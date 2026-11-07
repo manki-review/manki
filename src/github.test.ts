@@ -1230,6 +1230,12 @@ describe('postReview body lead', () => {
     const onThread = [{ ...blocker, threadId: 'T1' }, { ...blocker, line: 6, threadId: 'T1' }, { ...blocker, severity: 'warning' as const, threadId: 'T1' }];
     expect((await postedBody({ ...newOnly, findings: [blocker, ...onThread] }, [thread], followUp)).body)
       .toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker and 1 still open\./u);
+
+    // An earlier blocker named again and one left open share a single list.
+    const mixed = (await postedBody({ ...newOnly, findings: [{ ...blocker, threadId: 'T1' }], verdictTrace: { survivingBlockers: [], unresolvedPriors: [other] } }, [thread], followUp)).body;
+    expect(mixed).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 2 blockers still open from earlier reviews\./u);
+    expect(mixed.split('**Still open from earlier reviews:**')).toHaveLength(2);
+    expect(mixed).toContain('**Still open from earlier reviews:**\n- `src/a.ts:9`: Lock never released\n- `src/a.ts:3`: Cache never expires');
   });
 
   it('opens an INCOMPLETE review with the verdict line and the reason', async () => {

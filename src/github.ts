@@ -1243,11 +1243,8 @@ export async function postReview(
       b += `\n\n${needsHuman}`;
     }
     const blockingThreads = formatBlockingPriorThreads(result);
-    if (blockingThreads) {
-      b += `\n\n${blockingThreads}`;
-    }
-    if (stillOpen.length > 0) {
-      b += `\n\n${STILL_OPEN_HEADING}\n${stillOpen.join('\n')}`;
+    if (blockingThreads || stillOpen.length > 0) {
+      b += `\n\n${[blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n')}`;
     }
     if (generalFindings.length > 0) {
       b += `\n\n**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`;
