@@ -81,6 +81,7 @@ jest.mock('./providers', () => ({
   summarizeCalls: jest.requireActual('./providers').summarizeCalls,
   createLLMClient: jest.fn().mockImplementation(() => ({ sendMessage: jest.fn() })),
   parseModelSpec: jest.fn().mockImplementation((m: string) => ({ provider: 'anthropic', model: m })),
+  removeSeededAuthFiles: jest.fn(),
 }));
 
 jest.mock('./config', () => {
@@ -241,7 +242,7 @@ import { buildRoundRecap } from './round-context';
 import type { ParsedDiff, PrState, ReviewConfig, RunMode } from './types';
 import { SettingsView, withSettingsBlock } from './settings';
 import { registerSecret, withMarkers } from './utils';
-import { createLLMClient, LLMCall, parseModelSpec } from './providers';
+import { createLLMClient, LLMCall, parseModelSpec, removeSeededAuthFiles } from './providers';
 import { fetchWorkspace } from './workspace';
 import * as interaction from './interaction';
 import * as ghUtils from './github';
@@ -1613,6 +1614,7 @@ describe('main', () => {
     await main();
 
     expect(jest.mocked(core.saveState)).toHaveBeenCalledWith('manki_post_phase', 'true');
+    expect(removeSeededAuthFiles).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -6,7 +6,7 @@ import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
 import { changedKeys, loadConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
-import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
+import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow } from './code-window';
@@ -2001,6 +2001,7 @@ async function main(): Promise<void> {
     if (dispatched !== undefined && error instanceof TokenServiceError) await reportTokenFailure(dispatched, error);
     core.setFailed(`Manki encountered an error: ${failureReason(error)}`);
   } finally {
+    removeSeededAuthFiles();
     process.off('SIGTERM', onSignal);
     process.off('SIGINT', onSignal);
     stop.release();
