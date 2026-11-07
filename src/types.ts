@@ -53,21 +53,6 @@ export function isBlockingSeverity(severity: FindingSeverity): boolean {
 /** Regex source matching all current and legacy severity tokens. */
 export const SEVERITY_TOKEN_PATTERN = 'blocker|warning|suggestion|nitpick|ignore|required|nit';
 
-/**
- * Pre-Conventional-Commits planner vocab. Historical review bodies persisted
- * these values into `planner.prType`. Read-only remap so old rounds render
- * with the current canonical vocab.
- */
-const LEGACY_PR_TYPE_MAP: Record<string, string> = {
-  feature: 'feat',
-  bugfix: 'fix',
-  rename: 'refactor',
-};
-
-export function migrateLegacyPrType(value: string): string {
-  return LEGACY_PR_TYPE_MAP[value] ?? value;
-}
-
 export const RATCHET_SUPPRESSED_TAG = 'suppressed-by-ratchet' as const;
 export const CONTRADICTION_TAG = 'contradicts-prior-round' as const;
 export const RESOLVED_THREAD_SUPPRESSED_TAG = 'suppressed-by-resolved-thread' as const;
