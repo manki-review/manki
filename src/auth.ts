@@ -193,6 +193,25 @@ export async function fetchPrState(owner: string, repo: string, prNumber: number
   }
 }
 
+/** The clients holding the token service's review token, which cannot resolve review threads itself. */
+const serviceClients = new WeakSet<Octokit>();
+
+/**
+ * Resolves or reopens review thread `threadId` through the token service's `/resolve` when `octokit` holds the token
+ * service's review token, since resolving needs `contents: write`, which only the service's one-call token holds.
+ * Returns false for any other client, which changes the thread itself. Throws when the service does not change it.
+ */
+export async function changeThreadThroughService(octokit: Octokit, threadId: string, resolved: boolean, reason?: string): Promise<boolean> {
+  if (!serviceClients.has(octokit)) return false;
+  const { owner, repo } = github.context.repo;
+  const body = { owner, repo, thread_id: threadId, resolved, ...(reason !== undefined && { reason }) };
+  const response = await postToTokenService(new URL('resolve', tokenServiceUrl()).href, body);
+  if (!response?.ok) {
+    throw new Error(`The token service did not ${resolved ? 'resolve' : 'reopen'} the thread (${response ? response.status : 'no OIDC token'})`);
+  }
+  return true;
+}
+
 /** Sends what this run posted on PR `prNumber` to the PR coordinator. A failure only warns, since the review on GitHub stands. */
 export async function reportPrState(owner: string, repo: string, prNumber: number, report: StateReport): Promise<void> {
   try {
@@ -229,6 +248,7 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
   const { token, memoryToken, identity } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
 
   const octokit = createOctokit(token);
+  if (identity === 'app') serviceClients.add(octokit);
   const bot = identity === 'actions' ? await resolveTokenUserBot(octokit, token) : MANKI_BOT;
   const serviceMemoryRepo = `${owner}/review-memory`.toLowerCase();
   const appMemory: AppMemory | undefined = memoryToken

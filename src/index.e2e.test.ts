@@ -109,7 +109,7 @@ class FakeGitHub {
   onWrite?: (write: string) => void | Promise<void>;
   headSha = HEAD_SHA;
   mergeable: boolean | null = true;
-  /** Refuses `resolveReviewThread` the way GitHub does for a token without the permission. */
+  /** Refuses `resolveReviewThread`, and the token service's `/resolve`, the way GitHub does for a token without the permission. */
   refuseResolve = false;
   /** The config file at each ref, such as the base branch or the PR's head commit. */
   configs: Record<string, string> = {};
@@ -130,6 +130,16 @@ class FakeGitHub {
       this.stateReports.push(body);
       return json({ changed: [] });
     }
+    if (`${origin}${pathname}` === new URL('resolve', TOKEN_URL).href) {
+      this.writes.push('POST /resolve');
+      await this.onWrite?.('POST /resolve');
+      if (this.refuseResolve && body.resolved) return json({ error: 'Resolving the thread failed', request_id: 'r-1' }, 500);
+      const thread = this.threads.find(t => t.id === body.thread_id);
+      if (!thread) return json({ error: 'No Manki review thread with that id on the run\'s pull request' }, 404);
+      thread.isResolved = body.resolved === true;
+      thread.resolvedBy = thread.isResolved ? { login: APP_LOGIN.replace(/\[bot\]$/, '') } : null;
+      return json({ resolved: thread.isResolved });
+    }
     if (pathname === '/graphql' ? String(body.query).trimStart().startsWith('mutation') : method !== 'GET') {
       const write = `${method} ${pathname}`;
       this.writes.push(write);
@@ -137,7 +147,9 @@ class FakeGitHub {
     }
     const failure = this.failures.find(f => f.method === method && f.path.test(pathname));
     if (failure) return json({ message: 'Server Error' }, failure.status);
-    if (pathname === '/graphql' && this.refuseResolve && /\bresolveReviewThread\b/.test(String(body.query))) {
+    // The App's review token holds no `contents: write`, so only the token service's `/resolve` can change its threads.
+    const resolving = /\b(un)?resolveReviewThread\b/.test(String(body.query));
+    if (pathname === '/graphql' && resolving && (login === APP_LOGIN || (this.refuseResolve && !/\bunresolveReviewThread\b/.test(String(body.query))))) {
       return json({ data: null, errors: [{ type: 'FORBIDDEN', message: 'Resource not accessible by integration' }] });
     }
     if (pathname === '/graphql') return json({ data: this.graphql(body.query, body.variables ?? {}, login) });
@@ -823,6 +835,7 @@ describe('runFullReview end to end', () => {
     expect(postedReviews()[2].state).toBe('APPROVED');
     const [thread] = mockGitHub.threads;
     expect(thread.isResolved).toBe(true);
+    expect(mockGitHub.writes).toContain('POST /resolve');
     expect(thread.comments.at(-1)?.body).toMatch(/^Fixed in c3c3c3c\./);
   });
 

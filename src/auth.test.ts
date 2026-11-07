@@ -4,7 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 
-import { AppMemory, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState, resolveGitHubToken, TokenResult } from './auth';
+import { AppMemory, changeThreadThroughService, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState, resolveGitHubToken, TokenResult } from './auth';
 
 jest.mock('@actions/core');
 jest.mock('@actions/github');
@@ -526,5 +526,54 @@ describe('createAuthenticatedOctokit', () => {
     mockGetOctokit.mockReturnValue(fakeOctokit as unknown as ReturnType<typeof github.getOctokit>);
 
     await expect(createAuthenticatedOctokit()).rejects.toThrow('GitHub App authentication failed');
+  });
+});
+
+describe('changeThreadThroughService', () => {
+  beforeEach(() => {
+    mockGetInput.mockReset().mockImplementation((name: string) => (name === 'github_token' ? 'ghs_workflow' : ''));
+    mockGetOctokit.mockReset().mockImplementation(() => ({}) as ReturnType<typeof github.getOctokit>);
+    jest.restoreAllMocks();
+    Object.defineProperty(github.context, 'repo', { value: { owner: OWNER, repo: REPO }, configurable: true });
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
+  });
+
+  /** Returns the client of a run whose review token came from the token service, then serves later calls with `reply`. */
+  async function serviceClient(reply: (url: string, init?: RequestInit) => Promise<Response>) {
+    mockFetch(async () => Response.json({ token: APP_TOKEN, expires_at: '2026-12-31T00:00:00Z' }));
+    const { octokit, identity } = await createAuthenticatedOctokit();
+    expect(identity).toBe('app');
+    mockFetch(reply);
+    return octokit;
+  }
+
+  it('resolves and reopens a thread through `/resolve` with the OIDC token, for the token service\'s client only', async () => {
+    const octokit = await serviceClient(async () => Response.json({ resolved: true }));
+    expect(await changeThreadThroughService(octokit, 'PRRT_1', true, 'ADDRESSED')).toBe(true);
+    expect(await changeThreadThroughService(octokit, 'PRRT_1', false)).toBe(true);
+    const calls = (global.fetch as jest.Mock).mock.calls;
+    expect(calls.map(([url]) => url)).toEqual(['https://manki-api.dustinface.me/resolve', 'https://manki-api.dustinface.me/resolve']);
+    expect(calls[0][1].headers['Authorization']).toBe('Bearer fake-oidc-token');
+    expect(calls.map(([, init]) => JSON.parse(init.body))).toEqual([
+      { owner: OWNER, repo: REPO, thread_id: 'PRRT_1', resolved: true, reason: 'ADDRESSED' },
+      { owner: OWNER, repo: REPO, thread_id: 'PRRT_1', resolved: false },
+    ]);
+
+    // A run on the Actions token changes its threads itself.
+    jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC'));
+    const { octokit: actions, identity } = await createAuthenticatedOctokit();
+    expect(identity).toBe('actions');
+    mockFetch(async () => Response.json({ resolved: true }));
+    expect(await changeThreadThroughService(actions, 'PRRT_1', true)).toBe(false);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the service refuses the thread', () => mockFetch(async () => Response.json({ error: 'No Manki review thread' }, { status: 404 })), '(404)'],
+    ['the run has lost its OIDC token', () => jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC')), '(no OIDC token)'],
+  ])('throws when %s, so the caller keeps the thread open', async (_case, arrange, detail) => {
+    const octokit = await serviceClient(async () => Response.json({ resolved: true }));
+    arrange();
+    await expect(changeThreadThroughService(octokit, 'PRRT_1', true, 'ADDRESSED')).rejects.toThrow(`The token service did not resolve the thread ${detail}`);
   });
 });

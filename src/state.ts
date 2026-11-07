@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { fetchPrState, reportPrState } from './auth';
+import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
 import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
@@ -143,6 +143,7 @@ type ResolutionReason = 'ADDRESSED' | 'INVALID' | 'WONT_FIX';
 /** Resolves the review thread `threadId` with `resolutionReason`. Throws the abort reason once GitHub writes are stopped. */
 async function resolveReviewThread(octokit: Octokit, threadId: string, resolutionReason: ResolutionReason): Promise<void> {
   assertWritesAllowed();
+  if (await changeThreadThroughService(octokit, threadId, true, resolutionReason)) return;
   await octokit.graphql(
     'mutation($threadId: ID!, $resolutionReason: PullRequestReviewThreadResolutionReason) { resolveReviewThread(input: { threadId: $threadId, resolutionReason: $resolutionReason }) { thread { isResolved } } }',
     { threadId, resolutionReason },
@@ -151,6 +152,7 @@ async function resolveReviewThread(octokit: Octokit, threadId: string, resolutio
 
 async function unresolveReviewThread(octokit: Octokit, threadId: string): Promise<void> {
   assertWritesAllowed();
+  if (await changeThreadThroughService(octokit, threadId, false)) return;
   await octokit.graphql('mutation($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId });
 }
 
