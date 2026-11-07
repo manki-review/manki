@@ -182,7 +182,7 @@ describe('collectStaticSignals', () => {
   it('alerts once per file on hidden characters the PR adds in any changed file, whatever the config says', async () => {
     const raw = [
       'diff --git a/src/auth.ts b/src/auth.ts', '--- a/src/auth.ts', '+++ b/src/auth.ts', '@@ -1,2 +1,4 @@',
-      ' const zero = "a\u200Bb";', '+const crlf = 1;\r', '+if (isAdmin) { /* \u202E } \u2066 if (true) { */ grant(); }', '+const s = "x\u200By";',
+      ' const zero = "a\u200Bb";', '+const crlf = 1;\r', '+if (isAdmin) { /* \u202E } \u2066 if (true) { */ grant(); }', '+const s = "x\u200By"; // \u2028 ends this comment',
       'diff --git a/docs/notes.md b/docs/notes.md', '--- a/docs/notes.md', '+++ b/docs/notes.md', '@@ -1 +1,2 @@', ' # Notes', '+Use the\u00ADtool\t.', '',
     ].join('\n');
     const fullDiff = parsePRDiff(raw);
@@ -193,7 +193,7 @@ describe('collectStaticSignals', () => {
     expect(signals).toEqual([
       {
         tool: 'Manki', ruleId: 'hidden-characters', severity: 'error', file: 'src/auth.ts', line: 3, source: 'hidden_characters',
-        message: '2 added lines, from this one on, hold invisible or bidirectional control characters (U+202E, U+2066, U+200B), so the code may read differently than it runs.',
+        message: '2 added lines, from this one on, hold invisible or bidirectional control characters (U+202E, U+2066, U+200B, U+2028), so the code may read differently than it runs.',
       },
       {
         tool: 'Manki', ruleId: 'hidden-characters', severity: 'warning', file: 'docs/notes.md', line: 2, source: 'hidden_characters',
