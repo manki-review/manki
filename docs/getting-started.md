@@ -332,9 +332,10 @@ Manki publishes immutable releases: once a release is out, its tag can never mov
 # Label PRs that have any blocker-severity findings
 - name: Label blocking PRs
   if: fromJSON(steps.manki.outputs.severity_counts).blocker > 0
-  run: gh pr edit ${{ inputs.pr }} --add-label blocking-findings
+  run: gh pr edit "$PR" --add-label blocking-findings
   env:
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    PR: ${{ inputs.pr }}
 ```
 
 You can also forward `severity_counts` or `findings_json` to a metrics sink (Slack, Datadog, a dashboard) in a follow-up step.
