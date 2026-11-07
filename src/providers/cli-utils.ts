@@ -370,8 +370,14 @@ export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, cred
     if (!value) continue;
     registerSecret(value);
     if (name === 'GOOGLE_APPLICATION_CREDENTIALS') registerGoogleCredentials(value);
-    // Each `Name: value` line of the headers carries its own secret, such as a gateway key.
-    if (name === 'ANTHROPIC_CUSTOM_HEADERS') value.split(/\r?\n/).forEach(line => registerSecret(line.slice(line.indexOf(':') + 1).trim()));
+    // Each `Name: value` line of the headers carries its own secret, such as a gateway key, maybe after a scheme like `Bearer`.
+    if (name === 'ANTHROPIC_CUSTOM_HEADERS') {
+      for (const line of value.split(/\r?\n/)) {
+        const header = line.slice(line.indexOf(':') + 1).trim();
+        registerSecret(header);
+        registerSecret(header.split(/\s+/).pop() ?? '');
+      }
+    }
   }
   return result;
 }
