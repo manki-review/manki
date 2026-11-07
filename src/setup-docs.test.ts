@@ -125,7 +125,7 @@ describe('documented `review` examples', () => {
 describe('documentation links', () => {
   it('point to files and headings that exist, in the README and every page under `docs/`', () => {
     const pages = ['README.md', 'SETUP.md', ...fs.readdirSync(path.join(ROOT, 'docs')).filter(f => f.endsWith('.md')).map(f => `docs/${f}`)];
-    expect(pages).toEqual(expect.arrayContaining(['docs/getting-started.md', 'docs/how-reviews-work.md', 'docs/configuration.md', 'docs/memory.md', 'docs/security.md']));
+    expect(pages).toEqual(expect.arrayContaining(['docs/getting-started.md', 'docs/how-reviews-work.md', 'docs/configuration.md', 'docs/memory.md', 'docs/security.md', 'docs/migrating-to-v7.md']));
     const broken = pages.flatMap(page => [...withoutCodeBlocks(readRepoFile(page)).matchAll(/\]\(([^)\s]+)\)/g)].flatMap(([, target]) => {
       if (/^[a-z]+:/i.test(target)) return [];
       const [file, anchor] = target.split('#');

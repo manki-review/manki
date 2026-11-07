@@ -33,7 +33,7 @@ Manki sizes each review to the nature of the change: one reader for a change whe
 2. **Add a provider secret** — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` (OAuth subscription paths are also supported, see [Getting started](docs/getting-started.md#choosing-a-provider))
 3. **Add the workflow** — copy the YAML from [Getting started](docs/getting-started.md#step-3-add-the-workflow)
 
-Full setup guide with troubleshooting: **[Getting started](docs/getting-started.md)**. More in [How reviews work](docs/how-reviews-work.md), [Configuration](docs/configuration.md), [Review memory](docs/memory.md) and the [Security model](docs/security.md).
+Full setup guide with troubleshooting: **[Getting started](docs/getting-started.md)**. Coming from v6? See [Migrating to v7](docs/migrating-to-v7.md). More in [How reviews work](docs/how-reviews-work.md), [Configuration](docs/configuration.md), [Review memory](docs/memory.md) and the [Security model](docs/security.md).
 
 ## How it works
 

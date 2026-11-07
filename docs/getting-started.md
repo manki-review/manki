@@ -27,7 +27,7 @@ If you use branch protection rules and want Manki to be a required check:
 2. Edit the rule for `main` (or your default branch)
 3. Under "Require status checks to pass":
    - Add `build` (CI check)
-   - Add `review` (Manki check)
+   - Add `Manki` (the check Manki creates on the PR)
 4. Under "Require pull request reviews before merging":
    - Set to 1 required review
    - The action's APPROVE counts as a review
@@ -48,7 +48,7 @@ The app requires these permissions:
 
 | Permission | Access | Purpose |
 |------------|--------|---------|
-| Contents | Read | Read repository files and diffs |
+| Contents | Read and write | Read repository files and diffs. GitHub needs write to resolve a review thread, and the token Manki gets covers only the reviewed repo |
 | Pull requests | Read and write | Post review comments and approvals |
 | Issues | Read and write | Post progress comments and app warnings; read linked issues for review context |
 | Actions | Read and write | Start the Manki workflow and follow its runs (see [What the Manki App needs](#what-the-manki-app-needs)). Set on the App by its maintainers, so you only approve it |
@@ -171,7 +171,7 @@ Runs reviews through the Gemini CLI binary, signed in with Google. Effort tiers 
 
 GitHub sends your repository's events to the Manki GitHub App. The Manki service drops the ones Manki ignores, puts the rest in order for each PR, and starts a run of your Manki workflow for each event Manki acts on. The run uses your runner and your secrets. The service only orders and starts runs: every decision about a review, a reply or an approval stays in the action.
 
-The service only handles repositories that its operator has added to an allowlist (`WEBHOOK_REPOS` in the token service). It ignores the events of every other repository, so ask the Manki maintainers to add yours.
+The service only handles the repositories of the accounts its operator lists (`WEBHOOK_ACCOUNTS` in the token service), a user or an organization the App is installed on. It ignores the events of every other account, so ask the Manki maintainers to add yours. Manki runs through the manki-review service, and running your own copy of it is not supported yet ([#1091](https://github.com/manki-review/manki/issues/1091)).
 
 Create `.github/workflows/manki.yml` on the default branch:
 
@@ -208,7 +208,7 @@ jobs:
         with:
           node-version: '24'
       - name: Manki Review
-        uses: manki-review/manki@v6
+        uses: manki-review/manki@v7
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Only if the App can't reach the memory repo
@@ -222,7 +222,7 @@ Claude Code OAuth:
 
 ```yaml
       - name: Manki Review
-        uses: manki-review/manki@v6
+        uses: manki-review/manki@v7
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
@@ -231,7 +231,7 @@ OpenAI API key:
 
 ```yaml
       - name: Manki Review
-        uses: manki-review/manki@v6
+        uses: manki-review/manki@v7
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
@@ -243,7 +243,7 @@ OpenAI Codex CLI OAuth (requires the CLI on the runner):
         # --ignore-scripts is safe: @openai/codex@0.166.0 ships a plain JS bin with no postinstall steps. Re-verify if you bump the version pin.
         run: npm install -g --ignore-scripts '@openai/codex@0.166.0'
       - name: Manki Review
-        uses: manki-review/manki@v6
+        uses: manki-review/manki@v7
         with:
           openai_oauth_token: ${{ secrets.OPENAI_OAUTH_TOKEN }}
 ```
@@ -252,7 +252,7 @@ Gemini API key:
 
 ```yaml
       - name: Manki Review
-        uses: manki-review/manki@v6
+        uses: manki-review/manki@v7
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 ```
@@ -264,7 +264,7 @@ Gemini CLI OAuth (requires the CLI on the runner and a Gemini Code Assist Standa
         # --ignore-scripts is safe: @google/gemini-cli@0.66.0 has no install script of its own. Re-verify if you bump the version pin.
         run: npm install -g --ignore-scripts '@google/gemini-cli@0.66.0'
       - name: Manki Review
-        uses: manki-review/manki@v6
+        uses: manki-review/manki@v7
         env:
           GOOGLE_CLOUD_PROJECT: <your-project-id>
         with:
@@ -303,36 +303,34 @@ The action exposes outputs you can chain into later workflow steps: `review_id`,
 
 Pin to a release tag or to the commit a release tag points to:
 
-- `manki-review/manki@v6` is the floating major tag. It picks up minor and patch releases automatically. Recommended for most setups.
-- `manki-review/manki@v6.0.0` is an exact release. It stays on that release until you bump it. Recommended when you want lockstep upgrades.
+- `manki-review/manki@v7` is the floating major tag. It picks up minor and patch releases automatically. Recommended for most setups.
+- `manki-review/manki@v7.0.0` is an exact release. It stays on that release until you bump it. Recommended when you want lockstep upgrades.
 - `manki-review/manki@<sha>` is a full commit SHA, for organizations that require actions pinned to one.
 
 `main` holds source only and has no built `dist/`, so `@main` or a commit SHA from `main` will not run. Each release tag points at a commit that contains the built `dist/`. For a SHA pin, take the commit of the release tag:
 
 ```sh
-git ls-remote https://github.com/manki-review/manki 'refs/tags/v6.0.0^{}'
+git ls-remote https://github.com/manki-review/manki 'refs/tags/v7.0.0^{}'
 ```
 
 Then pin it with the version as a comment, so tools that update pins can read it:
 
 ```yaml
       - name: Manki Review
-        uses: manki-review/manki@<sha>  # v6.0.0
+        uses: manki-review/manki@<sha>  # v7.0.0
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-From v6.0.0, Manki publishes immutable releases: once a release is out, its tag can never move, so the SHA behind `v6.x.y` never changes. The floating `v6` tag keeps moving to each new release.
+Manki publishes immutable releases: once a release is out, its tag can never move, so the SHA behind `v7.x.y` never changes. The floating `v7` tag keeps moving to each new release.
 
-[Workflow lockfiles](https://docs.github.com/actions/concepts/security/workflow-dependency-lockfiles) are the alternative to SHA pins. Keep `@v6` in the workflow, and run the [`gh actions-lock`](https://github.com/github/gh-actions-lock) extension to record the commit it resolves to in `.github/workflows/actions.lock`. Commit that file. Actions then runs the recorded commit, even after the tag moves, until you regenerate the lockfile. A lockfile satisfies the policy that requires actions pinned to a full commit SHA for the workflows it covers, and Dependabot regenerates the entry when it bumps the version.
-
-Releases before the committed `dist/` fix (`v5.0.0`, `v5.0.1`) only work through the floating `@v5` tag.
+[Workflow lockfiles](https://docs.github.com/actions/concepts/security/workflow-dependency-lockfiles) are the alternative to SHA pins. Keep `@v7` in the workflow, and run the [`gh actions-lock`](https://github.com/github/gh-actions-lock) extension to record the commit it resolves to in `.github/workflows/actions.lock`. Commit that file. Actions then runs the recorded commit, even after the tag moves, until you regenerate the lockfile. A lockfile satisfies the policy that requires actions pinned to a full commit SHA for the workflows it covers, and Dependabot regenerates the entry when it bumps the version.
 
 ### Using outputs in downstream workflow steps
 
 ```yaml
 # Fail CI when the judge requests changes
-- uses: manki-review/manki@v6
+- uses: manki-review/manki@v7
   id: manki
   with:
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -398,7 +396,7 @@ Your CI on the default branch still writes the caches that Manki restores. Note 
 
 ### What the Manki App needs
 
-The Manki maintainers set up the App's webhook, the **Actions: read and write** and **Checks: read and write** permissions and the **Workflow run** event once for every installation. The webhook receives the events of every installation, with their payloads such as PR titles, PR bodies and comment text, and the service drops the events of repositories that are not on its allowlist. Actions write lets the App start, cancel and rerun workflow runs in the repositories it is installed on. The service uses it to start your Manki workflow, and the Workflow run event tells it within seconds that a run ended, so it can start the next one in that PR's queue. Checks write lets Manki create and update its `Manki` check on your PRs.
+The Manki maintainers set up the App's webhook, the **Actions: read and write** and **Checks: read and write** permissions and the **Workflow run** event once for every installation. The webhook receives the events of every installation, with their payloads such as PR titles, PR bodies and comment text, and the service drops the events of accounts it does not serve. Actions write lets the App start, cancel and rerun workflow runs in the repositories it is installed on. The service uses it to start your Manki workflow, and the Workflow run event tells it within seconds that a run ended, so it can start the next one in that PR's queue. Checks write lets Manki create and update its `Manki` check on your PRs.
 
 A new App permission only takes effect once each installation approves it. GitHub emails the owner of every installation and shows the request on the App's installation settings, where the owner accepts it. Until then the service cannot start runs in your repositories. Without the Checks permission, reviews run as usual and only the `Manki` check is missing.
 
@@ -435,7 +433,7 @@ Manki's newest progress comment ends with a settings block. It holds a status li
 | "Failed to post APPROVE review" | Enable "Allow GitHub Actions to create and approve pull requests" in repo settings |
 | Review says "No reviewable files" | Check `exclude_paths` in config -- dotfiles are included by default |
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
-| No run starts | The Manki workflow must be on the default branch and declare the dispatch inputs, no other workflow may run Manki on events, and the repository must be on the service's allowlist (see [Step 3](#step-3-add-the-workflow)) |
+| No run starts | The Manki workflow must be on the default branch and declare the dispatch inputs, no other workflow may run Manki on events, and the repository's account must be one the service serves (see [Step 3](#step-3-add-the-workflow)) |
 | "above the limit ... for automatic review" | Split the PR, tick Force review to review it in full, or raise `auto_review_max_lines` |
 | "above the limit ... that Manki reviews" | Split the PR, or raise `max_diff_lines` |
 | Auto-approve not working | Check that `auto_approve: true` is set in `.manki.yml` |
@@ -470,7 +468,3 @@ When both are set for a provider, OAuth takes precedence (the action checks the 
 | Secret | Purpose |
 |--------|---------|
 | `REVIEW_MEMORY_TOKEN` | Fine-grained PAT for memory repo writes (only when the App can't write the memory repo, see [Review Memory Token](memory.md#review-memory-token)) |
-
-## Upgrading to 6.1
-
-- **Review memory.** With the manki-review App, 6.1 writes memory with a separate memory token from the token service, which can write only `<owner>/review-memory`. Releases before 6.1 use the App's review token for memory. That token now covers only the reviewed repo, so their memory reads and writes fail. Upgrade to 6.1, or set `memory_repo_token`. A memory repo with any other name needs `memory_repo_token`, or [your own GitHub App](#your-own-github-app).
