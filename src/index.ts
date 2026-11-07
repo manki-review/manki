@@ -1248,14 +1248,18 @@ async function reviewRound(
   return { result, reviewEndTime, judgeEndTime: Date.now() };
 }
 
-/** Fails the run and posts the incomplete round as a COMMENT, so the previous review stays standing. Returns the report for the PR check. */
+/**
+ * Fails the run and posts the incomplete round as a COMMENT. An earlier request for changes stays standing, while an
+ * approval of an older commit is dismissed, since nothing approved the code since. Returns the report for the PR check.
+ */
 async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promise<CheckReport> {
   const { octokit, owner, repo, prNumber, commitSha, commentId, dashboard, diff } = run;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   cancelDashboardFlush(run.progress);
   core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
   result.verdict = 'COMMENT';
-  await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId, 'APPROVED', commitSha);
   dashboard.phase = 'complete';
   await updateProgressComment(octokit, owner, repo, commentId, dashboard, undefined, progressSettings(run, run.progress, 'review incomplete'));
   return outcomeReport('INCOMPLETE', result.summary);

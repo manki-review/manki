@@ -3022,6 +3022,22 @@ describe('dismissPreviousReviews', () => {
     expect(dismissMock).toHaveBeenCalledWith(expect.objectContaining({ review_id: 1 }));
   });
 
+  it('keeps an approval of `keepCommit` and dismisses the ones of older commits', async () => {
+    const dismissMock = jest.fn().mockResolvedValue({});
+    const reviews = [
+      { id: 1, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED', commit_id: 'old' },
+      { id: 2, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED', commit_id: 'head' },
+      { id: 3, body: `${BOT_MARKER}\nIncomplete`, state: 'COMMENTED', commit_id: 'head' },
+    ];
+    const mockOctokit = {
+      paginate: jest.fn().mockResolvedValue(reviews),
+      rest: { pulls: { dismissReview: dismissMock } },
+    } as unknown as Parameters<typeof dismissPreviousReviews>[0];
+
+    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1, 3, 'APPROVED', 'head');
+    expect(dismissMock.mock.calls).toEqual([[expect.objectContaining({ review_id: 1 })]]);
+  });
+
   it('dismisses reviews past the first page', async () => {
     const dismissMock = jest.fn().mockResolvedValue({});
     const reviews = Array.from({ length: 35 }, (_, i) => ({ id: i + 1, body: `${BOT_MARKER}\nReview`, state: 'CHANGES_REQUESTED' }));

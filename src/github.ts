@@ -830,8 +830,8 @@ export async function updateProgressDashboard(
 }
 
 /**
- * Dismiss the bot's reviews in `state`, `CHANGES_REQUESTED` by default, on this PR, except `keepReviewId`.
- * Call it only after the new review is posted, so a failed run leaves the merge
+ * Dismiss the bot's reviews in `state`, `CHANGES_REQUESTED` by default, on this PR, except `keepReviewId` and any
+ * review on `keepCommit`. Call it only after the new review is posted, so a failed run leaves the merge
  * block in place. A failed dismissal only warns, since the new review already stands.
  * Throws the abort reason once GitHub writes are stopped.
  */
@@ -842,6 +842,7 @@ export async function dismissPreviousReviews(
   prNumber: number,
   keepReviewId?: number,
   state: 'CHANGES_REQUESTED' | 'APPROVED' = 'CHANGES_REQUESTED',
+  keepCommit?: string,
 ): Promise<void> {
   assertWritesAllowed();
   let reviews;
@@ -858,7 +859,8 @@ export async function dismissPreviousReviews(
   }
 
   for (const review of reviews) {
-    if (review.id !== keepReviewId && review.body?.includes(BOT_MARKER) && review.state === state) {
+    const onKeptCommit = keepCommit !== undefined && review.commit_id === keepCommit;
+    if (review.id !== keepReviewId && !onKeptCommit && review.body?.includes(BOT_MARKER) && review.state === state) {
       assertWritesAllowed();
       try {
         await octokit.rest.pulls.dismissReview({
