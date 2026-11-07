@@ -449,7 +449,7 @@ describe('checkAndAutoApprove', () => {
     expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([
       ['owner', 'repo', 1, { approval: { commit: 'sha-456', held: true } }],
       ['owner', 'repo', 1, { approval: { commit: 'sha-456', held: true } }],
-      ['owner', 'repo', 1, { approval: { commit: 'sha-456', held: false } }],
+      ['owner', 'repo', 1, { approval: { commit: 'sha-456', held: false }, pause: null }],
     ]);
   });
 

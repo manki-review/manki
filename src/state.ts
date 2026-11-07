@@ -516,7 +516,8 @@ async function checkAndAutoApprove(
         body,
       });
       core.info('Auto-approved PR');
-      await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: false } });
+      // An approval ends the pause, so the coordinator again starts push reviews.
+      await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: false }, pause: null });
       await dismissPreviousReviews(octokit, owner, repo, prNumber);
       await completeReviewCheck(await startReviewCheck(octokit, owner, repo, pr.head.sha), outcomeReport('READY', 'All blocking threads are resolved.'));
     } catch (error) {
