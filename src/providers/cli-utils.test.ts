@@ -160,14 +160,14 @@ describe('cliEnv', () => {
       AWS_BEARER_TOKEN_BEDROCK: 'bedrock-api-key',
       GOOGLE_APPLICATION_CREDENTIALS: '/secrets/gcp-key.json',
       ANTHROPIC_AUTH_TOKEN: 'gateway-auth-token',
-      ANTHROPIC_CUSTOM_HEADERS: 'X-Gateway-Key: gateway-header-key\nX-Team: reviewers-team',
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Gateway-Key: gateway-header-key\nAuthorization: Bearer bare-gateway-bearer',
     };
     expect(cliEnv('claude', {}, undefined, credentials)).toEqual({});
 
     const on = { ...credentials, CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: 'true', ANTHROPIC_BASE_URL: 'https://gateway.example' };
     expect(cliEnv('claude', {}, undefined, on)).toEqual(on);
     expect(cliEnv('claude', {}, undefined, { ...credentials, CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' })).toEqual({ CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' });
-    expect(redactSecrets('aws-secret-access-key gateway-auth-token gateway-header-key')).toBe('[REDACTED] [REDACTED] [REDACTED]');
+    expect(redactSecrets('aws-secret-access-key gateway-auth-token gateway-header-key bare-gateway-bearer')).toBe('[REDACTED] [REDACTED] [REDACTED] [REDACTED]');
     // A Bedrock or Vertex gateway gets the headers too, but not the Anthropic gateway token.
     for (const url of ['ANTHROPIC_BEDROCK_BASE_URL', 'ANTHROPIC_VERTEX_BASE_URL']) {
       expect(cliEnv('claude', {}, undefined, { ...credentials, [url]: 'https://gateway.example' }))
