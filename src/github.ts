@@ -90,9 +90,7 @@ async function hasWriteAccess(octokit: Octokit, owner: string, repo: string, log
 
 const BOT_MARKER = '<!-- manki-bot -->';
 const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
-const FORCE_REVIEW_MARKER = '<!-- manki-force-review -->';
-const FORCE_CAP_MARKER = '<!-- manki-force-cap -->';
-/** Marks a pause notice whose Force review box sits in the settings block. */
+/** Marks a pause notice, whose settings block offers Force review. */
 const PAUSE_NOTICE_MARKER = '<!-- manki-paused -->';
 /** Marks the approval auto-approve posts. It stays in the body after GitHub dismisses the review. */
 const AUTO_APPROVE_MARKER = '<!-- manki-auto-approve -->';
@@ -2123,8 +2121,6 @@ function findProgressComment(comments: IssueComment[], bot: BotIdentity): Progre
     isBotUser(bot, c.user) &&
     c.body?.includes(BOT_MARKER) &&
     !c.body?.includes(REVIEW_COMPLETE_MARKER) &&
-    !c.body?.includes(FORCE_REVIEW_MARKER) &&
-    !c.body?.includes(FORCE_CAP_MARKER) &&
     !c.body?.includes(CANCELLED_MARKER)
   );
   if (!match || !match.body) return null;
@@ -2223,8 +2219,6 @@ function findInProgressLock(comments: IssueComment[], bot: BotIdentity, currentR
     if (!c.body?.includes(BOT_MARKER)) continue;
     if (c.body.includes(REVIEW_COMPLETE_MARKER)) continue;
     if (c.body.includes(CANCELLED_MARKER)) continue;
-    if (c.body.includes(FORCE_REVIEW_MARKER)) continue;
-    if (c.body.includes(FORCE_CAP_MARKER)) continue;
     const runId = extractRunIdFromBody(c.body);
     if (runId === null) continue;
     if (runId === currentRunId) continue;
@@ -2493,5 +2487,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
+export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
 export type { InProgressLock, StandingVerdict };

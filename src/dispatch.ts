@@ -187,7 +187,7 @@ function assertPartOf(url: string | undefined, path: string, what: string, numbe
   }
 }
 
-/** Who last edited a comment, such as the person who ticked a Force review box on Manki's comment. */
+/** Who last edited a comment, such as the person who ticked a box in Manki's settings block. */
 async function lastEditor(octokit: Octokit, nodeId: string): Promise<Sender | undefined> {
   const { node } = await octokit.graphql<{ node: { editor: { login: string; __typename: string } | null } | null }>(
     'query($id: ID!) { node(id: $id) { ... on IssueComment { editor { login __typename } } } }',

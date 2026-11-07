@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FORCE_CAP_MARKER, PAUSE_NOTICE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
@@ -289,7 +289,7 @@ async function autoReviewHalt(octokit: Octokit, bot: BotIdentity, owner: string,
     return 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.';
   }
   const { reason } = pauseState(await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
-  return reason && `${reason} Automatic review is paused. Tick **Force review** on the pause notice, or comment \`@manki review\`, to review it.`;
+  return reason && `${reason} Automatic review is paused. Tick **Force review** in the settings block, or comment \`@manki review\`, to review it.`;
 }
 
 function isBotReview(bot: BotIdentity, r: ReviewEntry): boolean {
@@ -393,9 +393,9 @@ async function holdApproval(
 /**
  * Deletes the auto-approve withheld notice for `headSha` and every approval-held notice. Call it once a review posts its verdict on `headSha`.
  * Marks each failed or incomplete progress comment for `headSha` as superseded by that verdict.
- * Pass `pauseLiftedAt` when that round lifted the pause: each open pause notice last updated before then is marked as resumed.
+ * With `pauseLifted`, when that round lifted the pause, each pause notice that lost its settings block is marked as resumed.
  */
-async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, pauseLiftedAt?: number): Promise<void> {
+async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, pauseLifted = false): Promise<void> {
   let comments: Awaited<ReturnType<typeof fetchPRComments>>;
   try {
     comments = await fetchPRComments(octokit, owner, repo, prNumber);
@@ -411,11 +411,8 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
       } else if (isFailedProgressOn(c.body, headSha)) {
         await markProgressCommentSuperseded(octokit, owner, repo, c.id, { reviewedSha: headSha, headSha });
-      } else if (pauseLiftedAt !== undefined && (
-        // The round's progress comment took the settings block from such a notice, which edited it after the round started.
-        (c.body.includes(PAUSE_NOTICE_MARKER) && !c.body.includes(SETTINGS_MARKER))
-        || (Date.parse(c.updated_at) < pauseLiftedAt && c.body.includes(FORCE_CAP_MARKER) && /- \[[ x]\] Force review/.test(c.body)))) {
-        const body = withMarkers(`Automatic review was paused. Review resumed on \`${headSha.slice(0, 7)}\`.`, PROGRESS_MARKER, FORCE_CAP_MARKER);
+      } else if (pauseLifted && c.body.includes(PAUSE_NOTICE_MARKER) && !c.body.includes(SETTINGS_MARKER)) {
+        const body = withMarkers(`Automatic review was paused. Review resumed on \`${headSha.slice(0, 7)}\`.`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER);
         await octokit.rest.issues.updateComment({ owner, repo, comment_id: c.id, body });
       }
     } catch (error) {

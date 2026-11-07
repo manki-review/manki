@@ -779,7 +779,7 @@ describe('checkAndAutoApprove', () => {
     const notConverging = makeRoundContext(1);
     notConverging.meta.outcome = 'NOT_CONVERGING';
     it.each([
-      ['the last round did not converge', DEFAULT_CONFIG, [formatReviewRecord(notConverging)], 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick **Force review** on the pause notice'],
+      ['the last round did not converge', DEFAULT_CONFIG, [formatReviewRecord(notConverging)], 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick **Force review** in the settings block'],
       ['the round cap is reached', DEFAULT_CONFIG, [1, 2, 3, 4, 5].map(n => formatReviewRecord(makeRoundContext(n))), 'Manki has reviewed new changes in 5/5 rounds on this PR. Automatic review is paused.'],
       ['automatic review is off', AUTO_REVIEW_OFF, [], 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.'],
     ])('posts one withheld notice with the reason when %s', async (_label, config, roundBodies, reason) => {
