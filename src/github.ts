@@ -93,9 +93,10 @@ const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
 const PAUSE_NOTICE_MARKER = '<!-- manki-paused -->';
 /** Marks the approval auto-approve posts. It stays in the body after GitHub dismisses the review. */
 const AUTO_APPROVE_MARKER = '<!-- manki-auto-approve -->';
-const RUN_ID_MARKER_PREFIX = '<!-- manki-run-id:';
 const CANCELLED_MARKER = '<!-- manki-review-cancelled -->';
 const VERSION_MARKER_PREFIX = '<!-- manki-version:';
+/** Holds the id of the progress comment the run posted, for the post step. */
+const PROGRESS_STATE_KEY = 'manki_progress_comment';
 
 const MANKI_VERSION: string = (() => {
   try {
@@ -109,7 +110,6 @@ const BOT_MARKERS = [BOT_MARKER, VERSION_MARKER];
 const REVIEW_FAILED_LINE = '🔴 **Review failed**';
 const REVIEW_INCOMPLETE_LINE = '⚠️ **Review incomplete:**';
 
-const RUN_ID_MARKER_REGEX = /<!-- manki-run-id:(\d+) -->/;
 const COMMIT_MARKER_REGEX = /<!-- manki-commit:([0-9a-f]+) -->/;
 const VERSION_MARKER_REGEX = /<!-- manki-version:\s*([^\s]+)\s*-->/;
 
@@ -119,10 +119,6 @@ function extractVersionFromBody(body: string | null | undefined): string | null 
   return match ? match[1] : null;
 }
 
-function buildRunIdMarker(runId: number | string): string {
-  return `${RUN_ID_MARKER_PREFIX}${runId} -->`;
-}
-
 function buildCommitMarker(commitSha: string): string {
   return `<!-- manki-commit:${commitSha} -->`;
 }
@@ -130,14 +126,6 @@ function buildCommitMarker(commitSha: string): string {
 /** Returns the commit a progress comment reviews, or `null` for a comment posted without the marker. */
 function extractCommitFromBody(body: string): string | null {
   return body.match(COMMIT_MARKER_REGEX)?.[1] ?? null;
-}
-
-function extractRunIdFromBody(body: string | null | undefined): number | null {
-  if (!body) return null;
-  const match = body.match(RUN_ID_MARKER_REGEX);
-  if (!match) return null;
-  const id = Number(match[1]);
-  return Number.isFinite(id) ? id : null;
 }
 
 // Covers all standard HTML elements including `base` (can inject a base URL that hijacks relative links)
@@ -647,7 +635,6 @@ export async function postProgressComment(
   const body = withSettingsBlock(withMarkers(
     dashboard ? buildDashboard(dashboard) : '**Review started**',
     ...BOT_MARKERS,
-    buildRunIdMarker(github.context.runId),
     buildCommitMarker(commitSha),
   ), settings);
 
@@ -657,6 +644,7 @@ export async function postProgressComment(
     issue_number: prNumber,
     body,
   });
+  core.saveState(PROGRESS_STATE_KEY, String(data.id));
   return data.id;
 }
 
@@ -681,23 +669,21 @@ async function editProgressComment(
   await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body: withSettingsBlock(body, settings) });
 }
 
-/**
- * Posts the comment that shows an auto-approve is running. Its `manki-run-id` marker lets the post step
- * mark it cancelled when the run stops early.
- */
+/** Posts the comment that shows an auto-approve is running. The post step marks it cancelled when the run stops early. */
 export async function postAutoApproveProgressComment(
   octokit: Octokit,
   owner: string,
   repo: string,
   prNumber: number,
 ): Promise<number> {
-  const body = withMarkers('**Auto-approving:** no findings remain.', ...BOT_MARKERS, buildRunIdMarker(github.context.runId));
+  const body = withMarkers('**Auto-approving:** no findings remain.', ...BOT_MARKERS);
   const { data } = await octokit.rest.issues.createComment({
     owner,
     repo,
     issue_number: prNumber,
     body,
   });
+  core.saveState(PROGRESS_STATE_KEY, String(data.id));
   return data.id;
 }
 
@@ -860,7 +846,7 @@ export async function updateProgressDashboard(
 ): Promise<void> {
   await editProgressComment(
     octokit, owner, repo, commentId,
-    withMarkers(buildDashboard(dashboard), ...BOT_MARKERS, buildRunIdMarker(github.context.runId), buildCommitMarker(commitSha)),
+    withMarkers(buildDashboard(dashboard), ...BOT_MARKERS, buildCommitMarker(commitSha)),
     settings,
   );
 }
@@ -1995,7 +1981,7 @@ async function markProgressCommentCancelled(
   const boxes = new Set(settings?.boxes);
   boxes.delete('cancel');
   const body = withSettingsBlock(withMarkers([
-    '**Review cancelled:** a newer run replaced it.',
+    '**Review cancelled:** the run stopped before the review finished.',
     '',
     '<details><summary>Original progress</summary>',
     '',
@@ -2125,25 +2111,20 @@ async function retireSettingsBlocks(
 }
 
 /**
- * Post-step cleanup: find our run's progress comment and mark it as cancelled.
- * Invoked when GitHub Actions cancels the main step.
+ * Post-step cleanup: marks the progress comment this run posted as cancelled, unless it already ended.
+ * Returns whether it marked one. Invoked when GitHub Actions cancels or fails the main step.
  */
-async function markOwnProgressCommentCancelled(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, runId: number,
-): Promise<boolean> {
+async function markOwnProgressCommentCancelled(octokit: Octokit, owner: string, repo: string): Promise<boolean> {
+  const commentId = Number(core.getState(PROGRESS_STATE_KEY));
+  if (!commentId) return false;
   try {
-    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    const target = comments.find(c =>
-      isBotUser(bot, c.user) &&
-      c.body?.includes(BOT_MARKER) &&
-      !c.body?.includes(REVIEW_COMPLETE_MARKER) &&
-      !c.body?.includes(CANCELLED_MARKER) &&
-      extractRunIdFromBody(c.body) === runId
-    );
-    if (!target || !target.body) return false;
-    await markProgressCommentCancelled(octokit, owner, repo, target.id, target.body);
+    const { data } = await octokit.rest.issues.getComment({ owner, repo, comment_id: commentId });
+    if (!data.body || data.body.includes(REVIEW_COMPLETE_MARKER) || data.body.includes(CANCELLED_MARKER)) return false;
+    await markProgressCommentCancelled(octokit, owner, repo, commentId, data.body);
     return true;
   } catch (error) {
+    // A run that reviews nothing deletes its progress comment.
+    if ((error as { status?: number }).status === 404) return false;
     core.warning(`Post-cleanup failed: ${error instanceof Error ? error.message : error}`);
     return false;
   }
@@ -2316,5 +2297,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
+export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
 export type { StandingVerdict };
