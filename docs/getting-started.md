@@ -10,27 +10,25 @@ Install Manki on a GitHub repository: the App, a provider credential and the wor
 
 ## Required Repository Settings
 
-### Enable PR Approvals and Change Requests
+### Branch protection
 
-**Required.** Without this setting, the action cannot post APPROVE or REQUEST_CHANGES reviews. The "Failed to post APPROVE review" error in CI means this is not enabled.
+**Required.** Without both settings below, an approval Manki gave on one commit still counts after the author pushes another, so the PR can merge before Manki reviews the new code.
+
+1. Go to **Settings > Branches > Branch protection rules**, or a ruleset under **Settings > Rules**
+2. Edit the rule for `main` (or your default branch)
+3. Under "Require status checks to pass", add `Manki` (the check Manki creates on the PR), and your CI checks such as `build`
+4. Under "Require pull request reviews before merging":
+   - Set to 1 required review. Manki's APPROVE counts as a review
+   - Check **"Dismiss stale pull request approvals when new commits are pushed"**
+
+### Allow GitHub Actions to approve pull requests (only without the App)
+
+Only needed when Manki runs without the [GitHub App](#step-1-install-the-github-app) and posts with the workflow token. With the App, leave it off. This setting lets every workflow approve PRs with `GITHUB_TOKEN`, so anyone who can push a workflow change can approve their own PR. Without it, Manki on the workflow token cannot post APPROVE or REQUEST_CHANGES, and CI shows "Failed to post APPROVE review".
 
 1. Go to **Settings > Actions > General**
 2. Scroll to **Workflow permissions**
 3. Check **"Allow GitHub Actions to create and approve pull requests"**
 4. Click Save
-
-## Branch Protection (Optional)
-
-If you use branch protection rules and want Manki to be a required check:
-
-1. Go to **Settings > Branches > Branch protection rules**
-2. Edit the rule for `main` (or your default branch)
-3. Under "Require status checks to pass":
-   - Add `build` (CI check)
-   - Add `Manki` (the check Manki creates on the PR)
-4. Under "Require pull request reviews before merging":
-   - Set to 1 required review
-   - The action's APPROVE counts as a review
 
 > **Note**: If the action finds blocking issues, it posts REQUEST_CHANGES which blocks the merge. Non-blocking suggestions still result in APPROVE.
 
@@ -430,7 +428,7 @@ Manki's newest progress comment ends with a settings block. It holds a status li
 |---------|----------|
 | "spawn claude ENOENT" | Add the "Install Claude Code CLI" step before the action |
 | "Claude subscription limit reached" or another quota message | The provider's limit is used up. Wait for the reset time the review names, or switch to another token or key |
-| "Failed to post APPROVE review" | Enable "Allow GitHub Actions to create and approve pull requests" in repo settings |
+| "Failed to post APPROVE review" | Install the [GitHub App](#step-1-install-the-github-app), or without it enable "Allow GitHub Actions to create and approve pull requests" in repo settings (see [the risk](#allow-github-actions-to-approve-pull-requests-only-without-the-app)) |
 | Review says "No reviewable files" | Check `exclude_paths` in config -- dotfiles are included by default |
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
 | No run starts | The Manki workflow must be on the default branch and declare the dispatch inputs, no other workflow may run Manki on events, and the repository's account must be one the service serves (see [Step 3](#step-3-add-the-workflow)) |

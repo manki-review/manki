@@ -2886,7 +2886,7 @@ describe('runFullReview orchestration', () => {
     }));
   });
 
-  it('posts COMMENT and skips post-review processing for incomplete review', async () => {
+  it('posts COMMENT, dismisses only approvals of older commits, and skips post-review processing for an incomplete review', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -2911,7 +2911,7 @@ describe('runFullReview orchestration', () => {
       expect.anything(),
     );
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith('Review incomplete: Review incomplete');
-    expect(jest.mocked(ghUtils.dismissPreviousReviews)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', 'abc123']]);
     // Should not call dedup since we return early
     expect(jest.mocked(recapModule.deduplicateFindings)).not.toHaveBeenCalled();
   });

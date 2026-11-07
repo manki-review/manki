@@ -15,6 +15,8 @@ Manki reviews run in these stages:
 
 When a provider's safety filter refuses a stage, Manki sends that stage once more on `models.fallback`, which defaults to `models.reviewer`. A stage already on that model goes to its other Claude tier instead. The round context records the stage, the fallback model and the refusal reason under `models.fallbacks`. A second refusal ends the round incomplete, and other errors are never retried on the fallback model. A used-up subscription limit, quota or rate limit, or an overloaded provider, is neither retried nor sent to the fallback model. The round ends incomplete and names the limit, with its reset time when the provider gives one.
 
+An incomplete round posts a comment, fails the `Manki` check and keeps an earlier request for changes. It dismisses Manki's approval of an older commit, since no model approved the code pushed since. An approval of the same commit stays.
+
 ## Review groups
 
 Each round sorts the PR into a **review class**, and the class picks a **review group**: the readers that run as finders. The class with the highest rank among those that match wins.
