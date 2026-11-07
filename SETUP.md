@@ -7,3 +7,4 @@ The setup guide now lives in [`docs/`](docs/):
 - [Configuration](docs/configuration.md): every `.manki.yml` setting.
 - [Review memory](docs/memory.md): learnings, suppressions and the memory repo.
 - [Security model](docs/security.md): tokens, untrusted PR content and reviewer tools.
+- [Migrating from v6 to v7](docs/migrating-to-v7.md): a short checklist.
