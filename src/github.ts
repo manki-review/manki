@@ -10,7 +10,7 @@ import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { MAX_AGENT_RETRIES, SEVERITY_ORDER } from './types';
-import { safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
+import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
 
@@ -1601,6 +1601,8 @@ function sanitizeMarkdown(text: string): string {
     .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
     .replace(/^\[[^\]]*\]:\s+.*$/gm, '')                             // Link/image definitions
+    .replace(FENCE_INFO_RE, (_, ticks?: string, tickInfo?: string, tildes?: string, tildeInfo?: string) => // No suggestion fences
+      `${ticks ?? tildes}${plainLanguage(ticks ? tickInfo : tildeInfo)}`)
     // Insert zero-width space after @ to prevent GitHub from resolving mentions.
     // Lookbehind avoids matching email addresses (which have chars before @).
     // Also handles @org/team patterns.
@@ -1625,6 +1627,19 @@ function visibleLength(text: string): number {
   return text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
 }
 const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
+// Every fence run with its info string, wherever it sits, since later splitting can move it to the start of a line. A
+// backtick run's info string stops at the next backtick, so a later run on the same line is matched too.
+const FENCE_INFO_RE = /(`{3,})([^\n`]*)|(~{3,})([^\n]*)/g;
+const PLAIN_LANGUAGE_RE = /^[A-Za-z0-9_+#.-]{1,32}$/;
+
+/**
+ * Returns `info` when it is a plain language name, or nothing. Any other info string is dropped, so no spelling that
+ * GitHub would read as `suggestion` gets a commit button.
+ */
+function plainLanguage(info = ''): string {
+  const lang = info.trim();
+  return PLAIN_LANGUAGE_RE.test(lang) && lang.toLowerCase() !== 'suggestion' ? info : '';
+}
 const PROSE_LINE_RE = /^[A-Z][A-Za-z']*(?:\s+\S+){2,}[.:]$/;
 // A comment that says where the code goes, such as `// After the guard, add:`, means the code does not apply as is.
 const PLACEMENT_COMMENT_RE = /^\s*(?:\/\/|#|--|\/\*)\s+(?:(?:in|after|before|replace|add|then|change|move|instead)\b|.*:\s*(?:\*\/)?$)/i;
@@ -1693,20 +1708,22 @@ function renderFixParts(parts: FixPart[], file: string): string {
     const text = p.lines.join('\n');
     if (p.kind === 'prose') return sanitizeMarkdown(text);
     const fence = dynamicFence(text);
-    return `${fence}${(p.lang || extension).replace(/[^\w+#.-]/g, '')}\n${text}\n${fence}`;
+    const lang = plainLanguage(p.lang) || plainLanguage(extension);
+    return `${fence}${lang}\n${text}\n${fence}`;
   }).join('\n\n');
 }
 
 /**
  * Renders a suggested fix. Only code that replaces the flagged line as is goes in a
  * `suggestion` block, because committing it writes the block verbatim into the file.
+ * Code with hidden characters never does, since a reader cannot see what would be committed.
  * Anything else is shown as text and plain code blocks.
  */
 function formatSuggestedFix(fix: string, file: string): string {
   const parts = splitFix(fix, file);
   const code = parts.filter(p => p.kind === 'code').map(p => p.lines.join('\n'));
   const isShort = code.every(c => c.split('\n').length <= SUGGESTION_MAX_LINES && c.length <= SUGGESTION_MAX_LENGTH);
-  if (parts.length === 1 && code.length === 1 && isShort && !PLACEMENT_COMMENT_RE.test(code[0].split('\n')[0])) {
+  if (parts.length === 1 && code.length === 1 && isShort && !PLACEMENT_COMMENT_RE.test(code[0].split('\n')[0]) && hiddenCharacters(code[0]).length === 0) {
     const fence = dynamicFence(code[0]);
     return `${fence}suggestion\n${code[0]}\n${fence}`;
   }

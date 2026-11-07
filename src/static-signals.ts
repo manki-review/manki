@@ -9,7 +9,7 @@ import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { resolveInRoot } from './mcp-server';
 import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundStaticAnalysis, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
-import { safeTruncate } from './utils';
+import { hiddenCharacters, safeTruncate } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -50,6 +50,10 @@ const DEFAULT_ANALYZERS: readonly AnalyzerName[] = ['actionlint', 'zizmor', 'she
 const TOOL_SEVERITY: Record<StaticSignal['severity'], FindingSeverity> = { error: 'blocker', warning: 'warning', note: 'suggestion' };
 
 const SEVERITY_RANK: Record<StaticSignal['severity'], number> = { error: 0, warning: 1, note: 2 };
+
+// Bidi embeddings, overrides and isolates can reorder how code displays against how it runs.
+const BIDI_CONTROL = /^U\+(?:202[A-E]|206[6-9])$/;
+const MAX_LISTED_CHARACTERS = 5;
 
 export interface StaticSignalRequest {
   owner: string;
@@ -174,18 +178,39 @@ export async function collectStaticSignals(
       return [];
     }
   }));
-  const onDiff = collected.flat().sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
+  // A PR can change its own `exclude_paths`, so hidden characters are looked for in every changed file. Their alerts go
+  // first and are never cut, so a PR cannot hide one behind many other results.
+  const hidden = hiddenCharacterSignals(fullDiff);
+  const onDiff = [...hidden, ...collected.flat().sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])];
   if (onDiff.length > 0) core.info(`Static analysis: ${onDiff.length} result(s) on lines in the diff`);
   const record: RoundStaticAnalysis = {
     ...(runs.length > 0 && { analyzers: runs.sort((a, b) => ANALYZERS.indexOf(a.analyzer) - ANALYZERS.indexOf(b.analyzer)) }),
     ...(checksStillPending.length > 0 && { checksStillPending }),
   };
-  return { signals: onDiff.slice(0, MAX_SIGNALS), ...(Object.keys(record).length > 0 && { record }) };
+  return { signals: onDiff.slice(0, Math.max(MAX_SIGNALS, hidden.length)), ...(Object.keys(record).length > 0 && { record }) };
 }
 
-/** Whether a Manki analyzer reported the result. Nobody sees those results unless the review posts them. */
+/** Whether Manki itself reported the result. Nobody sees those results unless the review posts them. */
 export function isAnalyzerSignal(signal: StaticSignal): boolean {
-  return (ANALYZERS as readonly string[]).includes(signal.source);
+  return signal.source === 'hidden_characters' || (ANALYZERS as readonly string[]).includes(signal.source);
+}
+
+/**
+ * Returns one alert per file of `diff` whose added lines hold control or format characters, at the first such line.
+ * It runs whatever the config says. A bidi control is an error, any other hidden character a warning.
+ */
+function hiddenCharacterSignals(diff: ParsedDiff): StaticSignal[] {
+  return diff.files.flatMap((file): StaticSignal[] => {
+    const lines = [...addedLines(file)].map(([line, text]) => ({ line, found: hiddenCharacters(text.replace(/\r$/, '')) })).filter(l => l.found.length > 0);
+    if (lines.length === 0) return [];
+    const found = [...new Set(lines.flatMap(l => l.found))];
+    const where = lines.length === 1 ? 'This added line holds' : `${lines.length} added lines, from this one on, hold`;
+    return [{
+      tool: 'Manki', ruleId: 'hidden-characters', severity: found.some(c => BIDI_CONTROL.test(c)) ? 'error' : 'warning', file: file.path, line: lines[0].line,
+      message: `${where} invisible or bidirectional control characters (${found.slice(0, MAX_LISTED_CHARACTERS).join(', ')}), so the code may read differently than it runs.`,
+      source: 'hidden_characters',
+    }];
+  });
 }
 
 function enabledAnalyzers(settings: StaticAnalysisConfig, rustRules: boolean): AnalyzerName[] {
