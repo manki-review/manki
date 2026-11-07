@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { parsePRDiff } from './diff';
 import { BotIdentity, fetchInterRoundDiff } from './github';
-import { appendMemoryLine } from './memory';
+import { appendMemoryLine, MemoryStore } from './memory';
 import { classifyAuthorReply, fetchRecapState, judgeAddressedThreadIds, PreviousFinding } from './recap';
 import { citesEvidence, FindingFingerprint, FindingFingerprintEntry, ParsedDiff, RoundContext } from './types';
 import { sanitizeTokens } from './utils';
@@ -52,7 +52,7 @@ export interface PostedFinding {
  * untouched, per severity and specialist (`counts`) and per severity, judge confidence, tool
  * evidence, category, effort, whether the finding had evidence and whether the judge checked
  * it (`calibration`). Writes one JSON line to the job summary, and appends it to
- * `<repo>/metrics/fix-rate.jsonl` in the memory repo when `memory` is given. The line carries
+ * `metrics/fix-rate.jsonl` in the repo's memory when `memory` is given. The line carries
  * the class, group and config digest of the last round that recorded them.
  */
 export async function recordFixRate(
@@ -61,7 +61,7 @@ export async function recordFixRate(
   owner: string,
   repo: string,
   pr: MergedPullRequest,
-  memory?: { octokit: Octokit; repo: string },
+  memory?: MemoryStore,
 ): Promise<void> {
   const { previousFindings, priorRounds } = await fetchRecapState(octokit, bot, owner, repo, pr.number, pr.authorLogin);
   if (priorRounds.length === 0) {
@@ -125,9 +125,9 @@ export async function recordFixRate(
 
   if (!memory) return;
   try {
-    await appendMemoryLine(memory.octokit, memory.repo, repo, FIX_RATE_FILE, record, `Record fix rate of ${owner}/${repo}#${pr.number}`);
+    await appendMemoryLine(memory, FIX_RATE_FILE, record, `Record fix rate of ${owner}/${repo}#${pr.number}`);
   } catch (error) {
-    core.warning(`Failed to append the fix rate to ${memory.repo}: ${sanitizeTokens(String(error))}`);
+    core.warning(`Failed to append the fix rate to ${memory.name}: ${sanitizeTokens(String(error))}`);
   }
 }
 

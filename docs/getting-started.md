@@ -45,11 +45,11 @@ The app requires these permissions:
 
 ### Your own GitHub App
 
-Instead of the manki-review App, Manki can post as an App you create, with the `github_app_id` and `github_app_private_key` inputs. Manki limits the tokens it mints to the reviewed repo and the memory repo. The App's private key is a secret of the workflow, though. Any code that runs in that job can read the key and mint tokens for every repository the App is installed on. Keep that job to the steps Manki needs, or prefer the manki-review App, whose key stays in the token service.
+Instead of the manki-review App, Manki can post as an App you create, with the `github_app_id` and `github_app_private_key` inputs. Manki limits the token it mints to the reviewed repo. The App's private key is a secret of the workflow, though. Any code that runs in that job can read the key and mint tokens for every repository the App is installed on. Keep that job to the steps Manki needs, or prefer the manki-review App, whose key stays in the token service.
 
 ## Step 2: Authentication Secrets
 
-> **Do you need a GitHub token?** No. `github_token` defaults to the workflow's own token. Manki reviews and posts with the GitHub App's token (Step 1) as `manki-review[bot]`, and uses the workflow token only to read the dispatched event and CI results. When the token service gives no App token, Manki tries once more, then fails the run and says so on the PR with the workflow token. For review memory, Manki gets a second App token that can write only the `review-memory` repo of the same account, when the App is installed on it. A memory repo with any other name needs the `memory_repo_token` input.
+> **Do you need a GitHub token?** No. `github_token` defaults to the workflow's own token. Manki reviews and posts with the GitHub App's token (Step 1) as `manki-review[bot]`, and uses the workflow token only to read the dispatched event and CI results. When the token service gives no App token, Manki tries once more, then fails the run and says so on the PR with the workflow token. Review memory needs no token either: the token service keeps it in the central memory repository for you. Only a memory repo of your own needs the `memory_repo_token` input, see [Review memory](memory.md).
 
 ### Choosing a provider
 
@@ -200,7 +200,7 @@ jobs:
         uses: manki-review/manki@v7
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Only if the App can't reach the memory repo
+          # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Only with your own memory repo in `memory.repo`
 ```
 
 The job has no `if` and no `concurrency` block, since the service filters and orders the events. It needs no checkout: Manki reads `.manki.yml` on the base branch, and the PR's copy at its head commit to check that it loads, through the API. The service finds the workflow by its `workflow_dispatch` inputs, so the file name is free. No other workflow may run Manki on events such as `pull_request`: while one is on the default branch, the service starts nothing for the repository and logs why, since each event would otherwise run twice. Manki fails a run that the service did not start.
@@ -422,7 +422,7 @@ Manki's newest progress comment ends with a settings block. It holds a status li
 | "Claude subscription limit reached" or another quota message | The provider's limit is used up. Wait for the reset time the review names, or switch to another token or key |
 | "Failed to post APPROVE review" | Check that the [GitHub App](#step-1-install-the-github-app) is installed on the repo with **Pull requests** read and write |
 | Review says "Not reviewed" and lists skipped files | Every changed file matches `exclude_paths` or has no code to read, such as a binary, a Git LFS pointer or a submodule bump, so a person must review the PR. Check `exclude_paths` in config if a file should be read |
-| Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
+| Memory not loading | The run log names the cause. With `memory.repo` set, pass `memory_repo_token` with Contents read/write on that repo. Without it, the token service must have started the run |
 | No run starts | The Manki workflow must be on the default branch and declare the dispatch inputs, no other workflow may run Manki on events, and the repository's account must be one the service serves (see [Step 3](#step-3-add-the-workflow)) |
 | "above the limit ... for automatic review" | Split the PR, tick Force review to review it in full, or raise `auto_review_max_lines` |
 | "above the limit ... that Manki reviews" | Split the PR, or raise `max_diff_lines` |
@@ -457,4 +457,4 @@ When both are set for a provider, OAuth takes precedence (the action checks the 
 
 | Secret | Purpose |
 |--------|---------|
-| `REVIEW_MEMORY_TOKEN` | Fine-grained PAT for memory repo writes (only when the App can't write the memory repo, see [Review Memory Token](memory.md#review-memory-token)) |
+| `REVIEW_MEMORY_TOKEN` | Fine-grained PAT for your own memory repo in `memory.repo` (see [Review memory token](memory.md#review-memory-token)) |

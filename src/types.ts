@@ -1402,7 +1402,7 @@ export interface RoundMemory {
   suppressionsApplied?: number;
   /**
    * Outcome of the memory-load step. `disabled` when `config.memory.enabled`
-   * is false, `no_token` when memory is enabled but no token was available,
+   * is false, `no_token` when `memory.repo` is set without `memory_repo_token`,
    * `failed` when the load attempt threw, `loaded` on success. Optional so
    * legacy context blocks parse cleanly; absence is treated as `loaded` when
    * `suppressionsApplied` is present.

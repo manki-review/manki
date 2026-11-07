@@ -1,4 +1,4 @@
-import { changedKeys, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadStaticAnalysisConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel, reviewFloorErrors } from './config';
+import { changedKeys, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadStaticAnalysisConfig, resolveFallbackModel, resolveModel, resolvePairModel, reviewFloorErrors } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -775,10 +775,4 @@ models:
     });
   });
 
-  describe('resolveMemoryRepo', () => {
-    it('returns `memory.repo`, or the owner\'s `review-memory` when it is empty', () => {
-      expect(resolveMemoryRepo({ repo: 'acme/team-memory' }, 'owner')).toBe('acme/team-memory');
-      expect(resolveMemoryRepo({ repo: '' }, 'owner')).toBe('owner/review-memory');
-    });
-  });
 });
