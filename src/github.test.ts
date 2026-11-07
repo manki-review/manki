@@ -3289,6 +3289,7 @@ describe('postReview fallback paths', () => {
         line: 10,
         description: 'Desc.',
         reviewers: [],
+        evidence: { checks: [], proof: ['src/missing.ts:10'] },
       }],
       highlights: [],
       reviewComplete: true,
@@ -3297,7 +3298,7 @@ describe('postReview fallback paths', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff);
     const body = createReviewMock.mock.calls[0][0].body as string;
-    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Warning**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\nDesc.');
+    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Warning**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\nDesc.\n<details>\n<summary>How this was checked</summary>\n\n- Proving lines: `src/missing.ts:10`\n\n</details>');
     expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
   });
 
@@ -3499,7 +3500,7 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('suggestion', 'Extract helper', 5, { suggestedFix: 'const x = helper();' }),
       nonBlocking('nitpick', 'Typo in name', 7, { judgeConfidence: 'high' }),
       nonBlocking('suggestion', 'Missing file context', 0, { file: '', suggestedFix: 'Use the shared helper.', judgeConfidence: 'low' }),
-      nonBlocking('suggestion', 'Off the diff', 40, { suggestedFix: 'if (a) {\n  b();\n}' }),
+      nonBlocking('suggestion', 'Off the diff', 40, { suggestedFix: 'if (a) {\n  b();\n}', evidence: { checks: ['read src/a.ts:40'], proof: [] } }),
     ]), diff);
 
     const review = createReview.mock.calls[0][0];
@@ -3535,6 +3536,13 @@ describe('postReview non-blocking findings', () => {
       '```',
       '',
       'https://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L40',
+      '',
+      '<details>',
+      '<summary>How this was checked</summary>',
+      '',
+      '- read `src/a.ts`:40',
+      '',
+      '</details>',
       '',
       '</details>',
     ].join('\n'));

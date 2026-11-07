@@ -36,7 +36,7 @@ interface CalibrationKey {
   toolEvidence: string;
   category: string;
   effort: string;
-  /** Whether the finding cited evidence, which its comment shows under "How this was checked". */
+  /** Whether the finding cited evidence, which its comment or review body entry shows under "How this was checked". */
   hadEvidence: boolean;
   /** Whether the judge tried to refute the finding with the repository tools. */
   judgeChecked: boolean;
