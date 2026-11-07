@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
-import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState } from './auth';
+import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
 import { changedKeys, loadConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
@@ -54,11 +54,11 @@ import {
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
   markProgressCommentSuperseded,
-  postAppWarningIfNeeded,
   postConfigErrorComment,
   latestSettings,
   PAUSE_NOTICE_MARKER,
   REVIEW_COMPLETE_MARKER,
+  REVIEW_INCOMPLETE_LINE,
   retireSettingsBlocks,
   setSettingsBlock,
   showSettings,
@@ -1562,16 +1562,8 @@ async function runFullReview(
 
   const startTime = Date.now();
   const configPath = core.getInput('config_path') || '.manki.yml';
-  const { octokit, bot, identity, appMemory } = await getAuth();
+  const { octokit, bot, appMemory } = await getAuth();
   const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef };
-
-  if (identity === 'actions') {
-    try {
-      await postAppWarningIfNeeded(octokit, bot, owner, repo, prNumber);
-    } catch (error) {
-      core.warning(`Failed to post app warning: ${error}`);
-    }
-  }
 
   const headMoved = new AbortController();
   const stop = stopWritesOn(headMoved.signal);
@@ -1958,6 +1950,21 @@ async function postCleanup(): Promise<void> {
   }
 }
 
+/**
+ * Tells PR or issue `issueNumber` that the round is incomplete because the token service failed. Only the
+ * workflow's `github_token` can post then, so the note comes from `github-actions[bot]` and carries no Manki marker.
+ */
+async function reportTokenFailure(issueNumber: number, error: TokenServiceError): Promise<void> {
+  const token = core.getInput('github_token');
+  if (!token) return;
+  const { owner, repo } = github.context.repo;
+  try {
+    await github.getOctokit(token).rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: `${REVIEW_INCOMPLETE_LINE} ${redactSecrets(error.message)}` });
+  } catch (postError) {
+    core.warning(`Could not post that the token service failed: ${postError}`);
+  }
+}
+
 async function main(): Promise<void> {
   const cancel = new AbortController();
   const stop = stopWritesOn(cancel.signal);
@@ -1972,6 +1979,8 @@ async function main(): Promise<void> {
   // `core.saveState` sets a STATE_<key> env var that only reaches the post step,
   // so its presence indicates we're in the post phase.
   const isPostPhase = core.getState(POST_PHASE_STATE_KEY) === 'true';
+  // Read before the dispatched event replaces the inputs in the context.
+  let dispatched: number | undefined;
 
   try {
     if (isPostPhase) {
@@ -1979,9 +1988,11 @@ async function main(): Promise<void> {
     } else {
       core.saveState(POST_PHASE_STATE_KEY, 'true');
       if (!isDispatchedRun()) throw new Error(NOT_DISPATCHED);
+      dispatched = dispatchedNumber();
       if (await restoreDispatchedEvent(await workflowOctokit()) === 'run') await run();
     }
   } catch (error) {
+    if (dispatched !== undefined && error instanceof TokenServiceError) await reportTokenFailure(dispatched, error);
     core.setFailed(`Manki encountered an error: ${failureReason(error)}`);
   } finally {
     process.off('SIGTERM', onSignal);

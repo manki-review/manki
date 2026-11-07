@@ -866,19 +866,17 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.threads[0].comments).toHaveLength(1);
   });
 
-  it('recognises its own comments, reviews and threads when it posts with the Actions token', async () => {
+  it('posts nothing as Manki and marks the round incomplete with the workflow token when the token service fails', async () => {
     jest.mocked(core.getIDToken).mockRejectedValue(new Error('no OIDC'));
-    for (let i = 0; i < 40; i++) mockGitHub.addComment(`Comment ${i}`, 'alice');
-    Object.assign(mockLLM.replies, BLOCKER_REPLIES);
-    await reviewRound();
 
-    Object.assign(mockLLM.replies, READY_REPLIES);
-    await forcedRound();
+    await dispatch({ event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: mockGitHub.headSha });
 
-    const [first, second] = postedReviews(ACTIONS_LOGIN);
-    expect(first.state).toBe('DISMISSED');
-    expect(mockGitHub.roundContext(second)).toMatchObject({ meta: { round: 2 }, judge: { openThreadCount: 1 } });
-    expect(mockGitHub.comments.filter(c => c.body.includes('<!-- manki-app-warning -->'))).toHaveLength(1);
+    expect(mockGitHub.reviews).toEqual([]);
+    expect(mockGitHub.comments.map(c => [c.user.login, c.body])).toEqual([[
+      ACTIONS_LOGIN,
+      '⚠️ **Review incomplete:** Could not get a token from the Manki token service (no OIDC token, so the workflow needs `id-token: write`). Retry the run.',
+    ]]);
+    expect(core.setFailed).toHaveBeenCalledWith(expect.stringContaining('Could not get a token from the Manki token service'));
   });
 
   describe('dispatched by the webhook service', () => {

@@ -70,7 +70,7 @@ describe('areAllFindingsResolved', () => {
     expect(areAllFindingsResolved(resolvedBy('author'), TEST_BOT, 'author')).toBe(false);
     expect(areAllFindingsResolved(resolvedBy('dependabot[bot]'), TEST_BOT, 'author')).toBe(false);
     expect(areAllFindingsResolved(resolvedBy('alice'), TEST_BOT, 'author')).toBe(true);
-    expect(areAllFindingsResolved(resolvedBy('github-actions[bot]'), TEST_BOT, 'author')).toBe(true);
+    expect(areAllFindingsResolved(resolvedBy('manki-review[bot]'), TEST_BOT, 'author')).toBe(true);
     // With the PR author unknown, any human resolver has write access.
     expect(areAllFindingsResolved(resolvedBy('alice'), TEST_BOT)).toBe(true);
     // A PR author who is a repo admin clears their own.
@@ -106,7 +106,7 @@ function makeGraphqlFetchThreadNode(overrides: {
         ...(overrides.url && { url: overrides.url }),
         author: overrides.authorLogin !== undefined
           ? (overrides.authorLogin === null ? null : { login: overrides.authorLogin })
-          : { login: 'github-actions[bot]' },
+          : { login: 'manki-review[bot]' },
       }, ...(overrides.replies ?? [])],
     },
   };
@@ -164,7 +164,7 @@ describe('fetchBotReviewThreads', () => {
         makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning')) }),
         makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security'])) }),
         makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug')) }),
-        makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now')), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'github-actions[bot]' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now')), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
         makeGraphqlFetchThreadNode({ id: 'h', body: formatFindingComment(finding('warning', 'Pasted marker')), replies: [{ body: '<!-- manki-found-again-blocker -->', author: { login: 'developer' } }] }),
       ]),
     );
@@ -204,7 +204,7 @@ describe('fetchBotReviewThreads', () => {
     const reply = (login: string, author: string) => ({ body: `${BOT_MARKER}\n${securityOverrideMarker('dismiss', login)}`, author: { login: author } });
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
-        makeGraphqlFetchThreadNode({ id: 't1', body: security, replies: [reply('jdoe_acme', 'github-actions[bot]')] }),
+        makeGraphqlFetchThreadNode({ id: 't1', body: security, replies: [reply('jdoe_acme', 'manki-review[bot]')] }),
         makeGraphqlFetchThreadNode({ id: 't2', body: security, replies: [reply('mallory', 'mallory')] }),
       ]),
     );
@@ -360,7 +360,7 @@ describe('checkAndAutoApprove', () => {
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
     const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
     const existingReviews = overrides.existingReviews ?? [
-      { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'github-actions[bot]', type: 'Bot' } },
+      { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'manki-review[bot]', type: 'Bot' } },
     ];
     const existingComments = overrides.existingComments ?? [];
 
@@ -443,7 +443,7 @@ describe('checkAndAutoApprove', () => {
 
     const again = makeMockOctokit({
       threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock,
-      existingComments: [{ body: notice, user: { login: 'github-actions[bot]' } }],
+      existingComments: [{ body: notice, user: { login: 'manki-review[bot]' } }],
     });
     expect(await checkAndAutoApprove(again, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
     expect(createCommentMock).toHaveBeenCalledTimes(1);
@@ -475,7 +475,7 @@ describe('checkAndAutoApprove', () => {
         makeGraphqlFetchThreadNode({
           id: 't1', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r1',
           body: formatFindingComment(finding('Token leaks into logs', ['security'])),
-          ...(recorded && { replies: [{ body: `<!-- manki -->\n${securityOverrideMarker('resolve', 'author')}`, author: { login: 'github-actions[bot]' } }] }),
+          ...(recorded && { replies: [{ body: `<!-- manki -->\n${securityOverrideMarker('resolve', 'author')}`, author: { login: 'manki-review[bot]' } }] }),
         }),
         makeGraphqlFetchThreadNode({ id: 't2', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r2', body: formatFindingComment(finding('Off by one')) }),
       ],
@@ -663,7 +663,7 @@ describe('checkAndAutoApprove', () => {
       prHeadSha: 'abc123',
       createReviewFn: createReviewMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'abc123', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'abc123', user: { login: 'manki-review[bot]', type: 'Bot' } },
       ],
     });
 
@@ -676,7 +676,7 @@ describe('checkAndAutoApprove', () => {
 
   it('finds the latest bot review past the first page of reviews', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
-    const bot = { login: 'github-actions[bot]', type: 'Bot' };
+    const bot = { login: 'manki-review[bot]', type: 'Bot' };
     const older = Array.from({ length: 30 }, (_, i) => ({ body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: `old-${i}`, user: bot }));
     const octokit = makeMockOctokit({ threads: [], prHeadSha: 'abc123', createReviewFn: createReviewMock, existingReviews: older });
     (octokit.paginate as unknown as jest.Mock).mockResolvedValueOnce([
@@ -698,8 +698,8 @@ describe('checkAndAutoApprove', () => {
       prHeadSha: 'sha-new',
       createReviewFn: createReviewMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'sha-new', user: { login: 'github-actions[bot]', type: 'Bot' } },
-        { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-new', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'sha-new', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-new', user: { login: 'manki-review[bot]', type: 'Bot' } },
       ],
     });
 
@@ -721,7 +721,7 @@ describe('checkAndAutoApprove', () => {
       createReviewFn: createReviewMock,
       createCommentFn: createCommentMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'DISMISSED', commit_id: 'sha-new', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'DISMISSED', commit_id: 'sha-new', user: { login: 'manki-review[bot]', type: 'Bot' } },
       ],
     });
 
@@ -859,7 +859,7 @@ describe('checkAndAutoApprove', () => {
         prHeadSha: 'new-sha',
         createReviewFn: createReviewMock,
         existingReviews: [
-          { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'old-sha', user: { login: 'github-actions[bot]', type: 'Bot' } },
+          { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'old-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
         ],
       });
 
@@ -881,7 +881,7 @@ describe('checkAndAutoApprove', () => {
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
         existingReviews: [
-          { body: '<!-- manki -->', state: 'DISMISSED', commit_id: 'old-sha', user: { login: 'github-actions[bot]', type: 'Bot' } },
+          { body: '<!-- manki -->', state: 'DISMISSED', commit_id: 'old-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
         ],
       });
 
@@ -980,7 +980,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
     const prHeadSha = overrides.prHeadSha ?? 'sha-x';
     const existingReviews = overrides.existingReviews ?? [
-      { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'github-actions[bot]', type: 'Bot' } },
+      { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'manki-review[bot]', type: 'Bot' } },
     ];
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
@@ -1048,7 +1048,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     const octokit = makeMockOctokit({
       prHeadSha: 'sha-x',
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'sha-x', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'sha-x', user: { login: 'manki-review[bot]', type: 'Bot' } },
       ],
     });
 

@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, formatFoundAgainReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
+import { ApprovalHeld, buildDashboard, formatFoundAgainReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
@@ -3916,7 +3916,7 @@ describe('hasBotReviewOnCommit', () => {
 
   it('counts a review only when its author is the bot identity', async () => {
     const octokit = makeMockOctokit([
-      { body: `${BOT_MARKER}\nReview`, state: 'COMMENTED', commit_id: 'sha-123', user: { login: 'github-actions[bot]', type: 'Bot' } },
+      { body: `${BOT_MARKER}\nReview`, state: 'COMMENTED', commit_id: 'sha-123', user: { login: 'manki-review[bot]', type: 'Bot' } },
     ]);
 
     expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
@@ -4062,82 +4062,14 @@ describe('postConfigErrorComment', () => {
   });
 });
 
-describe('postAppWarningIfNeeded', () => {
-  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
-
-  function makeOctokit(comments: Array<{ body: string; user: { login: string } | null }>) {
-    const createComment = jest.fn().mockResolvedValue({});
-    const paginate = jest.fn().mockResolvedValue(comments);
-    const octokit = {
-      paginate,
-      rest: { issues: { listComments: {}, createComment } },
-    } as unknown as Octokit;
-    return { octokit, createComment, paginate };
-  }
-
-  it('posts warning comment when no existing warning is present', async () => {
-    const { octokit, createComment } = makeOctokit([]);
-
-    await postAppWarningIfNeeded(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.stringContaining(APP_WARNING_MARKER),
-    }));
-    expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.stringContaining('https://github.com/apps/manki-review'),
-    }));
-  });
-
-  it('skips posting when github-actions[bot] has already posted the warning', async () => {
-    const { octokit, createComment } = makeOctokit([
-      { body: `${APP_WARNING_MARKER}\nWarning text`, user: { login: 'github-actions[bot]' } },
-    ]);
-
-    await postAppWarningIfNeeded(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(createComment).not.toHaveBeenCalled();
-  });
-
-  it('skips posting when manki-review[bot] has already posted the warning', async () => {
-    const { octokit, createComment } = makeOctokit([
-      { body: `${APP_WARNING_MARKER}\nWarning text`, user: { login: BOT_LOGIN } },
-    ]);
-
-    await postAppWarningIfNeeded(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(createComment).not.toHaveBeenCalled();
-  });
-
-  it('posts warning when a human (not the bot) has the marker in their comment', async () => {
-    const { octokit, createComment } = makeOctokit([
-      { body: `${APP_WARNING_MARKER}\nCopied marker`, user: { login: 'some-human' } },
-    ]);
-
-    await postAppWarningIfNeeded(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.stringContaining(APP_WARNING_MARKER),
-    }));
-  });
-
-  it('does not throw and re-posts warning when a comment has no user', async () => {
-    const { octokit, createComment } = makeOctokit([
-      { body: `${APP_WARNING_MARKER}\nWarning`, user: null },
-    ]);
-
-    await expect(postAppWarningIfNeeded(octokit, TEST_BOT, 'owner', 'repo', 1)).resolves.toBeUndefined();
-    expect(createComment).toHaveBeenCalled();
-  });
-});
-
 describe('isBotLogin', () => {
   it('matches the REST and GraphQL forms of each bot login', () => {
-    for (const login of ['manki-review[bot]', 'manki-review', 'github-actions[bot]', 'github-actions']) {
+    for (const login of ['manki-review[bot]', 'manki-review']) {
       expect(isBotLogin(TEST_BOT, login)).toBe(true);
     }
     expect(isBotLogin(CUSTOM_APP_BOT, 'acme-reviewer')).toBe(true);
     expect(isBotLogin(CUSTOM_APP_BOT, 'manki-review[bot]')).toBe(false);
-    for (const login of ['someone', 'manki-review[bot][bot]', '', null, undefined]) {
+    for (const login of ['someone', 'github-actions[bot]', 'github-actions', 'manki-review[bot][bot]', '', null, undefined]) {
       expect(isBotLogin(TEST_BOT, login)).toBe(false);
     }
   });
