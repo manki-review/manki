@@ -79,11 +79,15 @@ describe('installPinned', () => {
     expect(() => accessSync(join(dir, 'tool_linux_amd64'), constants.X_OK)).not.toThrow();
   });
 
-  it('rejects a download whose digest differs, and a failed download', async () => {
+  it('rejects a download whose digest differs, and a failed download, and tries a failed one again', async () => {
     const tampered = `sha512-${createHash('sha512').update('other').digest('base64')}`;
     await expect(installPinned({ url: 'https://example.test/tool-2.tgz', integrity: tampered })).rejects.toThrow(/does not match its pinned sha512 digest/);
 
     fetchMock.mockImplementation(async () => new Response('gone', { status: 404 }));
     await expect(installPinned({ url: 'https://example.test/tool-3.tgz', integrity })).rejects.toThrow(/HTTP 404/);
+
+    fetchMock.mockImplementation(async () => new Response(data));
+    const retried = await installPinned({ url: 'https://example.test/tool-3.tgz', integrity });
+    expect(readFileSync(join(retried, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
   });
 });

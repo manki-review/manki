@@ -5,7 +5,8 @@ import { join } from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
+import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
+import { installPinned } from '../tool-install';
 import { RelatedRepoTools } from '../types';
 import { QuotaError, RefusalError, SendMessageOptions } from './types';
 
@@ -15,6 +16,9 @@ jest.mock('child_process', () => ({
 }));
 
 jest.mock('@anthropic-ai/sdk');
+
+jest.mock('../tool-install', () => ({ ...jest.requireActual('../tool-install'), installPinned: jest.fn() }));
+const mockInstallPinned = installPinned as jest.MockedFunction<typeof installPinned>;
 
 // Container for the execFileAsync mock — must be a plain object so the
 // hoisted jest.mock factory can capture a reference to it before const
@@ -224,7 +228,6 @@ describe('sendMessage effort option (API path)', () => {
 describe('sendViaOAuth — error paths', () => {
   beforeEach(() => {
     mockSpawn.mockReset();
-    resetCLIInstallPromise();
   });
 
   function setupSpawnMock(opts: {
@@ -1017,7 +1020,7 @@ describe('ensureCLI — install path', () => {
   beforeEach(() => {
     mockSpawn.mockReset();
     mockExecFileAsync.mockReset();
-    resetCLIInstallPromise();
+    mockInstallPinned.mockReset();
   });
 
   function setupSpawnForSuccess(stdout: string): void {
@@ -1044,30 +1047,59 @@ describe('ensureCLI — install path', () => {
     mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
   }
 
-  it('installs CLI when which fails, then succeeds', async () => {
-    // First call: which claude fails; second call: npm install succeeds; third call: which claude succeeds
-    mockExecFileAsync
-      .mockRejectedValueOnce(new Error('not found'))
-      .mockResolvedValueOnce({ stdout: '' }) // npm install
-      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' }); // which after install
+  it('installs the pinned build of the Claude CLI when it is not on the path, and runs no other command', async () => {
+    mockExecFileAsync.mockRejectedValueOnce(new Error('not found'));
+    mockInstallPinned.mockResolvedValueOnce('/runner/temp/manki-pinned');
 
     setupSpawnForSuccess('installed ok');
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
     const result = await client.sendMessage('sys', 'user');
     expect(result.content).toBe('installed ok');
+    const name = `claude-code-${process.platform}-${process.arch}`;
+    expect(mockInstallPinned).toHaveBeenCalledWith({
+      url: `https://registry.npmjs.org/@anthropic-ai/${name}/-/${name}-${CLAUDE_CLI_VERSION}.tgz`,
+      integrity: expect.stringMatching(/^sha512-[A-Za-z0-9+/]{86}==$/),
+    });
+    expect(mockExecFileAsync.mock.calls).toEqual([['which', ['claude']]]);
+    expect(mockSpawn.mock.calls[0][0]).toBe(join('/runner/temp/manki-pinned', 'package', process.platform === 'win32' ? 'claude.exe' : 'claude'));
+
+    // A musl system such as Alpine reports no glibc version and gets the musl build.
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+    const report = jest.spyOn(process.report, 'getReport').mockReturnValue({ header: {} } as ReturnType<typeof process.report.getReport>);
+    try {
+      mockExecFileAsync.mockRejectedValueOnce(new Error('not found'));
+      mockInstallPinned.mockResolvedValueOnce('/runner/temp/manki-pinned');
+      await new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' }).sendMessage('sys', 'user');
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      report.mockRestore();
+    }
+    expect(mockInstallPinned.mock.calls[1][0].url).toBe(`https://registry.npmjs.org/@anthropic-ai/claude-code-linux-${process.arch}-musl/-/claude-code-linux-${process.arch}-musl-${CLAUDE_CLI_VERSION}.tgz`);
   });
 
-  it('throws when CLI install fails (which still fails after install)', async () => {
-    mockExecFileAsync
-      .mockRejectedValueOnce(new Error('not found'))
-      .mockResolvedValueOnce({ stdout: '' }) // npm install
-      .mockRejectedValueOnce(new Error('still not found')); // which after install
+  it('throws when the install fails or no build is pinned for the platform, and installs again on the next call', async () => {
+    mockExecFileAsync.mockRejectedValue(new Error('not found'));
+    mockInstallPinned.mockRejectedValueOnce(new Error('download does not match its pinned sha512 digest'));
+    setupSpawnForSuccess('installed later');
 
-    setupSpawnForSuccess('should not reach');
-    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+    await expect(new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' }).sendMessage('sys', 'user'))
+      .rejects.toThrow('Failed to install Claude CLI: download does not match its pinned sha512 digest');
 
-    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('Failed to install Claude CLI');
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...platform, value: 'aix' });
+    try {
+      await expect(new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' }).sendMessage('sys', 'user'))
+        .rejects.toThrow(`Failed to install Claude CLI: no pinned Claude CLI build for aix-${process.arch}`);
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+
+    mockInstallPinned.mockResolvedValueOnce('/runner/temp/manki-pinned');
+    const result = await new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' }).sendMessage('sys', 'retry');
+    expect(result.content).toBe('installed later');
+    expect(mockInstallPinned).toHaveBeenCalledTimes(2);
   });
 
   it('reuses cached CLI path on second call', async () => {
@@ -1082,34 +1114,13 @@ describe('ensureCLI — install path', () => {
     expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
     expect(mockSpawn).toHaveBeenCalledTimes(2);
   });
-
-  it('clears install promise on install failure so retry is possible', async () => {
-    // First attempt: which fails, npm install fails
-    mockExecFileAsync
-      .mockRejectedValueOnce(new Error('not found'))
-      .mockResolvedValueOnce({ stdout: '' }) // npm install
-      .mockRejectedValueOnce(new Error('still not found')); // which after install
-
-    setupSpawnForSuccess('should not reach');
-    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
-
-    await expect(client.sendMessage('sys', 'first')).rejects.toThrow('Failed to install Claude CLI');
-
-    // Second attempt: which succeeds (cliInstallPromise was cleared)
-    mockExecFileAsync.mockResolvedValue({ stdout: '/usr/local/bin/claude\n' });
-
-    // Need a fresh client since cachedCLIPath is instance-level
-    const client2 = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
-    const result = await client2.sendMessage('sys', 'retry');
-    expect(result.content).toBe('should not reach');
-  });
 });
 
 describe('warmupCLI', () => {
   beforeEach(() => {
     mockSpawn.mockReset();
     mockExecFileAsync.mockReset();
-    resetCLIInstallPromise();
+    mockInstallPinned.mockReset();
   });
 
   it('invokes ensureCLI once for OAuth auth', async () => {
@@ -1124,16 +1135,15 @@ describe('warmupCLI', () => {
     expect(mockExecFileAsync).toHaveBeenCalledWith('which', ['claude']);
   });
 
-  it('triggers npm install when CLI is missing', async () => {
-    mockExecFileAsync
-      .mockRejectedValueOnce(new Error('not found'))
-      .mockResolvedValueOnce({ stdout: '' })
-      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' });
+  it('installs the pinned build when the CLI is missing', async () => {
+    mockExecFileAsync.mockRejectedValueOnce(new Error('not found'));
+    mockInstallPinned.mockResolvedValueOnce('/runner/temp/manki-pinned');
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
     await client.warmupCLI();
 
-    expect(mockExecFileAsync).toHaveBeenNthCalledWith(2, 'npm', ['install', '-g', `@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}`], expect.any(Object));
+    expect(mockInstallPinned).toHaveBeenCalledTimes(1);
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
   });
 
   it('is a no-op for API-key auth', async () => {
@@ -1145,10 +1155,8 @@ describe('warmupCLI', () => {
   });
 
   it('propagates ensureCLI errors when install fails', async () => {
-    mockExecFileAsync
-      .mockRejectedValueOnce(new Error('not found'))
-      .mockResolvedValueOnce({ stdout: '' })
-      .mockRejectedValueOnce(new Error('still not found'));
+    mockExecFileAsync.mockRejectedValueOnce(new Error('not found'));
+    mockInstallPinned.mockRejectedValueOnce(new Error('download failed with HTTP 503'));
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
     await expect(client.warmupCLI()).rejects.toThrow('Failed to install Claude CLI');
@@ -1160,7 +1168,6 @@ describe('sendViaOAuth — stale process detection', () => {
     jest.resetAllMocks();
     mockExecFileAsync.mockResolvedValue({ stdout: '/usr/bin/claude' });
     _execMock.fn = mockExecFileAsync;
-    resetCLIInstallPromise();
   });
 
   it('kills process when no stdout for 90s', async () => {
