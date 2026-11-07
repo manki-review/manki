@@ -61,6 +61,22 @@ describe('deduplicateFindings', () => {
     expect(deduplicateFindings(findings, [fixed, ...previous]).duplicates).toHaveLength(1);
   });
 
+  it('drops a repeat of an answered thread on a file unchanged since the last round, and sends any other to the judge with the answer', () => {
+    const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+    const answered = makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'auto-resolved', threadId: 'T1', answer: 'Withdrawn. `id` is checked first.' });
+
+    expect(deduplicateFindings(findings, [answered], undefined, new Set(['src/bar.ts']))).toEqual({
+      unique: [],
+      duplicates: [{ finding: findings[0], matchedTitle: 'Missing null check', matchType: 'exact' }],
+    });
+    const toJudge = [{ ...findings[0], answeredIn: { threadId: 'T1', answer: 'Withdrawn. `id` is checked first.' } }];
+    expect(deduplicateFindings(findings, [answered], undefined, new Set(['src/foo.ts'])).unique).toEqual(toJudge);
+    expect(deduplicateFindings(findings, [answered]).unique).toEqual(toJudge);
+    expect(deduplicateFindings(findings, [{ ...answered, answer: undefined }], undefined, new Set()).unique).toEqual(findings);
+    const unrelated = [makeFinding({ title: 'Unrelated race', file: 'src/foo.ts', line: 42 })];
+    expect(deduplicateFindings(unrelated, [answered], undefined, new Set()).unique).toEqual(unrelated);
+  });
+
   it('attributes match types: exact, substring, word_overlap', () => {
     const findings = [
       makeFinding({ title: 'Missing null check', file: 'src/a.ts', line: 10 }),
@@ -800,7 +816,7 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings[0].threadUrl).toBe('');
   });
 
-  it('treats last non-bot comment body as author reply text', async () => {
+  it('treats last non-bot comment body as author reply text, and the latest Manki outcome or found-again reply as its answer', async () => {
     const octokit = mockOctokit([
       makeThread({
         id: 't1',
@@ -818,10 +834,33 @@ describe('fetchRecapState', () => {
           ],
         },
       }),
+      makeThread({
+        id: 't2',
+        comments: {
+          nodes: [
+            { body: '<!-- manki:blocker:Bug --> \u{1F6AB} **Blocker**: Bug found\n\nDesc.', author: { login: 'github-actions[bot]' } },
+            { body: 'It is intended.', author: { login: 'developer' } },
+            { body: '**Withdrawn.** `load` returns early.\n\n<!-- manki -->', author: { login: 'github-actions[bot]' } },
+            { body: 'Agreed. Developer text that looks like an answer.', author: { login: 'developer' } },
+            { body: 'Fixed in abc1234.\n\n<!-- manki -->', author: { login: 'github-actions[bot]' } },
+          ],
+        },
+      }),
+      makeThread({
+        id: 't3',
+        comments: {
+          nodes: [
+            { body: '<!-- manki:blocker:Bug --> \u{1F6AB} **Blocker**: Bug found\n\nDesc.', author: { login: 'github-actions[bot]' } },
+            { body: 'Agreed. Handling it later is fine.\n\n<!-- manki -->', author: { login: 'github-actions[bot]' } },
+            { body: 'This came up again.\n\nDetails.\n\n<!-- manki -->\n<!-- manki-found-again -->', author: { login: 'github-actions[bot]' } },
+          ],
+        },
+      }),
     ]);
 
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
+    expect(state.previousFindings.map(f => f.answer)).toEqual([undefined, '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
   });
 
   it('uses the latest non-bot reply when multiple human replies exist', async () => {

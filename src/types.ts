@@ -194,6 +194,8 @@ export interface Finding {
   toolEvidence?: ToolEvidence;
   /** Earlier finding this one resembles, whose fix the judge of an earlier round confirmed. */
   resemblesFixed?: { title: string; file: string; line: number };
+  /** The Manki thread that already answered the developer about this problem, and that answer. The judge keeps the finding only when the code there got worse. */
+  answeredIn?: { threadId: string; answer: string };
   /** Whether the finding sits on code the PR changed since the last reviewed round, or on code an earlier round reviewed. */
   origin?: FindingOrigin;
   /** The kind of problem, set by the judge. */

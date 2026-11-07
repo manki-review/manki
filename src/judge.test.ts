@@ -2329,7 +2329,7 @@ describe('runJudgeAgent', () => {
     expect(result.inPrSuppressedCount).toBeUndefined();
   });
 
-  it('marks each finding in a critical area with the highest ranked critical class', async () => {
+  it('marks each finding in a critical area with the highest ranked critical class, and a repeat of an answered thread with its answer', async () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'x', findings: [1, 2, 3].map(id => ({ id, title: 't', severity: 'warning', reasoning: 'r', confidence: 'high' })) }) });
     const review: ReviewConfig['review'] = {
       classes: {
@@ -2342,7 +2342,7 @@ describe('runJudgeAgent', () => {
       findings: [
         makeFinding({ title: 'Wrong fee', file: 'src/consensus/fees.ts' }),
         makeFinding({ title: 'Wrong check', file: 'src/consensus/validate/block.ts' }),
-        makeFinding({ title: 'Slow loop', file: 'src/net/peer.ts' }),
+        makeFinding({ title: 'Slow loop', file: 'src/net/peer.ts', answeredIn: { threadId: 'T1', answer: 'Withdrawn. The loop\nruns once.' } }),
       ],
       diff: makeDiff(),
       rawDiff: '',
@@ -2357,6 +2357,9 @@ describe('runJudgeAgent', () => {
     expect(block('Wrong fee')).toContain('- **Critical area**: `consensus`');
     expect(block('Wrong check')).toContain('- **Critical area**: `validation`');
     expect(block('Slow loop')).not.toContain('Critical area');
+    expect(block('Slow loop')).toContain('- **Already answered**: Manki answered the developer about this problem in its review thread: "Withdrawn. The loop runs once."');
+    expect(block('Wrong fee')).not.toContain('Already answered');
+    expect(mockSendMessage.mock.calls[0][0]).toContain('Mark it `ignore` unless the code at that spot changed since that answer and is worse now');
   });
 
   it('sends the same system prompt whatever `noise_level` is', async () => {

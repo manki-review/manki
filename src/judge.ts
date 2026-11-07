@@ -402,6 +402,8 @@ A finding that matches one under Prior Round Findings or Prior Blockers keeps th
 
 **No flip-flops.** A finding marked **Applies an earlier Manki fix** sits on code that applies a fix Manki asked for in an earlier round. Mark it \`ignore\` when it objects to that change. Keep it only when the new code is worse than the code it replaced, for example because it adds a defect, and grade that defect as usual.
 
+**No second round on an answered problem.** A finding marked **Already answered** repeats a problem Manki already answered the developer about in a review thread. Mark it \`ignore\` unless the code at that spot changed since that answer and is worse now, for example because the change adds a defect there. When you keep it, say in \`reasoning\` what got worse, and grade it as usual.
+
 ## Security Defects
 
 **A security defect that outside input can trigger is a \`blocker\`, however unlikely it looks.** Security is serious damage under test 3, and the attacker decides whether it happens, so rarity never lowers the grade. In code that handles pull requests, attacker-controlled input is anything a PR author or commenter can write: PR content and diffs, file contents, comments and replies, branch names, and config read from the PR. The classes are:
@@ -1071,6 +1073,7 @@ export async function runJudgeAgent(
     return [
       ...(area ? [`- **Critical area**: \`${area}\``] : []),
       ...(fix ? [`- **Applies an earlier Manki fix**: round ${fix.originatingRound} asked for this change in "${sanitizeForPromptEmbed(fix.originatingTitle)}".`] : []),
+      ...(f.answeredIn ? [`- **Already answered**: Manki answered the developer about this problem in its review thread: "${sanitizeForPromptEmbed(f.answeredIn.answer.slice(0, 500).replace(/[\r\n]+/g, ' '))}"`] : []),
     ];
   };
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, rawDiff, findingNotes);

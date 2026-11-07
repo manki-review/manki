@@ -157,6 +157,7 @@ jest.mock('./recap', () => ({
   collectResolvedThreadIds: jest.requireActual('./recap').collectResolvedThreadIds,
   sanitize: jest.requireActual('./recap').sanitize,
   securityOverridesIn: jest.requireActual('./recap').securityOverridesIn,
+  FOUND_AGAIN_MARKER: jest.requireActual('./recap').FOUND_AGAIN_MARKER,
 }));
 
 jest.mock('./review', () => ({
@@ -196,6 +197,7 @@ jest.mock('./github', () => {
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
   postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false }),
+  formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
   formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
@@ -5246,14 +5248,18 @@ describe('runFullReview orchestration', () => {
     });
     seedPriorRounds(
       [{ round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [] }],
-      [{ title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' }],
+      [
+        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
+        { title: 'Bug B', file: 'src/app.ts', line: 5, severity: 'warning' as const, status: 'auto-resolved' as const, threadId: 'PRRT_def', answer: 'Withdrawn. Fine.' },
+      ],
     );
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
+    const worse = { severity: 'warning' as const, title: 'Bug B', file: 'src/app.ts', line: 5, description: 'Worse now.', reviewers: [], answeredIn: { threadId: 'PRRT_def', answer: 'Withdrawn. Fine.' } };
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [],
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [
@@ -5286,9 +5292,17 @@ describe('runFullReview orchestration', () => {
     );
     // A round that does not post reopens the thread it resolved, unless the run is cancelled and writes nothing more.
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('resolveReviewThread')).map(([query, vars]) => [String(query).includes('unresolveReviewThread'), vars]))
-      .toEqual([[false, { threadId: 'PRRT_abc', resolutionReason: 'ADDRESSED' }], ...(outcome === 'superseded' ? [[true, { threadId: 'PRRT_abc' }]] : [])]);
-    expect(mockGraphql.mock.calls.some(([query, vars]) => String(query).includes('addPullRequestReviewThreadReply')
-      && (vars as { body?: string }).body === 'Fixed in abc123.\n\n<!-- manki -->')).toBe(posted);
+      .toEqual([
+        [false, { threadId: 'PRRT_abc', resolutionReason: 'ADDRESSED' }],
+        ...(outcome === 'superseded' ? [[true, { threadId: 'PRRT_abc' }]] : []),
+        // A kept repeat of the closed answered thread gets one reply there and reopens it.
+        ...(posted ? [[true, { threadId: 'PRRT_def' }]] : []),
+      ]);
+    expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars)).toEqual(posted ? [
+      { threadId: 'PRRT_abc', body: 'Fixed in abc123.\n\n<!-- manki -->' },
+      { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->' },
+    ] : []);
+    if (posted) expect(jest.mocked(ghUtils.formatFoundAgainReply)).toHaveBeenCalledWith(worse);
   });
 
   it('resolves only threads with status addressed', async () => {

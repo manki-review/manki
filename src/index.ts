@@ -18,7 +18,7 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
-import { fetchRecapState, PreviousFinding, RecapState, securityOverridesIn } from './recap';
+import { fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
@@ -33,6 +33,7 @@ import {
   fetchRepoContext,
   fetchFileContents,
   fetchInterRoundDiff,
+  formatFoundAgainReply,
   fetchHeadSha,
   assertHeadUnchanged,
   SupersededError,
@@ -1383,6 +1384,26 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
   }
 }
 
+/**
+ * Replies in each answered thread where the judge kept a finding that repeats its problem, and reopens a closed one.
+ * A thread gets one reply per round.
+ */
+async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+  const replied = new Set<string>();
+  for (const f of result.findings) {
+    const threadId = f.answeredIn?.threadId;
+    if (!threadId || replied.has(threadId)) continue;
+    replied.add(threadId);
+    const thread = run.recap.previousFindings.find(t => t.threadId === threadId);
+    try {
+      await replyToReviewThread(run.octokit, threadId, formatFoundAgainReply(f), FOUND_AGAIN_MARKER);
+      if (thread && thread.status !== 'open' && thread.status !== 'replied') await unresolveReviewThread(run.octokit, threadId);
+    } catch (error) {
+      core.warning(`Failed to reply on answered thread ${threadId}: ${error}`);
+    }
+  }
+}
+
 /** Reopens the threads a round resolved when its review did not go through. */
 async function reopenThreads(octokit: Octokit, threads: OpenThread[]): Promise<void> {
   for (const { threadId } of threads) {
@@ -1752,6 +1773,7 @@ async function runFullReview(
       throw error;
     }
     await replyFixedThreads(run, resolved);
+    await replyAnsweredThreads(run, result);
     await completeProgressComment(run, stage);
     const pauseLifted = !pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config).paused;
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, pauseLifted);
