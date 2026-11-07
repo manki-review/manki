@@ -1556,11 +1556,16 @@ function formatLabelled(label: string, text: string): string {
   return `**${label}:**${safe.includes('\n') ? '\n\n' : ' '}${safe}`;
 }
 
-/** Renders the setup on its own line and the steps as a numbered list, one step per line. */
+const TEST_GUIDE_NOTE = '_The review model wrote these steps. Check what a step runs before you follow it._';
+
+/**
+ * Renders the setup on its own line and the steps as a numbered list, one step per line, under a note that the model
+ * wrote them. Fences are dropped, so no step renders as a code block with a copy button.
+ */
 function formatTestGuide(guide: TestGuide): string {
-  const oneLine = (text: string): string => sanitizeMarkdown(text.replace(/\s+/g, ' ').trim());
+  const oneLine = (text: string): string => sanitizeMarkdown(text.replace(/```/g, '').replace(/\s+/g, ' ').trim());
   const steps = guide.steps.map((step, i) => `${i + 1}. ${oneLine(step.replace(/^\s*\d+[.)]\s*/, ''))}`).join('\n');
-  return guide.setup ? `**Setup:** ${oneLine(guide.setup)}\n\n${steps}` : steps;
+  return `${TEST_GUIDE_NOTE}\n\n${guide.setup ? `**Setup:** ${oneLine(guide.setup)}\n\n${steps}` : steps}`;
 }
 
 function formatReadyReport(result: ReviewResult): string | null {
@@ -1602,6 +1607,9 @@ function sanitizeMarkdown(text: string): string {
     .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
     .replace(/^\[[^\]]*\]:\s+.*$/gm, '')                             // Link/image definitions
+    // A zero-width space keeps GitHub from turning a bare URL into a link.
+    .replace(/\b(https?|ftp):\/\//gi, '$1:\u200B//')
+    .replace(/\bwww\./gi, 'www\u200B.')
     // Insert zero-width space after @ to prevent GitHub from resolving mentions.
     // Lookbehind avoids matching email addresses (which have chars before @).
     // Also handles @org/team patterns.

