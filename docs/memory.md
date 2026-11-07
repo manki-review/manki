@@ -11,16 +11,16 @@ memory:
   enabled: true
 ```
 
-Manki then keeps the repo's memory in the central memory repository, [`manki-review/review-memory`](https://github.com/manki-review/review-memory), in the folder `<owner>/<repo>/`. No secret is needed, and Manki never holds a token for that repository. The token service reads and writes it for the run it started, through its `/memory/read`, `/memory/write` and `/memory/append` endpoints. Each request carries the run's OIDC token, which is GitHub's signed proof of which workflow run is asking, and the token service also checks that it started that run for the PR. It takes the folder from that proof and never from the request, so a run can write only its own repo's folder. The central repository is public, so Manki skips it for a private repo with a warning. A private repo keeps its memory in a repository of its own, see below. Manki redacts its own secret values before it writes, as it does for any memory repo.
+Manki then keeps the repo's memory in the central memory repository, `manki-review/review-memory`, in the folder `<owner>/<repo>/`. No secret is needed, and Manki never holds a token for that repository. The token service reads and writes it for the run it started, through its `/memory/read`, `/memory/write` and `/memory/append` endpoints. Each request carries the run's OIDC token, which is GitHub's signed proof of which workflow run is asking, and the token service also checks that it started that run for the PR. It takes the folder from that proof and never from the request, so a run can write only its own repo's folder. The central repository is private: only its owner and the token service can read the learnings and suppressions in it. Manki still redacts its own secret values before it writes, as it does for any memory repo.
 
 When two runs change the same file at once, the later write is refused. Manki then reads the file again and applies its change to the new version. After three refused attempts it gives up with a warning, and the review goes on.
 
 ## Use your own memory repository
 
-To keep memory in a repository of your own, set `memory.repo` and pass a token that writes it in the `memory_repo_token` input (see [Review memory token](#review-memory-token)). Manki then reads and writes that repository directly, with the repo's files in a folder named after the repo. Without the token, Manki skips memory and logs a warning. It does not fall back to the central repository.
+To keep memory in a repository of your own, set `memory.repo` and pass a token that writes it in the `memory_repo_token` input (see [Review memory token](#review-memory-token)). Manki then reads and writes that repository directly, with the repo's files in a folder named after the repo. Without the token, Manki skips memory for the run and logs a warning. It does not fall back to the central repository. With [your own GitHub App](getting-started.md#your-own-github-app), Manki mints no memory token from it either: pass `memory_repo_token` the same way.
 
 ```bash
-gh repo create <owner>/review-memory --public --description "Review memory for Manki"
+gh repo create <owner>/review-memory --private --description "Review memory for Manki"
 git clone https://github.com/<owner>/review-memory
 cd review-memory
 
