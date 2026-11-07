@@ -3,9 +3,9 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
-import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState } from './auth';
+import { AuthResult, createAuthenticatedOctokit, fetchPrState, reportPrState } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
-import { changedKeys, loadConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
+import { changedKeys, loadConfig, resolveFallbackModel, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
@@ -15,7 +15,7 @@ import { dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dis
 import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, rebuildRawDiff, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
-import { loadMemory, RepoMemory } from './memory';
+import { loadMemory, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
@@ -432,7 +432,7 @@ async function handleMergedPullRequest(): Promise<void> {
     return;
   }
 
-  const { octokit, bot, appMemory } = await getAuth();
+  const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
   const configPath = core.getInput('config_path') || '.manki.yml';
   const configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath);
@@ -442,16 +442,8 @@ async function handleMergedPullRequest(): Promise<void> {
     return;
   }
 
-  let memory: { octokit: Octokit; repo: string } | undefined;
-  if (config.memory?.enabled) {
-    const memoryRepo = resolveMemoryRepo(config.memory, owner);
-    const memoryToken = await getMemoryToken(appMemory, memoryRepo);
-    if (memoryToken) {
-      memory = { octokit: github.getOctokit(memoryToken), repo: memoryRepo };
-    } else {
-      core.info('The fix rate goes to the job summary only');
-    }
-  }
+  const memory = openMemoryStore(config.memory, owner, repo, pr.number);
+  if (!memory) core.info('The fix rate goes to the job summary only');
 
   await recordFixRate(octokit, bot, owner, repo, {
     number: pr.number,
@@ -930,19 +922,17 @@ async function warmUpClients(clients: ReviewClients): Promise<void> {
 }
 
 async function loadRunMemory(
-  config: ReviewConfig, appMemory: AppMemory | undefined, owner: string, repo: string,
+  config: ReviewConfig, owner: string, repo: string, prNumber: number,
 ): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string }> {
   if (!config.memory?.enabled) {
     return { memory: null, memoryLoadStatus: 'disabled' };
   }
-  const memoryRepo = resolveMemoryRepo(config.memory, owner);
-  const memoryToken = await getMemoryToken(appMemory, memoryRepo);
-  if (!memoryToken) {
+  const store = openMemoryStore(config.memory, owner, repo, prNumber);
+  if (!store) {
     return { memory: null, memoryLoadStatus: 'no_token' };
   }
-  const memoryOctokit = github.getOctokit(memoryToken);
   try {
-    const memory = await loadMemory(memoryOctokit, memoryRepo, repo);
+    const memory = await loadMemory(store);
     core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
     return { memory, memoryLoadStatus: 'loaded' };
   } catch (error) {
@@ -1404,7 +1394,7 @@ function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: stri
     triage,
     teamAgents,
     memoryEnabled: config.memory?.enabled ?? false,
-    memoryRepo: config.memory?.repo ?? '',
+    memoryRepo: config.memory?.repo || 'central',
   };
 }
 
@@ -1556,7 +1546,7 @@ async function runFullReview(
 
   const startTime = Date.now();
   const configPath = core.getInput('config_path') || '.manki.yml';
-  const { octokit, bot, identity, appMemory } = await getAuth();
+  const { octokit, bot, identity } = await getAuth();
   const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef };
 
   if (identity === 'actions') {
@@ -1636,7 +1626,7 @@ async function runFullReview(
     await warmUpClients(clients);
 
     const repoContext = await fetchRepoContext(target.octokit, target.owner, target.repo, target.baseRef, diff.files.map(f => f.path));
-    const { memory, memoryLoadStatus, memoryLoadError } = await loadRunMemory(config, appMemory, owner, repo);
+    const { memory, memoryLoadStatus, memoryLoadError } = await loadRunMemory(config, owner, repo, prNumber);
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
@@ -1804,7 +1794,7 @@ async function handleInteraction(): Promise<void> {
 
   const configPathInput = core.getInput('config_path');
 
-  const { octokit, bot, appMemory } = await getAuth();
+  const { octokit, bot } = await getAuth();
 
   const { owner, repo } = github.context.repo;
   const prNumber = github.context.payload.issue?.number;
@@ -1822,10 +1812,9 @@ async function handleInteraction(): Promise<void> {
   if (!built) return;
   const { client } = built;
 
-  const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? (await getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner))) ?? undefined : undefined;
+  const memory = openMemoryStore(config.memory, owner, repo, prNumber);
 
-  await handlePRComment(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken, config);
+  await handlePRComment(octokit, bot, client, owner, repo, prNumber, memory, config);
 }
 
 async function handleIssueInteraction(): Promise<void> {
@@ -1839,17 +1828,16 @@ async function handleIssueInteraction(): Promise<void> {
   const issueNumber = payload.issue?.number;
   if (!issueNumber) return;
 
-  const { octokit, bot, appMemory } = await getAuth();
+  const { octokit, bot } = await getAuth();
   const configPathInput = core.getInput('config_path');
 
   const configPath = configPathInput || '.manki.yml';
   const configContent = await fetchConfigFile(octokit, owner, repo, 'main', configPath);
   const config = loadConfig(configContent ?? undefined, configPath);
 
-  const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? (await getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner))) ?? undefined : undefined;
+  const memory = openMemoryStore(config.memory, owner, repo, issueNumber);
 
-  await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memoryConfig, memoryToken, config);
+  await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memory, config);
 }
 
 async function handleReviewCommentInteraction(): Promise<void> {
@@ -1882,7 +1870,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
 
   const configPathInput = core.getInput('config_path');
 
-  const { octokit, bot, appMemory } = await getAuth();
+  const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
 
   const baseRef = payload.pull_request?.base?.ref ?? 'main';
@@ -1894,34 +1882,31 @@ async function handleReviewCommentInteraction(): Promise<void> {
   if (!built) return;
   const { client } = built;
 
-  const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? (await getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner))) ?? undefined : undefined;
+  const prNumber: number | undefined = payload.pull_request?.number;
+  const memory = prNumber ? openMemoryStore(config.memory, owner, repo, prNumber) : undefined;
 
   const command = parseCommand(body);
   if (command.type !== 'generic') {
-    const prNumber = payload.pull_request?.number;
     if (prNumber) {
-      await handleReviewCommentCommand(octokit, bot, owner, repo, prNumber, comment.id, command, memoryConfig, memoryToken);
+      await handleReviewCommentCommand(octokit, bot, owner, repo, prNumber, comment.id, command, memory);
     } else {
       core.warning('Cannot handle command — pull request number not available');
     }
   } else {
-    const prNumber = payload.pull_request?.number;
     if (!prNumber) {
       core.warning('Cannot handle reply — pull request number not available');
       return;
     }
     const headSha: string | undefined = payload.pull_request?.head?.sha;
     const loadWorkspace = async () => headSha ? fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha }, [client]) : undefined;
-    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken, loadWorkspace);
+    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memory, loadWorkspace);
   }
 
   // Check if all review threads are now resolved (e.g. the reply resolved the last conversation)
-  const prNum = payload.pull_request?.number;
-  if (prNum && config.auto_approve) {
-    const approved = await checkAndAutoApprove(octokit, bot, owner, repo, prNum, config);
+  if (prNumber && config.auto_approve) {
+    const approved = await checkAndAutoApprove(octokit, bot, owner, repo, prNumber, config);
     if (approved) {
-      core.info(`PR #${prNum} auto-approved after all findings resolved`);
+      core.info(`PR #${prNumber} auto-approved after all findings resolved`);
     }
   }
 }

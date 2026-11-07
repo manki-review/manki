@@ -770,8 +770,3 @@ export function loadConfig(yamlContent: string | undefined, source?: string): Re
 
   return loadConfigFromContent(yamlContent, source);
 }
-
-/** Returns the memory repo as `owner/name`: `memory.repo`, or `<owner>/review-memory` when that is empty. */
-export function resolveMemoryRepo(memory: { repo: string }, owner: string): string {
-  return memory.repo || `${owner}/review-memory`;
-}

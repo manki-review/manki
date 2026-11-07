@@ -1,4 +1,6 @@
-import { parse as parseYaml } from 'yaml';
+import * as core from '@actions/core';
+import * as github from '@actions/github';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 import {
   appendMemoryLine,
@@ -10,6 +12,8 @@ import {
   filterLearningsForFinding,
   filterSuppressionsForFinding,
   loadMemory,
+  MemoryStore,
+  openMemoryStore,
   removeLearning,
   removeSuppression,
   writeSuppression,
@@ -399,7 +403,14 @@ describe('filterSuppressionsForFinding', () => {
   });
 });
 
-type MockOctokit = Parameters<typeof removeLearning>[0];
+type MockOctokit = ReturnType<typeof github.getOctokit>;
+
+/** The memory in the folder `test-repo` of `owner/memory`, read and written with `octokit`. */
+function repoStore(octokit: MockOctokit): MemoryStore {
+  jest.spyOn(core, 'getInput').mockImplementation(name => (name === 'memory_repo_token' ? 'memory-token' : ''));
+  jest.spyOn(github, 'getOctokit').mockReturnValue(octokit);
+  return openMemoryStore({ enabled: true, repo: 'owner/memory' }, 'owner', 'test-repo', 1)!;
+}
 
 /** `concurrentWrite` changes the store before the first write, which then fails with a conflict. */
 function mockMemoryOctokit(
@@ -450,7 +461,7 @@ describe('removeLearning', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/learnings.yml': learnings });
 
-    const { removed, remaining } = await removeLearning(octokit, 'owner/memory', 'test-repo', 'strict mode');
+    const { removed, remaining } = await removeLearning(repoStore(octokit), 'strict mode');
 
     expect(removed).not.toBeNull();
     expect(removed!.id).toBe('l1');
@@ -461,7 +472,7 @@ describe('removeLearning', () => {
   it('removes a learning by its id', async () => {
     const octokit = mockMemoryOctokit({ 'test-repo/learnings.yml': [makeLearning({ id: 'learn-17', content: 'Always use strict mode' })] });
 
-    const { removed } = await removeLearning(octokit, 'owner/memory', 'test-repo', 'LEARN-17');
+    const { removed } = await removeLearning(repoStore(octokit), 'LEARN-17');
 
     expect(removed?.id).toBe('learn-17');
   });
@@ -472,7 +483,7 @@ describe('removeLearning', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/learnings.yml': learnings });
 
-    const { removed, remaining } = await removeLearning(octokit, 'owner/memory', 'test-repo', 'nonexistent');
+    const { removed, remaining } = await removeLearning(repoStore(octokit), 'nonexistent');
 
     expect(removed).toBeNull();
     expect(remaining).toBe(1);
@@ -482,7 +493,7 @@ describe('removeLearning', () => {
   it('returns null when no learnings file exists', async () => {
     const octokit = mockMemoryOctokit({});
 
-    const { removed, remaining } = await removeLearning(octokit, 'owner/memory', 'test-repo', 'anything');
+    const { removed, remaining } = await removeLearning(repoStore(octokit), 'anything');
 
     expect(removed).toBeNull();
     expect(remaining).toBe(0);
@@ -497,7 +508,7 @@ describe('removeSuppression', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/suppressions.yml': suppressions });
 
-    const { removed, remaining } = await removeSuppression(octokit, 'owner/memory', 'test-repo', 'TODO');
+    const { removed, remaining } = await removeSuppression(repoStore(octokit), 'TODO');
 
     expect(removed).not.toBeNull();
     expect(removed!.id).toBe('sup-2');
@@ -511,7 +522,7 @@ describe('removeSuppression', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/suppressions.yml': suppressions });
 
-    const { removed, remaining } = await removeSuppression(octokit, 'owner/memory', 'test-repo', 'nonexistent');
+    const { removed, remaining } = await removeSuppression(repoStore(octokit), 'nonexistent');
 
     expect(removed).toBeNull();
     expect(remaining).toBe(1);
@@ -521,7 +532,7 @@ describe('removeSuppression', () => {
   it('returns null when no suppressions file exists', async () => {
     const octokit = mockMemoryOctokit({});
 
-    const { removed, remaining } = await removeSuppression(octokit, 'owner/memory', 'test-repo', 'anything');
+    const { removed, remaining } = await removeSuppression(repoStore(octokit), 'anything');
 
     expect(removed).toBeNull();
     expect(remaining).toBe(0);
@@ -562,7 +573,7 @@ describe('loadMemory', () => {
       return originalImpl(args);
     });
 
-    const memory = await loadMemory(octokit, 'owner/memory', 'test-repo');
+    const memory = await loadMemory(repoStore(octokit));
 
     // 2 file learnings + 1 conventions entry
     expect(memory.learnings).toHaveLength(3);
@@ -577,7 +588,7 @@ describe('loadMemory', () => {
   it('returns empty arrays when no files exist', async () => {
     const octokit = mockMemoryOctokit({});
 
-    const memory = await loadMemory(octokit, 'owner/memory', 'test-repo');
+    const memory = await loadMemory(repoStore(octokit));
 
     expect(memory.learnings).toHaveLength(0);
     expect(memory.suppressions).toHaveLength(0);
@@ -591,7 +602,7 @@ describe('writeSuppression', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/suppressions.yml': existing });
 
-    await writeSuppression(octokit, 'owner/memory', 'test-repo', makeSuppression({ id: 'sup-2', pattern: 'new pattern' }));
+    await writeSuppression(repoStore(octokit), makeSuppression({ id: 'sup-2', pattern: 'new pattern' }));
 
     const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
     expect(createCall.path).toBe('test-repo/suppressions.yml');
@@ -600,7 +611,7 @@ describe('writeSuppression', () => {
   it('creates file when none exists', async () => {
     const octokit = mockMemoryOctokit({});
 
-    await writeSuppression(octokit, 'owner/memory', 'test-repo', makeSuppression({ id: 'sup-1', pattern: 'brand new' }));
+    await writeSuppression(repoStore(octokit), makeSuppression({ id: 'sup-1', pattern: 'brand new' }));
 
     expect(octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalled();
   });
@@ -613,7 +624,7 @@ describe('writeLearning', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/learnings.yml': existing });
 
-    await writeLearning(octokit, 'owner/memory', 'test-repo', makeLearning({ id: 'l2', content: 'new learning', scope: 'repo' }));
+    await writeLearning(repoStore(octokit), makeLearning({ id: 'l2', content: 'new learning', scope: 'repo' }));
 
     const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
     expect(createCall.path).toBe('test-repo/learnings.yml');
@@ -624,8 +635,8 @@ describe('writeLearning', () => {
     const octokit = mockMemoryOctokit({});
     const longContent = `${'x'.repeat(45)} ghs_memoryLeakToken is printed`;
 
-    await writeLearning(octokit, 'owner/memory', 'test-repo', makeLearning({ id: 'l1', content: 'ghs_memoryLeakToken' }));
-    await writeLearning(octokit, 'owner/memory', 'test-repo', makeLearning({ id: 'l2', content: longContent }));
+    await writeLearning(repoStore(octokit), makeLearning({ id: 'l1', content: 'ghs_memoryLeakToken' }));
+    await writeLearning(repoStore(octokit), makeLearning({ id: 'l2', content: longContent }));
 
     const calls = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls.map(([call]) => call);
     const written = Buffer.from(calls[1].content, 'base64').toString();
@@ -634,18 +645,9 @@ describe('writeLearning', () => {
     expect(calls.map(c => c.message).join()).not.toContain('ghs_');
 
     registerSecret('pass"word\\with-escapes');
-    await appendMemoryLine(octokit, 'owner/memory', 'test-repo', 'metrics/fix-rate.jsonl', { note: 'ghs_memoryLeakToken', other: 'pass"word\\with-escapes' }, 'Record');
+    await appendMemoryLine(repoStore(octokit), 'metrics/fix-rate.jsonl', { note: 'ghs_memoryLeakToken', other: 'pass"word\\with-escapes' }, 'Record');
     const line = Buffer.from((octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[2][0].content, 'base64').toString();
     expect(JSON.parse(line)).toEqual({ note: '[REDACTED]', other: '[REDACTED]' });
-  });
-
-  it('writes global-scoped learning to _global path', async () => {
-    const octokit = mockMemoryOctokit({});
-
-    await writeLearning(octokit, 'owner/memory', 'test-repo', makeLearning({ id: 'l1', content: 'global tip', scope: 'global' }));
-
-    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
-    expect(createCall.path).toBe('_global/learnings.yml');
   });
 });
 
@@ -662,10 +664,10 @@ describe('memory writes after a write conflict', () => {
   });
 
   it.each([
-    ['writeLearning', learnings, (o: MockOctokit) => writeLearning(o, 'owner/memory', 'test-repo', makeLearning({ id: 'new', content: 'new learning' })), ['l1', 'other', 'new']],
-    ['writeSuppression', suppressions, (o: MockOctokit) => writeSuppression(o, 'owner/memory', 'test-repo', makeSuppression({ id: 'new', pattern: 'new pattern' })), ['s1', 'other', 'new']],
-    ['removeLearning', learnings, (o: MockOctokit) => removeLearning(o, 'owner/memory', 'test-repo', 'old learning'), ['other']],
-    ['removeSuppression', suppressions, (o: MockOctokit) => removeSuppression(o, 'owner/memory', 'test-repo', 'old pattern'), ['other']],
+    ['writeLearning', learnings, (o: MockOctokit) => writeLearning(repoStore(o), makeLearning({ id: 'new', content: 'new learning' })), ['l1', 'other', 'new']],
+    ['writeSuppression', suppressions, (o: MockOctokit) => writeSuppression(repoStore(o), makeSuppression({ id: 'new', pattern: 'new pattern' })), ['s1', 'other', 'new']],
+    ['removeLearning', learnings, (o: MockOctokit) => removeLearning(repoStore(o), 'old learning'), ['other']],
+    ['removeSuppression', suppressions, (o: MockOctokit) => removeSuppression(repoStore(o), 'old pattern'), ['other']],
   ])('%s re-applies its change to the latest file', async (_name, path, write, ids) => {
     let store: Map<string, unknown[]> | undefined;
     const octokit = mockMemoryOctokit(seed(), s => { store = s; addConcurrent(s); });
@@ -679,11 +681,148 @@ describe('memory writes after a write conflict', () => {
   it('reports nothing removed when another write removed the match first', async () => {
     const octokit = mockMemoryOctokit(seed(), store => store.set(learnings, []));
 
-    const { removed, remaining } = await removeLearning(octokit, 'owner/memory', 'test-repo', 'old learning');
+    const { removed, remaining } = await removeLearning(repoStore(octokit), 'old learning');
 
     expect(removed).toBeNull();
     expect(remaining).toBe(0);
     expect(octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** The central memory of `owner/test-repo` for the run on PR 7, as the token service serves it. */
+function centralStore(memoryRepoToken = ''): MemoryStore {
+  jest.spyOn(core, 'getInput').mockImplementation(name => (name === 'memory_repo_token' ? memoryRepoToken : ''));
+  return openMemoryStore({ enabled: true, repo: '' }, 'owner', 'test-repo', 7)!;
+}
+
+/**
+ * A fake token service that holds the repo's memory `files`, by path in the repo's folder, and answers `/memory/*`.
+ * `beforeWrite` runs before each write checks its sha, so it can change a file as another run would.
+ */
+function mockMemoryService(files: Record<string, string>, { beforeWrite, status }: { beforeWrite?: (stored: Map<string, { text: string; sha: string }>) => void; status?: number } = {}) {
+  let version = 0;
+  const stored = new Map(Object.entries(files).map(([file, text]) => [file, { text, sha: `sha-${version}` }]));
+  const requests: { endpoint: string; body: Record<string, unknown>; auth: string | null }[] = [];
+  jest.spyOn(core, 'getIDToken').mockResolvedValue('oidc-token');
+  jest.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+    const endpoint = new URL(String(url)).pathname;
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    requests.push({ endpoint, body, auth: new Headers(init?.headers).get('Authorization') });
+    const reply = (code: number, data: unknown) => new Response(JSON.stringify(data), { status: code });
+    if (status) return reply(status, { error: 'refused' });
+    const file = String(body.file);
+    if (endpoint === '/memory/read') {
+      const pick = (prefix: string, names: string[]) => Object.fromEntries(names.map(name => [name, stored.get(prefix + name) ?? null]));
+      return reply(200, { repo: pick('', ['learnings.yml', 'suppressions.yml', 'patterns.yml']), global: pick('_global/', ['learnings.yml', 'conventions.md']) });
+    }
+    if (endpoint === '/memory/write') {
+      beforeWrite?.(stored);
+      if ((stored.get(file)?.sha ?? null) !== body.sha) return reply(409, { error: 'the file changed since it was read' });
+      stored.set(file, { text: String(body.content), sha: `sha-${++version}` });
+      return reply(200, { sha: stored.get(file)!.sha });
+    }
+    const lines = (body.lines as string[]).map(line => `${line}\n`).join('');
+    stored.set(file, { text: `${stored.get(file)?.text ?? ''}${lines}`, sha: `sha-${++version}` });
+    return reply(200, { sha: stored.get(file)!.sha });
+  });
+  return { stored, requests };
+}
+
+describe('central memory through the token service', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('loads the repo and global files in one read for the run\'s PR, with the run\'s OIDC token', async () => {
+    const service = mockMemoryService({
+      'learnings.yml': stringifyYaml([makeLearning({ content: 'repo learning' })]),
+      'suppressions.yml': stringifyYaml([makeSuppression()]),
+      '_global/learnings.yml': stringifyYaml([makeLearning({ content: 'global learning', scope: 'global' })]),
+      '_global/conventions.md': 'Use consistent naming',
+    });
+
+    const memory = await loadMemory(centralStore());
+
+    expect(memory.learnings.map(l => l.content)).toEqual(['repo learning', 'global learning', 'Use consistent naming']);
+    expect(memory.suppressions).toHaveLength(1);
+    expect(service.requests).toEqual([{ endpoint: '/memory/read', body: { owner: 'owner', repo: 'test-repo', pr: 7 }, auth: 'Bearer oidc-token' }]);
+  });
+
+  it('creates a missing file with a null sha', async () => {
+    const service = mockMemoryService({});
+
+    await writeSuppression(centralStore(), makeSuppression({ pattern: 'new pattern' }));
+
+    expect(service.requests[1]).toMatchObject({ endpoint: '/memory/write', body: { file: 'suppressions.yml', sha: null, message: 'Add suppression: new pattern' } });
+    expect((parseYaml(service.stored.get('suppressions.yml')!.text) as Suppression[]).map(s => s.pattern)).toEqual(['new pattern']);
+  });
+
+  it('reads again after a conflict and applies the edit to the latest file', async () => {
+    let concurrent = true;
+    const service = mockMemoryService({ 'learnings.yml': stringifyYaml([makeLearning({ id: 'l1' })]) }, {
+      beforeWrite: stored => {
+        if (!concurrent) return;
+        concurrent = false;
+        const items = parseYaml(stored.get('learnings.yml')!.text) as Learning[];
+        stored.set('learnings.yml', { text: stringifyYaml([...items, makeLearning({ id: 'other' })]), sha: 'sha-other' });
+      },
+    });
+
+    await writeLearning(centralStore(), makeLearning({ id: 'new', content: 'new learning' }));
+
+    expect(service.requests.map(r => r.endpoint)).toEqual(['/memory/read', '/memory/write', '/memory/read', '/memory/write']);
+    expect(service.requests[3].body.sha).toBe('sha-other');
+    expect((parseYaml(service.stored.get('learnings.yml')!.text) as Learning[]).map(l => l.id)).toEqual(['l1', 'other', 'new']);
+  });
+
+  it('gives up with an error once every attempt met a conflict', async () => {
+    let version = 0;
+    const service = mockMemoryService({ 'learnings.yml': '[]\n' }, { beforeWrite: stored => stored.set('learnings.yml', { text: '[]\n', sha: `moved-${version++}` }) });
+
+    await expect(writeLearning(centralStore(), makeLearning())).rejects.toThrow('learnings.yml in the central memory changed during each of 3 attempts');
+    expect(service.requests.filter(r => r.endpoint === '/memory/write')).toHaveLength(3);
+  });
+
+  it('appends a redacted fix-rate line through `/memory/append`', async () => {
+    registerSecret('ghs_centralLeakToken');
+    const service = mockMemoryService({});
+
+    await appendMemoryLine(centralStore(), 'metrics/fix-rate.jsonl', { pr: 7, note: 'ghs_centralLeakToken' }, 'Record fix rate');
+
+    expect(service.requests).toEqual([{
+      endpoint: '/memory/append',
+      body: { owner: 'owner', repo: 'test-repo', pr: 7, file: 'metrics/fix-rate.jsonl', lines: ['{"pr":7,"note":"[REDACTED]"}'], message: 'Record fix rate' },
+      auth: 'Bearer oidc-token',
+    }]);
+  });
+
+  it('fails a load the token service refuses', async () => {
+    mockMemoryService({}, { status: 403 });
+
+    await expect(loadMemory(centralStore())).rejects.toThrow('the token service answered 403 to `/memory/read`');
+  });
+});
+
+describe('openMemoryStore', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('is off when memory is off, and skips a `memory.repo` without `memory_repo_token` with a warning', () => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    jest.spyOn(core, 'getInput').mockReturnValue('');
+
+    expect(openMemoryStore(undefined, 'owner', 'test-repo', 7)).toBeUndefined();
+    expect(openMemoryStore({ enabled: false, repo: 'owner/memory' }, 'owner', 'test-repo', 7)).toBeUndefined();
+    expect(warning).not.toHaveBeenCalled();
+    expect(openMemoryStore({ enabled: true, repo: 'owner/memory' }, 'owner', 'test-repo', 7)).toBeUndefined();
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('`memory_repo_token` is not set, so memory is skipped'));
+  });
+
+  it('uses the central memory without `memory.repo`, and warns that a `memory_repo_token` is unused', async () => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const service = mockMemoryService({});
+
+    await loadMemory(centralStore('memory-token'));
+
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('`memory_repo_token` is set without `memory.repo`, so it is unused'));
+    expect(service.requests.map(r => r.endpoint)).toEqual(['/memory/read']);
   });
 });
 

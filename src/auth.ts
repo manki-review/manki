@@ -37,17 +37,8 @@ function createOctokit(token: string): Octokit {
   return github.getOctokit(token, { throttle: { onRateLimit, onSecondaryRateLimit: onRateLimit } }, retry, throttling, redactRequests);
 }
 
-/** Review memory access through a GitHub App. */
-export interface AppMemory {
-  /** Returns a token that writes `memoryRepo`, or `null` when the App cannot write it. */
-  tokenFor(memoryRepo: string): Promise<string | null>;
-}
-
-type AppAuth = ReturnType<typeof createAppAuth>;
-
 export interface AuthResult {
   octokit: Octokit;
-  appMemory?: AppMemory;
   identity: 'app' | 'actions';
   bot: BotIdentity;
 }
@@ -75,8 +66,6 @@ async function resolveTokenUserBot(octokit: Octokit, token: string): Promise<Bot
 
 export interface TokenResult {
   token: string;
-  /** The token service's `memory_token`, which writes only the owner's `review-memory`. */
-  memoryToken?: string;
   identity: 'app' | 'actions';
 }
 
@@ -135,7 +124,7 @@ export async function resolveGitHubToken(
   repo: string,
 ): Promise<TokenResult> {
   try {
-    const tokenResponse = await postToTokenService(tokenUrl, { owner, repo, memory: true });
+    const tokenResponse = await postToTokenService(tokenUrl, { owner, repo });
     if (!tokenResponse) {
       core.info('OIDC token not available — using github-actions[bot] identity');
       return { token: githubToken, identity: 'actions' };
@@ -146,7 +135,7 @@ export async function resolveGitHubToken(
       return { token: githubToken, identity: 'actions' };
     }
 
-    const tokenData = tokenResponse.data as { token?: unknown; expires_at?: unknown; memory_token?: unknown } | null;
+    const tokenData = tokenResponse.data as { token?: unknown; expires_at?: unknown } | null;
 
     if (!tokenData || !tokenData.token || typeof tokenData.token !== 'string') {
       core.warning('Token service returned invalid response — falling back to github-actions[bot]');
@@ -155,11 +144,7 @@ export async function resolveGitHubToken(
 
     core.info(`Using ${BOT_LOGIN} identity (token expires ${tokenData.expires_at})`);
     registerSecret(tokenData.token);
-    if (typeof tokenData.memory_token !== 'string' || !tokenData.memory_token) {
-      return { token: tokenData.token, identity: 'app' };
-    }
-    registerSecret(tokenData.memory_token);
-    return { token: tokenData.token, memoryToken: tokenData.memory_token, identity: 'app' };
+    return { token: tokenData.token, identity: 'app' };
   } catch (error) {
     core.info(`App token resolution failed: ${error} — using github-actions[bot] identity`);
     return { token: githubToken, identity: 'actions' };
@@ -227,8 +212,8 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
 
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
-    const { token, slug, appMemory } = await getInstallationToken(appId, privateKey);
-    return { octokit: createOctokit(token), appMemory, identity: 'app', bot: { logins: [`${slug}[bot]`] } };
+    const { token, slug } = await getInstallationToken(appId, privateKey);
+    return { octokit: createOctokit(token), identity: 'app', bot: { logins: [`${slug}[bot]`] } };
   }
 
   if (!githubToken) {
@@ -237,65 +222,17 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
 
   const tokenUrl = tokenServiceUrl();
   const { owner, repo: repoName } = github.context.repo;
-  const { token, memoryToken, identity } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
+  const { token, identity } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
 
   const octokit = createOctokit(token);
   const bot = identity === 'actions' ? await resolveTokenUserBot(octokit, token) : MANKI_BOT;
-  const serviceMemoryRepo = `${owner}/review-memory`.toLowerCase();
-  const appMemory: AppMemory | undefined = memoryToken
-    ? { tokenFor: async (memoryRepo) => (memoryRepo.toLowerCase() === serviceMemoryRepo ? memoryToken : null) }
-    : undefined;
-  return { octokit, appMemory, identity, bot };
-}
-
-/**
- * Returns the token for `memoryRepo`: `memory_repo_token`, else the App's memory token when it covers `memoryRepo`,
- * else `null` with a warning. The review token is never used, since it covers only the reviewed repo.
- */
-export async function getMemoryToken(appMemory: AppMemory | undefined, memoryRepo: string): Promise<string | null> {
-  const memoryRepoToken = core.getInput('memory_repo_token');
-  if (memoryRepoToken) return memoryRepoToken;
-  let appToken: string | null | undefined;
-  try {
-    appToken = await appMemory?.tokenFor(memoryRepo);
-  } catch (error) {
-    core.warning(`Could not get a token for the review memory repo \`${memoryRepo}\`, so memory is skipped: ${error}`);
-    return null;
-  }
-  if (appToken) return appToken;
-  core.warning(
-    `No token for the review memory repo \`${memoryRepo}\`, so memory is skipped. Set \`memory_repo_token\`, or use a `
-    + 'memory repo the App can write. The manki-review App writes only `<owner>/review-memory`, and a token service '
-    + 'that predates memory tokens issues none. A custom App writes only repos of the reviewed owner that it is installed on.',
-  );
-  return null;
-}
-
-/**
- * Mints a token that writes only the contents of `memoryRepo`, which must belong to `owner`'s installation.
- * Returns `null` when GitHub refuses the mint, and throws any other error, such as a 5xx or a network failure.
- */
-async function mintMemoryToken(auth: AppAuth, installationId: number, owner: string, memoryRepo: string): Promise<string | null> {
-  const [memoryOwner, name] = memoryRepo.split('/');
-  if (memoryOwner.toLowerCase() !== owner.toLowerCase() || !name) {
-    core.info(`The App installation on \`${owner}\` cannot write \`${memoryRepo}\``);
-    return null;
-  }
-  try {
-    const { token } = await auth({ type: 'installation', installationId, repositoryNames: [name], permissions: { contents: 'write' } });
-    registerSecret(token);
-    return token;
-  } catch (error) {
-    if (![403, 404, 422].includes((error as { status?: number }).status ?? 0)) throw error;
-    core.info(`GitHub refused a memory token for \`${memoryRepo}\`: ${error}`);
-    return null;
-  }
+  return { octokit, identity, bot };
 }
 
 async function getInstallationToken(
   appId: string,
   privateKey: string,
-): Promise<{ token: string; slug: string; appMemory: AppMemory }> {
+): Promise<{ token: string; slug: string }> {
   const appIdNum = parseInt(appId, 10);
   if (isNaN(appIdNum)) {
     throw new Error(`Invalid github_app_id: "${appId}" is not a number`);
@@ -331,8 +268,7 @@ async function getInstallationToken(
 
     registerSecret(installationAuth.token);
     core.info(`Authenticated as GitHub App ${app.slug}[bot] (installation ${installation.id})`);
-    const appMemory: AppMemory = { tokenFor: (memoryRepo) => mintMemoryToken(auth, installation.id, owner, memoryRepo) };
-    return { token: installationAuth.token, slug: app.slug, appMemory };
+    return { token: installationAuth.token, slug: app.slug };
   } catch (error) {
     throw new Error(`GitHub App authentication failed: ${error}. Check that the app is installed on this repo and credentials are correct.`);
   }

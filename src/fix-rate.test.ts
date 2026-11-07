@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 
 import { recordFixRate } from './fix-rate';
+import { MemoryStore } from './memory';
 import { fetchRecapState, PreviousFinding } from './recap';
 import { makeFindingFingerprintEntry, makeRoundContext, TEST_BOT } from './test-utils';
 import { RoundRouting } from './types';
@@ -38,16 +39,15 @@ function thread(threadId: string, overrides: Partial<PreviousFinding> = {}): Pre
   return { title: threadId, file: 'src/b.ts', line: 1, severity: 'warning', status: 'open', threadId, ...overrides };
 }
 
-function mockOctokit(existingMetrics: string | null = null) {
+function mockOctokit() {
   const repos = {
     compareCommits: jest.fn(async ({ base }: { base: string }) => ({ data: base === 'sha1' ? DIFF_SINCE_ROUND_1 : '' })),
-    getContent: jest.fn(async () => {
-      if (existingMetrics === null) throw Object.assign(new Error('Not Found'), { status: 404 });
-      return { data: { sha: 'file-sha', encoding: 'base64', content: Buffer.from(existingMetrics).toString('base64') } };
-    }),
-    createOrUpdateFileContents: jest.fn().mockResolvedValue({}),
   };
   return { repos, octokit: { rest: { repos } } as unknown as Octokit };
+}
+
+function mockMemoryStore() {
+  return { name: 'owner/review-memory', load: jest.fn(), read: jest.fn(), write: jest.fn(), append: jest.fn().mockResolvedValue(undefined) } satisfies MemoryStore;
 }
 
 const PR = { number: 42, headSha: 'head', mergedSha: 'merged', authorLogin: 'author' };
@@ -105,9 +105,9 @@ describe('recordFixRate', () => {
 
   it('counts fixed, dismissed and untouched findings per specialist and per confidence, tool evidence, category, effort, evidence and judge check, and appends them to the memory repo', async () => {
     const github = mockOctokit();
-    const memory = mockOctokit('{"pr":41}\n');
+    const memory = mockMemoryStore();
 
-    await recordFixRate(github.octokit, TEST_BOT, 'owner', 'repo', PR, { octokit: memory.octokit, repo: 'owner/review-memory' });
+    await recordFixRate(github.octokit, TEST_BOT, 'owner', 'repo', PR, memory);
 
     const expected = {
       pr: 42,
@@ -132,9 +132,7 @@ describe('recordFixRate', () => {
     expect(core.summary.write).toHaveBeenCalled();
     expect(github.repos.compareCommits).toHaveBeenCalledWith(expect.objectContaining({ base: 'sha1', head: 'head' }));
 
-    const write = memory.repos.createOrUpdateFileContents.mock.calls[0][0];
-    expect(write).toMatchObject({ owner: 'owner', repo: 'review-memory', path: 'repo/metrics/fix-rate.jsonl', sha: 'file-sha' });
-    expect(Buffer.from(write.content, 'base64').toString('utf-8')).toBe(`{"pr":41}\n${JSON.stringify(expected)}\n`);
+    expect(memory.append).toHaveBeenCalledWith('metrics/fix-rate.jsonl', [JSON.stringify(expected)], 'Record fix rate of owner/repo#42');
   });
 
   it('writes only the job summary without a memory repo, and marks a failed compare as partial', async () => {
@@ -150,16 +148,15 @@ describe('recordFixRate', () => {
     expect(line).not.toHaveProperty('class');
     expect(line).not.toHaveProperty('group');
     expect(line).not.toHaveProperty('configDigest');
-    expect(github.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
 
   it('records nothing when Manki never reviewed the pull request', async () => {
     jest.mocked(fetchRecapState).mockResolvedValue({ priorRounds: [], previousFindings: [] });
-    const memory = mockOctokit();
+    const memory = mockMemoryStore();
 
-    await recordFixRate(mockOctokit().octokit, TEST_BOT, 'owner', 'repo', PR, { octokit: memory.octokit, repo: 'owner/review-memory' });
+    await recordFixRate(mockOctokit().octokit, TEST_BOT, 'owner', 'repo', PR, memory);
 
     expect(core.summary.write).not.toHaveBeenCalled();
-    expect(memory.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
+    expect(memory.append).not.toHaveBeenCalled();
   });
 });
