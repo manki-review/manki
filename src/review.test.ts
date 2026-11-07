@@ -1226,11 +1226,11 @@ describe('selectTeam', () => {
     });
 
     it('routes what fetches or builds code and the review config to two finders, and never calls build or agent files trivial', () => {
-      for (const path of ['.gitmodules', 'lib/.gitattributes', '.npmrc', '.yarnrc.yml', 'build.rs', 'setup.py', 'tools/Makefile', '.husky/pre-commit', '.manki.yml']) {
+      for (const path of ['.gitmodules', 'lib/.gitattributes', '.npmrc', '.yarnrc.yml', 'build.rs', 'setup.py', 'tools/Makefile', '.husky/pre-commit', '.manki.yml', '.github/manki.yml', 'config/.manki.yaml']) {
         const team = run([path, [file(path)], t(true, false, false), 'never', '', []]);
         expect([path, team.routing.class, readers(team)]).toEqual([path, 'supply_chain', [`${S} · medium`, `${O} · medium`]]);
       }
-      for (const path of ['docs/conf.py', 'CMakeLists.txt', 'AGENTS.md', 'pkg/CLAUDE.md', '.github/copilot-instructions.md']) {
+      for (const path of ['docs/conf.py', 'CMakeLists.txt', 'AGENTS.md', 'pkg/claude.md', '.github/copilot-instructions.md', '.github/instructions/ts.instructions.md', '.claude/agents/review.md', '.cursor/rules/style.md']) {
         expect([path, run([path, [file(path)], t(true, false, false), 'auto', '', []]).routing.class]).toEqual([path, 'internal']);
       }
       expect(run(['', [file('docs/guide.md'), file('README.md')], t(true, false, false), 'auto', '', []]).routing.class).toBe('docs');

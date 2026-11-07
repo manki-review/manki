@@ -22,7 +22,7 @@ const CI_OR_DEPENDENCY_PATTERNS: readonly string[] = Object.freeze([
   '**/Cargo.toml', '**/go.mod', '**/pyproject.toml', '**/requirements*.txt', '**/Gemfile', '**/*.gemspec',
   '**/rust-toolchain*', '**/.nvmrc', '**/Dockerfile*',
   '**/.gitmodules', '**/.gitattributes', '**/.npmrc', '**/.yarnrc*', '**/build.rs', '**/setup.py', '**/Makefile',
-  '.husky/**', '.manki.yml',
+  '.husky/**', '**/.manki.{yml,yaml}', '**/manki.{yml,yaml}',
 ]);
 
 // Stored data and wire formats that other code or services rely on.
@@ -36,14 +36,15 @@ const DOCS_FILE_PATTERNS: readonly string[] = Object.freeze([
   '**/*.snap', '**/__snapshots__/**', '**/*.generated.*', 'dist/**',
 ]);
 
-// Prose that steers coding agents, so a change to it is never trivial.
+// Prose that steers coding agents, so a change to it is never trivial. Matched in any case.
 const AGENT_INSTRUCTION_PATTERNS: readonly string[] = Object.freeze([
-  '**/AGENTS.md', '**/CLAUDE.md', '**/GEMINI.md', '.github/copilot-instructions.md',
+  '**/AGENTS.md', '**/CLAUDE.md', '**/GEMINI.md', '.github/copilot-instructions.md', '.github/instructions/**',
+  '**/.claude/**', '**/.cursor/**',
 ]);
 
 const globAlias = (patterns: readonly string[]) => (path: string) => patterns.some(p => minimatch(path, p, { dot: true }));
 const isDocsFile = globAlias(DOCS_FILE_PATTERNS);
-const isAgentInstructions = globAlias(AGENT_INSTRUCTION_PATTERNS);
+const isAgentInstructions = (path: string) => AGENT_INSTRUCTION_PATTERNS.some(p => minimatch(path, p, { dot: true, nocase: true }));
 
 /** Path aliases a class's `paths_any` can name next to plain globs. */
 export const PATH_ALIASES: Readonly<Record<string, (path: string) => boolean>> = Object.freeze({
