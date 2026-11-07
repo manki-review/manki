@@ -291,7 +291,7 @@ export async function handleReviewCommentReply(
         return undefined;
       })
       : undefined;
-    const staysOpen = !!thread && isGuarded(thread) && !mayClear;
+    const staysOpen = !!thread && !thread.isResolved && isGuarded(thread) && !mayClear;
 
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;

@@ -722,6 +722,7 @@ describe('handleReviewCommentReply', () => {
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'warning', 'WONT_FIX'],
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined],
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'reraised', undefined],
+    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true],
     ['Fixed. The guard now runs first.', 'MEMBER', 'someone', 'pr-author', 'reraised', 'ADDRESSED'],
     ['Fixed. The guard now runs first.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined],
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', 'INVALID'],
@@ -737,7 +738,7 @@ describe('handleReviewCommentReply', () => {
     ['Agreed. The token never reaches a log.', 'MEMBER', 'reader', 'pr-author', 'security', undefined],
     ['Kept. `src/log.ts:4` still prints the token.', 'OWNER', 'pr-author', 'pr-author', 'security', undefined],
     ['Withdrawn. The token is masked first.', 'OWNER', 'pr-author', 'pr-author', 'security', undefined],
-  ])('resolves the thread after %j from a %s reply by %s, PR author %s, finding %s, with reason %s', async (reply, association, sender, prAuthor, kind, reason) => {
+  ])('resolves the thread after %j from a %s reply by %s, PR author %s, finding %s, with reason %s', async (reply, association, sender, prAuthor, kind, reason, resolved = false) => {
     setContext({
       comment: { id: 1, body: 'Done in the latest commit.', user: { type: 'User' }, in_reply_to_id: 99, author_association: association },
       pull_request: { number: 1, ...(prAuthor && { user: { login: prAuthor } }) },
@@ -749,14 +750,14 @@ describe('handleReviewCommentReply', () => {
     jest.mocked(client.sendMessage).mockResolvedValue({ content: reply });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
       { id: 'PRRT_other', rootCommentId: 98, isResolved: false, isBlocking: true, findingTitle: 'Other' },
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: kind !== 'warning', isSecurity: kind === 'security', findingTitle: 'This' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, isBlocking: kind !== 'warning', isSecurity: kind === 'security', findingTitle: 'This' },
     ]);
     jest.mocked(state.resolveReviewThread).mockClear();
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
 
-    // An agreement that cannot close a blocking or security thread says who can.
-    const staysOpen = kind !== 'warning' && !reason && /^\**(Fixed|Agreed|Withdrawn)\./.test(reply);
+    // An answer that cannot close an open blocking or security thread says who can.
+    const staysOpen = kind !== 'warning' && !reason && !resolved && /^\**(Fixed|Agreed|Withdrawn)\./.test(reply);
     const until = reply.startsWith('Fixed')
       ? 'the next review confirms the fix, or a maintainer other than the PR author closes it'
       : 'a maintainer other than the PR author, or a repo admin, closes it';
