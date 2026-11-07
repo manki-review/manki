@@ -1632,8 +1632,8 @@ async function runFullReview(
 
     if (diff.files.length === 0) {
       core.info('No reviewable files in diff');
-      // The analyzers still check the skipped files, such as a lockfile for vulnerable packages.
-      const { signals } = await collectStaticSignals(await workflowOctokit(), { owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff, fullDiff });
+      // Every source reads the skipped files as the diff, so CI, dependency review and the analyzers still check them.
+      const { signals } = await collectStaticSignals(await workflowOctokit(), { owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff: fullDiff, fullDiff });
       const notice = formatUnreviewedNotice(shortSha, excludedFiles, fullDiff.binarySkipped ?? [], signals);
       checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, notice, unreviewedMetadata());
       return;
