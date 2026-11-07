@@ -69,6 +69,12 @@ const TOKEN_RETRY_DELAY_MS = 2000;
 
 const OIDC_AUDIENCE = 'manki-api.dustinface.me';
 
+interface TokenServiceResponse {
+  ok: boolean;
+  status: number;
+  data?: unknown;
+}
+
 /** The token service's `/token` URL. Its other endpoints sit next to it. */
 function tokenServiceUrl(): string {
   return core.getInput('manki_token_url') || 'https://manki-api.dustinface.me/token';
@@ -78,7 +84,7 @@ function tokenServiceUrl(): string {
  * Posts `body` to the token service at `url` with the workflow's OIDC token, and reads the JSON reply of a 2xx response.
  * The timeout covers the reply too. Returns `null` when the run has no OIDC token.
  */
-async function postToTokenService(url: string, body: unknown): Promise<{ ok: boolean; status: number; data?: unknown } | null> {
+async function postToTokenService(url: string, body: unknown): Promise<TokenServiceResponse | null> {
   let oidcToken: string;
   try {
     oidcToken = await core.getIDToken(OIDC_AUDIENCE);
@@ -98,6 +104,11 @@ async function postToTokenService(url: string, body: unknown): Promise<{ ok: boo
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/** Posts `body` to the token service endpoint `path`, such as `state`, as `postToTokenService` does. */
+export function callTokenService(path: string, body: unknown): Promise<TokenServiceResponse | null> {
+  return postToTokenService(new URL(path, tokenServiceUrl()).href, body);
 }
 
 /**
@@ -153,7 +164,7 @@ function modesOf(items: unknown, keep: (item: Record<string, unknown>) => boolea
  */
 export async function fetchPrState(owner: string, repo: string, prNumber: number, runId: number): Promise<PrState | null> {
   try {
-    const response = await postToTokenService(new URL('state', tokenServiceUrl()).href, { owner, repo, pr: prNumber });
+    const response = await callTokenService('state', { owner, repo, pr: prNumber });
     if (!response?.ok) {
       core.warning(`The token service gave no PR state for #${prNumber} (${response ? response.status : 'no OIDC token'}), reviewing as not paused`);
       return null;
@@ -185,7 +196,7 @@ export async function changeThreadThroughService(octokit: Octokit, threadId: str
   if (!serviceClients.has(octokit)) return false;
   const { owner, repo } = github.context.repo;
   const body = { owner, repo, thread_id: threadId, resolved, ...(reason !== undefined && { reason }) };
-  const response = await postToTokenService(new URL('resolve', tokenServiceUrl()).href, body);
+  const response = await callTokenService('resolve', body);
   if (!response?.ok) {
     throw new Error(`The token service did not ${resolved ? 'resolve' : 'reopen'} the thread (${response ? response.status : 'no OIDC token'})`);
   }
@@ -195,7 +206,7 @@ export async function changeThreadThroughService(octokit: Octokit, threadId: str
 /** Sends what this run posted on PR `prNumber` to the PR coordinator. A failure only warns, since the review on GitHub stands. */
 export async function reportPrState(owner: string, repo: string, prNumber: number, report: StateReport): Promise<void> {
   try {
-    const response = await postToTokenService(new URL('state/report', tokenServiceUrl()).href, { owner, repo, pr: prNumber, ...report });
+    const response = await callTokenService('state/report', { owner, repo, pr: prNumber, ...report });
     if (!response?.ok) {
       core.warning(`The token service did not take the PR state of #${prNumber} (${response ? response.status : 'no OIDC token'})`);
     }
