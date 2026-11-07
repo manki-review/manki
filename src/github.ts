@@ -1628,8 +1628,9 @@ function visibleLength(text: string): number {
   return text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
 }
 const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
-// Any fence run, wherever it sits, since later splitting can move it to the start of a line.
-const SUGGESTION_FENCE_RE = /(`{3,}|~{3,})[\t ]*suggestion\S*/gi;
+// Any fence run, wherever it sits, since later splitting can move it to the start of a line. The rest of the line goes
+// too, so no later word on it can become the info string.
+const SUGGESTION_FENCE_RE = /(`{3,}|~{3,})[\t ]*suggestion[^\n]*/gi;
 const PROSE_LINE_RE = /^[A-Z][A-Za-z']*(?:\s+\S+){2,}[.:]$/;
 // A comment that says where the code goes, such as `// After the guard, add:`, means the code does not apply as is.
 const PLACEMENT_COMMENT_RE = /^\s*(?:\/\/|#|--|\/\*)\s+(?:(?:in|after|before|replace|add|then|change|move|instead)\b|.*:\s*(?:\*\/)?$)/i;
