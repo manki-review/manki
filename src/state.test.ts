@@ -859,6 +859,25 @@ describe('checkAndAutoApprove', () => {
       );
     });
 
+    it('skips approval when the only review on the head is no verdict, such as an unread or incomplete round', async () => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const octokit = makeMockOctokit({
+        threads: [],
+        prHeadSha: 'head-sha',
+        createReviewFn: createReviewMock,
+        existingReviews: [
+          { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'old-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
+          { body: '**Not reviewed**\n\n<!-- manki-no-verdict --><!-- manki -->', state: 'COMMENTED', commit_id: 'head-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        ],
+      });
+
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
+
+      expect(result).toBe(false);
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('manki has not reviewed HEAD'));
+    });
+
     it('skips approval when latest bot review is APPROVED but on a stale commit', async () => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const octokit = makeMockOctokit({
