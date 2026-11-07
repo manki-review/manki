@@ -72,14 +72,14 @@ describe('formatFindingComment', () => {
   it('shows a long code fix as a collapsed plain code block', () => {
     const longFix = 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\nconst e = 5;';
     const comment = formatFindingComment({ ...baseFinding, suggestedFix: longFix });
-    expect(comment).toContain(`<details>\n<summary>Suggested fix</summary>\n\n\`\`\`\n${longFix}\n\`\`\`\n</details>`);
+    expect(comment).toContain(`<details>\n<summary>Suggested fix</summary>\n\n\`\`\`ts\n${longFix}\n\`\`\`\n</details>`);
     expect(suggestionBlocks(comment)).toEqual([]);
   });
 
   it.each([
     ['prose around a fenced block', 'Move the guard before the early return:\n\n```typescript\nif (!sha) return;\n```', 'Move the guard before the early return:', '```typescript\nif (!sha) return;\n```'],
-    ['a leading prose line', 'Use the head commit instead.\nconst sha = pr.head.sha;', 'Use the head commit instead.', '```\nconst sha = pr.head.sha;\n```'],
-    ['a comment that says where the code goes', '// After computing latestBotReview, add:\nif (!latestBotReview) return;', undefined, '```\n// After computing latestBotReview, add:\nif (!latestBotReview) return;\n```'],
+    ['a leading prose line', 'Use the head commit instead.\nconst sha = pr.head.sha;', 'Use the head commit instead.', '```ts\nconst sha = pr.head.sha;\n```'],
+    ['a comment that says where the code goes', '// After computing latestBotReview, add:\nif (!latestBotReview) return;', undefined, '```ts\n// After computing latestBotReview, add:\nif (!latestBotReview) return;\n```'],
     ['prose only', 'Handle the `None` case separately.', 'Handle the `None` case separately.', undefined],
   ])('never puts prose or a fence in a suggestion block: %s', (_label, suggestedFix, prose, code) => {
     const comment = formatFindingComment({ ...baseFinding, suggestedFix });
@@ -258,10 +258,10 @@ describe('postReview generalFindings', () => {
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const call = mockCreateReview.mock.calls[0][0];
     expect(call.event).toBe('APPROVE');
-    expect(call.body).toContain('Fix: `try { op(); } catch (e) { handle(e); }`');
+    expect(call.body).toContain('**Suggested fix**\n\n```\ntry { op(); } catch (e) { handle(e); }\n```');
   });
 
-  it('omits Fix line when finding has no suggestedFix', async () => {
+  it('omits the suggested fix when finding has no suggestedFix', async () => {
     const result: ReviewResult = {
       verdict: 'APPROVE',
       summary: 'Summary',
@@ -283,7 +283,7 @@ describe('postReview generalFindings', () => {
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const call = mockCreateReview.mock.calls[0][0];
     expect(call.event).toBe('APPROVE');
-    expect(call.body).not.toContain('Fix:');
+    expect(call.body).not.toContain('Suggested fix');
   });
 
   it('truncates long suggestedFix to 600 chars in general findings', async () => {
@@ -313,7 +313,7 @@ describe('postReview generalFindings', () => {
     expect(body).not.toContain('x'.repeat(601));
   });
 
-  it('keeps backticks in a one-line suggestedFix inside a longer inline code span', async () => {
+  it('shows a one-line suggestedFix with backticks as is in a fenced block', async () => {
     const fixWithBackticks = 'use `foo` instead of `bar`';
     const result: ReviewResult = {
       verdict: 'APPROVE',
@@ -336,7 +336,7 @@ describe('postReview generalFindings', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('Fix: `` use `foo` instead of `bar` ``');
+    expect(body).toContain('**Suggested fix**\n\n```\nuse `foo` instead of `bar`\n```');
   });
 
   it('uses longer fence when suggestedFix contains triple backticks', async () => {
@@ -3519,7 +3519,7 @@ describe('postReview non-blocking findings', () => {
       '',
       'It goes wrong. Second sentence.',
       '',
-      'Fix: Use the shared helper.',
+      '**Suggested fix:** Use the shared helper.',
       '',
       '</details>',
       '',
@@ -3528,8 +3528,9 @@ describe('postReview non-blocking findings', () => {
       '',
       'It goes wrong. Second sentence.',
       '',
-      'Fix:',
-      '```',
+      '**Suggested fix**',
+      '',
+      '```ts',
       'if (a) {',
       '  b();',
       '}',
@@ -3637,7 +3638,8 @@ describe('postReview non-blocking findings', () => {
       expect.stringContaining('**Warning'),
       '**Retry has no `limit`**',
       'It retries forever.',
-      expect.stringContaining('Cap it.'),
+      '**Suggested fix**',
+      '```ts\nCap it.\n```',
     ]);
   });
 

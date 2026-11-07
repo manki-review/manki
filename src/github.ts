@@ -997,21 +997,11 @@ function buildLineLink(owner: string, repo: string, commitSha: string, serverUrl
   return (file, line, end = line) => `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(encodeURIComponent).join('/')}${line > 0 ? `#L${line}${end > line ? `-L${end}` : ''}` : ''}`;
 }
 
-/** Renders a fix for the body: one line of prose or code inline, anything longer as text and code blocks. */
+/** Renders a fix for the body: prose after the label, or the label above text and fenced code blocks. */
 function formatBodyFix(fix: string, file: string): string {
   const parts = splitFix(safeTruncate(fix, 600), file);
-  const code = parts.filter(p => p.kind === 'code');
-  if (code.length === 0) return `Fix: ${sanitizeMarkdown(parts.map(p => p.lines.join(' ')).join(' '))}`;
-  if (parts.length === 1 && code[0].lines.length === 1 && code[0].lines[0].length <= SUGGESTION_MAX_LENGTH) {
-    return `Fix: ${inlineCode(code[0].lines[0].trim())}`;
-  }
-  const rendered = parts.map(p => {
-    const text = p.lines.join('\n');
-    if (p.kind === 'prose') return sanitizeMarkdown(text);
-    const fence = dynamicFence(text);
-    return `${fence}${(p.lang ?? '').replace(/[^\w+#.-]/g, '')}\n${text}\n${fence}`;
-  }).join('\n');
-  return `Fix:\n${rendered}`;
+  if (parts.every(p => p.kind === 'prose')) return `**Suggested fix:** ${sanitizeMarkdown(parts.map(p => p.lines.join(' ')).join(' '))}`;
+  return `**Suggested fix**\n\n${renderFixParts(parts, file)}`;
 }
 
 /**
@@ -1710,6 +1700,18 @@ function splitFix(fix: string, file: string): FixPart[] {
   return parts.map(p => ({ ...p, lines: trimBlankLines(p.lines) })).filter(p => p.lines.length > 0);
 }
 
+/** Renders the parts of a fix as text and fenced code blocks. A block without a language gets the extension of `file`. */
+function renderFixParts(parts: FixPart[], file: string): string {
+  const extension = file.match(/\.([A-Za-z0-9+#-]+)$/)?.[1] ?? '';
+  // Code inside a dynamic fence renders literally, so only the prose needs sanitizing.
+  return parts.map(p => {
+    const text = p.lines.join('\n');
+    if (p.kind === 'prose') return sanitizeMarkdown(text);
+    const fence = dynamicFence(text);
+    return `${fence}${(p.lang || extension).replace(/[^\w+#.-]/g, '')}\n${text}\n${fence}`;
+  }).join('\n\n');
+}
+
 /**
  * Renders a suggested fix. Only code that replaces the flagged line as is goes in a
  * `suggestion` block, because committing it writes the block verbatim into the file.
@@ -1723,13 +1725,7 @@ function formatSuggestedFix(fix: string, file: string): string {
     const fence = dynamicFence(code[0]);
     return `${fence}suggestion\n${code[0]}\n${fence}`;
   }
-  // Code inside a dynamic fence renders literally, so only the prose needs sanitizing.
-  const rendered = parts.map(p => {
-    const text = p.lines.join('\n');
-    if (p.kind === 'prose') return sanitizeMarkdown(text);
-    const fence = dynamicFence(text);
-    return `${fence}${(p.lang ?? '').replace(/[^\w+#.-]/g, '')}\n${text}\n${fence}`;
-  }).join('\n\n');
+  const rendered = renderFixParts(parts, file);
   return isShort ? rendered : `<details>\n<summary>Suggested fix</summary>\n\n${rendered}\n</details>`;
 }
 
