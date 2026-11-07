@@ -600,15 +600,16 @@ describe('runFullReview end to end', () => {
     const progress = mockGitHub.comments.at(-1);
     expect(progress?.body).toContain('Review failed');
 
-    // A failed review of another commit stays as it is.
-    mockGitHub.addComment(`🔴 **Review failed:** boom\n\n${BOT_MARKER}\n${CANCELLED_MARKER}\n<!-- manki-commit:${'0f'.repeat(20)} -->`, APP_LOGIN);
-    const other = mockGitHub.comments.at(-1);
+    // A verdict makes every earlier failure stale, whatever commit it was for. A person's comment that quotes one stays.
+    const other = mockGitHub.addComment(`🔴 **Review failed:** boom\n\n${BOT_MARKER}\n${CANCELLED_MARKER}`, APP_LOGIN);
+    const quoted = mockGitHub.addComment('🔴 **Review failed:** boom', 'alice');
     mockGitHub.failures = [];
     await reviewRound();
 
     expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
     expect(progress?.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`/);
-    expect(other?.body).toMatch(/^🔴 \*\*Review failed:\*\* boom/);
+    expect(other.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`/);
+    expect(quoted.body).toBe('🔴 **Review failed:** boom');
   });
 
   describe('review command', () => {

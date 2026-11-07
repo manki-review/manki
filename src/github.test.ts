@@ -2828,10 +2828,10 @@ describe('postProgressComment', () => {
       },
     } as unknown as Parameters<typeof postProgressComment>[0];
 
-    const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1, 'abc123');
+    const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1);
     expect(id).toBe(42);
     const body = createCommentMock.mock.calls[0][0].body as string;
-    expect(body).toMatch(new RegExp(`^\\*\\*Review started\\*\\*\\n\\n${BOT_MARKER}\\n<!-- manki-version: [^>]+ -->\\n<!-- manki-commit:abc123 -->$`));
+    expect(body).toMatch(new RegExp(`^\\*\\*Review started\\*\\*\\n\\n${BOT_MARKER}\\n<!-- manki-version: [^>]+ -->$`));
     expect(saveState).toHaveBeenCalledWith('manki_progress_comment', '42');
     saveState.mockRestore();
   });
@@ -2847,7 +2847,7 @@ describe('postProgressComment', () => {
     } as unknown as Parameters<typeof postProgressComment>[0];
 
     const dashboard: DashboardData = { phase: 'started', lineCount: 100, agentCount: 3 };
-    const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1, 'abc123', dashboard);
+    const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1, dashboard);
     expect(id).toBe(43);
     const body = createCommentMock.mock.calls[0][0].body as string;
     expect(body).toContain('100 lines');
@@ -2867,11 +2867,10 @@ describe('updateProgressDashboard', () => {
     } as unknown as Parameters<typeof updateProgressDashboard>[0];
 
     const dashboard: DashboardData = { phase: 'reviewed', lineCount: 200, agentCount: 5, rawFindingCount: 8 };
-    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, 'abc123');
+    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard);
     const body = updateCommentMock.mock.calls[0][0].body as string;
     expect(body).toContain(BOT_MARKER);
     expect(body).toContain('8 findings');
-    expect(body).toContain('<!-- manki-commit:abc123 -->');
   });
 
   it('ends with the settings block, keeping a box a person ticked on the live comment, unless the comment lost its block', async () => {
@@ -2884,18 +2883,18 @@ describe('updateProgressDashboard', () => {
     const mockOctokit = { rest: { issues: { updateComment: updateCommentMock, getComment: getCommentMock } } } as unknown as Parameters<typeof updateProgressDashboard>[0];
     const dashboard: DashboardData = { phase: 'reviewed', lineCount: 200, agentCount: 5, rawFindingCount: 8 };
 
-    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, 'abc123', running);
+    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, running);
     const body = updateCommentMock.mock.calls[0][0].body as string;
     expect(body).toContain('8 findings');
     expect(parseSettingsBlock(body)).toEqual({ ...running, ticked: new Set(['pause']) });
 
-    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, 'abc123', running);
+    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, running);
     expect(parseSettingsBlock(updateCommentMock.mock.calls[1][0].body)).toEqual(running);
     expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to read the ticked settings boxes'));
     warningSpy.mockRestore();
 
     // A newer progress comment took the block, so this one stays without it.
-    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, 'abc123', running);
+    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, running);
     expect(updateCommentMock.mock.calls[2][0].body).not.toContain('manki-settings');
   });
 });

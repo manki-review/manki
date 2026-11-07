@@ -1189,54 +1189,6 @@ describe('fetchRecapState', () => {
       expect(state.lastApprovalAt).toBe('2026-01-01T01:00:00Z');
     });
 
-    it.each([
-      ['feature', 'feat'],
-      ['bugfix', 'fix'],
-      ['rename', 'refactor'],
-    ])('migrates legacy planner.prType `%s` to canonical `%s` on read', async (legacy, canonical) => {
-      const ctx = makeRoundContext(1, {
-        planner: { source: 'planner', used: true, teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: legacy },
-      });
-      const octokit = mockOctokit([], [
-        { id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
-      ]);
-      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
-      expect(state.priorRounds).toHaveLength(1);
-      expect(state.priorRounds[0].planner.prType).toBe(canonical);
-    });
-
-    it('passes a canonical Conventional Commits prType through unchanged', async () => {
-      const ctx = makeRoundContext(1, {
-        planner: { source: 'planner', used: true, teamSize: 2, reviewerEffort: 'low', judgeEffort: 'low', prType: 'docs' },
-      });
-      const octokit = mockOctokit([], [
-        { id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
-      ]);
-      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
-      expect(state.priorRounds[0].planner.prType).toBe('docs');
-    });
-
-    it.each<[string, 'planner' | 'heuristic' | 'heuristic_fallback', string | undefined]>([
-      ['planner ran', 'planner', undefined],
-      ['no planner and no fallbackReason', 'heuristic', undefined],
-      ['no planner with fallbackReason', 'heuristic_fallback', 'timeout'],
-    ])('migrates pre-5.2.0 context without `source` correctly when %s', async (_label, expectedSource, fallbackReason) => {
-      const base = makeRoundContext(1);
-      const legacy = {
-        ...base,
-        planner: {
-          used: expectedSource === 'planner',
-              ...(fallbackReason ? { fallbackReason } : {}),
-        },
-      } as unknown as RoundContext;
-      const octokit = mockOctokit([], [
-        { id: 100, body: htmlCommentBlock(legacy), user: { login: BOT_LOGIN } },
-      ]);
-      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
-      expect(state.priorRounds).toHaveLength(1);
-      expect(state.priorRounds[0].planner.source).toBe(expectedSource);
-    });
-
     it('round-trips findings.entries with specialist, suggestedFix, and title fields', async () => {
       const entry = {
         fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 12, slug: 'misleading-variable-name' },
