@@ -1155,7 +1155,7 @@ export async function runReview(
   const changedFiles = new Set(diff.files.map(f => f.path));
   finalFindings = finalFindings.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
   const priorBlockers = collectPriorBlockers(sortedPriorRounds);
-  const pushChangedFiles = new Set(interRoundDiff ? parsePRDiff(interRoundDiff).files.map(f => f.path) : []);
+  const pushChangedFiles = filesChangedByPush(interRoundDiff);
   const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
   let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles);
@@ -1863,6 +1863,16 @@ function namedPriorThreadIds(findings: Finding[], priorBlockers: PriorBlocker[])
  * A thread whose blocker this round names again is not fixed. A blocker thread, or one whose severity
  * is unknown, counts as fixed only when the push changed its file, so a judge reading an unchanged file cannot clear it.
  */
+/** Returns the files the inter-round diff changes, or none when it is unknown. */
+export function filesChangedByPush(interRoundDiff: string | undefined): Set<string> {
+  return new Set(interRoundDiff ? parsePRDiff(interRoundDiff).files.map(f => f.path) : []);
+}
+
+/** Whether `thread` is a blocker thread that stays open whatever the judge decides, because the push did not change its file. */
+export function blockerThreadStaysOpen(thread: OpenThread, pushChangedFiles: ReadonlySet<string>): boolean {
+  return (thread.severity === 'blocker' || thread.severity === 'unknown') && !pushChangedFiles.has(thread.file);
+}
+
 function confirmFixes(
   evaluations: ThreadEvaluation[] | undefined,
   openThreadIndex: Map<string, OpenThread>,
@@ -1873,7 +1883,7 @@ function confirmFixes(
     if (e.status !== 'addressed') return e;
     if (namedThreadIds.has(e.threadId)) return { ...e, status: 'not_addressed', reason: 'This round names the same blocker again.' };
     const thread = openThreadIndex.get(e.threadId);
-    if ((thread?.severity === 'blocker' || thread?.severity === 'unknown') && !pushChangedFiles.has(thread.file)) {
+    if (thread && blockerThreadStaysOpen(thread, pushChangedFiles)) {
       return { ...e, status: 'uncertain', reason: `The push did not change \`${thread.file}\`, so the fix is not confirmed.` };
     }
     return e;
