@@ -1225,6 +1225,17 @@ describe('selectTeam', () => {
       expect(team.finders.map(f => f.steps)).toEqual(row[5].map(() => steps));
     });
 
+    it('routes what fetches or builds code and the review config to two finders, and never calls build or agent files trivial', () => {
+      for (const path of ['.gitmodules', 'lib/.gitattributes', '.npmrc', '.yarnrc.yml', 'build.rs', 'setup.py', 'tools/Makefile', '.husky/pre-commit', '.manki.yml']) {
+        const team = run([path, [file(path)], t(true, false, false), 'never', '', []]);
+        expect([path, team.routing.class, readers(team)]).toEqual([path, 'supply_chain', [`${S} · medium`, `${O} · medium`]]);
+      }
+      for (const path of ['docs/conf.py', 'CMakeLists.txt', 'AGENTS.md', 'pkg/CLAUDE.md', '.github/copilot-instructions.md']) {
+        expect([path, run([path, [file(path)], t(true, false, false), 'auto', '', []]).routing.class]).toEqual([path, 'internal']);
+      }
+      expect(run(['', [file('docs/guide.md'), file('README.md')], t(true, false, false), 'auto', '', []]).routing.class).toBe('docs');
+    });
+
     it('runs two finders on every group one effort level higher on a deeper review', () => {
       const deeper = (files: DiffFile[], triage: ReturnType<typeof t>) => selectTeam(makeDiff({ files }), makeConfig(), triage, true);
 
