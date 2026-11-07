@@ -193,13 +193,13 @@ const MAX_UNREVIEWED_LINES = 50;
  */
 export function formatUnreviewedNotice(shortSha: string, excluded: RoundDiffExcludedFile[], binary: BinaryFile[], signals: StaticSignal[]): string {
   const list = (lines: string[]) => [...lines.slice(0, MAX_UNREVIEWED_LINES), ...(lines.length > MAX_UNREVIEWED_LINES ? [`- and ${lines.length - MAX_UNREVIEWED_LINES} more`] : [])].join('\n');
-  const skipped = [
-    ...excluded.map(f => `- \`${sanitizeFilePath(f.path)}\`: matches \`${sanitizeFilePath(f.matchedPattern)}\` in \`exclude_paths\``),
-    ...binary.map(f => `- \`${sanitizeFilePath(f.path)}\`: no lines to read, such as a binary, a mode change or an empty file`),
-  ];
-  // Tool output can quote the PR, so it is shown as inline code on one line.
+  // File names and tool output come from the PR, so each is shown as inline code on one line.
   const inline = (text: string) => `\`${sanitizeFilePath(sanitizeMarkdown(text))}\``;
-  const found = signals.map(s => `- \`${sanitizeFilePath(s.file)}:${s.line}\`: ${inline([s.tool, s.ruleId].filter(Boolean).join(' '))}: ${inline(s.message)}`);
+  const skipped = [
+    ...excluded.map(f => `- ${inline(f.path)}: matches ${inline(f.matchedPattern)} in \`exclude_paths\``),
+    ...binary.map(f => `- ${inline(f.path)}: no lines to read, such as a binary, a mode change or an empty file`),
+  ];
+  const found = signals.map(s => `- ${inline(`${s.file}:${s.line}`)}: ${inline([s.tool, s.ruleId].filter(Boolean).join(' '))}: ${inline(s.message)}`);
   return [
     `**Not reviewed** at \`${shortSha}\`: no model read this PR, since Manki skips every file it changes. A person needs to review it.`,
     ...(skipped.length > 0 ? [`**Skipped files:**\n${list(skipped)}`] : []),
