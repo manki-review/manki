@@ -65,6 +65,7 @@ jest.mock('./auth', () => ({
   createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, identity: 'app', bot: { logins: ['manki-review[bot]', 'github-actions[bot]'] } }),
   getMemoryToken: jest.fn().mockResolvedValue(null),
   fetchPrState: jest.fn().mockResolvedValue(null),
+  reportPrState: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('./workspace', () => ({ fetchWorkspace: jest.fn() }));
@@ -959,15 +960,15 @@ describe('handlePullRequest', () => {
     it.each([
       ['a draft', true, false, 'draft, not reviewed automatically', ['pause', 'full', 'deeper', 'draft'], ['full', 'deeper']],
       ['a paused PR', false, true, 'automatic review paused', ['pause', 'full', 'deeper'], ['pause', 'full', 'deeper']],
-    ])('shows %s in the settings block instead of reviewing it or posting a notice', async (_case, draft, paused, status, boxes, ticked) => {
-      jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState(paused, [], ['full', 'deeper']));
+    ])('shows %s in the settings block, with the coordinator\'s last reviewed commit, instead of reviewing it or posting a notice', async (_case, draft, paused, status, boxes, ticked) => {
+      jest.mocked(authModule.fetchPrState).mockResolvedValue({ ...settingsState(paused, [], ['full', 'deeper']), lastReviewed: 'fff0000' });
       setContext({ eventName: 'pull_request', payload: prPayload(draft) });
 
       await handlePullRequest();
 
       expect(ghUtils.showSettings).toHaveBeenCalledWith(
         expect.anything(), expect.anything(), 'test-owner', 'test-repo', 1,
-        { head: 'abc123', status, boxes: new Set(boxes), ticked: new Set(ticked) }, expect.any(String),
+        { lastReviewed: 'fff0000', head: 'abc123', status, boxes: new Set(boxes), ticked: new Set(ticked) }, expect.any(String),
       );
       expect(ghUtils.postProgressComment).not.toHaveBeenCalled();
       expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
@@ -1800,7 +1801,7 @@ describe('runFullReview orchestration', () => {
       return mockChecksUpdate.mock.calls[0][0];
     }
 
-    it('creates an in-progress `Manki` check on the head that links to the run, then completes it', async () => {
+    it('creates an in-progress `Manki` check on the head that links to the run, then completes it and reports the approval', async () => {
       await callRunFullReview();
 
       expect(mockChecksCreate).toHaveBeenCalledWith({
@@ -1813,12 +1814,15 @@ describe('runFullReview orchestration', () => {
         owner: 'test-owner', repo: 'test-repo', check_run_id: 901, status: 'completed', conclusion: 'success',
         output: { title: 'Approved', summary: 'Looks good' },
       });
+      expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, {
+        reviewed: { commit: 'abc123' }, approval: { commit: 'abc123', held: false }, pause: null,
+      });
     });
 
     it.each([
-      ['ADDRESS_FIRST', 'REQUEST_CHANGES', 'failure', 'Changes requested'],
-      ['NOT_CONVERGING', 'REQUEST_CHANGES', 'failure', 'Needs a human'],
-    ] as const)('completes the check for a %s round as %s', async (outcome, verdict, conclusion, title) => {
+      ['ADDRESS_FIRST', 'REQUEST_CHANGES', 'failure', 'Changes requested', null],
+      ['NOT_CONVERGING', 'REQUEST_CHANGES', 'failure', 'Needs a human', { reason: 'The last Manki round found a blocker that came back after a fix.' }],
+    ] as const)('completes the check for a %s round as %s, and reports the pause it starts', async (outcome, verdict, conclusion, title, pause) => {
       jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
         verdict, outcome, summary: 'Round summary', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
       });
@@ -1826,6 +1830,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(completedCheck()).toMatchObject({ conclusion, output: { title, summary: 'Round summary' } });
+      expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, { reviewed: { commit: 'abc123' }, pause });
     });
 
     it('completes the check as failure for an incomplete round', async () => {
@@ -1851,12 +1856,13 @@ describe('runFullReview orchestration', () => {
     it.each([
       ['conflict', 'Approval held: the PR conflicts with its base'],
       ['draft', 'Approval held: the PR is a draft'],
-    ] as const)('completes the check as neutral when the approval is held for a %s', async (held, title) => {
+    ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {
       jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld: held });
 
       await callRunFullReview();
 
       expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title } });
+      expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, expect.objectContaining({ approval: { commit: 'abc123', held: true } }));
     });
 
     it('completes the check as action required for a diff too large to review', async () => {
@@ -1867,7 +1873,7 @@ describe('runFullReview orchestration', () => {
       expect(completedCheck()).toMatchObject({ conclusion: 'action_required', output: { title: 'Not reviewed', summary: expect.stringContaining('above the limit of 15000 that Manki reviews') } });
     });
 
-    it('completes the check as action required while automatic review is paused', async () => {
+    it('completes the check as action required while automatic review is paused, and reports the pause', async () => {
       const round = roundContextFromLegacy({ round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [] });
       round.meta.outcome = 'NOT_CONVERGING';
       jest.mocked(recapModule.fetchRecapState).mockResolvedValueOnce({ previousFindings: [], priorRounds: [round] });
@@ -1879,6 +1885,9 @@ describe('runFullReview orchestration', () => {
         conclusion: 'action_required',
         output: { title: 'Automatic review paused', summary: expect.stringContaining('Automatic review is paused until someone asks for another round.') },
       });
+      expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([
+        ['test-owner', 'test-repo', 42, { pause: { reason: 'The last Manki round found a blocker that came back after a fix.' } }],
+      ]);
     });
 
     it('completes the check as cancelled when a newer commit supersedes the round', async () => {
@@ -2031,9 +2040,10 @@ describe('runFullReview orchestration', () => {
       body: withSettingsBlock('Older', { lastReviewed: 'fff0000', head: 'fff0000', status: 'up to date', boxes: new Set(['pause', 'full']), ticked: new Set() }),
     };
     const view = (status: string, extra: Partial<SettingsView> = {}): SettingsView => ({ head: 'abc123', status, boxes: new Set(['pause', 'full', 'deeper']), ticked: new Set(['pause']), ...extra });
+    // The coordinator names another commit than the older block, so a test shows which one the run reads.
     const runWith = (options: Parameters<typeof runFullReview>[6] = {}) => runFullReview(
       baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
-      { settings: settingsState(true), ...options },
+      { settings: { ...settingsState(true), lastReviewed: 'ddd2222' }, ...options },
     );
 
     beforeEach(() => {
@@ -2049,25 +2059,26 @@ describe('runFullReview orchestration', () => {
     it('keeps the block on the newest progress comment from the start of the run to its end', async () => {
       await runWith();
 
-      const running = view('review running', { lastReviewed: 'fff0000', boxes: new Set(['pause', 'full', 'deeper', 'cancel']) });
+      const running = view('review running', { lastReviewed: 'ddd2222', boxes: new Set(['pause', 'full', 'deeper', 'cancel']) });
       expect(ghUtils.postProgressComment).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 42, 'abc123', undefined, running);
       expect(ghUtils.retireSettingsBlocks).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', [older], 1);
       expect(jest.mocked(ghUtils.updateProgressDashboard).mock.calls[0][6]).toEqual(running);
       expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[7]).toEqual(view('up to date', { lastReviewed: 'abc123' }));
     });
 
-    it('names the last reviewed commit from the round record, and keeps the block on a failed review', async () => {
+    it('names the coordinator\'s last reviewed commit, not the round record\'s, and keeps the block on a failed review', async () => {
       seedPriorRounds([{ round: 1, commitSha: 'eee1111', timestamp: '2025-01-01T00:00:00Z', findings: [] }]);
       jest.mocked(reviewModule.runReview).mockRejectedValueOnce(new Error('boom'));
 
       await runWith({ draft: true });
 
       expect(jest.mocked(ghUtils.updateProgressDashboard).mock.calls[0][6]).toEqual(
-        view('review running', { lastReviewed: 'eee1111', boxes: new Set(['pause', 'full', 'deeper', 'draft', 'cancel']) }),
+        view('review running', { lastReviewed: 'ddd2222', boxes: new Set(['pause', 'full', 'deeper', 'draft', 'cancel']) }),
       );
       expect(jest.mocked(ghUtils.markProgressCommentFailed).mock.calls[0][7]).toEqual(
-        view('review failed', { lastReviewed: 'eee1111', boxes: new Set(['pause', 'full', 'deeper', 'draft']) }),
+        view('review failed', { lastReviewed: 'ddd2222', boxes: new Set(['pause', 'full', 'deeper', 'draft']) }),
       );
+      expect(authModule.reportPrState).not.toHaveBeenCalled();
     });
 
     it('moves the block back to the comment that had it when the run deletes its progress comment, or posts it once', async () => {
@@ -2076,14 +2087,14 @@ describe('runFullReview orchestration', () => {
       await runWith();
 
       expect(mockOctokitInstance.rest.issues.deleteComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 1 }));
-      expect(ghUtils.setSettingsBlock).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 7, view('automatic review off', { lastReviewed: 'fff0000' }));
+      expect(ghUtils.setSettingsBlock).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 7, view('automatic review off', { lastReviewed: 'ddd2222' }));
       expect(ghUtils.showSettings).not.toHaveBeenCalled();
 
       jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
       await runWith();
       expect(ghUtils.showSettings).toHaveBeenCalledWith(
         expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42,
-        { head: 'abc123', status: 'automatic review off', boxes: new Set(['pause', 'full', 'deeper']), ticked: new Set(['pause']) },
+        { lastReviewed: 'ddd2222', head: 'abc123', status: 'automatic review off', boxes: new Set(['pause', 'full', 'deeper']), ticked: new Set(['pause']) },
         expect.stringContaining('auto_review: false'),
       );
     });
@@ -2102,7 +2113,7 @@ describe('runFullReview orchestration', () => {
       expect(mockOctokitInstance.rest.issues.deleteComment).not.toHaveBeenCalledWith(expect.objectContaining({ comment_id: 1 }));
       const notice = jest.mocked(mockOctokitInstance.rest.issues.updateComment).mock.calls.find(([args]) => args.comment_id === 1)![0].body as string;
       expect(notice.startsWith('**Too big for automatic review** at `abc123`')).toBe(true);
-      expect(notice.endsWith(withSettingsBlock('', view('too big for automatic review', { boxes: new Set(['pause', 'full', 'deeper', 'force']) })).trimStart())).toBe(true);
+      expect(notice.endsWith(withSettingsBlock('', view('too big for automatic review', { lastReviewed: 'ddd2222', boxes: new Set(['pause', 'full', 'deeper', 'force']) })).trimStart())).toBe(true);
 
       // Above the hard limit no box can review it, so the block offers only Pause.
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 15_001, totalDeletions: 0 });
@@ -2110,7 +2121,7 @@ describe('runFullReview orchestration', () => {
       await runWith();
       const refused = jest.mocked(mockOctokitInstance.rest.issues.updateComment).mock.calls.find(([args]) => args.comment_id === 1)![0].body as string;
       expect(refused.startsWith('**Too big to review** at `abc123`')).toBe(true);
-      expect(refused.endsWith(withSettingsBlock('', view('too big to review', { boxes: new Set(['pause']) })).trimStart())).toBe(true);
+      expect(refused.endsWith(withSettingsBlock('', view('too big to review', { lastReviewed: 'ddd2222', boxes: new Set(['pause']) })).trimStart())).toBe(true);
     });
 
     it('counts every finding as new code on a full review', async () => {
@@ -5657,7 +5668,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
       const paused = () => runFullReview(
         baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
-        { settings: settingsState() },
+        { settings: { ...settingsState(), lastReviewed: 'sha2' } },
       );
       const updateComment = jest.mocked(mockOctokitInstance.rest.issues.updateComment);
       const deleteComment = jest.mocked(mockOctokitInstance.rest.issues.deleteComment);
@@ -5723,7 +5734,7 @@ describe('runFullReview orchestration', () => {
         '<!-- manki-bot -->',
         REVIEW_COMPLETE_MARKER,
         PAUSE_NOTICE_MARKER,
-      ].join('\n'), { lastReviewed: 'sha5', head: 'abc123', status: 'automatic review paused', boxes: new Set(['pause', 'full', 'deeper', 'force']), ticked: new Set() }));
+      ].join('\n'), { head: 'abc123', status: 'automatic review paused', boxes: new Set(['pause', 'full', 'deeper', 'force']), ticked: new Set() }));
     });
 
     it('counts the cap from the last approval, so rounds after it, as on rebases, start again', async () => {
@@ -6011,7 +6022,7 @@ describe('runFullReview orchestration', () => {
       ['an approval', 'APPROVE', false, 'success', 'Approved'],
       ['an approval held on a conflict', 'APPROVE', true, 'neutral', 'Approval held: the PR conflicts with its base'],
       ['a request for changes', 'REQUEST_CHANGES', false, 'failure', 'Changes requested'],
-    ] as const)('reports %s that stands as the PR check', async (_label, verdict, held, conclusion, title) => {
+    ] as const)('reports %s that stands as the PR check and to the coordinator', async (_label, verdict, held, conclusion, title) => {
       seedPush(verdict, REBASED_DIFF);
       if (held) jest.mocked(stateModule.holdApproval).mockResolvedValueOnce('conflict');
 
@@ -6023,6 +6034,7 @@ describe('runFullReview orchestration', () => {
         conclusion,
         output: { title, summary: 'No change to this PR since the reviewed commit `old9999`. The previous verdict stands.' },
       }));
+      expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual(verdict === 'APPROVE' ? [['test-owner', 'test-repo', 42, { approval: { commit: 'abc123', held } }]] : []);
     });
 
     it('runs a normal round when the PR change differs from the reviewed commit', async () => {

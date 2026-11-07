@@ -4,7 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 
-import { AppMemory, createAuthenticatedOctokit, fetchPrState, getMemoryToken, resolveGitHubToken, TokenResult } from './auth';
+import { AppMemory, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState, resolveGitHubToken, TokenResult } from './auth';
 
 jest.mock('@actions/core');
 jest.mock('@actions/github');
@@ -213,16 +213,16 @@ describe('fetchPrState', () => {
     jest.restoreAllMocks();
   });
 
-  it('reads the settings, the modes of this run and the modes still queued', async () => {
+  it('reads the settings, the last reviewed commit, the modes of this run and the modes still queued', async () => {
     mockFetch(async () => Response.json({
       active: [{ run_id: 7, modes: ['full', 'bogus'] }, { run_id: 8, modes: ['deeper'] }],
       queue: [{ modes: ['force'] }, { modes: 'draft' }, null],
       settings: { paused: true },
-      last_reviewed: null,
+      last_reviewed: { commit: 'a'.repeat(40), run_id: 6, at: '2026-11-07T00:00:00.000Z' },
     }));
 
     expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({
-      settings: { paused: true }, runModes: new Set(['full']), queuedModes: new Set(['force']),
+      settings: { paused: true }, lastReviewed: 'a'.repeat(40), runModes: new Set(['full']), queuedModes: new Set(['force']),
     });
     const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('https://manki-api.dustinface.me/state');
@@ -232,7 +232,7 @@ describe('fetchPrState', () => {
 
   it('reads the state next to a custom token URL, and counts settings that are not a boolean pause as not paused', async () => {
     mockGetInput.mockImplementation((name: string) => (name === 'manki_token_url' ? 'https://custom.example.com/api/token' : ''));
-    mockFetch(async () => Response.json({ active: [], queue: [], settings: { paused: 'yes' } }));
+    mockFetch(async () => Response.json({ active: [], queue: [], settings: { paused: 'yes' }, last_reviewed: null }));
 
     expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({ settings: { paused: false }, runModes: new Set(), queuedModes: new Set() });
     expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('https://custom.example.com/api/state');
@@ -264,6 +264,41 @@ describe('fetchPrState', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe('reportPrState', () => {
+  beforeEach(() => {
+    mockGetInput.mockReset().mockReturnValue('');
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
+    jest.mocked(core.warning).mockClear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('posts the report for the PR to `/state/report` with the OIDC token', async () => {
+    mockFetch(async () => Response.json({ changed: ['reviewed', 'pause'] }));
+    const report = { reviewed: { commit: 'b'.repeat(40) }, approval: { commit: 'b'.repeat(40), held: true }, pause: null };
+
+    await reportPrState(OWNER, REPO, 12, report);
+
+    const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://manki-api.dustinface.me/state/report');
+    expect(init.headers['Authorization']).toBe('Bearer fake-oidc-token');
+    expect(JSON.parse(init.body)).toEqual({ owner: OWNER, repo: REPO, pr: 12, ...report });
+    expect(core.warning).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the run has no OIDC token', () => jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC'))],
+    ['the service refuses the report', () => mockFetch(async () => Response.json({ error: 'run 7 is not active on this PR' }, { status: 403 }))],
+    ['the request fails', () => mockFetch(async () => { throw new Error('network down'); })],
+  ])('warns once and goes on when %s', async (_case, arrange) => {
+    arrange();
+    await expect(reportPrState(OWNER, REPO, 12, { pause: { reason: 'Paused.' } })).resolves.toBeUndefined();
+    expect(core.warning).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -114,6 +114,8 @@ class FakeGitHub {
   /** The config file the PR carries at its head commit. */
   headConfig?: string;
   activeRuns: number[] = [];
+  /** The bodies Manki sent to the token service's `/state/report`. */
+  stateReports: unknown[] = [];
   private nextId = 1000;
 
   fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
@@ -124,6 +126,10 @@ class FakeGitHub {
     const body = init.body ? JSON.parse(String(init.body)) : {};
 
     if (`${origin}${pathname}` === TOKEN_URL) return json({ token: 'ghs_app', expires_at: '2099-01-01T00:00:00Z' });
+    if (`${origin}${pathname}` === new URL('state/report', TOKEN_URL).href) {
+      this.stateReports.push(body);
+      return json({ changed: [] });
+    }
     if (pathname === '/graphql' ? String(body.query).trimStart().startsWith('mutation') : method !== 'GET') {
       const write = `${method} ${pathname}`;
       this.writes.push(write);
@@ -872,6 +878,9 @@ describe('runFullReview end to end', () => {
       expect(review).toMatchObject({ state: 'APPROVED', commit_id: HEAD_SHA });
       expect(mockGitHub.roundContext(review).meta.trigger).toEqual({ event: 'pull_request:synchronize', sender: 'alice' });
       expect(mockLLM.calls).not.toContain('planner');
+      expect(mockGitHub.stateReports).toEqual([
+        { owner: OWNER, repo: REPO, pr: PR_NUMBER, reviewed: { commit: HEAD_SHA }, approval: { commit: HEAD_SHA, held: false }, pause: null },
+      ]);
     });
 
     it('writes nothing for a push the PR head has moved past', async () => {

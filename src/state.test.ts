@@ -6,6 +6,12 @@ import { formatFindingComment } from './github';
 import { formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG } from './config';
 import { Finding } from './types';
+import * as authModule from './auth';
+
+jest.mock('./auth', () => ({
+  fetchPrState: jest.fn().mockResolvedValue(null),
+  reportPrState: jest.fn().mockResolvedValue(undefined),
+}));
 
 jest.mock('./github', () => ({
   ...jest.requireActual('./github'),
@@ -419,7 +425,7 @@ describe('checkAndAutoApprove', () => {
     expect(createReviewMock).not.toHaveBeenCalled();
   });
 
-  it('holds the approval of a PR that conflicts with its base, with one notice per head', async () => {
+  it('holds the approval of a PR that conflicts with its base, with one notice per head, and reports each outcome', async () => {
     const resolved = [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true })];
     const createReviewMock = jest.fn().mockResolvedValue({});
     const createCommentMock = jest.fn().mockResolvedValue({});
@@ -440,6 +446,11 @@ describe('checkAndAutoApprove', () => {
     const clean = makeMockOctokit({ threads: resolved, prHeadSha: 'sha-456', mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock });
     expect(await checkAndAutoApprove(clean, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456' }));
+    expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual([
+      ['owner', 'repo', 1, { approval: { commit: 'sha-456', held: true } }],
+      ['owner', 'repo', 1, { approval: { commit: 'sha-456', held: true } }],
+      ['owner', 'repo', 1, { approval: { commit: 'sha-456', held: false } }],
+    ]);
   });
 
   it.each([
@@ -928,10 +939,13 @@ describe('checkAndAutoApprove', () => {
         : 'Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.');
     });
 
-    it('explains an unreviewed head by the pause, or by the review still to come', async () => {
+    it('explains an unreviewed head by the pause, the Pause box, or by the review still to come', async () => {
       const octokit = staleHeadOctokit(jest.fn(), [formatReviewRecord(notConverging)]);
       expect(await explainUnreviewedHead(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
         .toMatch(/^Manki has not reviewed `head-sh`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
+      jest.mocked(authModule.fetchPrState).mockResolvedValueOnce({ settings: { paused: true }, runModes: new Set(), queuedModes: new Set() });
+      expect(await explainUnreviewedHead(staleHeadOctokit(jest.fn(), []), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
+        .toBe('Manki has not reviewed `head-sh`. Automatic review is paused in the settings block. Untick **Pause automatic reviews** there, or comment `@manki review`, to review it.');
       expect(await explainUnreviewedHead(staleHeadOctokit(jest.fn(), []), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
         .toBe('Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.');
     });
