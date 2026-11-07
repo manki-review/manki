@@ -72,6 +72,7 @@ describe('deduplicateFindings', () => {
     const toJudge = [{ ...findings[0], answeredIn: { threadId: 'T1', answer: 'Withdrawn. `id` is checked first.' } }];
     expect(deduplicateFindings(findings, [answered], undefined, new Set(['src/foo.ts'])).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [answered]).unique).toEqual(toJudge);
+    expect(deduplicateFindings(findings, [{ ...answered, line: 0, originalLine: 41 }]).unique).toEqual(toJudge);
     expect(deduplicateFindings(findings, [{ ...answered, answer: undefined }], undefined, new Set()).unique).toEqual(findings);
     const unrelated = [makeFinding({ title: 'Unrelated race', file: 'src/foo.ts', line: 42 })];
     expect(deduplicateFindings(unrelated, [answered], undefined, new Set()).unique).toEqual(unrelated);
