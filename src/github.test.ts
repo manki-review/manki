@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
+import { ApprovalHeld, buildDashboard, formatFoundAgainReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
@@ -3388,7 +3388,7 @@ describe('postReview fallback paths', () => {
       expect(posted).toEqual(['Resolved-thread', 'Far-line-thread', 'Other-file']);
     });
 
-    it('points a blocker linked to an open thread at that thread instead of posting a new one', async () => {
+    it('points a blocker linked to an open thread, or repeating an answered one, at that thread instead of posting a new one', async () => {
       const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
       const { octokit, createReview } = makeOctokit(createReviewComment);
       const existingThreads = [{
@@ -3397,8 +3397,9 @@ describe('postReview fallback paths', () => {
       }];
       const named = (line: number): Finding => ({ ...offLineBlocker, title: 'Floor class weakened by the PR', line, threadId: 'T1' });
 
-      for (const line of [2, 40]) {
-        await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([named(line)]), outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, { existingThreads });
+      const answered: Finding = { ...named(2), threadId: undefined, answeredIn: { threadId: 'T1', answer: 'Withdrawn. Fine.' } };
+      for (const finding of [named(2), named(40), answered]) {
+        await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([finding]), outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, { existingThreads });
       }
 
       expect(createReviewComment).not.toHaveBeenCalled();
@@ -3591,15 +3592,54 @@ describe('postReview non-blocking findings', () => {
     expect(body).toContain('<b>Past the end</b>');
   });
 
-  it('does not post a non-blocking finding again while its open thread carries it', async () => {
+  it('does not post a non-blocking finding again while its open thread carries it, or when it repeats an answered thread', async () => {
     const { octokit, createReview } = makeOctokit();
     const existingThreads = [{ title: 'Extract helper', file: 'src/a.ts', line: 5, severity: 'suggestion' as const, status: 'open' as const, threadId: 'T1', markerSlug: 'Extract-helper' }];
 
-    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([nonBlocking('suggestion', 'Extract helper', 5)]), diff, undefined, undefined, { existingThreads });
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
+      nonBlocking('suggestion', 'Extract helper', 5),
+      nonBlocking('suggestion', 'Worse retry', 11, { answeredIn: { threadId: 'T2', answer: 'Withdrawn. Fine.' } }),
+    ]), diff, undefined, undefined, { existingThreads });
 
     const review = createReview.mock.calls[0][0];
     expect(review.comments).toEqual([]);
     expect(review.body).not.toContain('Extract helper');
+    expect(review.body).not.toContain('Worse retry');
+  });
+
+  it('lists the findings of closed threads Manki agreed to leave for later as follow-ups', async () => {
+    const { octokit, createReview, getContent } = makeOctokit({ 'src/b.ts': 'x\n'.repeat(20) });
+    const thread = (title: string, extra: Partial<PreviousFinding>): PreviousFinding => ({
+      title, file: 'src/b.ts', line: 9, severity: 'warning', status: 'auto-resolved', threadId: `T-${title}`, description: 'Retries forever.', answer: 'Agreed. Later is fine.', ...extra,
+    });
+
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([]), diff, undefined, undefined, { existingThreads: [
+      thread('Retry has no limit', { suggestedFix: 'Cap the retries.' }),
+      thread('Human closed', { status: 'resolved', answer: '**Agreed.** Later.' }),
+      thread('Still open', { status: 'open' }),
+      thread('Fixed since', { status: 'resolved', fixed: true }),
+      thread('Withdrawn one', { answer: 'Withdrawn. Fine.' }),
+      thread('Agreed then kept', { answer: 'Kept. `src/b.ts:3` still loops.' }),
+      thread('No marker', { severity: 'unknown' }),
+    ] });
+
+    const { body } = createReview.mock.calls[0][0];
+    expect(getContent).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/b.ts' }));
+    expect(body).toContain('#### \u{1F4CC} 2 follow-ups agreed for later\n\n<sub>Agreed in their threads as later work. None of them blocks.</sub>\n\n<details>\n<summary>\u26A0\uFE0F <b>Retry has no limit</b>');
+    expect(body).toContain('Retries forever.');
+    expect(body).toContain('https://github.com/owner/repo/blob/sha/src/b.ts#L7-L11');
+    expect(body).toContain('<b>Human closed</b>');
+    for (const title of ['Still open', 'Fixed since', 'Withdrawn one', 'Agreed then kept', 'No marker']) expect(body).not.toContain(title);
+  });
+
+  it('formats the reply to an answered thread whose problem came back worse', () => {
+    expect(formatFoundAgainReply(nonBlocking('warning', 'Retry has no `limit`', 11, { description: 'It retries forever.', suggestedFix: 'Cap it.' })).split('\n\n')).toEqual([
+      'This came up again, and the code here is worse than when this thread was answered.',
+      expect.stringContaining('**Warning'),
+      '**Retry has no `limit`**',
+      'It retries forever.',
+      expect.stringContaining('Cap it.'),
+    ]);
   });
 
   it('lists smaller findings on reviewed code as previously missed, and keeps a blocker there inline', async () => {

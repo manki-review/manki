@@ -49,6 +49,27 @@ function isSecurityThread(body: string): boolean {
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
 const REOPENED_MARKER = '<!-- manki-reopened -->';
 
+/** Marks Manki's reply in an answered thread that the problem came back and the code there got worse. */
+const FOUND_AGAIN_MARKER = '<!-- manki-found-again -->';
+
+/** Added to a found-again reply whose finding is a blocker. The thread blocks from then on, whatever its first comment says. */
+const FOUND_AGAIN_BLOCKER_MARKER = '<!-- manki-found-again-blocker -->';
+
+/** Whether a Manki reply in `comments` says the problem came back as a blocker. */
+function foundAgainAsBlocker(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author: { login: string } | null }>): boolean {
+  return comments.slice(1).some(c => isBotLogin(bot, c.author?.login) && !!c.body?.includes(FOUND_AGAIN_BLOCKER_MARKER));
+}
+
+// The outcome a Manki reply to a developer starts with.
+const REPLY_OUTCOME_RE = /^\**(Fixed|Withdrawn|Agreed|Kept|Unverified)\./;
+
+/** Returns Manki's latest answer to a developer in `comments`, without its markers: an outcome reply, or a found-again reply. */
+function latestAnswer(bot: BotIdentity, comments: ThreadCommentNode[]): string | undefined {
+  const answer = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login) && !!c.body
+    && (REPLY_OUTCOME_RE.test(c.body) || c.body.includes(FOUND_AGAIN_MARKER))).pop();
+  return answer?.body.split('\n\n<!--')[0].trim();
+}
+
 /** A reply that opens with a `dismiss` command. */
 const DISMISS_COMMAND_RE = /^\s*(?:@manki-review|@manki|\/manki)\s+dismiss\b/i;
 
@@ -246,6 +267,8 @@ interface PreviousFinding extends FindingMetadata {
   reopen?: boolean;
   /** A security thread the PR author cleared as a repo admin. */
   securityOverride?: ThreadSecurityOverride;
+  /** Manki's latest answer to a developer in the thread, from `latestAnswer`. */
+  answer?: string;
 }
 
 /**
@@ -475,6 +498,7 @@ async function fetchRecapState(
       ...(t.isSecurity && t.authorReplyLogin && mayAgree.get(t.authorReplyLogin) && { authorReplyMayClear: true }),
       ...(!securityOverride && shouldReopen(t, addressedThreadIds, prAuthorLogin) && { reopen: true }),
       ...(securityOverride && { securityOverride }),
+      ...(t.answer && { answer: t.answer }),
       description: t.description,
       suggestedFix: t.suggestedFix,
     };
@@ -662,6 +686,7 @@ interface ReviewThread extends FindingMetadata {
   authorReplyText?: string;
   authorReplyLogin?: string;
   authorReplyAssociation?: string;
+  answer?: string;
 }
 
 /**
@@ -811,9 +836,10 @@ async function fetchReviewThreads(
       const authorReplyAssociation = lastNonBotReply?.authorAssociation;
 
       const severityMatch = firstComment?.body?.match(new RegExp(`manki:(${SEVERITY_TOKEN_PATTERN}):`));
-      const severity = (severityMatch?.[1]
+      const rootSeverity = (severityMatch?.[1]
         ? migrateLegacySeverity(severityMatch[1])
         : 'unknown') as FindingSeverity | 'unknown';
+      const severity = isBotThread && foundAgainAsBlocker(bot, thread.comments.nodes) ? 'blocker' : rootSeverity;
 
       const markerSlug = firstComment?.body?.match(new RegExp(`<!-- manki:(?:${SEVERITY_TOKEN_PATTERN}):(.+?) -->`))?.[1];
 
@@ -827,6 +853,7 @@ async function fetchReviewThreads(
       const line = thread.line ?? 0;
       const lineStart = thread.startLine ?? line;
       const recordedOverride = isBotThread ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
+      const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
 
       return {
         threadId: thread.id,
@@ -851,6 +878,7 @@ async function fetchReviewThreads(
         authorReplyText,
         authorReplyLogin,
         ...(authorReplyAssociation && { authorReplyAssociation }),
+        ...(answer && { answer }),
       };
     });
     return { threads, state: threads.length === 0 ? 'empty' : 'fetched' };
@@ -871,10 +899,15 @@ interface DuplicateMatch {
   matchType: DuplicateMatchType;
 }
 
+/**
+ * A finding that repeats a problem Manki already answered in a thread is dropped when `changedFiles`, the files changed
+ * since the last round, leaves its file out. Otherwise it goes to the judge with `answeredIn` set.
+ */
 function deduplicateFindings(
   newFindings: Finding[],
   previousFindings: PreviousFinding[],
   suppressions?: Suppression[],
+  changedFiles?: ReadonlySet<string>,
 ): { unique: Finding[]; duplicates: DuplicateMatch[] } {
   if (suppressions && suppressions.length > 0) {
     newFindings = newFindings.filter(f => {
@@ -889,27 +922,35 @@ function deduplicateFindings(
   const resolved = previousFindings.filter(f => f.status === 'resolved');
   // Waived priors come first, so a finding that matches both a waived and a fixed one is still dropped.
   const engaged = [...resolved.filter(f => !f.fixed), ...resolved.filter(f => f.fixed)];
+  const answered = previousFindings.flatMap(f => (f.answer && f.threadId ? [{ ...f, answer: f.answer, threadId: f.threadId }] : []));
 
   for (const finding of newFindings) {
-    let matched: { prev: PreviousFinding; matchType: DuplicateMatchType } | undefined;
-    for (const prev of engaged) {
-      const matchType = matchPreviousType(finding, prev);
-      if (matchType) {
-        matched = { prev, matchType };
-        break;
-      }
-    }
+    const matched = firstMatch(finding, engaged);
+    const answeredMatch = matched ? undefined : firstMatch(finding, answered);
 
     if (matched?.prev.fixed) {
       unique.push(resemblingFixed(finding, matched.prev));
     } else if (matched) {
       duplicates.push({ finding, matchedTitle: matched.prev.title, matchType: matched.matchType });
+    } else if (answeredMatch && changedFiles && !changedFiles.has(finding.file)) {
+      core.info(`Dedup: "${finding.title}" repeats answered "${answeredMatch.prev.title}" on a file unchanged since the last round`);
+      duplicates.push({ finding, matchedTitle: answeredMatch.prev.title, matchType: answeredMatch.matchType });
+    } else if (answeredMatch) {
+      unique.push({ ...finding, answeredIn: { threadId: answeredMatch.prev.threadId, answer: answeredMatch.prev.answer } });
     } else {
       unique.push(finding);
     }
   }
 
   return { unique, duplicates };
+}
+
+function firstMatch<P extends PreviousFinding>(finding: Finding, previous: P[]): { prev: P; matchType: DuplicateMatchType } | undefined {
+  for (const prev of previous) {
+    const matchType = matchPreviousType(finding, prev);
+    if (matchType) return { prev, matchType };
+  }
+  return undefined;
 }
 
 /** Returns `finding` with a note for the judge. A finding next to a fixed one can be a new defect, so dedup never drops it. */
@@ -1038,4 +1079,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };

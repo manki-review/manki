@@ -147,7 +147,7 @@ describe('fetchBotReviewThreads', () => {
     expect(graphqlMock).toHaveBeenNthCalledWith(2, expect.any(String), expect.objectContaining({ cursor: 'p2' }));
   });
 
-  it('treats suggestion and warning threads, security ones included, as not blocking auto-approve', async () => {
+  it('treats suggestion and warning threads, security ones included, as not blocking auto-approve, unless Manki said the problem came back as a blocker', async () => {
     const finding = (severity: Finding['severity'], title: string, tags?: string[]): Finding => ({
       severity, title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
     });
@@ -158,14 +158,16 @@ describe('fetchBotReviewThreads', () => {
         makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning')) }),
         makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security'])) }),
         makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug')) }),
+        makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now')), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'github-actions[bot]' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'h', body: formatFindingComment(finding('warning', 'Pasted marker')), replies: [{ body: '<!-- manki-found-again-blocker -->', author: { login: 'developer' } }] }),
       ]),
     );
 
     const threads = await fetchBotReviewThreads({ graphql: graphqlMock } as unknown as Octokit, TEST_BOT, 'owner', 'repo', 1);
 
-    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true]]);
+    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false]]);
     expect(threads.find(t => t.id === 'x')?.isSecurity).toBe(true);
-    expect(areAllFindingsResolved(threads.filter(t => t.id !== 'b'), TEST_BOT)).toBe(true);
+    expect(areAllFindingsResolved(threads.filter(t => t.id !== 'b' && t.id !== 'f'), TEST_BOT)).toBe(true);
     expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(false);
   });
 

@@ -1139,6 +1139,26 @@ async function postFileLevelComments(
   return refused;
 }
 
+const AGREED_ANSWER_RE = /^\**Agreed\./;
+
+/** Returns the findings of the closed threads where Manki's latest answer agreed to leave them for later work. */
+function agreedFollowUps(threads: PreviousFinding[]): Finding[] {
+  return threads.flatMap(t => (t.answer && AGREED_ANSWER_RE.test(t.answer) && t.severity !== 'unknown' && !t.fixed
+    && (t.status === 'resolved' || t.status === 'auto-resolved')
+    ? [{ severity: t.severity, title: t.title, file: t.file, line: t.line, description: t.description ?? '', ...(t.suggestedFix && { suggestedFix: t.suggestedFix }), reviewers: [] }]
+    : []));
+}
+
+/** Returns Manki's reply in an answered thread when the problem came back and the code there got worse. */
+export function formatFoundAgainReply(finding: Finding): string {
+  return [
+    'This came up again, and the code here is worse than when this thread was answered.',
+    `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}`,
+    `**${sanitizeMarkdown(finding.title)}**`,
+    ...formatFindingDetail(finding),
+  ].join('\n\n');
+}
+
 /** Whether an unresolved Manki thread was already posted for this finding. */
 function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): boolean {
   const open = existingThreads.filter(t => t.status !== 'resolved' && t.threadId && t.markerSlug);
@@ -1187,12 +1207,15 @@ export async function postReview(
   const previouslyMissed: string[] = [];
   const nonBlocking: Finding[] = [];
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
-  const listedFiles = new Set(result.findings.filter(f => !isBlockingFinding(f) && f.file && f.line > 0).map(f => f.file));
+  const followUps = agreedFollowUps(existingThreads);
+  const listedFiles = new Set([...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file));
   const lineCounts = await fetchLineCounts(octokit, owner, repo, commitSha, [...listedFiles]);
 
   for (const f of result.findings) {
     if (!isBlockingFinding(f)) {
-      if (hasOpenThread(f, existingThreads)) {
+      if (f.answeredIn) {
+        core.info(`Skipping "${f.title}" on ${f.file}: it goes as a reply in its answered thread ${f.answeredIn.threadId}`);
+      } else if (hasOpenThread(f, existingThreads)) {
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
       } else if (f.origin === 'reviewed') {
         previouslyMissed.push(formatFindingFold(f, linkTo, lineCounts));
@@ -1202,10 +1225,11 @@ export async function postReview(
       continue;
     }
 
-    const openThread = f.threadId ? existingThreads.find(t => t.threadId === f.threadId) : undefined;
+    const threadId = f.threadId ?? f.answeredIn?.threadId;
+    const openThread = threadId ? existingThreads.find(t => t.threadId === threadId) : undefined;
     if (openThread) {
-      core.info(`Skipping "${f.title}" on ${f.file}: the open thread ${f.threadId} already carries it`);
-      if (!result.needsHuman?.blockers.some(b => b.threadId === f.threadId)) {
+      core.info(`Skipping "${f.title}" on ${f.file}: the thread ${threadId} already carries it`);
+      if (!result.needsHuman?.blockers.some(b => b.threadId === threadId)) {
         // The finding shows under the link, so a wrong `sameAs` link still shows the defect. The indent keeps it in the list item.
         stillOpen.push(`${formatTraceEntry(openThread)}\n\n${`This round names it as:\n\n${formatFindingBlock(f, linkTo)}`.replace(/^(?=.)/gm, '  ')}`);
       }
@@ -1280,6 +1304,10 @@ export async function postReview(
     const smaller = formatSmallerFindings(smallerFindings, nitpicks, previouslyMissed);
     if (smaller) {
       b += `\n\n${smaller}`;
+    }
+    const agreed = formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, linkTo, lineCounts)), 'Agreed in their threads as later work. None of them blocks.');
+    if (agreed) {
+      b += `\n\n${agreed}`;
     }
     const overrides = event === 'APPROVE' && formatSecurityOverrides(existingThreads.flatMap(t =>
       t.securityOverride ? [{ title: t.title, threadUrl: t.threadUrl, login: t.securityOverride.login }] : []));
