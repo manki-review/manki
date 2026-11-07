@@ -757,40 +757,11 @@ models:
     });
   });
 
-  describe('models.agents config', () => {
-    it('accepts `models.agents` with a deprecation warning and seeds `reviewer_pair` from its first other model', () => {
-      const config = loadConfigFromContent(`
-reviewers:
-  - name: "Protocol Compliance"
-    focus: "DIP compliance"
-models:
-  reviewer: claude-sonnet-5-5
-  agents:
-    "Correctness & Logic": claude-sonnet-5-5
-    "Protocol Compliance": gpt-5.5
-    "Security & Safety": claude-opus-5-5
-`);
-      expect(config.models).toEqual({ ...DEFAULT_CONFIG.models, reviewer_pair: 'gpt-5.5' });
-      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('`models.agents` is deprecated'));
-    });
-
-    it('keeps an explicit `reviewer_pair` and seeds nothing when every override names the reviewer model', () => {
-      const pinned = loadConfigFromContent('models:\n  reviewer_pair: gemini-3-pro\n  agents:\n    "Security & Safety": claude-opus-4-7\n');
-      expect(pinned.models?.reviewer_pair).toBe('gemini-3-pro');
-      const same = loadConfigFromContent('models:\n  agents:\n    "Security & Safety": claude-sonnet-5-5\n');
-      expect(same.models).toEqual(DEFAULT_CONFIG.models);
-    });
-
-    it.each([
-      ['an empty model', '"Security & Safety": ""', /`models.agents.Security & Safety` must be a non-empty string/],
-      ['a number', '"Security & Safety": 42', /`models.agents.Security & Safety` must be a non-empty string/],
-      ['a list', '- "Security & Safety"', /`models.agents` must be an object/],
-    ])('rejects %s', (_label, entry, expected) => {
-      expect(() => loadConfig(`models:\n  agents:\n    ${entry}\n`)).toThrow(expected);
-    });
-
-    it('rejects a non-object `models.agents`', () => {
-      expect(() => loadConfig('models:\n  agents: "not a map"\n')).toThrow(/`models.agents` must be an object/);
+  describe('unknown `models` keys', () => {
+    it('warns about a key such as the removed `models.agents` and ignores it', () => {
+      const config = loadConfigFromContent('models:\n  reviewer: gpt-5.5\n  agents:\n    "Security & Safety": claude-opus-5-5\n');
+      expect(config.models).toEqual({ ...DEFAULT_CONFIG.models, reviewer: 'gpt-5.5' });
+      expect(core.warning).toHaveBeenCalledWith('Unknown config key: "models.agents"');
     });
   });
 

@@ -46,7 +46,6 @@ export const SETTINGS: Setting[] = [
   { key: 'models.judge', type: 'model id', description: 'The judge, which filters the findings and sets their severity, and the verdict reader.' },
   { key: 'models.dedup', type: 'model id', description: 'The dedup pass against findings already posted on the PR.' },
   { key: 'models.fallback', type: 'model id', default: '`models.reviewer`', description: 'Reruns a stage once when a provider\'s safety filter refuses it. A stage already on this model moves to its other Claude tier.' },
-  { key: 'models.agents', type: 'map of model ids', default: 'none', deprecated: true, description: 'Its first model that differs from `models.reviewer` becomes `models.reviewer_pair` when that is not set. Set `models.reviewer_pair` instead.' },
   { key: 'planner', type: 'map', description: 'The planner stage.' },
   { key: 'planner.enabled', type: 'boolean', description: 'Run the planner. Without it, every round takes the side that adds review: two finders at high effort.' },
   { key: 'planner.paired', type: '`auto`, `always` or `never`', deprecated: true, description: 'Pins the planner\'s `paired` answer. Route classes with `review.routing` instead.' },

@@ -145,7 +145,7 @@ Use the `models` config section to choose different models for the finders and t
 
 The judge treats two finders reporting the same defect as strong evidence that it is real, and one finder's silence as no evidence against the other's finding. Agreement never raises a finding's severity.
 
-`review_level`, `review_thresholds` and `models.agents` from earlier releases still load, with a warning. The first two are ignored. The first model in `models.agents` that differs from `models.reviewer` becomes `models.reviewer_pair` when that is not set. `models.agents` will be removed in the next major release: set `models.reviewer_pair`, or name models in a review group.
+`review_level` and `review_thresholds` from earlier releases still load, with a warning, and are ignored. To give the second finder its own model, set `models.reviewer_pair`, or name models in a review group.
 
 ## Skipping PRs
 

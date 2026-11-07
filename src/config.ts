@@ -95,6 +95,7 @@ const IGNORED_KEYS = new Set(['review_level', 'review_thresholds', 'stats']);
 
 const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
 
+export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', 'reviewer_pair', 'judge', 'dedup', 'fallback']);
 export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'outside_input', 'examples']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus', 'role']);
 const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'max', 'auto']);
@@ -216,18 +217,8 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       if ('fallback' in models && (typeof models.fallback !== 'string' || models.fallback === '')) {
         errors.push('`models.fallback` must be a non-empty string');
       }
-      if ('agents' in models) {
-        const agents = models.agents as Record<string, unknown>;
-        if (!agents || typeof agents !== 'object' || Array.isArray(agents)) {
-          errors.push('`models.agents` must be an object mapping agent names to model strings');
-        } else {
-          for (const [agentName, modelValue] of Object.entries(agents)) {
-            if (typeof modelValue !== 'string' || modelValue === '') {
-              errors.push(`\`models.agents.${agentName}\` must be a non-empty string`);
-            }
-          }
-          warnings.push('`models.agents` is deprecated and will be removed in the next major release. Manki no longer runs specialist agents. Unless `models.reviewer_pair` is set, its first model that differs from `models.reviewer` becomes the second finder\'s model, which `@reviewer_pair` in a review group names.');
-        }
+      for (const key of Object.keys(models)) {
+        if (!MODEL_KEYS.has(key)) warnings.push(`Unknown config key: "models.${key}"`);
       }
     }
   }
@@ -606,14 +597,8 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
     if (key === 'memory' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.memory = { ...defaults.memory, ...(value as Record<string, unknown>) } as ReviewConfig['memory'];
     } else if (key === 'models' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      const { agents, ...incoming } = value as Record<string, unknown>;
-      const models = { ...defaults.models, ...incoming } as NonNullable<ReviewConfig['models']>;
-      if (!models.reviewer_pair && agents && typeof agents === 'object') {
-        const reviewer = models.reviewer || defaults.models?.reviewer;
-        const pair = Object.values(agents).find(m => typeof m === 'string' && m !== '' && m !== reviewer);
-        if (pair) models.reviewer_pair = pair;
-      }
-      result.models = models;
+      const known = Object.entries(value as Record<string, unknown>).filter(([name]) => MODEL_KEYS.has(name));
+      result.models = { ...defaults.models, ...Object.fromEntries(known) } as ReviewConfig['models'];
     } else if (key === 'planner' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.planner = { ...defaults.planner, ...(value as Record<string, unknown>) } as ReviewConfig['planner'];
     } else if (key === 'static_analysis' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
