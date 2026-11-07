@@ -21,6 +21,14 @@ export function safeTruncate(text: string, maxLen: number): string {
   return text.slice(0, end) + '...';
 }
 
+// Control characters other than tab and newline, and format characters, which include zero-width and bidi controls.
+const HIDDEN_CHARACTER = /(?![\t\n])[\p{Cc}\p{Cf}]/gu;
+
+/** Returns the distinct hidden characters in `text` as `U+XXXX` code points, in the order they first appear. */
+export function hiddenCharacters(text: string): string[] {
+  return [...new Set([...text.matchAll(HIDDEN_CHARACTER)].map(([c]) => `U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`))];
+}
+
 /**
  * Appends hidden HTML comment markers after `body`. Notifications preview the start of
  * a comment as plain text, so markers at the top would show up there as blank lines.

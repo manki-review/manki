@@ -693,7 +693,7 @@ export interface StaticAnalysisConfig {
   analyzers: 'all' | AnalyzerSettings;
 }
 
-export type StaticSignalSource = 'checks' | 'code_scanning' | 'dependency_review' | AnalyzerName;
+export type StaticSignalSource = 'checks' | 'code_scanning' | 'dependency_review' | 'hidden_characters' | AnalyzerName;
 
 /** A vulnerable package a dependency scanner reports for a manifest or lockfile. */
 export interface PackageVulnerability {

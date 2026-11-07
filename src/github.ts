@@ -10,7 +10,7 @@ import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { MAX_AGENT_RETRIES, SEVERITY_ORDER } from './types';
-import { safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
+import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
 
@@ -1603,6 +1603,7 @@ function sanitizeMarkdown(text: string): string {
     .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
     .replace(/^\[[^\]]*\]:\s+.*$/gm, '')                             // Link/image definitions
+    .replace(SUGGESTION_FENCE_RE, '$1$2')                           // Suggestion fences: plain code, no commit button
     // Insert zero-width space after @ to prevent GitHub from resolving mentions.
     // Lookbehind avoids matching email addresses (which have chars before @).
     // Also handles @org/team patterns.
@@ -1627,6 +1628,7 @@ function visibleLength(text: string): number {
   return text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
 }
 const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
+const SUGGESTION_FENCE_RE = /^([\t >]*)(`{3,}|~{3,})[\t ]*suggestion\b.*$/gim;
 const PROSE_LINE_RE = /^[A-Z][A-Za-z']*(?:\s+\S+){2,}[.:]$/;
 // A comment that says where the code goes, such as `// After the guard, add:`, means the code does not apply as is.
 const PLACEMENT_COMMENT_RE = /^\s*(?:\/\/|#|--|\/\*)\s+(?:(?:in|after|before|replace|add|then|change|move|instead)\b|.*:\s*(?:\*\/)?$)/i;
@@ -1695,20 +1697,22 @@ function renderFixParts(parts: FixPart[], file: string): string {
     const text = p.lines.join('\n');
     if (p.kind === 'prose') return sanitizeMarkdown(text);
     const fence = dynamicFence(text);
-    return `${fence}${(p.lang || extension).replace(/[^\w+#.-]/g, '')}\n${text}\n${fence}`;
+    const lang = p.lang && !/^suggestion\b/i.test(p.lang) ? p.lang : extension;
+    return `${fence}${lang.replace(/[^\w+#.-]/g, '')}\n${text}\n${fence}`;
   }).join('\n\n');
 }
 
 /**
  * Renders a suggested fix. Only code that replaces the flagged line as is goes in a
  * `suggestion` block, because committing it writes the block verbatim into the file.
+ * Code with hidden characters never does, since a reader cannot see what would be committed.
  * Anything else is shown as text and plain code blocks.
  */
 function formatSuggestedFix(fix: string, file: string): string {
   const parts = splitFix(fix, file);
   const code = parts.filter(p => p.kind === 'code').map(p => p.lines.join('\n'));
   const isShort = code.every(c => c.split('\n').length <= SUGGESTION_MAX_LINES && c.length <= SUGGESTION_MAX_LENGTH);
-  if (parts.length === 1 && code.length === 1 && isShort && !PLACEMENT_COMMENT_RE.test(code[0].split('\n')[0])) {
+  if (parts.length === 1 && code.length === 1 && isShort && !PLACEMENT_COMMENT_RE.test(code[0].split('\n')[0]) && hiddenCharacters(code[0]).length === 0) {
     const fence = dynamicFence(code[0]);
     return `${fence}suggestion\n${code[0]}\n${fence}`;
   }
