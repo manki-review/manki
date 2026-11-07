@@ -8,8 +8,8 @@ import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, Bot
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
-import { fetchPriorRoundContexts, foundAgainAsBlocker, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
-import { migrateLegacySeverity, ReviewConfig, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
+import { fetchPriorRoundContexts, foundAgainAsBlocker, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
+import { ReviewConfig, RoundContext, SecurityOverride } from './types';
 import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -112,10 +112,10 @@ async function fetchBotReviewThreads(
     })
     .map(thread => {
       const body = thread.comments.nodes[0]?.body ?? '';
-      const severityMatch = body.match(new RegExp(`<!-- manki:(${SEVERITY_TOKEN_PATTERN}):`));
+      const severity = threadSeverity(body);
       const isSecurity = isSecurityThread(body);
       // A thread without a severity marker predates them, so it keeps blocking.
-      const isBlocking = !severityMatch?.[1] || migrateLegacySeverity(severityMatch[1]) === 'blocker' || foundAgainAsBlocker(bot, thread.comments.nodes);
+      const isBlocking = severity === 'unknown' || severity === 'blocker' || foundAgainAsBlocker(bot, thread.comments.nodes);
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
       const findingTitle = titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown';
 

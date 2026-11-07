@@ -46,6 +46,12 @@ function isSecurityThread(body: string): boolean {
   return isSecurityFinding(data?.tags, data?.flaggedBy ?? []);
 }
 
+/** The severity in the marker of a Manki thread's first comment, or `unknown` for a thread from before the markers. */
+function threadSeverity(body: string): FindingSeverity | 'unknown' {
+  const token = body.match(new RegExp(`<!-- manki:(${SEVERITY_TOKEN_PATTERN}):`))?.[1];
+  return token ? migrateLegacySeverity(token) as FindingSeverity : 'unknown';
+}
+
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
 const REOPENED_MARKER = '<!-- manki-reopened -->';
 
@@ -808,10 +814,7 @@ async function fetchReviewThreads(
       const authorReplyLogin = lastNonBotReply?.author?.login;
       const authorReplyAssociation = lastNonBotReply?.authorAssociation;
 
-      const severityMatch = firstComment?.body?.match(new RegExp(`manki:(${SEVERITY_TOKEN_PATTERN}):`));
-      const rootSeverity = (severityMatch?.[1]
-        ? migrateLegacySeverity(severityMatch[1])
-        : 'unknown') as FindingSeverity | 'unknown';
+      const rootSeverity = threadSeverity(firstComment?.body ?? '');
       const severity = isBotThread && foundAgainAsBlocker(bot, thread.comments.nodes) ? 'blocker' : rootSeverity;
 
       const markerSlug = firstComment?.body?.match(new RegExp(`<!-- manki:(?:${SEVERITY_TOKEN_PATTERN}):(.+?) -->`))?.[1];
@@ -1053,4 +1056,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
