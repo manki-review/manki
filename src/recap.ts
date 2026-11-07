@@ -922,7 +922,8 @@ function deduplicateFindings(
   const resolved = previousFindings.filter(f => f.status === 'resolved');
   // Waived priors come first, so a finding that matches both a waived and a fixed one is still dropped.
   const engaged = [...resolved.filter(f => !f.fixed), ...resolved.filter(f => f.fixed)];
-  const answered = previousFindings.flatMap(f => (f.answer && f.threadId ? [{ ...f, answer: f.answer, threadId: f.threadId }] : []));
+  // An outdated thread has `line` 0, so only then is it matched on the line it was posted on.
+  const answered = previousFindings.flatMap(f => (f.answer && f.threadId ? [{ ...f, line: f.line || f.originalLine || 0, answer: f.answer, threadId: f.threadId }] : []));
 
   for (const finding of newFindings) {
     const matched = firstMatch(finding, engaged);
