@@ -214,7 +214,7 @@ jobs:
           # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Only if the App can't reach the memory repo
 ```
 
-The job has no `if` and no `concurrency` block, since the service filters and orders the events. It needs no checkout: Manki reads the PR's `.manki.yml` at the head commit through the API. The service finds the workflow by its `workflow_dispatch` inputs, so the file name is free. No other workflow may run Manki on events such as `pull_request`: while one is on the default branch, the service starts nothing for the repository and logs why, since each event would otherwise run twice. Manki fails a run that the service did not start.
+The job has no `if` and no `concurrency` block, since the service filters and orders the events. It needs no checkout: Manki reads `.manki.yml` on the base branch, and the PR's copy at its head commit to check that it loads, through the API. The service finds the workflow by its `workflow_dispatch` inputs, so the file name is free. No other workflow may run Manki on events such as `pull_request`: while one is on the default branch, the service starts nothing for the repository and logs why, since each event would otherwise run twice. Manki fails a run that the service did not start.
 
 #### Workflow examples per provider
 
@@ -443,7 +443,7 @@ Manki's newest progress comment ends with a settings block. It holds a status li
 
 ### Runs use the workflow on the default branch
 
-The service starts every run on the default branch. A PR that changes the Manki workflow or the pinned Manki version only takes effect for its own reviews once it is merged. The review content is still correct: the PR diff and the PR's `.manki.yml` are fetched through the API.
+The service starts every run on the default branch. A PR that changes the Manki workflow or the pinned Manki version only takes effect for its own reviews once it is merged. The review content is still correct: the PR diff is fetched through the API. A change to `.manki.yml` also takes effect after merge, since every review reads it from the base branch.
 
 ### Reviews may post duplicate comments across runs
 
