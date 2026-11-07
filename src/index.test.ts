@@ -697,7 +697,7 @@ describe('run', () => {
 
       await run();
 
-      expect(jest.mocked(ghUtils.hasWriteAccess)).toHaveBeenCalledWith(workflowClient, 'test-owner', 'test-repo', 'private-member', 'CONTRIBUTOR');
+      expect(jest.mocked(ghUtils.hasWriteAccess)).toHaveBeenCalledWith(workflowClient, 'test-owner', 'test-repo', 'private-member');
       expect(mockPullsGet).toHaveBeenCalled();
       expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
     });
@@ -721,7 +721,7 @@ describe('run', () => {
 
       await run();
 
-      expect(jest.mocked(ghUtils.hasWriteAccess)).toHaveBeenCalledWith(workflowClient, 'test-owner', 'test-repo', 'stranger', 'NONE');
+      expect(jest.mocked(ghUtils.hasWriteAccess)).toHaveBeenCalledWith(workflowClient, 'test-owner', 'test-repo', 'stranger');
       expect(jest.mocked(authModule.createAuthenticatedOctokit)).not.toHaveBeenCalled();
       expect(jest.mocked(createLLMClient)).not.toHaveBeenCalled();
       expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();

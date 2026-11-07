@@ -1330,7 +1330,6 @@ describe('fetchRecapState', () => {
         'src/reader-agreed.ts': { reply: { login: 'dave', association: 'MEMBER' }, security: true, blocks: true },
         // A private org member shows as `NONE`.
         'src/private-member-agreed.ts': { reply: { login: 'erin', association: 'NONE' }, security: true, blocks: false },
-        'src/first-timer-agreed.ts': { reply: { login: 'frank', association: 'FIRST_TIME_CONTRIBUTOR' }, security: true, blocks: true },
         'src/judge-addressed.ts': { resolver: 'author', security: true, blocks: false },
         'src/plain-author-resolved.ts': { resolver: 'author', security: false, blocks: false },
         'src/plain-author-agreed.ts': { reply: { login: 'author', association: 'NONE' }, security: false, blocks: false },
@@ -1422,7 +1421,6 @@ describe('fetchRecapState', () => {
       await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(permission).toHaveBeenCalledTimes(lookups);
       expect(permission).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', username: 'author' });
-      expect(permission).not.toHaveBeenCalledWith(expect.objectContaining({ username: 'frank' }));
     });
 
     it('round-trips suggestedFix containing a literal \\u0060 escape sequence without parse error', async () => {

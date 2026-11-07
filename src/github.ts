@@ -77,12 +77,8 @@ async function isRepoAdmin(octokit: Octokit, owner: string, repo: string, login:
   return await repoPermission(octokit, owner, repo, login) === 'admin';
 }
 
-/**
- * Whether `login` can push to the repo. A `maintain` role reads as `write`.
- * A first-time contributor or first timer `association` is refused without a lookup, since neither is ever a member.
- */
-async function hasWriteAccess(octokit: Octokit, owner: string, repo: string, login: string, association?: string | null): Promise<boolean> {
-  if (association === 'FIRST_TIME_CONTRIBUTOR' || association === 'FIRST_TIMER') return false;
+/** Whether `login` can push to the repo. A `maintain` role reads as `write`. */
+async function hasWriteAccess(octokit: Octokit, owner: string, repo: string, login: string): Promise<boolean> {
   return ['admin', 'write'].includes(await repoPermission(octokit, owner, repo, login));
 }
 

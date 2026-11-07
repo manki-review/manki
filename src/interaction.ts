@@ -34,9 +34,8 @@ export async function isLLMAccessAllowed(octokit: Octokit, owner: string, repo: 
 
 /** Whether the commenter has write access, asked through the API since `author_association` cannot tell. */
 async function commenterCanWrite(octokit: Octokit, owner: string, repo: string): Promise<boolean> {
-  const { comment, sender } = github.context.payload;
-  const login: string | undefined = sender?.login;
-  return !!login && await hasWriteAccess(octokit, owner, repo, login, comment?.author_association);
+  const login: string | undefined = github.context.payload.sender?.login;
+  return !!login && await hasWriteAccess(octokit, owner, repo, login);
 }
 
 interface MemoryConfig {

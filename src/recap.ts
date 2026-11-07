@@ -446,10 +446,9 @@ async function fetchRecapState(
   const botThreads = threads.filter(t => t.isBotThread);
   const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isOverrideCandidate(t, prAuthorLogin))
     && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
-  const agreers = new Map(botThreads.flatMap(t => t.isSecurity && t.authorReplyLogin && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
-    ? [[t.authorReplyLogin, t.authorReplyAssociation] as const] : []));
-  const mayAgree = new Map(await Promise.all([...agreers].map(async ([login, association]) =>
-    [login, await hasWriteAccess(octokit, owner, repo, login, association)] as const)));
+  const agreers = new Set(botThreads.flatMap(t => t.isSecurity && t.authorReplyLogin && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
+    ? [t.authorReplyLogin] : []));
+  const mayAgree = new Map(await Promise.all([...agreers].map(async login => [login, await hasWriteAccess(octokit, owner, repo, login)] as const)));
 
   const previousFindings = botThreads.map(t => {
     const securityOverride = addressedThreadIds.has(t.threadId) ? undefined : securityOverrideOf(t, prAuthorLogin, prAuthorIsAdmin);

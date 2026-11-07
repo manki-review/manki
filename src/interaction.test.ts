@@ -579,12 +579,13 @@ describe('isLLMAccessAllowed', () => {
   ])('asks the API about %s', async (_name, login, association, expected) => {
     setContext({ comment: { id: 42, body: '@manki review', user: { login }, author_association: association }, sender: { login } });
     expect(await allowed()).toBe(expected);
-    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login, association);
+    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login);
   });
 
   it.each([
     ['a returning fork author without write access', 'reader', 'CONTRIBUTOR', false],
     ['a first-time fork author', 'reader', 'FIRST_TIME_CONTRIBUTOR', false],
+    ['a private org member on their first PR', 'member', 'FIRST_TIME_CONTRIBUTOR', true],
     ['a same-repo PR author with write access', 'author', 'NONE', true],
   ])('treats the PR author on their own PR like anyone else: %s', async (_name, login, association, expected) => {
     setContext({
@@ -594,7 +595,7 @@ describe('isLLMAccessAllowed', () => {
       pull_request: { number: 1, user: { login } },
     });
     expect(await allowed()).toBe(expected);
-    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login, association);
+    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login);
   });
 
   it('checks only the editor on an edit of another user\'s comment', async () => {
