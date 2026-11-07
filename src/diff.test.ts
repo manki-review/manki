@@ -362,6 +362,10 @@ describe('compareChanges', () => {
     const chmod = MULTI_FILE_DIFF.replace('index 1111111..2222222 100644', 'old mode 100644\nnew mode 100755\nindex 1111111..2222222');
     expect(parsePRDiff(chmod).files.find(f => f.modeChange)).toEqual(expect.objectContaining({ modeChange: '100644 100755' }));
     expect(isSameChange(MULTI_FILE_DIFF, chmod)).toBe(false);
+    const script = ADDED_FILE_DIFF.replace('new file mode 100644', 'new file mode 100755');
+    expect(parsePRDiff(script).files[0].modeChange).toBe('100755');
+    expect(parsePRDiff(ADDED_FILE_DIFF).files[0].modeChange).toBeUndefined();
+    expect(isSameChange(ADDED_FILE_DIFF, script)).toBe(false);
   });
 
   it('returns the binaries of the second diff, which only their full blob shas can prove unchanged', () => {
