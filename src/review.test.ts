@@ -2606,9 +2606,10 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
-  it('applies suppressions from memory to reviewer findings before judge, and never to tool alerts', async () => {
+  it('applies suppressions from memory to reviewer findings before judge, and never to blockers or tool alerts', async () => {
     const findingJson = JSON.stringify([
       { severity: 'suggestion', title: 'Suppressed finding here', file: 'src/a.ts', line: 10, description: 'Desc.' },
+      { severity: 'blocker', title: 'Suppressed check lets injection through', file: 'src/b.ts', line: 20, description: 'Desc.' },
     ]);
     const clients = makeClients(findingJson);
     const config = makeConfig();
@@ -2617,19 +2618,21 @@ describe('runReview', () => {
       suppressions: [{ id: '1', pattern: 'suppressed', reason: 'intentional', created_by: 'user', created_at: '2025-01-01', pr_ref: '#1' }],
       learnings: [],
     };
-
-    mockedApplySuppressions.mockReturnValue({
-      kept: [],
-      suppressed: [{ severity: 'suggestion', title: 'Suppressed finding here', file: 'src/a.ts', line: 10, description: 'Desc.', reviewers: ['Security & Safety'] }],
-    });
+    mockedApplySuppressions.mockImplementationOnce(jest.requireActual('./memory').applySuppressions);
+    // A later round, so dedup against earlier findings runs too.
+    const previousFindings = [{ title: 'Unrelated earlier finding', file: 'src/c.ts', line: 1, severity: 'warning' as const, status: 'open' as const }];
 
     const alert = { tool: 'CodeQL', ruleId: 'js/sql-injection', severity: 'warning' as const, file: 'src/a.ts', line: 10, message: 'Suppressed query built from input', source: 'code_scanning' as const };
 
-    const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', memory, prContext: { title: 'PR', body: '', baseBranch: 'main', staticSignals: [alert] } });
+    const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', memory, previousFindings, prContext: { title: 'PR', body: '', baseBranch: 'main', staticSignals: [alert] } });
     expect(mockedApplySuppressions).toHaveBeenCalled();
     expect(mockedApplySuppressions.mock.calls.flatMap(([findings]) => findings).some(f => f.toolSource)).toBe(false);
-    expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.title)).toEqual(['js/sql-injection: Suppressed query built from input']);
-    expect(result.suppressionCount).toBe(1);
+    expect([...new Set(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.title))]).toEqual([
+      'js/sql-injection: Suppressed query built from input',
+      'Suppressed check lets injection through',
+    ]);
+    // Both reviewers return the suggestion.
+    expect(result.suppressionCount).toBe(2);
   });
 
   it('keeps the judge severities when memory is loaded', async () => {

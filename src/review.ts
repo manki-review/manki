@@ -987,7 +987,7 @@ export async function runReview(
   const duplicateMatches: RoundDedupDuplicateMatch[] = [];
   if (previousFindings && previousFindings.length > 0 && findingsForJudge.length > 0) {
     const changedSinceLastRound = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
-    const { unique, duplicates } = deduplicateFindings(findingsForJudge, previousFindings, memory?.suppressions, changedSinceLastRound);
+    const { unique, duplicates } = deduplicateFindings(findingsForJudge, previousFindings, changedSinceLastRound);
     if (duplicates.length > 0) {
       core.info(`Static dedup removed ${duplicates.length} findings matching earlier resolved ones before judge`);
     }
