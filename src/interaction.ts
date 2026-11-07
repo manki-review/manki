@@ -92,10 +92,11 @@ const REPLY_TOOLS_TIMEOUT_MS = 300_000;
 
 const REPLY_RESOLUTION_REASONS: Record<string, ResolutionReason> = { Fixed: 'ADDRESSED', Agreed: 'WONT_FIX', Withdrawn: 'INVALID' };
 
-const AGREED_REPLY_RE = /^\**Agreed\b/;
-
-function staysOpenNote(isSecurity: boolean): string {
-  return `This is a ${isSecurity ? 'security' : 'blocking'} finding, so the thread stays open until a maintainer other than the PR author, or a repo admin, closes it.`;
+function staysOpenNote(isSecurity: boolean, fixed: boolean): string {
+  const until = fixed
+    ? 'the next review confirms the fix, or a maintainer other than the PR author closes it'
+    : 'a maintainer other than the PR author, or a repo admin, closes it';
+  return `This is a ${isSecurity ? 'security' : 'blocking'} finding, so the thread stays open until ${until}.`;
 }
 
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
@@ -290,7 +291,7 @@ export async function handleReviewCommentReply(
         return undefined;
       })
       : undefined;
-    const staysOpen = (AGREED_REPLY_RE.test(reply) || WITHDRAWN_REPLY_RE.test(reply)) && !!thread && isGuarded(thread) && !mayClear;
+    const staysOpen = !!thread && isGuarded(thread) && !mayClear;
 
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;
@@ -304,7 +305,7 @@ export async function handleReviewCommentReply(
         });
     }
 
-    const notes = [...(staysOpen ? [staysOpenNote(isSecurity)] : []), ...(saved ? [saved] : [])];
+    const notes = [...(staysOpen ? [staysOpenNote(isSecurity, outcome === 'Fixed')] : []), ...(saved ? [saved] : [])];
     await octokit.rest.pulls.createReplyForReviewComment({
       owner,
       repo,

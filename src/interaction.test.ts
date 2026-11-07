@@ -756,8 +756,11 @@ describe('handleReviewCommentReply', () => {
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
 
     // An agreement that cannot close a blocking or security thread says who can.
-    const staysOpen = kind !== 'warning' && !reason && /^\**(Agreed|Withdrawn)\./.test(reply);
-    const note = `\n\nThis is a ${kind === 'security' ? 'security' : 'blocking'} finding, so the thread stays open until a maintainer other than the PR author, or a repo admin, closes it.`;
+    const staysOpen = kind !== 'warning' && !reason && /^\**(Fixed|Agreed|Withdrawn)\./.test(reply);
+    const until = reply.startsWith('Fixed')
+      ? 'the next review confirms the fix, or a maintainer other than the PR author closes it'
+      : 'a maintainer other than the PR author, or a repo admin, closes it';
+    const note = `\n\nThis is a ${kind === 'security' ? 'security' : 'blocking'} finding, so the thread stays open until ${until}.`;
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${staysOpen ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason ? [[octokit, 'PRRT_this', reason]] : []);
   });
