@@ -22,11 +22,11 @@ Each round sorts the PR into a **review class**, and the class picks a **review 
 | Class | Rank | Matches | Built-in group |
 |-------|------|---------|----------------|
 | `security` | 100 | a security-sensitive path (`@security_paths`) | `pair` |
-| `supply_chain` | 90 | CI, automation or a dependency or toolchain manifest (`@ci_dependency_paths`) | `pair` |
+| `supply_chain` | 90 | CI, automation, a dependency or toolchain manifest, a file that fetches or builds code such as `.gitmodules`, `.gitattributes`, `.npmrc`, `build.rs`, `setup.py`, a `Makefile` or a `.husky` hook, or a `.manki.yml` or `manki.yml` anywhere (`@ci_dependency_paths`) | `pair` |
 | `data_contract` | 80 | migrations, `*.sql`, `*.proto`, `schema.*`, OpenAPI files (`@data_contract_paths`) | `pair` |
 | `behavior` | 50 | the planner answered `paired: true` | `pair` |
 | `internal` | 30 | the planner answered `paired: false` | `solo` |
-| `docs` | 20 | the planner answered `trivial: true` and every file is docs, snapshots or generated, deleted, or renamed without edits | `trivial` |
+| `docs` | 20 | the planner answered `trivial: true` and every file is prose (Markdown, reStructuredText, AsciiDoc or a license), a snapshot or generated, deleted, or renamed without edits. Agent instructions such as `AGENTS.md`, `CLAUDE.md` or files under `.claude/`, `.cursor/` or `.github/instructions/` never count as prose here | `trivial` |
 
 The built-in groups are `trivial` (the quick check on `models.reviewer` at medium effort), `solo` (one finder on `models.reviewer`) and `pair` (a finder on `models.reviewer` and one on `models.reviewer_pair`). Their effort is `auto`: high when the planner answers `subtle: true`, otherwise medium.
 

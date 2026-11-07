@@ -14,12 +14,15 @@ const SECURITY_SENSITIVE_PREFIXES: readonly string[] = Object.freeze([
   'key', 'cert', 'tls', 'ssl', 'https',
 ]);
 
-// CI and automation, which runs with the repository's secrets, and dependency or toolchain pins.
+// CI and automation, which runs with the repository's secrets, dependency or toolchain pins, what fetches or builds
+// code, and the review's own config.
 const CI_OR_DEPENDENCY_PATTERNS: readonly string[] = Object.freeze([
   '.github/workflows/**', '.github/actions/**', '**/action.yml', '**/action.yaml',
   '**/package.json', '**/package-lock.json', '**/npm-shrinkwrap.json', '**/pnpm-lock.yaml', '**/*.lock', '**/go.sum',
   '**/Cargo.toml', '**/go.mod', '**/pyproject.toml', '**/requirements*.txt', '**/Gemfile', '**/*.gemspec',
   '**/rust-toolchain*', '**/.nvmrc', '**/Dockerfile*',
+  '**/.gitmodules', '**/.gitattributes', '**/.npmrc', '**/.yarnrc*', '**/build.rs', '**/setup.py', '**/Makefile',
+  '.husky/**', '**/.manki.{yml,yaml}', '**/manki.{yml,yaml}',
 ]);
 
 // Stored data and wire formats that other code or services rely on.
@@ -27,13 +30,21 @@ const DATA_CONTRACT_PATTERNS: readonly string[] = Object.freeze([
   '**/migrations/**', '**/*.sql', '**/*.proto', '**/schema.*', '**/openapi*.{yml,yaml,json}',
 ]);
 
-// Kinds of file where the planner's `trivial: true` is believed: docs, snapshots and generated files.
+// Kinds of file where the planner's `trivial: true` is believed: prose, snapshots and generated files.
 const DOCS_FILE_PATTERNS: readonly string[] = Object.freeze([
-  '**/*.md', '**/*.mdx', '**/*.rst', '**/*.adoc', '**/*.txt', 'docs/**', '**/LICENSE*',
+  '**/*.md', '**/*.mdx', '**/*.rst', '**/*.adoc', '**/LICENSE*',
   '**/*.snap', '**/__snapshots__/**', '**/*.generated.*', 'dist/**',
 ]);
 
+// Prose that steers coding agents, so a change to it is never trivial. Matched in any case.
+const AGENT_INSTRUCTION_PATTERNS: readonly string[] = Object.freeze([
+  '**/AGENTS.md', '**/CLAUDE.md', '**/GEMINI.md', '.github/copilot-instructions.md', '.github/instructions/**',
+  '**/.claude/**', '**/.cursor/**',
+]);
+
 const globAlias = (patterns: readonly string[]) => (path: string) => patterns.some(p => minimatch(path, p, { dot: true }));
+const isDocsFile = globAlias(DOCS_FILE_PATTERNS);
+const isAgentInstructions = (path: string) => AGENT_INSTRUCTION_PATTERNS.some(p => minimatch(path, p, { dot: true, nocase: true }));
 
 /** Path aliases a class's `paths_any` can name next to plain globs. */
 export const PATH_ALIASES: Readonly<Record<string, (path: string) => boolean>> = Object.freeze({
@@ -99,11 +110,12 @@ function isUnchangedRename(file: DiffFile): boolean {
 }
 
 /**
- * Whether every changed file could be trivial: docs, snapshots or generated, deleted, or renamed without edits.
+ * Whether every changed file could be trivial: prose other than agent instructions, snapshots or generated, deleted,
+ * or renamed without edits.
  * The planner only sees PR-derived text, so its `trivial` answer needs this floor in code.
  */
 function couldBeTrivial(diff: ParsedDiff): boolean {
-  return diff.files.every(f => f.changeType === 'deleted' || isUnchangedRename(f) || DOCS_FILE_PATTERNS.some(p => minimatch(f.path, p, { dot: true })));
+  return diff.files.every(f => f.changeType === 'deleted' || isUnchangedRename(f) || (isDocsFile(f.path) && !isAgentInstructions(f.path)));
 }
 
 function matchesClass(diff: ParsedDiff, match: ReviewClassMatch, triage: Triage): boolean {
