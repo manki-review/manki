@@ -905,47 +905,6 @@ describe('handlePullRequest', () => {
     );
   });
 
-  it.each([undefined, 'skip', 'review'] as const)('reviews a draft PR automatically only with `drafts: review` (drafts: %s)', async (drafts) => {
-    jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...jest.mocked(configModule.loadConfig)(undefined), ...(drafts && { drafts }) });
-    setContext({
-      eventName: 'pull_request',
-      payload: {
-        action: 'opened',
-        sender: { login: 'user' },
-        pull_request: {
-          number: 1,
-          head: { sha: 'abc' },
-          base: { ref: 'main' },
-          title: 'Draft PR',
-          body: '',
-          draft: true,
-        },
-      },
-    });
-
-    await handlePullRequest();
-
-    if (drafts !== 'review') {
-      expect(jest.mocked(core.info)).toHaveBeenCalledWith('Skipping draft PR (`drafts: skip`)');
-      expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
-      return;
-    }
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Starting review for test-owner/test-repo#1');
-  });
-
-  it('skips a draft PR with a warning when the base config cannot be read', async () => {
-    jest.mocked(configModule.loadConfig).mockImplementationOnce(() => { throw new Error('Invalid config in .manki.yml: bad'); });
-    setContext({
-      eventName: 'pull_request',
-      payload: { action: 'synchronize', sender: { login: 'user' }, pull_request: { number: 1, head: { sha: 'abc' }, base: { ref: 'main' }, title: 'Draft PR', body: '', draft: true } },
-    });
-
-    await handlePullRequest();
-
-    expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not read .manki.yml on the base branch, skipping the draft PR: Invalid config in .manki.yml: bad');
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Skipping draft PR (`drafts: skip`)');
-  });
-
   describe('with the settings block', () => {
     const prPayload = (draft: boolean) => ({
       action: 'synchronize', sender: { login: 'user' },
@@ -958,20 +917,17 @@ describe('handlePullRequest', () => {
     });
 
     it.each([
-      ['a draft', true, false, 'draft, not reviewed automatically', ['pause', 'full', 'deeper', 'draft'], ['full', 'deeper']],
-      ['a paused PR', false, true, 'automatic review paused', ['pause', 'full', 'deeper'], ['pause', 'full', 'deeper']],
-    ])('shows %s in the settings block, with the coordinator\'s last reviewed commit, instead of reviewing it or posting a notice', async (_case, draft, paused, status, boxes, ticked) => {
-      jest.mocked(authModule.fetchPrState).mockResolvedValue({ ...settingsState(paused, [], ['full', 'deeper']), lastReviewed: 'fff0000' });
+      ['a draft', true, false],
+      ['a paused PR', false, true],
+    ])('reviews %s the service dispatched, since the service already decided to', async (_case, draft, paused) => {
+      jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'anthropic_api_key' ? 'test-api-key' : ''));
+      jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState(paused));
       setContext({ eventName: 'pull_request', payload: prPayload(draft) });
 
       await handlePullRequest();
 
-      expect(ghUtils.showSettings).toHaveBeenCalledWith(
-        expect.anything(), expect.anything(), 'test-owner', 'test-repo', 1,
-        { lastReviewed: 'fff0000', head: 'abc123', status, boxes: new Set(boxes), ticked: new Set(ticked) }, expect.any(String),
-      );
-      expect(ghUtils.postProgressComment).not.toHaveBeenCalled();
-      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
+      expect(ghUtils.postProgressComment).toHaveBeenCalled();
+      expect(ghUtils.showSettings).not.toHaveBeenCalled();
     });
 
     it('shows an already reviewed head as up to date', async () => {

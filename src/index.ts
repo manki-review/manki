@@ -361,11 +361,11 @@ function reviewModes({ runModes }: PrState): { forced: boolean; fullReview: bool
 
 /**
  * Shows `status` in the settings block, for a run that reviews nothing. Posts `text` with it when no comment has a block.
- * Without `lastReviewed`, the block names the coordinator's last reviewed commit, or keeps the one it names.
+ * Without `lastReviewed`, the block keeps the commit it names.
  */
 async function showRunStatus(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, settings: PrState,
-  { head, draft, status, text, lastReviewed = settings.lastReviewed }: { head: string; draft: boolean; status: string; text: string; lastReviewed?: string },
+  { head, draft, status, text, lastReviewed }: { head: string; draft: boolean; status: string; text: string; lastReviewed?: string },
 ): Promise<void> {
   await showSettings(octokit, bot, owner, repo, prNumber, {
     ...(lastReviewed && { lastReviewed }), head, status, boxes: settingsBoxes(draft), ticked: tickedBoxes(settings),
@@ -379,17 +379,6 @@ async function showAlreadyReviewed(
   await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
     head: commitSha, draft, status: 'up to date', text: 'This commit already has a review.', lastReviewed: commitSha,
   });
-}
-
-/** Whether the base branch's config sets `drafts: review`. A config that cannot be read counts as `drafts: skip`. */
-async function reviewsDrafts(octokit: Octokit, owner: string, repo: string, baseRef: string): Promise<boolean> {
-  const configPath = core.getInput('config_path') || '.manki.yml';
-  try {
-    return loadConfig(await fetchConfigFile(octokit, owner, repo, baseRef, configPath) ?? undefined, configPath).drafts === 'review';
-  } catch (error) {
-    core.warning(`Could not read ${configPath} on the base branch, skipping the draft PR: ${error instanceof Error ? error.message : error}`);
-    return false;
-  }
 }
 
 async function handlePullRequest(): Promise<void> {
@@ -408,21 +397,6 @@ async function handlePullRequest(): Promise<void> {
   const settings = await loadSettings(owner, repo, prNumber);
   const { forced, fullReview, deeper } = reviewModes(settings);
   const { octokit, bot } = await getAuth();
-  if (draft && !forced && !(await reviewsDrafts(octokit, owner, repo, pr.base.ref))) {
-    core.info('Skipping draft PR (`drafts: skip`)');
-    await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
-      head: commitSha, draft, status: 'draft, not reviewed automatically', text: 'This PR is a draft, so Manki does not review it automatically.',
-    });
-    return;
-  }
-  if (settings.settings.paused && !forced) {
-    core.info('Automatic review is paused in the settings block, skipping');
-    await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
-      head: commitSha, draft, status: 'automatic review paused', text: 'Automatic review is paused.',
-    });
-    return;
-  }
-
   if (!forced && await isApprovedOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.info('Already approved on this commit — skipping review');
     return;
