@@ -618,6 +618,11 @@ export interface DiffFile {
   hunks: DiffHunk[];
   additions?: number;
   deletions?: number;
+  /**
+   * The old and new mode, such as `100644 100755`, when the PR changes the mode of a file it also edits, or the mode
+   * of an added file that is no plain file, such as `100755`.
+   */
+  modeChange?: string;
 }
 
 export interface DiffHunk {
@@ -632,8 +637,14 @@ export interface ParsedDiff {
   files: DiffFile[];
   totalAdditions: number;
   totalDeletions: number;
-  /** Paths of binary files dropped by `isBinaryFile` during `parsePRDiff`. */
-  binarySkipped?: string[];
+  /** Files with no lines to read, such as binaries, mode changes and empty files, dropped by `isBinaryFile` during `parsePRDiff`. */
+  binarySkipped?: BinaryFile[];
+}
+
+export interface BinaryFile {
+  path: string;
+  /** The paths, abbreviated blob ids and modes from the file's diff header, which change with its content. */
+  header: string;
 }
 
 export interface PrContext {

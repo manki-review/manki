@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
@@ -89,6 +89,8 @@ const PAUSE_NOTICE_MARKER = '<!-- manki-paused -->';
 /** Marks the approval auto-approve posts. It stays in the body after GitHub dismisses the review. */
 const AUTO_APPROVE_MARKER = '<!-- manki-auto-approve -->';
 const CANCELLED_MARKER = '<!-- manki-review-cancelled -->';
+/** Marks a review that is no verdict on its commit, such as a round no model finished, so auto-approve never builds on it. */
+const NO_VERDICT_MARKER = '<!-- manki-no-verdict -->';
 const VERSION_MARKER_PREFIX = '<!-- manki-version:';
 /** Holds the id of the progress comment the run posted, for the post step. */
 const PROGRESS_STATE_KEY = 'manki_progress_comment';
@@ -184,6 +186,28 @@ export function approvalHoldLine(hold: ApprovalHold): string {
   return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
 }
 
+const MAX_UNREVIEWED_LINES = 50;
+
+/**
+ * Returns the notice for a diff no model reads: each skipped file and why, and what the static analyzers found on them.
+ * Long lists are cut at `MAX_UNREVIEWED_LINES` entries.
+ */
+export function formatUnreviewedNotice(shortSha: string, excluded: RoundDiffExcludedFile[], binary: BinaryFile[], signals: StaticSignal[]): string {
+  const list = (lines: string[]) => [...lines.slice(0, MAX_UNREVIEWED_LINES), ...(lines.length > MAX_UNREVIEWED_LINES ? [`- and ${lines.length - MAX_UNREVIEWED_LINES} more`] : [])].join('\n');
+  // File names and tool output come from the PR, so each is shown as inline code on one line.
+  const inline = (text: string) => `\`${sanitizeFilePath(sanitizeMarkdown(text))}\``;
+  const skipped = [
+    ...excluded.map(f => `- ${inline(f.path)}: matches ${inline(f.matchedPattern)} in \`exclude_paths\``),
+    ...binary.map(f => `- ${inline(f.path)}: no lines to read, such as a binary, a mode change or an empty file`),
+  ];
+  const found = signals.map(s => `- ${inline(`${s.file}:${s.line}`)}: ${inline([s.tool, s.ruleId].filter(Boolean).join(' '))}: ${inline(s.message)}`);
+  return [
+    `**Not reviewed** at \`${shortSha}\`: no model read this PR, since Manki skips every file it changes. A person needs to review it.`,
+    ...(skipped.length > 0 ? [`**Skipped files:**\n${list(skipped)}`] : []),
+    ...(found.length > 0 ? [`**Static analysis on the skipped files:**\n${list(found)}`] : []),
+  ].join('\n\n');
+}
+
 /** Thrown when the PR head moved past the commit under review, so the review must post no verdict. */
 export class SupersededError extends Error {
   constructor(readonly reviewedSha: string, readonly headSha: string) {
@@ -230,6 +254,15 @@ export async function fetchInterRoundDiff(
     core.debug(`Failed to fetch inter-round diff ${base}..${head}: ${error}`);
     throw error;
   }
+}
+
+/**
+ * Returns the full blob sha of each file `head` changes against its merge base with `base`, by path. GitHub lists at most
+ * 300 files for a comparison, so a path past that is missing from the map.
+ */
+export async function fetchBlobShas(octokit: Octokit, owner: string, repo: string, base: string, head: string): Promise<Map<string, string>> {
+  const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base, head, per_page: 1 });
+  return new Map((data.files ?? []).flatMap(f => (f.sha ? [[f.filename, f.sha] as const] : [])));
 }
 
 /**
@@ -1137,7 +1170,7 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, configFailed = false }: { existingThreads?: PreviousFinding[]; draft?: boolean; configFailed?: boolean } = {},
+  { existingThreads = [], draft = false, configFailed = false, noVerdict = false }: { existingThreads?: PreviousFinding[]; draft?: boolean; configFailed?: boolean; noVerdict?: boolean } = {},
 ): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const event = mapVerdictToEvent(result.verdict);
 
@@ -1269,9 +1302,9 @@ export async function postReview(
   const highlight = <T extends { body: string }>(c: T): T => ({ ...c, body: highlightCode(c.body, codeTokens) });
   const body = highlightCode(renderBody(), codeTokens);
   const postedComments = [...validComments, ...fileComments].map(highlight);
-  const record = context
+  const record = (context
     ? formatRecordTrailer({ ...context, output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) } }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
-    : '';
+    : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '');
 
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
@@ -2296,5 +2329,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
+export { APPROVED_LINE, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, NO_VERDICT_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
 export type { StandingVerdict };
