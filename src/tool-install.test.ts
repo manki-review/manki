@@ -49,7 +49,7 @@ describe('installPinned', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('never reuses an install that others can write, or one outside the runner temp folder', async () => {
+  it('never reuses an install that others can write, one whose download changed, or one outside the runner temp folder', async () => {
     const download = { url: 'https://example.test/tool-4.tgz', integrity };
     const first = await installPinned(download);
     chmodSync(first, 0o777);
@@ -60,13 +60,24 @@ describe('installPinned', () => {
     expect(planted).not.toBe(first);
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
+    const changed = { url: 'https://example.test/tool-5.tgz', integrity: `sha256-${createHash('sha256').update(data).digest('base64')}` };
+    const shared = await installPinned(changed);
+    expect(basename(shared)).toMatch(/^manki-pinned-/);
+    writeFileSync(join(shared, 'tool-5.tgz'), 'tampered');
+    let reused: string | undefined;
+    await jest.isolateModulesAsync(async () => {
+      reused = await (await import('./tool-install')).installPinned(changed);
+    });
+    expect(reused).not.toBe(shared);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
     delete process.env.RUNNER_TEMP;
     let unshared: string | undefined;
     await jest.isolateModulesAsync(async () => {
       unshared = await (await import('./tool-install')).installPinned(download);
     });
     expect(basename(unshared!)).toMatch(/^manki-tool-/);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it('saves a download that is not an archive as an executable under its own name', async () => {
