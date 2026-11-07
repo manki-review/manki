@@ -1154,6 +1154,8 @@ export async function postReview(
   const nitpicks: string[] = [];
   const stillOpen: string[] = [];
   const previouslyMissed: string[] = [];
+  let carriedBlockers = 0;
+  const carriedThreadIds = new Set<string>();
   const nonBlocking: Finding[] = [];
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
   const followUps = agreedFollowUps(existingThreads);
@@ -1176,8 +1178,10 @@ export async function postReview(
 
     const threadId = f.threadId ?? f.answeredIn?.threadId;
     const openThread = threadId ? existingThreads.find(t => t.threadId === threadId) : undefined;
-    if (openThread) {
+    if (threadId && openThread) {
       core.info(`Skipping "${f.title}" on ${f.file}: the thread ${threadId} already carries it`);
+      carriedBlockers++;
+      carriedThreadIds.add(threadId);
       if (!result.needsHuman?.blockers.some(b => b.threadId === threadId)) {
         // The finding shows under the link, so a wrong `sameAs` link still shows the defect. The indent keeps it in the list item.
         stillOpen.push(`${formatTraceEntry(openThread)}\n\n${`This round names it as:\n\n${formatFindingBlock(f, linkTo)}`.replace(/^(?=.)/gm, '  ')}`);
@@ -1221,7 +1225,8 @@ export async function postReview(
   const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl);
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
-  const lead = formatLead(result, blockingFindings);
+  const earlier = carriedThreadIds.size + (result.verdictTrace?.unresolvedPriors.length ?? 0);
+  const lead = formatLead(result, blockingFindings, { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (context?.meta.round ?? 1) > 1 });
   const hold = event === 'APPROVE' ? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   const heldLine = hold && approvalHoldLine(hold);
@@ -1238,11 +1243,8 @@ export async function postReview(
       b += `\n\n${needsHuman}`;
     }
     const blockingThreads = formatBlockingPriorThreads(result);
-    if (blockingThreads) {
-      b += `\n\n${blockingThreads}`;
-    }
-    if (stillOpen.length > 0) {
-      b += `\n\n${STILL_OPEN_HEADING}\n${stillOpen.join('\n')}`;
+    if (blockingThreads || stillOpen.length > 0) {
+      b += `\n\n${[blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n')}`;
     }
     if (generalFindings.length > 0) {
       b += `\n\n**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`;
@@ -1447,9 +1449,9 @@ function asSentence(text: string): string {
 const APPROVED_LINE = '✅ **Approved.**';
 
 /** The first line of the review body for each outcome. Its emoji is the only one in the review. */
-const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockerCount: number) => string> = {
+const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: BlockerCounts) => string> = {
   READY: () => APPROVED_LINE,
-  ADDRESS_FIRST: (_result, blockerCount) => `🔴 **Changes requested:** ${countOf(blockerCount, 'blocker')}.`,
+  ADDRESS_FIRST: (_result, blockers) => `🔴 **Changes requested:** ${formatBlockerCounts(blockers)}.`,
   INCOMPLETE: result => `${REVIEW_INCOMPLETE_LINE} ${asSentence(sanitizeMarkdown(result.summary.trim()) || 'The review did not finish')}`,
   NOT_CONVERGING: result => {
     const blockers = countOf(result.needsHuman?.blockers.length ?? 0, 'blocker');
@@ -1458,6 +1460,20 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockerCount: n
       : `🛑 **Needs a human:** ${blockers} came back after a fix.`;
   },
 };
+
+/** The blockers first raised this round, those still open from an earlier review, and whether earlier reviews exist. */
+interface BlockerCounts {
+  fresh: number;
+  earlier: number;
+  followUp: boolean;
+}
+
+/** Returns the blocker count for the verdict line, telling new blockers apart from those still open from an earlier review. */
+function formatBlockerCounts({ fresh, earlier, followUp }: BlockerCounts): string {
+  if (earlier === 0) return countOf(fresh, followUp ? 'new blocker' : 'blocker');
+  if (fresh === 0) return `${countOf(earlier, 'blocker')} still open from ${earlier === 1 ? 'an earlier review' : 'earlier reviews'}`;
+  return `${countOf(fresh, 'new blocker')} and ${earlier} still open`;
+}
 
 /** Returns what goes wrong in practice, from the judge summary or else the top blocker's description. */
 function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string {
@@ -1471,24 +1487,21 @@ function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string 
 }
 
 /** Returns the verdict line and the sentences under it that open the review body. */
-function formatLead(result: ReviewResult, blocking: Finding[]): string {
+function formatLead(result: ReviewResult, blocking: Finding[], blockers: BlockerCounts): string {
   if (!result.outcome) return sanitizeMarkdown(result.summary.trim());
-  const blockerCount = blocking.length || (result.verdictTrace?.unresolvedPriors.length ?? 0);
-  const line = VERDICT_LINES[result.outcome](result, blockerCount);
+  const line = VERDICT_LINES[result.outcome](result, blockers);
   const detail = formatVerdictDetail(result, blocking);
   return detail ? `${line}\n\n${detail}` : line;
 }
 
 /**
- * Lists every entry in `verdictTrace.unresolvedPriors` when the outcome is blocked by
- * `prior_unaddressed`, with its location and a link to the thread, so the author sees
- * which earlier thread blocks without reading the context JSON. An entry already listed
- * under "Needs a human" is left out.
+ * Lists every entry in `verdictTrace.unresolvedPriors`, with its location and a link to the
+ * thread, so the author sees which earlier thread blocks without reading the context JSON.
+ * An entry already listed under "Needs a human" is left out.
  */
 export function formatBlockingPriorThreads(
-  result: Pick<ReviewResult, 'verdictReason' | 'verdictTrace' | 'outcome' | 'needsHuman'>,
+  result: Pick<ReviewResult, 'verdictTrace' | 'outcome' | 'needsHuman'>,
 ): string | null {
-  if (result.verdictReason !== 'prior_unaddressed') return null;
   const listed = new Set(result.outcome === 'NOT_CONVERGING' ? result.needsHuman?.blockers.map(b => b.fingerprint) : []);
   const priors = (result.verdictTrace?.unresolvedPriors ?? []).filter(p => !listed.has(p.fingerprint));
   if (priors.length === 0) return null;

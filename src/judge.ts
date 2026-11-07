@@ -14,7 +14,7 @@ import {
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { parseProof, stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
+import { blockerThreadStaysOpen, determineOutcome, filesChangedByPush, parseProof, stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
 import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { refuteBlockers } from './refute';
@@ -297,6 +297,12 @@ export function collectPriorBlockers(priorRounds: RoundContext[] | undefined): P
   return [...byKey.values()];
 }
 
+/** Returns the IDs of the open threads whose earlier blocker blocks merge until the judge finds it addressed. */
+function earlierBlockerThreadIds(openThreads: OpenThread[], priorRounds: RoundContext[] | undefined): Set<string> {
+  const entries = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round).flatMap(r => r.findings.entries ?? []);
+  return new Set(determineOutcome([], entries, openThreads).verdictTrace.unresolvedPriors.flatMap(p => p.threadId ? [p.threadId] : []));
+}
+
 export interface JudgeResult {
   summary: string;
   findings: JudgedFinding[];
@@ -320,8 +326,15 @@ export function buildJudgeSystemPrompt(
   isFollowUp?: boolean,
   openThreadsCount: number = 0,
   relatedRepos?: RelatedRepo[],
+  openBlockerCount: number = 0,
 ): string {
   const hasOpenThreads = openThreadsCount > 0;
+  const openBlockers = openBlockerCount === 1
+    ? 'One of the Open Review Threads in the user message is an earlier blocker'
+    : `${openBlockerCount} of the Open Review Threads in the user message are earlier blockers`;
+  const openBlockerInstruction = openBlockerCount > 0
+    ? `\n\n${openBlockers}, marked "earlier blocker". Each one you do not mark \`addressed\` still blocks merge, and one marked "stays open" blocks merge whatever you decide. While one is still open, never write that nothing blocks merge or that the earlier problems are fixed. Say in plain words which earlier problem is still open and what still goes wrong because of it, for example: "The new comment matches \`memory.repo\`, but the earlier blocker is still open: the memory repo still sits in another account, so the App cannot write to it."`
+    : '';
   const summaryInstruction = isFollowUp
     ? `Write one or two sentences on where the change stands now: whether the earlier problems are fixed, and what still goes wrong in practice. The review already shows each finding's title, so do not repeat a title word for word. Do not re-describe the PR and do not praise the change. Never start with "The author" or "Since last review". If you can swap the project name and the summary still works, it is too generic. Good examples:
 - "Both earlier problems are fixed. The new retry loop drops the error reason, so operators see '3 attempts failed' with no cause."
@@ -330,7 +343,7 @@ export function buildJudgeSystemPrompt(
 Bad examples (do NOT write like this):
 - "The author addressed the positional slice ordering issue..."
 - "Solid follow-up with a few remaining suggestions."
-- "No findings submitted for evaluation this round."`
+- "No findings submitted for evaluation this round."${openBlockerInstruction}`
     : `Write one or two sentences on the most important problem: what goes wrong in practice when this code runs, and who notices. The review already shows each finding's title, so do not repeat a title word for word. When nothing blocks, say so in one short sentence. Do not praise the change or describe what the PR does. Never start with "The author", "This PR" or "The refactor". If you can swap the project name and the summary still works, it is too generic. Good examples:
 - "A client synced from a checkpoint can no longer start, because the filter header bound falls back to 0."
 - "Every failed request leaves a listener behind, so a long-running worker slowly runs out of memory."
@@ -634,9 +647,14 @@ export function buildJudgeUserMessage(
   if (openThreads && openThreads.length > 0) {
     parts.push(`## Open Review Threads\n`);
     parts.push('These are unresolved review threads from the previous review. Decide for each whether it has been addressed using the inter-round diff and current code regions below, then return one entry per thread in `threadEvaluations`.\n');
+    const pushChangedFiles = filesChangedByPush(interRoundDiff);
+    const earlierBlockers = earlierBlockerThreadIds(openThreads, priorRounds);
+    const staysOpenReason = interRoundDiff === undefined ? 'the fix cannot be confirmed without the inter-round diff' : 'the push did not change this file';
     for (const t of openThreads) {
       const linkSuffix = t.threadUrl ? ` ([view](${t.threadUrl}))` : '';
-      parts.push(`- **${t.threadId}**${linkSuffix}: [${t.severity}] "${sanitize(t.title)}" at ${sanitize(t.file)}:${t.line}`);
+      const blocks = !earlierBlockers.has(t.threadId) ? ''
+        : blockerThreadStaysOpen(t, pushChangedFiles) ? ` (earlier blocker, stays open: ${staysOpenReason})` : ' (earlier blocker)';
+      parts.push(`- **${t.threadId}**${linkSuffix}: [${t.severity}] "${sanitize(t.title)}" at ${sanitize(t.file)}:${t.line}${blocks}`);
     }
     parts.push('');
 
@@ -1065,7 +1083,8 @@ export async function runJudgeAgent(
 
   const changedFiles = diff.files;
 
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos);
+  const openBlockerCount = openThreads ? earlierBlockerThreadIds(openThreads, priorRounds).size : 0;
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos, openBlockerCount);
   const { classes } = resolveRouting(config.review);
   const findingNotes = (f: Finding): string[] => {
     const area = criticalAreaOf(classes, f.file);

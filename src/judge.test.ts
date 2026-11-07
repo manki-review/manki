@@ -319,6 +319,12 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('where the change stands now');
     expect(prompt).toContain('Never start with "The author"');
     expect(prompt).not.toContain('the most important problem');
+    expect(prompt).not.toContain('earlier blocker');
+
+    const blocked = buildJudgeSystemPrompt(makeConfig(), 5, true, 3, undefined, 2);
+    expect(blocked).toContain('2 of the Open Review Threads in the user message are earlier blockers');
+    expect(blocked).toContain('never write that nothing blocks merge');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, true, 3, undefined, 1)).toContain('One of the Open Review Threads in the user message is an earlier blocker');
   });
 
   it('uses standard summary instruction when isFollowUp is false', () => {
@@ -590,6 +596,26 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('Null check missing');
     expect(msg).toContain('PRRT_def');
     expect(msg).toContain('Unused import');
+
+    // Only a thread whose earlier blocker still blocks is marked: an agreed blocker no longer blocks.
+    const agreed = { threadId: 'PRRT_ghi', title: 'Agreed later', file: 'src/baz.ts', line: 5, severity: 'blocker' as const };
+    const entries = [
+      makeFindingFingerprintEntry({ title: 'Null check missing', file: 'src/foo.ts', severity: 'blocker', threadId: 'PRRT_abc' }),
+      makeFindingFingerprintEntry({ title: 'Unused import', file: 'src/bar.ts', severity: 'suggestion', threadId: 'PRRT_def' }),
+      makeFindingFingerprintEntry({ title: 'Agreed later', file: 'src/baz.ts', severity: 'blocker', threadId: 'PRRT_ghi', authorReplyClass: 'agree' }),
+    ];
+    const rounds = [makeRoundContext(1, { findings: { count: 3, severityCounts: {}, entries } })];
+    const followUp = (interRoundDiff: string) =>
+      buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [...openThreads, agreed], rounds, interRoundDiff);
+    const unpushed = followUp('');
+    expect(unpushed).toContain('"Null check missing" at src/foo.ts:10 (earlier blocker, stays open: the push did not change this file)');
+    expect(unpushed).toMatch(/"Unused import" at src\/bar\.ts:20\n/);
+    expect(unpushed).toMatch(/"Agreed later" at src\/baz\.ts:5\n/);
+
+    const pushed = 'diff --git a/src/foo.ts b/src/foo.ts\n--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -10,1 +10,1 @@\n-a\n+b\n';
+    expect(followUp(pushed)).toMatch(/"Null check missing" at src\/foo\.ts:10 \(earlier blocker\)\n/);
+    expect(buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads, rounds))
+      .toContain('"Null check missing" at src/foo.ts:10 (earlier blocker, stays open: the fix cannot be confirmed without the inter-round diff)');
   });
 
   it('renders thread reference with view link suffix when threadUrl is provided', () => {
