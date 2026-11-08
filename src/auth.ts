@@ -165,7 +165,7 @@ export async function resolveGitHubToken(tokenUrl: string, owner: string, repo: 
   return { token: tokenData.token };
 }
 
-const RUN_MODES: ReadonlySet<string> = new Set<RunMode>(['full', 'deeper', 'draft', 'force']);
+const RUN_MODES: ReadonlySet<string> = new Set<RunMode>(['again', 'deeper', 'draft']);
 
 function modesOf(items: unknown, keep: (item: Record<string, unknown>) => boolean): Set<RunMode> {
   const modes = new Set<RunMode>();

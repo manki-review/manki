@@ -1,16 +1,15 @@
 /** Ends the settings block of Manki's newest progress comment. The Worker reads the boxes above it. */
 export const SETTINGS_MARKER = '<!-- manki-settings -->';
 
-export type SettingsBox = 'pause' | 'full' | 'deeper' | 'cancel' | 'draft' | 'force';
+export type SettingsBox = 'pause' | 'again' | 'deeper' | 'cancel' | 'draft';
 
 /** The label of each box, in the order the block lists them. */
 const BOX_LABELS: Record<SettingsBox, string> = {
   pause: 'Pause automatic reviews',
-  full: 'Full review',
+  again: 'Review again',
   deeper: 'Deeper review',
   cancel: 'Cancel this review',
   draft: 'Review this draft',
-  force: 'Force review',
 };
 
 /** What the settings block shows. */

@@ -428,7 +428,7 @@ function reviewRound(trigger = 'pull_request:opened', force = false): Promise<vo
   });
 }
 
-/** Runs a second round on the same commit, as a Force review tick does. */
+/** Runs a second round on the same commit, as a Review again tick does. */
 function forcedRound(): Promise<void> {
   return reviewRound('issue_comment:edited:settings:force', true);
 }
@@ -646,7 +646,7 @@ describe('runFullReview end to end', () => {
       expect(skipNotices()).toEqual([]);
       expect(mankiComments()).toHaveLength(comments);
       const blocks = mockGitHub.comments.map(c => parseSettingsBlock(c.body)).filter(b => b !== undefined);
-      expect(blocks).toEqual([expect.objectContaining({ lastReviewed: HEAD_SHA.slice(0, 7), status: 'up to date', boxes: new Set(['pause', 'full', 'deeper']) })]);
+      expect(blocks).toEqual([expect.objectContaining({ lastReviewed: HEAD_SHA.slice(0, 7), status: 'up to date', boxes: new Set(['pause', 'again', 'deeper']) })]);
     });
 
     it('reviews a commit whose only review is incomplete', async () => {

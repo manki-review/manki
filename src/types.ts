@@ -1154,7 +1154,7 @@ export interface FullReviewOptions {
 }
 
 /** A one-off mode a settings box queued for a run. */
-export type RunMode = 'full' | 'deeper' | 'draft' | 'force';
+export type RunMode = 'again' | 'deeper' | 'draft';
 
 /** What the PR coordinator says about a PR. */
 export interface PrState {

@@ -4,7 +4,7 @@ const view: SettingsView = {
   lastReviewed: 'abc1234def',
   head: 'def5678abc',
   status: 'review running',
-  boxes: new Set(['force', 'pause', 'deeper', 'full', 'cancel']),
+  boxes: new Set(['pause', 'deeper', 'again', 'cancel']),
   ticked: new Set(['pause', 'draft']),
 };
 
@@ -14,10 +14,9 @@ describe('settings block', () => {
       '---',
       'Last reviewed `abc1234` · head `def5678` · review running',
       '- [x] Pause automatic reviews <!-- manki-box:pause -->',
-      '- [ ] Full review <!-- manki-box:full -->',
+      '- [ ] Review again <!-- manki-box:again -->',
       '- [ ] Deeper review <!-- manki-box:deeper -->',
       '- [ ] Cancel this review <!-- manki-box:cancel -->',
-      '- [ ] Force review <!-- manki-box:force -->',
       SETTINGS_MARKER,
     ].join('\n'));
     expect(renderSettingsBlock({ head: 'def5678', status: 'up to date', boxes: new Set(['draft']), ticked: new Set() }))
@@ -28,7 +27,7 @@ describe('settings block', () => {
     const body = withSettingsBlock('**Review started**\n\n<!-- manki-bot -->', view);
     expect(parseSettingsBlock(body)).toEqual({
       lastReviewed: 'abc1234', head: 'def5678', status: 'review running',
-      boxes: new Set(['pause', 'full', 'deeper', 'cancel', 'force']), ticked: new Set(['pause']),
+      boxes: new Set(['pause', 'again', 'deeper', 'cancel']), ticked: new Set(['pause']),
     });
     const answered = `${body}\n<!-- manki-answered:42 -->`;
     expect(parseSettingsBlock(answered)?.status).toBe('review running');
@@ -36,14 +35,14 @@ describe('settings block', () => {
     expect(stripSettingsBlock(body)).toBe('**Review started**\n\n<!-- manki-bot -->');
   });
 
-  it('reads a tick a person made, and ignores boxes it does not know', () => {
+  it('reads a tick a person made, and ignores boxes it does not know, the removed Full and Force review included', () => {
     const body = withSettingsBlock('Text', view)
-      .replace('- [ ] Full review', '- [X] Full review')
-      .replace(SETTINGS_MARKER, `- [x] Something else <!-- manki-box:other -->\n${SETTINGS_MARKER}`);
+      .replace('- [ ] Review again <', '- [X] Review again <')
+      .replace(SETTINGS_MARKER, `- [x] Something else <!-- manki-box:other -->\n- [x] Full review <!-- manki-box:full -->\n- [x] Force review <!-- manki-box:force -->\n${SETTINGS_MARKER}`);
     const parsed = parseSettingsBlock(body);
-    expect(parsed?.ticked).toEqual(new Set(['pause', 'full']));
-    expect(parsed?.boxes.has('full')).toBe(true);
-    expect([...(parsed?.boxes ?? [])]).not.toContain('other');
+    expect(parsed?.ticked).toEqual(new Set(['pause', 'again']));
+    expect(parsed?.boxes.has('again')).toBe(true);
+    expect([...(parsed?.boxes ?? [])]).toEqual(['pause', 'again', 'deeper', 'cancel']);
   });
 
   it('finds no block in a body without one, or with the marker quoted in the middle', () => {
