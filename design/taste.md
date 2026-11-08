@@ -21,7 +21,7 @@ Shown and not picked. Use only when the problem calls for it.
 - An index table of findings.
 - Every finding always open, under its own heading and rule.
 - Findings grouped by file under one shared snippet.
-- Task-list checkboxes in Manki's own review body. A tick edits the body and is lost when Manki rewrites it.
+- Task-list checkboxes in Manki's own review body. A tick edits the body and is lost when Manki rewrites it. A box is fine where Manki never rewrites the text after posting it, such as a finding's own "Create an issue for this" box.
 
 ## Round log
 

@@ -23,6 +23,8 @@ import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
+import { tickedIssueBoxes } from './issue-box';
+import { handleIssueBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
 import { ConfigSource, DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases } from './types';
 import {
@@ -214,6 +216,7 @@ async function run(): Promise<void> {
   }
 
   let settingsTick = false;
+  let issueTick = false;
 
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
@@ -265,17 +268,31 @@ async function run(): Promise<void> {
       markAnswers(octokit, commentId);
     }
   } else if (eventName === 'pull_request_review_comment') {
-    if (action !== 'created') {
+    if (action === 'edited') {
+      // Only a tick of an issue box in Manki's own comment matters. The editor needs write access.
+      const comment = github.context.payload.comment;
+      if (tickedIssueBoxes(comment?.body ?? '').length === 0) {
+        core.info('Edited review comment has no ticked issue box, ignoring');
+        return;
+      }
+      if (!await commenterAllowed()) return;
+      const { bot } = await getAuth();
+      if (!isBotLogin(bot, comment?.user?.login)) {
+        core.info('Edited review comment is not one of Manki\'s, ignoring');
+        return;
+      }
+      issueTick = true;
+    } else if (action !== 'created') {
       core.info(`Ignoring pull_request_review_comment action: ${action}`);
       return;
     }
     // Skip our own review comments
     const commentBody = github.context.payload.comment?.body ?? '';
-    if (commentBody.includes('<!-- manki')) {
+    if (!issueTick && commentBody.includes('<!-- manki')) {
       core.info('Ignoring our own review comment');
       return;
     }
-    if (!await commenterAllowed()) return;
+    if (!issueTick && !await commenterAllowed()) return;
   } else if (eventName === 'pull_request_review') {
     if (action !== 'submitted' && action !== 'dismissed') {
       core.info(`Ignoring pull_request_review action: ${action}`);
@@ -316,7 +333,8 @@ async function run(): Promise<void> {
     }
 
     case 'pull_request_review_comment':
-      await handleReviewCommentInteraction();
+      if (issueTick) await handleIssueTick();
+      else await handleReviewCommentInteraction();
       break;
 
     case 'pull_request_review':
@@ -1891,6 +1909,15 @@ async function handleIssueInteraction(): Promise<void> {
   const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, issueNumber);
 
   await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memory, config);
+}
+
+/** Files the findings whose issue box the editor ticked in Manki's review comment. */
+async function handleIssueTick(): Promise<void> {
+  const { comment, pull_request: pr, sender } = github.context.payload;
+  if (!comment || !pr || !sender?.login) return;
+  const { octokit, bot } = await getAuth();
+  const { owner, repo } = github.context.repo;
+  await handleIssueBoxTick(octokit, bot, owner, repo, pr.number, comment as Parameters<typeof handleIssueBoxTick>[5], sender.login);
 }
 
 async function handleReviewCommentInteraction(): Promise<void> {

@@ -66,6 +66,9 @@ describe('restoreDispatchedEvent', () => {
       { review: REVIEW, pull_request: PR }, BOB],
     ['a thread reply, as its author', { event: 'pull_request_review_comment', action: 'created', pr: '7', comment_id: '13' },
       { comment: REVIEW_COMMENT, pull_request: PR }, BOB],
+    // A tick of a box in Manki's review comment is an edit by someone else, so the editor is the sender.
+    ['an edited review comment, as its last editor', { event: 'pull_request_review_comment', action: 'edited', pr: '7', comment_id: '13' },
+      { comment: REVIEW_COMMENT, pull_request: PR }, { login: 'carol', type: 'User' }],
     ['a resolved thread, as the PR author', { event: 'pull_request_review_thread', action: 'resolved', pr: '7', delivery_id: 'f1e2d3c4-0000-4000-8000-000000000002' },
       { pull_request: PR }, ALICE],
   ])('rebuilds %s', async (_label, inputs, objects, sender) => {

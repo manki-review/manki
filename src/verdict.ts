@@ -3,11 +3,10 @@ import * as core from '@actions/core';
 import { LLMClient } from './providers';
 import { extractJSON } from './json';
 import { parseEvidence } from './review';
-import { Finding, TestGuide, VerdictReport } from './types';
+import { Finding, TestGuide, VERDICT_READER_NAME, VerdictReport } from './types';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 
-const VERDICT_READER_NAME = 'Verdict reader';
 const MAX_BLOCKER_TITLE_LENGTH = 100;
 const MAX_TEST_STEPS = 8;
 // Most verdicts take under two minutes, but a legitimate one has taken almost 15.
