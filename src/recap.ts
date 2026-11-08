@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
+import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
 import { isSecurityFinding } from './review';
@@ -717,6 +717,7 @@ function parseFindingFromComment(body: string): FindingMetadata {
   const stopMarkers = [
     '\n```',
     '\n<details>',
+    `\n${CHECKS_MARKER}`,
     '\n<!-- manki:',
     '\n<!-- manki-finding:',
   ];

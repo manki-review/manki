@@ -993,6 +993,12 @@ describe('fetchRecapState', () => {
       description: 'The pointer is dereferenced without a prior null check.…(truncated)',
       suggestedFix: 'if (!ptr) return;',
     });
+
+    // The line saying nothing was checked shows outside a fold, and is not read back as description.
+    const unchecked = formatFindingComment({ severity: 'warning', title: 'Unchecked', file: 'src/a.ts', line: 4, description: 'It goes wrong.', reviewers: ['SecurityReviewer'] }, TEST_LINKS);
+    expect(unchecked).toContain('Not checked against the code');
+    const [read] = (await fetchRecapState(mockOctokit([makeThread({ id: 't2', isResolved: false, comments: { nodes: [{ body: unchecked, author: { login: 'manki-review[bot]' } }] } })]), TEST_BOT, 'owner', 'repo', 1)).previousFindings;
+    expect(read.description).toBe('It goes wrong.');
   });
 
   it('skips `suggestedFix` when AI context JSON is malformed, still recovers `description`', async () => {

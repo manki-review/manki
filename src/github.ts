@@ -1220,7 +1220,8 @@ export async function postReview(
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
   const followUps = agreedFollowUps(existingThreads);
   const listedFiles = [...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file);
-  const lineCounts = await fetchLineCounts(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...result.findings.flatMap(citedFiles)])]);
+  const cited = [...new Set(result.findings.flatMap(citedFiles))].slice(0, MAX_CITED_FILES);
+  const lineCounts = await fetchLineCounts(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
   const links: CodeLinks = { linkTo, lineCounts };
 
   for (const f of result.findings) {
@@ -1856,6 +1857,9 @@ const REFUTATION_LINE: Record<RefutationOutcome, string> = {
   disproved: '**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself.',
 };
 
+/** Opens the checks under a finding comment, so reading the comment back stops its description there. */
+const CHECKS_MARKER = '<!-- manki-checks -->';
+
 const REFUTATION_SUMMARY: Record<RefutationOutcome, string> = { confirmed: 'double-checked', unsettled: 'not settled', disproved: 'doubt found' };
 
 /** Shortens model text to one plain line, so no raw tool output or code block reaches the comment. */
@@ -1895,6 +1899,9 @@ function findingChecks({ evidence }: Finding): Check[] {
   if (evidence?.emptySearch) checks.push({ text: `Searched with no match: ${oneLine(evidence.emptySearch)}` });
   return checks;
 }
+
+/** Cited files whose line counts are fetched. A preview in any other file covers only its cited lines. */
+const MAX_CITED_FILES = 20;
 
 /** Returns the files a finding's checks cite, whose line counts keep its previews inside them. */
 function citedFiles(finding: Finding): string[] {
@@ -1953,7 +1960,7 @@ function checksSection(finding: Finding, { linkTo, lineCounts }: CodeLinks, ownL
   const checks = findingChecks(finding);
   const { refutation } = finding;
   if (checks.length === 0 && !refutation) {
-    return finding.toolSource || finding.reviewers.length === 0 ? [] : ['**Not checked against the code.** Nothing was cited to back it.'];
+    return finding.toolSource || finding.reviewers.length === 0 ? [] : [`${CHECKS_MARKER}\n**Not checked against the code.** Nothing was cited to back it.`];
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
   // The comment already sits on its own line, so a bare proving line there shows only when nothing else does.
@@ -1974,12 +1981,12 @@ function checksSection(finding: Finding, { linkTo, lineCounts }: CodeLinks, ownL
   ];
   // A fold never holds a single line, so a lone one shows open.
   if (parts.length === 1 && shown.length === 0 && !parts[0].includes('\n')) {
-    return [parts[0].startsWith('- ') ? `**Checked:** ${parts[0].slice(2)}` : parts[0]];
+    return [`${CHECKS_MARKER}\n${parts[0].startsWith('- ') ? `**Checked:** ${parts[0].slice(2)}` : parts[0]}`];
   }
   const read = checks.filter(c => c.at).length;
   const other = checks.length - read;
   const counts = [read && `${read} ${read === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check'), refutation && REFUTATION_SUMMARY[refutation.outcome]].filter(Boolean);
-  return [`<details>\n<summary>How this was checked: ${counts.join(', ')}</summary>\n\n${parts.join('\n\n')}\n\n</details>`];
+  return [`${CHECKS_MARKER}\n<details>\n<summary>How this was checked: ${counts.join(', ')}</summary>\n\n${parts.join('\n\n')}\n\n</details>`];
 }
 
 function formatFindingComment(finding: Finding, links: CodeLinks): string {
@@ -1990,8 +1997,8 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
   const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - visibleLength(fix) - visibleLength(checks.join('\n\n')));
   const description = sanitizeMarkdown(finding.description);
   const { lead, rest } = splitLead(description, 3, room);
-  // A fold never holds a single sentence, so one sentence past the lead shows with it.
-  const folds = rest.includes('\n') || rest.split(/(?<=[.!?])\s+/).length > 1;
+  // A fold never holds a single sentence, so one sentence past the lead shows with it, unless the lead was cut short.
+  const folds = rest.includes('\n') || rest.split(/(?<=[.!?])\s+/).length > 1 || !description.trim().startsWith(lead);
   comment += `${folds ? lead : description.trim()}${fix}`;
   if (folds) {
     comment += `\n\n<details>\n<summary>Details</summary>\n\n${rest}\n\n</details>`;
@@ -2494,5 +2501,5 @@ async function postConfigErrorComment(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

@@ -160,6 +160,9 @@ describe('formatFindingComment', () => {
     const four = render({ ...baseFinding, description: [1, 2, 3, 4].map(sentence).join(' ') });
     expect(four).toContain(`${sentence(3)} ${sentence(4)}`);
     expect(four).not.toContain('<summary>Details</summary>');
+    const oneLong = render({ ...baseFinding, description: `${'A very long only sentence '.repeat(40)}ends here.` });
+    expect(visible(oneLong)).toBeLessThan(700);
+    expect(oneLong).toContain('<summary>Details</summary>\n\nA very long only sentence');
     expect(wordy).toContain('<summary>Details</summary>\n\nA very long first sentence');
 
     expect(render(baseFinding)).not.toContain('<details>');
@@ -185,7 +188,8 @@ describe('formatFindingComment', () => {
       refutation: { outcome: 'confirmed', reason: 'No caller checks `value` first.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc' },
     });
 
-    expect(comment.match(/<details>\n<summary>How this was checked: [^<]*<\/summary>\n\n[\s\S]*?\n\n<\/details>/)![0]).toBe([
+    expect(comment.match(/<!-- manki-checks -->\n<details>\n<summary>How this was checked: [^<]*<\/summary>\n\n[\s\S]*?\n\n<\/details>/)![0]).toBe([
+      '<!-- manki-checks -->',
       '<details>',
       '<summary>How this was checked: 7 places read, 2 other checks, double-checked</summary>',
       '',
@@ -218,9 +222,9 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, evidence: { checks: ['src/util.ts:30 ends the file', 'src/unknown.ts:7-9 is outside the diff'], proof: [] } }))
       .toContain(`Ends the file\n${link('src/util.ts', 29, 30)}\n\nIs outside the diff\n${link('src/unknown.ts', 6, 9)}`);
     expect(render({ ...baseFinding, evidence: { checks: [`${'very long check '.repeat(20)}end`], proof: [] } }))
-      .toMatch(/\n\n\*\*Checked:\*\* Very long check (very long check ){8}very long check…\n/);
+      .toMatch(/\n<!-- manki-checks -->\n\*\*Checked:\*\* Very long check (very long check ){8}very long check…\n/);
     // A fold never holds a single line, so a lone check shows open.
-    expect(render({ ...baseFinding, evidence: { checks: [], proof: ['src/main.ts:42'] } })).toContain('\n\nOn the commented line: Shows the failure.\n');
+    expect(render({ ...baseFinding, evidence: { checks: [], proof: ['src/main.ts:42'] } })).toContain('\n<!-- manki-checks -->\nOn the commented line: Shows the failure.\n');
 
     // A finding that cites nothing says so, unless a tool reported it or it is an earlier round's.
     const unchecked = '**Not checked against the code.** Nothing was cited to back it.';
@@ -239,7 +243,7 @@ describe('formatFindingComment', () => {
     expect(render({ ...disprovedFinding, evidence: { checks: ['src/util.ts:3 marks it intended'], proof: [] } })).toContain('<summary>How this was checked: 1 place read, doubt found</summary>');
     expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}).`);
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
-      .toContain('\n\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
+      .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
   });
 
   it('omits the fix when there is none', () => {
@@ -3491,7 +3495,7 @@ describe('postReview fallback paths', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff);
     const body = createReviewMock.mock.calls[0][0].body as string;
-    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Warning**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\nDesc.\nOn the flagged line: Shows the failure.');
+    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Warning**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\nDesc.\n<!-- manki-checks -->\nOn the flagged line: Shows the failure.');
     expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
   });
 
@@ -3697,6 +3701,12 @@ describe('postReview non-blocking findings', () => {
     expect(getContent).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/b.ts', ref: 'abc1234' }));
     expect(createReview.mock.calls[0][0].comments[0].body).toContain(
       '<summary>How this was checked: 1 place read</summary>\n\nEnds the helper\nhttps://github.com/owner/repo/blob/abc1234/src/b.ts#L2-L3\n\n</details>');
+
+    // Evidence can cite many paths, so only the first 20 get their length looked up, besides the finding's own file.
+    getContent.mockClear();
+    const many = Array.from({ length: 25 }, (_, i) => `src/f${i}.ts:1 is read`);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([nonBlocking('suggestion', 'Extract helper', 5, { evidence: { checks: many, proof: [] } })]), diff);
+    expect(getContent).toHaveBeenCalledTimes(21);
   });
 
   it('posts non-blocking findings on changed lines inline as not blocking, lists the rest as blocks, and nitpicks only in their own list', async () => {
@@ -3744,6 +3754,7 @@ describe('postReview non-blocking findings', () => {
       '',
       'https://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L40',
       '',
+      '<!-- manki-checks -->',
       '**Checked:** Read `src/a.ts`:40',
       '',
       '</details>',
