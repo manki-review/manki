@@ -421,7 +421,7 @@ Manki's newest progress comment ends with a settings block. It holds a status li
 | "spawn claude ENOENT" | Add the "Install Claude Code CLI" step before the action |
 | "Claude subscription limit reached" or another quota message | The provider's limit is used up. Wait for the reset time the review names, or switch to another token or key |
 | "Failed to post APPROVE review" | Check that the [GitHub App](#step-1-install-the-github-app) is installed on the repo with **Pull requests** read and write |
-| Review says "Not reviewed" and lists skipped files | Every changed file matches `exclude_paths` or has no lines to read, such as a binary, so a person must review the PR. Check `exclude_paths` in config if a file should be read |
+| Review says "Not reviewed" and lists skipped files | Every changed file matches `exclude_paths` or has no code to read, such as a binary, a Git LFS pointer or a submodule bump, so a person must review the PR. Check `exclude_paths` in config if a file should be read |
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
 | No run starts | The Manki workflow must be on the default branch and declare the dispatch inputs, no other workflow may run Manki on events, and the repository's account must be one the service serves (see [Step 3](#step-3-add-the-workflow)) |
 | "above the limit ... for automatic review" | Split the PR, tick Force review to review it in full, or raise `auto_review_max_lines` |

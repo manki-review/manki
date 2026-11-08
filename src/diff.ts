@@ -20,9 +20,10 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
   const binarySkipped: BinaryFile[] = [];
 
   for (const file of parsed) {
-    if (isBinaryFile(file)) {
+    const kind = unreadableKind(file);
+    if (kind || isBinaryFile(file)) {
       const binaryPath = file.to && file.to !== '/dev/null' ? file.to : file.from ?? '';
-      if (binaryPath) binarySkipped.push({ path: binaryPath, header: JSON.stringify([file.from, file.to, file.index, file.oldMode, file.newMode]), ...(file.deleted && { deleted: true as const }) });
+      if (binaryPath) binarySkipped.push({ path: binaryPath, header: JSON.stringify([file.from, file.to, file.index, file.oldMode, file.newMode]), ...(kind && { kind }), ...(file.deleted && { deleted: true as const }) });
       continue;
     }
 
@@ -312,6 +313,21 @@ const PLAIN_FILE_MODE = '100644';
 function modeChange(file: parseDiff.File): Pick<DiffFile, 'modeChange'> {
   if (file.new) return file.newMode && file.newMode !== PLAIN_FILE_MODE ? { modeChange: file.newMode } : {};
   return file.oldMode && file.newMode && file.oldMode !== file.newMode ? { modeChange: `${file.oldMode} ${file.newMode}` } : {};
+}
+
+// A Git LFS pointer names its content by hash, and a submodule entry names a commit, so their lines show no code to read.
+const LFS_POINTER_LINE = /^(?:version https:\/\/git-lfs\.github\.com\/spec\/v1|oid sha256:[0-9a-f]{64}|size \d+|ext-\d+-\w+ sha256:[0-9a-f]{64})$/;
+const SUBMODULE_LINE = /^Subproject commit [0-9a-f]{40,64}(?:-dirty)?$/;
+
+/**
+ * Returns whether the new side of a file is only a Git LFS pointer or a submodule commit, or `undefined` for any other
+ * file. The removed lines do not count, so a text file turned into a pointer is caught too.
+ */
+function unreadableKind(file: parseDiff.File): BinaryFile['kind'] {
+  const lines = file.chunks.flatMap(c => c.changes).filter(c => c.type !== 'del').map(c => c.content).filter(l => !l.startsWith('\\')).map(l => l.slice(1));
+  if (lines.length === 0) return undefined;
+  if (lines.every(l => SUBMODULE_LINE.test(l))) return 'submodule';
+  return lines.every(l => LFS_POINTER_LINE.test(l)) && lines.some(l => l.startsWith('oid ')) ? 'lfs' : undefined;
 }
 
 function isBinaryFile(file: parseDiff.File): boolean {

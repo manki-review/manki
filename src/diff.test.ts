@@ -188,6 +188,39 @@ describe('parsePRDiff', () => {
     expect(deleted.binarySkipped).toEqual([expect.objectContaining({ path: 'app.jar', deleted: true })]);
   });
 
+  it('skips a Git LFS pointer and a submodule bump as unread, but never a text file that only looks like one', () => {
+    const oid = (c: string) => `oid sha256:${c.repeat(64)}`;
+    const lfs = [
+      'diff --git a/model.bin b/model.bin', 'index 1111111..2222222 100644', '--- a/model.bin', '+++ b/model.bin', '@@ -1,3 +1,3 @@',
+      ' version https://git-lfs.github.com/spec/v1', `-${oid('a')}`, '-size 10', `+${oid('b')}`, '+size 20',
+    ].join('\n');
+    const submodule = [
+      'diff --git a/vendor/lib b/vendor/lib', 'index 3333333..4444444 160000', '--- a/vendor/lib', '+++ b/vendor/lib', '@@ -1 +1 @@',
+      `-Subproject commit ${'c'.repeat(40)}`, `+Subproject commit ${'d'.repeat(40)}`,
+    ].join('\n');
+    const lookalike = [
+      'diff --git a/notes.txt b/notes.txt', 'index 5555555..6666666 100644', '--- a/notes.txt', '+++ b/notes.txt', '@@ -1 +1,3 @@',
+      ' size 10', `+${oid('e')}`, '+and a real line',
+    ].join('\n');
+
+    const converted = [
+      'diff --git a/data.csv b/data.csv', 'index 7777777..8888888 100644', '--- a/data.csv', '+++ b/data.csv', '@@ -1,2 +1,3 @@',
+      '-id,name', '-1,alice', '+version https://git-lfs.github.com/spec/v1', `+${oid('f')}`, '+size 30',
+    ].join('\n');
+
+    const result = parsePRDiff(`${lfs}\n${submodule}\n${lookalike}\n${converted}\n${SIMPLE_DIFF}`);
+
+    // A text file turned into a pointer counts too, since only its new side is checked.
+    expect(result.binarySkipped).toEqual([
+      expect.objectContaining({ path: 'model.bin', kind: 'lfs' }),
+      expect.objectContaining({ path: 'vendor/lib', kind: 'submodule' }),
+      expect.objectContaining({ path: 'data.csv', kind: 'lfs' }),
+    ]);
+    expect(result.files.map(f => f.path)).toEqual(['notes.txt', ...parsePRDiff(SIMPLE_DIFF).files.map(f => f.path)]);
+    // A PR of only such changes leaves no file a model reads.
+    expect(parsePRDiff(`${lfs}\n${submodule}`).files).toEqual([]);
+  });
+
   it('returns an empty `binarySkipped` array when no binaries are present', () => {
     const result = parsePRDiff(SIMPLE_DIFF);
     expect(result.binarySkipped).toEqual([]);
