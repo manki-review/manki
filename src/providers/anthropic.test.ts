@@ -501,25 +501,30 @@ describe('sendViaOAuth — error paths', () => {
       cacheDir: '/runner/temp/manki-related-repos',
       stateDir: '/runner/temp/manki-related-1',
     };
-    const response = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related } });
+    const savedApiUrl = process.env.GITHUB_API_URL;
+    process.env.GITHUB_API_URL = 'https://ghe.example/api/v3';
+    const response = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related } })
+      .finally(() => { if (savedApiUrl === undefined) delete process.env.GITHUB_API_URL; else process.env.GITHUB_API_URL = savedApiUrl; });
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     const valueOf = (flag: string) => spawnArgs[spawnArgs.indexOf(flag) + 1];
     expect(spawnArgs).toEqual(expect.arrayContaining(['--restricted', '--strict-mcp-config']));
     expect([valueOf('--permission-mode'), valueOf('--tools'), valueOf('--add-dir'), valueOf('--allowedTools'), valueOf('--max-turns')])
-      .toEqual(['dontAsk', 'Read,Grep,Glob', '/work/repo', 'mcp__manki__git_history,mcp__manki__ast_grep,mcp__manki__read_file,mcp__manki__grep,mcp__manki__glob', '20']);
+      .toEqual(['dontAsk', 'Read,Grep,Glob', '/work/repo', 'mcp__manki__git_history,mcp__manki__ast_grep,mcp__manki__repo_info,mcp__manki__read_file,mcp__manki__grep,mcp__manki__glob', '20']);
     const hook = JSON.parse(valueOf('--settings')).hooks.PreToolUse;
     expect(hook).toEqual([{ matcher: '*', hooks: [{ type: 'command', command: expect.stringMatching(/ 'step-hook' '[^']+\/steps' '15'$/) }] }]);
     expect(hook[0].hooks[0].command.startsWith(`'${process.execPath}' '${process.argv[1]}' `)).toBe(true);
     expect(valueOf('--setting-sources')).toBe('');
     expect(mcpConfig!.mcpServers.manki).toEqual({
-      type: 'stdio', command: process.execPath, args: [process.argv[1], 'mcp-server', '/work/repo', '--related-repos', JSON.stringify(related)], env: { CLAUDE_CODE_OAUTH_TOKEN: '' },
+      type: 'stdio', command: process.execPath, args: [process.argv[1], 'mcp-server', '/work/repo', '--related-repos', JSON.stringify(related)],
+      env: { CLAUDE_CODE_OAUTH_TOKEN: '', GITHUB_API_URL: 'https://ghe.example/api/v3' },
     });
     expect(Object.keys(mcpConfig!.mcpServers)).toEqual(['manki']);
     expect(systemPromptFile).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\./);
     expect(systemPromptFile).toContain('You have 15 tool steps, and each tool call takes one. When 3 are left, a note from Manki');
     expect(systemPromptFile).toContain('Use the tools to follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome.');
     expect(systemPromptFile).not.toContain('not to explore');
+    expect(systemPromptFile).toContain('`repo_info` tells whether a GitHub repository, named as `owner/name`, exists and is public, archived or a fork');
     expect(systemPromptFile).toContain([
       '## Related repos',
       '',

@@ -91,15 +91,16 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
 
 /**
  * Returns the `-c` overrides that give Codex Manki's tool server. Its tools are read-only, so they run without
- * approval. Codex starts the server with a few default variables only, so the runner temp folder is passed on.
+ * approval. Codex starts the server with a few default variables only, so `env_vars` names the rest of the CLI's own
+ * environment, such as the runner temp folder, the proxy settings and the GitHub API URL `repo_info` needs. Codex reads
+ * their values from its own environment, so none of them, such as a proxy password, lands on the command line.
  */
-function codexToolServerArgs({ command, args }: MankiCommand): string[] {
-  const runnerTemp = process.env.RUNNER_TEMP;
+function codexToolServerArgs({ command, args }: MankiCommand, env: NodeJS.ProcessEnv): string[] {
   return [
     '-c', `mcp_servers.manki.command=${JSON.stringify(command)}`,
     '-c', `mcp_servers.manki.args=${JSON.stringify(args)}`,
     '-c', 'mcp_servers.manki.default_tools_approval_mode="approve"',
-    ...(runnerTemp ? ['-c', `mcp_servers.manki.env.RUNNER_TEMP=${JSON.stringify(runnerTemp)}`] : []),
+    '-c', `mcp_servers.manki.env_vars=${JSON.stringify(Object.keys(env).filter(name => name !== 'CODEX_HOME'))}`,
   ];
 }
 
@@ -225,7 +226,10 @@ export class OpenAIClient implements LLMClient {
       core.warning(`Ignoring effort=${options.effort} for model "${this.model}": it does not accept reasoning effort. The Codex CLI will apply its own default effort instead.`);
     }
 
-    if (repoTools) args.push(...codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, related: repoTools.related })));
+    // The GitHub API URL is for the tool server's `repo_info`, which Codex starts with names from this environment.
+    const apiUrl = process.env.GITHUB_API_URL;
+    const env = cliEnv('codex', { CODEX_HOME: codexHome, ...(repoTools && apiUrl && { GITHUB_API_URL: apiUrl }) });
+    if (repoTools) args.push(...codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, related: repoTools.related }), env));
 
     let output = '';
     const { code, signal, stderr, lastStdoutChunk } = await withPromptDir((promptDir) => {
@@ -236,7 +240,7 @@ export class OpenAIClient implements LLMClient {
         label: 'Codex',
         cliPath,
         args: [...args, '-c', `model_instructions_file=${JSON.stringify(instructionsPath)}`, '-'],
-        env: cliEnv('codex', { CODEX_HOME: codexHome }),
+        env,
         input: userMessage,
         hardTimeoutMs: options?.timeoutMs,
         signal: options?.signal,

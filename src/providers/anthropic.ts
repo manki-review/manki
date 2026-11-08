@@ -151,15 +151,16 @@ function anthropicQuotaError(error: unknown): QuotaError | undefined {
 }
 
 // The names Claude Code gives the tools of Manki's tool server.
-const MANKI_TOOLS = ['mcp__manki__git_history', 'mcp__manki__ast_grep', 'mcp__manki__read_file', 'mcp__manki__grep', 'mcp__manki__glob'];
+const MANKI_TOOLS = ['mcp__manki__git_history', 'mcp__manki__ast_grep', 'mcp__manki__repo_info', 'mcp__manki__read_file', 'mcp__manki__grep', 'mcp__manki__glob'];
 
 /**
  * Writes the MCP config that starts Manki's tool server into `dir` and returns its path. The server gets the CLI's
- * environment without the Claude credential, which it does not need.
+ * environment without the Claude credential, which it does not need, and the GitHub API URL `repo_info` reads.
  */
 export function writeToolServerConfig(dir: string, { command, args }: MankiCommand): string {
   const path = join(dir, 'mcp.json');
-  const config = { mcpServers: { manki: { type: 'stdio', command, args, env: { CLAUDE_CODE_OAUTH_TOKEN: '' } } } };
+  const apiUrl = process.env.GITHUB_API_URL;
+  const config = { mcpServers: { manki: { type: 'stdio', command, args, env: { CLAUDE_CODE_OAUTH_TOKEN: '', ...(apiUrl && { GITHUB_API_URL: apiUrl }) } } } };
   writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
   return path;
 }

@@ -423,7 +423,13 @@ describe('sendViaOAuth (Codex CLI path)', () => {
   it('gives Codex Manki\'s tool server with the file tools, and tells it about them, only when asked', async () => {
     const { stdin, instructions } = setupSpawnMock('[]\n');
     const savedRunnerTemp = process.env.RUNNER_TEMP;
+    const savedApiUrl = process.env.GITHUB_API_URL;
+    const savedProxy = process.env.HTTPS_PROXY;
+    const savedSecret = process.env.OPENAI_API_KEY;
     process.env.RUNNER_TEMP = '/runner/temp';
+    process.env.GITHUB_API_URL = 'https://ghe.example/api/v3';
+    process.env.HTTPS_PROXY = 'http://user:secret@proxy:3128';
+    process.env.OPENAI_API_KEY = 'sk-not-for-the-server';
     try {
       const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
       expect(client.repoTools).toBe(true);
@@ -434,6 +440,12 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     } finally {
       if (savedRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
       else process.env.RUNNER_TEMP = savedRunnerTemp;
+      if (savedApiUrl === undefined) delete process.env.GITHUB_API_URL;
+      else process.env.GITHUB_API_URL = savedApiUrl;
+      if (savedProxy === undefined) delete process.env.HTTPS_PROXY;
+      else process.env.HTTPS_PROXY = savedProxy;
+      if (savedSecret === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = savedSecret;
     }
 
     const [withTools, without] = mockSpawn.mock.calls.map(call => call[1] as string[]);
@@ -441,8 +453,16 @@ describe('sendViaOAuth (Codex CLI path)', () => {
       `-c mcp_servers.manki.command=${JSON.stringify(process.execPath)}`,
       `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15'])}`,
       '-c mcp_servers.manki.default_tools_approval_mode="approve"',
-      '-c mcp_servers.manki.env.RUNNER_TEMP="/runner/temp"',
     ].join(' '));
+    // The server gets the CLI's own environment by name, so no value, such as a proxy password, is on the command line.
+    const envVars = JSON.parse(withTools.find(arg => arg.startsWith('mcp_servers.manki.env_vars='))!.slice('mcp_servers.manki.env_vars='.length)) as string[];
+    expect(envVars).toEqual(expect.arrayContaining(['RUNNER_TEMP', 'HTTPS_PROXY', 'GITHUB_API_URL']));
+    expect(envVars).not.toContain('OPENAI_API_KEY');
+    expect(withTools.join(' ')).not.toContain('secret@proxy');
+    expect(withTools.some(arg => arg.startsWith('mcp_servers.manki.env.'))).toBe(false);
+    const { env: codexEnv } = mockSpawn.mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+    expect(codexEnv).toMatchObject({ RUNNER_TEMP: '/runner/temp', HTTPS_PROXY: 'http://user:secret@proxy:3128', GITHUB_API_URL: 'https://ghe.example/api/v3' });
+    expect(codexEnv).not.toHaveProperty('OPENAI_API_KEY');
     expect(withTools).toContain('features.shell_tool=false');
     expect(without.join(' ')).not.toContain('mcp_servers');
     expect(instructions[0]).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\. `read_file`, `grep` and `glob` read files/);
