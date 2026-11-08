@@ -1416,7 +1416,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     existingThreads: recap.previousFindings,
     draft: run.options.draft,
     configFailed: configFailed(run.reviewSource),
-    skipped: { excluded: run.excludedFiles, binary: diff.binarySkipped ?? [] },
+    skipped: { excluded: run.excludedFiles, binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
   return posted;

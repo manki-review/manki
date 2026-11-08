@@ -183,6 +183,8 @@ describe('parsePRDiff', () => {
     expect(result.binarySkipped).toEqual([{ path: 'assets/logo.png', header: '["/dev/null","assets/logo.png",["0000000..abcdef1"],null,"100644"]' }]);
     const chmod = parsePRDiff('diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n');
     expect(chmod.binarySkipped).toEqual([{ path: 'run.sh', header: '["run.sh","run.sh",null,"100644","100755"]' }]);
+    const deleted = parsePRDiff('diff --git a/app.jar b/app.jar\ndeleted file mode 100644\nindex abcdef1..0000000\nBinary files a/app.jar and /dev/null differ\n');
+    expect(deleted.binarySkipped).toEqual([expect.objectContaining({ path: 'app.jar', deleted: true })]);
   });
 
   it('returns an empty `binarySkipped` array when no binaries are present', () => {

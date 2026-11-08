@@ -645,6 +645,8 @@ export interface BinaryFile {
   path: string;
   /** The paths, abbreviated blob ids and modes from the file's diff header, which change with its content. */
   header: string;
+  /** Set when the PR deletes the file, which leaves nothing unread. */
+  deleted?: true;
 }
 
 export interface PrContext {

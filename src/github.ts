@@ -217,7 +217,7 @@ export function formatUnreviewedNotice(shortSha: string, skipped: SkippedFiles, 
 function formatSkippedFiles({ excluded, binary }: SkippedFiles): string {
   const lines = [
     ...excluded.map(f => `- ${inline(f.path)}: matches ${inline(f.matchedPattern)} in \`exclude_paths\``),
-    ...binary.map(f => `- ${inline(f.path)}: no lines to read, such as a binary, a mode change or an empty file`),
+    ...binary.map(f => `- ${inline(f.path)}: no lines to read, such as a binary, a rename, a mode change or an empty file`),
   ];
   return lines.length > 0 ? `**Skipped files:**\n${cutList(lines)}` : '';
 }

@@ -22,7 +22,7 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
   for (const file of parsed) {
     if (isBinaryFile(file)) {
       const binaryPath = file.to && file.to !== '/dev/null' ? file.to : file.from ?? '';
-      if (binaryPath) binarySkipped.push({ path: binaryPath, header: JSON.stringify([file.from, file.to, file.index, file.oldMode, file.newMode]) });
+      if (binaryPath) binarySkipped.push({ path: binaryPath, header: JSON.stringify([file.from, file.to, file.index, file.oldMode, file.newMode]), ...(file.deleted && { deleted: true as const }) });
       continue;
     }
 

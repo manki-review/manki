@@ -3458,7 +3458,7 @@ describe('runFullReview orchestration', () => {
     beforeEach(() => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [attrFile], totalAdditions: 10, totalDeletions: 5,
-        binarySkipped: [{ path: 'assets/logo.png', header: '' }],
+        binarySkipped: [{ path: 'assets/logo.png', header: '' }, { path: 'old.bin', header: '', deleted: true }],
       });
       jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({
         included: [attrFile],
@@ -3550,7 +3550,7 @@ describe('runFullReview orchestration', () => {
       const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
 
       expect(rc!.diff.excludedFiles).toEqual([{ path: 'dist/index.js', matchedPattern: 'dist/**' }]);
-      expect(rc!.diff.binarySkipped).toEqual(['assets/logo.png']);
+      expect(rc!.diff.binarySkipped).toEqual(['assets/logo.png', 'old.bin']);
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.skipped).toEqual({
         excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [{ path: 'assets/logo.png', header: '' }],
       });
