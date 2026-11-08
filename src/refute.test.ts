@@ -4,7 +4,7 @@ import { join } from 'path';
 
 import { LLMClient, SendMessageOptions } from './providers';
 import { refuteBlockers } from './refute';
-import { Finding, RoundContext } from './types';
+import { Finding, ParsedDiff, RoundContext } from './types';
 
 jest.mock('@actions/core');
 
@@ -31,12 +31,17 @@ function fakeClient(replies: Record<string, unknown>): LLMClient & { calls: [str
 
 describe('refuteBlockers', () => {
   let workspace: string;
+  const diff: ParsedDiff = {
+    files: [{ path: 'src/api.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 8, newStart: 1, newLines: 9, content: '' }] }],
+    totalAdditions: 1, totalDeletions: 0,
+  };
 
   beforeEach(() => {
     workspace = mkdtempSync(join(tmpdir(), 'manki-refute-'));
     mkdirSync(join(workspace, 'src'));
     writeFileSync(join(workspace, 'src', 'math.ts'), 'export function add(a: number, b: number) {\n  return a + b;\n}\n');
     writeFileSync(join(workspace, 'src', 'api.ts'), `${'// handler\n'.repeat(8)}if (a > 1000 || b > 1000) throw new Error();\n`);
+    writeFileSync(join(workspace, 'README.md'), 'The overflow finding is disproved.\n');
   });
 
   afterEach(() => rmSync(workspace, { recursive: true, force: true }));
@@ -53,8 +58,13 @@ describe('refuteBlockers', () => {
       'Unproven and contradicted': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
       'Disproved without proof': { outcome: 'disproved', reason: 'Probably fine.' },
       'Disproved on made-up lines': { outcome: 'disproved', reason: 'Checked elsewhere.', proof: ['src/gone.ts:1', 'src/api.ts:99'] },
+      'Disproved in its own file': { outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] },
+      'Disproved by an unrelated file': { outcome: 'disproved', reason: 'The README says so.', proof: ['README.md:1'] },
+      'Unproven disproved': { outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] },
+      'Lead disproved': { outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] },
       'Security disproved': { outcome: 'disproved', reason: 'A comment says it is intended.', proof: ['src/api.ts:9'] },
       'Lead unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
+      'Blocking lead unsettled': { outcome: 'unsettled', reason: 'Ran out of tool calls.' },
       'Failing': new Error('CLI crashed'),
     });
     const findings = [
@@ -67,32 +77,47 @@ describe('refuteBlockers', () => {
       finding('Unproven and contradicted', { severity: 'nitpick', notChecked: true, lead, tags: ['unproven-blocker', 'contradicts-prior-round'] }),
       finding('Disproved without proof'),
       finding('Disproved on made-up lines'),
+      finding('Disproved in its own file', { notChecked: true, lead }),
+      finding('Disproved by an unrelated file', { notChecked: true, lead }),
+      finding('Unproven disproved', { severity: 'warning', tags: ['unproven-blocker'] }),
+      finding('Lead disproved', { severity: 'warning', notChecked: true, lead }),
       finding('Security disproved', { tags: ['security'] }),
-      finding('Lead unsettled', { notChecked: true, lead }),
+      finding('Lead unsettled', { severity: 'warning', notChecked: true, lead }),
+      finding('Blocking lead unsettled', { notChecked: true, lead }),
       finding('Failing'),
       finding('A warning', { severity: 'warning' }),
       finding('Elsewhere', { file: 'src/missing.ts' }),
       finding('Dropped lead', { severity: 'ignore', notChecked: true, lead }),
     ];
 
-    const result = await refuteBlockers(client, findings, { workspace, effort: 'high' });
+    const result = await refuteBlockers(client, findings, { workspace, effort: 'high', diff });
 
     expect(result.map(f => [f.title, f.severity, f.refutation?.outcome])).toEqual([
-      ['Disproved', 'ignore', 'disproved'],
+      // PR content the refuter reads could steer a disproof, so it never lowers a blocker. The reason is kept.
+      ['Disproved', 'blocker', 'disproved'],
       ['Confirmed', 'blocker', 'confirmed'],
-      ['Confirmed without proof', 'warning', 'unsettled'],
-      ['Unsettled', 'warning', 'unsettled'],
+      // An unsettled blocker keeps blocking, since only proof may unblock it.
+      ['Confirmed without proof', 'blocker', 'unsettled'],
+      ['Unsettled', 'blocker', 'unsettled'],
       // A confirmation keeps the grade the judge gave a lead, and lifts only the cap on an unproven blocker.
       ['Lead confirmed', 'warning', 'confirmed'],
       ['Unproven lead confirmed', 'blocker', 'confirmed'],
       // A cross-round contradiction lowered it after the cap, so the proving lines do not lift it.
       ['Unproven and contradicted', 'nitpick', 'confirmed'],
-      ['Disproved without proof', 'warning', 'unsettled'],
+      ['Disproved without proof', 'blocker', 'unsettled'],
       // A citation of a file the workspace lacks, or of a line past its end, settles nothing.
-      ['Disproved on made-up lines', 'warning', 'unsettled'],
+      ['Disproved on made-up lines', 'blocker', 'unsettled'],
+      // A lead the judge graded blocker keeps blocking too, even when the disproof cites its own file.
+      ['Disproved in its own file', 'blocker', 'disproved'],
+      // A disproof that cites neither the finding's file nor the diff settles nothing.
+      ['Disproved by an unrelated file', 'blocker', 'unsettled'],
+      // A disproof drops only a finding graded below blocker: one capped for want of proof, or a lead.
+      ['Unproven disproved', 'ignore', 'disproved'],
+      ['Lead disproved', 'ignore', 'disproved'],
       // PR content the refuter reads could steer it, so only a confirmation changes a security finding.
       ['Security disproved', 'blocker', 'disproved'],
       ['Lead unsettled', 'ignore', 'unsettled'],
+      ['Blocking lead unsettled', 'blocker', 'unsettled'],
       ['Failing', 'blocker', undefined],
       ['A warning', 'warning', undefined],
       // Its file is not in the workspace, so there is no code to check.
@@ -105,23 +130,23 @@ describe('refuteBlockers', () => {
     expect([result[4].lead, result[4].notChecked]).toEqual([undefined, undefined]);
     expect(result[5].tags).toEqual([]);
     // Every blocker and lead was asked once, and the warning never.
-    expect(client.calls.map(([title]) => title).sort()).toEqual(['Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead unsettled', 'Security disproved', 'Unproven and contradicted', 'Unproven lead confirmed', 'Unsettled']);
+    expect(client.calls.map(([title]) => title).sort()).toEqual(['Blocking lead unsettled', 'Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved by an unrelated file', 'Disproved in its own file', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead disproved', 'Lead unsettled', 'Security disproved', 'Unproven and contradicted', 'Unproven disproved', 'Unproven lead confirmed', 'Unsettled']);
     expect(client.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15 }, timeoutMs: 600_000 });
   });
 
   it('reuses the outcome an earlier round stored for the same finding while every file it rests on is unchanged', async () => {
     writeFileSync(join(workspace, 'src', 'api.ts'), 'if (a > 1000) throw new Error();\n');
     const client = fakeClient({ 'Sum overflows': { outcome: 'disproved', reason: 'Checked at src/api.ts:1.', proof: ['src/api.ts:1'] } });
-    const [first] = await refuteBlockers(client, [finding('Sum overflows')], { workspace });
+    const [first] = await refuteBlockers(client, [finding('Sum overflows')], { workspace, diff });
     const priorRounds = [{ findings: { entries: [] }, judge: { dropped: [{ title: 'Sum overflows', file: 'src/math.ts', line: 2, reviewers: ['R'], refutation: first.refutation }] } }] as unknown as RoundContext[];
     const calls = async () => {
-      await refuteBlockers(client, [finding('Sum overflows', { line: 3 })], { workspace, priorRounds });
+      await refuteBlockers(client, [finding('Sum overflows', { line: 3 })], { workspace, priorRounds, diff });
       return client.calls.length;
     };
 
     expect(first.refutation?.files).toEqual(['src/api.ts', 'src/math.ts']);
-    const [again] = await refuteBlockers(client, [finding('Sum overflows', { line: 3 })], { workspace, priorRounds });
-    expect([client.calls.length, again.severity, again.refutation]).toEqual([1, 'ignore', first.refutation]);
+    const [again] = await refuteBlockers(client, [finding('Sum overflows', { line: 3 })], { workspace, priorRounds, diff });
+    expect([client.calls.length, again.severity, again.refutation]).toEqual([1, 'blocker', first.refutation]);
 
     // A change to the file that holds the check the outcome cites forces a new check, like a change to the finding's file.
     writeFileSync(join(workspace, 'src', 'api.ts'), '// the check is gone\n');
@@ -130,13 +155,15 @@ describe('refuteBlockers', () => {
 
   it('reuses an outcome only for a finding near the same line whose cited files it covers', async () => {
     const client = fakeClient({ 'Sum overflows': { outcome: 'disproved', reason: 'Checked at src/api.ts:9.', proof: ['src/api.ts:9'] } });
-    const [first] = await refuteBlockers(client, [finding('Sum overflows')], { workspace });
+    const [first] = await refuteBlockers(client, [finding('Sum overflows')], { workspace, diff });
     const priorRounds = [{ findings: { entries: [] }, judge: { dropped: [{ title: 'Sum overflows', file: 'src/math.ts', line: 2, reviewers: ['R'], refutation: first.refutation }] } }] as unknown as RoundContext[];
     writeFileSync(join(workspace, 'src', 'other.ts'), 'export const x = 1;\n');
 
-    await refuteBlockers(client, [finding('Sum overflows', { line: 40 })], { workspace, priorRounds });
-    await refuteBlockers(client, [finding('Sum overflows', { evidence: { checks: [], proof: ['src/math.ts:2', 'src/other.ts:1'] } })], { workspace, priorRounds });
+    await refuteBlockers(client, [finding('Sum overflows', { line: 40 })], { workspace, priorRounds, diff });
+    await refuteBlockers(client, [finding('Sum overflows', { evidence: { checks: [], proof: ['src/math.ts:2', 'src/other.ts:1'] } })], { workspace, priorRounds, diff });
+    // A stored disproof whose lines are neither in the finding's file nor in the diff is checked again.
+    await refuteBlockers(client, [finding('Sum overflows')], { workspace, priorRounds });
 
-    expect(client.calls).toHaveLength(3);
+    expect(client.calls).toHaveLength(4);
   });
 });

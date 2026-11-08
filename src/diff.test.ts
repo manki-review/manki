@@ -502,6 +502,13 @@ describe('isLineInDiff', () => {
   it('returns false for line before first hunk', () => {
     expect(isLineInDiff(file, 1)).toBe(false);
   });
+
+  it('returns true for a range that overlaps or encloses a hunk, and false for one between hunks', () => {
+    expect(isLineInDiff(file, 1, 5)).toBe(true);
+    expect(isLineInDiff(file, 8, 30)).toBe(true);
+    expect(isLineInDiff(file, 1, 40)).toBe(true);
+    expect(isLineInDiff(file, 9, 20)).toBe(false);
+  });
 });
 
 describe('sliceDiff', () => {

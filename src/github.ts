@@ -1777,8 +1777,8 @@ const MAX_CHECK_CHARS = 160;
 const REFUTATION_LINE: Record<RefutationOutcome, string> = {
   confirmed: 'The judge tried to refute it with the repository tools and confirmed it',
   unsettled: 'The judge tried to refute it with the repository tools and could not settle it',
-  // A disproved finding is dropped, so a posted one is a security finding, which keeps its grade.
-  disproved: 'The judge found a reason it may not happen, but a security finding keeps its grade',
+  // A disproof drops only findings graded below blocker, so a posted disproved finding is a blocker, which keeps its grade.
+  disproved: 'The judge found a reason it may not happen, but a disproof alone never clears a blocker',
 };
 
 /** Shortens model text to one plain line, so no raw tool output or code block reaches the comment. */
