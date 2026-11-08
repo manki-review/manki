@@ -1407,8 +1407,8 @@ async function submitReview(
 }
 
 function dynamicFence(content: string): string {
-  const maxBt = (content.match(/`+/g) || []).reduce((max: number, s: string) => Math.max(max, s.length), 0);
-  return '`'.repeat(Math.max(3, maxBt + 1));
+  const maxRun = (content.match(/`+|~+/g) || []).reduce((max: number, s: string) => Math.max(max, s.length), 0);
+  return '`'.repeat(Math.max(3, maxRun + 1));
 }
 
 /** Wraps `text` in a `dynamicFence`, so nothing inside can close the block, with `info` as its language. */
@@ -1594,7 +1594,7 @@ function sanitizeMarkdown(text: string): string {
   result = result.replace(HTML_TAG_REGEX, '');
   result = result.replace(HTML_TAG_REGEX, '');
 
-  return closeOpenFence(result
+  return fenceOwnCode(result
     .replace(HTML_UNCLOSED_TAG_REGEX, '')  // Unclosed tags at end of string
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Images: keep alt text only
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Links: keep text only
@@ -1603,8 +1603,6 @@ function sanitizeMarkdown(text: string): string {
     .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
     .replace(/^\[[^\]]*\]:\s+.*$/gm, '')                             // Link/image definitions
-    .replace(FENCE_INFO_RE, (_, ticks?: string, tickInfo?: string, tildes?: string, tildeInfo?: string) => // No suggestion fences
-      `${ticks ?? tildes}${plainLanguage(ticks ? tickInfo : tildeInfo)}`)
     // Insert zero-width space after @ to prevent GitHub from resolving mentions.
     // Lookbehind avoids matching email addresses (which have chars before @).
     // Also handles @org/team patterns.
@@ -1629,25 +1627,21 @@ function visibleLength(text: string): number {
   return text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
 }
 const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
-// Every fence run with its info string, wherever it sits, since later splitting can move it to the start of a line. A
-// backtick run's info string stops at the next backtick, so a later run on the same line is matched too.
-const FENCE_INFO_RE = /(`{3,})([^\n`]*)|(~{3,})([^\n]*)/g;
-const PLAIN_LANGUAGE_RE = /^[A-Za-z0-9_+#.-]{1,32}$/;
+// A run that could open a fence, anywhere in a line, since later splitting can move it to the start of one.
+const FENCE_RUN_RE = /`{3,}|~{3,}/g;
 
-/** Closes a top-level fence `text` leaves open, so what Manki appends after it is never read as part of the block. */
-function closeOpenFence(text: string): string {
-  let open: string | undefined;
-  for (const line of text.split('\n')) {
-    const [, run, info] = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/) ?? [];
-    if (!run) continue;
-    if (!open) {
-      if (run[0] === '~' || !info.includes('`')) open = run;
-    } else if (run[0] === open[0] && run.length >= open.length && !info.trim()) {
-      open = undefined;
-    }
-  }
-  return open ? `${text}\n${open}` : text;
+/**
+ * Rebuilds the fences in model-written `text` as Manki's own: each fenced block gets a `dynamicFence` that nothing in it
+ * can close and a plain language name at most, and a block left open is closed. Any other run of three backticks or
+ * tildes is escaped, so no prose can open a fence, such as a `suggestion`, around what Manki appends after it.
+ */
+function fenceOwnCode(text: string): string {
+  return splitFences(text.split('\n')).filter(p => p.lines.length > 0).map(p => p.kind === 'code'
+    ? fenceText(p.lines.join('\n'), plainLanguage(p.lang))
+    : p.lines.join('\n').replace(FENCE_RUN_RE, run => run.replace(/./g, '\\$&'))).join('\n');
 }
+
+const PLAIN_LANGUAGE_RE = /^[A-Za-z0-9_+#.-]{1,32}$/;
 
 /**
  * Returns `info` when it is a plain language name, or nothing. Any other info string is dropped, so no spelling that
@@ -1694,6 +1688,11 @@ function splitFix(fix: string, file: string): FixPart[] {
       { kind: 'prose' as const, lines: lines.slice(end) },
     ].map(p => ({ ...p, lines: trimBlankLines(p.lines) })).filter(p => p.lines.length > 0);
   }
+  return splitFences(lines).map(p => ({ ...p, lines: trimBlankLines(p.lines) })).filter(p => p.lines.length > 0);
+}
+
+/** Splits `lines` at fence lines into prose and code parts, in order. A block left open runs to the end. */
+function splitFences(lines: string[]): FixPart[] {
   const parts: FixPart[] = [];
   let fence: string | null = null;
   let current: FixPart = { kind: 'prose', lines: [] };
@@ -1714,7 +1713,7 @@ function splitFix(fix: string, file: string): FixPart[] {
     }
   }
   parts.push(current);
-  return parts.map(p => ({ ...p, lines: trimBlankLines(p.lines) })).filter(p => p.lines.length > 0);
+  return parts;
 }
 
 /** Renders the parts of a fix as text and fenced code blocks. A block without a language gets the extension of `file`. */
@@ -1724,9 +1723,7 @@ function renderFixParts(parts: FixPart[], file: string): string {
   return parts.map(p => {
     const text = p.lines.join('\n');
     if (p.kind === 'prose') return sanitizeMarkdown(text);
-    const fence = dynamicFence(text);
-    const lang = plainLanguage(p.lang) || plainLanguage(extension);
-    return `${fence}${lang}\n${text}\n${fence}`;
+    return fenceText(text, plainLanguage(p.lang) || plainLanguage(extension));
   }).join('\n\n');
 }
 

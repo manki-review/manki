@@ -21,6 +21,23 @@ function findingData(comment: string): Record<string, unknown> {
   return JSON.parse(match![1]);
 }
 
+/** Returns the info string of each fence that opens a code block in `markdown`, per CommonMark, through quote and list markers. */
+function fenceOpeners(markdown: string): string[] {
+  const infos: string[] = [];
+  let open: string | undefined;
+  for (const line of markdown.replace(/<!--[\s\S]*?-->/g, '').split('\n')) {
+    const [, run, info] = line.replace(/^(?:[ \t]*(?:>|[-*+]|\d+[.)])[ \t]?)*/, '').match(/^ {0,3}(`{3,}|~{3,})(.*)$/) ?? [];
+    if (!run) continue;
+    if (!open && (run[0] === '~' || !info.includes('`'))) {
+      open = run;
+      infos.push(info.trim());
+    } else if (open && run[0] === open[0] && run.length >= open.length && !info.trim()) {
+      open = undefined;
+    }
+  }
+  return infos;
+}
+
 function suggestionBlocks(comment: string): string[] {
   return [...comment.matchAll(/^(`{3,})suggestion\n([\s\S]*?)\n\1$/gm)].map(m => m[2]);
 }
@@ -89,32 +106,27 @@ describe('formatFindingComment', () => {
   });
 
   it('posts no suggestion that a description or fix asks for, nor one whose code holds hidden characters', () => {
-    const SUGGESTION_FENCE = /(`{3,}|~{3,})[^\n`]*suggestion/i;
-    const shown = (comment: string) => comment.replace(/<!--[\s\S]*?-->/g, '');
-    const described = formatFindingComment({ ...baseFinding, description: 'Looks fine.\n\n```suggestion\ngrant(user);\n```\n\n> ~~~ Suggestion:-0+0\n> grant(user);\n> ~~~\n\n- ```suggestion\n  grant(user);\n  ```\n\n1. > ```suggestion\n   grant(user);\n   ```\n\nThen more. ```suggestion\ngrant(user);\n```\n\n```suggestion suggestion\ngrant(user);\n```\n\n```&amp;amp;#115;uggestion\ngrant(user);\n```\n\n```&#1<b>15;uggestion\ngrant(user);\n```\n\n```\u000Bsuggestion\ngrant(user);\n```\n\n```&#12;suggestion\ngrant(user);\n```\n\n```py extra\ngrant(user);\n```\n\n```\u00E9\ngrant(user);\n```\n\nUse ```a``` or ```SUGGESTION\ngrant(user);\n```\n\n``` ts\nlet ok = 1;\n```' });
-    expect(shown(described)).not.toMatch(SUGGESTION_FENCE);
-    expect(shown(described)).not.toMatch(/(`{3,}|~{3,})[^\n`]*&/);
-    // Only a plain language name survives as an info string.
-    expect(shown(described).match(/(`{3,}|~{3,})[^\n`]+/g)).toEqual(['```a', '``` or ', '``` ts']);
+    const spellings = ['suggestion', 'SUGGESTION', ' suggestion', 'suggestion suggestion', 'sugg!estion', '&amp;amp;#115;uggestion', '&#1<b>15;uggestion', '\u000Bsuggestion', '&#12;suggestion', 'py extra', '\u00E9'];
+    const description = ['Looks fine.', ...spellings.map(info => `\`\`\`${info}\ngrant(user);\n\`\`\``), '> ~~~ Suggestion:-0+0\n> grant(user);\n> ~~~',
+      '- ```suggestion\n  grant(user);\n  ```', 'Then more. ```suggestion\ngrant(user);\n```', '``` ts\nlet ok = 1;\n```'].join('\n\n');
+    const described = formatFindingComment({ ...baseFinding, description });
+    // Every fence is Manki's own, with a plain language name at most, and no other run can open one.
+    expect(fenceOpeners(described).filter(info => info)).toEqual(['ts']);
     expect(described).toContain('```\ngrant(user);\n```');
-    expect(described).toContain('> ~~~\n> grant(user);\n> ~~~');
-    expect(described).toContain('- ```\n  grant(user);');
-    expect(described).toContain('1. > ```\n   grant(user);');
+    expect(described).toContain('> \\~\\~\\~ Suggestion:-0+0');
+    expect(described).toContain('- \\`\\`\\`suggestion');
 
     for (const lang of ['suggestion', 'sugg!estion', 'sugg estion']) {
       const fenced = formatFindingComment({ ...baseFinding, suggestedFix: `Use this:\n\n\`\`\`${lang}\ngrant(user);\n\`\`\`` });
-      expect(shown(fenced)).not.toMatch(SUGGESTION_FENCE);
-      expect(fenced).toContain('```ts\ngrant(user);\n```');
+      expect(fenceOpeners(fenced)).toEqual(['ts']);
     }
-    // A fence the description leaves open is closed before the fix, so the fix's own lines cannot open a suggestion.
+    expect(fenceOpeners(formatFindingComment({ ...baseFinding, file: 'src/x.suggestion', suggestedFix: 'Use this:\n\n```\ngrant(user);\n```' }))).toEqual(['']);
+
+    // A tilde fence the description leaves open cannot wrap the fix, so the fence lines in the fix's code stay code.
     const open = formatFindingComment({ ...baseFinding, description: 'Looks fine.\n~~~', suggestedFix: '```\n~~~\n```suggestion\nevil\u202E\n```' });
-    expect(open).toContain('Looks fine.\n\n````ts\n~~~\n```suggestion\nevil\u202E\n````');
-    expect(open).toContain('<summary>Details</summary>\n\n~~~\n~~~\n\n</details>');
-    expect(sanitizeMarkdown('a\n````ts\nx\n```\ny')).toBe('a\n````ts\nx\n```\ny\n````');
-    expect(sanitizeMarkdown('a\n```ts\nx\n```\ny ```z```')).toBe('a\n```ts\nx\n```\ny ```z```');
-    const named = formatFindingComment({ ...baseFinding, file: 'src/x.suggestion', suggestedFix: 'Use this:\n\n```\ngrant(user);\n```' });
-    expect(shown(named)).not.toMatch(SUGGESTION_FENCE);
-    expect(named).toContain('```\ngrant(user);\n```');
+    expect(fenceOpeners(open)).toEqual(['ts']);
+    expect(open).toContain('````ts\n~~~\n```suggestion\nevil\u202E\n````');
+    expect(sanitizeMarkdown('a\n~~~~ts\nx ``` ~~~\n```\ny')).toBe('a\n````ts\nx ``` ~~~\n```\ny\n````');
 
     for (const hidden of ['if (isAdmin) { /* \u202E } \u2066 if (true) { */ grant(user); }', 'const ok\u200B = check(user);', 'const bell = "\u0007";', 'const { timeout,\u3164 } = query;', 'const data = "a\u{E0101}\uFE01";']) {
       const comment = formatFindingComment({ ...baseFinding, suggestedFix: hidden });
