@@ -1206,8 +1206,8 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
 
     const input: JudgeInput = {
-      findings: [makeFinding()],
-      diff: makeDiff(),
+      findings: [makeFinding({ evidence: { checks: [], proof: ['src/caller.ts:4'] } })],
+      diff: makeDiff([makeDiffFile(), makeDiffFile({ path: 'src/caller.ts', hunks: [makeHunk({ content: ` ${'c'.repeat(30_000)}\n+call();` })] }), makeDiffFile({ path: 'src/other.ts', hunks: [makeHunk({ content: '+const unused = 1;' })] })]),
       rawDiff: 'diff --git a/src/index.ts b/src/index.ts\n+const unused = 1;',
       repoContext: '',
       agentCount: 5,
@@ -1222,7 +1222,10 @@ describe('runJudgeAgent', () => {
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
     const [, userMessage] = mockSendMessage.mock.calls[0];
     expect(userMessage).toContain('## Pull Request Diff');
-    expect(userMessage).toContain('+const unused = 1;');
+    expect(userMessage).toContain('diff --git a/src/index.ts b/src/index.ts');
+    expect(userMessage).toContain('diff --git a/src/caller.ts b/src/caller.ts');
+    expect(userMessage).toContain('more characters of this line cut');
+    expect(userMessage).not.toContain('diff --git a/src/other.ts');
   });
 
   it('passes effort option to sendMessage', async () => {

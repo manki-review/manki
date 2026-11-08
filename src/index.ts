@@ -646,6 +646,11 @@ async function dropProgressComment(target: RunTarget, progress: RunProgress, set
   await setSettingsBlock(octokit, owner, repo, previousId, progressSettings(target, progress, status));
 }
 
+/** Characters of reviewable diff above which a PR gets no automatic review, since each 50,000 of them cost a call per reader. */
+const MAX_AUTO_REVIEW_CHARS = 2_000_000;
+/** Characters of reviewable diff above which Manki never reviews a PR, even when forced. */
+const MAX_REVIEW_CHARS = 4_000_000;
+
 /** What a review round works on. Built once its inputs are collected, then passed to the stages that review, post and record. */
 interface ReviewRun extends RunTarget, RoundRecordInput {
   commentId: number;
@@ -1637,6 +1642,12 @@ async function runFullReview(
 
     const autoLimit = Math.min(config.auto_review_max_lines ?? config.max_diff_lines, config.max_diff_lines);
     const shortSha = commitSha.slice(0, 7);
+    const charCount = rawDiff.length;
+    if (charCount > MAX_REVIEW_CHARS) {
+      core.warning(`Diff too large (${charCount} reviewable characters > ${MAX_REVIEW_CHARS} max)`);
+      checkReport = await postTooBigNotice(target, progress, `**Too big to review** at \`${shortSha}\`: this PR has ${charCount} characters of reviewable diff, above the limit of ${MAX_REVIEW_CHARS} that Manki reviews. Split it into smaller PRs to get a review.`, false, recap.priorRounds.at(-1)?.meta.timestamp);
+      return;
+    }
     if (lineCount > config.max_diff_lines) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
       checkReport = await postTooBigNotice(target, progress, `**Too big to review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${config.max_diff_lines} that Manki reviews. Split it into smaller PRs to get a review.`, false, recap.priorRounds.at(-1)?.meta.timestamp);
@@ -1645,6 +1656,11 @@ async function runFullReview(
     if (lineCount > autoLimit && !forceReview && !skipCap) {
       core.info(`No automatic review: ${lineCount} reviewable lines > ${autoLimit}`);
       checkReport = await postTooBigNotice(target, progress, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick Force review to review it in full.`, true, recap.priorRounds.at(-1)?.meta.timestamp);
+      return;
+    }
+    if (charCount > MAX_AUTO_REVIEW_CHARS && !forceReview && !skipCap) {
+      core.info(`No automatic review: ${charCount} reviewable characters > ${MAX_AUTO_REVIEW_CHARS}`);
+      checkReport = await postTooBigNotice(target, progress, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${charCount} characters of reviewable diff, above the limit of ${MAX_AUTO_REVIEW_CHARS} for automatic review. Split it into smaller PRs, or tick Force review to review it in full.`, true, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 

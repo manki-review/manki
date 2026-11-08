@@ -2188,14 +2188,22 @@ describe('runFullReview orchestration', () => {
     });
   });
 
+  const offerLines = /^\*\*Too big for automatic review\*\* at `abc123`: this PR has 10000 reviewable lines, above the limit of 8000 for automatic review\. Split it into smaller PRs, or tick Force review to review it in full\.\n/;
+  const refuseLines = /^\*\*Too big to review\*\* at `abc123`: this PR has 15001 reviewable lines, above the limit of 15000 that Manki reviews\. Split it into smaller PRs to get a review\.\n/;
+  const offerChars = /^\*\*Too big for automatic review\*\* at `abc123`: this PR has \d+ characters of reviewable diff, above the limit of 2000000 for automatic review\. Split it into smaller PRs, or tick Force review to review it in full\.\n/;
+  const refuseChars = /^\*\*Too big to review\*\* at `abc123`: this PR has \d+ characters of reviewable diff, above the limit of 4000000 that Manki reviews\. Split it into smaller PRs to get a review\.\n/;
   it.each([
-    ['an automatic review of 10,000 lines', 10_000, false, 'offer'],
-    ['a forced review of 10,000 lines', 10_000, true, 'review'],
-    ['a forced review of 15,000 lines', 15_000, true, 'review'],
-    ['a forced review of 15,001 lines', 15_001, true, 'refuse'],
-    ['an automatic review of 8,000 lines', 8_000, false, 'review'],
-  ] as const)('handles %s with the default limits', async (_label, lines, forceReview, expected) => {
-    const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: '+x' }] };
+    ['an automatic review of 10,000 lines', 10_000, 1, false, offerLines],
+    ['a forced review of 10,000 lines', 10_000, 1, true, undefined],
+    ['a forced review of 15,000 lines', 15_000, 1, true, undefined],
+    ['a forced review of 15,001 lines', 15_001, 1, true, refuseLines],
+    ['an automatic review of 8,000 lines', 8_000, 1, false, undefined],
+    ['an automatic review of 2,000,000 characters', 100, 2_000_000 - 200, false, undefined],
+    ['an automatic review of over 2,000,000 characters', 100, 2_000_001, false, offerChars],
+    ['a forced review of over 2,000,000 characters', 100, 2_000_001, true, undefined],
+    ['a forced review of over 4,000,000 characters', 100, 4_000_001, true, refuseChars],
+  ] as const)('handles %s with the default limits', async (_label, lines, chars, forceReview, notice) => {
+    const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: `+${'x'.repeat(chars)}` }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: lines, totalDeletions: 0 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
     const warmupCLI = jest.fn().mockResolvedValue(undefined);
@@ -2204,7 +2212,7 @@ describe('runFullReview orchestration', () => {
     await runFullReview(baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext, { forceReview });
 
     const notices = jest.mocked(mockOctokitInstance.rest.issues.updateComment).mock.calls.map(([c]) => (c as { body: string }).body).filter(b => b.includes('**Too big'));
-    if (expected === 'review') {
+    if (!notice) {
       expect(reviewModule.runReview).toHaveBeenCalled();
       expect(notices).toEqual([]);
       return;
@@ -2217,9 +2225,7 @@ describe('runFullReview orchestration', () => {
     // The progress comment becomes the notice, so it keeps the settings block.
     expect(mockOctokitInstance.rest.issues.deleteComment).not.toHaveBeenCalled();
     expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
-    expect(notices).toEqual([expected === 'offer'
-      ? expect.stringMatching(/^\*\*Too big for automatic review\*\* at `abc123`: this PR has 10000 reviewable lines, above the limit of 8000 for automatic review\. Split it into smaller PRs, or tick Force review to review it in full\.\n/)
-      : expect.stringMatching(/^\*\*Too big to review\*\* at `abc123`: this PR has 15001 reviewable lines, above the limit of 15000 that Manki reviews\. Split it into smaller PRs to get a review\.\n/)]);
+    expect(notices).toEqual([expect.stringMatching(notice)]);
   });
 
   it('edits the last unanswered too-big notice on a later push instead of adding another', async () => {

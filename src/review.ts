@@ -7,17 +7,17 @@ import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, r
 import { mapWithConcurrency } from './utils';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
-import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
+import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
 import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
-import { countChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
+import { countChangedLines, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { refuteBlockers } from './refute';
-import { runVerdictReader } from './verdict';
+import { combineVerdictReports, runVerdictReader } from './verdict';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 
@@ -42,6 +42,15 @@ const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
 };
 
 export const RETRY_HINT = 'Retry with @manki review.';
+
+const MAX_LISTED_LINES = 10;
+
+/** Names the changed lines no prompt can show in full, and how to get the PR reviewed. */
+function overlongSummary(lines: OverlongLine[]): string {
+  const listed = lines.slice(0, MAX_LISTED_LINES).map(l => `\`${sanitizeFilePath(l.file)}:${l.line}\` (${l.side} line, ${l.length} characters)`);
+  const more = lines.length > MAX_LISTED_LINES ? `, and ${lines.length - MAX_LISTED_LINES} more` : '';
+  return `No model read this PR in full: ${listed.join(', ')}${more} ${lines.length === 1 ? 'is' : 'are'} longer than ${MAX_LINE_CHARS} characters, the most a prompt shows of one line. Split the line, or exclude its file in \`exclude_paths\` on the base branch, and push again.`;
+}
 
 
 export const PLANNER_TIMEOUT_MS = 60_000;
@@ -526,6 +535,11 @@ export async function runReview(
     config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal,
     isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff, workspace,
   } = options;
+  const overlong = overlongChangedLines(diff);
+  if (overlong.length > 0) {
+    core.warning(`${overlong.length} changed line(s) are too long to show any model, so the round is incomplete`);
+    return { verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary: overlongSummary(overlong), findings: [], highlights: [], reviewComplete: false, agentNames: [] };
+  }
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
   const modelFallbacks: RoundModelFallback[] = [];
   const llmCalls: LLMCall[] = [];
@@ -1165,8 +1179,14 @@ export async function runReview(
   if (outcome === 'READY') {
     const verdictWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict'));
     const readerFiles = fileContents && new Map([...fileContents].filter(([path]) => changedFiles.has(path)));
+    // The reader reads the slices the finders read, so no slice of the diff is cut.
+    const slices = diffSlices(rawDiff, config);
+    if (slices.length > 1) core.info(`The verdict reader reads the diff in ${slices.length} slices`);
     try {
-      verdictReport = await runVerdictReader(verdictWrap.client, buildReviewerUserMessage(rawDiff, repoContext, { fileContents: readerFiles, changedSinceLastRound }));
+      verdictReport = combineVerdictReports(await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
+        runVerdictReader(verdictWrap.client, buildReviewerUserMessage(raw, repoContext, {
+          fileContents: readerFiles && filesIn(readerFiles, paths), changedSinceLastRound: pathsIn(changedSinceLastRound, paths), sliceNote: sliceNote(index, slices),
+        }))));
     } catch (error) {
       core.warning(`Verdict reader failed: ${error}`);
       logOutputTokens('Verdict reader', verdictWrap.getTotals().usage);
@@ -1290,6 +1310,8 @@ export interface BuildReviewerUserMessageOptions {
   linkedIssues?: LinkedIssue[];
   /** The files of the diff the author changed since the last reviewed round, listed first. Unset on a first round. */
   changedSinceLastRound?: string[];
+  /** Opens the message for a reader of one slice of a larger diff, from `sliceNote`. */
+  sliceNote?: string;
 }
 
 interface RunReviewerAgentOptions {
@@ -1315,6 +1337,39 @@ function filesChangedSinceLastRound(diff: ParsedDiff, priorRounds: RoundContext[
 const MAX_PARALLEL_SLICES = 4;
 
 /**
+ * Returns the slices `sliceDiff` splits `rawDiff` into, each as the text a prompt shows and, when there are several, the
+ * paths it holds. A diff that fits one slice keeps its own text, unless it is too long to show uncut.
+ */
+function diffSlices(rawDiff: string, config: ReviewConfig): Array<{ raw: string; paths?: Set<string> }> {
+  const slices = sliceDiff(parsePRDiff(rawDiff), config.slice_lines ?? DEFAULT_CONFIG.slice_lines!);
+  if (slices.length === 1) return [{ raw: rawDiff.length <= MAX_SLICE_CHARS ? rawDiff : rebuildRawDiff(slices[0]) }];
+  return slices.map(slice => ({ raw: rebuildRawDiff(slice), paths: new Set(slice.files.map(f => f.path)) }));
+}
+
+const MAX_NOTED_PATHS = 50;
+
+/** Tells a finder or the verdict reader of slice `index` which slice it reads and which changed files only the other slices hold. Empty for one slice. */
+function sliceNote(index: number, slices: Array<{ paths?: Set<string> }>): string {
+  const count = slices.length;
+  if (count === 1) return '';
+  const own = slices[index].paths;
+  const others = [...new Set(slices.flatMap(s => [...(s.paths ?? [])]))].filter(path => !own?.has(path));
+  const listed = others.slice(0, MAX_NOTED_PATHS).join('\n');
+  const more = others.length > MAX_NOTED_PATHS ? `\n... and ${others.length - MAX_NOTED_PATHS} more` : '';
+  return `## Slice\n\nThis is slice ${index + 1} of ${count} of the PR's diff. The other slices are read in calls of their own. A file in this slice can also continue in another slice, and code missing from this slice, such as a caller, a test or the rest of a split hunk, is no defect. These changed files are not in this slice:\n\n${fenceText(`${listed}${more}` || '(none)')}\n\n`;
+}
+
+/** Returns the entries of `list` in `paths`, or all of them when the diff is read in one slice. */
+function pathsIn(list: string[] | undefined, paths?: Set<string>): string[] | undefined {
+  return paths ? list?.filter(path => paths.has(path)) : list;
+}
+
+/** Returns the file contents of `paths`, or all of them when the diff is read in one slice. */
+function filesIn(contents: Map<string, string>, paths?: Set<string>): Map<string, string> {
+  return paths ? new Map([...contents].filter(([path]) => paths.has(path))) : contents;
+}
+
+/**
  * Runs one finder on the diff. A diff over `config.slice_lines` is split by `sliceDiff`, and the finder
  * reads each slice in a call of its own, `MAX_PARALLEL_SLICES` at a time. The findings and usage of all slices are combined.
  */
@@ -1330,16 +1385,13 @@ async function runReviewerAgent(
   linkedIssues?: LinkedIssue[],
   options: RunReviewerAgentOptions = {},
 ): Promise<AgentResult> {
-  const slices = sliceDiff(parsePRDiff(rawDiff), config.slice_lines ?? DEFAULT_CONFIG.slice_lines!);
-  if (slices.length <= 1) return runReviewerOnSlice(client, config, finder, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, options);
+  const slices = diffSlices(rawDiff, config);
+  if (slices.length <= 1) return runReviewerOnSlice(client, config, finder, slices[0]?.raw ?? rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, options);
   core.info(`${finder.name} reads the diff in ${slices.length} slices`);
   const startedAt = Date.now();
-  const results = await mapWithConcurrency(slices, MAX_PARALLEL_SLICES, slice => {
-    const paths = new Set(slice.files.map(f => f.path));
-    const sliceContents = fileContents && new Map([...fileContents].filter(([path]) => paths.has(path)));
-    const changedSinceLastRound = options.changedSinceLastRound?.filter(path => paths.has(path));
-    return runReviewerOnSlice(client, config, finder, rebuildRawDiff(slice), repoContext, sliceContents, prContext, memoryContext, linkedIssues, { ...options, changedSinceLastRound });
-  });
+  const results = await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
+    runReviewerOnSlice(client, config, finder, raw, repoContext, fileContents && filesIn(fileContents, paths), prContext, memoryContext, linkedIssues,
+      { ...options, changedSinceLastRound: pathsIn(options.changedSinceLastRound, paths) }, sliceNote(index, slices)));
   return {
     findings: results.flatMap(r => r.findings),
     responseLength: results.reduce((sum, r) => sum + r.responseLength, 0),
@@ -1359,11 +1411,12 @@ async function runReviewerOnSlice(
   memoryContext?: string,
   linkedIssues?: LinkedIssue[],
   options: RunReviewerAgentOptions = {},
+  sliceNote?: string,
 ): Promise<AgentResult> {
   const { effort, language, context, workspace, related, changedSinceLastRound } = options;
   const tools = !!workspace && !!client.repoTools;
   const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, context, config.noise_level, tools);
-  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound });
+  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, sliceNote });
 
   const sendOptions: SendMessageOptions = {
     ...(effort && { effort }),
@@ -1536,8 +1589,8 @@ export function buildReviewerUserMessage(
   repoContext: string,
   options: BuildReviewerUserMessageOptions = {},
 ): string {
-  const { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound } = options;
-  let message = '';
+  const { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, sliceNote } = options;
+  let message = sliceNote ?? '';
 
   if (changedSinceLastRound?.length) {
     message += `## Changed Since the Last Review\n\n`;
@@ -1971,7 +2024,7 @@ export function stringifyFindingFingerprint(fp: FindingFingerprint): string {
  * Each cut file keeps its header lines through the first hunk header. The total can
  * exceed `maxLength` only when those lines alone are longer than a file's share.
  */
-export function truncateDiff(rawDiff: string, maxLength: number = 50000): string {
+export function truncateDiff(rawDiff: string, maxLength: number = MAX_SLICE_CHARS): string {
   if (rawDiff.length <= maxLength) return rawDiff;
   const sections = rawDiff.split(/(?=^diff --git )/m);
   const order = sections.map((_, i) => i).sort((a, b) => sections[a].length - sections[b].length || a - b);
