@@ -848,7 +848,7 @@ export async function updateProgressComment(
     if (metadata.judgeDecisions.length > 0) {
       parts.push('**Judge decisions:**');
       for (const d of metadata.judgeDecisions) {
-        parts.push(`- ${d.kept ? 'Kept' : 'Dropped'}: "${sanitizeMarkdown(d.title)}" (${d.severity}, ${d.confidence} confidence): "${sanitizeMarkdown(d.reasoning)}"`);
+        parts.push(`- ${d.listed ? 'Not finished' : d.kept ? 'Kept' : 'Dropped'}: "${sanitizeMarkdown(d.title)}" (${d.severity}, ${d.confidence} confidence): "${sanitizeMarkdown(d.reasoning)}"`);
       }
       parts.push('');
     }

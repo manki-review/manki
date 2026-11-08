@@ -1460,8 +1460,10 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
 
   const allJudgedForDashboard = result.allJudgedFindings || result.findings;
   const rawForLookup = result.rawFindings ?? allJudgedForDashboard;
+  // A lead the tools left unsettled is listed as not finished, neither kept nor dropped.
+  const listed = new Set(result.openLeads);
   const judgeDecisions = allJudgedForDashboard.map(f => {
-    const kept = f.severity !== 'ignore';
+    const kept = f.severity !== 'ignore' && !listed.has(f);
     const originalSeverity = kept
       ? f.severity
       : rawForLookup.find(r => r.title === f.title && r.file === f.file && r.line === f.line)?.severity ?? f.severity;
@@ -1471,6 +1473,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
       reasoning: f.judgeNotes || '',
       confidence: f.judgeConfidence || 'medium',
       kept,
+      ...(listed.has(f) && { listed: true as const }),
       originalSeverity,
     };
   });
@@ -1478,8 +1481,6 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   const keptSeverities: Record<string, number> = {};
   const droppedSeverities: Record<string, number> = {};
   const keptSet = new Set(result.findings);
-  // A lead the tools left unsettled is listed as not finished, not dropped.
-  const listed = new Set(result.openLeads);
   for (const f of result.findings) {
     keptSeverities[f.severity] = (keptSeverities[f.severity] ?? 0) + 1;
   }

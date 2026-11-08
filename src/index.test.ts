@@ -2456,6 +2456,8 @@ describe('runFullReview orchestration', () => {
     expect(dashboardArg?.keptSeverities).toEqual({ blocker: 1, suggestion: 1, nitpick: 1 });
     expect(dashboardArg?.droppedSeverities).toEqual({ nitpick: 1 });
     expect(dashboardArg?.droppedCount).toBe(1);
+    const decisions = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[5]?.judgeDecisions;
+    expect(decisions?.find(d => d.title === 'Token may not read the repo')).toEqual(expect.objectContaining({ kept: false, listed: true }));
     expect(dashboardArg?.keptCount).toBe(3);
   });
 

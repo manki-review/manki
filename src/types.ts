@@ -959,6 +959,8 @@ export interface JudgeDecision {
   reasoning: string;
   confidence: 'high' | 'medium' | 'low';
   kept: boolean;
+  /** Set on an open lead the judge's tools left unsettled, which is listed as not finished instead of posted. */
+  listed?: true;
 }
 
 export interface ReviewMetadata {
