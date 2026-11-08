@@ -1629,7 +1629,7 @@ Example of one finding:
 ## How to Search
 
 These rules hold in every round. A later round searches the whole PR as fully as the first one.
-- Report every blocker and every security issue you find, not only the strongest. A defect you leave for a later round costs the author another round.
+- Report every blocker, every warning and every security issue you find in this pass, not only the strongest. A defect you leave for a later round costs the author another round.
 - Follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome, such as a second function that writes the same state.
 - When you find a defect, search the whole PR for the same kind of defect before you report it. Report one finding at the first location, and list every location in \`proof\` and \`evidence\`. Never stop at the first instance.
 - Quality over quantity applies to suggestions and nitpicks only. Never leave out a blocker, a warning or a security issue you can back with code.
