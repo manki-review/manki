@@ -2178,22 +2178,22 @@ function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { fin
 }
 
 /**
- * Whether the findings `a` and `b` name one problem: they sit in one file with overlapping titles, and one cites the
- * other's line as proof. A few lines apart is enough only when one title holds the other, since short titles share
- * words by chance.
+ * Whether the findings `a` and `b` in one file name one problem. When one title contains the other, a few lines apart or
+ * one citing the other's line is enough. Titles that only share words, which short titles do by chance, must both cite
+ * the other's line.
  */
 function sameProblem(a: Finding, b: Finding): boolean {
   const overlap = a.file === b.file ? titleOverlapType(a.title, b.title) : null;
   if (overlap === null) return false;
-  if (citesLineOf(a, b) || citesLineOf(b, a)) return true;
-  return overlap !== 'word_overlap' && Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
+  if (overlap === 'word_overlap') return citesLineOf(a, b) && citesLineOf(b, a);
+  return citesLineOf(a, b) || citesLineOf(b, a) || Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
 }
 
-/** Whether `a` cites the line of `b` as proof. */
+/** Whether `a` cites the line of `b` as proof, in a span no wider than `DISMISSED_LINE_TOLERANCE`. */
 function citesLineOf(a: Finding, b: Finding): boolean {
   return (a.evidence?.proof ?? []).some(at => {
     const location = parseLocation(at);
-    return location?.file === b.file && location.start <= b.line && b.line <= location.end;
+    return location?.file === b.file && location.start <= b.line && b.line <= location.end && location.end - location.start <= DISMISSED_LINE_TOLERANCE;
   });
 }
 
