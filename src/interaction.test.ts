@@ -36,6 +36,7 @@ jest.mock('./memory', () => ({
 
 jest.mock('./github', () => ({
   dynamicFence: jest.requireActual('./github').dynamicFence,
+  sanitizeMarkdown: jest.requireActual('./github').sanitizeMarkdown,
   isBotLogin: jest.requireActual('./github').isBotLogin,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   reactToReviewComment: jest.fn().mockResolvedValue(undefined),
@@ -674,6 +675,24 @@ describe('handleReviewCommentReply', () => {
     });
     expect(core.info).toHaveBeenCalledWith('Posted reply to review comment');
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
+  });
+
+  it('posts a model answer without the mentions, links, suggestion fences and Manki markers it wrote', async () => {
+    const injected = 'The guard runs first. cc @admin, see [docs](https://evil.example).\n\n```suggestion\ngrant(user);\n```\n\n<!-- manki-reopened -->';
+    const clean = /^The guard runs first\. cc @\u200Badmin, see docs\.\n\n```\ngrant\(user\);\n```\n\n<!-- manki -->\n<!-- manki-reply-record: .+ -->$/;
+    const client = { sendMessage: jest.fn().mockResolvedValue({ content: injected }) } as unknown as LLMClient;
+
+    setContext({ comment: { id: 1, body: 'Can you explain more?', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' }, pull_request: { number: 1 } });
+    const octokit = createMockOctokit();
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
+    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringMatching(clean) }));
+
+    for (const body of ['@manki explain the changes', '@manki what does this change?']) {
+      setContext({ comment: { id: 42, body, user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+      const prOctokit = createMockOctokit();
+      await handlePRComment(prOctokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
+      expect(prOctokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringMatching(clean) }));
+    }
   });
 
   it('fences the developer reply as untrusted data in the reply prompt', async () => {

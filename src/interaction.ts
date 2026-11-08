@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, hasWriteAccess, MANKI_VERSION, isRepoAdmin, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
+import { BotIdentity, dynamicFence, hasWriteAccess, MANKI_VERSION, isRepoAdmin, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
 import { resolveMemoryRepo } from './config';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
@@ -307,7 +307,8 @@ export async function handleReviewCommentReply(
     const tools = workspace ? { repoTools: { root: workspace, steps: REPLY_STEPS }, timeoutMs: REPLY_TOOLS_TIMEOUT_MS } : undefined;
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools);
     const findingBody = root.comment.body ?? '';
-    const reply = requireNewProof(highlightCode(response.content.trim(), codeTokens), findingBody);
+    // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
+    const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody);
     const isSecurity = isSecurityThread(findingBody);
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     const outcome = RESOLVING_REPLY_RE.exec(reply)?.[1];
@@ -497,7 +498,7 @@ async function handleExplain(
     owner,
     repo,
     issue_number: prNumber,
-    body: withMarkers(response.content.trim(), BOT_MARKER, response.record),
+    body: withMarkers(sanitizeMarkdown(response.content).trim(), BOT_MARKER, response.record),
   });
 }
 
@@ -858,7 +859,7 @@ async function handleGenericQuestion(
     owner,
     repo,
     issue_number: prNumber,
-    body: withMarkers(response.content.trim(), BOT_MARKER, response.record),
+    body: withMarkers(sanitizeMarkdown(response.content).trim(), BOT_MARKER, response.record),
   });
 }
 
