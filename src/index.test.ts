@@ -227,6 +227,8 @@ jest.mock('./state', () => ({
   retireStaleNotices: jest.requireActual('./state').retireStaleNotices,
   unresolveReviewThread: jest.requireActual('./state').unresolveReviewThread,
   findUnchangedVerdict: jest.requireActual('./state').findUnchangedVerdict,
+  fetchBotReviewThreads: jest.requireActual('./state').fetchBotReviewThreads,
+  fixedMarker: jest.requireActual('./state').fixedMarker,
 }));
 
 jest.mock('./fix-rate', () => ({
@@ -5135,7 +5137,7 @@ describe('runFullReview orchestration', () => {
         ...(posted ? [[true, { threadId: 'PRRT_def' }]] : []),
       ]);
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars)).toEqual(posted ? [
-      { threadId: 'PRRT_abc', body: 'Fixed in abc123.\n\n<!-- manki -->' },
+      { threadId: 'PRRT_abc', body: 'Fixed in abc123.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->' },
       { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->' },
     ] : []);
     if (posted) expect(jest.mocked(ghUtils.formatFoundAgainReply)).toHaveBeenCalledWith(worse);

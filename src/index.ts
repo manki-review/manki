@@ -64,7 +64,7 @@ import {
   showSettings,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, fetchBotReviewThreads, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -1318,11 +1318,26 @@ async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Pr
   return resolved;
 }
 
-/** Replies `Fixed in <sha>.` in each thread the round resolved. */
+/**
+ * Replies `Fixed in <sha>.` in each thread the round resolved, unless a Manki reply there already confirmed the fix on
+ * this head. That reply answered the developer, so it says more than this line.
+ */
 async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise<void> {
+  if (threads.length === 0) return;
+  const { octokit, bot, owner, repo, prNumber, commitSha } = run;
+  const confirmed = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber)
+    .then(live => new Set(live.filter(t => t.fixedOn?.includes(commitSha)).map(t => t.id)))
+    .catch((error: unknown) => {
+      core.warning(`Could not read which threads already confirm the fix, replying on all of them: ${error}`);
+      return new Set<string>();
+    });
   for (const { threadId } of threads) {
+    if (confirmed.has(threadId)) {
+      core.info(`Thread ${threadId} already confirms the fix on ${commitSha.slice(0, 7)}, so the round adds no reply`);
+      continue;
+    }
     try {
-      await replyToReviewThread(run.octokit, threadId, `Fixed in ${run.commitSha.slice(0, 7)}.`);
+      await replyToReviewThread(octokit, threadId, `Fixed in ${commitSha.slice(0, 7)}.`, fixedMarker(commitSha));
     } catch (error) {
       core.warning(`Failed to reply on resolved thread ${threadId}: ${error}`);
     }

@@ -978,5 +978,31 @@ describe('runFullReview end to end', () => {
       // Alice wrote the PR, so her word alone does not clear a blocker.
       expect(thread.isResolved).toBe(false);
     });
+
+    it.each(['round', 'reply'])('confirms a fix once per head when the %s comes first', async first => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+      mockGitHub.headSha = 'c3'.repeat(20);
+      const round = async () => {
+        Object.assign(mockLLM.replies, READY_REPLIES, {
+          judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
+        });
+        await reviewRound();
+      };
+      const reply = async () => {
+        const comment = { databaseId: 9001, body: 'Fixed in c3c3c3c.', url: `${thread.comments[0].url}-9001`, authorAssociation: 'OWNER', author: { login: 'alice' } };
+        thread.comments.push(comment);
+        mockLLM.replies.reviewer = 'Fixed. `add` checks the range before it sums.';
+        await dispatch({ event: 'pull_request_review_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(comment.databaseId) });
+      };
+      for (const step of first === 'round' ? [round, reply] : [reply, round]) await step();
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      const confirmations = thread.comments.filter(c => c.author.login !== 'alice' && /^Fixed\b/.test(c.body)).map(c => c.body.split('\n')[0]);
+      // The reply answers the developer, so it says more than the round's line and is the one kept.
+      expect(confirmations).toEqual([first === 'round' ? 'Fixed in c3c3c3c.' : 'Fixed. `add` checks the range before it sums.']);
+      expect(thread.isResolved).toBe(true);
+    });
   });
 });

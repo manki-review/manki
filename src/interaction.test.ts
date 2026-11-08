@@ -55,6 +55,7 @@ jest.mock('./state', () => ({
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
   explainUnreviewedHead: jest.fn().mockResolvedValue(undefined),
   fetchBotReviewThreads: jest.fn().mockResolvedValue([]),
+  fixedMarker: jest.requireActual('./state').fixedMarker,
   resolveReviewThread: jest.fn().mockResolvedValue(undefined),
 }));
 
@@ -797,7 +798,9 @@ describe('handleReviewCommentReply', () => {
     ['a "Fixed." on a warning thread', 'Fixed. The guard now runs first.', '14:32:05', 'head', 'not_addressed', false, undefined],
     ['a deferral written during the round', '**Agreed.** Deferring it to the follow-up is fine.', '14:32:05', 'head', 'not_addressed', true, undefined],
     ['a withdrawal written during the round', 'Withdrawn. The caller already checks for null.', '14:32:05', 'head', 'not_addressed', true, undefined],
-  ])('defers to the latest round for %s', async (_case, answer, repliedAt, roundHead, status, blocking, pointer) => {
+    // A Manki reply already confirmed the fix on this head, so a maintainer's "Fixed." posts no second one but still resolves the thread.
+    ['a "Fixed." already confirmed on this head', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', true, null],
+  ] as Array<[string, string, string, string, string | undefined, boolean, string | undefined | null]>)('defers to the latest round for %s', async (_case, answer, repliedAt, roundHead, status, blocking, pointer) => {
     const head = 'a'.repeat(40);
     setContext({
       comment: { id: 1, body: 'Fixed in 7e3f21d.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: `2026-11-06T${repliedAt}Z` },
@@ -814,19 +817,26 @@ describe('handleReviewCommentReply', () => {
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: answer });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: blocking, findingTitle: 'This' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: blocking, findingTitle: 'This', ...(pointer === null && { fixedOn: [head] }) },
     ]);
     jest.mocked(state.resolveReviewThread).mockClear();
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
 
-    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    if (pointer === null) {
+      expect(octokit.rest.pulls.createReplyForReviewComment).not.toHaveBeenCalled();
+      expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual([[octokit, 'PRRT_this', 'ADDRESSED']]);
+      return;
+    }
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
     if (pointer) {
       expect(body).toMatch(new RegExp(`^${pointer.replace(/[.*+?^${}()|[\]\\`]/g, '\\$&')}\n\n<!-- manki -->\n<!-- manki-reply-record: `));
       expect(state.resolveReviewThread).not.toHaveBeenCalled();
     } else {
       expect(body.startsWith(answer)).toBe(true);
+      // A "Fixed." answer records the head it confirms, so the round on that head adds no "Fixed in" line.
+      expect(body.includes(`<!-- manki-fixed:${head} -->`)).toBe(answer.startsWith('Fixed'));
     }
   });
 

@@ -61,7 +61,16 @@ interface ReviewThread {
   findingTitle: string;
   /** URL of the thread's first comment. */
   threadUrl?: string;
+  /** The head commits on which a Manki reply in this thread confirmed the fix, from `fixedMarker`. */
+  fixedOn?: string[];
 }
+
+/** Marks Manki's reply that confirms a fix on `commitSha`, so a thread gets one such reply per head. */
+function fixedMarker(commitSha: string): string {
+  return `<!-- manki-fixed:${commitSha} -->`;
+}
+
+const FIXED_MARKER_RE = /<!-- manki-fixed:([0-9a-f]{40}) -->/;
 
 /**
  * Fetch all review threads `bot` started on a PR using GraphQL.
@@ -123,6 +132,10 @@ async function fetchBotReviewThreads(
       const resolvedByLogin = thread.resolvedBy?.login;
       const threadUrl = thread.comments.nodes[0]?.url;
       const recordedOverride = isSecurity || isBlocking ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
+      const fixedOn = thread.comments.nodes.slice(1).flatMap(c => {
+        const sha = isBotLogin(bot, c.author?.login) ? c.body?.match(FIXED_MARKER_RE)?.[1] : undefined;
+        return sha ? [sha] : [];
+      });
       return {
         id: thread.id,
         ...(rootCommentId != null && { rootCommentId }),
@@ -133,6 +146,7 @@ async function fetchBotReviewThreads(
         ...(recordedOverride && { recordedOverride }),
         findingTitle,
         ...(threadUrl && { threadUrl }),
+        ...(fixedOn.length > 0 && { fixedOn }),
       };
     });
 }
@@ -553,4 +567,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
