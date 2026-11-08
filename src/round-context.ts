@@ -2,6 +2,7 @@ import type { LLMCall } from './providers';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { MANKI_VERSION } from './github';
+import type { MemorySkip } from './memory';
 import { parseModelSpec, summarizeCalls } from './providers';
 import { routingDigest } from './routing';
 import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
@@ -37,6 +38,8 @@ export interface RoundRecordInput {
   interRoundDiff?: string;
   memoryLoadStatus: MemoryLoadStatus;
   memoryLoadError?: string;
+  /** Why the run may not use memory, when `memoryLoadStatus` is `skipped`. */
+  memorySkip?: MemorySkip;
   staticAnalysis?: RoundStaticAnalysis;
 }
 
@@ -85,7 +88,7 @@ export function buildRoundUsage(calls: LLMCall[]): RoundUsage {
 export function buildRoundContext(input: RoundRecordInput, result: ReviewResult, durations: RoundDurations): RoundContext {
   const {
     prNumber, commitSha, trigger, options, config, models, plannerEnabled, recap,
-    priorRoundCount, maxAutoRounds, diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, staticAnalysis,
+    priorRoundCount, maxAutoRounds, diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
   } = input;
   const { skipCap, forceReview, bypassHint } = options;
   const { plannerDurationMs, judgeDurationMs, wallClockMs } = durations;
@@ -385,6 +388,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     memory: {
       ...(result.suppressionCount != null && result.suppressionCount > 0 && { suppressionsApplied: result.suppressionCount }),
       loadStatus: memoryLoadStatus,
+      ...(memorySkip && { skipReason: memorySkip.reason }),
       ...(memoryLoadError && { loadError: memoryLoadError }),
     },
     findings: {

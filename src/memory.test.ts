@@ -13,6 +13,7 @@ import {
   filterSuppressionsForFinding,
   loadMemory,
   MemoryStore,
+  MemoryRefusedError,
   openMemoryStore,
   removeLearning,
   removeSuppression,
@@ -408,11 +409,19 @@ describe('filterSuppressionsForFinding', () => {
 
 type MockOctokit = ReturnType<typeof github.getOctokit>;
 
+const eventPayload = github.context.payload;
+// The reviewed repo is public unless a test says otherwise.
+beforeEach(() => { github.context.payload = { repository: { name: 'test-repo', owner: { login: 'owner' }, private: false } }; });
+afterAll(() => { github.context.payload = eventPayload; });
+
+/** A client of the reviewed repo, which the visibility lookups never need while the event says it. */
+const REVIEW_OCTOKIT = {} as MockOctokit;
+
 /** The memory in the folder `test-repo` of `owner/memory`, read and written with `octokit`. */
-function repoStore(octokit: MockOctokit): MemoryStore {
+async function repoStore(octokit: MockOctokit): Promise<MemoryStore> {
   jest.spyOn(core, 'getInput').mockImplementation(name => (name === 'memory_repo_token' ? 'memory-token' : ''));
   jest.spyOn(github, 'getOctokit').mockReturnValue(octokit);
-  return openMemoryStore({ enabled: true, repo: 'owner/memory' }, 'owner', 'test-repo', 1)!;
+  return (await openMemoryStore(REVIEW_OCTOKIT, { enabled: true, repo: 'owner/memory' }, 'owner', 'test-repo', 1)).store!;
 }
 
 /** `concurrentWrite` changes the store before the first write, which then fails with a conflict. */
@@ -464,7 +473,7 @@ describe('removeLearning', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/learnings.yml': learnings });
 
-    const { removed, remaining } = await removeLearning(repoStore(octokit), 'strict mode');
+    const { removed, remaining } = await removeLearning(await repoStore(octokit), 'strict mode');
 
     expect(removed).not.toBeNull();
     expect(removed!.id).toBe('l1');
@@ -475,7 +484,7 @@ describe('removeLearning', () => {
   it('removes a learning by its id', async () => {
     const octokit = mockMemoryOctokit({ 'test-repo/learnings.yml': [makeLearning({ id: 'learn-17', content: 'Always use strict mode' })] });
 
-    const { removed } = await removeLearning(repoStore(octokit), 'LEARN-17');
+    const { removed } = await removeLearning(await repoStore(octokit), 'LEARN-17');
 
     expect(removed?.id).toBe('learn-17');
   });
@@ -486,7 +495,7 @@ describe('removeLearning', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/learnings.yml': learnings });
 
-    const { removed, remaining } = await removeLearning(repoStore(octokit), 'nonexistent');
+    const { removed, remaining } = await removeLearning(await repoStore(octokit), 'nonexistent');
 
     expect(removed).toBeNull();
     expect(remaining).toBe(1);
@@ -496,7 +505,7 @@ describe('removeLearning', () => {
   it('returns null when no learnings file exists', async () => {
     const octokit = mockMemoryOctokit({});
 
-    const { removed, remaining } = await removeLearning(repoStore(octokit), 'anything');
+    const { removed, remaining } = await removeLearning(await repoStore(octokit), 'anything');
 
     expect(removed).toBeNull();
     expect(remaining).toBe(0);
@@ -511,7 +520,7 @@ describe('removeSuppression', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/suppressions.yml': suppressions });
 
-    const { removed, remaining } = await removeSuppression(repoStore(octokit), 'TODO');
+    const { removed, remaining } = await removeSuppression(await repoStore(octokit), 'TODO');
 
     expect(removed).not.toBeNull();
     expect(removed!.id).toBe('sup-2');
@@ -525,7 +534,7 @@ describe('removeSuppression', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/suppressions.yml': suppressions });
 
-    const { removed, remaining } = await removeSuppression(repoStore(octokit), 'nonexistent');
+    const { removed, remaining } = await removeSuppression(await repoStore(octokit), 'nonexistent');
 
     expect(removed).toBeNull();
     expect(remaining).toBe(1);
@@ -535,7 +544,7 @@ describe('removeSuppression', () => {
   it('returns null when no suppressions file exists', async () => {
     const octokit = mockMemoryOctokit({});
 
-    const { removed, remaining } = await removeSuppression(repoStore(octokit), 'anything');
+    const { removed, remaining } = await removeSuppression(await repoStore(octokit), 'anything');
 
     expect(removed).toBeNull();
     expect(remaining).toBe(0);
@@ -576,7 +585,7 @@ describe('loadMemory', () => {
       return originalImpl(args);
     });
 
-    const memory = await loadMemory(repoStore(octokit));
+    const memory = await loadMemory(await repoStore(octokit));
 
     // 2 file learnings + 1 conventions entry
     expect(memory.learnings).toHaveLength(3);
@@ -591,7 +600,7 @@ describe('loadMemory', () => {
   it('returns empty arrays when no files exist', async () => {
     const octokit = mockMemoryOctokit({});
 
-    const memory = await loadMemory(repoStore(octokit));
+    const memory = await loadMemory(await repoStore(octokit));
 
     expect(memory.learnings).toHaveLength(0);
     expect(memory.suppressions).toHaveLength(0);
@@ -605,7 +614,7 @@ describe('writeSuppression', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/suppressions.yml': existing });
 
-    await writeSuppression(repoStore(octokit), makeSuppression({ id: 'sup-2', pattern: 'new pattern' }));
+    await writeSuppression(await repoStore(octokit), makeSuppression({ id: 'sup-2', pattern: 'new pattern' }));
 
     const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
     expect(createCall.path).toBe('test-repo/suppressions.yml');
@@ -614,7 +623,7 @@ describe('writeSuppression', () => {
   it('creates file when none exists', async () => {
     const octokit = mockMemoryOctokit({});
 
-    await writeSuppression(repoStore(octokit), makeSuppression({ id: 'sup-1', pattern: 'brand new' }));
+    await writeSuppression(await repoStore(octokit), makeSuppression({ id: 'sup-1', pattern: 'brand new' }));
 
     expect(octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalled();
   });
@@ -627,7 +636,7 @@ describe('writeLearning', () => {
     ];
     const octokit = mockMemoryOctokit({ 'test-repo/learnings.yml': existing });
 
-    await writeLearning(repoStore(octokit), makeLearning({ id: 'l2', content: 'new learning', scope: 'repo' }));
+    await writeLearning(await repoStore(octokit), makeLearning({ id: 'l2', content: 'new learning', scope: 'repo' }));
 
     const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
     expect(createCall.path).toBe('test-repo/learnings.yml');
@@ -638,8 +647,8 @@ describe('writeLearning', () => {
     const octokit = mockMemoryOctokit({});
     const longContent = `${'x'.repeat(45)} ghs_memoryLeakToken is printed`;
 
-    await writeLearning(repoStore(octokit), makeLearning({ id: 'l1', content: 'ghs_memoryLeakToken' }));
-    await writeLearning(repoStore(octokit), makeLearning({ id: 'l2', content: longContent }));
+    await writeLearning(await repoStore(octokit), makeLearning({ id: 'l1', content: 'ghs_memoryLeakToken' }));
+    await writeLearning(await repoStore(octokit), makeLearning({ id: 'l2', content: longContent }));
 
     const calls = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls.map(([call]) => call);
     const written = Buffer.from(calls[1].content, 'base64').toString();
@@ -648,7 +657,7 @@ describe('writeLearning', () => {
     expect(calls.map(c => c.message).join()).not.toContain('ghs_');
 
     registerSecret('pass"word\\with-escapes');
-    await appendMemoryLine(repoStore(octokit), 'metrics/fix-rate.jsonl', { note: 'ghs_memoryLeakToken', other: 'pass"word\\with-escapes' }, 'Record');
+    await appendMemoryLine(await repoStore(octokit), 'metrics/fix-rate.jsonl', { note: 'ghs_memoryLeakToken', other: 'pass"word\\with-escapes' }, 'Record');
     const line = Buffer.from((octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[2][0].content, 'base64').toString();
     expect(JSON.parse(line)).toEqual({ note: '[REDACTED]', other: '[REDACTED]' });
   });
@@ -667,10 +676,10 @@ describe('memory writes after a write conflict', () => {
   });
 
   it.each([
-    ['writeLearning', learnings, (o: MockOctokit) => writeLearning(repoStore(o), makeLearning({ id: 'new', content: 'new learning' })), ['l1', 'other', 'new']],
-    ['writeSuppression', suppressions, (o: MockOctokit) => writeSuppression(repoStore(o), makeSuppression({ id: 'new', pattern: 'new pattern' })), ['s1', 'other', 'new']],
-    ['removeLearning', learnings, (o: MockOctokit) => removeLearning(repoStore(o), 'old learning'), ['other']],
-    ['removeSuppression', suppressions, (o: MockOctokit) => removeSuppression(repoStore(o), 'old pattern'), ['other']],
+    ['writeLearning', learnings, async (o: MockOctokit) => writeLearning(await repoStore(o), makeLearning({ id: 'new', content: 'new learning' })), ['l1', 'other', 'new']],
+    ['writeSuppression', suppressions, async (o: MockOctokit) => writeSuppression(await repoStore(o), makeSuppression({ id: 'new', pattern: 'new pattern' })), ['s1', 'other', 'new']],
+    ['removeLearning', learnings, async (o: MockOctokit) => removeLearning(await repoStore(o), 'old learning'), ['other']],
+    ['removeSuppression', suppressions, async (o: MockOctokit) => removeSuppression(await repoStore(o), 'old pattern'), ['other']],
   ])('%s re-applies its change to the latest file', async (_name, path, write, ids) => {
     let store: Map<string, unknown[]> | undefined;
     const octokit = mockMemoryOctokit(seed(), s => { store = s; addConcurrent(s); });
@@ -684,7 +693,7 @@ describe('memory writes after a write conflict', () => {
   it('reports nothing removed when another write removed the match first', async () => {
     const octokit = mockMemoryOctokit(seed(), store => store.set(learnings, []));
 
-    const { removed, remaining } = await removeLearning(repoStore(octokit), 'old learning');
+    const { removed, remaining } = await removeLearning(await repoStore(octokit), 'old learning');
 
     expect(removed).toBeNull();
     expect(remaining).toBe(0);
@@ -693,9 +702,9 @@ describe('memory writes after a write conflict', () => {
 });
 
 /** The central memory of `owner/test-repo` for the run on PR 7, as the token service serves it. */
-function centralStore(memoryRepoToken = ''): MemoryStore {
+async function centralStore(memoryRepoToken = ''): Promise<MemoryStore> {
   jest.spyOn(core, 'getInput').mockImplementation(name => (name === 'memory_repo_token' ? memoryRepoToken : ''));
-  return openMemoryStore({ enabled: true, repo: '' }, 'owner', 'test-repo', 7)!;
+  return (await openMemoryStore(REVIEW_OCTOKIT, { enabled: true, repo: '' }, 'owner', 'test-repo', 7)).store!;
 }
 
 /**
@@ -742,7 +751,7 @@ describe('central memory through the token service', () => {
       '_global/conventions.md': 'Use consistent naming',
     });
 
-    const memory = await loadMemory(centralStore());
+    const memory = await loadMemory(await centralStore());
 
     expect(memory.learnings.map(l => l.content)).toEqual(['repo learning', 'global learning', 'Use consistent naming']);
     expect(memory.suppressions).toHaveLength(1);
@@ -752,7 +761,7 @@ describe('central memory through the token service', () => {
   it('creates a missing file with a null sha', async () => {
     const service = mockMemoryService({});
 
-    await writeSuppression(centralStore(), makeSuppression({ pattern: 'new pattern' }));
+    await writeSuppression(await centralStore(), makeSuppression({ pattern: 'new pattern' }));
 
     expect(service.requests[1]).toMatchObject({ endpoint: '/memory/write', body: { file: 'suppressions.yml', sha: null, message: 'Add suppression: new pattern' } });
     expect((parseYaml(service.stored.get('suppressions.yml')!.text) as Suppression[]).map(s => s.pattern)).toEqual(['new pattern']);
@@ -769,7 +778,7 @@ describe('central memory through the token service', () => {
       },
     });
 
-    await writeLearning(centralStore(), makeLearning({ id: 'new', content: 'new learning' }));
+    await writeLearning(await centralStore(), makeLearning({ id: 'new', content: 'new learning' }));
 
     expect(service.requests.map(r => r.endpoint)).toEqual(['/memory/read', '/memory/write', '/memory/read', '/memory/write']);
     expect(service.requests[3].body.sha).toBe('sha-other');
@@ -780,7 +789,7 @@ describe('central memory through the token service', () => {
     let version = 0;
     const service = mockMemoryService({ 'learnings.yml': '[]\n' }, { beforeWrite: stored => stored.set('learnings.yml', { text: '[]\n', sha: `moved-${version++}` }) });
 
-    await expect(writeLearning(centralStore(), makeLearning())).rejects.toThrow('learnings.yml in the central memory changed during each of 3 attempts');
+    await expect(writeLearning(await centralStore(), makeLearning())).rejects.toThrow('learnings.yml in the central memory changed during each of 3 attempts');
     expect(service.requests.filter(r => r.endpoint === '/memory/write')).toHaveLength(3);
   });
 
@@ -788,7 +797,7 @@ describe('central memory through the token service', () => {
     registerSecret('ghs_centralLeakToken');
     const service = mockMemoryService({});
 
-    await appendMemoryLine(centralStore(), 'metrics/fix-rate.jsonl', { pr: 7, note: 'ghs_centralLeakToken' }, 'Record fix rate');
+    await appendMemoryLine(await centralStore(), 'metrics/fix-rate.jsonl', { pr: 7, note: 'ghs_centralLeakToken' }, 'Record fix rate');
 
     expect(service.requests).toEqual([{
       endpoint: '/memory/append',
@@ -801,39 +810,100 @@ describe('central memory through the token service', () => {
     const service = mockMemoryService({ 'learnings.yml': '[]\n' });
     service.stored.set('learnings.yml', { text: undefined as unknown as string, sha: 'sha-unreadable' });
 
-    await expect(writeLearning(centralStore(), makeLearning())).rejects.toThrow('Cannot read learnings.yml to update it');
+    await expect(writeLearning(await centralStore(), makeLearning())).rejects.toThrow('Cannot read learnings.yml to update it');
     expect(service.requests.map(r => r.endpoint)).toEqual(['/memory/read']);
   });
 
   it('fails a load the token service refuses', async () => {
     mockMemoryService({}, { status: 403 });
 
-    await expect(loadMemory(centralStore())).rejects.toThrow('the token service answered 403 to `/memory/read`');
+    const refused = loadMemory(await centralStore());
+
+    await expect(refused).rejects.toThrow('the token service answered 403 to `/memory/read`');
+    await expect(refused).rejects.toBeInstanceOf(MemoryRefusedError);
+    await expect(refused).rejects.toMatchObject({ skip: { reason: 'refused' } });
   });
 });
 
 describe('openMemoryStore', () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it('is off when memory is off, and skips a `memory.repo` without `memory_repo_token` with a warning', () => {
+  /** Opens memory as `owner/test-repo` with `memory`, the `memory_repo_token` input `token` and the event saying `isPrivate`. */
+  async function open(memory: { enabled: boolean; repo: string } | undefined, { token = '', isPrivate = false, memoryRepo, reviewedRepo }: {
+    token?: string;
+    /** `null` leaves it out of the event. */
+    isPrivate?: boolean | null;
+    /** What the API says about the memory repo, or an error for a failed read. */
+    memoryRepo?: { private: boolean; owner: { login: string } } | Error;
+    /** What the API says about the reviewed repo when the event does not. */
+    reviewedRepo?: { private: boolean };
+  } = {}) {
     const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    jest.spyOn(core, 'getInput').mockReturnValue('');
+    jest.spyOn(core, 'getInput').mockImplementation(name => (name === 'memory_repo_token' ? token : ''));
+    const memoryGet = jest.fn(async () => {
+      if (memoryRepo instanceof Error) throw memoryRepo;
+      return { data: memoryRepo };
+    });
+    jest.spyOn(github, 'getOctokit').mockReturnValue({ rest: { repos: { get: memoryGet } } } as unknown as MockOctokit);
+    const reviewedGet = jest.fn(async () => ({ data: reviewedRepo }));
+    github.context.payload = { repository: { name: 'test-repo', owner: { login: 'owner' }, ...(isPrivate !== null && { private: isPrivate }) } };
+    const opened = await openMemoryStore({ rest: { repos: { get: reviewedGet } } } as unknown as MockOctokit, memory, 'owner', 'test-repo', 7);
+    return { ...opened, warning, memoryGet, reviewedGet };
+  }
 
-    expect(openMemoryStore(undefined, 'owner', 'test-repo', 7)).toBeUndefined();
-    expect(openMemoryStore({ enabled: false, repo: 'owner/memory' }, 'owner', 'test-repo', 7)).toBeUndefined();
-    expect(warning).not.toHaveBeenCalled();
-    expect(openMemoryStore({ enabled: true, repo: 'owner/memory' }, 'owner', 'test-repo', 7)).toBeUndefined();
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('`memory_repo_token` is not set, so memory is skipped'));
+  it('opens nothing when memory is off', async () => {
+    for (const memory of [undefined, { enabled: false, repo: 'owner/memory' }]) {
+      const { store, skip, warning } = await open(memory);
+      expect(store).toBeUndefined();
+      expect(skip).toBeUndefined();
+      expect(warning).not.toHaveBeenCalled();
+    }
   });
 
-  it('uses the central memory without `memory.repo`, and warns that a `memory_repo_token` is unused', async () => {
-    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    const service = mockMemoryService({});
+  it('gives a public repo the central memory, and its own `memory.repo` without checking it', async () => {
+    const central = await open({ enabled: true, repo: '' });
+    expect(central.store?.name).toBe('the central memory');
 
-    await loadMemory(centralStore('memory-token'));
+    const own = await open({ enabled: true, repo: 'acme/memory' }, { token: 'memory-token' });
+    expect(own.store?.name).toBe('acme/memory');
+    expect(own.memoryGet).not.toHaveBeenCalled();
+  });
 
+  it('warns that a `memory_repo_token` without `memory.repo` is unused', async () => {
+    const { store, warning } = await open({ enabled: true, repo: '' }, { token: 'memory-token' });
+
+    expect(store?.name).toBe('the central memory');
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('`memory_repo_token` is set without `memory.repo`, so it is unused and memory comes from the central memory repository'));
-    expect(service.requests.map(r => r.endpoint)).toEqual(['/memory/read']);
+  });
+
+  it('uses a private memory repo of the same owner for a private repo', async () => {
+    const { store, skip, memoryGet } = await open({ enabled: true, repo: 'Owner/memory' }, { token: 'memory-token', isPrivate: true, memoryRepo: { private: true, owner: { login: 'OWNER' } } });
+
+    expect(skip).toBeUndefined();
+    expect(store?.name).toBe('Owner/memory');
+    expect(memoryGet).toHaveBeenCalledWith({ owner: 'Owner', repo: 'memory' });
+  });
+
+  it.each([
+    ['a public repo with `memory.repo` and no token', { enabled: true, repo: 'owner/memory' }, {}, 'no_token', 'or remove `memory.repo` to use the central memory'],
+    ['a private repo without `memory.repo`', { enabled: true, repo: '' }, { isPrivate: true }, 'private_repo', 'keeps only public repos\' memory'],
+    ['a private repo with `memory.repo` and no token', { enabled: true, repo: 'owner/memory' }, { isPrivate: true }, 'no_token', 'Pass a token that writes `owner/memory` in `memory_repo_token`.'],
+    ['a private repo whose memory repo is public', { enabled: true, repo: 'owner/memory' }, { token: 't', isPrivate: true, memoryRepo: { private: false, owner: { login: 'owner' } } }, 'memory_repo_public', 'Make `owner/memory` private'],
+    ['a private repo whose memory repo has another owner', { enabled: true, repo: 'other/memory' }, { token: 't', isPrivate: true, memoryRepo: { private: true, owner: { login: 'other' } } }, 'memory_repo_other_owner', 'belongs to another owner than `owner/test-repo`'],
+    ['a private repo whose memory repo the token cannot read', { enabled: true, repo: 'owner/memory' }, { token: 't', isPrivate: true, memoryRepo: new Error('Not Found') }, 'memory_repo_unreadable', 'cannot read `owner/memory`'],
+  ] as const)('skips memory with the reason and fix for %s', async (_case, memory, options, reason, text) => {
+    const { store, skip, warning } = await open(memory, options);
+
+    expect(store).toBeUndefined();
+    expect(skip).toEqual({ reason, message: expect.stringContaining(text) });
+    expect(warning).toHaveBeenCalledWith(`Memory is skipped: ${skip!.message}`);
+  });
+
+  it('asks the API whether the repo is private when the event does not say', async () => {
+    const { skip, reviewedGet } = await open({ enabled: true, repo: '' }, { isPrivate: null, reviewedRepo: { private: true } });
+
+    expect(reviewedGet).toHaveBeenCalledWith({ owner: 'owner', repo: 'test-repo' });
+    expect(skip?.reason).toBe('private_repo');
   });
 });
 

@@ -15,7 +15,7 @@ import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedE
 import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
-import { loadMemory, openMemoryStore, RepoMemory } from './memory';
+import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
@@ -443,7 +443,7 @@ async function handleMergedPullRequest(): Promise<void> {
     return;
   }
 
-  const memory = openMemoryStore(config.memory, owner, repo, pr.number);
+  const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, pr.number);
   if (!memory) core.info('The fix rate goes to the job summary only');
 
   await recordFixRate(octokit, bot, owner, repo, {
@@ -932,20 +932,24 @@ async function warmUpClients(clients: ReviewClients): Promise<void> {
 }
 
 async function loadRunMemory(
-  config: ReviewConfig, owner: string, repo: string, prNumber: number,
-): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string }> {
+  octokit: Octokit, config: ReviewConfig, owner: string, repo: string, prNumber: number,
+): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string; memorySkip?: MemorySkip }> {
   if (!config.memory?.enabled) {
     return { memory: null, memoryLoadStatus: 'disabled' };
   }
-  const store = openMemoryStore(config.memory, owner, repo, prNumber);
+  const { store, skip } = await openMemoryStore(octokit, config.memory, owner, repo, prNumber);
   if (!store) {
-    return { memory: null, memoryLoadStatus: 'no_token' };
+    return { memory: null, memoryLoadStatus: 'skipped', memorySkip: skip };
   }
   try {
     const memory = await loadMemory(store);
     core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
     return { memory, memoryLoadStatus: 'loaded' };
   } catch (error) {
+    if (error instanceof MemoryRefusedError) {
+      core.warning(`Memory is skipped: ${error.skip.message}`);
+      return { memory: null, memoryLoadStatus: 'skipped', memorySkip: error.skip };
+    }
     const message = error instanceof Error ? error.message : String(error);
     const sanitized = sanitizeTokens(message);
     core.warning(`Failed to load review memory: ${sanitized}`);
@@ -1414,6 +1418,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     existingThreads: recap.previousFindings,
     draft: run.options.draft,
     configFailed: configFailed(run.reviewSource),
+    memorySkip: run.memorySkip?.message,
     skipped: { excluded: run.excludedFiles, binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
@@ -1671,7 +1676,7 @@ async function runFullReview(
     await warmUpClients(clients);
 
     const repoContext = await fetchRepoContext(target.octokit, target.owner, target.repo, target.baseRef, diff.files.map(f => f.path));
-    const { memory, memoryLoadStatus, memoryLoadError } = await loadRunMemory(config, owner, repo, prNumber);
+    const { memory, memoryLoadStatus, memoryLoadError, memorySkip } = await loadRunMemory(octokit, config, owner, repo, prNumber);
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
@@ -1693,7 +1698,7 @@ async function runFullReview(
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
-      diff, changeDigest: digest, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, staticAnalysis,
+      diff, changeDigest: digest, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
       commentId, dashboard, progress, startTime, parseEndTime,
     };
 
@@ -1859,7 +1864,7 @@ async function handleInteraction(): Promise<void> {
   if (!built) return;
   const { client } = built;
 
-  const memory = openMemoryStore(config.memory, owner, repo, prNumber);
+  const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, prNumber);
 
   await handlePRComment(octokit, bot, client, owner, repo, prNumber, memory, config);
 }
@@ -1882,7 +1887,7 @@ async function handleIssueInteraction(): Promise<void> {
   const configContent = await fetchConfigFile(octokit, owner, repo, 'main', configPath);
   const config = loadConfig(configContent ?? undefined, configPath);
 
-  const memory = openMemoryStore(config.memory, owner, repo, issueNumber);
+  const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, issueNumber);
 
   await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memory, config);
 }
@@ -1930,7 +1935,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const { client } = built;
 
   const prNumber: number | undefined = payload.pull_request?.number;
-  const memory = prNumber ? openMemoryStore(config.memory, owner, repo, prNumber) : undefined;
+  const memory = prNumber ? (await openMemoryStore(octokit, config.memory, owner, repo, prNumber)).store : undefined;
 
   const command = parseCommand(body);
   if (command.type !== 'generic') {

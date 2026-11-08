@@ -4,7 +4,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { minimatch } from 'minimatch';
 
 import { callTokenService } from './auth';
-import { Finding, FindingSeverity, SECURITY_TAG, UNPROVEN_TAG } from './types';
+import { Finding, FindingSeverity, MemorySkipReason, SECURITY_TAG, UNPROVEN_TAG } from './types';
 import { redactSecrets, redactSecretsDeep } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -62,21 +62,86 @@ export interface MemoryStore {
   append(file: string, lines: string[], message: string): Promise<void>;
 }
 
+/** Why a run may not use memory. `message` names the reason and the fix, for the log and the review body. */
+export interface MemorySkip {
+  reason: MemorySkipReason;
+  message: string;
+}
+
+/** The token service refused a memory request with 403, so the run may not use memory. */
+export class MemoryRefusedError extends Error {
+  readonly skip: MemorySkip = {
+    reason: 'refused',
+    message: 'the token service refused memory for this run (HTTP 403). Check that the Manki service started the run, or use a memory repo of your own with `memory.repo` and `memory_repo_token`.',
+  };
+
+  constructor(endpoint: string) {
+    super(`the token service answered 403 to \`/memory/${endpoint}\``);
+    this.name = 'MemoryRefusedError';
+  }
+}
+
+/** Whether `owner/repo` is private, from the event when it says, else from the API. A failed lookup counts as private. */
+async function isPrivateRepo(octokit: Octokit, owner: string, repo: string): Promise<boolean> {
+  const fromEvent: unknown = github.context.payload.repository?.private;
+  if (typeof fromEvent === 'boolean') return fromEvent;
+  try {
+    return (await octokit.rest.repos.get({ owner, repo })).data.private;
+  } catch (error) {
+    core.warning(`Could not read whether ${owner}/${repo} is private, so it counts as private: ${error}`);
+    return true;
+  }
+}
+
+/** Why the private repo `owner/repo` may not keep memory in `memoryRepo`, read with `memoryOctokit`, or `undefined` when it may. */
+async function privateMemoryRepoSkip(memoryOctokit: Octokit, memoryRepo: string, owner: string, repo: string): Promise<MemorySkip | undefined> {
+  const [memoryOwner, memoryName] = memoryRepo.split('/');
+  let data: { private: boolean; owner: { login: string } };
+  try {
+    ({ data } = await memoryOctokit.rest.repos.get({ owner: memoryOwner, repo: memoryName }));
+  } catch (error) {
+    core.info(`Could not read ${memoryRepo}: ${error}`);
+    return { reason: 'memory_repo_unreadable', message: `\`memory_repo_token\` cannot read \`${memoryRepo}\`, so Manki cannot check that it is private. Give the token access to \`${memoryRepo}\`.` };
+  }
+  if (!data.private) {
+    return { reason: 'memory_repo_public', message: `\`${memoryRepo}\` is not private, and a private repo keeps its memory only in a private memory repo. Make \`${memoryRepo}\` private, or set \`memory.repo\` to a private one.` };
+  }
+  if (data.owner.login.toLowerCase() !== owner.toLowerCase()) {
+    return { reason: 'memory_repo_other_owner', message: `\`${memoryRepo}\` belongs to another owner than \`${owner}/${repo}\`. Set \`memory.repo\` to a private memory repo of \`${owner}\`.` };
+  }
+  return undefined;
+}
+
 /**
- * Returns the store of `owner/repo`'s memory for the run on PR or issue `pr`, or `undefined` when memory is off.
- * A `memory.repo` is used directly with `memory_repo_token`, and is skipped with a warning without that token.
- * Otherwise the token service reads and writes the central memory repository, and no token leaves it.
+ * Opens `owner/repo`'s memory for the run on PR or issue `pr`. Returns nothing when memory is off, the store, or why
+ * the run may not use memory, which is also logged as a warning. A public repo uses `memory.repo` with
+ * `memory_repo_token`, or else the central memory repository through the token service. A private repo never uses the
+ * central one, and uses `memory.repo` only when the API shows it is private and has the same owner.
  */
-export function openMemoryStore(memory: { enabled: boolean; repo: string } | undefined, owner: string, repo: string, pr: number): MemoryStore | undefined {
-  if (!memory?.enabled) return undefined;
+export async function openMemoryStore(
+  octokit: Octokit, memory: { enabled: boolean; repo: string } | undefined, owner: string, repo: string, pr: number,
+): Promise<{ store?: MemoryStore; skip?: MemorySkip }> {
+  if (!memory?.enabled) return {};
+  const skipped = (skip: MemorySkip) => {
+    core.warning(`Memory is skipped: ${skip.message}`);
+    return { skip };
+  };
   const token = core.getInput('memory_repo_token');
+  const isPrivate = await isPrivateRepo(octokit, owner, repo);
   if (memory.repo) {
-    if (token) return repoMemoryStore(github.getOctokit(token), memory.repo, repo);
-    core.warning(`\`memory.repo\` is \`${memory.repo}\` but \`memory_repo_token\` is not set, so memory is skipped. Set the token, or remove \`memory.repo\` to use the central memory.`);
-    return undefined;
+    if (!token) {
+      const fix = isPrivate ? '' : ', or remove `memory.repo` to use the central memory';
+      return skipped({ reason: 'no_token', message: `\`memory.repo\` is \`${memory.repo}\` but \`memory_repo_token\` is not set. Pass a token that writes \`${memory.repo}\` in \`memory_repo_token\`${fix}.` });
+    }
+    const memoryOctokit = github.getOctokit(token);
+    const skip = isPrivate ? await privateMemoryRepoSkip(memoryOctokit, memory.repo, owner, repo) : undefined;
+    return skip ? skipped(skip) : { store: repoMemoryStore(memoryOctokit, memory.repo, repo) };
+  }
+  if (isPrivate) {
+    return skipped({ reason: 'private_repo', message: 'this repo is private, and the central memory repository keeps only public repos\' memory. Set `memory.repo` to a private memory repo of the same owner, and pass `memory_repo_token`.' });
   }
   if (token) core.warning('`memory_repo_token` is set without `memory.repo`, so it is unused and memory comes from the central memory repository. Set `memory.repo` to keep using your own memory repository, such as `<owner>/review-memory`.');
-  return serviceMemoryStore(owner, repo, pr);
+  return { store: serviceMemoryStore(owner, repo, pr) };
 }
 
 /** The memory in the folder `folder` of `memoryRepo`, read and written with `octokit`. */
@@ -120,6 +185,7 @@ function serviceMemoryStore(owner: string, repo: string, pr: number): MemoryStor
   const call = async (endpoint: string, body: object) => {
     const response = await callTokenService(`memory/${endpoint}`, { owner, repo, pr, ...body });
     if (!response) throw new Error('the run has no OIDC token for the token service');
+    if (response.status === 403) throw new MemoryRefusedError(endpoint);
     return response;
   };
   const failed = (endpoint: string, status: number) => new Error(`the token service answered ${status} to \`/memory/${endpoint}\``);

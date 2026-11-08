@@ -1218,8 +1218,10 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped }: {
+  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped, memorySkip }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configFailed?: boolean; noVerdict?: boolean;
+    /** Why the round ran without memory, with the fix. */
+    memorySkip?: string;
     /** Changed files no model read. Any one holds the approval. */
     skipped?: SkippedFiles;
   } = {},
@@ -1317,6 +1319,9 @@ export async function postReview(
 
   const renderBody = (): string => {
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
+    if (memorySkip) {
+      head += `\n\n**Memory skipped:** ${memorySkip}`;
+    }
     const readyReport = formatReadyReport(result);
     if (readyReport) {
       head += `\n\n${readyReport}`;
