@@ -6,7 +6,7 @@ import {
   filterRawDiff,
   isLineInDiff,
   sliceDiff,
-  isSameChange,
+  compareChanges,
   rebuildRawDiff,
   tagFindingOrigins,
 } from './diff';
@@ -178,9 +178,13 @@ describe('parsePRDiff', () => {
     expect(result.totalDeletions).toBe(0);
   });
 
-  it('records binary-skipped paths for attribution', () => {
+  it('records each binary-skipped path with the header that names its blobs', () => {
     const result = parsePRDiff(BINARY_FILE_DIFF);
-    expect(result.binarySkipped).toEqual(['assets/logo.png']);
+    expect(result.binarySkipped).toEqual([{ path: 'assets/logo.png', header: '["/dev/null","assets/logo.png",["0000000..abcdef1"],null,"100644"]' }]);
+    const chmod = parsePRDiff('diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n');
+    expect(chmod.binarySkipped).toEqual([{ path: 'run.sh', header: '["run.sh","run.sh",null,"100644","100755"]' }]);
+    const deleted = parsePRDiff('diff --git a/app.jar b/app.jar\ndeleted file mode 100644\nindex abcdef1..0000000\nBinary files a/app.jar and /dev/null differ\n');
+    expect(deleted.binarySkipped).toEqual([expect.objectContaining({ path: 'app.jar', deleted: true })]);
   });
 
   it('returns an empty `binarySkipped` array when no binaries are present', () => {
@@ -340,24 +344,43 @@ describe('filterRawDiff', () => {
   });
 });
 
-describe('isSameChange', () => {
-  it('ignores hunk positions, index lines and excluded files', () => {
-    const excluded = DEFAULT_CONFIG.exclude_paths;
-    expect(changeDigest(filterDiff(parsePRDiff(GENERATED_FIRST_DIFF), excluded).diff, excluded)).toBe(changeDigest(parsePRDiff(MULTI_FILE_DIFF), excluded));
+describe('compareChanges', () => {
+  const isSameChange = (a: string, b: string) => compareChanges(a, b).same;
+
+  it('ignores hunk positions and index lines', () => {
     const rebased = MULTI_FILE_DIFF
       .replace('index 1111111..2222222', 'index 5555555..6666666')
       .replace('@@ -5,3 +5,4 @@ export function b() {', '@@ -42,3 +57,4 @@ export function moved() {');
-    expect(isSameChange(MULTI_FILE_DIFF, rebased, [])).toBe(true);
-    expect(isSameChange(MULTI_FILE_DIFF, GENERATED_FIRST_DIFF, DEFAULT_CONFIG.exclude_paths)).toBe(true);
-    expect(isSameChange(MULTI_FILE_DIFF, `${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`, ['assets/**'])).toBe(true);
+    expect(isSameChange(MULTI_FILE_DIFF, rebased)).toBe(true);
+    expect(isSameChange(GENERATED_FIRST_DIFF, GENERATED_FIRST_DIFF.replace('index 1111111..2222222', 'index 3333333..2222222'))).toBe(true);
   });
 
-  it('detects a changed line, an added file or a changed context line', () => {
-    expect(isSameChange(MULTI_FILE_DIFF, MULTI_FILE_DIFF.replace('+added line', '+edited line'), [])).toBe(false);
-    expect(isSameChange(MULTI_FILE_DIFF, `${MULTI_FILE_DIFF}${ADDED_FILE_DIFF}`, [])).toBe(false);
-    expect(isSameChange(MULTI_FILE_DIFF, MULTI_FILE_DIFF.replace(' line2', ' line2 from base'), [])).toBe(false);
-    expect(isSameChange(MULTI_FILE_DIFF, GENERATED_FIRST_DIFF, [])).toBe(false);
-    expect(isSameChange(MULTI_FILE_DIFF, `${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`, [])).toBe(false);
+  it('detects a changed line, an added file, a changed context line or a change to an excluded file', () => {
+    expect(isSameChange(MULTI_FILE_DIFF, MULTI_FILE_DIFF.replace('+added line', '+edited line'))).toBe(false);
+    expect(isSameChange(MULTI_FILE_DIFF, `${MULTI_FILE_DIFF}${ADDED_FILE_DIFF}`)).toBe(false);
+    expect(isSameChange(MULTI_FILE_DIFF, MULTI_FILE_DIFF.replace(' line2', ' line2 from base'))).toBe(false);
+    expect(isSameChange(MULTI_FILE_DIFF, GENERATED_FIRST_DIFF)).toBe(false);
+    expect(isSameChange(GENERATED_FIRST_DIFF, GENERATED_FIRST_DIFF.replace('"mappings"', '"names"'))).toBe(false);
+    const chmod = MULTI_FILE_DIFF.replace('index 1111111..2222222 100644', 'old mode 100644\nnew mode 100755\nindex 1111111..2222222');
+    expect(parsePRDiff(chmod).files.find(f => f.modeChange)).toEqual(expect.objectContaining({ modeChange: '100644 100755' }));
+    expect(isSameChange(MULTI_FILE_DIFF, chmod)).toBe(false);
+    const script = ADDED_FILE_DIFF.replace('new file mode 100644', 'new file mode 100755');
+    expect(parsePRDiff(script).files[0].modeChange).toBe('100755');
+    expect(parsePRDiff(ADDED_FILE_DIFF).files[0].modeChange).toBeUndefined();
+    expect(isSameChange(ADDED_FILE_DIFF, script)).toBe(false);
+  });
+
+  it('returns the binaries of the second diff, which only their full blob shas can prove unchanged', () => {
+    const withBinary = `${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`;
+    expect(compareChanges(withBinary, withBinary)).toEqual({ same: true, binaries: [expect.objectContaining({ path: 'assets/logo.png' })] });
+    expect(compareChanges(MULTI_FILE_DIFF, withBinary).same).toBe(false);
+    expect(compareChanges(MULTI_FILE_DIFF, MULTI_FILE_DIFF)).toEqual({ same: true, binaries: [] });
+  });
+
+  it('gives a binary whose blob changes a new digest', () => {
+    const swapped = BINARY_FILE_DIFF.replace('0000000..abcdef1', '0000000..1234567');
+    expect(changeDigest(parsePRDiff(swapped))).not.toBe(changeDigest(parsePRDiff(BINARY_FILE_DIFF)));
+    expect(changeDigest(parsePRDiff(BINARY_FILE_DIFF))).toBe(changeDigest(parsePRDiff(BINARY_FILE_DIFF)));
   });
 });
 

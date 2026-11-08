@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
@@ -88,6 +88,10 @@ const PAUSE_NOTICE_MARKER = '<!-- manki-paused -->';
 /** Marks the approval auto-approve posts. It stays in the body after GitHub dismisses the review. */
 const AUTO_APPROVE_MARKER = '<!-- manki-auto-approve -->';
 const CANCELLED_MARKER = '<!-- manki-review-cancelled -->';
+/** Marks a review that is no verdict on its commit, such as a round no model finished, so auto-approve never builds on it. */
+const NO_VERDICT_MARKER = '<!-- manki-no-verdict -->';
+/** Marks a review after which only a person can approve, such as one with unread files, whatever its verdict, so auto-approve never does. */
+const HELD_FOR_PERSON_MARKER = '<!-- manki-held-for-person -->';
 const VERSION_MARKER_PREFIX = '<!-- manki-version:';
 /** Holds the id of the progress comment the run posted, for the post step. */
 const PROGRESS_STATE_KEY = 'manki_progress_comment';
@@ -149,10 +153,19 @@ const MERGEABLE_ATTEMPTS = 3;
 const MERGEABLE_RETRY_MS = 1500;
 
 /** Why an approval was posted as a comment instead, or `false` when it was not held. */
-export type ApprovalHeld = false | 'conflict' | 'draft' | 'config';
+export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread';
 
-/** Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, or the base branch's config did not load. */
-export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config' };
+/** The changed files no model reads: those `exclude_paths` drops, and those with no lines, such as binaries. */
+export interface SkippedFiles {
+  excluded: RoundDiffExcludedFile[];
+  binary: BinaryFile[];
+}
+
+/**
+ * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, the base branch's config did not
+ * load, or no model read some of its files.
+ */
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config' } | { reason: 'unread'; skipped: SkippedFiles };
 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
@@ -180,7 +193,42 @@ export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: s
 export function approvalHoldLine(hold: ApprovalHold): string {
   if (hold.reason === 'draft') return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.';
   if (hold.reason === 'config') return '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.';
+  if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
   return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
+}
+
+const MAX_UNREVIEWED_LINES = 50;
+
+/**
+ * Returns the notice for a diff no model reads: each skipped file and why, and what the static analyzers found on them.
+ * Long lists are cut at `MAX_UNREVIEWED_LINES` entries.
+ */
+export function formatUnreviewedNotice(shortSha: string, skipped: SkippedFiles, signals: StaticSignal[]): string {
+  const found = signals.map(s => `- ${inline(`${s.file}:${s.line}`)}: ${inline([s.tool, s.ruleId].filter(Boolean).join(' '))}: ${inline(s.message)}`);
+  const files = formatSkippedFiles(skipped);
+  return [
+    `**Not reviewed** at \`${shortSha}\`: no model read this PR, since Manki skips every file it changes. A person needs to review it.`,
+    ...(files ? [files] : []),
+    ...(found.length > 0 ? [`**Static analysis on the skipped files:**\n${cutList(found)}`] : []),
+  ].join('\n\n');
+}
+
+/** Lists each skipped file and why, or returns an empty string when there is none. */
+function formatSkippedFiles({ excluded, binary }: SkippedFiles): string {
+  const lines = [
+    ...excluded.map(f => `- ${inline(f.path)}: matches ${inline(f.matchedPattern)} in \`exclude_paths\``),
+    ...binary.map(f => `- ${inline(f.path)}: no lines to read, such as a binary, a rename, a mode change or an empty file`),
+  ];
+  return lines.length > 0 ? `**Skipped files:**\n${cutList(lines)}` : '';
+}
+
+function cutList(lines: string[]): string {
+  return [...lines.slice(0, MAX_UNREVIEWED_LINES), ...(lines.length > MAX_UNREVIEWED_LINES ? [`- and ${lines.length - MAX_UNREVIEWED_LINES} more`] : [])].join('\n');
+}
+
+/** Shows text from the PR, such as a file name or tool output, as inline code on one line. */
+function inline(text: string): string {
+  return `\`${sanitizeFilePath(sanitizeMarkdown(text))}\``;
 }
 
 /** Thrown when the PR head moved past the commit under review, so the review must post no verdict. */
@@ -229,6 +277,15 @@ export async function fetchInterRoundDiff(
     core.debug(`Failed to fetch inter-round diff ${base}..${head}: ${error}`);
     throw error;
   }
+}
+
+/**
+ * Returns the full blob sha of each file `head` changes against its merge base with `base`, by path. GitHub lists at most
+ * 300 files for a comparison, so a path past that is missing from the map.
+ */
+export async function fetchBlobShas(octokit: Octokit, owner: string, repo: string, base: string, head: string): Promise<Map<string, string>> {
+  const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base, head, per_page: 1 });
+  return new Map((data.files ?? []).flatMap(f => (f.sha ? [[f.filename, f.sha] as const] : [])));
 }
 
 /**
@@ -1138,7 +1195,11 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, configFailed = false }: { existingThreads?: PreviousFinding[]; draft?: boolean; configFailed?: boolean } = {},
+  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped }: {
+    existingThreads?: PreviousFinding[]; draft?: boolean; configFailed?: boolean; noVerdict?: boolean;
+    /** Changed files no model read. Any one holds the approval. */
+    skipped?: SkippedFiles;
+  } = {},
 ): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const event = mapVerdictToEvent(result.verdict);
 
@@ -1223,8 +1284,9 @@ export async function postReview(
   const blockingFindings = result.findings.filter(isBlockingFinding);
   const earlier = carriedThreadIds.size + (result.verdictTrace?.unresolvedPriors.length ?? 0);
   const lead = formatLead(result, blockingFindings, { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (context?.meta.round ?? 1) > 1 });
-  const configHold: ApprovalHold | undefined = configFailed ? { reason: 'config' } : undefined;
-  const hold = event === 'APPROVE' ? configHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
+  const standingHold: ApprovalHold | undefined = configFailed ? { reason: 'config' }
+    : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
+  const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   const heldLine = hold && approvalHoldLine(hold);
 
@@ -1270,16 +1332,18 @@ export async function postReview(
   const highlight = <T extends { body: string }>(c: T): T => ({ ...c, body: highlightCode(c.body, codeTokens) });
   const body = highlightCode(renderBody(), codeTokens);
   const postedComments = [...validComments, ...fileComments].map(highlight);
-  const record = context
+  const record = (context
     ? formatRecordTrailer({ ...context, output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) } }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
-    : '';
+    : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
 
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
   }
   const postedVerdict = approvalHeld ? 'COMMENT' : result.verdict;
   if (approvalHeld) {
-    const why = hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : hold?.reason === 'config' ? 'The base branch config did not load' : 'The PR is a draft';
+    const why = hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}`
+      : hold?.reason === 'config' ? 'The base branch config did not load'
+      : hold?.reason === 'unread' ? 'No model read some of the changed files' : 'The PR is a draft';
     core.info(`${why}, so the approval is posted as a comment`);
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
@@ -2314,5 +2378,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
+export { APPROVED_LINE, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

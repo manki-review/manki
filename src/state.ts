@@ -4,10 +4,10 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, NO_VERDICT_MARKER, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
-import { isSameChange } from './diff';
+import { compareChanges } from './diff';
 import { fetchPriorRoundContexts, foundAgainAsBlocker, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
 import { ReviewConfig, RoundContext, SecurityOverride } from './types';
 import { withMarkers } from './utils';
@@ -31,7 +31,7 @@ function staleApproveMarker(headSha: string): string {
  */
 async function findUnchangedVerdict(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
-  baseRef: string, commitSha: string, excludePaths: string[],
+  baseRef: string, commitSha: string,
 ): Promise<StandingVerdict | undefined> {
   const standing = await fetchStandingVerdict(octokit, bot, owner, repo, prNumber);
   if (!standing || standing.commitSha === commitSha) return undefined;
@@ -41,7 +41,14 @@ async function findUnchangedVerdict(
       fetchInterRoundDiff(octokit, owner, repo, baseRef, commitSha),
     ]);
     if (!reviewed.trim() || !current.trim()) return undefined;
-    return isSameChange(reviewed, current, excludePaths) ? standing : undefined;
+    const { same, binaries } = compareChanges(reviewed, current);
+    if (!same) return undefined;
+    if (binaries.length === 0) return standing;
+    const [reviewedShas, currentShas] = await Promise.all([
+      fetchBlobShas(octokit, owner, repo, baseRef, standing.commitSha),
+      fetchBlobShas(octokit, owner, repo, baseRef, commitSha),
+    ]);
+    return binaries.every(f => reviewedShas.has(f.path) && reviewedShas.get(f.path) === currentShas.get(f.path)) ? standing : undefined;
   } catch (error) {
     core.warning(`Could not compare with the reviewed commit ${standing.commitSha.slice(0, 7)}: ${error instanceof Error ? error.message : error}`);
     return undefined;
@@ -317,15 +324,15 @@ function isBotReview(bot: BotIdentity, r: ReviewEntry): boolean {
 }
 
 /**
- * Whether a Manki review covers the head of `pr`. That is a review on the head that is not dismissed,
+ * Whether a Manki review covers the head of `pr`. That is a verdict on the head that is not dismissed,
  * or the standing verdict on a commit whose PR diff equals the head's, as after a rebase.
  */
 async function reviewCoversHead(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
-  pr: PullHead, reviews: ReviewEntry[], config?: ReviewConfig,
+  pr: PullHead, reviews: ReviewEntry[],
 ): Promise<boolean> {
-  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha)) return true;
-  const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha, config?.exclude_paths ?? []);
+  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha && !r.body?.includes(NO_VERDICT_MARKER))) return true;
+  const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha);
   if (standing) core.info(`No change since the reviewed commit ${standing.commitSha.slice(0, 7)}, so its review covers ${pr.head.sha.slice(0, 7)}`);
   return !!standing;
 }
@@ -335,7 +342,7 @@ async function explainUnreviewedHead(octokit: Octokit, bot: BotIdentity, owner: 
   const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
   const head = `\`${pr.head.sha.slice(0, 7)}\``;
   const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });
-  if (await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews, config)) return undefined;
+  if (await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews)) return undefined;
   const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
   return halt
     ? `Manki has not reviewed ${head}. ${halt}`
@@ -487,7 +494,7 @@ async function checkAndAutoApprove(
   // Stale-SHA gate: bail unless a Manki review covers the current HEAD. This covers
   // every variant: stale prior review, absent commit_id, all reviews DISMISSED, or
   // no bot review at all.
-  if (!await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews, config)) {
+  if (!await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews)) {
     const staleSha =
       reviews.filter((r: ReviewEntry) => isBotReview(bot, r) && r.commit_id !== pr.head.sha).slice(-1)[0]?.commit_id ?? 'unknown';
     core.warning(
@@ -506,6 +513,13 @@ async function checkAndAutoApprove(
   if (latestBotReview?.state === 'APPROVED') {
     core.info('Already approved — skipping duplicate approval');
     return true;
+  }
+
+  // The review that covers the head is the latest one, or any on the head, as when a no-verdict round follows it.
+  const held = (r?: ReviewEntry) => !!r?.body?.includes(HELD_FOR_PERSON_MARKER);
+  if (held(latestBotReview) || botReviews.some(r => r.commit_id === pr.head.sha && held(r))) {
+    core.info('The review that covers the head holds its approval for a person, such as for unread files — skipping auto-approve');
+    return false;
   }
 
   if (await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha)) {

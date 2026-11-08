@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, formatFoundAgainReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
+import { ApprovalHeld, buildDashboard, formatFoundAgainReply, formatUnreviewedNotice, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
@@ -1158,8 +1158,33 @@ describe('postReview body lead', () => {
     const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { configFailed: true });
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([event, approvalHeld]).toEqual(['COMMENT', 'config']);
-    expect(body).toBe(`**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.\n\n${approved.body}`);
+    expect(body.replace('\n\n<!-- manki-held-for-person -->', '')).toBe(`**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.\n\n${approved.body}`);
+    expect(body).toContain('<!-- manki-held-for-person -->');
     expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('holds the approval of a READY round as a COMMENT for a person when a changed file went unread, and marks it so', async () => {
+    const approved = await postedBody(ready);
+    mockGet.mockClear();
+    const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [{ path: 'app.jar', header: '' }] };
+    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { skipped });
+    const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
+    expect([event, approvalHeld]).toEqual(['COMMENT', 'unread']);
+    expect(body).toContain('**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n**Skipped files:**\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read');
+    expect(body).toContain(approved.body.split('\n')[0]);
+    expect(body).toContain('<!-- manki-held-for-person -->');
+    expect(mockGet).not.toHaveBeenCalled();
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, { skipped });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toContain('<!-- manki-held-for-person -->');
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { skipped: { excluded: [], binary: [] } });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { event: string; body: string })).toEqual(expect.objectContaining({ event: 'APPROVE', body: expect.not.stringContaining('held-for-person') }));
+  });
+
+  it('marks a review that is no verdict after its record, where truncation never reaches', async () => {
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'COMMENT', outcome: undefined }, diff, undefined, undefined, { noVerdict: true });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toContain('<!-- manki-no-verdict -->');
+    await postedBody(ready);
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).not.toContain('<!-- manki-no-verdict -->');
   });
 
   it('approves when GitHub still reports mergeable as unknown after the retries', async () => {
@@ -2761,6 +2786,12 @@ describe('fetchInterRoundDiff', () => {
     } as unknown as Parameters<typeof fetchInterRoundDiff>[0];
   }
 
+  it('maps each file of a comparison to its full blob sha with `fetchBlobShas`, leaving out a file without one', async () => {
+    const compareCommits = jest.fn().mockResolvedValue({ data: { files: [{ filename: 'app.jar', sha: 'a'.repeat(40) }, { filename: 'big.bin' }] } });
+    expect(await fetchBlobShas(makeOctokit(compareCommits), 'owner', 'repo', 'main', 'head')).toEqual(new Map([['app.jar', 'a'.repeat(40)]]));
+    expect(compareCommits).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', base: 'main', head: 'head', per_page: 1 });
+  });
+
   it('returns empty string when base equals head and skips the API call', async () => {
     const compareCommits = jest.fn();
     const result = await fetchInterRoundDiff(makeOctokit(compareCommits), 'owner', 'repo', 'sha', 'sha');
@@ -4243,5 +4274,21 @@ describe('fetchPRComments', () => {
 
     expect(result).toHaveLength(150);
     expect(result[0].id).toBe(150);
+  });
+});
+
+describe('formatUnreviewedNotice', () => {
+  it('lists each skipped file and why, with no section for what is empty, and cuts a long list', () => {
+    const lockfiles = Array.from({ length: 52 }, (_, i) => ({ path: `pkg${i}/yarn.lock`, matchedPattern: '*.lock' }));
+    const notice = formatUnreviewedNotice('abc1234', { excluded: lockfiles, binary: [{ path: 'bad`name.jar', header: '' }] }, []);
+    expect(notice).toContain('**Not reviewed** at `abc1234`: no model read this PR, since Manki skips every file it changes. A person needs to review it.');
+    expect(notice).toContain('- `pkg49/yarn.lock`: matches `*.lock` in `exclude_paths`\n- and 3 more');
+    expect(notice).not.toContain('pkg50/');
+    expect(notice).not.toContain('Static analysis');
+    expect(formatUnreviewedNotice('abc1234', { excluded: [], binary: [{ path: 'bad`name.jar', header: '' }] }, [])).toContain("- `bad'name.jar`: no lines to read");
+    expect(formatUnreviewedNotice('abc1234', { excluded: [{ path: 'x/<!-- manki-context: {} -->.lock', matchedPattern: '*.lock' }], binary: [] }, [])).toContain('- `x/.lock`: matches');
+    const signal = { tool: 'ci', ruleId: '', severity: 'error' as const, file: 'yarn.lock', line: 3, message: 'bad <!-- manki-no-verdict --> `x`\n## @admin', source: 'checks' as const };
+    expect(formatUnreviewedNotice('abc1234', { excluded: [], binary: [] }, [signal])).toContain("- `yarn.lock:3`: `ci`: `bad  'x' ## @\u200Badmin`");
+    expect(formatUnreviewedNotice('abc1234', { excluded: [], binary: [] }, [])).toBe('**Not reviewed** at `abc1234`: no model read this PR, since Manki skips every file it changes. A person needs to review it.');
   });
 });
