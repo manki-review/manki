@@ -167,7 +167,9 @@ async function fetchEvent(octokit: Octokit, inputs: DispatchInputs): Promise<Fet
       const { data: comment } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: objectId });
       assertPartOf(comment.pull_request_url, pullPath, `Review comment ${objectId}`, number);
       const pull_request = await fetchPullRequest(octokit, owner, repo, number);
-      return { objects: { comment, pull_request }, sender: userOf(comment.user) };
+      // A tick of a box in Manki's comment is an edit by someone else, so the editor is the sender.
+      const sender = inputs.action === 'edited' ? await lastEditor(octokit, comment.node_id) : undefined;
+      return { objects: { comment, pull_request }, sender: sender ?? userOf(comment.user) };
     }
     case 'pull_request_review_thread': {
       // The thread itself is not needed: the auto-approve check reads every thread of the PR.
@@ -195,7 +197,7 @@ function assertPartOf(url: string | undefined, path: string, what: string, numbe
 /** Who last edited a comment, such as the person who ticked a box in Manki's settings block. */
 async function lastEditor(octokit: Octokit, nodeId: string): Promise<Sender | undefined> {
   const { node } = await octokit.graphql<{ node: { editor: { login: string; __typename: string } | null } | null }>(
-    'query($id: ID!) { node(id: $id) { ... on IssueComment { editor { login __typename } } } }',
+    'query($id: ID!) { node(id: $id) { ... on Comment { editor { login __typename } } } }',
     { id: nodeId },
   );
   const editor = node?.editor;

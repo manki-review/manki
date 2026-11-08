@@ -140,6 +140,10 @@ jest.mock('./interaction', () => ({
   isLLMAccessAllowed: jest.requireActual('./interaction').isLLMAccessAllowed,
 }));
 
+jest.mock('./issue-tick', () => ({
+  handleIssueBoxTick: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('./memory', () => ({
   loadMemory: jest.fn().mockResolvedValue(null),
   openMemoryStore: jest.fn().mockResolvedValue({}),
@@ -254,6 +258,7 @@ import { SettingsView, withSettingsBlock } from './settings';
 import { registerSecret, withMarkers } from './utils';
 import { createLLMClient, LLMCall, parseModelSpec, removeSeededAuthFiles } from './providers';
 import { fetchWorkspace } from './workspace';
+import * as issueTick from './issue-tick';
 import * as interaction from './interaction';
 import * as ghUtils from './github';
 import { PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER } from './github';
@@ -740,14 +745,33 @@ describe('run', () => {
     it('skips non-created actions', async () => {
       setContext({
         eventName: 'pull_request_review_comment',
-        payload: { action: 'edited', sender: { login: 'user' } },
+        payload: { action: 'deleted', sender: { login: 'user' } },
       });
 
       await run();
 
       expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-        'Ignoring pull_request_review_comment action: edited',
+        'Ignoring pull_request_review_comment action: deleted',
       );
+    });
+
+    it.each([
+      ['a writer ticks the box in Manki\'s comment', 'manki-review[bot]', '[x]', true, true],
+      ['an editor without write access ticks it', 'manki-review[bot]', '[x]', false, false],
+      ['an edit leaves the box unticked', 'manki-review[bot]', '[ ]', true, false],
+      ['a writer ticks a copy of the box in someone else\'s comment', 'alice', '[x]', true, false],
+    ])('files an issue only when %s', async (_case, author, tick, writer, files) => {
+      jest.mocked(ghUtils.hasWriteAccess).mockResolvedValueOnce(writer);
+      const comment = {
+        id: 77, body: `**Off by one**\n\n<!-- manki-issue-box -->\n- ${tick} Create an issue for this <!-- manki-box:issue:src/a.ts:3:Off-by-one -->`,
+        user: { login: author, type: author.endsWith('[bot]') ? 'Bot' : 'User' }, path: 'src/a.ts',
+      };
+      setContext({ eventName: 'pull_request_review_comment', payload: { action: 'edited', sender: { login: 'bob', type: 'User' }, comment, pull_request: { number: 5 } } });
+
+      await run();
+
+      expect(jest.mocked(issueTick.handleIssueBoxTick).mock.calls).toEqual(files ? [[mockOctokitInstance, { logins: ['manki-review[bot]'] }, 'test-owner', 'test-repo', 5, comment, 'bob']] : []);
+      expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
     });
 
     it('skips own review comments containing manki marker', async () => {

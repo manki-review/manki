@@ -326,7 +326,7 @@ class FakeGitHub {
       const nodes = page.nodes.map(t => ({ ...t, comments: connection(t.comments, 10, 0) }));
       return { repository: { pullRequest: { reviewThreads: { ...page, nodes } } } };
     }
-    if (query.includes('... on IssueComment')) {
+    if (query.includes('... on Comment {')) {
       const comment = this.comments.find(c => `IC_${c.id}` === variables.id);
       return { node: comment && { editor: { login: comment.user.login.replace(/\[bot\]$/, ''), __typename: comment.user.type } } };
     }

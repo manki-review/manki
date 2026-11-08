@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
+import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { findPriorThreadId } from './finding-fingerprint';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
 import { isSecurityFinding } from './review';
@@ -721,6 +722,7 @@ function parseFindingFromComment(body: string): FindingMetadata {
     `\n${FIX_LABEL}`,
     '\n<!-- manki:',
     '\n<!-- manki-finding:',
+    `\n${ISSUE_BOX_ANCHOR}`,
   ];
   let earliest = descSlice.length;
   let truncatingStop = false;

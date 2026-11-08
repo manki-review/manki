@@ -39,7 +39,7 @@ The app requires these permissions:
 |------------|--------|---------|
 | Contents | Read and write | Read repository files and diffs. GitHub needs write to resolve a review thread, and the token Manki gets covers only the reviewed repo |
 | Pull requests | Read and write | Post review comments and approvals |
-| Issues | Read and write | Post progress comments; read linked issues for review context |
+| Issues | Read and write | Post progress comments; read linked issues for review context; file a finding as an issue when someone ticks its box |
 | Actions | Read and write | Start the Manki workflow and follow its runs (see [What the Manki App needs](#what-the-manki-app-needs)). Set on the App by its maintainers, so you only approve it |
 | Checks | Read and write | Show a `Manki` check on the PR. Set on the App by its maintainers, so you only approve it |
 
@@ -348,13 +348,13 @@ You can also forward `severity_counts` or `findings_json` to a metrics sink (Sla
 | `pull_request: [ready_for_review]` | Auto-review when a draft PR is marked ready (head SHA unchanged, so the planner sees the same diff a `synchronize` would have produced). Drafts get no automatic review unless `drafts: review` is set. A draft review never approves: a clean round is posted as a comment saying the approval is held until the PR is ready, and it does not count toward the round cap |
 | `pull_request: [closed]` | On merge, records how many posted findings were fixed, dismissed or left untouched (see `metrics.fix_rate` in [Configuration](configuration.md)). Closing without merging does nothing |
 | `issue_comment: [created, edited]` | `/manki` commands on PRs and issues, and ticks in the settings block. PR-only commands: `review`, `check`, `explain`. Available on both: `help`, `dismiss`, `remember`, `forget`, and free-form questions. |
-| `pull_request_review_comment: [created]` | Replies to review comment threads |
+| `pull_request_review_comment: [created, edited]` | Replies to review comment threads, and ticks of a finding's "Create an issue for this" box |
 | `pull_request_review: [submitted, dismissed]` | Auto-approve check when reviews change state |
 | `pull_request_review_thread: [resolved, unresolved]` | Auto-approve check when someone resolves the last open thread by hand |
 
 The service starts no run for anything Manki or another bot did, a PR closed without merging, or a comment that doesn't mention `@manki` or `/manki`.
 
-Manki itself decides who can start it from a comment, on a PR, an issue or a review thread. A comment counts when its author has write access to the repository. Manki trusts an owner, member or collaborator as the event reports them, and asks the GitHub API about anyone else, with the workflow's own `GITHUB_TOKEN`. GitHub reports an organization member who keeps the membership private as `CONTRIBUTOR` or `NONE`, and the API still shows their access. Anyone can comment on a public repository, so Manki checks the commenter before it fetches the App token, uses a provider credential or calls a model. It refuses without posting anything, and the run ends at once. A tick in the settings block edits Manki's own comment, so Manki checks the person who ticked, who needs write access.
+Manki itself decides who can start it from a comment, on a PR, an issue or a review thread. A comment counts when its author has write access to the repository. Manki asks the GitHub API about every commenter, with the workflow's own `GITHUB_TOKEN`, since the role an event reports does not show write access: an org member with read access shows as `MEMBER`, and a private member with write access as `CONTRIBUTOR` or `NONE`. Anyone can comment on a public repository, so Manki checks the commenter before it fetches the App token, uses a provider credential or calls a model. It refuses without posting anything, and the run ends at once. A tick in the settings block, or in a finding's issue box, edits Manki's own comment, so Manki checks the person who ticked, who needs write access.
 
 ### What the service does
 

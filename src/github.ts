@@ -4,8 +4,9 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, SECURITY_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
+import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
@@ -2123,6 +2124,11 @@ function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: 
   return [`${CHECKS_MARKER}\n<details>\n<summary>How this was checked: ${counts.join(', ')}</summary>\n\n${parts.join('\n\n')}\n\n</details>`];
 }
 
+/** Returns the id a finding's issue box carries: its file, line and title slug. */
+function issueBoxId(finding: Finding): string {
+  return `${finding.file}:${finding.line}:${titleToSlug(finding.title)}`;
+}
+
 function formatFindingComment(finding: Finding, links: CodeLinks): string {
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
   if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
@@ -2140,6 +2146,8 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
     comment += `\n\n<details>\n<summary>Details</summary>\n\n${rest}\n\n</details>`;
   }
   for (const section of checks) comment += `\n\n${section}`;
+  // A public issue would disclose a security defect, so only other findings offer one.
+  if (!finding.tags?.includes(SECURITY_TAG)) comment += `\n\n${issueBox(issueBoxId(finding))}`;
 
   const data: Record<string, unknown> = {
     file: finding.file,
