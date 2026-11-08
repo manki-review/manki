@@ -30,7 +30,7 @@ import { DEFAULT_CONFIG } from './config';
 import { filterRawDiff } from './diff';
 import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
-import { LinkedIssue, titleToSlug } from './github';
+import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
 import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
@@ -1952,6 +1952,31 @@ describe('runReview', () => {
     const unnamed = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(unnamed.outcome).toBe('ADDRESS_FIRST');
     expect(unnamed.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'The retry loop never ends.', description: 'The retry loop never ends.' })]);
+
+    // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof keeps it a
+    // blocker, and its reason shows under "How this was checked".
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-reader-refute-'));
+    try {
+      writeFileSync(join(workspace, 'a.ts'), 'const cache = new Map();\nexport function put(k, v) { cache.clear(); cache.set(k, v); }\n');
+      const refuting = makeClients();
+      Object.assign(refuting.judge, { repoTools: true });
+      jest.mocked(refuting.judge.sendMessage).mockImplementation(async (_system, _message, options) => ({
+        content: options?.repoTools
+          ? JSON.stringify({ outcome: 'disproved', reason: 'Every write clears the cache first.', proof: ['a.ts:2'] })
+          : JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['a.ts:1: The cache is never invalidated.'], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
+      }));
+      const refuted = await runReview(refuting, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', workspace });
+      expect(refuted.outcome).toBe('ADDRESS_FIRST');
+      expect(refuted.verdictReason).toBe('verdict_reader');
+      expect(jest.mocked(refuting.judge.sendMessage).mock.calls.map(call => call[2]?.repoTools?.root)).toEqual([undefined, workspace]);
+      expect(refuted.findings).toEqual([expect.objectContaining({
+        severity: 'blocker', file: 'a.ts', line: 1, refutation: expect.objectContaining({ outcome: 'disproved', reason: 'Every write clears the cache first.' }),
+      })]);
+      expect(refuted.verdictTrace?.survivingBlockers).toEqual([expect.objectContaining({ file: 'a.ts', title: 'The cache is never invalidated.' })]);
+      expect(formatFindingComment(refuted.findings[0])).toMatch(/<summary>How this was checked<\/summary>\n\n- [^\n]*Every write clears the cache first\./);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('turns every warning into a follow-up in every round, security ones included, while a verdict reader blocker still blocks', async () => {
