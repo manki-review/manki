@@ -4918,17 +4918,20 @@ describe('recordCalls', () => {
       .mockResolvedValueOnce({ content: 'ok', usage, model: 'claude-opus-5-5', limits: [claude(70), { ...claude(20), window: '5-hour' }] })
       .mockResolvedValueOnce({ content: 'ok', usage, model: 'gpt-5', limits: [codex] })
       .mockResolvedValueOnce({ content: 'ok', usage, model: 'claude-opus-5-5', limits: [claude(72)] })
-      .mockResolvedValueOnce({ content: 'ok', usage, model: 'claude-opus-5-5' }) } as unknown as LLMClient;
+      .mockResolvedValueOnce({ content: 'ok', usage, model: 'claude-opus-5-5' })
+      .mockRejectedValueOnce(Object.assign(new QuotaError('limit', 'Claude subscription limit reached'), { limits: [claude(100)] })) } as unknown as LLMClient;
     const calls: LLMCall[] = [];
     const recorded = recordCalls(client, { stage: 'judge' }, calls);
     for (let i = 0; i < 4; i++) await recorded.sendMessage('sys', 'user');
+    // A call that failed on a used-up limit keeps the readings its error carries.
+    await expect(recorded.sendMessage('sys', 'user')).rejects.toThrow(QuotaError);
 
-    expect(calls.map(c => c.limits)).toEqual([[claude(70), { ...claude(20), window: '5-hour' }], [codex], [claude(72)], undefined]);
-    expect(latestLimits(calls)).toEqual([claude(72), { ...claude(20), window: '5-hour' }, codex]);
+    expect(calls.map(c => c.limits)).toEqual([[claude(70), { ...claude(20), window: '5-hour' }], [codex], [claude(72)], undefined, [claude(100)]]);
+    expect(latestLimits(calls)).toEqual([claude(100), { ...claude(20), window: '5-hour' }, codex]);
     expect(latestLimits([])).toEqual([]);
     expect(buildRoundUsage(calls).llmCalls!.some(c => 'limits' in c)).toBe(false);
-    expect(buildRoundUsage(calls).limits).toEqual([claude(72), { ...claude(20), window: '5-hour' }, codex]);
-    expect(buildRoundUsage(calls.slice(3))).not.toHaveProperty('limits');
+    expect(buildRoundUsage(calls).limits).toEqual([claude(100), { ...claude(20), window: '5-hour' }, codex]);
+    expect(buildRoundUsage(calls.slice(3, 4))).not.toHaveProperty('limits');
   });
 });
 

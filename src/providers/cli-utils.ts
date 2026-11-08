@@ -467,7 +467,7 @@ export function relatedReadsFile(dir: string): string {
 }
 
 /** What a call measured before it failed. */
-type CallReadings = Pick<LLMResponse, 'relatedReads'>;
+type CallReadings = Pick<LLMResponse, 'relatedReads' | 'limits'>;
 
 /** Puts the set `readings` of a call that failed on its error and returns it, so the failed call's record keeps them. */
 export function carryReadings(error: unknown, readings: CallReadings): unknown {
@@ -480,8 +480,8 @@ export function carryReadings(error: unknown, readings: CallReadings): unknown {
 /** Returns the readings `carryReadings` put on `error`. */
 export function readingsOf(error: unknown): CallReadings {
   if (!error || typeof error !== 'object') return {};
-  const { relatedReads } = error as CallReadings;
-  return { ...(relatedReads && { relatedReads }) };
+  const { relatedReads, limits } = error as CallReadings;
+  return { ...(relatedReads && { relatedReads }), ...(limits && { limits }) };
 }
 
 /** Returns the related repo read counts a tool server kept in `path`, or `undefined` when it kept none. */

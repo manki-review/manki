@@ -332,7 +332,8 @@ describe('sendViaOAuth — error paths', () => {
     ['exits 0 with `is_error`', 0],
   ])('throws a `QuotaError` with the reset time when the subscription limit is used up and the CLI %s', async (_case, exitCode) => {
     const limitText = "You've hit your weekly limit · resets Nov 6, 8pm (UTC)";
-    setupSpawnMock({ exitCode, stderr: '', stdout: `${JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: limitText })}\n`, rawStdout: true });
+    const limitEvent = JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', unifiedWindows: { seven_day: { utilization: 1, resetsAt: 1794600000 } } } });
+    setupSpawnMock({ exitCode, stderr: '', stdout: `${limitEvent}\n${JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: limitText })}\n`, rawStdout: true });
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-sonnet-5-5' });
 
@@ -340,6 +341,8 @@ describe('sendViaOAuth — error paths', () => {
     expect(error).toBeInstanceOf(QuotaError);
     expect(error).toMatchObject({ limit: 'Claude subscription limit reached', resetsAt: 'Nov 6, 8pm (UTC)', credential: 'token' });
     expect(error?.message).toContain(limitText);
+    // The failed call still reports the limit that ran out, so the round can warn about it.
+    expect(error).toMatchObject({ limits: [{ account: 'Claude subscription', window: 'weekly', usedPercent: 100, resetsAt: 1794600000 }] });
     warnSpy.mockRestore();
   });
 

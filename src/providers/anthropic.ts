@@ -347,6 +347,8 @@ export class AnthropicClient implements LLMClient {
     const toolStarts = new Map<string, { tool: string; start: number }>();
     // The CLI reports the limits after each request, so a later reading of a window replaces an earlier one.
     const limits = new Map<string, LimitUsage>();
+    // A failed run keeps the readings too, since a used-up limit is when they matter most.
+    const readings = () => (limits.size > 0 ? { limits: [...limits.values()] } : {});
     const consumeLine = (line: string): void => {
       if (!line.trim()) return;
       const delta = processJsonLine(line);
@@ -382,7 +384,7 @@ export class AnthropicClient implements LLMClient {
       },
     }).catch((error: unknown) => {
       warnReplyTail('Claude CLI', replyTail);
-      throw error;
+      throw carryReadings(error, readings());
     });
     consumeLine(jsonBuffer);
     const resultEvent = lastResultEvent as { stop_reason?: unknown; api_error?: unknown } | null;
@@ -400,12 +402,12 @@ export class AnthropicClient implements LLMClient {
       const limit = quota.overloaded ? 'Claude is overloaded' : 'Claude subscription limit reached';
       const message = `${limit}: ${sanitizeLogOutput(limitText.slice(-500)).trim()}`;
       core.warning(message);
-      throw new QuotaError(message, limit, quota.resetsAt, quota.overloaded ? undefined : 'token');
+      throw carryReadings(new QuotaError(message, limit, quota.resetsAt, quota.overloaded ? undefined : 'token'), readings());
     }
     if ((lastResultEvent as { subtype?: unknown } | null)?.subtype === 'error_max_turns') {
       const message = 'Claude CLI used all its turns before it answered';
       core.warning(message);
-      throw new Error(message);
+      throw carryReadings(new Error(message), readings());
     }
     if ((code !== 0 && !truncated) || refusal) {
       const msg = buildExitDiagnostics({
@@ -424,7 +426,7 @@ export class AnthropicClient implements LLMClient {
       core.warning(`${lead}Claude CLI failed (${msg})`);
       warnReplyTail('Claude CLI', replyTail);
       const message = `${lead}Claude CLI invocation failed (${msg})`;
-      throw refusal ? new RefusalError(message, refusal) : new Error(message);
+      throw carryReadings(refusal ? new RefusalError(message, refusal) : new Error(message), readings());
     }
     if (truncated) {
       core.warning(`Claude CLI reply reached the ${THINKING_MAX_TOKENS}-token output limit (exit ${code})`);
@@ -439,7 +441,7 @@ export class AnthropicClient implements LLMClient {
       model: this.model,
       truncated,
       ...(toolSteps.length > 0 && { toolSteps }),
-      ...(limits.size > 0 && { limits: [...limits.values()] }),
+      ...readings(),
     };
   }
 

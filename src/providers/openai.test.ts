@@ -773,10 +773,24 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     setupSpawnMock('', { exitCode: 1, stderr });
     jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
+    // The session Codex wrote before it stopped records the limit that ran out.
+    const savedCodexHome = process.env.CODEX_HOME;
+    const home = mkdtempSync(join(tmpdir(), 'manki-codex-quota-'));
+    process.env.CODEX_HOME = home;
+    const session = join(home, 'sessions', 'rollout.jsonl');
+    mkdirSync(join(home, 'sessions'));
+    writeFileSync(session, `${JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limits: { secondary: { used_percent: 100, window_minutes: 10080 } } } })}\n`);
+    const later = Date.now() / 1000 + 60;
+    utimesSync(session, later, later);
 
-    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e).finally(() => {
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodexHome;
+      rmSync(home, { recursive: true, force: true });
+    });
     expect(error).toBeInstanceOf(QuotaError);
     expect(error).toMatchObject({ limit: 'ChatGPT subscription limit reached', resetsAt: 'at 20 Aug 2026, 16:29', credential: 'token' });
+    expect(error).toMatchObject({ limits: [{ account: 'ChatGPT subscription', window: 'weekly', usedPercent: 100 }] });
 
     setupSpawnMock('', { exitCode: 1, stderr: 'user\nreview this: rate limit reached\nERROR: stream disconnected\n' });
     const other = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);

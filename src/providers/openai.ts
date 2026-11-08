@@ -263,6 +263,11 @@ export class OpenAIClient implements LLMClient {
     }
     const cliPath = await this.ensureCLI();
     const startTime = Date.now();
+    // A failed run keeps the readings too, since a used-up limit is when they matter most.
+    const limitReadings = () => {
+      const limits = readCodexLimits(codexHome, startTime);
+      return limits.length > 0 ? { limits } : {};
+    };
 
     // `codex exec` runs a non-interactive completion, reading the prompt from stdin
     // when invoked with `-` as the prompt argument. `--model` selects the model.
@@ -308,13 +313,14 @@ export class OpenAIClient implements LLMClient {
         signal: options?.signal,
         onStdout: (chunk) => { output += chunk; },
         stderrResetsStale: true,
-      }).catch((error: unknown) => { throw carryReadings(error, { relatedReads: reads() }); });
+      }).catch((error: unknown) => { throw carryReadings(error, { relatedReads: reads(), ...limitReadings() }); });
       return { ...exit, relatedReads: reads() };
     }).catch((error: unknown) => {
       warnReplyTail('Codex CLI', output);
       throw error;
     }).finally(() => registerAuthFileSecrets(join(codexHome, 'auth.json')));
 
+    const limits = limitReadings();
     if (code !== 0) {
       // Codex echoes the prompt to stderr, so only its `ERROR:` line is read for a limit.
       const errorLine = extractCliErrorSnippet(stderr);
@@ -322,7 +328,7 @@ export class OpenAIClient implements LLMClient {
       if (quota && !quota.overloaded) {
         const message = `ChatGPT subscription limit reached: ${errorLine}`;
         core.warning(message);
-        throw carryReadings(new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token'), { relatedReads });
+        throw carryReadings(new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token'), { relatedReads, ...limits });
       }
       const msg = buildExitDiagnostics({
         exitCode: code,
@@ -336,17 +342,16 @@ export class OpenAIClient implements LLMClient {
       });
       core.warning(`Codex CLI failed (${msg})`);
       warnReplyTail('Codex CLI', output);
-      throw carryReadings(new Error(`Codex CLI invocation failed (${msg})`), { relatedReads });
+      throw carryReadings(new Error(`Codex CLI invocation failed (${msg})`), { relatedReads, ...limits });
     }
     const content = output.trim();
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
-    const limits = readCodexLimits(codexHome, startTime);
     return {
       content,
       latencyMs: Date.now() - startTime,
       model: this.model,
       ...(relatedReads && { relatedReads }),
-      ...(limits.length > 0 && { limits }),
+      ...limits,
     };
   }
 
