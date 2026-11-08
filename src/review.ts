@@ -1421,7 +1421,7 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
     "line": <line number in the NEW file>,
     "description": "At most three sentences: what goes wrong in practice, the decisive evidence, and the change that fixes it.",
     "suggestedFix": "Optional: the replacement code for the flagged line",
-    "evidence": ["What you read or searched and what it showed, one short line each, with file:line"],
+    "evidence": ["file:line, then what you read or searched there and what it showed, quoting the key code in backticks"],
     "proof": ["file:line of each line that shows the failure"]
   }
 ]
@@ -1446,7 +1446,7 @@ Example of one finding:
 
 ## Evidence
 
-- In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each, with \`file:line\`.
+- In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each. Start each line with its \`file:line\` and quote the key code it refers to in backticks, such as "src/sync.ts:42 passes \`fh_bound\` to \`truncate_above\`".
 - A \`blocker\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most.
 - When a finding says something is missing or handled nowhere, set \`"claimsMissing": true\` and put the search that came back empty in \`emptySearch\`, such as "grep \`close(\` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.${tools ? `
 - When Manki tells you to wrap up, report what you have. Set \`"notChecked": true\` on a finding you could not finish checking.

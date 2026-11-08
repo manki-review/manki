@@ -26,7 +26,7 @@ ${UNTRUSTED_CONTENT_RULE}
 
 CI builds the change and runs its tests separately, so whether it compiles and its tests pass is not yours to establish. Never withhold READY for want of that evidence. A defect you can see by reading the code is still a blocker. A commit message is never a blocker.
 
-Return READY only if you would merge it as it stands. When you return ADDRESS_FIRST, every blocker must be specific enough for someone else to fix without asking you what you meant. Name as a blocker only what you would refuse to merge with, and put everything else in the summary as a suggestion. For each blocker give \`file\` as shown in the diff, \`line\` on the new side of the diff, the defect in one plain line as \`title\`, and in \`description\` what goes wrong in practice and the change that fixes it. In \`evidence\`, list what you read and what it showed, one short line each with \`file:line\`. In \`proof\`, list the \`file:line\` of each line that shows the failure.
+Return READY only if you would merge it as it stands. When you return ADDRESS_FIRST, every blocker must be specific enough for someone else to fix without asking you what you meant. Name as a blocker only what you would refuse to merge with, and put everything else in the summary as a suggestion. For each blocker give \`file\` as shown in the diff, \`line\` on the new side of the diff, the defect in one plain line as \`title\`, and in \`description\` what goes wrong in practice and the change that fixes it. In \`evidence\`, list what you read and what it showed, one short line each that starts with its \`file:line\` and quotes the key code it refers to in backticks. In \`proof\`, list the \`file:line\` of each line that shows the failure.
 
 Also write two things for the pull request:
 - whatThisDoes: one or two sentences a non-specialist can follow. What was wrong or missing, what the change does now, what it gets the user. Ground it in the diff, never in the change's own framing.
@@ -44,7 +44,7 @@ Respond with ONLY a JSON object (no markdown fences):
     "line": 42,
     "title": "Startup aborts for a client synced from a checkpoint",
     "description": "With no filter headers the bound falls back to 0, and truncating storage above 0 fails. Handle the missing header separately.",
-    "evidence": ["src/sync.ts:40 reads the filter height, which is unset after a checkpoint sync"],
+    "evidence": ["src/sync.ts:40 reads \`filter_height\`, which is \`None\` after a checkpoint sync"],
     "proof": ["src/sync.ts:42"]
   }],
   "summary": "string",
