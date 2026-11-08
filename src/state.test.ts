@@ -859,19 +859,26 @@ describe('checkAndAutoApprove', () => {
       );
     });
 
-    it('skips approval when the review of the head holds its approval for a person', async () => {
+    it.each([
+      ['on the head', 'head-sha'],
+      ['on an earlier commit with the same change, such as before an empty commit', 'old-sha'],
+    ])('skips approval when the review that covers the head holds its approval for a person, %s', async (_label, commit) => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const octokit = makeMockOctokit({
         threads: [],
         prHeadSha: 'head-sha',
         createReviewFn: createReviewMock,
         existingReviews: [
-          { body: '**Approval held:** no model read some of the files\n\n<!-- manki-held-for-person --><!-- manki -->', state: 'COMMENTED', commit_id: 'head-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
+          { body: '**Changes requested**\n\n<!-- manki-held-for-person --><!-- manki --><!-- manki-bot -->', state: 'CHANGES_REQUESTED', commit_id: commit, user: { login: 'manki-review[bot]', type: 'Bot' } },
         ],
       });
+      const sameChange = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n';
+      Object.assign(octokit.rest, { repos: { compareCommits: jest.fn().mockResolvedValue({ data: sameChange }) } });
+      const info = jest.spyOn(core, 'info');
 
       expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('holds its approval for a person'));
     });
 
     it('skips approval when the only review on the head is no verdict, such as an unread or incomplete round', async () => {

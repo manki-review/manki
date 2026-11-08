@@ -515,8 +515,9 @@ async function checkAndAutoApprove(
     return true;
   }
 
-  if (latestBotReview?.commit_id === pr.head.sha && latestBotReview.body?.includes(HELD_FOR_PERSON_MARKER)) {
-    core.info('The review of the head holds its approval for a person, such as for unread files — skipping auto-approve');
+  // The latest review covers the head, on the head itself or on a commit with the same change.
+  if (latestBotReview?.body?.includes(HELD_FOR_PERSON_MARKER)) {
+    core.info('The review that covers the head holds its approval for a person, such as for unread files — skipping auto-approve');
     return false;
   }
 
