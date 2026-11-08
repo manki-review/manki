@@ -761,7 +761,8 @@ describe('run', () => {
       ['an edit leaves the box unticked', 'manki-review[bot]', '[ ]', true, false],
       ['a writer ticks a copy of the box in someone else\'s comment', 'alice', '[x]', true, false],
     ])('files an issue only when %s', async (_case, author, tick, writer, files) => {
-      jest.mocked(ghUtils.hasWriteAccess).mockResolvedValueOnce(writer);
+      // Only a ticked box reaches the write check, so only then is the answer queued.
+      if (tick === '[x]') jest.mocked(ghUtils.hasWriteAccess).mockResolvedValueOnce(writer);
       const comment = {
         id: 77, body: `**Off by one**\n\n<!-- manki-issue-box -->\n- ${tick} Create an issue for this <!-- manki-box:issue:src/a.ts:3:Off-by-one -->`,
         user: { login: author, type: author.endsWith('[bot]') ? 'Bot' : 'User' }, path: 'src/a.ts',

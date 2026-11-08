@@ -308,6 +308,8 @@ describe('formatFindingComment', () => {
   it('ends a finding with a box that files it as an issue, except a security finding', () => {
     expect(render(baseFinding)).toMatch(/\n\n<!-- manki-issue-box -->\n- \[ \] Create an issue for this <!-- manki-box:issue:src\/main\.ts:42:Null-pointer-dereference -->\n\n<!-- manki:blocker:/);
     expect(render({ ...baseFinding, tags: ['security'] })).not.toContain('manki-box:issue');
+    // The verdict reader cannot mark a security defect, so its blockers get no box either.
+    expect(render({ ...baseFinding, reviewers: ['Verdict reader'] })).not.toContain('manki-box:issue');
   });
 
   it('keeps the finding data in a hidden comment, never in visible text', () => {

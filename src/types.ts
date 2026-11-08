@@ -61,6 +61,8 @@ export const OWN_PROPOSAL_TAG = 'own-proposal-followup' as const;
 export const IN_PR_SUPPRESSED_TAG = 'suppressed-in-pr' as const;
 /** Marks a warning that no longer blocks at this round. It is listed in the review body instead of posted as a thread. */
 export const FOLLOW_UP_TAG = 'follow-up' as const;
+/** Names the verdict reader as the reviewer of the blockers it reports. */
+export const VERDICT_READER_NAME = 'Verdict reader';
 /** Marks a security defect, which blocks at every round and never becomes a follow-up. */
 export const SECURITY_TAG = 'security' as const;
 /** Marks a finding on lines outside every hunk of the PR's diff. Unless it is a security finding, it never blocks. */

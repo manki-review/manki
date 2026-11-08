@@ -6,9 +6,14 @@ const ISSUE_BOX_LABEL = 'Create an issue for this';
 // A box is a task list line that ends with the finding's id. GitHub turns `[ ]` into `[x]` on a tick.
 const ISSUE_BOX_LINE = /^[ \t]*[-*] \[([ xX])\] .*<!-- manki-box:issue:(.+?) -->[ \t]*$/gm;
 
+/** Returns the unticked box line of the finding `id`. */
+export function issueBoxLine(id: string): string {
+  return `- [ ] ${ISSUE_BOX_LABEL} <!-- manki-box:issue:${id} -->`;
+}
+
 /** Returns the box that offers to file the finding `id` as an issue, after its anchor. */
 export function issueBox(id: string): string {
-  return `${ISSUE_BOX_ANCHOR}\n- [ ] ${ISSUE_BOX_LABEL} <!-- manki-box:issue:${id} -->`;
+  return `${ISSUE_BOX_ANCHOR}\n${issueBoxLine(id)}`;
 }
 
 /** Returns the ids of the issue boxes ticked in `body`. */

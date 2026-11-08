@@ -2,8 +2,8 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { BotIdentity } from './github';
-import { filedIssueMarker, replaceIssueBox, tickedIssueBoxes } from './issue-box';
-import { isSecurityThread, parseFindingData, parseFindingFromComment } from './recap';
+import { filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, replaceIssueBox, tickedIssueBoxes } from './issue-box';
+import { isSecurityThread, parseFindingData } from './recap';
 import { fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -30,19 +30,25 @@ async function findFiledIssue(octokit: Octokit, bot: BotIdentity, owner: string,
   return undefined;
 }
 
+/** Returns the finding as Manki posted it: the comment without its issue box and its hidden markers. */
+function postedFinding(body: string): string {
+  const anchor = body.indexOf(ISSUE_BOX_ANCHOR);
+  return (anchor >= 0 ? body.slice(0, anchor) : body).replace(/^<!-- manki[^\n]*-->\n?/gm, '').trim();
+}
+
 /** Files the finding in `comment` as an issue, with a permalink to its line and a link back to the thread. */
 async function fileIssue(octokit: Octokit, owner: string, repo: string, prNumber: number, comment: TickedComment, id: string): Promise<number> {
-  const title = parseFindingData(comment.body)?.title ?? 'Manki finding';
-  const description = parseFindingFromComment(comment.body).description ?? '';
-  const line = comment.original_line ?? 0;
+  const finding = parseFindingData(comment.body);
+  // A finding outside the diff is posted on another line, so the finding data names its own line.
+  const line = finding?.line ?? comment.original_line ?? 0;
   const location = `${comment.path}${line > 0 ? `:${line}` : ''}`;
   const permalink = `${github.context.serverUrl}/${owner}/${repo}/blob/${comment.original_commit_id}/${comment.path}${line > 0 ? `#L${line}` : ''}`;
   const body = [
-    ...(description ? [description] : []),
+    postedFinding(comment.body),
     `Found by Manki in #${prNumber} at [\`${location}\`](${permalink}). See the [review thread](${comment.html_url}).`,
     filedIssueMarker(id),
   ].join('\n\n');
-  const { data } = await octokit.rest.issues.create({ owner, repo, title, body });
+  const { data } = await octokit.rest.issues.create({ owner, repo, title: finding?.title ?? 'Manki finding', body });
   return data.number;
 }
 
@@ -57,20 +63,31 @@ export async function handleIssueBoxTick(
   const ids = tickedIssueBoxes(comment.body);
   // A security finding never offers a box, so a box on one was added by hand and filing it would disclose the defect.
   if (ids.length === 0 || isSecurityThread(comment.body)) return;
-  let body = comment.body;
-  const filed: number[] = [];
-  for (const id of ids) {
-    const existing = await findFiledIssue(octokit, bot, owner, repo, id);
-    const number = existing ?? await fileIssue(octokit, owner, repo, prNumber, comment, id);
-    body = replaceIssueBox(body, id, existing ? `Issue #${number} already tracks this, linked by @${editor}` : `Issue #${number} created by @${editor}`);
-    filed.push(number);
-    core.info(`${existing ? 'Linked' : 'Filed'} issue #${number} for finding ${id}`);
-  }
-  await octokit.rest.pulls.updateReviewComment({ owner, repo, comment_id: comment.id, body });
-
   const thread = (await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber)).find(t => t.rootCommentId === comment.id);
-  if (!thread) return;
-  await replyToReviewThread(octokit, thread.id, `Filed as ${filed.map(n => `#${n}`).join(', ')}.`);
+  let body = comment.body;
+  let allFiled = true;
+  for (const id of ids) {
+    let line: string;
+    let reply: string;
+    try {
+      const existing = await findFiledIssue(octokit, bot, owner, repo, id);
+      const number = existing ?? await fileIssue(octokit, owner, repo, prNumber, comment, id);
+      core.info(`${existing ? 'Linked' : 'Filed'} issue #${number} for finding ${id}`);
+      line = existing ? `Issue #${number} already tracks this, linked by @${editor}` : `Issue #${number} created by @${editor}`;
+      // Opening with "Agreed." records the deferral, so a later round does not raise the finding in a new thread.
+      reply = `Agreed. Filed as #${number} for later work.`;
+    } catch (error) {
+      core.warning(`Failed to file an issue for finding ${id}: ${error}`);
+      allFiled = false;
+      // The box is cleared, so ticking it again tries again.
+      line = issueBoxLine(id);
+      reply = `Could not file an issue for this finding: ${String(error).slice(0, 200)}. Tick the box again to retry.`;
+    }
+    body = replaceIssueBox(body, id, line);
+    // Each box is saved as soon as it is handled, so a later failure keeps the issues already filed.
+    await octokit.rest.pulls.updateReviewComment({ owner, repo, comment_id: comment.id, body });
+    if (thread) await replyToReviewThread(octokit, thread.id, reply);
+  }
   // A deferred finding no longer needs this PR, but only someone other than the author clears a blocker.
-  if (!thread.isBlocking && !thread.isResolved) await resolveReviewThread(octokit, thread.id, 'WONT_FIX');
+  if (thread && allFiled && !thread.isBlocking && !thread.isResolved) await resolveReviewThread(octokit, thread.id, 'WONT_FIX');
 }
