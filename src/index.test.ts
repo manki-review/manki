@@ -5732,7 +5732,9 @@ describe('runFullReview orchestration', () => {
       const stripped = { id: 501, body: notice.slice(0, notice.indexOf('\n\n---\n')), user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2025-01-02T00:00:00Z' };
       const withheld = { id: 502, body: '**Auto-approve withheld**\n\n<!-- manki-stale-approve:abc123 -->', user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2025-01-02T00:00:00Z' };
       const otherHead = { ...withheld, id: 503, body: '**Auto-approve withheld**\n\n<!-- manki-stale-approve:def456 -->' };
-      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([stripped, withheld, otherHead]);
+      // The token service's note that the PR waited for a rebase goes too, since a review ran.
+      const conflict = { ...withheld, id: 504, body: 'This PR conflicts with `main`. Rebase it, and Manki reviews it then.\n\n<!-- manki-conflict-note -->' };
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([stripped, withheld, otherHead, conflict]);
       const forcedRound = () => runFullReview(
         baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
         baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
@@ -5744,7 +5746,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(mockOctokitInstance.rest.issues.updateComment).mockClear();
       jest.mocked(mockOctokitInstance.rest.issues.deleteComment).mockClear();
       await forcedRound();
-      expect(jest.mocked(mockOctokitInstance.rest.issues.deleteComment).mock.calls.map(([args]) => args.comment_id)).toEqual([502]);
+      expect(jest.mocked(mockOctokitInstance.rest.issues.deleteComment).mock.calls.map(([args]) => args.comment_id)).toEqual([502, 504]);
       expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalledWith(expect.objectContaining({ comment_id: 501 }));
 
       jest.mocked(reviewModule.runReview).mockClear();
