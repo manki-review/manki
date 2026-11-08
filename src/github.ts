@@ -1261,7 +1261,7 @@ export async function postReview(
       } else if (hasOpenThread(f, existingThreads)) {
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
       } else if (isPreExisting(f)) {
-        preExisting.push(formatFindingFold(f, linkTo, lineCounts));
+        preExisting.push(formatFindingFold(f, links));
       } else if (f.origin === 'reviewed') {
         previouslyMissed.push(formatFindingFold(f, links));
       } else {

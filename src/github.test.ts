@@ -3955,7 +3955,7 @@ describe('postReview non-blocking findings', () => {
     expect(review.body).not.toMatch(/not listed|smaller fix(es)? in this PR/);
     expect(review.body).toMatch(/Previously missed[\s\S]*Nitpick[\s\S]*#### Pre-existing: 1 finding\n\n<sub>These sit on code this PR did not change, so none of them blocks\. A blocker among them is listed as a warning\.<\/sub>\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · /);
     // A security finding on unchanged code still blocks, and its header says where it sits.
-    expect(formatFindingComment(nonBlocking('blocker', 'Old SQL injection', 90, { tags: ['security', 'pre-existing'] })).split('\n')[0]).toBe('\u{1F6AB} **Blocker** · Pre-existing');
+    expect(formatFindingComment(nonBlocking('blocker', 'Old SQL injection', 90, { tags: ['security', 'pre-existing'] }), TEST_LINKS).split('\n')[0]).toBe('\u{1F6AB} **Blocker** · Pre-existing');
   });
 });
 
