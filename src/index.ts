@@ -1010,13 +1010,14 @@ function pauseReport({ reason }: PauseState): StateReport['pause'] {
   return reason ? { reason } : null;
 }
 
+/** Ends a pause notice of the round cap, since rounds that keep finding problems point at the design. */
+const RETHINK_LINE = 'Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes.';
+
 /**
  * Replaces the progress comment with a notice that automatic review is paused, listing the blocking threads still open.
  * Each push during the same pause updates the notice from after `lastRoundAt` instead of adding another.
  * The notice's settings block offers Force review.
  */
-const RETHINK_LINE = 'Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes.';
-
 async function postPauseNotice(
   target: RunTarget, progress: RunProgress, pause: PauseState, maxAutoRounds: number,
   previousFindings: PreviousFinding[], lastRoundAt?: string,
