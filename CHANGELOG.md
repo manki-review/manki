@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [7.1.0] - 2026-11-09
+## [7.1.1] - 2026-11-09
 
-Manki 7.1 makes Manki safe to run for people who only want a review, and makes each round find more. The security work from the v7.0.0 audit ([#1116](https://github.com/manki-review/manki/issues/1116)) means nobody gains write access they should not have, Manki never approves code no model read, and no answer from a single model can unblock a change. Review memory moves to a central repository the Manki service writes. The review body is grouped by where findings sit, and any finding can be filed as an issue with a tick. Finders search the whole PR in every round, and the round records keep enough diagnostics for a weekly statistics report. A review on a Claude or Codex subscription warns before a usage limit runs out. v7.0.1 was never published, and its change is part of this release.
+Manki 7.1 makes Manki safe to run for people who only want a review, and makes each round find more. The security work from the v7.0.0 audit ([#1116](https://github.com/manki-review/manki/issues/1116)) means nobody gains write access they should not have, Manki never approves code no model read, and no answer from a single model can unblock a change. Review memory moves to a central repository the Manki service writes. The review body is grouped by where findings sit, and any finding can be filed as an issue with a tick. Finders search the whole PR in every round, and the round records keep enough diagnostics for a weekly statistics report. A review on a Claude or Codex subscription warns before a usage limit runs out. v7.0.1 and v7.1.0 were never published, and their changes are part of this release.
 
 ### Upgrading
 
