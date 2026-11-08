@@ -45,7 +45,7 @@ function fullyPopulatedContext(): RoundContext {
       round: 2,
       timestamp: '2026-01-01T00:00:00.000Z',
       mankiVersion: '4.7.0',
-      promptVersions: { judge: 'j1', reviewer: 'r1', planner: 'p1' },
+      promptVersions: { judge: ['j1'], reviewer: ['r1'], planner: ['p1'] },
     },
     config: {
       reviewLevel: 'medium',

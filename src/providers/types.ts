@@ -109,7 +109,7 @@ export interface LLMCall extends LLMUsage {
   promptDigest?: string;
   /** The tool steps the call was given, when it had tools. */
   stepBudget?: number;
-  /** Set when the call used enough steps that Manki told the model to wrap up. */
+  /** Set when the call used enough steps that Manki told the model to wrap up. Only a client that reports `toolSteps` sets it. */
   wrapUpNoted?: true;
 }
 

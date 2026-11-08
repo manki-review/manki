@@ -4648,7 +4648,12 @@ describe('recordCalls', () => {
     const budgeted: LLMCall[] = [];
     for (const steps of [4, 5]) await recordCalls(fallback, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps } });
     await recordCalls(refusing, finder, budgeted).sendMessage('other', 'user', { repoTools: { root: '/work', steps: 4 } }).catch(() => undefined);
-    expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest])).toEqual([[4, true, true], [5, undefined, true], [undefined, undefined, false]]);
+    // A client that reports no tool steps, such as Codex, leaves it unknown whether the model was told to wrap up.
+    const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5' }), repoTools: true } as unknown as LLMClient;
+    await recordCalls(silent, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } });
+    expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest])).toEqual([
+      [4, true, true], [5, undefined, true], [undefined, undefined, false], [3, undefined, true],
+    ]);
     expect([recordCalls(fallback, finder, []).repoTools, judge.repoTools]).toEqual([true, undefined]);
     expect(summarizeCalls(calls)).toEqual({
       calls: 6, failedCalls: 2, unpricedCalls: 3,
