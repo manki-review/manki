@@ -114,46 +114,65 @@ describe('resolveReasoningEffort', () => {
 
 describe('readCodexLimits', () => {
   const tokenCount = (rateLimits: unknown) => JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limits: rateLimits } });
+  const NOW = Date.UTC(2026, 10, 9, 12);
+  const T = NOW / 1000;
   let home: string;
-  const writeSession = (name: string, lines: string[], mtimeSeconds: number) => {
-    const dir = join(home, 'sessions', '2026', '11', '09');
+  const writeSession = (name: string, lines: string[], mtimeSeconds: number, folder = '2026/11/09') => {
+    const dir = join(home, 'sessions', ...folder.split('/'));
     mkdirSync(dir, { recursive: true });
     const path = join(dir, name);
     writeFileSync(path, `${lines.join('\n')}\n`);
     utimesSync(path, mtimeSeconds, mtimeSeconds);
   };
 
-  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'manki-codex-limits-')); });
-  afterEach(() => rmSync(home, { recursive: true, force: true }));
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'manki-codex-limits-'));
+    jest.spyOn(Date, 'now').mockReturnValue(NOW);
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    rmSync(home, { recursive: true, force: true });
+  });
 
   it('reads the last recorded limits of the newest session written since the call started that has any', () => {
-    writeSession('rollout-old.jsonl', [tokenCount({ primary: { used_percent: 99, window_minutes: 300 } })], 1000);
+    writeSession('rollout-old.jsonl', [tokenCount({ primary: { used_percent: 99, window_minutes: 300 } })], T - 3000);
     writeSession('rollout-new.jsonl', [
       tokenCount({ primary: { used_percent: 10, window_minutes: 300 } }),
       tokenCount({ primary: { used_percent: 72.4, window_minutes: 300, resets_at: 1794000000 }, secondary: { used_percent: 91, window_minutes: 10080 } }),
       JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message' } }),
-    ], 2000);
+    ], T - 1000);
     // A call running in parallel started a newer session that has no readings yet.
-    writeSession('rollout-parallel.jsonl', [JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message' } })], 3000);
+    writeSession('rollout-parallel.jsonl', [JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message' } })], T - 500);
+    // A folder of an earlier day is never read, even with a file touched since the call started.
+    writeSession('rollout-history.jsonl', [tokenCount({ primary: { used_percent: 50, window_minutes: 300 } })], T - 100, '2026/11/07');
 
-    expect(readCodexLimits(home, 1500 * 1000)).toEqual([
+    expect(readCodexLimits(home, (T - 2000) * 1000)).toEqual([
       { account: 'ChatGPT subscription', window: '5-hour', usedPercent: 72, resetsAt: 1794000000 },
       { account: 'ChatGPT subscription', window: 'weekly', usedPercent: 91 },
     ]);
-    expect(readCodexLimits(home, 2500 * 1000)).toEqual([]);
+    expect(readCodexLimits(home, (T - 800) * 1000)).toEqual([]);
+  });
+
+  it.each([
+    ['the day the call runs', '2026/11/09'],
+    ['the day before, for a CLI at UTC-12', '2026/11/08'],
+    ['the day after, for a CLI at UTC+14', '2026/11/10'],
+  ])('reads the folder of %s', (_case, folder) => {
+    writeSession('rollout.jsonl', [tokenCount({ primary: { used_percent: 40, window_minutes: 300 } })], T - 60, folder);
+    expect(readCodexLimits(home, (T - 600) * 1000)).toEqual([{ account: 'ChatGPT subscription', window: '5-hour', usedPercent: 40 }]);
   });
 
   it('names other window lengths by days or hours, and skips a window without a length or share', () => {
-    writeSession('rollout.jsonl', [tokenCount({ primary: { used_percent: 5, window_minutes: 2880 }, secondary: { used_percent: 6, window_minutes: 60 } })], 2000);
-    expect(readCodexLimits(home, 0).map(l => l.window)).toEqual(['2-day', '1-hour']);
+    writeSession('rollout.jsonl', [tokenCount({ primary: { used_percent: 5, window_minutes: 2880 }, secondary: { used_percent: 6, window_minutes: 60 } })], T - 10);
+    expect(readCodexLimits(home, (T - 60) * 1000).map(l => l.window)).toEqual(['2-day', '1-hour']);
 
-    writeSession('rollout.jsonl', ['{"rate_limits": not json', tokenCount({ primary: { used_percent: 5 }, secondary: null }), tokenCount(null)], 2000);
-    expect(readCodexLimits(home, 0)).toEqual([]);
+    writeSession('rollout.jsonl', ['{"rate_limits": not json', tokenCount({ primary: { used_percent: 5 }, secondary: null }), tokenCount(null)], T - 10);
+    expect(readCodexLimits(home, (T - 60) * 1000)).toEqual([]);
   });
 
   it('returns none when Codex wrote no sessions', () => {
-    expect(readCodexLimits(home, 0)).toEqual([]);
-    expect(readCodexLimits(join(home, 'missing'), 0)).toEqual([]);
+    expect(readCodexLimits(home, (T - 60) * 1000)).toEqual([]);
+    expect(readCodexLimits(join(home, 'missing'), (T - 60) * 1000)).toEqual([]);
   });
 });
 
@@ -779,8 +798,10 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     const savedCodexHome = process.env.CODEX_HOME;
     const home = mkdtempSync(join(tmpdir(), 'manki-codex-quota-'));
     process.env.CODEX_HOME = home;
-    const session = join(home, 'sessions', 'rollout.jsonl');
-    mkdirSync(join(home, 'sessions'));
+    const today = new Date();
+    const folder = join(home, 'sessions', String(today.getFullYear()), String(today.getMonth() + 1).padStart(2, '0'), String(today.getDate()).padStart(2, '0'));
+    const session = join(folder, 'rollout.jsonl');
+    mkdirSync(folder, { recursive: true });
     writeFileSync(session, `${JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limits: { secondary: { used_percent: 100, window_minutes: 10080 } } } })}\n`);
     const later = Date.now() / 1000 + 60;
     utimesSync(session, later, later);
