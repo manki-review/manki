@@ -1493,7 +1493,8 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
     }
   });
 
-  const judgeDroppedCount = allJudgedForDashboard.filter(f => !keptSet.has(f) && !listed.has(f)).length;
+  // Kept findings are copies of the judged ones, so the count goes by size, less the listed leads among the judged.
+  const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size - allJudgedForDashboard.filter(f => listed.has(f)).length;
   const disproved = allJudgedForDashboard.flatMap(({ title, file, line, severity, refutation }) => refutation?.outcome === 'disproved' && severity === 'ignore' ? [{ title, file, line, reason: refutation.reason }] : []);
   const completeDashboard: DashboardData = {
     ...dashboard,
