@@ -671,9 +671,10 @@ export async function runReview(
     ? { repos: config.related_repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related') }
     : undefined;
   const changedSinceLastRound = filesChangedSinceLastRound(diff, priorRounds, interRoundDiff);
-  const finderOptions = (finder: Finder): RunReviewerAgentOptions => ({
+  // Only a retry passes `retryNote`, the note of the reply it corrects, so a first attempt never carries one.
+  const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
     effort: finder.effort, language: plannerResult?.language, context: plannerResult?.context, workspace, related, changedSinceLastRound,
-    retryNote: retryNotes.get(finder.name),
+    ...(retryNote && { retryNote }),
   });
 
   const passes = config.review_passes ?? 1;
@@ -688,7 +689,7 @@ export async function runReview(
   const agentFailureReasons = new Map<string, string>();
   // A finder whose provider reported a used-up limit is not retried: it would fail the same way.
   const quotaErrors = new Map<string, QuotaError>();
-  // A finder whose reply did not parse is retried with a note that names the error.
+  // The note each finder's next retry gets: one that names the parse error when its last reply did not parse.
   const retryNotes = new Map<string, string>();
   const recordFailure = (name: string, error: unknown): void => {
     agentFailureReasons.set(name, sanitizeLogOutput(String(((error as Error)?.message ?? error) || 'unknown failure')).slice(0, 500));
@@ -807,7 +808,7 @@ export async function runReview(
           Array.from({ length: passes }, () => {
             const shuffledDiff = shuffleDiffFiles(diff);
             const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-            return runReviewerAgent(finderClients.get(agent.name)!, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent));
+            return runReviewerAgent(finderClients.get(agent.name)!, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent, retryNotes.get(agent.name)));
           })
         );
 
@@ -960,7 +961,7 @@ export async function runReview(
 
       const retryPromises = agentsToRetry.map(agent => {
         const startTime = Date.now();
-        return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
+        return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent, retryNotes.get(agent.name)))
           .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null as unknown }))
           .catch(error => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime, error: error as unknown }));
       });

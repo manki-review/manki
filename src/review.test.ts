@@ -3855,6 +3855,9 @@ describe('runReview', () => {
     expect(retrySystem).toBe(firstSystem);
     expect(retryMessage).toMatch(/^[\s\S]*\n\nYour previous reply could not be used: malformed response \(length 51\): .+\n\nReply with only the JSON array the system prompt describes, with no text, markdown or code fence around it\.$/);
     expect(retryMessage.startsWith(firstMessage)).toBe(true);
+    // Only the retry carries the note: no first attempt does, of this finder or the other one.
+    expect(firstMessage).not.toContain('Your previous reply could not be used');
+    expect((clients.reviewer.sendMessage as jest.Mock).mock.calls.map(([, message]) => message).some((m: string) => m.includes('Your previous reply'))).toBe(false);
     const judged = mockedRunJudgeAgent.mock.calls[0][2].findings;
     expect(judged.map(f => [f.title, f.reviewers])).toEqual([['Unchecked sum', ['Claude Opus 5.5 · high']]]);
   });
