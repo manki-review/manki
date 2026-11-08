@@ -883,6 +883,7 @@ describe('buildReviewerSystemPrompt', () => {
       expect(prompt).toContain('Look for all of them, not only the first or the worst.');
       // The proof requirement stays.
       expect(prompt).toContain('A `blocker` must list in `proof` the `file:line` of each line that shows the failure.');
+      expect(prompt).toContain('Start each line with its `file:line` and quote the key code it refers to in backticks');
       expect(prompt).not.toMatch(/not to explore|Don't comment on unchanged code|only flag issues in the changed code|not pedantic/);
     }
     expect(buildReviewerSystemPrompt(reviewer, makeConfig())).toContain('Frame every potential suggestion or nitpick through this lens');
@@ -1971,6 +1972,8 @@ describe('runReview', () => {
     ]);
     expect(result.findings[1]).not.toHaveProperty('evidence');
     expect(result.verdictTrace?.survivingBlockers.map(e => e.file)).toEqual(['src/a.ts', '', 'src/b.ts', 'src/c.ts']);
+    // The reader is asked to start each evidence line with its location and quote the code, as the finders are.
+    expect(jest.mocked(clients.judge.sendMessage).mock.calls.at(-1)![0]).toContain('one short line each that starts with its `file:line` and quotes the key code it refers to in backticks');
 
     jest.mocked(clients.judge.sendMessage).mockResolvedValue({
       content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [], summary: 'The retry loop never ends.', whatThisDoes: '', whatToTest: '' }),
