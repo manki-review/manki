@@ -2160,7 +2160,8 @@ function confirmFixes(
 
 /**
  * Folds each kept finding that names the problem of a verdict reader blocker into that blocker, so one problem gets one
- * thread. The blocker keeps its grade and takes the finding's reviewers and evidence, and its fix when it has none.
+ * thread. The blocker keeps its grade and takes the finding's reviewers and evidence. It takes the finding's fix only
+ * when it has none and both sit on one line, since a one-line fix replaces the line its comment sits on.
  */
 function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { findings: Finding[]; blockers: Finding[] } {
   const merged = blockers.map(b => ({ ...b }));
@@ -2168,7 +2169,7 @@ function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { fin
     const blocker = merged.find(b => sameProblem(b, f));
     if (!blocker) return true;
     foldInto(blocker, f);
-    if (!blocker.suggestedFix && f.suggestedFix) blocker.suggestedFix = f.suggestedFix;
+    if (!blocker.suggestedFix && f.suggestedFix && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
     if (f.tags?.includes(SECURITY_TAG) && !blocker.tags?.includes(SECURITY_TAG)) blocker.tags = [...(blocker.tags ?? []), SECURITY_TAG];
     core.info(`Folded ${f.severity} "${f.title}" into the verdict reader's blocker "${blocker.title}"`);
     return false;
@@ -2177,12 +2178,15 @@ function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { fin
 }
 
 /**
- * Whether the findings `a` and `b` name one problem: they sit in one file with overlapping titles, and they are a few
- * lines apart or one cites the other's line as proof.
+ * Whether the findings `a` and `b` name one problem: they sit in one file with overlapping titles, and one cites the
+ * other's line as proof. A few lines apart is enough only when one title holds the other, since short titles share
+ * words by chance.
  */
 function sameProblem(a: Finding, b: Finding): boolean {
-  if (a.file !== b.file || titleOverlapType(a.title, b.title) === null) return false;
-  return Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE || citesLineOf(a, b) || citesLineOf(b, a);
+  const overlap = a.file === b.file ? titleOverlapType(a.title, b.title) : null;
+  if (overlap === null) return false;
+  if (citesLineOf(a, b) || citesLineOf(b, a)) return true;
+  return overlap !== 'word_overlap' && Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
 }
 
 /** Whether `a` cites the line of `b` as proof. */
