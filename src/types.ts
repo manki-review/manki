@@ -610,7 +610,7 @@ export interface TeamRouting {
   escalatedFrom?: string;
   /** Floor classes `review.allow_weaker` let run below the floor. */
   weakerAllowed?: string[];
-  /** A deeper review again ran: two finders on every group, each one effort level higher. */
+  /** A Deeper review ran: two finders on every group, each one effort level higher. */
   deeper?: true;
 }
 
@@ -1149,7 +1149,7 @@ export interface FullReviewOptions {
   settings?: PrState;
   /** Reviews the whole PR as new, so every finding counts as new code. */
   fullReview?: boolean;
-  /** A deeper review again: two finders on every group, each one effort level higher. */
+  /** A Deeper review: two finders on every group, each one effort level higher. */
   deeper?: boolean;
 }
 

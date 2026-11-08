@@ -588,7 +588,7 @@ export interface ReviewOptions {
   finalRound?: boolean;
   /** The checked-out PR head, which finders and the judge on a client with `repoTools` read with read-only tools. */
   workspace?: string;
-  /** A deeper review again: two finders on every group, each one effort level higher. */
+  /** A Deeper review: two finders on every group, each one effort level higher. */
   deeper?: boolean;
   /** Files the PR changes that `exclude_paths` left out of `diff`. A finding there is never pre-existing. */
   excludedPaths?: string[];

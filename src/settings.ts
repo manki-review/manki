@@ -7,7 +7,7 @@ export type SettingsBox = 'pause' | 'again' | 'deeper' | 'cancel' | 'draft';
 const BOX_LABELS: Record<SettingsBox, string> = {
   pause: 'Pause automatic reviews',
   again: 'Review again',
-  deeper: 'Review again, deeper (two reviewers, higher effort)',
+  deeper: 'Deeper review',
   cancel: 'Cancel this review',
   draft: 'Review this draft',
 };

@@ -15,7 +15,7 @@ describe('settings block', () => {
       'Last reviewed `abc1234` · head `def5678` · review running',
       '- [x] Pause automatic reviews <!-- manki-box:pause -->',
       '- [ ] Review again <!-- manki-box:again -->',
-      '- [ ] Review again, deeper (two reviewers, higher effort) <!-- manki-box:deeper -->',
+      '- [ ] Deeper review <!-- manki-box:deeper -->',
       '- [ ] Cancel this review <!-- manki-box:cancel -->',
       SETTINGS_MARKER,
     ].join('\n'));

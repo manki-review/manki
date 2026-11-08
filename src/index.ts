@@ -379,7 +379,7 @@ async function loadSettings(owner: string, repo: string, prNumber: number): Prom
   return await fetchPrState(owner, repo, prNumber, github.context.runId) ?? NO_SETTINGS;
 }
 
-/** The boxes that apply to a PR: Pause and both Review again boxes always, Review this draft on a draft, and `extra`. */
+/** The boxes that apply to a PR: Pause, Review again and Deeper review always, Review this draft on a draft, and `extra`. */
 function settingsBoxes(draft: boolean, extra: SettingsBox[] = []): Set<SettingsBox> {
   return new Set<SettingsBox>(['pause', 'again', 'deeper', ...(draft ? ['draft' as const] : []), ...extra]);
 }
@@ -1027,7 +1027,7 @@ async function replaceWithNotice(target: RunTarget, progress: RunProgress, marke
 /**
  * Replaces the progress comment with a request to split a PR too big to review, and dismisses Manki's earlier
  * approvals, since no reviewer read the new code. Posts no review, so a request for changes stays. `offerReview`
- * keeps the Review again boxes, which review the PR anyway.
+ * keeps the Review again and Deeper review boxes, which review the PR anyway.
  */
 async function postTooBigNotice(target: RunTarget, progress: RunProgress, text: string, offerReview: boolean, lastRoundAt?: string): Promise<CheckReport> {
   const { octokit, owner, repo, prNumber } = target;
@@ -1080,7 +1080,7 @@ async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: st
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
     return comments.find(c => isBotLogin(bot, c.user?.login) && !!c.body?.includes(marker)
-      && !c.body.includes('- [x] Review again') && Date.parse(c.updated_at) > since);
+      && !/- \[x\] (?:Review again|Deeper review) /.test(c.body) && Date.parse(c.updated_at) > since);
   } catch (error) {
     core.warning(`Failed to look up an earlier notice: ${error}`);
     return undefined;
