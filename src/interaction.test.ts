@@ -1,6 +1,6 @@
 import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isLLMAccessAllowed } from './interaction';
 import { ReplyRecord, ReviewConfig } from './types';
-import { extractReplyRecords } from './review-record';
+import { extractReplyRecords, formatReviewRecord } from './review-record';
 import { WRITING_RULES } from './writing-rules';
 import * as github from '@actions/github';
 import * as core from '@actions/core';
@@ -8,7 +8,7 @@ import { LLMClient } from './providers';
 import * as memory from './memory';
 import * as ghUtils from './github';
 import * as state from './state';
-import { TEST_BOT } from './test-utils';
+import { makeRoundContext, TEST_BOT } from './test-utils';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -764,6 +764,48 @@ describe('handleReviewCommentReply', () => {
     const note = `\n\nThis is a ${kind === 'security' ? 'security' : 'blocking'} finding, so the thread stays open until ${until}.`;
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${staysOpen ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason ? [[octokit, 'PRRT_this', reason]] : []);
+  });
+
+  it.each([
+    ['written during the round, on its head, which found the thread open', '14:32:05', 'head', 'not_addressed',
+      'The review of `aaaaaaa`, which finished after this reply, still finds this open: the disproved lead still drops the grade.'],
+    ['written during the round, on its head, which found the thread addressed', '14:32:05', 'head', 'addressed',
+      'The review of `aaaaaaa`, which finished after this reply, already found this addressed.'],
+    ['written after the round', '14:36:00', 'head', 'not_addressed', undefined],
+    ['on a head that moved since the round', '14:32:05', 'other', 'not_addressed', undefined],
+    ['on a thread the round did not evaluate', '14:32:05', 'head', undefined, undefined],
+  ])('defers to the latest round for a reply %s', async (_case, repliedAt, roundHead, status, pointer) => {
+    const head = 'a'.repeat(40);
+    setContext({
+      comment: { id: 1, body: 'Fixed in 7e3f21d.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: `2026-11-06T${repliedAt}Z` },
+      pull_request: { number: 1, head: { sha: head } },
+      sender: { login: 'someone' },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment('blocker'), path: 'src/file.ts', line: 10 } });
+    const round = makeRoundContext(2, {
+      meta: { prNumber: 1, commitSha: roundHead === 'head' ? head : 'b'.repeat(40), round: 2, timestamp: '2026-11-06T14:34:11Z', mankiVersion: '7.0.1' },
+      judge: { summary: '', ...(status && { threadEvaluations: [{ threadId: 'PRRT_this', status, reason: 'the disproved lead still drops the grade.' }] }) },
+    } as Parameters<typeof makeRoundContext>[1]);
+    octokit.paginate = jest.fn().mockResolvedValue([{ id: 7, body: `Changes requested.\n\n${formatReviewRecord(round)}`, user: { login: 'manki-review[bot]' } }]);
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: 'Fixed. The guard now runs first.' });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, findingTitle: 'This' },
+    ]);
+    jest.mocked(state.resolveReviewThread).mockClear();
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
+
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
+    if (pointer) {
+      expect(client.sendMessage).not.toHaveBeenCalled();
+      expect(body).toBe(`${pointer}\n\n<!-- manki -->`);
+      expect(state.resolveReviewThread).not.toHaveBeenCalled();
+    } else {
+      expect(client.sendMessage).toHaveBeenCalledTimes(1);
+      expect(body).toMatch(/^Fixed\. The guard now runs first\./);
+    }
   });
 
   it('includes scoped PR diff context in the Claude prompt', async () => {
