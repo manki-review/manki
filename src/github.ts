@@ -10,7 +10,7 @@ import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { MAX_AGENT_RETRIES, SEVERITY_ORDER } from './types';
-import { safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
+import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
 
@@ -975,7 +975,7 @@ function formatBodyFix(fix: string, file: string): string {
  */
 function splitLead(text: string, maxSentences: number, maxLength: number): { lead: string; rest: string } {
   const trimmed = text.trim();
-  const fenceAt = trimmed.indexOf('```');
+  const fenceAt = trimmed.search(/`{3}|~{3}/);
   const prose = fenceAt === -1 ? trimmed : trimmed.slice(0, fenceAt);
   // Odd entries are the whitespace between sentences, so joining a slice keeps the original spacing.
   const parts = prose.trimEnd().split(/(?<=[.!?])(\s+)/);
@@ -1406,8 +1406,8 @@ async function submitReview(
 }
 
 function dynamicFence(content: string): string {
-  const maxBt = (content.match(/`+/g) || []).reduce((max: number, s: string) => Math.max(max, s.length), 0);
-  return '`'.repeat(Math.max(3, maxBt + 1));
+  const maxRun = (content.match(/`+|~+/g) || []).reduce((max: number, s: string) => Math.max(max, s.length), 0);
+  return '`'.repeat(Math.max(3, maxRun + 1));
 }
 
 /** Wraps `text` in a `dynamicFence`, so nothing inside can close the block, with `info` as its language. */
@@ -1593,7 +1593,7 @@ function sanitizeMarkdown(text: string): string {
   result = result.replace(HTML_TAG_REGEX, '');
   result = result.replace(HTML_TAG_REGEX, '');
 
-  return result
+  return fenceOwnCode(result
     .replace(HTML_UNCLOSED_TAG_REGEX, '')  // Unclosed tags at end of string
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Images: keep alt text only
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Links: keep text only
@@ -1605,7 +1605,7 @@ function sanitizeMarkdown(text: string): string {
     // Insert zero-width space after @ to prevent GitHub from resolving mentions.
     // Lookbehind avoids matching email addresses (which have chars before @).
     // Also handles @org/team patterns.
-    .replace(/(?<![a-zA-Z0-9.])@([a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?)/g, '@\u200B$1');
+    .replace(/(?<![a-zA-Z0-9.])@([a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?)/g, '@\u200B$1'));
 }
 
 /** Reduce a finding title to a URL-safe slug for use in HTML comment markers and fingerprints. */
@@ -1626,6 +1626,30 @@ function visibleLength(text: string): number {
   return text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
 }
 const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
+// A run that could open a fence, anywhere in a line, since later splitting can move it to the start of one.
+const FENCE_RUN_RE = /`{3,}|~{3,}/g;
+
+/**
+ * Rebuilds the fences in model-written `text` as Manki's own: each fenced block gets a `dynamicFence` that nothing in it
+ * can close and a plain language name at most, and a block left open is closed. Any other run of three backticks or
+ * tildes is escaped, so no prose can open a fence, such as a `suggestion`, around what Manki appends after it.
+ */
+function fenceOwnCode(text: string): string {
+  return splitFences(text.split('\n')).filter(p => p.lines.length > 0).map(p => p.kind === 'code'
+    ? fenceText(p.lines.join('\n'), plainLanguage(p.lang))
+    : p.lines.join('\n').replace(FENCE_RUN_RE, run => run.replace(/./g, '\\$&'))).join('\n');
+}
+
+const PLAIN_LANGUAGE_RE = /^[A-Za-z0-9_+#.-]{1,32}$/;
+
+/**
+ * Returns `info` when it is a plain language name, or nothing. Any other info string is dropped, so no spelling that
+ * GitHub would read as `suggestion` gets a commit button.
+ */
+function plainLanguage(info = ''): string {
+  const lang = info.trim();
+  return PLAIN_LANGUAGE_RE.test(lang) && lang.toLowerCase() !== 'suggestion' ? info : '';
+}
 const PROSE_LINE_RE = /^[A-Z][A-Za-z']*(?:\s+\S+){2,}[.:]$/;
 // A comment that says where the code goes, such as `// After the guard, add:`, means the code does not apply as is.
 const PLACEMENT_COMMENT_RE = /^\s*(?:\/\/|#|--|\/\*)\s+(?:(?:in|after|before|replace|add|then|change|move|instead)\b|.*:\s*(?:\*\/)?$)/i;
@@ -1663,6 +1687,11 @@ function splitFix(fix: string, file: string): FixPart[] {
       { kind: 'prose' as const, lines: lines.slice(end) },
     ].map(p => ({ ...p, lines: trimBlankLines(p.lines) })).filter(p => p.lines.length > 0);
   }
+  return splitFences(lines).map(p => ({ ...p, lines: trimBlankLines(p.lines) })).filter(p => p.lines.length > 0);
+}
+
+/** Splits `lines` at fence lines into prose and code parts, in order. A block left open runs to the end. */
+function splitFences(lines: string[]): FixPart[] {
   const parts: FixPart[] = [];
   let fence: string | null = null;
   let current: FixPart = { kind: 'prose', lines: [] };
@@ -1671,6 +1700,11 @@ function splitFix(fix: string, file: string): FixPart[] {
     if (!marker) {
       current.lines.push(line);
     } else if (fence === null) {
+      // A backtick run followed by another backtick on the line is inline code, not a fence.
+      if (marker[1][0] === '`' && marker[2].includes('`')) {
+        current.lines.push(line);
+        continue;
+      }
       parts.push(current);
       fence = marker[1];
       current = { kind: 'code', lines: [], lang: marker[2].trim() };
@@ -1683,7 +1717,7 @@ function splitFix(fix: string, file: string): FixPart[] {
     }
   }
   parts.push(current);
-  return parts.map(p => ({ ...p, lines: trimBlankLines(p.lines) })).filter(p => p.lines.length > 0);
+  return parts;
 }
 
 /** Renders the parts of a fix as text and fenced code blocks. A block without a language gets the extension of `file`. */
@@ -1693,21 +1727,21 @@ function renderFixParts(parts: FixPart[], file: string): string {
   return parts.map(p => {
     const text = p.lines.join('\n');
     if (p.kind === 'prose') return sanitizeMarkdown(text);
-    const fence = dynamicFence(text);
-    return `${fence}${(p.lang || extension).replace(/[^\w+#.-]/g, '')}\n${text}\n${fence}`;
+    return fenceText(text, plainLanguage(p.lang) || plainLanguage(extension));
   }).join('\n\n');
 }
 
 /**
  * Renders a suggested fix. Only code that replaces the flagged line as is goes in a
  * `suggestion` block, because committing it writes the block verbatim into the file.
+ * Code with hidden characters never does, since a reader cannot see what would be committed.
  * Anything else is shown as text and plain code blocks.
  */
 function formatSuggestedFix(fix: string, file: string): string {
   const parts = splitFix(fix, file);
   const code = parts.filter(p => p.kind === 'code').map(p => p.lines.join('\n'));
   const isShort = code.every(c => c.split('\n').length <= SUGGESTION_MAX_LINES && c.length <= SUGGESTION_MAX_LENGTH);
-  if (parts.length === 1 && code.length === 1 && isShort && !PLACEMENT_COMMENT_RE.test(code[0].split('\n')[0])) {
+  if (parts.length === 1 && code.length === 1 && isShort && !PLACEMENT_COMMENT_RE.test(code[0].split('\n')[0]) && hiddenCharacters(code[0]).length === 0) {
     const fence = dynamicFence(code[0]);
     return `${fence}suggestion\n${code[0]}\n${fence}`;
   }

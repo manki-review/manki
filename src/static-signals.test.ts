@@ -179,6 +179,38 @@ describe('collectStaticSignals', () => {
     expect(allOff.rest.dependencyGraph.diffRange).not.toHaveBeenCalled();
   });
 
+  it('alerts once per file on hidden characters the PR adds in any changed file, whatever the config says', async () => {
+    const raw = [
+      'diff --git a/src/auth.ts b/src/auth.ts', '--- a/src/auth.ts', '+++ b/src/auth.ts', '@@ -1,2 +1,4 @@',
+      ' const zero = "a\u200Bb";', '+const crlf = 1;\r', '+if (isAdmin) { /* \u202E } \u2066 if (true) { */ grant(); }', '+const s = "x\u200By"; // \u2028 ends this comment',
+      'diff --git a/docs/notes.md b/docs/notes.md', '--- a/docs/notes.md', '+++ b/docs/notes.md', '@@ -1 +1,2 @@', ' # Notes', '+Use the\u00ADtool\t.', '',
+    ].join('\n');
+    const fullDiff = parsePRDiff(raw);
+    const allOff = makeOctokit({ main: 'static_analysis:\n  checks: false\n  code_scanning: false\n  dependency_review: false\n' });
+
+    const { signals } = await collectStaticSignals(allOff, { ...request(), diff: filterDiff(fullDiff, ['docs/**']).diff, fullDiff });
+
+    expect(signals).toEqual([
+      {
+        tool: 'Manki', ruleId: 'hidden-characters', severity: 'error', file: 'src/auth.ts', line: 3, source: 'hidden_characters',
+        message: '2 added lines, from this one on, hold invisible or bidirectional control characters (U+202E, U+2066, U+200B, U+2028), so the code may read differently than it runs.',
+      },
+      {
+        tool: 'Manki', ruleId: 'hidden-characters', severity: 'warning', file: 'docs/notes.md', line: 2, source: 'hidden_characters',
+        message: 'This added line holds invisible or bidirectional control characters (U+00AD), so the code may read differently than it runs.',
+      },
+    ]);
+    expect(toolAlertFindings(signals).map(f => [f.severity, f.file, f.toolSource])).toEqual([['blocker', 'src/auth.ts', 'Manki'], ['warning', 'docs/notes.md', 'Manki']]);
+
+    // Many other results never push the alerts out, and the alerts never push 50 other results out.
+    const crowded = makeOctokit({ main: 'static_analysis:\n  checks: false\n  dependency_review: false\n' });
+    crowded.rest.codeScanning.listAlertsForRepo.mockResolvedValue({ data: Array.from({ length: 60 }, (_, i) => ({
+      rule: { id: `rule-${i}`, severity: 'error' }, tool: { name: 'CodeQL' }, most_recent_instance: { location: { path: 'src/auth.ts', start_line: 2 }, message: { text: 'Unsafe' } },
+    })) });
+    const many = (await collectStaticSignals(crowded, { ...request(), diff: fullDiff, fullDiff })).signals;
+    expect([many.length, ...many.slice(0, 3).map(s => s.source)]).toEqual([52, 'hidden_characters', 'hidden_characters', 'code_scanning']);
+  });
+
   it('reads every source with one warning when the base config cannot be fetched', async () => {
     const fetchSpy = jest.spyOn(githubModule, 'fetchConfigFile').mockRejectedValueOnce(new Error('socket hang up'));
     try {

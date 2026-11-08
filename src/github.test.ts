@@ -21,6 +21,23 @@ function findingData(comment: string): Record<string, unknown> {
   return JSON.parse(match![1]);
 }
 
+/** Returns the info string of each fence that opens a code block in `markdown`, per CommonMark, through quote and list markers. */
+function fenceOpeners(markdown: string): string[] {
+  const infos: string[] = [];
+  let open: string | undefined;
+  for (const line of markdown.replace(/<!--[\s\S]*?-->/g, '').split('\n')) {
+    const [, run, info] = line.replace(/^(?:[ \t]*(?:>|[-*+]|\d+[.)])[ \t]?)*/, '').match(/^ {0,3}(`{3,}|~{3,})(.*)$/) ?? [];
+    if (!run) continue;
+    if (!open && (run[0] === '~' || !info.includes('`'))) {
+      open = run;
+      infos.push(info.trim());
+    } else if (open && run[0] === open[0] && run.length >= open.length && !info.trim()) {
+      open = undefined;
+    }
+  }
+  return infos;
+}
+
 function suggestionBlocks(comment: string): string[] {
   return [...comment.matchAll(/^(`{3,})suggestion\n([\s\S]*?)\n\1$/gm)].map(m => m[2]);
 }
@@ -86,6 +103,40 @@ describe('formatFindingComment', () => {
     expect(suggestionBlocks(comment)).toEqual([]);
     if (prose) expect(comment).toContain(`\n\n${prose}`);
     if (code) expect(comment).toContain(code);
+  });
+
+  it('posts no suggestion that a description or fix asks for, nor one whose code holds hidden characters', () => {
+    const spellings = ['suggestion', 'SUGGESTION', ' suggestion', 'suggestion suggestion', 'sugg!estion', '&amp;amp;#115;uggestion', '&#1<b>15;uggestion', '\u000Bsuggestion', '&#12;suggestion', 'py extra', '\u00E9'];
+    const description = ['Looks fine.', ...spellings.map(info => `\`\`\`${info}\ngrant(user);\n\`\`\``), '> ~~~ Suggestion:-0+0\n> grant(user);\n> ~~~',
+      '- ```suggestion\n  grant(user);\n  ```', 'Then more. ```suggestion\ngrant(user);\n```', '``` ts\nlet ok = 1;\n```'].join('\n\n');
+    const described = formatFindingComment({ ...baseFinding, description });
+    // Every fence is Manki's own, with a plain language name at most, and no other run can open one.
+    expect(fenceOpeners(described).filter(info => info)).toEqual(['ts']);
+    expect(described).toContain('```\ngrant(user);\n```');
+    expect(described).toContain('> \\~\\~\\~ Suggestion:-0+0');
+    expect(described).toContain('- \\`\\`\\`suggestion');
+
+    for (const lang of ['suggestion', 'sugg!estion', 'sugg estion']) {
+      const fenced = formatFindingComment({ ...baseFinding, suggestedFix: `Use this:\n\n\`\`\`${lang}\ngrant(user);\n\`\`\`` });
+      expect(fenceOpeners(fenced)).toEqual(['ts']);
+    }
+    expect(fenceOpeners(formatFindingComment({ ...baseFinding, file: 'src/x.suggestion', suggestedFix: 'Use this:\n\n```\ngrant(user);\n```' }))).toEqual(['']);
+
+    // A tilde fence the description leaves open cannot wrap the fix, so the fence lines in the fix's code stay code.
+    const open = formatFindingComment({ ...baseFinding, description: 'Looks fine.\n~~~', suggestedFix: '```\n~~~\n```suggestion\nevil\u202E\n```' });
+    expect(fenceOpeners(open)).toEqual(['ts']);
+    expect(open).toContain('````ts\n~~~\n```suggestion\nevil\u202E\n````');
+    expect(sanitizeMarkdown('a\n~~~~ts\nx ``` ~~~\n```\ny')).toBe('a\n````ts\nx ``` ~~~\n```\ny\n````');
+    // A line that starts with inline triple-backtick code stays prose, with its runs escaped.
+    expect(sanitizeMarkdown('```suggestion``` fences slip through\nmore')).toBe('\\`\\`\\`suggestion\\`\\`\\` fences slip through\nmore');
+
+    for (const hidden of ['if (isAdmin) { /* \u202E } \u2066 if (true) { */ grant(user); }', 'const ok\u200B = check(user);', 'const bell = "\u0007";', 'const { timeout,\u3164 } = query;', 'const data = "a\u{E0101}\uFE01";']) {
+      const comment = formatFindingComment({ ...baseFinding, suggestedFix: hidden });
+      expect(suggestionBlocks(comment)).toEqual([]);
+      expect(comment).toContain(`\`\`\`ts\n${hidden}\n\`\`\``);
+    }
+    expect(suggestionBlocks(formatFindingComment({ ...baseFinding, suggestedFix: 'if (a) {\n\tuse(a);\n}' }))).toEqual(['if (a) {\n\tuse(a);\n}']);
+    expect(suggestionBlocks(formatFindingComment({ ...baseFinding, suggestedFix: 'const ok = "\u2705\uFE0F";' }))).toEqual(['const ok = "\u2705\uFE0F";']);
   });
 
   it('suggests a prose line as is in a prose file', () => {
