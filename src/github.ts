@@ -1612,7 +1612,9 @@ const HOW_REVIEWS_WORK_URL = 'https://github.com/manki-review/manki/blob/main/do
  */
 function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string, serverUrl: string, context?: RoundContext, reviewTimeMs?: number): string {
   const commit = `[\`${commitSha.slice(0, 7)}\`](${repoUrl(serverUrl, owner, repo)}/commit/${commitSha})`;
-  const finders = context ? [context.models.reviewer, context.models.reviewerPair].filter((m): m is string => !!m).map(m => inlineCode(m)) : [];
+  // The routed group says which models read the PR. Without it, the configured finder models did.
+  const routed = context?.routing?.reviewers.map(r => r.model);
+  const finders = [...new Set(routed?.length ? routed : [context?.models.reviewer, context?.models.reviewerPair].filter((m): m is string => !!m))].map(m => inlineCode(m));
   const lines = [
     `- Reviewed ${commit}${context ? `, round ${context.meta.round}` : ''}`,
     ...(context ? [`- ${countOf(context.diff.lines, 'changed line')} read${reviewTimeMs ? ` in ${formatDuration(reviewTimeMs)}` : ''}`] : []),
@@ -1724,9 +1726,9 @@ function formatLead(result: ReviewResult, blocking: Finding[], blockers: Blocker
   return [VERDICT_LINES[result.outcome](result, blockers, posted), threadList, detail && `**${label}:** ${detail}`].filter(Boolean).join('\n\n');
 }
 
-/** Returns `text` for a link label, with the brackets that would end the label escaped. */
+/** Returns `text` for a link label on one line, with the brackets that would end the label escaped. */
 function linkText(text: string): string {
-  return sanitizeMarkdown(text).replace(/[[\]]/g, '\\$&');
+  return sanitizeMarkdown(text).replace(/\s+/g, ' ').trim().replace(/[[\]]/g, '\\$&');
 }
 
 /**

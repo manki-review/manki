@@ -1069,7 +1069,9 @@ describe('postReview with context', () => {
     // The only fold is the footer's, so the stats never show as one.
     expect(body.match(/<details>/g)).toHaveLength(1);
     expect(body.endsWith(TRAILING_MARKERS)).toBe(true);
-    // The footer closes the body as a fold with the commit, round, lines, time and models.
+    // The footer closes the body as a fold with the commit, round, lines, time and the models the routed group ran.
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, routing: { ...ctx.routing!, reviewers: [{ name: 'deep', model: 'gemini-3-pro', provider: 'gemini' }] } }, 60000);
+    expect(mockCreateReview.mock.calls.at(-1)![0].body).toContain('- Found by `gemini-3-pro`, judged by ');
     expect(body.slice(0, -TRAILING_MARKERS.length)).toMatch(/-->\n\n<details>\n<summary>About this review<\/summary>\n\n- Reviewed \[`abc`\]\([^)]+\), round \d+\n- 200 changed lines read in 1m 0s\n- Found by `claude-sonnet-4-20250514`, judged by `[^`]+`\n- \[How Manki reviews\]\([^)]+\)\n\n<\/details>$/);
     expect(body).not.toContain('\u{1F4CA}');
     expect(body).toContain('"reviewer":"claude-sonnet-4-20250514"');
@@ -3845,6 +3847,10 @@ describe('postReview non-blocking findings', () => {
     paginate.mockRejectedValueOnce(new Error('boom'));
     await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...result, findings: [blocking] }, diff);
     expect(updateReview).not.toHaveBeenCalled();
+    // A title over several lines stays one list item.
+    createReview.mockClear();
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...result, findings: [{ ...blocking, title: 'Cache\n\nnever [expires]' }] }, diff);
+    expect(createReview.mock.calls[0][0].body).toContain('- \u{1F6AB} [Cache never \\[expires\\]](https://github.com/owner/repo/blob/abc1234/src/a.ts#L5)');
   });
 
   it('shows a small code fix in the body as a diff against the flagged line, and anything else as before', async () => {
