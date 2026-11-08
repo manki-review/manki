@@ -515,8 +515,9 @@ async function checkAndAutoApprove(
     return true;
   }
 
-  // The latest review covers the head, on the head itself or on a commit with the same change.
-  if (latestBotReview?.body?.includes(HELD_FOR_PERSON_MARKER)) {
+  // The review that covers the head is the latest one, or any on the head, as when a no-verdict round follows it.
+  const held = (r?: ReviewEntry) => !!r?.body?.includes(HELD_FOR_PERSON_MARKER);
+  if (held(latestBotReview) || botReviews.some(r => r.commit_id === pr.head.sha && held(r))) {
     core.info('The review that covers the head holds its approval for a person, such as for unread files — skipping auto-approve');
     return false;
   }

@@ -1419,6 +1419,8 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     skipped: { excluded: run.excludedFiles, binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
+  // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed.
+  if (posted.approvalHeld) await dismissPreviousReviews(octokit, owner, repo, prNumber, posted.id, 'APPROVED', commitSha);
   return posted;
 }
 

@@ -1857,6 +1857,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title } });
+      expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', 'abc123');
       expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, expect.objectContaining({ approval: { commit: 'abc123', held: true } }));
     });
 

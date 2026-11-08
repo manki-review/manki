@@ -859,18 +859,18 @@ describe('checkAndAutoApprove', () => {
       );
     });
 
+    const heldReview = (commit: string) => ({ body: '**Changes requested**\n\n<!-- manki-held-for-person --><!-- manki --><!-- manki-bot -->', state: 'CHANGES_REQUESTED', commit_id: commit, user: { login: 'manki-review[bot]', type: 'Bot' } });
     it.each([
-      ['on the head', 'head-sha'],
-      ['on an earlier commit with the same change, such as before an empty commit', 'old-sha'],
-    ])('skips approval when the review that covers the head holds its approval for a person, %s', async (_label, commit) => {
+      ['on the head', [heldReview('head-sha')]],
+      ['on an earlier commit with the same change, such as before an empty commit', [heldReview('old-sha')]],
+      ['on the head under a later round that gave no verdict', [heldReview('head-sha'), { body: 'Incomplete\n\n<!-- manki-no-verdict --><!-- manki --><!-- manki-bot -->', state: 'COMMENTED', commit_id: 'head-sha', user: { login: 'manki-review[bot]', type: 'Bot' } }]],
+    ])('skips approval when the review that covers the head holds its approval for a person, %s', async (_label, existingReviews) => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const octokit = makeMockOctokit({
         threads: [],
         prHeadSha: 'head-sha',
         createReviewFn: createReviewMock,
-        existingReviews: [
-          { body: '**Changes requested**\n\n<!-- manki-held-for-person --><!-- manki --><!-- manki-bot -->', state: 'CHANGES_REQUESTED', commit_id: commit, user: { login: 'manki-review[bot]', type: 'Bot' } },
-        ],
+        existingReviews,
       });
       const sameChange = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n';
       Object.assign(octokit.rest, { repos: { compareCommits: jest.fn().mockResolvedValue({ data: sameChange }) } });
