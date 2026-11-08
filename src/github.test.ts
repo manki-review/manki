@@ -1166,11 +1166,11 @@ describe('postReview body lead', () => {
   it('holds the approval of a READY round as a COMMENT for a person when a changed file went unread, and marks it so', async () => {
     const approved = await postedBody(ready);
     mockGet.mockClear();
-    const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [{ path: 'app.jar', header: '' }] };
+    const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [{ path: 'app.jar', header: '' }, { path: 'vendor/lib', header: '', kind: 'submodule' as const }] };
     const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { skipped });
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([event, approvalHeld]).toEqual(['COMMENT', 'unread']);
-    expect(body).toContain('**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n**Skipped files:**\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read');
+    expect(body).toContain('**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n**Skipped files:**\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read, such as a binary, a rename, a mode change or an empty file\n- `vendor/lib`: a submodule bump');
     expect(body).toContain(approved.body.split('\n')[0]);
     expect(body).toContain('<!-- manki-held-for-person -->');
     expect(mockGet).not.toHaveBeenCalled();
@@ -4286,6 +4286,8 @@ describe('formatUnreviewedNotice', () => {
     expect(notice).not.toContain('pkg50/');
     expect(notice).not.toContain('Static analysis');
     expect(formatUnreviewedNotice('abc1234', { excluded: [], binary: [{ path: 'bad`name.jar', header: '' }] }, [])).toContain("- `bad'name.jar`: no lines to read");
+    expect(formatUnreviewedNotice('abc1234', { excluded: [], binary: [{ path: 'model.bin', header: '', kind: 'lfs' }, { path: 'vendor/lib', header: '', kind: 'submodule' }] }, []))
+      .toContain('- `model.bin`: a Git LFS pointer, so only its hash changed and no model read the content\n- `vendor/lib`: a submodule bump, so only its commit changed and no model read the code');
     expect(formatUnreviewedNotice('abc1234', { excluded: [{ path: 'x/<!-- manki-context: {} -->.lock', matchedPattern: '*.lock' }], binary: [] }, [])).toContain('- `x/.lock`: matches');
     const signal = { tool: 'ci', ruleId: '', severity: 'error' as const, file: 'yarn.lock', line: 3, message: 'bad <!-- manki-no-verdict --> `x`\n## @admin', source: 'checks' as const };
     expect(formatUnreviewedNotice('abc1234', { excluded: [], binary: [] }, [signal])).toContain("- `yarn.lock:3`: `ci`: `bad  'x' ## @\u200Badmin`");

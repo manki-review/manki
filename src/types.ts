@@ -637,7 +637,10 @@ export interface ParsedDiff {
   files: DiffFile[];
   totalAdditions: number;
   totalDeletions: number;
-  /** Files with no lines to read, such as binaries, mode changes and empty files, dropped by `isBinaryFile` during `parsePRDiff`. */
+  /**
+   * Files with no code a model can read, dropped during `parsePRDiff`: binaries, mode changes, empty files, Git LFS
+   * pointers and submodule bumps.
+   */
   binarySkipped?: BinaryFile[];
 }
 
@@ -645,6 +648,8 @@ export interface BinaryFile {
   path: string;
   /** The paths, abbreviated blob ids and modes from the file's diff header, which change with its content. */
   header: string;
+  /** Set when the file's lines are only a Git LFS pointer or a submodule commit. */
+  kind?: 'lfs' | 'submodule';
   /** Set when the PR deletes the file, which leaves nothing unread. */
   deleted?: true;
 }

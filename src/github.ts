@@ -155,7 +155,7 @@ const MERGEABLE_RETRY_MS = 1500;
 /** Why an approval was posted as a comment instead, or `false` when it was not held. */
 export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread';
 
-/** The changed files no model reads: those `exclude_paths` drops, and those with no lines, such as binaries. */
+/** The changed files no model reads: those `exclude_paths` drops, and those with no code to read, such as binaries. */
 export interface SkippedFiles {
   excluded: RoundDiffExcludedFile[];
   binary: BinaryFile[];
@@ -213,11 +213,17 @@ export function formatUnreviewedNotice(shortSha: string, skipped: SkippedFiles, 
   ].join('\n\n');
 }
 
+const SKIPPED_REASON: Record<NonNullable<BinaryFile['kind']> | 'binary', string> = {
+  binary: 'no lines to read, such as a binary, a rename, a mode change or an empty file',
+  lfs: 'a Git LFS pointer, so only its hash changed and no model read the content',
+  submodule: 'a submodule bump, so only its commit changed and no model read the code',
+};
+
 /** Lists each skipped file and why, or returns an empty string when there is none. */
 function formatSkippedFiles({ excluded, binary }: SkippedFiles): string {
   const lines = [
     ...excluded.map(f => `- ${inline(f.path)}: matches ${inline(f.matchedPattern)} in \`exclude_paths\``),
-    ...binary.map(f => `- ${inline(f.path)}: no lines to read, such as a binary, a rename, a mode change or an empty file`),
+    ...binary.map(f => `- ${inline(f.path)}: ${SKIPPED_REASON[f.kind ?? 'binary']}`),
   ];
   return lines.length > 0 ? `**Skipped files:**\n${cutList(lines)}` : '';
 }
