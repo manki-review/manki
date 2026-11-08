@@ -6,7 +6,7 @@ import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AuthResult, createAuthenticatedOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
 import { changedKeys, loadConfig, resolveFallbackModel, resolveModel, resolvePairModel } from './config';
-import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
+import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow } from './code-window';
@@ -1560,9 +1560,11 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   const triage = result.triage
     ? `trivial=${result.triage.trivial}, subtle=${result.triage.subtle}, paired=${result.triage.paired} (${result.plannerSource ?? 'planner'}${result.sensitivePaths ? ', security-sensitive paths' : ''}${result.ciOrDependencyPaths ? ', CI or dependency paths' : ''})`
     : 'none';
+  const limits = latestLimits(result.llmCalls ?? []);
   const metadata: ReviewMetadata = {
     config: metadataConfig(config, models, triage, result.agentNames, run.memorySkip),
     judgeDecisions,
+    ...(limits.length > 0 && { limits }),
     timing,
   };
 

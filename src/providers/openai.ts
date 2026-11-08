@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { writeFileSync } from 'fs';
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { promisify } from 'util';
 
@@ -8,7 +8,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { buildExitDiagnostics, callWithTimeout, carryRelatedReads, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
-import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
+import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +25,64 @@ export function resolveCodexHome(): string {
     );
   }
   return join(home, '.codex');
+}
+
+/** Names a Codex window by its length: `5-hour`, `weekly`, or its hours or days. */
+function codexWindowName(minutes: number): string {
+  if (minutes === 7 * 24 * 60) return 'weekly';
+  return minutes % (24 * 60) === 0 ? `${minutes / (24 * 60)}-day` : `${Math.round(minutes / 60)}-hour`;
+}
+
+/** Lists the `.jsonl` files under `dir` and its subfolders with their modification times, skipping what cannot be read. */
+function listSessionFiles(dir: string): { path: string; mtimeMs: number }[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) return listSessionFiles(path);
+      return entry.isFile() && entry.name.endsWith('.jsonl') ? [{ path, mtimeMs: statSync(path).mtimeMs }] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Reads the usage limits Codex last recorded in the newest session file under `codexHome` written since `since`, in
+ * milliseconds. Codex records them as `rate_limits` on its `token_count` events. Returns none when nothing was recorded.
+ */
+export function readCodexLimits(codexHome: string, since: number): LimitUsage[] {
+  const newest = listSessionFiles(join(codexHome, 'sessions'))
+    .filter(f => f.mtimeMs >= since)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
+  if (!newest) return [];
+  let lines: string[];
+  try {
+    lines = readFileSync(newest.path, 'utf8').split('\n');
+  } catch {
+    return [];
+  }
+  for (const line of lines.reverse()) {
+    if (!line.includes('"rate_limits"')) continue;
+    let rateLimits: unknown;
+    try {
+      rateLimits = (JSON.parse(line) as { payload?: { rate_limits?: unknown } }).payload?.rate_limits;
+    } catch {
+      continue;
+    }
+    if (!rateLimits || typeof rateLimits !== 'object') continue;
+    const { primary, secondary } = rateLimits as { primary?: unknown; secondary?: unknown };
+    return [primary, secondary].flatMap(w => {
+      const { used_percent: used, window_minutes: minutes, resets_at: resets } = (w ?? {}) as Record<string, unknown>;
+      if (typeof used !== 'number' || !Number.isFinite(used) || typeof minutes !== 'number' || minutes <= 0) return [];
+      return [{
+        account: 'ChatGPT subscription',
+        window: codexWindowName(minutes),
+        usedPercent: Math.round(used),
+        ...(typeof resets === 'number' && Number.isFinite(resets) && { resetsAt: resets }),
+      }];
+    });
+  }
+  return [];
 }
 
 const OPENAI_OAUTH_BOOTSTRAP_HINT =
@@ -282,11 +340,13 @@ export class OpenAIClient implements LLMClient {
     }
     const content = output.trim();
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
+    const limits = readCodexLimits(codexHome, startTime);
     return {
       content,
       latencyMs: Date.now() - startTime,
       model: this.model,
       ...(relatedReads && { relatedReads }),
+      ...(limits.length > 0 && { limits }),
     };
   }
 

@@ -71,7 +71,7 @@ export function buildRoundRecap(recap: {
   };
 }
 
-/** Totals `calls`, per stage and per model, and keeps the calls. */
+/** Totals `calls`, per stage and per model, and keeps the calls without their usage limits. */
 export function buildRoundUsage(calls: LLMCall[]): RoundUsage {
   const groups = (key: (call: LLMCall) => string | undefined): Record<string, RoundUsageStage> => {
     const byKey = new Map<string, LLMCall[]>();
@@ -83,7 +83,7 @@ export function buildRoundUsage(calls: LLMCall[]): RoundUsage {
   };
   return {
     ...summarizeCalls(calls),
-    ...(calls.length > 0 && { perStage: groups(c => c.stage), perModel: groups(c => c.model), llmCalls: calls }),
+    ...(calls.length > 0 && { perStage: groups(c => c.stage), perModel: groups(c => c.model), llmCalls: calls.map(({ limits: _limits, ...call }) => call) }),
   };
 }
 

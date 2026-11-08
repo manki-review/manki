@@ -79,6 +79,7 @@ jest.mock('./providers', () => ({
   hasAnyProviderCredentials: jest.requireActual('./providers').hasAnyProviderCredentials,
   sanitizeLogOutput: jest.requireActual('./providers').sanitizeLogOutput,
   summarizeCalls: jest.requireActual('./providers').summarizeCalls,
+  latestLimits: jest.requireActual('./providers').latestLimits,
   createLLMClient: jest.fn().mockImplementation(() => ({ sendMessage: jest.fn() })),
   parseModelSpec: jest.fn().mockImplementation((m: string) => ({ provider: 'anthropic', model: m })),
   removeSeededAuthFiles: jest.fn(),
@@ -3706,6 +3707,7 @@ describe('runFullReview orchestration', () => {
         stage, attempt: 1, promptDigest, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0, ...extra,
       });
       const hidden = { severity: 'suggestion' as const, title: 'Rename the helper', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['general'], suppressedBy: 'sup-1' };
+      const limit = { account: 'Claude subscription', window: 'weekly', usedPercent: 81 };
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING' as const, summary: 'Paused',
         findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
@@ -3713,7 +3715,7 @@ describe('runFullReview orchestration', () => {
         llmCalls: [
           call('reviewer', 'bbbbbbbbbbbb', { agent: 'general', stepBudget: 15, wrapUpNoted: true, relatedReads: { 'o/r': 3 } }),
           call('reviewer', 'aaaaaaaaaaaa', { agent: 'security', relatedReads: { 'o/r': 1 } }),
-          call('reviewer', 'aaaaaaaaaaaa', { agent: 'general', attempt: 2, failed: true, relatedReads: { 'o/r': 2 } }), call('judge', 'cccccccccccc'),
+          call('reviewer', 'aaaaaaaaaaaa', { agent: 'general', attempt: 2, failed: true, relatedReads: { 'o/r': 2 } }), call('judge', 'cccccccccccc', { limits: [limit] }),
         ],
         relatedRepos: [{ repo: 'o/r', status: 'fetched', durationMs: 900 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }],
         memoryLoaded: { learnings: 4, suppressions: 2 },
@@ -3736,6 +3738,8 @@ describe('runFullReview orchestration', () => {
       expect(rc.meta.needsHuman).toEqual({ cause: 'repeated', blockers: [blocker] });
       expect(rc.meta.promptVersions).toEqual({ reviewer: ['aaaaaaaaaaaa', 'bbbbbbbbbbbb'], judge: ['cccccccccccc'] });
       expect(rc.usage.llmCalls?.[0]).toMatchObject({ stepBudget: 15, wrapUpNoted: true });
+      expect(rc.usage.llmCalls?.[3]).not.toHaveProperty('limits');
+      expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![5]?.limits).toEqual([limit]);
       expect(rc.memory).toMatchObject({
         loaded: { learnings: 4, suppressions: 2 },
         suppressed: [{ title: 'Rename the helper', file: 'src/app.ts', line: 9, severity: 'suggestion', suppressionId: 'sup-1' }],

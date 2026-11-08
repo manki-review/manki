@@ -1,4 +1,4 @@
-import type { LLMCall, UsageSummary } from './providers/types';
+import type { LimitUsage, LLMCall, UsageSummary } from './providers/types';
 
 export const MAX_AGENT_RETRIES = 1;
 
@@ -994,6 +994,8 @@ export interface ReviewMetadata {
     memoryRepo: string;
   };
   judgeDecisions: JudgeDecision[];
+  /** The newest usage reading of each subscription window the round's calls used. */
+  limits?: LimitUsage[];
   timing: {
     parseMs: number;
     reviewMs: number;

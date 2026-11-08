@@ -13,6 +13,8 @@ import type { PreviousFinding } from './recap';
 import { MAX_AGENT_RETRIES, SEVERITY_ORDER } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
+import { latestLimits } from './providers/instrumentation';
+import type { LimitUsage } from './providers/types';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -816,6 +818,32 @@ export async function markProgressCommentSuperseded(
   }
 }
 
+/** Formats `seconds` since the Unix epoch as a UTC minute, such as `2026-11-12 14:00 UTC`. */
+function formatResetTime(seconds: number): string {
+  return `${new Date(seconds * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+function formatLimitWindow(limit: LimitUsage): string {
+  return `${limit.window} ${limit.usedPercent}%${limit.resetsAt != null ? ` (resets ${formatResetTime(limit.resetsAt)})` : ''}`;
+}
+
+const LIMIT_WARNING_THRESHOLDS = [90, 80, 70];
+
+/**
+ * A red box naming every account window at or past 70% used, with the highest of the 70, 80 and 90% marks it reached.
+ * Unset when no window has reached 70%.
+ */
+function formatLimitWarning(limits: readonly LimitUsage[]): string | undefined {
+  const lines = [...limits].sort((a, b) => b.usedPercent - a.usedPercent).flatMap(limit => {
+    const mark = LIMIT_WARNING_THRESHOLDS.find(t => limit.usedPercent >= t);
+    if (mark === undefined) return [];
+    const resets = limit.resetsAt != null ? ` It resets ${formatResetTime(limit.resetsAt)}.` : '';
+    return [`**${limit.account} has used ${limit.usedPercent}% of its ${limit.window} limit**, past the ${mark}% mark.${resets}`];
+  });
+  if (lines.length === 0) return undefined;
+  return `> [!CAUTION]\n${[...lines, 'Once a limit is used up, reviews on that account stop until it resets.'].map(line => `> ${line}`).join('\n>\n')}`;
+}
+
 /**
  * Freeze the progress comment as an audit log with the final dashboard
  * and optional review metadata (config, judge decisions, recap, timing).
@@ -850,6 +878,14 @@ export async function updateProgressComment(
     parts.push(`- Team: ${metadata.config.teamAgents.map(sanitizeMarkdown).join(', ')}`);
     parts.push(`- Memory: ${metadata.config.memoryEnabled ? `enabled (${metadata.config.memoryRepo})` : 'disabled'}`);
     parts.push('');
+
+    if (metadata.limits && metadata.limits.length > 0) {
+      parts.push('**Account limits:**');
+      for (const account of new Set(metadata.limits.map(l => l.account))) {
+        parts.push(`- ${account}: ${metadata.limits.filter(l => l.account === account).map(formatLimitWindow).join(', ')}`);
+      }
+      parts.push('');
+    }
 
     if (metadata.judgeDecisions.length > 0) {
       parts.push('**Judge decisions:**');
@@ -1412,6 +1448,10 @@ export async function postReview(
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
+    }
+    const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
+    if (limitWarning) {
+      head += `\n\n${limitWarning}`;
     }
     const readyReport = formatReadyReport(result);
     if (readyReport) {

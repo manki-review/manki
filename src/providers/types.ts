@@ -23,6 +23,20 @@ export interface LLMResponse {
   toolSteps?: ToolStep[];
   /** Tool calls that read each related repo, by `owner/name`. Unset when none did. */
   relatedReads?: Record<string, number>;
+  /** The subscription usage limits the CLI reported for its account. Unset when it reported none. */
+  limits?: LimitUsage[];
+}
+
+/** How much of one subscription usage window an account has used. */
+export interface LimitUsage {
+  /** The account, named by its subscription, such as `Claude subscription`. */
+  account: string;
+  /** The window, such as `5-hour` or `weekly`. */
+  window: string;
+  /** Share of the window used, from 0 to 100. */
+  usedPercent: number;
+  /** When the window resets, in Unix seconds. */
+  resetsAt?: number;
 }
 
 /**
@@ -118,6 +132,8 @@ export interface LLMCall extends LLMUsage {
   stepBudget?: number;
   /** Set when the call used enough steps that Manki told the model to wrap up. Only a client that reports `toolSteps` sets it. */
   wrapUpNoted?: true;
+  /** The subscription usage limits the call's CLI reported. Left out of the round record. */
+  limits?: LimitUsage[];
 }
 
 /** Totals over a set of `LLMCall`s. */
