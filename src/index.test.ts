@@ -2390,9 +2390,11 @@ describe('runFullReview orchestration', () => {
       { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
       { severity: 'nitpick' as const, originalSeverity: 'warning' as const, reviewerSeverity: 'suggestion' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'], judgeConfidence: 'low' as const },
     ];
+    const unsettledLead = { severity: 'warning' as const, title: 'Token may not read the repo', file: 'src/app.ts', line: 3, description: 'd', reviewers: ['general'], lead: { checked: 'read it', left: 'check the repo' } };
     const allJudged = [
       ...findings,
       { severity: 'ignore' as const, reviewerSeverity: 'nitpick' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'not relevant' },
+      unsettledLead,
     ];
     const rawFindings = [
       ...findings,
@@ -2404,9 +2406,10 @@ describe('runFullReview orchestration', () => {
       findings,
       highlights: [],
       reviewComplete: true,
-      rawFindingCount: 6,
+      rawFindingCount: 7,
       agentNames: ['security', 'general'],
       allJudgedFindings: allJudged,
+      openLeads: [unsettledLead],
       rawFindings,
       verdictReason: 'required_present',
       unpostedPreExisting: [{ severity: 'suggestion', title: 'Old helper name', file: 'src/old.ts', line: 4, description: 'd', reviewers: ['general'], tags: ['pre-existing'] }],
@@ -2447,7 +2450,8 @@ describe('runFullReview orchestration', () => {
 
     expect(statsArg!.meta.round).toBe(1);
 
-    // keptSeverities/droppedSeverities passed to dashboard use original severity for dropped findings
+    // keptSeverities/droppedSeverities passed to dashboard use original severity for dropped findings, and a lead left
+    // unsettled is listed, not dropped.
     const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4];
     expect(dashboardArg?.keptSeverities).toEqual({ blocker: 1, suggestion: 1, nitpick: 1 });
     expect(dashboardArg?.droppedSeverities).toEqual({ nitpick: 1 });

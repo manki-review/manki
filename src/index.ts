@@ -1478,6 +1478,8 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   const keptSeverities: Record<string, number> = {};
   const droppedSeverities: Record<string, number> = {};
   const keptSet = new Set(result.findings);
+  // A lead the tools left unsettled is listed as not finished, not dropped.
+  const listed = new Set(result.openLeads);
   for (const f of result.findings) {
     keptSeverities[f.severity] = (keptSeverities[f.severity] ?? 0) + 1;
   }
@@ -1485,13 +1487,13 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   // index aligns and d.originalSeverity carries the pre-judge severity even
   // when the judge merged or renamed the finding before dropping it.
   allJudgedForDashboard.forEach((f, i) => {
-    if (!keptSet.has(f)) {
+    if (!keptSet.has(f) && !listed.has(f)) {
       const sev = judgeDecisions[i].originalSeverity;
       droppedSeverities[sev] = (droppedSeverities[sev] ?? 0) + 1;
     }
   });
 
-  const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size;
+  const judgeDroppedCount = allJudgedForDashboard.filter(f => !keptSet.has(f) && !listed.has(f)).length;
   const disproved = allJudgedForDashboard.flatMap(({ title, file, line, severity, refutation }) => refutation?.outcome === 'disproved' && severity === 'ignore' ? [{ title, file, line, reason: refutation.reason }] : []);
   const completeDashboard: DashboardData = {
     ...dashboard,
