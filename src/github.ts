@@ -1306,9 +1306,13 @@ export async function postReview(
   const invalidComments: string[] = [];
   const generalFindings: string[] = [];
   const stillOpen: string[] = [];
-  /** The findings posted as threads this round, listed under the verdict, and those among them posted as line comments. */
+  /**
+   * The findings posted as threads this round, listed under the verdict, those among them posted as line comments,
+   * and the file-level comments GitHub refused, which are listed as blockers in the body instead.
+   */
   const threadFindings: Finding[] = [];
   const lineThreads = new Set<Finding>();
+  const refusedThreads = new Set<Finding>();
   /** The findings listed as folds in the review body, under one section per severity. */
   const bodyFindings: Finding[] = [];
   let carriedBlockers = 0;
@@ -1402,7 +1406,7 @@ export async function postReview(
    * `withoutLineThreads` leaves out the line comments, for a review GitHub only takes without them.
    */
   const renderBody = (threadUrls: ReadonlyMap<Finding, string> = new Map(), withoutLineThreads = false): string => {
-    const threads = withoutLineThreads ? threadFindings.filter(f => !lineThreads.has(f)) : threadFindings;
+    const threads = threadFindings.filter(f => !refusedThreads.has(f) && !(withoutLineThreads && lineThreads.has(f)));
     const threadList = threads.map(f => `- ${SEVERITY_EMOJI[f.severity]} [${linkText(f.title)}](${threadUrls.get(f) ?? linkTo(f.file, f.line)}) · ${inlineCode(findingLocation(f))}`).join('\n');
     const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: bodyFindings, hold }, threadList);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
@@ -1459,8 +1463,9 @@ export async function postReview(
   const withoutLineThreads = (): string => highlightCode(renderBody(new Map(), true), codeTokens);
   const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads);
   const { refused, urls: fileThreadUrls } = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
-  // GitHub gives a thread its URL only once it is posted, so the body links each listed thread in an update.
-  // A review posted without its line comments, after GitHub refused their lines, keeps the body it was posted with.
+  for (const f of refused) refusedThreads.add(f);
+  // GitHub gives a thread its URL only once it is posted, so the body links each listed thread in an update, which
+  // also drops a refused file-level comment from the list. A review posted without its line comments keeps its body.
   const postedAsRendered = review.body === truncateBody(body, REVIEW_BODY_BUDGET - record.length);
   const threadUrls = postedAsRendered
     ? new Map([...await fetchThreadUrls(octokit, owner, repo, prNumber, review.id, threadFindings), ...fileThreadUrls])
@@ -1475,7 +1480,7 @@ export async function postReview(
     if (room <= 0) {
       throw new Error(`Could not post blocking findings as threads or fit them in review #${review.id}: ${titles}`);
     }
-    const linked = threadUrls.size > 0 ? highlightCode(renderBody(threadUrls), codeTokens) : review.body;
+    const linked = postedAsRendered ? highlightCode(renderBody(threadUrls), codeTokens) : review.body;
     try {
       await octokit.rest.pulls.updateReview({
         owner,
@@ -1575,7 +1580,7 @@ async function submitReview(
     core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);
 
     const findingSummary = validComments.map(c => `- ${commentHeadline(c.body)} (\`${c.path}:${c.line}\`)`).join('\n');
-    const fallbackBody = fit(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`);
+    const fallbackBody = fit(`${bodyWithoutLineComments()}\n\n**Findings (could not post inline):**\n${findingSummary}`);
 
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,

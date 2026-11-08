@@ -721,6 +721,7 @@ describe('postReview reviewed-commit footer', () => {
 
     const result: ReviewResult = {
       verdict: 'APPROVE',
+      outcome: 'READY',
       summary: 'All good.',
       findings: [{
         severity: 'suggestion',
@@ -743,6 +744,9 @@ describe('postReview reviewed-commit footer', () => {
 
     await postReview(octokit, 'acme', 'widgets', 1, fullSha, result, diff);
     const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
+    // The review GitHub took as a comment has no line comments, so it lists none as a thread.
+    expect(createReviewMock.mock.calls[0][0].body).toContain('- \u2728 [Minor]');
+    expect(fallbackBody).not.toContain('[Minor]');
     expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
     expect(fallbackBody).toContain('**Findings (could not post inline):**\n- \u2728 **Suggestion, not blocking** **Minor** (`src/a.ts:10`)');
   });
@@ -3757,6 +3761,13 @@ describe('postReview fallback paths', () => {
       expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\n<details>\n<summary>About this review')))).toBe(true);
       expect(update.body).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)');
       expect(update.body).toMatch(/- Reviewed \[`sha`\]\([^)]+\)\n[^\n]*\n\n<\/details>\n\n<!-- manki-bot -->/);
+
+      // A refused file-level comment leaves the threads named under the verdict, and the verdict stops counting it.
+      updateReview.mockClear();
+      createReview.mockClear();
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([offLineBlocker]), outcome: 'ADDRESS_FIRST' }, diff);
+      expect(createReview.mock.calls[0][0].body).toContain('- \u{1F6AB} [Refused thread]');
+      expect(updateReview.mock.calls[0][0].body).not.toContain('[Refused thread]');
     });
 
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
