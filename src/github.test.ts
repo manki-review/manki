@@ -3771,6 +3771,7 @@ describe('postReview non-blocking findings', () => {
     file[40] = '  return retry(fn);';
     file[42] = '  const out = `a` + b;';
     file[46] = 'const fence = "```";';
+    file[47] = `const data = '${'x'.repeat(700)}';`;
     const { octokit, createReview } = makeOctokit({ 'src/a.ts': `${file.join('\r\n')}\r\n` });
     const longFix = Array.from({ length: 10 }, (_, i) => `step${i}();`).join('\n');
 
@@ -3781,6 +3782,7 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('nitpick', 'Past the end', 70, { suggestedFix: 'x();' }),
       nonBlocking('nitpick', 'In prose', 45, { suggestedFix: 'Handle the `None` case separately.' }),
       nonBlocking('nitpick', 'Fence in code', 47, { suggestedFix: 'const fence = "~~~";' }),
+      nonBlocking('nitpick', 'Minified', 48, { suggestedFix: 'const data = load();' }),
     ]), diff);
     const body = createReview.mock.calls[0][0].body as string;
     const fold = (title: string) => body.match(new RegExp(`<details>\n<summary>\\u{1F4DD} <b>${title}</b>[\\s\\S]*?\n</details>`, 'u'))![0];
@@ -3793,6 +3795,9 @@ describe('postReview non-blocking findings', () => {
     expect(fold('Too long')).toContain(`**Fix:**\n\n\`\`\`ts\n${longFix}\n\`\`\``);
     expect(fold('Too long')).toContain('https://github.com/owner/repo/blob/abc1234/src/a.ts#L42-L46');
     expect(fold('Past the end')).toContain('**Fix:**\n\n```ts\nx();\n```');
+    // So does one whose flagged line is too long for the body, such as a line of a minified file.
+    expect(fold('Minified')).toContain('**Fix:**\n\n```ts\nconst data = load();\n```');
+    expect(fold('Minified')).not.toContain('x'.repeat(700));
     expect(fold('In prose')).toContain('**Fix:** Handle the `None` case separately.');
     expect(fold('In prose')).toContain('https://github.com/owner/repo/blob/abc1234/src/a.ts#L43-L47');
     // A fence run in the code gets a longer fence around the diff.

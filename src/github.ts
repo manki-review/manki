@@ -1032,9 +1032,12 @@ const WHAT_GOES_WRONG_LABEL = '**What goes wrong:**';
 const WHY_LABEL = '**Why:**';
 const FIX_LABEL = '**Fix:**';
 
+/** The most of a fix the review body shows, so one long line cannot crowd out the rest of the review. */
+const MAX_BODY_FIX_CHARS = 600;
+
 /** Renders a fix for the body: prose after the label, or the label above text and fenced code blocks. */
 function formatBodyFix(fix: string, file: string): string {
-  const parts = splitFix(safeTruncate(fix, 600), file);
+  const parts = splitFix(safeTruncate(fix, MAX_BODY_FIX_CHARS), file);
   if (parts.every(p => p.kind === 'prose')) return `${FIX_LABEL} ${sanitizeMarkdown(parts.map(p => p.lines.join(' ')).join(' '))}`;
   return `${FIX_LABEL}\n\n${renderFixParts(parts, file)}`;
 }
@@ -1085,16 +1088,17 @@ const MAX_DIFF_FIX_LINES = 10;
 
 /**
  * Returns a small code fix as a `diff` block: the flagged line at the reviewed commit, then the code that replaces it.
- * Returns none for a prose fix, a fix that says where its code goes, a fix over `MAX_DIFF_FIX_LINES` changed lines,
- * and a fix whose flagged line was not read.
+ * Returns none for a prose fix, a fix that says where its code goes, a fix whose flagged line was not read, and a diff
+ * over `MAX_DIFF_FIX_LINES` changed lines or `MAX_BODY_FIX_CHARS`, such as one on a minified file.
  */
 function formatFixDiff(finding: Finding, files: ReadonlyMap<string, readonly string[]>): string | undefined {
   const parts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
   const original = finding.line > 0 ? files.get(finding.file)?.[finding.line - 1] : undefined;
   if (parts.length !== 1 || parts[0].kind !== 'code' || original === undefined) return undefined;
   const fix = parts[0].lines;
-  if (fix.length + 1 > MAX_DIFF_FIX_LINES || PLACEMENT_COMMENT_RE.test(fix[0])) return undefined;
-  return `${FIX_LABEL}\n\n${fenceText([`-${original}`, ...fix.map(line => `+${line}`)].join('\n'), 'diff')}`;
+  const diff = [`-${original}`, ...fix.map(line => `+${line}`)].join('\n');
+  if (fix.length + 1 > MAX_DIFF_FIX_LINES || diff.length > MAX_BODY_FIX_CHARS || PLACEMENT_COMMENT_RE.test(fix[0])) return undefined;
+  return `${FIX_LABEL}\n\n${fenceText(diff, 'diff')}`;
 }
 
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
