@@ -126,6 +126,7 @@ jest.mock('./diff', () => {
     compareChanges: jest.requireActual('./diff').compareChanges,
     changeDigest: jest.requireActual('./diff').changeDigest,
     rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,
+    shortenLongLines: jest.requireActual('./diff').shortenLongLines,
   };
 });
 
@@ -2198,12 +2199,15 @@ describe('runFullReview orchestration', () => {
     ['a forced review of 15,000 lines', 15_000, 1, true, undefined],
     ['a forced review of 15,001 lines', 15_001, 1, true, refuseLines],
     ['an automatic review of 8,000 lines', 8_000, 1, false, undefined],
-    ['an automatic review of 2,000,000 characters', 100, 2_000_000 - 200, false, undefined],
-    ['an automatic review of over 2,000,000 characters', 100, 2_000_001, false, offerChars],
-    ['a forced review of over 2,000,000 characters', 100, 2_000_001, true, undefined],
-    ['a forced review of over 4,000,000 characters', 100, 4_000_001, true, refuseChars],
+    ['an automatic review of under 2,000,000 characters', 100, 1_990_000, false, undefined],
+    ['an automatic review of over 2,000,000 characters', 100, 2_010_000, false, offerChars],
+    ['a forced review of over 2,000,000 characters', 100, 2_010_000, true, undefined],
+    ['a forced review of over 4,000,000 characters', 100, 4_010_000, true, refuseChars],
+    ['a review whose characters sit in one long removed line', 100, 0, false, undefined],
   ] as const)('handles %s with the default limits', async (_label, lines, chars, forceReview, notice) => {
-    const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: `+${'x'.repeat(chars)}` }] };
+    // The gate counts a line over the line limit as shortened, so the characters are spread over lines of 1,000.
+    const content = chars > 0 ? Array.from({ length: Math.max(1, chars / 1000) }, () => `+${'x'.repeat(999)}`).join('\n') : `-${'x'.repeat(5_000_000)}`;
+    const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: lines, totalDeletions: 0 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
     const warmupCLI = jest.fn().mockResolvedValue(undefined);

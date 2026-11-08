@@ -12,7 +12,7 @@ import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, 
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
-import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, tagFindingOrigins } from './diff';
+import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
@@ -1642,7 +1642,8 @@ async function runFullReview(
 
     const autoLimit = Math.min(config.auto_review_max_lines ?? config.max_diff_lines, config.max_diff_lines);
     const shortSha = commitSha.slice(0, 7);
-    const charCount = rawDiff.length;
+    // The prompts show a long removed or unchanged line shortened, so the gate counts it the same way.
+    const charCount = rebuildRawDiff({ ...diff, files: diff.files.map(shortenLongLines) }).length;
     if (charCount > MAX_REVIEW_CHARS) {
       core.warning(`Diff too large (${charCount} reviewable characters > ${MAX_REVIEW_CHARS} max)`);
       checkReport = await postTooBigNotice(target, progress, `**Too big to review** at \`${shortSha}\`: this PR has ${charCount} characters of reviewable diff, above the limit of ${MAX_REVIEW_CHARS} that Manki reviews. Split it into smaller PRs to get a review.`, false, recap.priorRounds.at(-1)?.meta.timestamp);
