@@ -1608,8 +1608,8 @@ function sanitizeMarkdown(text: string): string {
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
     .replace(/^\[[^\]]*\]:\s+.*$/gm, '')                             // Link/image definitions
     // A zero-width space keeps GitHub from turning a bare URL into a link.
-    .replace(/\b(https?|ftp):\/\//gi, '$1:\u200B//')
-    .replace(/\bwww\./gi, 'www\u200B.')
+    .replace(/(https?|ftp):\/\//gi, '$1:\u200B//')
+    .replace(/www\./gi, 'www\u200B.')
     // Insert zero-width space after @ to prevent GitHub from resolving mentions.
     // Lookbehind avoids matching email addresses (which have chars before @).
     // Also handles @org/team patterns.

@@ -1364,6 +1364,7 @@ describe('sanitizeMarkdown', () => {
     expect(sanitizeMarkdown('see https://evil.example/login, HTTP://a.example or www.b.example'))
       .toBe('see https:\u200B//evil.example/login, HTTP:\u200B//a.example or www\u200B.b.example');
     expect(sanitizeMarkdown('[docs](https://evil.example) at ftp://c.example')).toBe('docs at ftp:\u200B//c.example');
+    expect(sanitizeMarkdown('_https://d.example_ see1https://e.example _www.f.example')).toBe('_https:\u200B//d.example_ see1https:\u200B//e.example _www\u200B.f.example');
   });
 
   it('does not modify email addresses', () => {
