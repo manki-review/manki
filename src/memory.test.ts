@@ -797,6 +797,14 @@ describe('central memory through the token service', () => {
     }]);
   });
 
+  it('refuses to overwrite a file the token service returned without its text', async () => {
+    const service = mockMemoryService({ 'learnings.yml': '[]\n' });
+    service.stored.set('learnings.yml', { text: undefined as unknown as string, sha: 'sha-unreadable' });
+
+    await expect(writeLearning(centralStore(), makeLearning())).rejects.toThrow('Cannot read learnings.yml to update it');
+    expect(service.requests.map(r => r.endpoint)).toEqual(['/memory/read']);
+  });
+
   it('fails a load the token service refuses', async () => {
     mockMemoryService({}, { status: 403 });
 

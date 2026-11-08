@@ -110,9 +110,9 @@ function repoMemoryStore(octokit: Octokit, memoryRepo: string, folder: string): 
 
 type ServiceFile = { text?: unknown; sha?: unknown } | null | undefined;
 
-/** The file in a `/memory/read` reply, or a missing file for anything malformed. */
+/** The file in a `/memory/read` reply. A file with a sha but no text is one that exists and could not be read. */
 function serviceFile(file: ServiceFile): StoredFile {
-  return typeof file?.text === 'string' && typeof file.sha === 'string' ? { sha: file.sha, text: file.text } : { text: null };
+  return typeof file?.sha === 'string' ? { sha: file.sha, text: typeof file.text === 'string' ? file.text : null } : { text: null };
 }
 
 /** The memory the token service keeps for `owner/repo` in the central memory repository, for the run on `pr`. */
