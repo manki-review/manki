@@ -40,7 +40,10 @@ interface FinderStats {
 }
 
 export interface ReviewStats {
+  /** PRs with at least one round record. Only they count in the statistics. */
   prs: number;
+  /** Merged PRs without a round record, such as one Manki never reviewed. */
+  unreviewed: number;
   roundsPerPr: number[];
   passedFirstRound: number;
   manyRounds: number;
@@ -91,11 +94,16 @@ function finder(stats: ReviewStats, model: string): FinderStats {
 /** Adds up the statistics over `prs`. A finder is keyed by the model it ran on, or by its name in records without one. */
 export function computeStats(prs: PrRecords[]): ReviewStats {
   const stats: ReviewStats = {
-    prs: prs.length, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, severityCounts: {}, findings: 0, onReviewedCode: 0,
+    prs: 0, unreviewed: 0, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, severityCounts: {}, findings: 0, onReviewedCode: 0,
     blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), keptByMany: 0, readerRounds: 0, readerBlockers: 0,
     refutations: new Map(), costPerPr: [], costPerRound: [], followUpRounds: 0, interRoundDiffCutOrUnknown: 0,
   };
   for (const pr of prs) {
+    if (pr.rounds.length === 0) {
+      stats.unreviewed++;
+      continue;
+    }
+    stats.prs++;
     stats.roundsPerPr.push(pr.rounds.length);
     if (pr.rounds[0]?.meta.outcome === 'READY') stats.passedFirstRound++;
     if (pr.rounds.length >= MANY_ROUNDS) stats.manyRounds++;
@@ -123,7 +131,8 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
       for (const [name, count] of Object.entries(round.reviewers?.keptOnlyBy ?? {})) finder(stats, models.get(name) ?? name).keptOnlyBy += count;
       stats.keptByMany += round.reviewers?.keptByMany ?? 0;
       for (const call of round.usage?.llmCalls ?? []) {
-        if (call.stage === 'reviewer') finder(stats, call.model ?? call.agent ?? 'unknown').toolSteps.push(call.toolSteps?.length ?? 0);
+        // A fallback answers on another model, and a failed call names none, so the finder's own model keys the call.
+        if (call.stage === 'reviewer') finder(stats, (call.agent && models.get(call.agent)) || call.model || call.agent || 'unknown').toolSteps.push(call.toolSteps?.length ?? 0);
       }
       if (round.judge?.verdictReason === 'verdict_reader') {
         stats.readerRounds++;
@@ -161,6 +170,9 @@ export function renderStats(stats: ReviewStats): string {
   const lines = [
     `# Review statistics over ${stats.prs} merged PRs and ${stats.rounds} rounds`,
     '',
+    ...(stats.unreviewed > 0
+      ? [`${stats.unreviewed} more merged ${stats.unreviewed === 1 ? 'PR has no round record and is' : 'PRs have no round record and are'} left out.`, '']
+      : []),
     '## Rounds',
     '',
     `- Rounds per PR: ${summary(stats.roundsPerPr)}`,

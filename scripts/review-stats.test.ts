@@ -32,7 +32,14 @@ describe('review stats', () => {
         keptOnlyBy: { Sonnet: 1 },
         keptByMany: 1,
       },
-      usage: { estimatedCostUsd: 0.5, llmCalls: [call('claude-sonnet', 4), call('claude-opus', 10), { ...call('j', 3), stage: 'judge' }] },
+      usage: {
+        estimatedCostUsd: 0.5,
+        llmCalls: [
+          call('claude-sonnet', 4), call('claude-opus', 10), { ...call('j', 3), stage: 'judge' },
+          // A fallback that answered for the Sonnet finder on another model still counts for that finder.
+          { ...call('gpt-5', 2), agent: 'Sonnet', fallback: true },
+        ],
+      },
     });
     const second = makeRoundContext(2, {
       meta: { prNumber: 1, commitSha: 'b', round: 2, timestamp: 't', mankiVersion: '7', outcome: 'READY' },
@@ -68,9 +75,10 @@ describe('review stats', () => {
     }));
     const two = prRecords('o/r', 2, { reviews: [reader, ...later].map((context, i) => review(100 + i, context)), threadComments: [] });
 
-    const stats = computeStats([one, two]);
+    const unreviewed = prRecords('o/r', 3, { reviews: [{ id: 200, body: 'A person\'s review.', user: person }], threadComments: [] });
+    const stats = computeStats([one, two, unreviewed]);
     expect(stats).toMatchObject({
-      prs: 2, roundsPerPr: [2, 5], passedFirstRound: 0, manyRounds: 1, rounds: 7,
+      prs: 2, unreviewed: 1, roundsPerPr: [2, 5], passedFirstRound: 0, manyRounds: 1, rounds: 7,
       severityCounts: { blocker: 1, warning: 1 }, findings: 2, onReviewedCode: 1,
       blockerOutcomes: { fixed: 1, withdrawn: 1, other: 1 },
       keptByMany: 1, readerRounds: 1, readerBlockers: 2,
@@ -80,17 +88,17 @@ describe('review stats', () => {
     });
     expect(Object.fromEntries(stats.refutations)).toEqual({ 'blocker disproved': 1 });
     expect(Object.fromEntries(stats.finders)).toEqual({
-      'claude-sonnet': { rounds: 1, rawFindings: 3, keptOnlyBy: 1, toolSteps: [4] },
+      'claude-sonnet': { rounds: 1, rawFindings: 3, keptOnlyBy: 1, toolSteps: [4, 2] },
       'claude-opus': { rounds: 1, rawFindings: 1, keptOnlyBy: 0, toolSteps: [10] },
     });
 
     const report = renderStats(stats);
-    expect(report).toContain('# Review statistics over 2 merged PRs and 7 rounds');
+    expect(report).toContain('# Review statistics over 2 merged PRs and 7 rounds\n\n1 more merged PR has no round record and is left out.');
     expect(report).toContain('- Rounds per PR: mean 3.5, median 3.5, max 5.0');
     expect(report).toContain('- Needed 5 or more rounds: 50% (1 of 2)');
     expect(report).toContain('| blocker | 1 | 0.14 |');
     expect(report).toContain('- Blocker threads: 3, fixed 1, withdrawn 1, other 1');
-    expect(report).toContain('| claude-sonnet | 1 | 3 | 3.00 | 1 | mean 4.0, median 4.0, max 4.0 |');
+    expect(report).toContain('| claude-sonnet | 1 | 3 | 3.00 | 1 | mean 3.0, median 3.0, max 4.0 |');
     expect(report).toContain('| blocker disproved | 1 |');
     expect(report).toContain('- Follow-up rounds whose inter-round diff was cut or unknown: 40% (2 of 5)');
   });
