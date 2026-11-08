@@ -42,7 +42,7 @@ function citesChangedLine(at: string, diff: ParsedDiff): boolean {
 }
 
 /** Whether `f` sits inside a hunk of `diff`, or cites a line inside one as proof. */
-export function touchesChangedCode(f: Finding, diff: ParsedDiff): boolean {
+function touchesChangedCode(f: Finding, diff: ParsedDiff): boolean {
   const diffFile = f.file ? diff.files.find(df => df.path === f.file) : undefined;
   if (diffFile && f.line > 0 && isLineInDiff(diffFile, f.line)) return true;
   return (f.evidence?.proof ?? []).some(at => citesChangedLine(at, diff));
@@ -53,7 +53,7 @@ export function touchesChangedCode(f: Finding, diff: ParsedDiff): boolean {
  * blocker: the reviewer said the defect exists without this PR and the judge kept that, the finding sits outside every
  * hunk, no line it cites as proof is in the diff, and the PR neither deletes its file nor left it out by `exclude_paths`.
  */
-function preExistingCheck(f: Finding, diff: ParsedDiff, excludedPaths: ReadonlySet<string>): PreExistingCheck | undefined {
+export function preExistingCheck(f: Finding, diff: ParsedDiff, excludedPaths: ReadonlySet<string>): PreExistingCheck | undefined {
   if (!f.preExisting) return undefined;
   if (!f.file || f.line <= 0) return 'no_location';
   if (excludedPaths.has(f.file)) return 'excluded_file';
@@ -1132,6 +1132,7 @@ export async function runReview(
     const judgeInput: JudgeInput = {
       findings: findingsForJudge,
       diff,
+      ...(options.excludedPaths && { excludedPaths: options.excludedPaths }),
       rawDiff,
       memory: memory ?? undefined,
       repoContext,
