@@ -1834,9 +1834,9 @@ function withEarlierLeads(
 ): { current: Finding[]; carried: Finding[] } {
   const inPr = new Set(diff.files.map(f => f.path));
   // Without the change since the last round, no file is known to be unchanged, so nothing carries over.
-  const open = earlier.filter((l, i) => !l.posted && (l.outcome === 'unsettled' || l.outcome === 'not_checked')
-    && round - l.since <= MAX_LEAD_ROUNDS && inPr.has(l.file) && changedSinceLastRound !== undefined && !changedSinceLastRound.includes(l.file)
-    && earlier.findIndex(other => sameLead(other, l)) === i);
+  const candidates = earlier.filter(l => !l.posted && (l.outcome === 'unsettled' || l.outcome === 'not_checked')
+    && round - l.since <= MAX_LEAD_ROUNDS && inPr.has(l.file) && changedSinceLastRound !== undefined && !changedSinceLastRound.includes(l.file));
+  const open = candidates.filter((l, i) => candidates.findIndex(other => sameLead(other, l)) === i);
   const current = findings.map(f => {
     const match = f.lead && open.find(l => sameLead(l, f));
     return match ? { ...f, leadSince: match.since } : f;
@@ -1856,7 +1856,7 @@ function recordLeads(leads: Finding[], listed: Finding[], judged: Finding[], pos
       : !verdict ? 'dropped'
       : verdict.refutation?.outcome === 'disproved' ? 'disproved'
       : verdict.severity === 'ignore' ? 'dropped'
-      : verdict.lead ? 'unsettled' : 'confirmed';
+      : verdict.lead ? (verdict.refutation ? 'unsettled' : 'not_checked') : 'confirmed';
     return {
       title: l.title, file: l.file, line: l.line, severity: l.severity, reviewers: l.reviewers, description: l.description, lead: l.lead!,
       outcome, since: l.leadSince ?? round, ...(posted.some(p => sameLead(p, l)) && { posted: true as const }),

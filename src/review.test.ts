@@ -1995,14 +1995,18 @@ describe('runReview', () => {
     });
 
     it('lists a warning lead without sending it to a judge that has no tools to settle it', async () => {
-      const clients = leadClients([leadOf('warning', 'The token may not read the other repository', 'src/a.ts', 1)], false);
+      const clients = leadClients([
+        leadOf('warning', 'The token may not read the other repository', 'src/a.ts', 1),
+        leadOf('blocker', 'The sum may overflow on large input', 'src/b.ts', 2),
+      ], false);
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings }));
 
       const result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '' });
 
-      expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([]);
+      expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.file)).toEqual(['src/b.ts']);
       expect(result.openLeads?.map(f => f.file)).toEqual(['src/a.ts']);
-      expect(result.leads?.map(l => l.outcome)).toEqual(['not_checked']);
+      // Without tools nothing tried to settle the blocker lead the judge kept, so it is posted as not checked.
+      expect(result.leads?.map(l => [l.file, l.outcome, !!l.posted])).toEqual([['src/a.ts', 'not_checked', false], ['src/b.ts', 'not_checked', true]]);
     });
 
     it('carries over a lead the last round left unsettled, once, with the round it first came up in', async () => {
@@ -2020,6 +2024,7 @@ describe('runReview', () => {
         earlier('The lead has been open for too many rounds', 'src/c.ts', 'warning', 'unsettled', { since: -1 }),
         earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'unsettled'),
       ];
+      last.leads.unshift(earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'confirmed', { posted: true }));
       const clients = leadClients([leadOf('suggestion', 'The helper name may confuse a reader', 'src/d.ts', 7)], true);
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings.map(f => ({ ...f, refutation: refuted('unsettled') })) }));
 

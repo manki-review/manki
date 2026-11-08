@@ -331,7 +331,7 @@ export function buildJudgeSystemPrompt(
 ): string {
   const hasOpenThreads = openThreadsCount > 0;
   const leadRule = toolsSettleLeads
-    ? 'An **Open lead** is a suspicion the reviewer could not finish checking. Mark it `ignore` only when the code shown disproves it. Otherwise grade it like any finding: Manki checks each lead graded `blocker` or `warning` with tools next. A `warning` lead they do not confirm is listed as not finished instead of posted, unless it concerns security.'
+    ? 'An **Open lead** is a suspicion the reviewer could not finish checking. Mark it `ignore` only when the code shown disproves it. Otherwise grade it like any finding: Manki checks every lead you keep with tools next. A lead below `blocker` they do not confirm is listed as not finished instead of posted, unless it concerns security.'
     : 'An **Open lead** is a suspicion the reviewer could not finish checking. Keep it only when the code shown proves it, and grade it like any finding. Otherwise mark it `ignore`.';
   const openBlockers = openBlockerCount === 1
     ? 'One of the Open Review Threads in the user message is an earlier blocker'
