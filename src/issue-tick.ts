@@ -170,7 +170,8 @@ function bodyFinding(body: string, id: string): { title: string; text: string } 
     const end = fold.indexOf('</summary>');
     // The title is the bold text before the line break, and it can hold bold text of its own.
     const title = fold.slice(0, end).match(/<summary>[^<]*<b>(.*)<\/b><br>/)?.[1];
-    return title ? { title: decodeHtml(title), text: fold.slice(end + '</summary>'.length) } : undefined;
+    if (title) return { title: decodeHtml(title), text: fold.slice(end + '</summary>'.length) };
+    // A blocker block can end with its own "How this was checked" fold, which is no finding.
   }
   const start = [...plain.slice(0, anchor).matchAll(BLOCK_HEADER_RE)].pop()?.index;
   if (start === undefined) return undefined;

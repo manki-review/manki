@@ -263,6 +263,16 @@ describe('handleReviewBoxTick', () => {
     expect(jest.mocked(octokit.rest.pulls.updateReview).mock.calls.at(-1)?.[0].body).toMatch(/\r\nIssue #41 created by @bob$/);
   });
 
+  it('files a blocker block that ends with its own checks fold', async () => {
+    const octokit = makeOctokit();
+    const body = `**Blocker** · Correctness\n**Pool leaks**\n**What goes wrong:** It leaks.\n<!-- manki-checks -->\n<details>\n<summary>How this was checked: 2 places read</summary>\n\n- read src/pool.ts:12\n\n</details>\n\n${box('src/pool.ts:12:Pool-leaks')}`;
+
+    await tickReview(octokit, { ...review, body });
+
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls.map(([args]) => args.title)).toEqual(['Pool leaks']);
+    expect(jest.mocked(octokit.rest.pulls.updateReview).mock.calls.at(-1)?.[0].body).toMatch(/\nIssue #12 created by @bob$/);
+  });
+
   it('links the real file of a box whose id encodes it', async () => {
     const octokit = makeOctokit();
     const body = `**Blocker** · Correctness\n**Odd name**\n**What goes wrong:** Odd.\n\n${box('src/a--%3Eb.ts:3:Odd-name')}`;
