@@ -105,6 +105,12 @@ export interface LLMCall extends LLMUsage {
   costUsd: number | null;
   /** Tool steps the call took. Unset when it took none. */
   toolSteps?: ToolStep[];
+  /** The first 12 hex digits of the SHA-256 of the call's system prompt, so calls before and after a prompt change compare. */
+  promptDigest?: string;
+  /** The tool steps the call was given, when it had tools. */
+  stepBudget?: number;
+  /** Set when the call used enough steps that Manki told the model to wrap up. */
+  wrapUpNoted?: true;
 }
 
 /** Totals over a set of `LLMCall`s. */

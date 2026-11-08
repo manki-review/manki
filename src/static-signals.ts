@@ -8,7 +8,7 @@ import { loadStaticAnalysisConfig } from './config';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { resolveInRoot } from './mcp-server';
-import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundStaticAnalysis, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
+import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { hiddenCharacters, safeTruncate } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -91,6 +91,8 @@ export interface StaticAnalysisResult {
  * Returns the CI, code-scanning, dependency-review and analyzer results for the PR head that sit on lines in `diff`.
  * A source the token cannot read, or an analyzer that cannot run, is skipped, so this never throws.
  */
+const SOURCE_ORDER: readonly RoundSignalSourceRun['source'][] = ['checks', 'code_scanning', 'dependency_review'];
+
 export async function collectStaticSignals(
   octokit: Octokit, request: StaticSignalRequest, runtime: StaticAnalysisRuntime = DEFAULT_RUNTIME,
 ): Promise<StaticAnalysisResult> {
@@ -157,6 +159,7 @@ export async function collectStaticSignals(
   const files = new Map(diff.files.map(f => [f.path, f]));
   const allFiles = new Map(fullDiff.files.map(f => [f.path, f]));
   const runs: RoundAnalyzerRun[] = [];
+  const sourceRuns: RoundSignalSourceRun[] = [];
   const collected = await Promise.all(sources.map(async ([source, fetch]) => {
     const analyzer = analyzers.find(a => a === source);
     try {
@@ -170,11 +173,18 @@ export async function collectStaticSignals(
         return file !== undefined && (added ? addedLines(file).has(s.line) : isLineInDiff(file, s.line));
       }).map(s => analyzer ? { ...s, ruleId: cleanMessage(s.ruleId, MAX_NAME_CHARS), message: cleanMessage(s.message) } : s);
       if (analyzer) runs.push({ analyzer, status: 'ran', results: onDiff.length });
+      else sourceRuns.push({ source: source as RoundSignalSourceRun['source'], status: 'ran', results: onDiff.length });
       return onDiff;
     } catch (error) {
-      if (error instanceof AnalyzerSkipped) core.info(`Static analysis: skipping ${source}, ${error.message}`);
-      else logSkippedSource(source, error);
-      if (analyzer) runs.push({ analyzer, status: 'skipped', reason: safeTruncate(error instanceof Error ? error.message : String(error), MAX_MESSAGE_CHARS) });
+      let reason: string;
+      if (error instanceof AnalyzerSkipped) {
+        core.info(`Static analysis: skipping ${source}, ${error.message}`);
+        reason = safeTruncate(error.message, MAX_MESSAGE_CHARS);
+      } else {
+        reason = logSkippedSource(source, error);
+      }
+      if (analyzer) runs.push({ analyzer, status: 'skipped', reason });
+      else sourceRuns.push({ source: source as RoundSignalSourceRun['source'], status: 'skipped', reason });
       return [];
     }
   }));
@@ -185,6 +195,8 @@ export async function collectStaticSignals(
   if (onDiff.length > 0) core.info(`Static analysis: ${onDiff.length} result(s) on lines in the diff`);
   const record: RoundStaticAnalysis = {
     ...(runs.length > 0 && { analyzers: runs.sort((a, b) => ANALYZERS.indexOf(a.analyzer) - ANALYZERS.indexOf(b.analyzer)) }),
+    ...(sourceRuns.length > 0 && { sources: sourceRuns.sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source)) }),
+    ...(hidden.length > 0 && { hiddenCharacters: hidden.length }),
     ...(checksStillPending.length > 0 && { checksStillPending }),
   };
   return { signals: onDiff.slice(0, hidden.length + MAX_SIGNALS), ...(Object.keys(record).length > 0 && { record }) };
@@ -496,13 +508,16 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function logSkippedSource(source: StaticSignalSource, error: unknown): void {
+/** Logs why `source` gave nothing and returns that reason, short enough for the round record. */
+function logSkippedSource(source: StaticSignalSource, error: unknown): string {
   const status = (error as { status?: number })?.status;
   if (status === 403 || status === 404) {
     core.info(`Static analysis: skipping ${source}, the token cannot read it (HTTP ${status})`);
-  } else {
-    core.warning(`Static analysis: skipping ${source}: ${error instanceof Error ? error.message : String(error)}`);
+    return `the token cannot read it (HTTP ${status})`;
   }
+  const message = error instanceof Error ? error.message : String(error);
+  core.warning(`Static analysis: skipping ${source}: ${message}`);
+  return safeTruncate(message, MAX_MESSAGE_CHARS);
 }
 
 function cleanMessage(text: string | null | undefined, maxChars = MAX_MESSAGE_CHARS): string {

@@ -4,7 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 import { BOT_LOGIN, BotIdentity } from './github';
-import type { PrState, RunMode, StateReport } from './types';
+import type { PrState, RunMode, StateReport, TokenServiceCall } from './types';
 import { redactSecretsDeep, registerSecret } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -69,15 +69,38 @@ function tokenServiceUrl(): string {
   return core.getInput('manki_token_url') || 'https://manki-api.dustinface.me/token';
 }
 
+const MAX_CALL_ERROR_CHARS = 200;
+
+/** Every call this run made to the token service, in order, for the round and reply records. */
+const serviceCalls: TokenServiceCall[] = [];
+
+/** Returns the token service calls this run has made so far. */
+export function tokenServiceCalls(): TokenServiceCall[] {
+  return [...serviceCalls];
+}
+
+/** Reads the service's `{ error, request_id }` from a refused call, which names the Worker's log line. */
+async function refusalOf(response: Response): Promise<Pick<TokenServiceCall, 'error' | 'requestId'>> {
+  const body = await response.json().catch(() => null) as { error?: unknown; request_id?: unknown } | null;
+  return {
+    ...(typeof body?.error === 'string' && { error: body.error.slice(0, MAX_CALL_ERROR_CHARS) }),
+    ...(typeof body?.request_id === 'string' && { requestId: body.request_id.slice(0, MAX_CALL_ERROR_CHARS) }),
+  };
+}
+
 /**
  * Posts `body` to the token service at `url` with the workflow's OIDC token, and reads the JSON reply of a 2xx response.
- * The timeout covers the reply too. Returns `null` when the run has no OIDC token.
+ * The timeout covers the reply too. Returns `null` when the run has no OIDC token. Each call is logged under `endpoint`
+ * in `tokenServiceCalls`.
  */
-async function postToTokenService(url: string, body: unknown): Promise<TokenServiceResponse | null> {
+async function postToTokenService(url: string, body: unknown, endpoint: string): Promise<TokenServiceResponse | null> {
+  const start = Date.now();
+  const logCall = (outcome: Omit<TokenServiceCall, 'endpoint' | 'durationMs'>) => serviceCalls.push({ endpoint, ...outcome, durationMs: Date.now() - start });
   let oidcToken: string;
   try {
     oidcToken = await core.getIDToken(OIDC_AUDIENCE);
   } catch {
+    logCall({ error: 'no OIDC token' });
     return null;
   }
   const controller = new AbortController();
@@ -89,7 +112,16 @@ async function postToTokenService(url: string, body: unknown): Promise<TokenServ
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    return response.ok ? { ok: true, status: response.status, data: await response.json() } : { ok: false, status: response.status };
+    if (!response.ok) {
+      logCall({ status: response.status, ...await refusalOf(response) });
+      return { ok: false, status: response.status };
+    }
+    const data: unknown = await response.json();
+    logCall({ status: response.status });
+    return { ok: true, status: response.status, data };
+  } catch (error) {
+    logCall({ error: String(error).slice(0, MAX_CALL_ERROR_CHARS) });
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -97,7 +129,7 @@ async function postToTokenService(url: string, body: unknown): Promise<TokenServ
 
 /** Posts `body` to the token service endpoint `path`, such as `state`, as `postToTokenService` does. */
 export function callTokenService(path: string, body: unknown): Promise<TokenServiceResponse | null> {
-  return postToTokenService(new URL(path, tokenServiceUrl()).href, body);
+  return postToTokenService(new URL(path, tokenServiceUrl()).href, body, path);
 }
 
 /**
@@ -109,7 +141,7 @@ export async function resolveGitHubToken(tokenUrl: string, owner: string, repo: 
   for (let attempt = 1; !response; attempt++) {
     let failure: string;
     try {
-      const reply = await postToTokenService(tokenUrl, { owner, repo });
+      const reply = await postToTokenService(tokenUrl, { owner, repo }, 'token');
       if (!reply) throw new TokenServiceError('no OIDC token, so the workflow needs `id-token: write`');
       if (reply.ok || reply.status < 500) {
         response = reply;

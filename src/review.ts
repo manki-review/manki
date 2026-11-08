@@ -1121,11 +1121,13 @@ export async function runReview(
 
   // Memory suppressions apply after the judge, so the judge's severity and security tag decide what they may hide.
   let suppressionCount = 0;
+  let memorySuppressed: Finding[] = [];
   if (memory?.suppressions && memory.suppressions.length > 0) {
     const { kept, suppressed } = applySuppressions(finalFindings, memory.suppressions);
     if (suppressed.length > 0) core.info(`Suppressed ${suppressed.length} findings by memory after the judge`);
     finalFindings = kept;
     suppressionCount = suppressed.length;
+    memorySuppressed = suppressed;
   }
 
   // Mechanism B: drop low-severity findings on test files starting at round 2.
@@ -1276,6 +1278,8 @@ export async function runReview(
     llmDedupCount,
     ...(duplicateMatches.length > 0 && { duplicateMatches }),
     ...(suppressionCount > 0 && { suppressionCount }),
+    ...(memorySuppressed.length > 0 && { memorySuppressed }),
+    ...(memory && { memoryLoaded: { learnings: memory.learnings.length, suppressions: memory.suppressions.length } }),
     ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
     agentResponseLengths,
     agentDurationMs,

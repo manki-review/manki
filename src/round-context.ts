@@ -5,7 +5,7 @@ import { MANKI_VERSION } from './github';
 import type { MemorySkip } from './memory';
 import { parseModelSpec, summarizeCalls } from './providers';
 import { routingDigest } from './routing';
-import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
+import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   OWN_PROPOSAL_TAG,
@@ -41,6 +41,8 @@ export interface RoundRecordInput {
   /** Why the run may not use memory, when `memoryLoadStatus` is `skipped`. */
   memorySkip?: MemorySkip;
   staticAnalysis?: RoundStaticAnalysis;
+  /** The token service calls the run made before the round posts. */
+  tokenServiceCalls?: TokenServiceCall[];
 }
 
 /** Durations `buildRoundContext` records that only the review stage measures. */
@@ -89,6 +91,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
   const {
     prNumber, commitSha, trigger, options, config, models, plannerEnabled, recap,
     priorRoundCount, maxAutoRounds, diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
+    tokenServiceCalls,
   } = input;
   const { skipCap, forceReview, bypassHint } = options;
   const { plannerDurationMs, judgeDurationMs, wallClockMs } = durations;
@@ -274,6 +277,8 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       cap,
       trigger,
       ...(result.outcome && { outcome: result.outcome }),
+      ...(result.needsHuman && { needsHuman: result.needsHuman }),
+      ...(llmCalls.length > 0 && { promptVersions: promptVersions(llmCalls) }),
       ...(options.draft && { draft: true }),
     },
     config: {
@@ -387,6 +392,12 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     },
     memory: {
       ...(result.suppressionCount != null && result.suppressionCount > 0 && { suppressionsApplied: result.suppressionCount }),
+      ...(result.memoryLoaded && { loaded: result.memoryLoaded }),
+      ...(result.memorySuppressed && result.memorySuppressed.length > 0 && {
+        suppressed: result.memorySuppressed.map(f => ({
+          title: f.title.slice(0, 200), file: f.file, line: f.line, severity: f.severity, suppressionId: f.suppressedBy ?? 'unknown',
+        })),
+      }),
       loadStatus: memoryLoadStatus,
       ...(memorySkip && { skipReason: memorySkip.reason }),
       ...(memoryLoadError && { loadError: memoryLoadError }),
@@ -400,5 +411,15 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     verdict: result.verdict,
     recap: buildRoundRecap(recap),
     ...(staticAnalysis && { staticAnalysis }),
+    ...(tokenServiceCalls && tokenServiceCalls.length > 0 && { tokenService: tokenServiceCalls }),
   };
+}
+
+/** Returns, per stage, the distinct prompt digests of `calls`, sorted. */
+function promptVersions(calls: LLMCall[]): PromptVersions {
+  const byStage = new Map<string, Set<string>>();
+  for (const { stage, promptDigest } of calls) {
+    if (promptDigest) byStage.set(stage, (byStage.get(stage) ?? new Set()).add(promptDigest));
+  }
+  return Object.fromEntries([...byStage].map(([stage, digests]) => [stage, [...digests].sort()]));
 }
