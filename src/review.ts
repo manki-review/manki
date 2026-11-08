@@ -691,6 +691,12 @@ export async function runReview(
   const quotaErrors = new Map<string, QuotaError>();
   // The note each finder's next retry gets: one that names the parse error when its last reply did not parse.
   const retryNotes = new Map<string, string>();
+  // A retry takes the note, so no later call of the finder can carry it again.
+  const takeRetryNote = (name: string): string | undefined => {
+    const note = retryNotes.get(name);
+    retryNotes.delete(name);
+    return note;
+  };
   const recordFailure = (name: string, error: unknown): void => {
     agentFailureReasons.set(name, sanitizeLogOutput(String(((error as Error)?.message ?? error) || 'unknown failure')).slice(0, 500));
     if (error instanceof QuotaError) quotaErrors.set(name, error);
@@ -804,11 +810,12 @@ export async function runReview(
         }
 
         const retryStartTime = Date.now();
+        const retryNote = takeRetryNote(agent.name);
         const retryPassResults = await Promise.allSettled(
           Array.from({ length: passes }, () => {
             const shuffledDiff = shuffleDiffFiles(diff);
             const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-            return runReviewerAgent(finderClients.get(agent.name)!, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent, retryNotes.get(agent.name)));
+            return runReviewerAgent(finderClients.get(agent.name)!, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent, retryNote));
           })
         );
 
@@ -961,7 +968,7 @@ export async function runReview(
 
       const retryPromises = agentsToRetry.map(agent => {
         const startTime = Date.now();
-        return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent, retryNotes.get(agent.name)))
+        return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent, takeRetryNote(agent.name)))
           .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null as unknown }))
           .catch(error => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime, error: error as unknown }));
       });
