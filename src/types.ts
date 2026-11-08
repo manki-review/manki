@@ -1730,6 +1730,8 @@ export interface RoundUsage extends RoundUsageStage {
   perStage?: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
+  /** The newest reading of each subscription usage window the round's calls reported. */
+  limits?: LimitUsage[];
 }
 
 /** Older records hold only some of the fields. */

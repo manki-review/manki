@@ -3,7 +3,7 @@ import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { MANKI_VERSION } from './github';
 import type { MemorySkip } from './memory';
-import { parseModelSpec, summarizeCalls } from './providers';
+import { latestLimits, parseModelSpec, summarizeCalls } from './providers';
 import { routingDigest } from './routing';
 import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRelatedRepo, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall, PRE_EXISTING_TAG, Finding, FindingFingerprintEntry } from './types';
 
@@ -71,7 +71,7 @@ export function buildRoundRecap(recap: {
   };
 }
 
-/** Totals `calls`, per stage and per model, and keeps the calls without their usage limits. */
+/** Totals `calls`, per stage and per model, and keeps the calls. Only the newest reading of each usage limit is kept. */
 export function buildRoundUsage(calls: LLMCall[]): RoundUsage {
   const groups = (key: (call: LLMCall) => string | undefined): Record<string, RoundUsageStage> => {
     const byKey = new Map<string, LLMCall[]>();
@@ -81,9 +81,11 @@ export function buildRoundUsage(calls: LLMCall[]): RoundUsage {
     }
     return Object.fromEntries([...byKey].map(([k, group]) => [k, summarizeCalls(group)]));
   };
+  const limits = latestLimits(calls);
   return {
     ...summarizeCalls(calls),
     ...(calls.length > 0 && { perStage: groups(c => c.stage), perModel: groups(c => c.model), llmCalls: calls.map(({ limits: _limits, ...call }) => call) }),
+    ...(limits.length > 0 && { limits }),
   };
 }
 

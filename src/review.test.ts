@@ -4911,7 +4911,7 @@ describe('recordCalls', () => {
     });
   });
 
-  it('keeps the limits each call reported, the newest reading of each window, and none of them in the round record', async () => {
+  it('keeps the limits each call reported, and the newest reading of each window in the round record', async () => {
     const claude = (usedPercent: number) => ({ account: 'Claude subscription', window: 'weekly', usedPercent });
     const codex = { account: 'ChatGPT subscription', window: 'weekly', usedPercent: 40 };
     const client = { sendMessage: jest.fn()
@@ -4927,6 +4927,8 @@ describe('recordCalls', () => {
     expect(latestLimits(calls)).toEqual([claude(72), { ...claude(20), window: '5-hour' }, codex]);
     expect(latestLimits([])).toEqual([]);
     expect(buildRoundUsage(calls).llmCalls!.some(c => 'limits' in c)).toBe(false);
+    expect(buildRoundUsage(calls).limits).toEqual([claude(72), { ...claude(20), window: '5-hour' }, codex]);
+    expect(buildRoundUsage(calls.slice(3))).not.toHaveProperty('limits');
   });
 });
 

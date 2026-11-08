@@ -132,7 +132,7 @@ export interface LLMCall extends LLMUsage {
   stepBudget?: number;
   /** Set when the call used enough steps that Manki told the model to wrap up. Only a client that reports `toolSteps` sets it. */
   wrapUpNoted?: true;
-  /** The subscription usage limits the call's CLI reported. Left out of the round record. */
+  /** The subscription usage limits the call's CLI reported. The round record keeps only the newest per window, in `RoundUsage.limits`. */
   limits?: LimitUsage[];
 }
 
