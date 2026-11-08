@@ -798,8 +798,8 @@ describe('handleReviewCommentReply', () => {
     ['a "Fixed." on a warning thread', 'Fixed. The guard now runs first.', '14:32:05', 'head', 'not_addressed', false, undefined],
     ['a deferral written during the round', '**Agreed.** Deferring it to the follow-up is fine.', '14:32:05', 'head', 'not_addressed', true, undefined],
     ['a withdrawal written during the round', 'Withdrawn. The caller already checks for null.', '14:32:05', 'head', 'not_addressed', true, undefined],
-    // The round's own "Fixed in" reply already confirmed the fix on this head, so the reply adds nothing.
-    ['a "Fixed." the round already confirmed', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', true, null],
+    // A Manki reply already confirmed the fix on this head, so a maintainer's "Fixed." posts no second one but still resolves the thread.
+    ['a "Fixed." already confirmed on this head', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'addressed', true, null],
   ] as Array<[string, string, string, string, string | undefined, boolean, string | undefined | null]>)('defers to the latest round for %s', async (_case, answer, repliedAt, roundHead, status, blocking, pointer) => {
     const head = 'a'.repeat(40);
     setContext({
@@ -817,7 +817,7 @@ describe('handleReviewCommentReply', () => {
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: answer });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: pointer === null, isBlocking: blocking, findingTitle: 'This', ...(pointer === null && { fixedOn: [head] }) },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: blocking, findingTitle: 'This', ...(pointer === null && { fixedOn: [head] }) },
     ]);
     jest.mocked(state.resolveReviewThread).mockClear();
 
@@ -826,6 +826,7 @@ describe('handleReviewCommentReply', () => {
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
     if (pointer === null) {
       expect(octokit.rest.pulls.createReplyForReviewComment).not.toHaveBeenCalled();
+      expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual([[octokit, 'PRRT_this', 'ADDRESSED']]);
       return;
     }
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
