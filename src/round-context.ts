@@ -421,6 +421,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(staticAnalysis && { staticAnalysis }),
     ...(tokenServiceCalls && tokenServiceCalls.length > 0 && { tokenService: tokenServiceCalls }),
     ...(result.slicing && { slicing: result.slicing }),
+    ...(result.leads && result.leads.length > 0 && { leads: result.leads }),
   };
 }
 

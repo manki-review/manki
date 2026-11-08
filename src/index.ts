@@ -1478,8 +1478,10 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
 
   const allJudgedForDashboard = result.allJudgedFindings || result.findings;
   const rawForLookup = result.rawFindings ?? allJudgedForDashboard;
+  // A lead the tools left unsettled is listed as not finished, neither kept nor dropped.
+  const listed = new Set(result.openLeads);
   const judgeDecisions = allJudgedForDashboard.map(f => {
-    const kept = f.severity !== 'ignore';
+    const kept = f.severity !== 'ignore' && !listed.has(f);
     const originalSeverity = kept
       ? f.severity
       : rawForLookup.find(r => r.title === f.title && r.file === f.file && r.line === f.line)?.severity ?? f.severity;
@@ -1489,6 +1491,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
       reasoning: f.judgeNotes || '',
       confidence: f.judgeConfidence || 'medium',
       kept,
+      ...(listed.has(f) && { listed: true as const }),
       originalSeverity,
     };
   });
@@ -1503,13 +1506,14 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   // index aligns and d.originalSeverity carries the pre-judge severity even
   // when the judge merged or renamed the finding before dropping it.
   allJudgedForDashboard.forEach((f, i) => {
-    if (!keptSet.has(f)) {
+    if (!keptSet.has(f) && !listed.has(f)) {
       const sev = judgeDecisions[i].originalSeverity;
       droppedSeverities[sev] = (droppedSeverities[sev] ?? 0) + 1;
     }
   });
 
-  const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size;
+  // Kept findings are copies of the judged ones, so the count goes by size, less the listed leads among the judged.
+  const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size - allJudgedForDashboard.filter(f => listed.has(f)).length;
   const disproved = allJudgedForDashboard.flatMap(({ title, file, line, severity, refutation }) => refutation?.outcome === 'disproved' && severity === 'ignore' ? [{ title, file, line, reason: refutation.reason }] : []);
   const completeDashboard: DashboardData = {
     ...dashboard,
@@ -1522,7 +1526,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
     droppedSeverities,
     ...(result.suppressionCount && { suppressionCount: result.suppressionCount }),
     ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
-    ...(result.openLeads && { unfinishedChecks: result.openLeads.map(({ title, file, line }) => ({ title, file, line })) }),
+    ...(result.openLeads && { unfinishedChecks: result.openLeads.map(({ title, file, line, leadSince }) => ({ title, file, line, ...(leadSince && { leadSince }) })) }),
     ...(disproved.length > 0 && { disproved }),
     judgeDurationMs: judgeEndTime - reviewEndTime,
   };

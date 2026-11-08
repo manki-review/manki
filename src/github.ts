@@ -656,7 +656,7 @@ export function buildDashboard(data: DashboardData): string {
   if (data.phase === 'complete') {
     const where = (f: { title: string; file: string; line: number }) => `${sanitizeMarkdown(f.title)} (\`${sanitizeFilePath(f.file)}:${f.line}\`)`;
     const disproved = listSection('Disproved by the judge', 'finding', (data.disproved ?? []).map(d => `${where(d)}: ${sanitizeMarkdown(d.reason)}`));
-    const unfinished = listSection('Not finished checking', 'lead', (data.unfinishedChecks ?? []).map(where));
+    const unfinished = listSection('Not finished checking', 'lead', (data.unfinishedChecks ?? []).map(f => `${where(f)}${f.leadSince ? `, open since round ${f.leadSince}` : ''}`));
     sections.push(...[disproved, unfinished].filter((section): section is string => section !== undefined));
   }
 
@@ -849,7 +849,7 @@ export async function updateProgressComment(
     if (metadata.judgeDecisions.length > 0) {
       parts.push('**Judge decisions:**');
       for (const d of metadata.judgeDecisions) {
-        parts.push(`- ${d.kept ? 'Kept' : 'Dropped'}: "${sanitizeMarkdown(d.title)}" (${d.severity}, ${d.confidence} confidence): "${sanitizeMarkdown(d.reasoning)}"`);
+        parts.push(`- ${d.listed ? 'Not finished' : d.kept ? 'Kept' : 'Dropped'}: "${sanitizeMarkdown(d.title)}" (${d.severity}, ${d.confidence} confidence): "${sanitizeMarkdown(d.reasoning)}"`);
       }
       parts.push('');
     }

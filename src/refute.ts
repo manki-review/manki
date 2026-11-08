@@ -148,8 +148,6 @@ function applyRefutation(finding: Finding, refutation: Refutation): Finding {
       ...(tags && { tags }),
     };
   }
-  // An open lead nobody could settle is dropped, since it never was a finding, unless the judge graded it a blocker.
-  if (finding.lead && finding.severity !== 'blocker') return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', 'an open lead nobody could settle') };
   return graded;
 }
 

@@ -108,6 +108,13 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('ignore');
   });
 
+  it('has the judge drop an unproven open lead, unless its tools check the lead next', () => {
+    expect(buildJudgeSystemPrompt(makeConfig(), 5)).toContain('Keep it only when the code shown proves it, and grade it like any finding. Otherwise mark it `ignore`.');
+    const withTools = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true);
+    expect(withTools).toContain('Mark it `ignore` only when the code shown disproves it.');
+    expect(withTools).not.toContain('Keep it only when the code shown proves it');
+  });
+
   it('contains evaluation criteria', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('Accuracy');
