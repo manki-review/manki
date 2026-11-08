@@ -1849,6 +1849,8 @@ const CHECK_PREVIEW_LINES = 5;
 const SHARED_PREVIEW_LINES = 8;
 // A `path:line` or `path:start-end` at the start of a check, with the path in backticks or not.
 const CHECK_LOCATION_RE = /^`?([^\s`:]+)`?:(\d+)(?:-(\d+))?`?(?![\w-])[\s:,;.]*/;
+// A repository path made only of characters that cannot end a Markdown link or start another URL.
+const LINKABLE_PATH_RE = /^[\w@+.-]+(?:\/[\w@+.-]+)*$/;
 
 const REFUTATION_LINE: Record<RefutationOutcome, string> = {
   confirmed: '**Double-checked:** Manki tried to disprove this by reading the code and could not.',
@@ -1878,7 +1880,9 @@ interface Check { text: string; at?: CodeRange; proofOnly?: boolean }
 interface CodeLinks { linkTo: LineLink; lineCounts: ReadonlyMap<string, number> }
 
 function parseCheck(entry: string): Check | undefined {
-  const located = entry.match(CHECK_LOCATION_RE);
+  // The path is model output that PR content can steer, so only a plain repository path becomes a link.
+  const match = entry.match(CHECK_LOCATION_RE);
+  const located = match && LINKABLE_PATH_RE.test(match[1]) && !match[1].split('/').some(segment => segment === '.' || segment === '..') ? match : null;
   const start = located ? Number(located[2]) : 0;
   const end = located?.[3] ? Number(located[3]) : start;
   const rest = oneLine(located && start > 0 && end >= start ? entry.slice(located[0].length) : entry);

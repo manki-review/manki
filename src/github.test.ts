@@ -226,6 +226,12 @@ describe('formatFindingComment', () => {
     // A fold never holds a single line, so a lone check shows open.
     expect(render({ ...baseFinding, evidence: { checks: [], proof: ['src/main.ts:42'] } })).toContain('\n<!-- manki-checks -->\nOn the commented line: Shows the failure.\n');
 
+    // A cited path is model output, so one that could end the link or leave the repository stays plain text.
+    const steered = render({ ...baseFinding, evidence: { checks: ['a)www.evil.com/b.ts:3 is safe', '../../other/repo/blob/main/x.ts:1 is fine'], proof: ['../x.ts:2'] } });
+    expect(steered).not.toMatch(/\]\(https:\/\/github\.com\/o\/r\/blob\/sha\/(?:a\)|\.\.)/);
+    expect(steered).not.toContain('https://www.evil.com');
+    expect(steered).toContain('<summary>How this was checked: 2 other checks</summary>');
+
     // A finding that cites nothing says so, unless a tool reported it or it is an earlier round's.
     const unchecked = '**Not checked against the code.** Nothing was cited to back it.';
     expect(render({ ...baseFinding, evidence: { checks: [], proof: [] } })).toContain(unchecked);
