@@ -17,15 +17,17 @@ const FINDING_TITLE_RE = /\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(
 /** The hidden finding data in a thread comment. Comments without it use the older `**Severity**: title` layout. */
 const FINDING_DATA_RE = /<!-- manki-finding: (.+?) -->/;
 
-export function parseFindingData(body: string): { title?: string; fix?: string; tags?: string[]; flaggedBy?: string[] } | undefined {
+export function parseFindingData(body: string): { title?: string; fix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number } | undefined {
   const match = body.match(FINDING_DATA_RE);
   if (!match) return undefined;
   try {
     const parsed: unknown = JSON.parse(match[1]);
     if (!parsed || typeof parsed !== 'object') return undefined;
-    const { title, fix, tags, flaggedBy } = parsed as { title?: unknown; fix?: unknown; tags?: unknown; flaggedBy?: unknown };
+    const { title, fix, tags, flaggedBy, file, line } = parsed as { title?: unknown; fix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown };
     return {
       ...(typeof title === 'string' && { title }),
+      ...(typeof file === 'string' && file && { file }),
+      ...(typeof line === 'number' && Number.isSafeInteger(line) && line > 0 && { line }),
       ...(typeof fix === 'string' && fix.length > 0 && { fix }),
       ...(isStringArray(tags) && { tags }),
       ...(isStringArray(flaggedBy) && { flaggedBy }),
@@ -270,6 +272,12 @@ interface PreviousFinding extends FindingMetadata {
   markerSlug?: string;
   /** Line the thread was posted on. Stays set after the thread goes outdated, unlike `line`. */
   originalLine?: number;
+  /**
+   * Line the finding named when it was posted, from the thread's hidden finding data. A finding on a line outside the
+   * diff is posted on a fallback line, so only this line matches it to its round record. `currentFindingLine` gives
+   * where it sits now.
+   */
+  findingLine?: number;
   authorReplyText?: string;
   /** Login of the latest non-bot replier on this thread, if any. */
   authorReplyLogin?: string;
@@ -300,6 +308,16 @@ interface PreviousFinding extends FindingMetadata {
  * other than the PR author with write access. `resolved-thread` suppressions are
  * unaffected because resolving a thread already requires repository write access.
  */
+/**
+ * Returns the line a thread's finding sits on now. GitHub moves `line` with the code, so it is the answer unless the
+ * thread was posted on a fallback line, in which case the gap to the finding's own line is added. An outdated thread
+ * keeps `line` 0.
+ */
+function currentFindingLine(t: { line: number; originalLine?: number; findingLine?: number }): number {
+  if (!t.line || !t.findingLine || !t.originalLine || t.findingLine === t.originalLine) return t.line;
+  return t.line + (t.findingLine - t.originalLine);
+}
+
 function collectInPrSuppressions(
   previousFindings: PreviousFinding[],
   prAuthorLogin?: string,
@@ -310,8 +328,9 @@ function collectInPrSuppressions(
     if (!pf.line || pf.fixed) continue;
     const reason = inPrSuppressionReasonFor(pf, prAuthorLogin);
     if (!reason) continue;
-    const lineStart = pf.lineStart ?? pf.line;
-    const lineEnd = pf.line;
+    const moved = currentFindingLine(pf);
+    const lineStart = moved === pf.line ? pf.lineStart ?? pf.line : moved;
+    const lineEnd = moved;
     const entry: InPrSuppression = {
       fingerprint: fingerprintFinding(pf.title, pf.file, lineStart, lineEnd),
       reason,
@@ -479,6 +498,7 @@ async function fetchRecapState(
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
       ...(t.originalLine && { originalLine: t.originalLine }),
+      ...(t.findingLine && { findingLine: t.findingLine }),
       authorReplyText: t.authorReplyText,
       authorReplyLogin: t.authorReplyLogin,
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
@@ -661,6 +681,7 @@ interface ReviewThread extends FindingMetadata {
   threadUrl: string;
   markerSlug?: string;
   originalLine?: number;
+  findingLine?: number;
   isBotThread: boolean;
   isResolved: boolean;
   resolvedByHuman: boolean;
@@ -832,7 +853,9 @@ async function fetchReviewThreads(
       const markerSlug = firstComment?.body?.match(new RegExp(`<!-- manki:(?:${SEVERITY_TOKEN_PATTERN}):(.+?) -->`))?.[1];
 
       const body = firstComment?.body ?? '';
-      const findingTitle = parseFindingData(body)?.title?.trim() || matchTitleLine(body)?.[1]?.trim() || '';
+      const data = isBotThread ? parseFindingData(body) : undefined;
+      const findingTitle = data?.title?.trim() || matchTitleLine(body)?.[1]?.trim() || '';
+      const findingLine = data?.file === thread.path ? data.line : undefined;
 
       const { description, suggestedFix } = isBotThread && firstComment?.body
         ? parseFindingFromComment(firstComment.body)
@@ -861,6 +884,7 @@ async function fetchReviewThreads(
         line,
         lineStart,
         ...(thread.originalLine && { originalLine: thread.originalLine }),
+        ...(findingLine && { findingLine }),
         ...(markerSlug && { markerSlug }),
         severity,
         authorReplyText,
@@ -940,7 +964,7 @@ function mayWaive(prev: PreviousFinding, finding: Finding): boolean {
 /** Returns `finding` with a note for the judge. A finding next to a fixed one can be a new defect, so dedup never drops it. */
 function resemblingFixed(finding: Finding, fixed: PreviousFinding): Finding {
   core.info(`Dedup: "${finding.title}" resembles fixed "${fixed.title}", sending it to the judge`);
-  return finding.resemblesFixed ? finding : { ...finding, resemblesFixed: { title: fixed.title, file: fixed.file, line: fixed.line } };
+  return finding.resemblesFixed ? finding : { ...finding, resemblesFixed: { title: fixed.title, file: fixed.file, line: currentFindingLine(fixed) } };
 }
 
 /**
@@ -990,7 +1014,7 @@ function matchPreviousType(finding: Finding, previous: PreviousFinding): Duplica
 
   // Relax line proximity when word overlap is strong (>= 70%)
   const maxLineDelta = wordOverlapRatio(finding.title, previous.title) >= 0.7 ? 20 : 5;
-  if (Math.abs(finding.line - previous.line) > maxLineDelta) return null;
+  if (Math.abs(finding.line - currentFindingLine(previous)) > maxLineDelta) return null;
 
   return matchType;
 }
@@ -1064,4 +1088,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { currentFindingLine, DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
