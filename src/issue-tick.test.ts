@@ -239,4 +239,29 @@ describe('handleReviewBoxTick', () => {
     });
     expect(jest.mocked(failing.rest.pulls.updateReview).mock.calls[0][0].body).toContain('- [ ] Create an issue for this <!-- manki-box:issue:src/menu.html:3:Close-the-menu -->\r\n');
   });
+
+  it('files a blocker block in a CRLF body, and goes on after a failed report of a failed filing', async () => {
+    const block = (title: string, id: string) =>
+      `**Blocker** · Correctness\n**${title}**\n**What goes wrong:** ${title}.\n\n${box(id)}`;
+    // A file name with `-->` is encoded in the id, so its permalink names the real file.
+    const crlf = ['**Blockers in files outside this diff:**', block('First leak', 'src/a--%3Eb.ts:3:First-leak'), block('Second leak', 'src/c.ts:4:Second-leak')]
+      .join('\n\n').replace(/\n/g, '\r\n');
+    const octokit = makeOctokit();
+    octokit.rest.issues.create.mockRejectedValueOnce(new Error('rate limited')).mockResolvedValueOnce({ data: { number: 41 } });
+    octokit.rest.issues.createComment.mockRejectedValueOnce(new Error('comment refused'));
+
+    await tickReview(octokit, { ...review, body: crlf });
+
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls.map(([args]) => args.title)).toEqual(['First leak', 'Second leak']);
+    expect(jest.mocked(octokit.rest.pulls.updateReview).mock.calls.at(-1)?.[0].body).toMatch(/\r\nIssue #41 created by @bob$/);
+  });
+
+  it('links the real file of a box whose id encodes it', async () => {
+    const octokit = makeOctokit();
+    const body = `**Blocker** · Correctness\n**Odd name**\n**What goes wrong:** Odd.\n\n${box('src/a--%3Eb.ts:3:Odd-name')}`;
+
+    await tickReview(octokit, { ...review, body });
+
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain('[`src/a-->b.ts:3`](https://github.com/o/r/blob/abc123/src/a-->b.ts#L3)');
+  });
 });

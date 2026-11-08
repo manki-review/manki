@@ -2133,7 +2133,9 @@ function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: 
  */
 function issueBoxFor(finding: Finding): string | undefined {
   if (finding.tags?.includes(SECURITY_TAG) || finding.category === 'security' || finding.reviewers.includes(VERDICT_READER_NAME)) return undefined;
-  return issueBox(`${finding.file}:${finding.line}:${titleToSlug(finding.title)}`);
+  // A file name with `-->` or a line break would end the hidden comment that carries the id, so those are encoded.
+  const file = finding.file.replace(/[%<>\r\n]/g, encodeURIComponent);
+  return issueBox(`${file}:${finding.line}:${titleToSlug(finding.title)}`);
 }
 
 function formatFindingComment(finding: Finding, links: CodeLinks): string {

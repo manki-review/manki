@@ -311,6 +311,8 @@ describe('formatFindingComment', () => {
     // The verdict reader cannot mark a security defect, so its blockers get no box either.
     expect(render({ ...baseFinding, reviewers: ['Verdict reader'] })).not.toContain('manki-box:issue');
     expect(render({ ...baseFinding, category: 'security' })).not.toContain('manki-box:issue');
+    // A file name that would end the hidden comment is encoded in the id.
+    expect(render({ ...baseFinding, file: 'src/a-->b.ts' })).toContain('<!-- manki-box:issue:src/a--%3Eb.ts:42:Null-pointer-dereference -->');
   });
 
   it('keeps the finding data in a hidden comment, never in visible text', () => {

@@ -179,7 +179,7 @@ function bodyFinding(body: string, id: string): { title: string; text: string; s
   const start = [...plain.slice(0, box).matchAll(BLOCK_HEADER_RE)].pop()?.index;
   if (start === undefined) return undefined;
   const block = body.slice(start, box);
-  const [header, titleLine] = block.split('\n');
+  const [header, titleLine] = block.split(/\r?\n/);
   const title = titleLine?.match(/^\*\*(.+)\*\*$/)?.[1];
   return title ? { title, text: block, security: / · Security\b/.test(header) } : undefined;
 }
@@ -204,7 +204,8 @@ export async function handleReviewBoxTick(
       continue;
     }
     // The id names the finding's file and line, which a listed finding has no hidden data for.
-    const [, file = '', line = '0'] = id.match(/^(.*):(\d+):[^:]*$/) ?? [];
+    const [, encodedFile = '', line = '0'] = id.match(/^(.*):(\d+):[^:]*$/) ?? [];
+    const file = decodeURIComponent(encodedFile);
     let filed: { number: number; existing: boolean } | undefined;
     try {
       filed = await fileOrLink(octokit, bot, owner, repo, prNumber, id, {
@@ -213,11 +214,11 @@ export async function handleReviewBoxTick(
       core.info(`${filed.existing ? 'Linked' : 'Filed'} issue #${filed.number} for finding ${id}`);
     } catch (error) {
       core.warning(`Failed to file an issue for finding ${id}: ${error}`);
-      // The review has no thread to reply in, so the PR gets the reason.
+      // The review has no thread to reply in, so the PR gets the reason. The box is cleared for a retry either way.
       await octokit.rest.issues.createComment({
         owner, repo, issue_number: prNumber,
         body: withMarkers(`Could not file an issue for **${sanitizeMarkdown(finding.title)}**: ${String(error).slice(0, 200)}. Tick its box in the review again to retry.`, BOT_MARKER),
-      });
+      }).catch((reportError: unknown) => core.warning(`Failed to report the failed filing of ${id}: ${reportError}`));
     }
     // Each box is saved as soon as it is handled, on the review as it is now, so a tick made meanwhile stays.
     const { data: current } = await octokit.rest.pulls.getReview({ owner, repo, pull_number: prNumber, review_id: review.id });
