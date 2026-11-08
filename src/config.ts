@@ -49,7 +49,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   drafts: 'skip',
   review_passes: 1,
   convergence: {
-    max_auto_rounds: 5,
+    max_auto_rounds: 3,
     test_path_patterns: ['**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**'],
     suppress_resolved_threads: true,
   },

@@ -87,7 +87,7 @@ export const SETTINGS: Setting[] = [
   { key: 'reviewers[].name', type: 'string', default: 'required', description: 'The check\'s name.' },
   { key: 'reviewers[].focus', type: 'string', default: 'required', description: 'What the finders check for.' },
   { key: 'convergence', type: 'map', description: 'How rounds end. See [Severity tiers](' + REVIEWS + '#severity-tiers).' },
-  { key: 'convergence.max_auto_rounds', type: 'non-negative integer', description: 'Automatic rounds since Manki last approved. After the last one, automatic review pauses until `@manki review`. `0` turns the cap off.' },
+  { key: 'convergence.max_auto_rounds', type: 'non-negative integer', description: 'Automatic rounds since Manki last approved. After the last one, automatic review pauses until `@manki review`, and the notice asks the author to reconsider the approach. `0` turns the cap off.' },
   { key: 'convergence.test_path_patterns', type: 'list of globs', description: 'Test files. From the second round, suggestions and nitpicks on them are dropped.' },
   { key: 'convergence.suppress_resolved_threads', type: 'boolean', description: 'A finding whose thread a person resolved, or Manki resolved as addressed, suppresses matching findings in later rounds.' },
   { key: 'memory', type: 'map', description: 'Review memory. See [Review memory](memory.md).' },

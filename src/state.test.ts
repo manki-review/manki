@@ -786,7 +786,7 @@ describe('checkAndAutoApprove', () => {
     notConverging.meta.outcome = 'NOT_CONVERGING';
     it.each([
       ['the last round did not converge', DEFAULT_CONFIG, [formatReviewRecord(notConverging)], 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick **Force review** in the settings block'],
-      ['the round cap is reached', DEFAULT_CONFIG, [1, 2, 3, 4, 5].map(n => formatReviewRecord(makeRoundContext(n))), 'Manki has reviewed new changes in 5/5 rounds on this PR. Automatic review is paused.'],
+      ['the round cap is reached', DEFAULT_CONFIG, [1, 2, 3].map(n => formatReviewRecord(makeRoundContext(n))), 'Manki has reviewed new changes in 3/3 rounds on this PR. Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes. Automatic review is paused.'],
       ['automatic review is off', AUTO_REVIEW_OFF, [], 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.'],
     ])('posts one withheld notice with the reason when %s', async (_label, config, roundBodies, reason) => {
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
@@ -1195,10 +1195,10 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
 
 describe('pauseState', () => {
   it('leaves draft rounds out of the round cap', () => {
-    const rounds = [1, 2, 3, 4, 5].map(n => makeRoundContext(n));
-    expect(pauseState({ priorRounds: rounds }, DEFAULT_CONFIG)).toMatchObject({ capRounds: 5, paused: true });
+    const rounds = [1, 2, 3, 4].map(n => makeRoundContext(n));
+    expect(pauseState({ priorRounds: rounds }, DEFAULT_CONFIG)).toMatchObject({ capRounds: 4, paused: true });
     rounds[1].meta.draft = true;
     rounds[3].meta.draft = true;
-    expect(pauseState({ priorRounds: rounds }, DEFAULT_CONFIG)).toEqual({ capRounds: 3, capReached: false, paused: false });
+    expect(pauseState({ priorRounds: rounds }, DEFAULT_CONFIG)).toEqual({ capRounds: 2, capReached: false, paused: false });
   });
 });
