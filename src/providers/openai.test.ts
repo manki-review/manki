@@ -424,8 +424,12 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     const { stdin, instructions } = setupSpawnMock('[]\n');
     const savedRunnerTemp = process.env.RUNNER_TEMP;
     const savedApiUrl = process.env.GITHUB_API_URL;
+    const savedProxy = process.env.HTTPS_PROXY;
+    const savedSecret = process.env.OPENAI_API_KEY;
     process.env.RUNNER_TEMP = '/runner/temp';
     process.env.GITHUB_API_URL = 'https://ghe.example/api/v3';
+    process.env.HTTPS_PROXY = 'http://proxy:3128';
+    process.env.OPENAI_API_KEY = 'sk-not-for-the-server';
     try {
       const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
       expect(client.repoTools).toBe(true);
@@ -438,6 +442,10 @@ describe('sendViaOAuth (Codex CLI path)', () => {
       else process.env.RUNNER_TEMP = savedRunnerTemp;
       if (savedApiUrl === undefined) delete process.env.GITHUB_API_URL;
       else process.env.GITHUB_API_URL = savedApiUrl;
+      if (savedProxy === undefined) delete process.env.HTTPS_PROXY;
+      else process.env.HTTPS_PROXY = savedProxy;
+      if (savedSecret === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = savedSecret;
     }
 
     const [withTools, without] = mockSpawn.mock.calls.map(call => call[1] as string[]);
@@ -445,9 +453,15 @@ describe('sendViaOAuth (Codex CLI path)', () => {
       `-c mcp_servers.manki.command=${JSON.stringify(process.execPath)}`,
       `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15'])}`,
       '-c mcp_servers.manki.default_tools_approval_mode="approve"',
-      '-c mcp_servers.manki.env.RUNNER_TEMP="/runner/temp"',
-      '-c mcp_servers.manki.env.GITHUB_API_URL="https://ghe.example/api/v3"',
     ].join(' '));
+    // The server gets the CLI's own environment, with the proxy settings `repo_info` needs, and no secret.
+    const serverEnv = withTools.filter(arg => arg.startsWith('mcp_servers.manki.env.'));
+    expect(serverEnv).toEqual(expect.arrayContaining([
+      'mcp_servers.manki.env.RUNNER_TEMP="/runner/temp"',
+      'mcp_servers.manki.env.HTTPS_PROXY="http://proxy:3128"',
+      'mcp_servers.manki.env.GITHUB_API_URL="https://ghe.example/api/v3"',
+    ]));
+    expect(serverEnv.some(arg => /TOKEN|_KEY/.test(arg))).toBe(false);
     expect(withTools).toContain('features.shell_tool=false');
     expect(without.join(' ')).not.toContain('mcp_servers');
     expect(instructions[0]).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\. `read_file`, `grep` and `glob` read files/);

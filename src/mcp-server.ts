@@ -326,13 +326,20 @@ async function askRepoInfo(repo: string, apiUrl: string): Promise<RepoInfoAnswer
   return { text, isError: false, transient: false };
 }
 
-/** The folder in the runner temp folder where every tool server of this run keeps its `repo_info` answers. */
+/**
+ * The folder in the runner temp folder where every tool server of this run keeps its `repo_info` answers, or
+ * `undefined` when there is none to use, and the answers then stay in this process.
+ */
 function repoInfoCacheDir(): string | undefined {
   const runnerTemp = process.env.RUNNER_TEMP;
   if (!runnerTemp) return undefined;
-  const dir = join(realpathSync(runnerTemp), 'manki-repo-info');
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return writableOnlyByUs(dir) ? dir : undefined;
+  try {
+    const dir = join(realpathSync(runnerTemp), 'manki-repo-info');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return writableOnlyByUs(dir) ? dir : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const repoInfoAnswers = new Map<string, RepoInfoAnswer & { at: number }>();
@@ -359,10 +366,17 @@ export async function repoInfo(repo: string, apiUrl = process.env.GITHUB_API_URL
   const file = dir && join(dir, `${createHash('sha256').update(`${apiUrl}\n${key}`).digest('hex')}.json`);
   const fresh = (answer?: RepoInfoAnswer & { at: number }) => answer && (!answer.transient || Date.now() - answer.at < REPO_INFO_RETRY_MS) ? answer : undefined;
   let answer = fresh(repoInfoAnswers.get(key));
-  if (!answer && file && existsSync(file)) answer = fresh(keptAnswer(safeJsonParse(readFileSync(file, 'utf8'))));
+  // The kept answers are only a saving, so a cache file that cannot be read or written is skipped.
+  if (!answer && file) {
+    try {
+      if (existsSync(file)) answer = fresh(keptAnswer(safeJsonParse(readFileSync(file, 'utf8'))));
+    } catch { /* asked again below */ }
+  }
   if (!answer) {
     answer = { ...await askRepoInfo(repo, apiUrl), at: Date.now() };
-    if (file) writeFileSync(file, JSON.stringify(answer), { mode: 0o600 });
+    try {
+      if (file) writeFileSync(file, JSON.stringify(answer), { mode: 0o600 });
+    } catch { /* kept in this process only */ }
   }
   repoInfoAnswers.set(key, answer);
   if (answer.isError) throw new Error(answer.text);

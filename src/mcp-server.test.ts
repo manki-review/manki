@@ -136,11 +136,17 @@ describe('Manki tool server', () => {
       }
       expect(fetchMock).toHaveBeenCalledTimes(6);
 
+      // A runner temp folder that cannot hold the cache only costs the saving.
+      process.env.RUNNER_TEMP = join(tmpdir(), 'manki-missing-runner-temp', 'nested');
+      fetchMock.mockResolvedValueOnce(Response.json({ visibility: 'public', archived: false, fork: false, default_branch: 'main' }));
+      expect(await call(client, 'repo_info', { repo: 'acme/uncached' })).toEqual({ text: expect.stringContaining('visibility: public'), isError: false });
+      expect(fetchMock).toHaveBeenCalledTimes(7);
+
       // GitHub Enterprise Server answers at the API URL of its runner.
       process.env.GITHUB_API_URL = 'https://ghe.example/api/v3';
       fetchMock.mockResolvedValueOnce(Response.json({ visibility: 'internal', archived: false, fork: false, default_branch: 'main' }));
       expect((await call(client, 'repo_info', { repo: 'acme/tools' })).text).toContain('visibility: internal');
-      expect(fetchMock.mock.calls[6][0]).toBe('https://ghe.example/api/v3/repos/acme/tools');
+      expect(fetchMock.mock.calls[7][0]).toBe('https://ghe.example/api/v3/repos/acme/tools');
     } finally {
       delete process.env.GITHUB_API_URL;
       if (savedRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
