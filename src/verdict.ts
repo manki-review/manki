@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 
 import { LLMClient } from './providers';
 import { extractJSON } from './json';
+import { parseEvidence } from './review';
 import { Finding, TestGuide, VerdictReport } from './types';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
@@ -25,7 +26,7 @@ ${UNTRUSTED_CONTENT_RULE}
 
 CI builds the change and runs its tests separately, so whether it compiles and its tests pass is not yours to establish. Never withhold READY for want of that evidence. A defect you can see by reading the code is still a blocker. A commit message is never a blocker.
 
-Return READY only if you would merge it as it stands. When you return ADDRESS_FIRST, every blocker must be specific enough for someone else to fix without asking you what you meant. Name as a blocker only what you would refuse to merge with, and put everything else in the summary as a suggestion. Write each blocker as \`path/to/file.ext:LINE: <the defect in one plain sentence>. <what goes wrong in practice and the change that fixes it>\`, with the path as shown in the diff and the line number on the new side of the diff. For example: \`src/sync.ts:42: Startup aborts for a client synced from a checkpoint. With no filter headers the bound falls back to 0, and truncating storage above 0 fails, so handle the missing header separately.\`
+Return READY only if you would merge it as it stands. When you return ADDRESS_FIRST, every blocker must be specific enough for someone else to fix without asking you what you meant. Name as a blocker only what you would refuse to merge with, and put everything else in the summary as a suggestion. For each blocker give \`file\` as shown in the diff, \`line\` on the new side of the diff, the defect in one plain line as \`title\`, and in \`description\` what goes wrong in practice and the change that fixes it. In \`evidence\`, list what you read and what it showed, one short line each with \`file:line\`. In \`proof\`, list the \`file:line\` of each line that shows the failure.
 
 Also write two things for the pull request:
 - whatThisDoes: one or two sentences a non-specialist can follow. What was wrong or missing, what the change does now, what it gets the user. Ground it in the diff, never in the change's own framing.
@@ -38,7 +39,14 @@ Keep the whole reply short. Name at most 8 blockers, keep \`summary\` under 150 
 Respond with ONLY a JSON object (no markdown fences):
 {
   "verdict": "READY" | "ADDRESS_FIRST",
-  "blockers": ["path/to/file.ext:LINE: defect"],
+  "blockers": [{
+    "file": "src/sync.ts",
+    "line": 42,
+    "title": "Startup aborts for a client synced from a checkpoint",
+    "description": "With no filter headers the bound falls back to 0, and truncating storage above 0 fails. Handle the missing header separately.",
+    "evidence": ["src/sync.ts:40 reads the filter height, which is unset after a checkpoint sync"],
+    "proof": ["src/sync.ts:42"]
+  }],
   "summary": "string",
   "whatThisDoes": "string",
   "whatToTest": { "setup": "string, optional", "steps": ["Do X. Expect Y."] }
@@ -89,8 +97,8 @@ function parseVerdictReport(responseText: string): VerdictReport {
     throw new Error('verdict is missing `summary`, `whatThisDoes` or `whatToTest`');
   }
   const whatToTest = parseTestGuide(rawWhatToTest);
-  if (blockers !== undefined && (!Array.isArray(blockers) || blockers.some(b => typeof b !== 'string'))) {
-    throw new Error('verdict `blockers` is not an array of strings');
+  if (blockers !== undefined && (!Array.isArray(blockers) || blockers.some(b => !b || typeof b !== 'object' || typeof b.title !== 'string'))) {
+    throw new Error('verdict `blockers` is not an array of objects with a `title`');
   }
   if (verdict === 'READY') {
     if (whatThisDoes.trim().length === 0 || whatToTest.steps.length === 0) {
@@ -98,12 +106,41 @@ function parseVerdictReport(responseText: string): VerdictReport {
     }
     return { verdict, blockers: [], summary, whatThisDoes, whatToTest };
   }
-  const named = ((blockers ?? []) as string[]).map(b => b.trim()).filter(b => b.length > 0);
+  const named = ((blockers ?? []) as Record<string, unknown>[]).filter(b => String(b.title).trim().length > 0).map(blockerFinding);
   // An ADDRESS_FIRST that names no blocker still refuses the merge, so its summary is the blocker.
   if (named.length === 0 && summary.trim().length === 0) {
     throw new Error('ADDRESS_FIRST verdict names no blocker and has a blank `summary`');
   }
-  return { verdict, blockers: named.length > 0 ? named : [summary.trim()], summary, whatThisDoes, whatToTest };
+  return { verdict, blockers: named.length > 0 ? named : [summaryBlocker(summary.trim())], summary, whatThisDoes, whatToTest };
+}
+
+/** Turns one of the reader's blockers into a blocking finding. A blocker without a location lands in the review body. */
+function blockerFinding(blocker: Record<string, unknown>): Finding {
+  const title = String(blocker.title).trim();
+  const evidence = parseEvidence(blocker);
+  return {
+    severity: 'blocker',
+    title: safeTruncate(title, MAX_BLOCKER_TITLE_LENGTH),
+    file: typeof blocker.file === 'string' ? blocker.file.replace(/`/g, '').trim() : '',
+    line: Number(blocker.line) || 0,
+    description: typeof blocker.description === 'string' && blocker.description.trim() ? blocker.description.trim() : title,
+    reviewers: [VERDICT_READER_NAME],
+    ...(evidence && { evidence }),
+  };
+}
+
+/** Turns the summary of an `ADDRESS_FIRST` that names no blocker into the one blocker, posted in the review body. */
+function summaryBlocker(summary: string): Finding {
+  const [first, ...rest] = summary.split(/(?<=[.!?])\s+/);
+  const titled = first.length <= MAX_BLOCKER_TITLE_LENGTH;
+  return {
+    severity: 'blocker',
+    title: safeTruncate(first, MAX_BLOCKER_TITLE_LENGTH),
+    file: '',
+    line: 0,
+    description: titled && rest.length > 0 ? rest.join(' ') : summary,
+    reviewers: [VERDICT_READER_NAME],
+  };
 }
 
 /** Runs the verdict reader once on `userMessage`. Throws when the call fails or its output is truncated or unparseable. */
@@ -119,20 +156,4 @@ export async function runVerdictReader(client: LLMClient, userMessage: string): 
     },
     (error) => core.warning(`Verdict reader reply could not be used (${error}), asking once more`),
   );
-}
-
-/** Turns a `file:line: defect` blocker into a blocking finding. A blocker without a location lands in the review body. */
-export function verdictBlockerToFinding(blocker: string): Finding {
-  const located = blocker.match(/^`?([^\s:`][^:`]*)`?:(\d+)(?:-\d+)?`?:\s*([\s\S]+)$/);
-  const text = (located ? located[3] : blocker).trim();
-  const [first, ...rest] = text.split(/(?<=[.!?])\s+/);
-  const titled = first.length <= MAX_BLOCKER_TITLE_LENGTH;
-  return {
-    severity: 'blocker',
-    title: safeTruncate(first, MAX_BLOCKER_TITLE_LENGTH),
-    file: located ? located[1] : '',
-    line: located ? Number(located[2]) : 0,
-    description: titled && rest.length > 0 ? rest.join(' ') : text,
-    reviewers: [VERDICT_READER_NAME],
-  };
 }

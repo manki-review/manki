@@ -17,7 +17,7 @@ import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classi
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { refuteBlockers } from './refute';
-import { runVerdictReader, verdictBlockerToFinding } from './verdict';
+import { runVerdictReader } from './verdict';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 
@@ -1185,7 +1185,7 @@ export async function runReview(
     logOutputTokens('Verdict reader', verdictUsage);
     core.info(`Verdict reader: ${verdictReport.verdict}. ${verdictReport.summary}`);
     if (verdictReport.verdict === 'ADDRESS_FIRST') {
-      const readerBlockers = verdictReport.blockers.map(verdictBlockerToFinding).map(f => {
+      const readerBlockers = verdictReport.blockers.map(f => {
         const sameAs = matchPriorBlocker(f, priorBlockers);
         return sameAs ? { ...f, sameAs } : f;
       });
@@ -1614,7 +1614,7 @@ export function parseProof(value: unknown): string[] {
 }
 
 /** Reads a reviewer entry's `evidence`, `proof` and `claimsMissing` with `emptySearch`, or returns `undefined` when it cites none. */
-function parseEvidence(f: Record<string, unknown>): FindingEvidence | undefined {
+export function parseEvidence(f: Record<string, unknown>): FindingEvidence | undefined {
   const checks = textLines(f.evidence);
   const proof = parseProof(f.proof);
   const emptySearch = f.claimsMissing === true ? textOf(f.emptySearch) : undefined;

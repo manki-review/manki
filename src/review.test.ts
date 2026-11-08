@@ -1915,10 +1915,14 @@ describe('runReview', () => {
       content: JSON.stringify({
         verdict: 'ADDRESS_FIRST',
         blockers: [
-          'src/a.ts:12: The cache is never invalidated. Stale entries are served forever.',
-          'No migration for the renamed column.',
-          '`src/b.ts:3-5`: Off by one.',
-          `src/c.ts:7: ${'The retry budget is shared across every tenant '.repeat(4)}so one tenant starves the rest`,
+          {
+            file: 'src/a.ts', line: 12, title: 'The cache is never invalidated.', description: 'Stale entries are served forever.',
+            evidence: ['src/a.ts:12 caches the value', 'grep `cache.delete`: no match'], proof: ['src/a.ts:12', 'no location'],
+          },
+          { title: 'No migration for the renamed column.' },
+          { file: '`src/b.ts`', line: '3', title: 'Off by one.', description: '  ' },
+          { file: 'src/c.ts', line: 7, title: `${'The retry budget is shared across every tenant '.repeat(4)}so one tenant starves the rest`, description: 'Cap it per tenant.' },
+          { file: 'src/d.ts', line: 1, title: '  ' },
         ],
         summary: 'Two defects.',
         whatThisDoes: 'Adds a cache.',
@@ -1932,8 +1936,12 @@ describe('runReview', () => {
     expect(result.outcome).toBe('ADDRESS_FIRST');
     expect(result.verdict).toBe('REQUEST_CHANGES');
     expect(result.verdictReason).toBe('verdict_reader');
+    // The reader's evidence and proof travel with the blocker, so it can show how it was checked.
     expect(result.findings).toEqual([
-      expect.objectContaining({ severity: 'blocker', file: 'src/a.ts', line: 12, title: 'The cache is never invalidated.', description: 'Stale entries are served forever.' }),
+      expect.objectContaining({
+        severity: 'blocker', file: 'src/a.ts', line: 12, title: 'The cache is never invalidated.', description: 'Stale entries are served forever.',
+        reviewers: ['Verdict reader'], evidence: { checks: ['src/a.ts:12 caches the value', 'grep `cache.delete`: no match'], proof: ['src/a.ts:12'] },
+      }),
       expect.objectContaining({ severity: 'blocker', file: '', line: 0, title: 'No migration for the renamed column.', description: 'No migration for the renamed column.' }),
       expect.objectContaining({ severity: 'blocker', file: 'src/b.ts', line: 3, title: 'Off by one.', description: 'Off by one.' }),
       expect.objectContaining({
@@ -1941,9 +1949,10 @@ describe('runReview', () => {
         file: 'src/c.ts',
         line: 7,
         title: `${'The retry budget is shared across every tenant '.repeat(4).slice(0, 100)}...`,
-        description: `${'The retry budget is shared across every tenant '.repeat(4)}so one tenant starves the rest`,
+        description: 'Cap it per tenant.',
       }),
     ]);
+    expect(result.findings[1]).not.toHaveProperty('evidence');
     expect(result.verdictTrace?.survivingBlockers.map(e => e.file)).toEqual(['src/a.ts', '', 'src/b.ts', 'src/c.ts']);
 
     jest.mocked(clients.judge.sendMessage).mockResolvedValue({
@@ -1963,7 +1972,10 @@ describe('runReview', () => {
       jest.mocked(refuting.judge.sendMessage).mockImplementation(async (_system, _message, options) => ({
         content: options?.repoTools
           ? JSON.stringify({ outcome: 'disproved', reason: 'Every write clears the cache first.', proof: ['a.ts:2'] })
-          : JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['a.ts:1: The cache is never invalidated.'], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
+          : JSON.stringify({
+            verdict: 'ADDRESS_FIRST', summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y',
+            blockers: [{ file: 'a.ts', line: 1, title: 'The cache is never invalidated.', evidence: ['a.ts:1 builds the cache'], proof: ['a.ts:1'] }],
+          }),
       }));
       const refuted = await runReview(refuting, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', workspace });
       expect(refuted.outcome).toBe('ADDRESS_FIRST');
@@ -1973,7 +1985,9 @@ describe('runReview', () => {
         severity: 'blocker', file: 'a.ts', line: 1, refutation: expect.objectContaining({ outcome: 'disproved', reason: 'Every write clears the cache first.' }),
       })]);
       expect(refuted.verdictTrace?.survivingBlockers).toEqual([expect.objectContaining({ file: 'a.ts', title: 'The cache is never invalidated.' })]);
-      expect(formatFindingComment(refuted.findings[0])).toMatch(/<summary>How this was checked<\/summary>\n\n- [^\n]*Every write clears the cache first\./);
+      const comment = formatFindingComment(refuted.findings[0]);
+      expect(comment).toMatch(/<summary>How this was checked<\/summary>\n\n- [^\n]*Every write clears the cache first\./);
+      expect(comment).toContain('a.ts:1 builds the cache');
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -2035,7 +2049,7 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
     const refusing = makeClients();
     jest.mocked(refusing.judge.sendMessage).mockResolvedValue({
-      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['src/a.ts:9: Tokens leak into logs.'], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
+      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/a.ts', line: 9, title: 'Tokens leak into logs.' }], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
     });
     const refused = await runAtRound(refusing, 3);
     expect(refused.outcome).toBe('ADDRESS_FIRST');
@@ -2098,7 +2112,7 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
     const refusing = makeClients();
     jest.mocked(refusing.judge.sendMessage).mockResolvedValue({
-      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['src/x.ts:12: Old issue is still there.'], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
+      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 12, title: 'Old issue is still there.' }], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
     });
     const readerRepeat = await runOn(refusing, 'sha2', [], [thread('resolved')]);
     expect(readerRepeat.outcome).toBe('NOT_CONVERGING');
@@ -2211,8 +2225,9 @@ describe('runReview', () => {
     ['truncated output', { content: READY_VERDICT, truncated: true }],
     ['an unknown verdict', { content: JSON.stringify({ verdict: 'LGTM', summary: '', whatThisDoes: '', whatToTest: '' }) }],
     ['missing fields', { content: JSON.stringify({ verdict: 'READY', blockers: [] }) }],
-    ['blockers that are not strings', { content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'a' }], summary: '', whatThisDoes: '', whatToTest: '' }) }],
-    ['ADDRESS_FIRST with no blocker and a blank summary', { content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['  '], summary: ' ', whatThisDoes: 'x', whatToTest: 'y' }) }],
+    ['blockers without a title', { content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'a' }], summary: '', whatThisDoes: '', whatToTest: '' }) }],
+    ['blockers given as strings', { content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['a.ts:1: bug'], summary: 'x', whatThisDoes: '', whatToTest: '' }) }],
+    ['ADDRESS_FIRST with no blocker and a blank summary', { content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ title: '  ' }], summary: ' ', whatThisDoes: 'x', whatToTest: 'y' }) }],
     ['READY with a blank whatThisDoes', { content: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: ' ', whatToTest: 'y' }) }],
     ['READY with a blank whatToTest', { content: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: 'x', whatToTest: '' }) }],
     ['READY with no whatToTest steps', { content: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: 'x', whatToTest: { setup: 'x', steps: [] } }) }],

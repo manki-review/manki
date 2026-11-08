@@ -1268,7 +1268,7 @@ describe('postReview body lead', () => {
       verdict: 'REQUEST_CHANGES',
       outcome: 'ADDRESS_FIRST',
       verdictReason: 'verdict_reader',
-      verdictReport: { ...verdictReport, verdict: 'ADDRESS_FIRST', blockers: ['src/a.ts:5: bug'] },
+      verdictReport: { ...verdictReport, verdict: 'ADDRESS_FIRST', blockers: [{ severity: 'blocker', title: 'bug', file: 'src/a.ts', line: 5, description: 'bug', reviewers: ['Verdict reader'] }] },
       summary: 'Nothing to flag.',
       findings: [{ ...blocker, file: '', line: 0, description: 'A synced client cannot start. Storage starts above 0. Handle `None`.' }],
     });

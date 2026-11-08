@@ -292,8 +292,8 @@ export type VerdictReason = 'required_present' | 'prior_unaddressed' | 'only_nit
 /** The verdict reader's answer on a round where no finding blocked. */
 export interface VerdictReport {
   verdict: 'READY' | 'ADDRESS_FIRST';
-  /** Each entry reads `file:line: defect`. Empty on `READY`. */
-  blockers: string[];
+  /** The blockers as findings, with the evidence the reader cited. Empty on `READY`. */
+  blockers: Finding[];
   summary: string;
   whatThisDoes: string;
   whatToTest: TestGuide;
