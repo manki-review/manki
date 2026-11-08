@@ -4,7 +4,7 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, removeSeededAuthFiles, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
 
 function encode(json: unknown): string {
@@ -536,6 +536,28 @@ describe('seedAuthFile', () => {
     registerAuthFileSecrets(target);
     expect(redactSecrets('refreshed-during-run')).toBe('[REDACTED]');
     expect(() => registerAuthFileSecrets(tmpRoot)).not.toThrow();
+  });
+
+  it('deletes the files this run wrote, also from the post step\'s saved state, and never one that was there before', () => {
+    const written = join(tmpRoot, 'sub', 'auth.json');
+    const existing = join(tmpRoot, 'sub', 'oauth_creds.json');
+    seedAuthFile(opts());
+    writeFileSync(existing, '{"tokens":{}}');
+    seedAuthFile(opts({ targetPath: existing }));
+    removeSeededAuthFiles();
+    expect(existsSync(written)).toBe(false);
+    expect(existsSync(existing)).toBe(true);
+
+    const fromMainStep = join(tmpRoot, 'main-step-auth.json');
+    writeFileSync(fromMainStep, '{}');
+    process.env.STATE_manki_seeded_auth_files = JSON.stringify([fromMainStep]);
+    try {
+      removeSeededAuthFiles();
+    } finally {
+      delete process.env.STATE_manki_seeded_auth_files;
+    }
+    expect(existsSync(fromMainStep)).toBe(false);
+    expect(existsSync(existing)).toBe(true);
   });
 
   it('rejects an empty secret', () => {

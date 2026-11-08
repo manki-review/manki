@@ -115,7 +115,7 @@ Reasoning models (o-series and GPT-5 onwards, such as `gpt-5.6-terra` or `gpt-6.
 
 #### Codex CLI OAuth Token (subscription, experimental)
 
-> **Status: experimental for CI.** The Codex CLI keeps subscription auth in `~/.codex/auth.json` and refreshes it during a run once the tokens are about 8 days old. A refresh rotates the tokens and writes them back to `auth.json` on the runner, which is discarded when the job ends. The secret still holds the old tokens, so later runs fail to authenticate until you bootstrap again and re-upload the secret. Concurrent jobs, or a local Codex that refreshes the same login, invalidate it the same way. An API key has none of these problems, and [OpenAI's CI/CD auth guide](https://learn.chatgpt.com/docs/auth/ci-cd-auth) recommends it for most CI jobs.
+> **Status: experimental for CI.** The Codex CLI keeps subscription auth in `~/.codex/auth.json` and refreshes it during a run once the tokens are about 8 days old. A refresh rotates the tokens and writes them back to `auth.json` on the runner. Manki deletes the `auth.json` it wrote when the run ends, also on a persistent self-hosted runner, and leaves alone one that was there before the run. The secret still holds the old tokens, so later runs fail to authenticate until you bootstrap again and re-upload the secret. Concurrent jobs, or a local Codex that refreshes the same login, invalidate it the same way. An API key has none of these problems, and [OpenAI's CI/CD auth guide](https://learn.chatgpt.com/docs/auth/ci-cd-auth) recommends it for most CI jobs.
 
 If you have a ChatGPT Plus or Pro subscription and the Codex CLI installed:
 
@@ -332,9 +332,10 @@ Manki publishes immutable releases: once a release is out, its tag can never mov
 # Label PRs that have any blocker-severity findings
 - name: Label blocking PRs
   if: fromJSON(steps.manki.outputs.severity_counts).blocker > 0
-  run: gh pr edit ${{ inputs.pr }} --add-label blocking-findings
+  run: gh pr edit "$PR" --add-label blocking-findings
   env:
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    PR: ${{ inputs.pr }}
 ```
 
 You can also forward `severity_counts` or `findings_json` to a metrics sink (Slack, Datadog, a dashboard) in a follow-up step.

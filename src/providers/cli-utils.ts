@@ -211,11 +211,15 @@ export interface SeedAuthFileOptions {
   bootstrapHint: string;
 }
 
+// The auth files this run wrote, saved for the post step too, since a cancelled run may never reach its own cleanup.
+const SEEDED_AUTH_FILES_STATE = 'manki_seeded_auth_files';
+const seededAuthFiles = new Set<string>();
+
 /**
  * Decode a base64-encoded auth file from a GitHub secret and write it to disk
  * with mode 0600, only when the target file is absent. Preserving an existing
  * file lets CLIs that refresh tokens in place keep their refreshed credentials
- * across invocations on persistent runners.
+ * across the calls of a run, and leaves a file that was there before the run alone.
  */
 export function seedAuthFile(opts: SeedAuthFileOptions): void {
   const trimmed = opts.secret.trim();
@@ -255,10 +259,29 @@ export function seedAuthFile(opts: SeedAuthFileOptions): void {
   }
   try {
     writeFileSync(opts.targetPath, decoded, { mode: 0o600, flag: 'wx' });
+    seededAuthFiles.add(opts.targetPath);
+    core.saveState(SEEDED_AUTH_FILES_STATE, JSON.stringify([...seededAuthFiles]));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
   }
   registerAuthFileSecrets(opts.targetPath);
+}
+
+/**
+ * Deletes the auth files `seedAuthFile` wrote in this run, so no token stays behind on a persistent runner. The post
+ * step finds them in the saved state. A file that was there before the run is never deleted.
+ */
+export function removeSeededAuthFiles(): void {
+  const saved = safeJsonParse(core.getState(SEEDED_AUTH_FILES_STATE) || '[]');
+  const paths = new Set([...seededAuthFiles, ...(Array.isArray(saved) ? saved.filter((path): path is string => typeof path === 'string') : [])]);
+  for (const path of paths) {
+    try {
+      rmSync(path, { force: true });
+    } catch (error) {
+      core.warning(`Could not delete the auth file ${path}: ${error}`);
+    }
+  }
+  seededAuthFiles.clear();
 }
 
 function hasNestedString(obj: Record<string, unknown>, dottedPath: string): boolean {

@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
-import { chmodSync, existsSync, mkdtempSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import { promisify } from 'util';
@@ -40,31 +40,38 @@ export function makeScratchDir(prefix: string): string {
   return realpathSync(mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), `manki-${prefix}-`)));
 }
 
+/** Whether `data` has the digest `integrity`, which is in Subresource Integrity form. */
+function matchesIntegrity(data: Buffer, integrity: string): boolean {
+  const separator = integrity.indexOf('-');
+  return createHash(integrity.slice(0, separator)).update(data).digest('base64') === integrity.slice(separator + 1);
+}
+
 /**
- * Returns the folder another process of this run installed `integrity` into, or `undefined` when there is none.
+ * Returns the folder another process of this run installed `download` into, or `undefined` when there is none.
  * Only the runner's own temp folder holds one, and only a folder this user owns and no one else can write is reused,
- * since the shared temp folder would let another user plant a binary there.
+ * since the shared temp folder would let another user plant a binary there. The download kept in it must still
+ * match its digest.
  */
-function sharedInstall(integrity: string): { path: string; ready: boolean } | undefined {
+function sharedInstall({ url, integrity }: PinnedDownload): { path: string; ready: boolean } | undefined {
   const runnerTemp = process.env.RUNNER_TEMP;
   if (!runnerTemp) return undefined;
   const path = join(realpathSync(runnerTemp), `manki-pinned-${createHash('sha256').update(integrity).digest('hex').slice(0, 16)}`);
   if (!existsSync(join(path, INSTALLED_MARKER))) return { path, ready: false };
   const { uid, mode } = statSync(path);
   const own = process.getuid === undefined || (uid === process.getuid() && (mode & 0o022) === 0);
-  return own ? { path, ready: true } : undefined;
+  const download = join(path, basename(new URL(url).pathname));
+  return own && existsSync(download) && matchesIntegrity(readFileSync(download), integrity) ? { path, ready: true } : undefined;
 }
 
-async function downloadAndInstall({ url, integrity }: PinnedDownload): Promise<string> {
-  const shared = sharedInstall(integrity);
+async function downloadAndInstall(download: PinnedDownload): Promise<string> {
+  const { url, integrity } = download;
+  const shared = sharedInstall(download);
   if (shared?.ready) return shared.path;
   const response = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`download of ${url} failed with HTTP ${response.status}`);
   const data = Buffer.from(await response.arrayBuffer());
-  const separator = integrity.indexOf('-');
-  const algorithm = integrity.slice(0, separator);
-  if (createHash(algorithm).update(data).digest('base64') !== integrity.slice(separator + 1)) {
-    throw new Error(`download of ${url} does not match its pinned ${algorithm} digest`);
+  if (!matchesIntegrity(data, integrity)) {
+    throw new Error(`download of ${url} does not match its pinned ${integrity.slice(0, integrity.indexOf('-'))} digest`);
   }
   const dir = makeScratchDir('tool');
   const name = basename(new URL(url).pathname);
@@ -85,7 +92,7 @@ async function downloadAndInstall({ url, integrity }: PinnedDownload): Promise<s
     renameSync(dir, shared.path);
   } catch {
     // Another process installed the same download first. Its folder is reused only if it passes the same checks.
-    if (!sharedInstall(integrity)?.ready) return dir;
+    if (!sharedInstall(download)?.ready) return dir;
     rmSync(dir, { recursive: true, force: true });
   }
   return shared.path;

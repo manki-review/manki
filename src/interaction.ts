@@ -644,11 +644,21 @@ async function handleRemember(
   }
 
   const sanitized = sanitizeMemoryField(content);
+  const memoryOctokit = github.getOctokit(memoryToken);
+  const memoryRepo = resolveMemoryRepo(memoryConfig, owner);
+
+  // A global learning reaches every repo that shares the memory, so it takes write access to the memory repo itself.
+  const [memoryOwner, memoryName] = memoryRepo.split('/');
+  if (scope === 'global' && !await commenterCanWrite(memoryOctokit, memoryOwner, memoryName)) {
+    await octokit.rest.issues.createComment({
+      owner, repo,
+      issue_number: prNumber,
+      body: withMarkers(`Only collaborators with write access to \`${memoryRepo}\` can add a global learning. Leave out \`global:\` to store it for this repo.`, BOT_MARKER),
+    });
+    return;
+  }
 
   try {
-    const memoryOctokit = github.getOctokit(memoryToken);
-    const memoryRepo = resolveMemoryRepo(memoryConfig, owner);
-
     await writeLearning(memoryOctokit, memoryRepo, repo, {
       id: `learn-${Date.now()}`,
       content: sanitized,
