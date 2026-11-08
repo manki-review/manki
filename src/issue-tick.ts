@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { BotIdentity, sanitizeMarkdown } from './github';
 import { filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
-import { isSecurityThread, parseFindingData } from './recap';
+import { parseFindingData } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
 import { withMarkers } from './utils';
 
@@ -91,8 +91,7 @@ export async function handleIssueBoxTick(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, comment: TickedComment, editor: string,
 ): Promise<void> {
   const ids = tickedIssueBoxes(comment.body);
-  // A security finding never offers a box, so a box on one was added by hand and filing it would disclose the defect.
-  if (ids.length === 0 || isSecurityThread(comment.body)) return;
+  if (ids.length === 0) return;
   const finding = parseFindingData(comment.body);
   const source: IssueSource = {
     title: finding?.title ?? 'Manki finding',
@@ -114,7 +113,11 @@ export async function handleIssueBoxTick(
     } catch (error) {
       core.warning(`Failed to file an issue for finding ${id}: ${error}`);
       allFiled = false;
-      if (thread) await replyToReviewThread(octokit, thread.id, `Could not file an issue for this finding: ${String(error).slice(0, 200)}. Tick the box again to retry.`);
+      // The box is cleared for a retry even when the reply fails, and the other boxes are still handled.
+      if (thread) {
+        await replyToReviewThread(octokit, thread.id, `Could not file an issue for this finding: ${String(error).slice(0, 200)}. Tick the box again to retry.`)
+          .catch((replyError: unknown) => core.warning(`Failed to report the failed filing of ${id}: ${replyError}`));
+      }
     }
     // Each box is saved as soon as it is handled, on the comment as it is now, so a tick made meanwhile stays.
     const { data: current } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: comment.id });
@@ -131,27 +134,19 @@ const BLOCK_HEADER_RE = /^\*\*(?:Blocker|Warning|Suggestion|Nitpick)\b/gm;
 const FOLD_TAG_RE = /<\/?details>/g;
 
 /**
- * Returns where the fold that encloses `at` opens and closes, or -1 for both when none does. A fold can hold folds of
- * its own, such as "How this was checked", so the tags are balanced from `at` outwards.
+ * Returns where the fold that ends right before `at` opens, or -1 when what comes before `at` is no fold. A fold can
+ * hold folds of its own, such as "How this was checked", so the tags are balanced from its end backwards.
  */
-function enclosingFold(body: string, at: number): { open: number; close: number } {
+function foldOpenBefore(body: string, at: number): number {
+  const before = body.slice(0, at).trimEnd();
+  if (!before.endsWith('</details>')) return -1;
   let depth = 0;
-  let open = -1;
-  for (const match of [...body.slice(0, at).matchAll(FOLD_TAG_RE)].reverse()) {
+  for (const match of [...before.slice(0, before.length - '</details>'.length).matchAll(FOLD_TAG_RE)].reverse()) {
     if (match[0] === '</details>') depth++;
-    else if (depth === 0) {
-      open = match.index;
-      break;
-    } else depth--;
-  }
-  if (open < 0) return { open: -1, close: -1 };
-  depth = 0;
-  for (const match of body.slice(at).matchAll(FOLD_TAG_RE)) {
-    if (match[0] === '<details>') depth++;
-    else if (depth === 0) return { open, close: at + match.index };
+    else if (depth === 0) return match.index;
     else depth--;
   }
-  return { open: -1, close: -1 };
+  return -1;
 }
 
 function decodeHtml(text: string): string {
@@ -159,29 +154,29 @@ function decodeHtml(text: string): string {
 }
 
 /**
- * Returns the finding of the review body whose box carries `id`: its title, the text Manki posted for it, and whether
- * its header names it a security finding. A listed finding is a fold, and a blocker without a thread is a block that
- * opens with its severity.
+ * Returns the finding of the review body whose box carries `id`: its title and the text Manki posted for it. The box
+ * sits right under it: a listed finding is a fold, and a blocker without a thread is a block that opens with its
+ * severity.
  */
-function bodyFinding(body: string, id: string): { title: string; text: string; security: boolean } | undefined {
+function bodyFinding(body: string, id: string): { title: string; text: string } | undefined {
   const box = issueBoxOffset(body, id);
   if (box < 0) return undefined;
+  const anchor = body.lastIndexOf(ISSUE_BOX_ANCHOR, box);
   // Tags and headers inside a fenced fix are a model's text, never Manki's structure.
   const plain = withoutFences(body);
-  const { open, close } = enclosingFold(plain, box);
-  if (open >= 0 && close > box) {
-    const fold = body.slice(open, close);
+  const open = foldOpenBefore(plain, anchor);
+  if (open >= 0) {
+    const fold = body.slice(open, plain.slice(0, anchor).trimEnd().length - '</details>'.length);
     const end = fold.indexOf('</summary>');
-    const summary = fold.slice(0, end);
-    const title = summary.match(/<summary>[^<]*<b>(.*?)<\/b>/)?.[1];
-    return title ? { title: decodeHtml(title), text: fold.slice(end + '</summary>'.length), security: / · Security\b/.test(decodeHtml(summary)) } : undefined;
+    // The title is the bold text before the line break, and it can hold bold text of its own.
+    const title = fold.slice(0, end).match(/<summary>[^<]*<b>(.*)<\/b><br>/)?.[1];
+    return title ? { title: decodeHtml(title), text: fold.slice(end + '</summary>'.length) } : undefined;
   }
-  const start = [...plain.slice(0, box).matchAll(BLOCK_HEADER_RE)].pop()?.index;
+  const start = [...plain.slice(0, anchor).matchAll(BLOCK_HEADER_RE)].pop()?.index;
   if (start === undefined) return undefined;
-  const block = body.slice(start, box);
-  const [header, titleLine] = block.split(/\r?\n/);
-  const title = titleLine?.match(/^\*\*(.+)\*\*$/)?.[1];
-  return title ? { title, text: block, security: / · Security\b/.test(header) } : undefined;
+  const block = body.slice(start, anchor);
+  const title = block.split(/\r?\n/)[1]?.match(/^\*\*(.+)\*\*$/)?.[1];
+  return title ? { title, text: block } : undefined;
 }
 
 /**
@@ -196,11 +191,6 @@ export async function handleReviewBoxTick(
     const finding = bodyFinding(review.body, id);
     if (!finding) {
       core.warning(`Found no finding for the ticked issue box ${id} in review ${review.id}`);
-      continue;
-    }
-    // A security finding never offers a box, so a box on one was added by hand and filing it would disclose the defect.
-    if (finding.security) {
-      core.warning(`Not filing ${id}: it is a security finding, and a public issue would disclose it`);
       continue;
     }
     // The id names the finding's file and line, which a listed finding has no hidden data for.

@@ -305,12 +305,12 @@ describe('formatFindingComment', () => {
     expect(comment).not.toContain('```');
   });
 
-  it('ends a finding with a box that files it as an issue, except a security finding', () => {
-    expect(render(baseFinding)).toMatch(/\n\n<!-- manki-issue-box -->\n- \[ \] Create an issue for this <!-- manki-box:issue:src\/main\.ts:42:Null-pointer-dereference -->\n\n<!-- manki:blocker:/);
-    expect(render({ ...baseFinding, tags: ['security'] })).not.toContain('manki-box:issue');
-    // The verdict reader cannot mark a security defect, so its blockers get no box either.
-    expect(render({ ...baseFinding, reviewers: ['Verdict reader'] })).not.toContain('manki-box:issue');
-    expect(render({ ...baseFinding, category: 'security' })).not.toContain('manki-box:issue');
+  it('ends every finding with a box that files it as an issue, security and verdict reader ones included', () => {
+    const box = /\n\n<!-- manki-issue-box -->\n- \[ \] Create an issue for this <!-- manki-box:issue:src\/main\.ts:42:Null-pointer-dereference -->\n\n<!-- manki:blocker:/;
+    expect(render(baseFinding)).toMatch(box);
+    // The review already shows a security finding, so a box on it discloses nothing more.
+    expect(render({ ...baseFinding, tags: ['security'], category: 'security' })).toMatch(box);
+    expect(render({ ...baseFinding, reviewers: ['Verdict reader'] })).toMatch(box);
     // A file name that would end the hidden comment is encoded in the id.
     expect(render({ ...baseFinding, file: 'src/a-->b.ts' })).toContain('<!-- manki-box:issue:src/a--%3Eb.ts:42:Null-pointer-dereference -->');
   });
@@ -1503,10 +1503,10 @@ describe('postReview body lead', () => {
       '',
       'https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L45-L47',
       '',
+      '</details>',
+      '',
       '<!-- manki-issue-box -->',
       '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:47:Extract-helper -->',
-      '',
-      '</details>',
       '',
       '<details>',
       '<summary>\u26A0\uFE0F <b>Tagged both ways</b><br><sub><b>Warning, not blocking</b> · <a href="https://github.com/owner/repo/blob/abcdef1234/src/gone.ts#L41"><code>src/gone.ts:41</code></a></sub></summary>',
@@ -3876,10 +3876,10 @@ describe('postReview non-blocking findings', () => {
       '',
       '**Fix:** Use the shared helper.',
       '',
+      '</details>',
+      '',
       '<!-- manki-issue-box -->',
       '- [ ] Create an issue for this <!-- manki-box:issue::0:Missing-file-context -->',
-      '',
-      '</details>',
       '',
       '<details>',
       '<summary>\u2728 <b>Off the diff</b><br><sub><b>Suggestion, not blocking</b> · <a href="https://github.com/owner/repo/blob/abc1234/src/a.ts#L40"><code>src/a.ts:40</code></a></sub></summary>',
@@ -3899,10 +3899,10 @@ describe('postReview non-blocking findings', () => {
       '<!-- manki-checks -->',
       '**Checked:** Read `src/a.ts`:40',
       '',
+      '</details>',
+      '',
       '<!-- manki-issue-box -->',
       '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:40:Off-the-diff -->',
-      '',
-      '</details>',
     ].join('\n'));
     expect(review.body.indexOf('smaller fixes in this PR')).toBeLessThan(review.body.indexOf('1 nitpick'));
     expect(review.body).not.toContain('not listed');
@@ -3943,8 +3943,8 @@ describe('postReview non-blocking findings', () => {
     const { body } = createReview.mock.calls[0][0];
     expect(getContent).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/a.ts', ref: 'abc1234' }));
     expect(body).toContain('<summary>\u2728 <b>Near the end of <code>Vec&lt;u8&gt;</code> &amp; co</b>');
-    expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L41\n\n<!-- manki-issue-box -->');
-    expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/c.ts#L1-L3\n\n<!-- manki-issue-box -->');
+    expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L41\n\n</details>\n\n<!-- manki-issue-box -->');
+    expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/c.ts#L1-L3\n\n</details>\n\n<!-- manki-issue-box -->');
     expect(body).not.toContain('#L48');
     expect(body).toContain('<b>Past the end</b>');
   });

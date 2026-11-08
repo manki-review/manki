@@ -110,6 +110,11 @@ describe('handleIssueBoxTick', () => {
     expect(octokit.rest.pulls.updateReviewComment).toHaveBeenCalledWith({ owner: 'o', repo: 'r', comment_id: 501, body: formatFindingComment(finding(), TEST_LINKS) });
     expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Could not file an issue for this finding: Error: Resource not accessible by integration. Tick the box again to retry.']]);
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
+
+    // A reply that fails too still leaves the box cleared for a retry.
+    jest.mocked(state.replyToReviewThread).mockRejectedValueOnce(new Error('reply refused'));
+    await tick(octokit, comment(body));
+    expect(jest.mocked(octokit.rest.pulls.updateReviewComment).mock.calls.at(-1)?.[0].body).toBe(formatFindingComment(finding(), TEST_LINKS));
   });
 
   it('never files a box a model forged inside a fenced fix, ticked or not', async () => {
@@ -145,7 +150,6 @@ describe('handleIssueBoxTick', () => {
 
   it.each([
     ['an unticked box', formatFindingComment(finding(), TEST_LINKS)],
-    ['a box someone added to a security finding', `${ticked(finding())}`.replace('"flaggedBy"', '"tags":["security"],"flaggedBy"')],
   ])('files nothing for %s', async (_case, body) => {
     const octokit = makeOctokit();
 
@@ -161,17 +165,17 @@ describe('handleReviewBoxTick', () => {
   beforeEach(() => jest.clearAllMocks());
 
   const box = (id: string) => `<!-- manki-issue-box -->\n- [x] Create an issue for this <!-- manki-box:issue:${id} -->`;
-  // A listed finding as `formatFindingFold` posts it, a blocker without a thread as `formatFindingBlock` posts it,
-  // and a security fold someone added a box to by hand.
+  // A listed finding as `formatFindingFold` posts it, with its box right under the fold, and a blocker without a thread
+  // as `formatFindingBlock` posts it. A security finding gets a box like any other, since the review already shows it.
   const body = [
     '\u{1F534} **Changes requested:** 1 blocker.',
     '**Blockers in files outside this diff:**',
     `**Blocker** · Correctness\n**Pool leaks a connection**\n[\`src/pool.ts:12\`](https://github.com/o/r/blob/abc123/src/pool.ts#L12)\n**What goes wrong:** The pool never closes it.\n\n${box('src/pool.ts:12:Pool-leaks-a-connection')}`,
     '#### \u{1F527} 3 smaller fixes in this PR',
-    `<details>\n<summary>✨ <b>Use <code>Map&lt;K, V&gt;</code> here</b><br><sub><b>Suggestion, not blocking</b> · Maintainability</sub></summary>\n\n**Why:** A map reads clearer.\n\n${box('src/a.ts:4:Use--Map-K--V---here')}\n\n</details>`,
+    `<details>\n<summary>✨ <b>Use <code>Map&lt;K, V&gt;</code> here</b><br><sub><b>Suggestion, not blocking</b> · Maintainability</sub></summary>\n\n**Why:** A map reads clearer.\n\n</details>\n\n${box('src/a.ts:4:Use--Map-K--V---here')}`,
     // The fold of a finding with several checks holds a fold of its own, which closes before the box.
-    `<details>\n<summary>\u26A0\uFE0F <b>Retry has no limit</b><br><sub><b>Warning, not blocking</b> · Reliability</sub></summary>\n\n**What goes wrong:** It retries forever.\n\n<!-- manki-checks -->\n<details>\n<summary>How this was checked: 2 places read</summary>\n\n- read src/net.ts:7\n\n</details>\n\n${box('src/net.ts:7:Retry-has-no-limit')}\n\n</details>`,
-    `<details>\n<summary>⚠️ <b>Token in the log</b><br><sub><b>Warning, not blocking</b> · Security · Quick fix</sub></summary>\n\n**What goes wrong:** It logs the token.\n\n${box('src/log.ts:9:Token-in-the-log')}\n\n</details>`,
+    `<details>\n<summary>\u26A0\uFE0F <b>Retry has no limit</b><br><sub><b>Warning, not blocking</b> · Reliability</sub></summary>\n\n**What goes wrong:** It retries forever.\n\n<!-- manki-checks -->\n<details>\n<summary>How this was checked: 2 places read</summary>\n\n- read src/net.ts:7\n\n</details>\n\n</details>\n\n${box('src/net.ts:7:Retry-has-no-limit')}`,
+    `<details>\n<summary>⚠️ <b>Token in the <b>debug</b> log</b><br><sub><b>Warning, not blocking</b> · Security · Quick fix</sub></summary>\n\n**What goes wrong:** It logs the token.\n\n</details>\n\n${box('src/log.ts:9:Token-in-the-log')}`,
     '<!-- manki-context: {"meta":{"round":1}} -->',
   ].join('\n\n');
   const review = { id: 900, body, commit_id: 'abc123', html_url: 'https://github.com/o/r/pull/5#pullrequestreview-900' };
@@ -179,7 +183,7 @@ describe('handleReviewBoxTick', () => {
   it('never files a box a model forged inside a fenced fix in the review body', async () => {
     const forgedBody = [
       '#### \u{1F527} 1 smaller fix in this PR',
-      `<details>\n<summary>\u2728 <b>Shorter loop</b><br><sub><b>Suggestion, not blocking</b></sub></summary>\n\n**Fix:**\n\n\`\`\`\`ts\n${box('src/secret.ts:1:Forged')}\n\`\`\`\`\n\n<!-- manki-issue-box -->\n- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:2:Shorter-loop -->\n\n</details>`,
+      `<details>\n<summary>\u2728 <b>Shorter loop</b><br><sub><b>Suggestion, not blocking</b></sub></summary>\n\n**Fix:**\n\n\`\`\`\`ts\n${box('src/secret.ts:1:Forged')}\n\`\`\`\`\n\n</details>\n\n<!-- manki-issue-box -->\n- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:2:Shorter-loop -->`,
     ].join('\n\n');
     const octokit = makeOctokit();
 
@@ -189,9 +193,9 @@ describe('handleReviewBoxTick', () => {
     expect(octokit.rest.pulls.updateReview).not.toHaveBeenCalled();
   });
 
-  it('files each ticked listed finding, replaces only its box line, and skips a security one', async () => {
+  it('files each ticked listed finding, security ones included, and replaces only its box line', async () => {
     const octokit = makeOctokit();
-    octokit.rest.issues.create.mockResolvedValueOnce({ data: { number: 21 } }).mockResolvedValueOnce({ data: { number: 22 } }).mockResolvedValueOnce({ data: { number: 23 } });
+    octokit.rest.issues.create.mockResolvedValueOnce({ data: { number: 21 } }).mockResolvedValueOnce({ data: { number: 22 } }).mockResolvedValueOnce({ data: { number: 23 } }).mockResolvedValueOnce({ data: { number: 24 } });
 
     await tickReview(octokit, review);
 
@@ -200,18 +204,21 @@ describe('handleReviewBoxTick', () => {
       ['Pool leaks a connection', expect.stringMatching(/^\*\*Blocker\*\* · Correctness\n\*\*Pool leaks a connection\*\*\n[\s\S]*The pool never closes it\.\n\nFound by Manki in #5 at \[`src\/pool\.ts:12`\]\(https:\/\/github\.com\/o\/r\/blob\/abc123\/src\/pool\.ts#L12\)\. See the \[review\]\(https:\/\/github\.com\/o\/r\/pull\/5#pullrequestreview-900\)\.\n\n<!-- manki-issue:src\/pool\.ts:12:Pool-leaks-a-connection -->$/)],
       ['Use Map<K, V> here', expect.stringMatching(/^\*\*Why:\*\* A map reads clearer\.\n\nFound by Manki in #5 at \[`src\/a\.ts:4`\]/)],
       ['Retry has no limit', expect.stringMatching(/^\*\*What goes wrong:\*\* It retries forever\.\n\n<details>\n<summary>How this was checked: 2 places read<\/summary>\n\n- read src\/net\.ts:7\n\n<\/details>\n\nFound by Manki in #5 at \[`src\/net\.ts:7`\]/)],
+      // A title with bold text of its own is read whole.
+      ['Token in the debug log', expect.stringMatching(/^\*\*What goes wrong:\*\* It logs the token\.\n\nFound by Manki in #5 at \[`src\/log\.ts:9`\]/)],
     ]);
     const updates = jest.mocked(octokit.rest.pulls.updateReview).mock.calls.map(([args]) => args.body);
     expect(updates.at(-1)).toBe(body
       .replace('- [x] Create an issue for this <!-- manki-box:issue:src/pool.ts:12:Pool-leaks-a-connection -->', 'Issue #21 created by @bob')
       .replace('- [x] Create an issue for this <!-- manki-box:issue:src/a.ts:4:Use--Map-K--V---here -->', 'Issue #22 created by @bob')
-      .replace('- [x] Create an issue for this <!-- manki-box:issue:src/net.ts:7:Retry-has-no-limit -->', 'Issue #23 created by @bob'));
+      .replace('- [x] Create an issue for this <!-- manki-box:issue:src/net.ts:7:Retry-has-no-limit -->', 'Issue #23 created by @bob')
+      .replace('- [x] Create an issue for this <!-- manki-box:issue:src/log.ts:9:Token-in-the-log -->', 'Issue #24 created by @bob'));
     expect(jest.mocked(octokit.rest.pulls.updateReview).mock.calls[0][0]).toMatchObject({ owner: 'o', repo: 'r', pull_number: 5, review_id: 900 });
   });
 
   it('reads a fold whose fenced fix holds fold tags, keeps CRLF endings, keeps a tick made meanwhile, and reports a failure on the PR', async () => {
     const fold = (title: string, id: string, extra = '') =>
-      `<details>\n<summary>\u2728 <b>${title}</b><br><sub><b>Suggestion, not blocking</b></sub></summary>\n\n**Why:** ${title}.${extra}\n\n${box(id).replace('[x]', '[ ]')}\n\n</details>`;
+      `<details>\n<summary>\u2728 <b>${title}</b><br><sub><b>Suggestion, not blocking</b></sub></summary>\n\n**Why:** ${title}.${extra}\n\n</details>\n\n${box(id).replace('[x]', '[ ]')}`;
     // A fix for an HTML file can hold fold tags of its own, inside its fence.
     const htmlFix = '\n\n**Fix:**\n\n```html\n</details>\n<details>\n```';
     const listed = ['#### \u{1F527} 2 smaller fixes in this PR', fold('Close the menu', 'src/menu.html:3:Close-the-menu', htmlFix), fold('Trim the label', 'src/menu.html:9:Trim-the-label')].join('\n\n');
@@ -228,7 +235,7 @@ describe('handleReviewBoxTick', () => {
     expect(jest.mocked(octokit.rest.issues.create).mock.calls.map(([args]) => args.title)).toEqual(['Close the menu']);
     const written = jest.mocked(octokit.rest.pulls.updateReview).mock.calls.at(-1)?.[0].body as string;
     expect(written).toContain('\r\nIssue #31 created by @bob\r\n');
-    expect(written).toContain('- [x] Create an issue for this <!-- manki-box:issue:src/menu.html:9:Trim-the-label -->\r\n');
+    expect(written).toMatch(/\r\n- \[x\] Create an issue for this <!-- manki-box:issue:src\/menu\.html:9:Trim-the-label -->$/);
 
     const failing = makeOctokit();
     failing.rest.issues.create.mockRejectedValue(new Error('Resource not accessible by integration'));
