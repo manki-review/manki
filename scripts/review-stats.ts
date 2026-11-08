@@ -12,7 +12,8 @@ import * as github from '@actions/github';
 
 import { replyOutcome } from '../src/interaction';
 import { threadSeverity } from '../src/recap';
-import type { ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
+import { extractApprovalRecords } from '../src/review-record';
+import type { ApprovalRecord, ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
 import { githubToken, historyLines } from './review-history';
 
 const DEFAULT_LAST = 40;
@@ -31,6 +32,8 @@ export interface PrRecords {
   rounds: RoundContext[];
   /** The records of Manki's thread replies. */
   replies: ReplyRecord[];
+  /** The decisions of the review state checks, from their approval reviews and the notices still standing. */
+  approvals: ApprovalRecord[];
   threadComments: ThreadComment[];
 }
 
@@ -54,6 +57,7 @@ const DECISIONS = [
   'Memory suppressions (findings hidden per suppression)',
   'Verdict reader per slice',
   'Approvals',
+  'State check approvals',
   'Thread reply decisions',
   'Token service calls',
 ] as const;
@@ -102,12 +106,25 @@ function tally(stats: ReviewStats, decision: Decision, value: string, by = 1): v
 }
 
 /** Returns the round records and thread comments of `number` from what GitHub lists for it. */
-export function prRecords(repo: string, number: number, posted: { reviews: Posted[]; threadComments: ThreadComment[] }): PrRecords {
+export function prRecords(
+  repo: string, number: number, posted: { reviews: Posted[]; threadComments: ThreadComment[]; issueComments?: Posted[] },
+): PrRecords {
   const lines = historyLines(repo, number, { reviews: posted.reviews, comments: posted.threadComments });
+  // The state check's approval decisions ride on its approval reviews and on its notices while they stand.
+  const approvals = [...posted.reviews, ...(posted.issueComments ?? [])]
+    .filter(item => item.user?.type === 'Bot' && item.body)
+    .flatMap(item => extractApprovalRecords(item.body!).flatMap(text => {
+      try {
+        return [JSON.parse(text) as ApprovalRecord];
+      } catch {
+        return [];
+      }
+    }));
   return {
     number,
     rounds: lines.filter(line => line.kind === 'round').map(line => line.record as RoundContext),
     replies: lines.filter(line => line.kind === 'reply').map(line => line.record as ReplyRecord),
+    approvals,
     threadComments: posted.threadComments,
   };
 }
@@ -195,6 +212,7 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
     stats.costPerPr.push(prCost);
     const outcomes = blockerOutcomes(pr.threadComments);
     for (const key of ['fixed', 'withdrawn', 'other'] as const) stats.blockerOutcomes[key] += outcomes[key];
+    for (const approval of pr.approvals) tally(stats, 'State check approvals', `${approval.decision}: ${approval.reason}`);
     for (const reply of pr.replies) {
       if (reply.decision) tally(stats, 'Thread reply decisions', `${reply.decision.outcome}, ${reply.decision.thread}`);
       for (const call of reply.tokenService ?? []) tally(stats, 'Token service calls', tokenCallKey(call));
@@ -349,11 +367,12 @@ async function main(args: string[]): Promise<number> {
   const numbers = merged.slice(0, last).map(p => p.number);
   const prs: PrRecords[] = [];
   for (const number of numbers) {
-    const [reviews, threadComments] = await Promise.all([
+    const [reviews, threadComments, issueComments] = await Promise.all([
       octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: number, per_page: 100 }),
       octokit.paginate(octokit.rest.pulls.listReviewComments, { owner, repo, pull_number: number, per_page: 100 }),
+      octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 }),
     ]);
-    prs.push(prRecords(`${owner}/${repo}`, number, { reviews, threadComments }));
+    prs.push(prRecords(`${owner}/${repo}`, number, { reviews, threadComments, issueComments }));
   }
   process.stdout.write(renderStats(computeStats(prs), `${owner}/${repo}`));
   return 0;

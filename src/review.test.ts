@@ -4726,6 +4726,12 @@ describe('recordCalls', () => {
     const none = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
     // The digest is the first 12 hex digits of the SHA-256 of the system prompt, `sys` here.
     const promptDigest = '518b67e65253';
+    // A call that names its prompt template is digested by the template, so prompts built for different rounds share it.
+    const templated: LLMCall[] = [];
+    for (const system of ['round one', 'round two']) await recordCalls(fallback, finder, templated).sendMessage(system, 'user', { promptTemplate: 'template' });
+    await recordCalls(fallback, finder, templated).sendMessage('round two', 'user');
+    expect(templated[0].promptDigest).toBe(templated[1].promptDigest);
+    expect(templated[2].promptDigest).not.toBe(templated[1].promptDigest);
     // The counts a prompt quotes leave the digest alone.
     const counted: LLMCall[] = [];
     for (const count of ['2', '13']) await recordCalls(fallback, finder, counted).sendMessage(`${count} open threads`, 'user');

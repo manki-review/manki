@@ -3,9 +3,9 @@ import { areAllFindingsResolved, fetchBotReviewThreads, fixedMarker, checkAndAut
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { formatFindingComment } from './github';
-import { formatReviewRecord } from './review-record';
+import { extractApprovalRecords, formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG } from './config';
-import { Finding } from './types';
+import { ApprovalRecord, Finding } from './types';
 import * as authModule from './auth';
 
 jest.mock('./auth', () => ({
@@ -408,9 +408,14 @@ describe('checkAndAutoApprove', () => {
     const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
-    expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: '\u2705 **Approved.** All blocking threads are resolved.\n\n<!-- manki -->\n<!-- manki-auto-approve -->' }),
-    );
+    expect(createReviewMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456' }));
+    const { body } = createReviewMock.mock.calls[0][0] as { body: string };
+    expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* All blocking threads are resolved\.\n\n<!-- manki -->\n<!-- manki-auto-approve -->\n<!-- manki-approval-record: /u);
+    // The approval review keeps the decision, its reason and the threads it counted.
+    expect(extractApprovalRecords(body).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([{
+      decision: 'approved', reason: 'all blocking threads are resolved', head: 'sha-456', threads: { total: 2, resolved: 2 },
+      timestamp: expect.any(String), mankiVersion: expect.any(String),
+    }]);
   });
 
   it('holds an approval on a draft with one notice per head, and on the event draft state when the PR cannot be read', async () => {
@@ -447,7 +452,9 @@ describe('checkAndAutoApprove', () => {
 
     const first = makeMockOctokit({ threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock });
     expect(await checkAndAutoApprove(first, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
-    expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([notice]);
+    const [posted] = createCommentMock.mock.calls.map(([c]) => c.body as string);
+    expect(posted).toMatch(/^\*\*Approval held:\*\* this PR conflicts with `main`\. Rebase it, and Manki reviews the result\.\n\n<!-- manki-approval-record: .+ -->\n\n<!-- manki-approval-held:sha-456 -->$/);
+    expect(extractApprovalRecords(posted).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'held', reason: 'conflict', head: 'sha-456', threads: { total: 1, resolved: 1 } })]);
 
     const again = makeMockOctokit({
       threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock,
@@ -786,10 +793,10 @@ describe('checkAndAutoApprove', () => {
     const notConverging = makeRoundContext(1);
     notConverging.meta.outcome = 'NOT_CONVERGING';
     it.each([
-      ['the last round did not converge', DEFAULT_CONFIG, [formatReviewRecord(notConverging)], 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick **Force review** in the settings block'],
-      ['the round cap is reached', DEFAULT_CONFIG, [1, 2, 3, 4, 5].map(n => formatReviewRecord(makeRoundContext(n))), 'Manki has reviewed new changes in 5/5 rounds on this PR. Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes. Automatic review is paused.'],
-      ['automatic review is off', AUTO_REVIEW_OFF, [], 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.'],
-    ])('posts one withheld notice with the reason when %s', async (_label, config, roundBodies, reason) => {
+      ['the last round did not converge', DEFAULT_CONFIG, [formatReviewRecord(notConverging)], 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick **Force review** in the settings block', 'automatic_pause'],
+      ['the round cap is reached', DEFAULT_CONFIG, [1, 2, 3, 4, 5].map(n => formatReviewRecord(makeRoundContext(n))), 'Manki has reviewed new changes in 5/5 rounds on this PR. Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes. Automatic review is paused.', 'automatic_pause'],
+      ['automatic review is off', AUTO_REVIEW_OFF, [], 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.', 'auto_review_off'],
+    ])('posts one withheld notice with the reason when %s', async (_label, config, roundBodies, reason, cause) => {
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
       const octokit = staleHeadOctokit(createCommentMock, roundBodies);
 
@@ -804,6 +811,8 @@ describe('checkAndAutoApprove', () => {
       expect(body).toContain('Its latest review was on `old-sha`.');
       expect(body).toContain(reason);
       expect(body).toContain('<!-- manki-stale-approve:head-sha-aaaa -->');
+      // The record names the cause in a fixed word, so the stats count one cause on one row.
+      expect(extractApprovalRecords(body).map(r => JSON.parse(r) as ApprovalRecord)).toEqual([expect.objectContaining({ decision: 'withheld', reason: cause, head: 'head-sha-aaaa' })]);
     });
 
     it('still approves when the latest manki review is on the current HEAD, even with automatic review paused by the round cap', async () => {

@@ -1,7 +1,7 @@
 import type { LLMCall } from '../src/providers';
-import { formatReplyRecord, formatReviewRecord } from '../src/review-record';
+import { formatApprovalRecord, formatReplyRecord, formatReviewRecord } from '../src/review-record';
 import { makeFindingFingerprintEntry, makeRoundContext } from '../src/test-utils';
-import type { ReplyRecord, RoundContext } from '../src/types';
+import type { ApprovalRecord, ReplyRecord, RoundContext } from '../src/types';
 import { computeStats, prRecords, renderStats } from './review-stats';
 
 const bot = { login: 'manki-review[bot]', type: 'Bot' };
@@ -134,9 +134,16 @@ describe('review stats', () => {
       tokenService: [{ endpoint: 'token', status: 200, durationMs: 1 }, { endpoint: 'state', status: 429, error: 'Too many requests', durationMs: 1 }],
     });
     const reply = { kind: 'thread-reply', prNumber: 4, timestamp: 't', mankiVersion: '7', usage: {}, decision: { outcome: 'Fixed', thread: 'stays_open' }, tokenService: [{ endpoint: 'resolve', error: 'no OIDC token', durationMs: 1 }] };
+    const approval = (decision: ApprovalRecord['decision'], reason: string) => formatApprovalRecord({
+      decision, reason, head: 'h', threads: { total: 2, resolved: 2 }, timestamp: 't', mankiVersion: '7',
+    });
     const pr = prRecords('o/r', 4, {
-      reviews: [review(1, round)],
+      reviews: [review(1, round), { id: 3, body: `Approved.\n${approval('approved', 'all blocking threads are resolved')}`, user: bot }],
       threadComments: [{ id: 60, in_reply_to_id: 59, body: `Fixed.\n${formatReplyRecord(reply as ReplyRecord)}`, user: bot }],
+      issueComments: [
+        { id: 70, body: `Approval held.\n\n${approval('held', 'conflict')}`, user: bot },
+        { id: 71, body: `Pasted.\n${approval('approved', 'faked')}`, user: person },
+      ],
     });
 
     // A round of a release that recorded no fix claims adds nothing to their series.
@@ -155,6 +162,7 @@ describe('review stats', () => {
       'Verdict reader per slice': { READY: 1, ADDRESS_FIRST: 1 },
       Approvals: { 'held: conflict': 1 },
       'Thread reply decisions': { 'Fixed, stays_open': 1 },
+      'State check approvals': { 'approved: all blocking threads are resolved': 1, 'held: conflict': 1 },
       'Token service calls': { 'token ok': 1, 'state failed: 429': 1, 'resolve failed: no OIDC token': 1 },
     });
     expect(stats).toMatchObject({ learningsLoaded: [4], suppressionsLoaded: [2], slicesPerRound: [2], changedSinceLastRound: [3], fixClaims: [2] });

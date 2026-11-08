@@ -1,11 +1,12 @@
 import { gunzipSync, gzipSync } from 'zlib';
 
-import type { ReplyRecord, RoundContext } from './types';
+import type { ApprovalRecord, ReplyRecord, RoundContext } from './types';
 import { redactSecretsDeep, sanitizeHtmlCommentJson, sanitizeTokens } from './utils';
 
 const PLAIN_RE = /<!-- manki-context: ([\s\S]+?) -->/g;
 const GZIP_RE = /<!-- manki-context-gzip: ([A-Za-z0-9+/=]+) -->/g;
 const REPLY_RE = /<!-- manki-reply-record: ([\s\S]+?) -->/g;
+const APPROVAL_RE = /<!-- manki-approval-record: ([\s\S]+?) -->/g;
 /** Larger than any real record, so a crafted compressed one can't exhaust memory. */
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
 
@@ -26,6 +27,17 @@ export function formatReviewRecord(context: RoundContext, room: number = Infinit
 /** Returns a reply-handler run's record as a hidden HTML comment. */
 export function formatReplyRecord(record: ReplyRecord): string {
   return `<!-- manki-reply-record: ${sanitizeHtmlCommentJson(recordJson(record))} -->`;
+}
+
+/** Returns a review state check's approval decision as a hidden HTML comment. */
+export function formatApprovalRecord(record: ApprovalRecord): string {
+  return `<!-- manki-approval-record: ${sanitizeHtmlCommentJson(recordJson(record))} -->`;
+}
+
+/** Returns the JSON text of the approval record in a review or comment body. Manki writes it last, so an earlier one is quoted text. */
+export function extractApprovalRecords(body: string): string[] {
+  const last = [...body.matchAll(APPROVAL_RE)].at(-1);
+  return last ? [last[1]] : [];
 }
 
 /** Returns the JSON text of the reply record in a comment body. Manki writes it last, so an earlier one is quoted text. */
