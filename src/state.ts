@@ -292,6 +292,9 @@ interface PauseState {
   reason?: string;
 }
 
+/** Ends the reason of a round-cap pause, since rounds that keep finding problems point at the design. */
+const RETHINK_LINE = 'Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes.';
+
 /**
  * Returns the rounds with new changes since the last approval, whether they reach the round cap, and whether automatic review
  * is paused by it or by a last round that ended `NOT_CONVERGING` with no approval since.
@@ -302,7 +305,7 @@ function pauseState({ priorRounds, lastApprovalAt }: Pick<RecapState, 'priorRoun
   const capReached = maxAutoRounds > 0 && capRounds >= maxAutoRounds;
   const lastRound = priorRounds.at(-1);
   const reason = capReached
-    ? `Manki has reviewed new changes in ${capRounds}/${maxAutoRounds} rounds on this PR${approved ? ' since its last approval' : ''}.`
+    ? `Manki has reviewed new changes in ${capRounds}/${maxAutoRounds} rounds on this PR${approved ? ' since its last approval' : ''}. ${RETHINK_LINE}`
     : lastRound?.meta.outcome === 'NOT_CONVERGING' && !approvedSince(lastRound, lastApprovalAt) ? 'The last Manki round found a blocker that came back after a fix.' : undefined;
   return { capRounds, capReached, paused: reason !== undefined, ...(reason && { reason }) };
 }
