@@ -767,15 +767,18 @@ describe('handleReviewCommentReply', () => {
   });
 
   it.each([
-    ['written during the round, on its head, which found the thread open', '14:32:05', 'head', 'not_addressed',
+    ['a "Fixed." written during the round, on its head, which found the thread open', 'Fixed. The guard now runs first.', '14:32:05', 'head', 'not_addressed', true,
       'The review of `aaaaaaa`, which finished after this reply, still finds this open: the disproved lead still drops the grade.'],
-    ['written during the round, on its head, which found the thread addressed', '14:32:05', 'head', 'addressed',
-      'The review of `aaaaaaa`, which finished after this reply, already found this addressed.'],
-    ['written after the round', '14:36:00', 'head', 'not_addressed', undefined],
-    ['on a head that moved since the round', '14:32:05', 'other', 'not_addressed', undefined],
-    ['on a thread the round did not evaluate', '14:32:05', 'head', undefined, undefined],
-    ['written during the round on a warning thread, where a deferral can still resolve it', '14:32:05', 'head', 'not_addressed', undefined, false],
-  ])('defers to the latest round for a reply %s', async (_case, repliedAt, roundHead, status, pointer, blocking = true) => {
+    ['a "Fixed." written during the round, on its head, which was not sure', 'Fixed. The guard now runs first.', '14:32:05', 'head', 'uncertain', true,
+      'The review of `aaaaaaa`, which finished after this reply, could not tell whether this is addressed: the disproved lead still drops the grade.'],
+    ['a "Fixed." the round agrees with', 'Fixed. The guard now runs first.', '14:32:05', 'head', 'addressed', true, undefined],
+    ['a "Fixed." written after the round', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'not_addressed', true, undefined],
+    ['a "Fixed." on a head that moved since the round', 'Fixed. The guard now runs first.', '14:32:05', 'other', 'not_addressed', true, undefined],
+    ['a "Fixed." on a thread the round did not evaluate', 'Fixed. The guard now runs first.', '14:32:05', 'head', undefined, true, undefined],
+    ['a "Fixed." on a warning thread', 'Fixed. The guard now runs first.', '14:32:05', 'head', 'not_addressed', false, undefined],
+    ['a deferral written during the round', '**Agreed.** Deferring it to the follow-up is fine.', '14:32:05', 'head', 'not_addressed', true, undefined],
+    ['a withdrawal written during the round', 'Withdrawn. The caller already checks for null.', '14:32:05', 'head', 'not_addressed', true, undefined],
+  ])('defers to the latest round for %s', async (_case, answer, repliedAt, roundHead, status, blocking, pointer) => {
     const head = 'a'.repeat(40);
     setContext({
       comment: { id: 1, body: 'Fixed in 7e3f21d.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: `2026-11-06T${repliedAt}Z` },
@@ -790,7 +793,7 @@ describe('handleReviewCommentReply', () => {
     } as Parameters<typeof makeRoundContext>[1]);
     octokit.paginate = jest.fn().mockResolvedValue([{ id: 7, body: `Changes requested.\n\n${formatReviewRecord(round)}`, user: { login: 'manki-review[bot]' } }]);
     const client = createMockClient();
-    jest.mocked(client.sendMessage).mockResolvedValue({ content: 'Fixed. The guard now runs first.' });
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: answer });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
       { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: blocking, findingTitle: 'This' },
     ]);
@@ -799,13 +802,12 @@ describe('handleReviewCommentReply', () => {
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
 
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
     if (pointer) {
-      expect(client.sendMessage).not.toHaveBeenCalled();
-      expect(body).toBe(`${pointer}\n\n<!-- manki -->`);
+      expect(body).toMatch(new RegExp(`^${pointer.replace(/[.*+?^${}()|[\]\\`]/g, '\\$&')}\n\n<!-- manki -->\n<!-- manki-reply-record: `));
       expect(state.resolveReviewThread).not.toHaveBeenCalled();
     } else {
-      expect(client.sendMessage).toHaveBeenCalledTimes(1);
-      expect(body).toMatch(/^Fixed\. The guard now runs first\./);
+      expect(body.startsWith(answer)).toBe(true);
     }
   });
 

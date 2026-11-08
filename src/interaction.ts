@@ -129,33 +129,27 @@ async function findBotThread(
 const MAX_ROUND_REASON_CHARS = 300;
 
 /**
- * Returns the latest round's evaluation of the blocking or security thread rooted at `rootCommentId` when that round
- * reviewed `head` and finished after the reply written at `repliedAt`. The reply was queued behind that round, so its
- * judgment is the newer one, and a verdict of the reply run could contradict it. Any other thread is answered as usual,
- * since a deferral or a withdrawal there can still resolve it.
+ * Returns the latest round's evaluation of `thread` when that round reviewed `head`, finished after the reply written at
+ * `repliedAt`, and did not find the thread addressed. The reply was queued behind that round, so its judgment is the
+ * newer one, and a "Fixed." from the reply run would contradict it.
  */
-async function roundEvaluationAfterReply(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, rootCommentId: number,
+async function openAfterRound(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, thread: ReviewThread,
   head: string | undefined, repliedAt: string | undefined,
 ): Promise<{ commit: string; evaluation: ThreadEvaluation } | undefined> {
   const latest = (await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber)).priorRounds.at(-1);
   if (!latest || !head || latest.meta.commitSha !== head) return undefined;
   if (!(Date.parse(latest.meta.timestamp) > Date.parse(repliedAt ?? ''))) return undefined;
-  const thread = await findBotThread(octokit, bot, owner, repo, prNumber, rootCommentId).catch((error: unknown) => {
-    core.warning(`Failed to read the thread of the reply: ${error}`);
-    return undefined;
-  });
-  const evaluation = thread && isGuarded(thread) ? latest.judge.threadEvaluations?.find(e => e.threadId === thread.id) : undefined;
-  return evaluation && { commit: head, evaluation };
+  const evaluation = latest.judge.threadEvaluations?.find(e => e.threadId === thread.id);
+  return evaluation && evaluation.status !== 'addressed' ? { commit: head, evaluation } : undefined;
 }
 
-/** The answer to a reply that a newer round on the same commit already judged, pointing at that judgment. */
+/** The answer in place of a "Fixed." that a newer round on the same commit contradicts, pointing at its judgment. */
 function roundPointer(commit: string, { status, reason }: ThreadEvaluation): string {
   const round = `The review of \`${commit.slice(0, 7)}\`, which finished after this reply, `;
   const why = safeTruncate(reason.trim(), MAX_ROUND_REASON_CHARS);
-  if (status === 'addressed') return `${round}already found this addressed.`;
-  if (status === 'uncertain') return `${round}could not tell whether this is addressed${why ? `: ${why}` : '.'}`;
-  return `${round}still finds this open${why ? `: ${why}` : '.'}`;
+  const finding = status === 'uncertain' ? 'could not tell whether this is addressed' : 'still finds this open';
+  return `${round}${finding}${why ? `: ${why}` : '.'}`;
 }
 
 /**
@@ -283,16 +277,6 @@ export async function handleReviewCommentReply(
     // Acknowledge the reply
     await reactToReviewComment(octokit, owner, repo, comment.id, 'eyes');
 
-    // A round that judged the thread after the reply was written has the last word, so this run adds no verdict.
-    const head = github.context.payload.pull_request?.head?.sha as string | undefined;
-    const judged = await roundEvaluationAfterReply(octokit, bot, owner, repo, prNumber, root.id, head, comment.created_at);
-    if (judged) {
-      await octokit.rest.pulls.createReplyForReviewComment({
-        owner, repo, pull_number: prNumber, comment_id: comment.id, body: withMarkers(roundPointer(judged.commit, judged.evaluation), BOT_MARKER),
-      });
-      core.info(`Deferred the reply to the review of ${judged.commit.slice(0, 7)}, which judged the thread ${judged.evaluation.status}`);
-      return;
-    }
 
     // Fetch the PR diff scoped to the file under discussion
     let diffContext = '';
@@ -334,6 +318,18 @@ export async function handleReviewCommentReply(
         return undefined;
       })
       : undefined;
+    // A round that finished after the reply, on the same head, has the newer judgment of a blocking or security thread.
+    const contradicted = outcome === 'Fixed' && thread && isGuarded(thread)
+      ? await openAfterRound(octokit, bot, owner, repo, prNumber, thread, github.context.payload.pull_request?.head?.sha, comment.created_at)
+      : undefined;
+    if (contradicted) {
+      await octokit.rest.pulls.createReplyForReviewComment({
+        owner, repo, pull_number: prNumber, comment_id: comment.id,
+        body: withMarkers(roundPointer(contradicted.commit, contradicted.evaluation), BOT_MARKER, response.record),
+      });
+      core.info(`Deferred the reply to the review of ${contradicted.commit.slice(0, 7)}, which found the thread ${contradicted.evaluation.status}`);
+      return;
+    }
     const staysOpen = !!thread && !thread.isResolved && isGuarded(thread) && !mayClear;
 
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
