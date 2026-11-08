@@ -45,7 +45,7 @@ memory:
   repo: "<owner>/review-memory"
 ```
 
-With the manki-review App, Manki writes memory with the App's memory token, so no secret is needed. Without the App, set the `REVIEW_MEMORY_TOKEN` secret (see [Review memory token](#review-memory-token)). A `memory_repo_token` that is set always wins over the App's token, so leave it unset when you use the App.
+With the manki-review App, Manki writes memory with the App's memory token, so no secret is needed. For a memory repo the App's memory token does not cover, set the `REVIEW_MEMORY_TOKEN` secret (see [Review memory token](#review-memory-token)). A `memory_repo_token` that is set always wins over the App's token, so leave it unset when you use the App.
 
 ## How memory works
 

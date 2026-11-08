@@ -21,18 +21,9 @@ Install Manki on a GitHub repository: the App, a provider credential and the wor
    - Set to 1 required review. Manki's APPROVE counts as a review
    - Check **"Dismiss stale pull request approvals when new commits are pushed"**
 
-### Allow GitHub Actions to approve pull requests (only without the App)
-
-Only needed when Manki runs without the [GitHub App](#step-1-install-the-github-app) and posts with the workflow token. With the App, leave it off. This setting lets every workflow approve PRs with `GITHUB_TOKEN`, so anyone who can push a workflow change can approve their own PR. Without it, Manki on the workflow token cannot post APPROVE or REQUEST_CHANGES, and CI shows "Failed to post APPROVE review".
-
-1. Go to **Settings > Actions > General**
-2. Scroll to **Workflow permissions**
-3. Check **"Allow GitHub Actions to create and approve pull requests"**
-4. Click Save
-
 > **Note**: If the action finds blocking issues, it posts REQUEST_CHANGES which blocks the merge. Non-blocking suggestions still result in APPROVE.
 
-When Manki posts a new review, it dismisses its own earlier REQUEST_CHANGES review. If a ruleset turns on **Restrict who can dismiss reviews** (in its **Require a pull request before merging** rule), add the identity Manki posts as to the allowed actors: the Manki app, or GitHub Actions when Manki runs without the app. Otherwise GitHub refuses the dismissal, and the old REQUEST_CHANGES keeps blocking the merge after Manki approves.
+When Manki posts a new review, it dismisses its own earlier REQUEST_CHANGES review. If a ruleset turns on **Restrict who can dismiss reviews** (in its **Require a pull request before merging** rule), add the App Manki posts as to the allowed actors: the Manki app, or your own App. Otherwise GitHub refuses the dismissal, and the old REQUEST_CHANGES keeps blocking the merge after Manki approves.
 
 ## Step 1: Install the GitHub App
 
@@ -428,7 +419,7 @@ Manki's newest progress comment ends with a settings block. It holds a status li
 |---------|----------|
 | "spawn claude ENOENT" | Add the "Install Claude Code CLI" step before the action |
 | "Claude subscription limit reached" or another quota message | The provider's limit is used up. Wait for the reset time the review names, or switch to another token or key |
-| "Failed to post APPROVE review" | Install the [GitHub App](#step-1-install-the-github-app), or without it enable "Allow GitHub Actions to create and approve pull requests" in repo settings (see [the risk](#allow-github-actions-to-approve-pull-requests-only-without-the-app)) |
+| "Failed to post APPROVE review" | Check that the [GitHub App](#step-1-install-the-github-app) is installed on the repo with **Pull requests** read and write |
 | Review says "No reviewable files" | Check `exclude_paths` in config -- dotfiles are included by default |
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
 | No run starts | The Manki workflow must be on the default branch and declare the dispatch inputs, no other workflow may run Manki on events, and the repository's account must be one the service serves (see [Step 3](#step-3-add-the-workflow)) |

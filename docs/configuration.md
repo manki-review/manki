@@ -118,7 +118,7 @@ reviewers:
   - name: "Protocol Compliance"
     focus: "DIP compliance, consensus rules"
 
-# Review memory (uses the App's memory token, or a REVIEW_MEMORY_TOKEN secret without the App)
+# Review memory (uses the App's memory token, or a REVIEW_MEMORY_TOKEN secret for another memory repo)
 memory:
   enabled: true
   repo: "<owner>/review-memory"
