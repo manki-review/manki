@@ -182,6 +182,13 @@ describe('formatFindingComment', () => {
       .toMatch(/<summary>How this was checked<\/summary>\n\n- (very long check ){9}very long check…\n/);
     expect(formatFindingComment({ ...baseFinding, evidence: { checks: [], proof: [] } })).not.toContain('How this was checked');
     expect(formatFindingComment(baseFinding)).not.toContain('How this was checked');
+
+    // A disproof keeps a security warning, so its line names security findings, not only blockers.
+    const disproved = formatFindingComment({
+      ...baseFinding, severity: 'warning', tags: ['security'], evidence: { checks: [], proof: ['src/main.ts:42'] },
+      refutation: { outcome: 'disproved', reason: 'A comment says it is intended.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc' },
+    });
+    expect(disproved).toContain('- The judge found a reason it may not happen, but a disproof alone never clears a blocker or a security finding: A comment says it is intended.');
   });
 
   it('omits the fix when there is none', () => {
