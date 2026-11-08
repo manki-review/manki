@@ -10,7 +10,9 @@ const FINDER_FOCUS = `defects in the change. Check, in this order:
 2. Security: injection, authentication or permission bypass, secret or token exposure, unsafe handling of untrusted input. A security defect always blocks the merge, so report every one you find.
 3. Error paths: a failure that is swallowed, loses its cause, or leaves state half changed.
 4. Tests that cannot fail: assertions that pass whatever the code does, or mocks that replace the code under test.
-5. Contract breaks: changed behavior of an API, config key, file or wire format, or stored data that existing callers rely on.`;
+5. Contract breaks: changed behavior of an API, config key, file or wire format, or stored data that existing callers rely on.
+
+A PR can hold several defects of different kinds. Look for all of them, not only the first or the worst.`;
 
 /** Returns the finder every non-trivial round runs. Each custom reviewer becomes one more line to check. */
 export function buildFinderAgent(customReviewers: readonly ReviewerAgent[]): ReviewerAgent {
