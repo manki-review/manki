@@ -3,9 +3,9 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
-import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState, TokenServiceError } from './auth';
+import { AuthResult, createAuthenticatedOctokit, fetchPrState, reportPrState, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
-import { changedKeys, loadConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
+import { changedKeys, loadConfig, resolveFallbackModel, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
@@ -15,7 +15,7 @@ import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedE
 import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
-import { loadMemory, RepoMemory } from './memory';
+import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
@@ -433,7 +433,7 @@ async function handleMergedPullRequest(): Promise<void> {
     return;
   }
 
-  const { octokit, bot, appMemory } = await getAuth();
+  const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
   const configPath = core.getInput('config_path') || '.manki.yml';
   const configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath);
@@ -443,16 +443,8 @@ async function handleMergedPullRequest(): Promise<void> {
     return;
   }
 
-  let memory: { octokit: Octokit; repo: string } | undefined;
-  if (config.memory?.enabled) {
-    const memoryRepo = resolveMemoryRepo(config.memory, owner);
-    const memoryToken = await getMemoryToken(appMemory, memoryRepo);
-    if (memoryToken) {
-      memory = { octokit: github.getOctokit(memoryToken), repo: memoryRepo };
-    } else {
-      core.info('The fix rate goes to the job summary only');
-    }
-  }
+  const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, pr.number);
+  if (!memory) core.info('The fix rate goes to the job summary only');
 
   await recordFixRate(octokit, bot, owner, repo, {
     number: pr.number,
@@ -940,22 +932,24 @@ async function warmUpClients(clients: ReviewClients): Promise<void> {
 }
 
 async function loadRunMemory(
-  config: ReviewConfig, appMemory: AppMemory | undefined, owner: string, repo: string,
-): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string }> {
+  octokit: Octokit, config: ReviewConfig, owner: string, repo: string, prNumber: number,
+): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string; memorySkip?: MemorySkip }> {
   if (!config.memory?.enabled) {
     return { memory: null, memoryLoadStatus: 'disabled' };
   }
-  const memoryRepo = resolveMemoryRepo(config.memory, owner);
-  const memoryToken = await getMemoryToken(appMemory, memoryRepo);
-  if (!memoryToken) {
-    return { memory: null, memoryLoadStatus: 'no_token' };
+  const { store, skip } = await openMemoryStore(octokit, config.memory, owner, repo, prNumber);
+  if (!store) {
+    return { memory: null, memoryLoadStatus: 'skipped', memorySkip: skip };
   }
-  const memoryOctokit = github.getOctokit(memoryToken);
   try {
-    const memory = await loadMemory(memoryOctokit, memoryRepo, repo);
+    const memory = await loadMemory(store);
     core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
     return { memory, memoryLoadStatus: 'loaded' };
   } catch (error) {
+    if (error instanceof MemoryRefusedError) {
+      core.warning(`Memory is skipped: ${error.skip.message}`);
+      return { memory: null, memoryLoadStatus: 'skipped', memorySkip: error.skip };
+    }
     const message = error instanceof Error ? error.message : String(error);
     const sanitized = sanitizeTokens(message);
     core.warning(`Failed to load review memory: ${sanitized}`);
@@ -1424,6 +1418,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     existingThreads: recap.previousFindings,
     draft: run.options.draft,
     configFailed: configFailed(run.reviewSource),
+    memorySkip: run.memorySkip?.message,
     skipped: { excluded: run.excludedFiles, binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
@@ -1432,14 +1427,14 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
   return posted;
 }
 
-function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: string, teamAgents: string[]): ReviewMetadata['config'] {
+function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: string, teamAgents: string[], memorySkip?: MemorySkip): ReviewMetadata['config'] {
   return {
     reviewerModel: models.reviewer,
     judgeModel: models.judge,
     triage,
     teamAgents,
     memoryEnabled: config.memory?.enabled ?? false,
-    memoryRepo: config.memory?.repo ?? '',
+    memoryRepo: memorySkip ? `skipped: ${memorySkip.reason}` : config.memory?.repo || 'central',
   };
 }
 
@@ -1525,7 +1520,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
     ? `trivial=${result.triage.trivial}, subtle=${result.triage.subtle}, paired=${result.triage.paired} (${result.plannerSource ?? 'planner'}${result.sensitivePaths ? ', security-sensitive paths' : ''}${result.ciOrDependencyPaths ? ', CI or dependency paths' : ''})`
     : 'none';
   const metadata: ReviewMetadata = {
-    config: metadataConfig(config, models, triage, result.agentNames),
+    config: metadataConfig(config, models, triage, result.agentNames, run.memorySkip),
     judgeDecisions,
     timing,
   };
@@ -1595,7 +1590,7 @@ async function runFullReview(
 
   const startTime = Date.now();
   const configPath = core.getInput('config_path') || '.manki.yml';
-  const { octokit, bot, appMemory } = await getAuth();
+  const { octokit, bot } = await getAuth();
   const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef };
 
   const headMoved = new AbortController();
@@ -1681,7 +1676,7 @@ async function runFullReview(
     await warmUpClients(clients);
 
     const repoContext = await fetchRepoContext(target.octokit, target.owner, target.repo, target.baseRef, diff.files.map(f => f.path));
-    const { memory, memoryLoadStatus, memoryLoadError } = await loadRunMemory(config, appMemory, owner, repo);
+    const { memory, memoryLoadStatus, memoryLoadError, memorySkip } = await loadRunMemory(octokit, config, owner, repo, prNumber);
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
@@ -1703,7 +1698,7 @@ async function runFullReview(
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
-      diff, changeDigest: digest, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, staticAnalysis,
+      diff, changeDigest: digest, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
       commentId, dashboard, progress, startTime, parseEndTime,
     };
 
@@ -1851,7 +1846,7 @@ async function handleInteraction(): Promise<void> {
 
   const configPathInput = core.getInput('config_path');
 
-  const { octokit, bot, appMemory } = await getAuth();
+  const { octokit, bot } = await getAuth();
 
   const { owner, repo } = github.context.repo;
   const prNumber = github.context.payload.issue?.number;
@@ -1869,10 +1864,9 @@ async function handleInteraction(): Promise<void> {
   if (!built) return;
   const { client } = built;
 
-  const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? (await getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner))) ?? undefined : undefined;
+  const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, prNumber);
 
-  await handlePRComment(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken, config);
+  await handlePRComment(octokit, bot, client, owner, repo, prNumber, memory, config);
 }
 
 async function handleIssueInteraction(): Promise<void> {
@@ -1886,17 +1880,16 @@ async function handleIssueInteraction(): Promise<void> {
   const issueNumber = payload.issue?.number;
   if (!issueNumber) return;
 
-  const { octokit, bot, appMemory } = await getAuth();
+  const { octokit, bot } = await getAuth();
   const configPathInput = core.getInput('config_path');
 
   const configPath = configPathInput || '.manki.yml';
   const configContent = await fetchConfigFile(octokit, owner, repo, 'main', configPath);
   const config = loadConfig(configContent ?? undefined, configPath);
 
-  const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? (await getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner))) ?? undefined : undefined;
+  const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, issueNumber);
 
-  await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memoryConfig, memoryToken, config);
+  await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memory, config);
 }
 
 async function handleReviewCommentInteraction(): Promise<void> {
@@ -1929,7 +1922,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
 
   const configPathInput = core.getInput('config_path');
 
-  const { octokit, bot, appMemory } = await getAuth();
+  const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
 
   const baseRef = payload.pull_request?.base?.ref ?? 'main';
@@ -1941,34 +1934,31 @@ async function handleReviewCommentInteraction(): Promise<void> {
   if (!built) return;
   const { client } = built;
 
-  const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? (await getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner))) ?? undefined : undefined;
+  const prNumber: number | undefined = payload.pull_request?.number;
+  const memory = prNumber ? (await openMemoryStore(octokit, config.memory, owner, repo, prNumber)).store : undefined;
 
   const command = parseCommand(body);
   if (command.type !== 'generic') {
-    const prNumber = payload.pull_request?.number;
     if (prNumber) {
-      await handleReviewCommentCommand(octokit, bot, owner, repo, prNumber, comment.id, command, memoryConfig, memoryToken);
+      await handleReviewCommentCommand(octokit, bot, owner, repo, prNumber, comment.id, command, memory);
     } else {
       core.warning('Cannot handle command — pull request number not available');
     }
   } else {
-    const prNumber = payload.pull_request?.number;
     if (!prNumber) {
       core.warning('Cannot handle reply — pull request number not available');
       return;
     }
     const headSha: string | undefined = payload.pull_request?.head?.sha;
     const loadWorkspace = async () => headSha ? fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha }, [client]) : undefined;
-    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken, loadWorkspace);
+    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memory, loadWorkspace);
   }
 
   // Check if all review threads are now resolved (e.g. the reply resolved the last conversation)
-  const prNum = payload.pull_request?.number;
-  if (prNum && config.auto_approve) {
-    const approved = await checkAndAutoApprove(octokit, bot, owner, repo, prNum, config);
+  if (prNumber && config.auto_approve) {
+    const approved = await checkAndAutoApprove(octokit, bot, owner, repo, prNumber, config);
     if (approved) {
-      core.info(`PR #${prNum} auto-approved after all findings resolved`);
+      core.info(`PR #${prNumber} auto-approved after all findings resolved`);
     }
   }
 }

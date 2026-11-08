@@ -4,50 +4,12 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 
-import { AppMemory, changeThreadThroughService, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState, resolveGitHubToken, TokenResult, TokenServiceError } from './auth';
+import { changeThreadThroughService, createAuthenticatedOctokit, fetchPrState, reportPrState, resolveGitHubToken, TokenResult, TokenServiceError } from './auth';
 
 jest.mock('@actions/core');
 jest.mock('@actions/github');
 
 const mockGetInput = core.getInput as jest.MockedFunction<typeof core.getInput>;
-
-describe('getMemoryToken', () => {
-  const MEMORY_REPO = 'owner/review-memory';
-  const SERVICE_MEMORY: AppMemory = { tokenFor: async (repo) => (repo === MEMORY_REPO ? 'app-memory-token' : null) };
-
-  beforeEach(() => {
-    mockGetInput.mockReset();
-    jest.mocked(core.warning).mockClear();
-  });
-
-  it('prefers memory_repo_token over the App memory token, for any memory repo', async () => {
-    mockGetInput.mockImplementation((name: string) => (name === 'memory_repo_token' ? 'memory-token-123' : 'github-token-456'));
-
-    expect(await getMemoryToken(SERVICE_MEMORY, MEMORY_REPO)).toBe('memory-token-123');
-    expect(await getMemoryToken(SERVICE_MEMORY, 'acme/team-memory')).toBe('memory-token-123');
-    expect(await getMemoryToken(undefined, MEMORY_REPO)).toBe('memory-token-123');
-    expect(core.warning).not.toHaveBeenCalled();
-  });
-
-  it('returns the App memory token for the repo it covers', async () => {
-    mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'github-token-456' : ''));
-
-    expect(await getMemoryToken(SERVICE_MEMORY, MEMORY_REPO)).toBe('app-memory-token');
-    expect(core.warning).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['no App memory token', undefined, MEMORY_REPO],
-    ['an App memory token for another repo', SERVICE_MEMORY, 'acme/team-memory'],
-  ])('returns null with one warning for %s instead of falling back to github_token', async (_case, appMemory, memoryRepo) => {
-    mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'github-token-456' : ''));
-
-    expect(await getMemoryToken(appMemory, memoryRepo)).toBeNull();
-    expect(core.warning).toHaveBeenCalledTimes(1);
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining(`\`${memoryRepo}\``));
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('memory_repo_token'));
-  });
-});
 
 const TOKEN_URL = 'https://manki-api.dustinface.me/token';
 const OWNER = 'test-owner';
@@ -82,30 +44,7 @@ describe('resolveGitHubToken', () => {
     expect(call[0]).toBe(TOKEN_URL);
     expect(call[1].headers['Authorization']).toBe('Bearer fake-oidc-token');
     expect(call[1].method).toBe('POST');
-    expect(JSON.parse(call[1].body)).toEqual({ owner: OWNER, repo: REPO, memory: true });
-  });
-
-  it('returns the memory token next to the app token and masks both', async () => {
-    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
-    mockFetch(async () => Response.json({
-      token: APP_TOKEN,
-      expires_at: '2026-03-28T12:00:00Z',
-      memory_token: 'ghs_memory',
-      memory_expires_at: '2026-03-28T12:00:00Z',
-    }));
-
-    const result = await resolveGitHubToken(TOKEN_URL, OWNER, REPO);
-
-    expect(result).toEqual<TokenResult>({ token: APP_TOKEN, memoryToken: 'ghs_memory' });
-    expect(core.setSecret).toHaveBeenCalledWith(APP_TOKEN);
-    expect(core.setSecret).toHaveBeenCalledWith('ghs_memory');
-  });
-
-  it.each([['an empty', ''], ['a numeric', 42], ['a null', null]])('ignores %s memory token', async (_case, memoryToken) => {
-    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
-    mockFetch(async () => Response.json({ token: APP_TOKEN, expires_at: '2026-03-28T12:00:00Z', memory_token: memoryToken }));
-
-    expect(await resolveGitHubToken(TOKEN_URL, OWNER, REPO)).toEqual<TokenResult>({ token: APP_TOKEN });
+    expect(JSON.parse(call[1].body)).toEqual({ owner: OWNER, repo: REPO });
   });
 
   const tokenReply = () => Response.json({ token: APP_TOKEN, expires_at: '2026-03-28T12:00:00Z' });
@@ -294,10 +233,7 @@ describe('createAuthenticatedOctokit', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const mockAuth: any = jest.fn()
       .mockResolvedValueOnce({ token: 'app-jwt-token' })
-      .mockResolvedValueOnce({ token: 'installation-token-abc' })
-      .mockResolvedValueOnce({ token: 'memory-token-def' })
-      .mockRejectedValueOnce(Object.assign(new Error('Not installed on that repo'), { status: 422 }))
-      .mockRejectedValueOnce(Object.assign(new Error('Bad gateway'), { status: 502 }));
+      .mockResolvedValueOnce({ token: 'installation-token-abc' });
     mockAuth.hook = jest.fn();
     mockCreateAppAuth.mockReturnValue(mockAuth);
 
@@ -321,27 +257,6 @@ describe('createAuthenticatedOctokit', () => {
     expect(result.octokit).toBeDefined();
     expect(result.bot).toEqual({ logins: ['acme-reviewer[bot]'] });
 
-    // The memory token is minted per memory repo, with only `contents: write`, and never reuses the review token.
-    expect(await getMemoryToken(result.appMemory, 'test-owner/team-memory')).toBe('memory-token-def');
-    expect(mockAuth).toHaveBeenLastCalledWith({
-      type: 'installation', installationId: 999, repositoryNames: ['team-memory'], permissions: { contents: 'write' },
-    });
-    expect(core.setSecret).toHaveBeenCalledWith('memory-token-def');
-
-    jest.mocked(core.warning).mockClear();
-    expect(await getMemoryToken(result.appMemory, 'test-owner/not-installed')).toBeNull();
-    expect(await getMemoryToken(result.appMemory, 'other-owner/review-memory')).toBeNull();
-    expect(core.warning).toHaveBeenCalledTimes(2);
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('`test-owner/not-installed`'));
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('memory_repo_token'));
-
-    // A transient failure names its cause instead of the setup advice.
-    jest.mocked(core.warning).mockClear();
-    expect(await getMemoryToken(result.appMemory, 'test-owner/team-memory-2')).toBeNull();
-    expect(mockAuth).toHaveBeenCalledTimes(5);
-    expect(core.warning).toHaveBeenCalledTimes(1);
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Bad gateway'));
-    expect(core.warning).not.toHaveBeenCalledWith(expect.stringContaining('memory_repo_token'));
   });
 
   it('throws when github_app_id is not a number', async () => {
@@ -382,10 +297,7 @@ describe('createAuthenticatedOctokit', () => {
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('giving up after 2 retries'));
   });
 
-  it.each([
-    ['the service\'s memory token', { memory_token: 'ghs_memory' }, 'ghs_memory'],
-    ['no memory token from a service that predates it', {}, null],
-  ])('passes %s to getMemoryToken, never the review token', async (_case, extra, expected) => {
+  it('posts as the manki-review App with the token service\'s token', async () => {
     mockGetInput.mockImplementation((name: string) => {
       if (name === 'github_app_id') return '';
       if (name === 'github_app_private_key') return '';
@@ -395,16 +307,13 @@ describe('createAuthenticatedOctokit', () => {
     });
 
     jest.spyOn(core, 'getIDToken').mockResolvedValue('oidc-token');
-    mockFetch(async () => Response.json({ token: 'resolved-app-token', expires_at: '2026-12-31T00:00:00Z', ...extra }));
+    mockFetch(async () => Response.json({ token: 'resolved-app-token', expires_at: '2026-12-31T00:00:00Z' }));
     mockGetOctokit.mockReturnValue({} as ReturnType<typeof github.getOctokit>);
 
     const result = await createAuthenticatedOctokit();
 
     expect(result.bot).toEqual({ logins: ['manki-review[bot]'] });
     expect(mockGetOctokit).toHaveBeenCalledWith('resolved-app-token', expect.anything(), retry, throttling, expect.any(Function));
-    expect(await getMemoryToken(result.appMemory, `${OWNER}/review-memory`)).toBe(expected);
-    expect(await getMemoryToken(result.appMemory, 'Test-Owner/Review-Memory')).toBe(expected);
-    expect(await getMemoryToken(result.appMemory, `${OWNER}/team-memory`)).toBeNull();
   });
 
   it('uses custom manki_token_url when provided', async () => {

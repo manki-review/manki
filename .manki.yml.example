@@ -183,13 +183,15 @@
 
 # On merge, count per severity and specialist how many posted findings were fixed,
 # dismissed or left untouched. Needs `closed` in the workflow's `pull_request` types.
-# Written to the job summary, and appended to `<repo>/metrics/fix-rate.jsonl` in the
-# memory repo when memory is enabled. Default: on when `memory.enabled` is true.
+# Written to the job summary, and appended to `metrics/fix-rate.jsonl` in the
+# repo's memory when memory is enabled. Default: on when `memory.enabled` is true.
 # metrics:
 #   fix_rate: true
 
-# Review memory (requires memory_repo_token)
-# Stores learnings and suppressions to improve reviews over time
+# Review memory: stores learnings and suppressions to improve reviews over time.
+# Without `repo`, a public repo's memory lives in the central memory repository
+# and needs no token. A repo of your own needs the `memory_repo_token` input, and
+# a private repo needs one that is private and has the same owner.
 # memory:
 #   enabled: false
-#   repo: ""  # defaults to {owner}/review-memory
+#   repo: ""

@@ -1396,18 +1396,26 @@ export interface RoundDedup {
   durationMs?: number;
 }
 
-export type MemoryLoadStatus = 'loaded' | 'disabled' | 'no_token' | 'failed';
+export type MemoryLoadStatus = 'loaded' | 'disabled' | 'skipped' | 'failed';
+
+/**
+ * Why memory was skipped. A private repo never uses the central memory, and uses its own `memory.repo` only when that
+ * repo is private and has the same owner. `refused` is the token service answering 403.
+ */
+export type MemorySkipReason = 'private_repo' | 'no_token' | 'memory_repo_unreadable' | 'memory_repo_public' | 'memory_repo_other_owner' | 'refused';
 
 export interface RoundMemory {
   suppressionsApplied?: number;
   /**
    * Outcome of the memory-load step. `disabled` when `config.memory.enabled`
-   * is false, `no_token` when memory is enabled but no token was available,
+   * is false, `skipped` with `skipReason` when the run may not use memory,
    * `failed` when the load attempt threw, `loaded` on success. Optional so
    * legacy context blocks parse cleanly; absence is treated as `loaded` when
    * `suppressionsApplied` is present.
    */
   loadStatus?: MemoryLoadStatus;
+  /** Set when `loadStatus === 'skipped'`. */
+  skipReason?: MemorySkipReason;
   /** Truncated error message recorded when `loadStatus === 'failed'`. */
   loadError?: string;
 }

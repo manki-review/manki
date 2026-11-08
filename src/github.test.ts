@@ -1233,6 +1233,16 @@ describe('postReview body lead', () => {
     expect(mockGet).not.toHaveBeenCalled();
   });
 
+  it('names why memory was skipped and the fix under the lead, and keeps the approval', async () => {
+    const approved = await postedBody(ready);
+    const memorySkip = 'this repo is private, and the central memory repository keeps only public repos\' memory. Set `memory.repo` to a private memory repo of the same owner, and pass `memory_repo_token`.';
+    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { memorySkip });
+    const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
+    const [lead, ...rest] = approved.body.split('\n\n');
+    expect([event, approvalHeld]).toEqual(['APPROVE', false]);
+    expect(body).toBe([lead, `**Memory skipped:** ${memorySkip}`, ...rest].join('\n\n'));
+  });
+
   it('holds the approval of a READY round as a COMMENT for a person when a changed file went unread, and marks it so', async () => {
     const approved = await postedBody(ready);
     mockGet.mockClear();

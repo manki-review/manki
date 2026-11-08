@@ -103,7 +103,7 @@ static_analysis:
 
 # On merge, count per severity and reviewer how many posted findings were
 # fixed, dismissed or left untouched. Written to the job summary, and appended
-# to `<repo>/metrics/fix-rate.jsonl` in the memory repo when memory is enabled.
+# to `metrics/fix-rate.jsonl` in the repo's memory when memory is enabled.
 # Default: on when `memory.enabled` is true, off otherwise.
 # metrics:
 #   fix_rate: true
@@ -118,10 +118,11 @@ reviewers:
   - name: "Protocol Compliance"
     focus: "DIP compliance, consensus rules"
 
-# Review memory (uses the App's memory token, or a REVIEW_MEMORY_TOKEN secret for another memory repo)
+# Review memory, kept in the central memory repository for a public repo. Set
+# `repo` and the `memory_repo_token` input to use a memory repository of your
+# own instead. A private repo needs one, private and of the same owner.
 memory:
   enabled: true
-  repo: "<owner>/review-memory"
 ```
 
 [`.manki.yml.example`](../.manki.yml.example) has the same example with every default.
@@ -194,10 +195,10 @@ memory:
 | `convergence.test_path_patterns` | list of globs | `["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]` | Test files. From the second round, suggestions and nitpicks on them are dropped. |
 | `convergence.suppress_resolved_threads` | boolean | `true` | A finding whose thread a person resolved, or Manki resolved as addressed, suppresses matching findings in later rounds. |
 | `memory` | map | see below | Review memory. See [Review memory](memory.md). |
-| `memory.enabled` | boolean | `false` | Read learnings and suppressions, and write new ones. |
-| `memory.repo` | `owner/name` | none | The memory repository, such as `<owner>/review-memory`. |
+| `memory.enabled` | boolean | `false` | Read learnings and suppressions, and write new ones. Without `memory.repo`, a public repo's memory lives in the central memory repository, which holds only public repos' memory and which the token service reads and writes for the run. A private repo needs `memory.repo`. |
+| `memory.repo` | `owner/name` | none | Your own memory repository instead of the central one, such as `<owner>/review-memory`. Needs the `memory_repo_token` input, or memory is skipped with a warning. For a private repo, it must be private and have the same owner. |
 | `metrics` | map | none | Metrics Manki records. |
-| `metrics.fix_rate` | boolean | the value of `memory.enabled` | On merge, count per severity and finder how many posted findings were fixed, dismissed or left untouched. Written to the job summary, and to the memory repo when memory is on. |
+| `metrics.fix_rate` | boolean | the value of `memory.enabled` | On merge, count per severity and finder how many posted findings were fixed, dismissed or left untouched. Written to the job summary, and to the repo's memory when memory is on. |
 
 ### Deprecated settings
 

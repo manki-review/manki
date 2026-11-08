@@ -66,7 +66,6 @@ const mockOctokitInstance = {
 jest.mock('./auth', () => ({
   createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, bot: { logins: ['manki-review[bot]'] } }),
   TokenServiceError: jest.requireActual('./auth').TokenServiceError,
-  getMemoryToken: jest.fn().mockResolvedValue(null),
   changeThreadThroughService: jest.fn().mockResolvedValue(false),
   fetchPrState: jest.fn().mockResolvedValue(null),
   reportPrState: jest.fn().mockResolvedValue(undefined),
@@ -104,7 +103,6 @@ jest.mock('./config', () => {
     resolvePairModel,
     changedKeys: actual.changedKeys,
     resolveFallbackModel: jest.fn().mockImplementation(actual.resolveFallbackModel),
-    resolveMemoryRepo: actual.resolveMemoryRepo,
     resolveReviewerModel: jest.fn((config: ReviewConfig, ref: string | undefined) =>
       ref === '@reviewer_pair' ? resolvePairModel(config) : ref === undefined || ref === '@reviewer' ? resolveModel(config, 'reviewer') : ref),
   };
@@ -143,7 +141,11 @@ jest.mock('./interaction', () => ({
 
 jest.mock('./memory', () => ({
   loadMemory: jest.fn().mockResolvedValue(null),
+  openMemoryStore: jest.fn().mockResolvedValue({}),
+  MemoryRefusedError: jest.requireActual('./memory').MemoryRefusedError,
 }));
+
+const MEMORY_STORE = { name: 'test-owner/review-memory' } as memoryModule.MemoryStore;
 
 jest.mock('./recap', () => ({
   fetchRecapState: jest.fn().mockResolvedValue({ previousFindings: [], priorRounds: [] }),
@@ -424,7 +426,7 @@ describe('run', () => {
         memory: { enabled: memory, repo: '' },
         ...(fixRate !== undefined && { metrics: { fix_rate: fixRate } }),
       } as ReviewConfig);
-      if (toMemory) jest.mocked(authModule.getMemoryToken).mockResolvedValueOnce('memory-token');
+      if (toMemory) jest.mocked(memoryModule.openMemoryStore).mockResolvedValueOnce({ store: MEMORY_STORE });
       setContext({
         eventName: 'pull_request',
         payload: {
@@ -443,7 +445,7 @@ describe('run', () => {
       expect(fixRateModule.recordFixRate).toHaveBeenCalledWith(
         expect.anything(), TEST_BOT, 'test-owner', 'test-repo',
         { number: 7, headSha: 'head', mergedSha: 'merged', authorLogin: 'author' },
-        toMemory ? expect.objectContaining({ repo: 'test-owner/review-memory' }) : undefined,
+        toMemory ? MEMORY_STORE : undefined,
       );
       expect(ghUtils.postProgressComment).not.toHaveBeenCalled();
     });
@@ -667,7 +669,7 @@ describe('run', () => {
 
       expect(jest.mocked(interaction.handlePRComment)).toHaveBeenCalledWith(
         expect.anything(), TEST_BOT, null, 'test-owner', 'test-repo', 10,
-        undefined, undefined, expect.anything(),
+        undefined, expect.anything(),
       );
     });
   });
@@ -1201,7 +1203,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
 
     expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
     expect(jest.mocked(interaction.handleReviewCommentCommand)).toHaveBeenCalledWith(
-      expect.anything(), expect.anything(), 'test-owner', 'test-repo', 7, 99, { type: 'help', args: '' }, undefined, undefined,
+      expect.anything(), expect.anything(), 'test-owner', 'test-repo', 7, 99, { type: 'help', args: '' }, undefined,
     );
     const skipCalls = mockOctokitInstance.rest.issues.createComment.mock.calls.filter(
       (c: [{ body: string }]) => c[0].body.includes('Review skipped'),
@@ -1737,7 +1739,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: [] });
-    jest.mocked(authModule.getMemoryToken).mockResolvedValue(null);
+    jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({});
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: [] });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -3096,7 +3098,7 @@ describe('runFullReview orchestration', () => {
       reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
-    jest.mocked(authModule.getMemoryToken).mockResolvedValue('token123');
+    jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
       learnings: [], suppressions: [],
     });
@@ -3281,7 +3283,7 @@ describe('runFullReview orchestration', () => {
         reviewers: [], instructions: '',
         memory: { enabled: true, repo: 'owner/memory' },
       });
-      jest.mocked(authModule.getMemoryToken).mockResolvedValue('token123');
+      jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
       jest.mocked(memoryModule.loadMemory).mockResolvedValue({
         learnings: [], suppressions: [],
       });
@@ -3589,6 +3591,36 @@ describe('runFullReview orchestration', () => {
       expect(rc!.memory.loadError).toBeUndefined();
     });
 
+    it.each([
+      ['memory may not be opened', () => {
+        jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ skip: { reason: 'private_repo', message: 'this repo is private.' } });
+      }, 'private_repo', 'this repo is private.'],
+      ['the token service refuses the read', () => {
+        jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
+        jest.mocked(memoryModule.loadMemory).mockRejectedValue(new memoryModule.MemoryRefusedError('read'));
+      }, 'refused', expect.stringContaining('the token service refused memory for this run')],
+    ])('records the skip reason and shows it in the review body when %s', async (_case, arrange, reason, message) => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({
+        auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
+        reviewers: [], instructions: '',
+        memory: { enabled: true, repo: '' },
+      });
+      arrange();
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', outcome: 'READY' as const, summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+      });
+
+      await callRunFullReview();
+
+      const call = jest.mocked(ghUtils.postReview).mock.calls[0];
+      expect(call[7]!.memory).toMatchObject({ loadStatus: 'skipped', skipReason: reason });
+      expect(call[9]).toMatchObject({ memorySkip: message });
+      const metadata = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![5];
+      expect(metadata?.config.memoryRepo).toBe(`skipped: ${reason}`);
+    });
+
     it('populates `recap` with `priorRoundCount`, `reclassifiedPriorCount`, and `reclassifiedPriors`', async () => {
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
         previousFindings: [],
@@ -3646,7 +3678,7 @@ describe('runFullReview orchestration', () => {
         files: [pinTestFile], totalAdditions: 10, totalDeletions: 5,
       });
       jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [pinTestFile], excluded: [] });
-      jest.mocked(authModule.getMemoryToken).mockResolvedValue('token123');
+      jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
       jest.mocked(memoryModule.loadMemory).mockResolvedValue({
         learnings: [], suppressions: [],
       });
@@ -3991,7 +4023,7 @@ describe('runFullReview orchestration', () => {
       instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
-    jest.mocked(authModule.getMemoryToken).mockResolvedValue('token123');
+    jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
 
     const memory = { learnings: [], suppressions: [] };
     jest.mocked(memoryModule.loadMemory).mockResolvedValue(memory);
@@ -4451,7 +4483,7 @@ describe('runFullReview orchestration', () => {
       instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
-    jest.mocked(authModule.getMemoryToken).mockResolvedValue('token123');
+    jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
 
     const memory = {
       learnings: [],
@@ -4778,7 +4810,7 @@ describe('runFullReview orchestration', () => {
       reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
-    jest.mocked(authModule.getMemoryToken).mockResolvedValue('token123');
+    jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
       learnings: [], suppressions: [],
     });
@@ -4842,7 +4874,7 @@ describe('runFullReview orchestration', () => {
       reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
-    jest.mocked(authModule.getMemoryToken).mockResolvedValue('token123');
+    jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
       learnings: [], suppressions: [],
     });
@@ -4893,7 +4925,7 @@ describe('runFullReview orchestration', () => {
       reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
-    jest.mocked(authModule.getMemoryToken).mockResolvedValue('token123');
+    jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
       learnings: [], suppressions: [],
     });
@@ -5074,7 +5106,7 @@ describe('runFullReview orchestration', () => {
       reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
-    jest.mocked(authModule.getMemoryToken).mockResolvedValue('token123');
+    jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
       learnings: [], suppressions: [],
     });
@@ -5130,7 +5162,7 @@ describe('runFullReview orchestration', () => {
       reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
-    jest.mocked(authModule.getMemoryToken).mockResolvedValue('token123');
+    jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
       learnings: [], suppressions: [],
     });
@@ -5567,7 +5599,7 @@ describe('runFullReview orchestration', () => {
     }
 
     beforeEach(() => {
-      jest.mocked(authModule.getMemoryToken).mockResolvedValue('mem-token');
+      jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({ store: MEMORY_STORE });
       jest.mocked(memoryModule.loadMemory).mockResolvedValue({
         learnings: [], suppressions: [],
       });
@@ -6280,8 +6312,7 @@ describe('handleInteraction', () => {
       TEST_BOT,
       expect.anything(),  // claude client
       'test-owner', 'test-repo', 7,
-      undefined,          // memoryConfig (memory not enabled)
-      undefined,          // memoryToken
+      undefined,          // memory (not enabled)
       expect.anything(),  // config
     );
   });
@@ -6542,7 +6573,7 @@ describe('handleIssueInteraction', () => {
       TEST_BOT,
       null,               // no claude client for issue interactions
       'test-owner', 'test-repo', 15,
-      undefined, undefined, expect.anything(),
+      undefined, expect.anything(),
     );
   });
 });
@@ -6803,7 +6834,7 @@ describe('runFullReview config and dedupe', () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-    jest.mocked(authModule.getMemoryToken).mockResolvedValue(null);
+    jest.mocked(memoryModule.openMemoryStore).mockResolvedValue({});
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
