@@ -427,11 +427,11 @@ A finding that matches one under Prior Round Findings or Prior Blockers keeps th
 
 Set \`security\` to true on every finding in these classes that you keep, and false on all others.
 
+If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it at a lower grade. A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation, because the PR author writes them.
+
 ## Pre-existing Findings
 
 A reviewer marks a finding pre-existing when it says the defect sits on code this PR did not change and the code before this PR already had it. Set \`preExisting\` to true only on such a finding, and only when the diff shows this PR neither causes nor exposes the defect. An unchanged caller that breaks because this PR changed what a function returns or takes is caused by this PR. Set it to false on every other finding. A pre-existing finding is posted as one, and it never blocks unless it is a security defect.
-
-If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it at a lower grade. A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation, because the PR author writes them.
 
 ## When You Are Unsure
 

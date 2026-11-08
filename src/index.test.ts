@@ -2431,13 +2431,13 @@ describe('runFullReview orchestration', () => {
       mergedDuplicates: 2,
       verdictReason: 'required_present',
     }));
-    // A pre-existing finding Manki did not post is still recorded, but not counted as posted.
-    expect(statsArg!.findings.entries.map(e => [e.severity, e.originalSeverity, e.reviewerSeverity, e.tags])).toEqual([
-      ['blocker', undefined, 'warning', undefined],
-      ['suggestion', undefined, undefined, undefined],
-      ['nitpick', 'warning', 'suggestion', undefined],
-      ['suggestion', undefined, undefined, ['pre-existing']],
+    expect(statsArg!.findings.entries.map(e => [e.severity, e.originalSeverity, e.reviewerSeverity])).toEqual([
+      ['blocker', undefined, 'warning'],
+      ['suggestion', undefined, undefined],
+      ['nitpick', 'warning', 'suggestion'],
     ]);
+    // A pre-existing finding Manki did not post is recorded apart, so nothing that reads posted findings counts it.
+    expect(statsArg!.findings.unposted?.map(e => [e.title, e.tags])).toEqual([['Old helper name', ['pre-existing']]]);
     expect(statsArg!.findings.count).toBe(3);
 
     expect(statsArg!.diff.fileTypes).toEqual({ '.ts': 1, '.js': 1 });

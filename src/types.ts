@@ -1503,6 +1503,8 @@ export interface RoundFindings {
   count: number;
   severityCounts: Record<string, number>;
   entries: FindingFingerprintEntry[];
+  /** Pre-existing findings Manki recorded without posting them. Nothing that reads posted findings sees them. */
+  unposted?: FindingFingerprintEntry[];
 }
 
 export interface FindingFingerprintEntry {
