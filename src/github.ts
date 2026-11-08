@@ -1170,10 +1170,16 @@ function formatFindingSection(heading: string, folds: string[], intro?: string, 
  * found this round (just "Findings" on a first round), missed by an earlier review, and pre-existing.
  */
 function formatOriginSections(findings: Finding[], links: CodeLinks, followUp: boolean): string[] {
+  const missed = findings.filter(f => !isPreExisting(f) && f.origin === 'reviewed');
+  const preExisting = findings.filter(isPreExisting);
   const groups: Array<[string, Finding[], string?]> = [
     [followUp ? 'Found this round' : 'Findings', findings.filter(f => !isPreExisting(f) && f.origin !== 'reviewed')],
-    [MISSED_EARLIER, findings.filter(f => !isPreExisting(f) && f.origin === 'reviewed'), 'These sit on lines an earlier round already reviewed, so none of them blocks this PR.'],
-    ['Pre-existing', findings.filter(isPreExisting), 'These sit on code this PR did not change, so none of them blocks. A blocker among them is listed as a warning.'],
+    [MISSED_EARLIER, missed, missed.length === 1
+      ? 'It sits on lines an earlier round already reviewed, so it doesn\'t block this PR.'
+      : 'These sit on lines an earlier round already reviewed, so none of them block this PR.'],
+    ['Pre-existing', preExisting, preExisting.length === 1
+      ? 'It sits on code this PR did not change, so it doesn\'t block. If it is a blocker, it is listed as a warning.'
+      : 'These sit on code this PR did not change, so none of them block. A blocker among them is listed as a warning.'],
   ];
   return groups.flatMap(([title, listed, intro]) => {
     const bySeverity = [...listed].sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
@@ -1666,7 +1672,8 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: Block
   READY: (_result, _blockers, { threads, listed, hold }) => {
     if (hold?.reason === 'unread') return `✅ **Approved, but a person must approve:** no model read ${hold.skipped.excluded.length + hold.skipped.binary.length} of the changed files.`;
     const all = [...threads, ...listed].filter(f => !isBlockingFinding(f));
-    return all.length > 0 ? `${APPROVED_LINE} ${formatSeverityCounts(all)}, none of them blocks.` : APPROVED_LINE;
+    if (all.length === 0) return APPROVED_LINE;
+    return `${APPROVED_LINE} ${formatSeverityCounts(all)}, ${all.length === 1 ? 'which doesn\'t block' : 'none of which block'}.`;
   },
   ADDRESS_FIRST: (_result, blockers, { threads }) => {
     // A blocking warning already counts as a blocker.
