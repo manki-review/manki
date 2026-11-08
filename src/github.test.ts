@@ -1333,16 +1333,24 @@ describe('postReview body lead', () => {
       '**Claude subscription has used 95% of its 5-hour limit**, past the 90% mark. It resets 2026-11-12 14:00 UTC.',
       '**Claude subscription has used 85% of its weekly limit**, past the 80% mark. It resets 2026-11-12 14:00 UTC.',
     ]],
-  ])('puts a red box under the lead for each account window of %j percent at 70% or more', async (used, lines) => {
+  ])('puts a red box under the verdict and threads for each account window of %j percent at 70% or more', async (used, lines) => {
     const approved = await postedBody(ready);
     const llmCalls = [{ stage: 'judge', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
       limits: used.map((usedPercent, i) => ({ account: 'Claude subscription', window: i === 0 ? 'weekly' : '5-hour', usedPercent, resetsAt: Date.UTC(2026, 10, 12, 14) / 1000 })) }];
     const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, llmCalls }, diff);
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
-    const [lead, ...rest] = approved.body.split('\n\n');
+    const [verdict, threads, ...rest] = approved.body.split('\n\n');
     const box = `> [!CAUTION]\n${[...lines, 'Once a limit is used up, reviews on that account stop until it resets.'].map(line => `> ${line}`).join('\n>\n')}`;
     expect([event, approvalHeld]).toEqual(['APPROVE', false]);
-    expect(body).toBe(lines.length > 0 ? [lead, box, ...rest].join('\n\n') : approved.body);
+    expect(body).toBe(lines.length > 0 ? [verdict, threads, box, ...rest].join('\n\n') : approved.body);
+    if (lines.length === 0) return;
+    // A request for changes shows the box after its threads and before what blocks.
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', llmCalls }, diff);
+    const blocked = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n\n');
+    expect(blocked.slice(1, 4)).toEqual([threads, box, '**What blocks:** All clear.']);
+    // A round without a verdict, such as an incomplete one, shows the box under its summary.
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'COMMENT', outcome: undefined, llmCalls }, diff, undefined, undefined, { noVerdict: true });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toMatch(new RegExp(`^All clear\\.\n\n${box.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   });
 
   it('holds the approval of a READY round as a COMMENT for a person when a changed file went unread, and marks it so', async () => {

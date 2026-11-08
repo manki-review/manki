@@ -1437,6 +1437,8 @@ export async function postReview(
   // An approval held for unread files says so in its verdict line, so only the other holds get a line of their own.
   const heldLine = hold && hold.reason !== 'unread' && approvalHoldLine(hold);
 
+  const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
+
   /**
    * Renders the body. `threadUrls` links each listed thread once GitHub has posted it, and the flagged line until then.
    * `withoutLineThreads` leaves out the line comments, for a review GitHub only takes without them.
@@ -1444,14 +1446,10 @@ export async function postReview(
   const renderBody = (threadUrls: ReadonlyMap<Finding, string> = new Map(), withoutLineThreads = false): string => {
     const threads = threadFindings.filter(f => !refusedThreads.has(f) && !(withoutLineThreads && lineThreads.has(f)));
     const threadList = threads.map(f => `- ${SEVERITY_EMOJI[f.severity]} [${linkText(f.title)}](${threadUrls.get(f) ?? linkTo(f.file, f.line)}) · ${inlineCode(findingLocation(f))}`).join('\n');
-    const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: bodyFindings, hold }, threadList);
+    const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: bodyFindings, hold }, threadList, limitWarning);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
-    }
-    const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
-    if (limitWarning) {
-      head += `\n\n${limitWarning}`;
     }
     const readyReport = formatReadyReport(result);
     if (readyReport) {
@@ -1763,12 +1761,17 @@ function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string 
   return top ? sanitizeMarkdown(top.description.trim()).split(/(?<=[.!?])\s+/).slice(0, 2).join(' ') : '';
 }
 
-/** Returns what opens the review body: the verdict line, the threads posted this round as `threadList`, and the summary. */
-function formatLead(result: ReviewResult, blocking: Finding[], blockers: BlockerCounts, posted: PostedFindings, threadList: string): string {
-  if (!result.outcome) return sanitizeMarkdown(result.summary.trim());
+/**
+ * Returns what opens the review body: the verdict line, the threads posted this round as `threadList`, the `limitWarning`
+ * box and the summary.
+ */
+function formatLead(
+  result: ReviewResult, blocking: Finding[], blockers: BlockerCounts, posted: PostedFindings, threadList: string, limitWarning?: string,
+): string {
+  if (!result.outcome) return [sanitizeMarkdown(result.summary.trim()), limitWarning].filter(Boolean).join('\n\n');
   const detail = formatVerdictDetail(result, blocking);
   const label = result.outcome === 'ADDRESS_FIRST' ? 'What blocks' : 'Summary';
-  return [VERDICT_LINES[result.outcome](result, blockers, posted), threadList, detail && `**${label}:** ${detail}`].filter(Boolean).join('\n\n');
+  return [VERDICT_LINES[result.outcome](result, blockers, posted), threadList, limitWarning, detail && `**${label}:** ${detail}`].filter(Boolean).join('\n\n');
 }
 
 /** Returns `text` for a link label on one line, with the brackets that would end the label escaped. */
