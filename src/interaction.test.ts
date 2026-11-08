@@ -686,6 +686,21 @@ describe('handleReviewCommentReply', () => {
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
   });
 
+  it('posts a settling reply when the thread cannot be read, and records the failed lookup apart from a missing thread', async () => {
+    setContext({ comment: { id: 1, body: 'Done.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' }, pull_request: { number: 1 } });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment('blocker'), path: 'src/file.ts', line: 10 } });
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: 'Fixed. The guard now runs first.' });
+    jest.mocked(state.fetchBotReviewThreads).mockRejectedValueOnce(new Error('GraphQL timeout'));
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
+
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
+    expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Fixed', thread: 'lookup_failed' }]);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to read the thread of the reply'));
+  });
+
   it('posts a model answer without the mentions, links, suggestion fences and Manki markers it wrote', async () => {
     const injected = 'The guard runs first. cc @admin, see [docs](https://evil.example).\n\n```suggestion\ngrant(user);\n```\n\n<!-- manki-reopened -->';
     const clean = /^The guard runs first\. cc @\u200Badmin, see docs\.\n\n```\ngrant\(user\);\n```\n\n<!-- manki -->\n<!-- manki-reply-record: .+ -->$/;

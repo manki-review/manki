@@ -77,8 +77,11 @@ type ReplyOutcome = 'Fixed' | 'Agreed' | 'Withdrawn';
  * Returns what a thread reply decided for the record: the outcome it opens with, and what happens to the thread. A
  * reply that settles nothing records nothing.
  */
-function replyDecision(outcome: ReplyOutcome | undefined, thread: ReviewThread | undefined, mayResolve: boolean, staysOpen: boolean): ReplyDecision | undefined {
+function replyDecision(
+  outcome: ReplyOutcome | undefined, thread: ReviewThread | 'lookup_failed' | undefined, mayResolve: boolean, staysOpen: boolean,
+): ReplyDecision | undefined {
   if (!outcome) return undefined;
+  if (thread === 'lookup_failed') return { outcome, thread };
   const fate: ReplyDecision['thread'] = !thread ? 'not_found' : thread.isResolved ? 'already_resolved' : staysOpen ? 'stays_open' : !mayResolve ? 'no_permission' : 'resolves';
   return { outcome, thread: fate };
 }
@@ -330,9 +333,11 @@ export async function handleReviewCommentReply(
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     const outcome = replyOutcome(reply);
     // The live thread also counts a found-again reply that made it block, which the first comment does not show.
+    let lookupFailed = false;
     const thread = outcome
       ? await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch((error: unknown) => {
         core.warning(`Failed to read the thread of the reply: ${error}`);
+        lookupFailed = true;
         return undefined;
       })
       : undefined;
@@ -373,7 +378,7 @@ export async function handleReviewCommentReply(
         repo,
         pull_number: prNumber,
         comment_id: comment.id,
-        body: withMarkers([reply, ...notes].join('\n\n'), BOT_MARKER, response.record(replyDecision(outcome, thread, mayResolve, staysOpen)), ...(outcome === 'Fixed' && head ? [fixedMarker(head)] : [])),
+        body: withMarkers([reply, ...notes].join('\n\n'), BOT_MARKER, response.record(replyDecision(outcome, lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen)), ...(outcome === 'Fixed' && head ? [fixedMarker(head)] : [])),
       });
       core.info('Posted reply to review comment');
     }

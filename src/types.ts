@@ -1644,11 +1644,12 @@ export interface ReplyRecord {
 
 /**
  * What a thread reply decided: the word it opens with, and what happens to the thread. `stays_open` is a blocking or
- * security thread only a maintainer may close, and `deferred_to_round` a fix a later round already judged.
+ * security thread only a maintainer may close, `lookup_failed` a thread GitHub could not list, and `deferred_to_round`
+ * a fix a later round already judged.
  */
 export interface ReplyDecision {
   outcome: 'Fixed' | 'Agreed' | 'Withdrawn';
-  thread: 'resolves' | 'stays_open' | 'no_permission' | 'already_resolved' | 'not_found' | 'deferred_to_round';
+  thread: 'resolves' | 'stays_open' | 'no_permission' | 'already_resolved' | 'not_found' | 'lookup_failed' | 'deferred_to_round';
 }
 
 /** The round's LLM usage: totals over its calls, per stage and per model, and the calls themselves. */
