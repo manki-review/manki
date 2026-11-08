@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import { WRAP_UP_STEPS } from '../tool-steps';
 import { estimateCostUsd } from './model-registry';
 import { addUsage, LimitUsage, LLMCall, LLMClient, LLMUsage, RefusalError, UsageSummary, ZERO_USAGE } from './types';
-import { relatedReadsOf, sanitizeLogOutput } from './cli-utils';
+import { readingsOf, sanitizeLogOutput } from './cli-utils';
 
 export interface UsageTotals {
   usage: LLMUsage;
@@ -119,7 +119,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
           ...base,
           failed: true,
           error: sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 300),
-          ...(relatedReadsOf(error) && { relatedReads: relatedReadsOf(error) }),
+          ...readingsOf(error),
           durationMs: Date.now() - start,
           ...ZERO_USAGE,
           costUsd: null,

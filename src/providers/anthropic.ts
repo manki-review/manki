@@ -7,7 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { installPinned } from '../tool-install';
-import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryRelatedReads, cliEnv, MankiCommand, matchQuotaText, readRelatedReads, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, MankiCommand, matchQuotaText, readRelatedReads, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { AnthropicAuth, LimitUsage, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -327,7 +327,7 @@ export class AnthropicClient implements LLMClient {
       const args = claudeCliArgs(this.model, systemPromptPath, options, tools);
       const reads = () => (repoTools?.related ? readRelatedReads(relatedReadsFile(promptDir)) : undefined);
       const response = await this.runOAuthCli(cliPath, args, fullPrompt.length + userMessage.length, userMessage, options)
-        .catch((error: unknown) => { throw carryRelatedReads(error, reads()); });
+        .catch((error: unknown) => { throw carryReadings(error, { relatedReads: reads() }); });
       const relatedReads = reads();
       return relatedReads ? { ...response, relatedReads } : response;
     });

@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, carryRelatedReads, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -308,7 +308,7 @@ export class OpenAIClient implements LLMClient {
         signal: options?.signal,
         onStdout: (chunk) => { output += chunk; },
         stderrResetsStale: true,
-      }).catch((error: unknown) => { throw carryRelatedReads(error, reads()); });
+      }).catch((error: unknown) => { throw carryReadings(error, { relatedReads: reads() }); });
       return { ...exit, relatedReads: reads() };
     }).catch((error: unknown) => {
       warnReplyTail('Codex CLI', output);
@@ -322,7 +322,7 @@ export class OpenAIClient implements LLMClient {
       if (quota && !quota.overloaded) {
         const message = `ChatGPT subscription limit reached: ${errorLine}`;
         core.warning(message);
-        throw carryRelatedReads(new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token'), relatedReads);
+        throw carryReadings(new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token'), { relatedReads });
       }
       const msg = buildExitDiagnostics({
         exitCode: code,
@@ -336,7 +336,7 @@ export class OpenAIClient implements LLMClient {
       });
       core.warning(`Codex CLI failed (${msg})`);
       warnReplyTail('Codex CLI', output);
-      throw carryRelatedReads(new Error(`Codex CLI invocation failed (${msg})`), relatedReads);
+      throw carryReadings(new Error(`Codex CLI invocation failed (${msg})`), { relatedReads });
     }
     const content = output.trim();
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
