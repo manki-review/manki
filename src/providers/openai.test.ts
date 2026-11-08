@@ -423,7 +423,9 @@ describe('sendViaOAuth (Codex CLI path)', () => {
   it('gives Codex Manki\'s tool server with the file tools, and tells it about them, only when asked', async () => {
     const { stdin, instructions } = setupSpawnMock('[]\n');
     const savedRunnerTemp = process.env.RUNNER_TEMP;
+    const savedApiUrl = process.env.GITHUB_API_URL;
     process.env.RUNNER_TEMP = '/runner/temp';
+    process.env.GITHUB_API_URL = 'https://ghe.example/api/v3';
     try {
       const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
       expect(client.repoTools).toBe(true);
@@ -434,6 +436,8 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     } finally {
       if (savedRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
       else process.env.RUNNER_TEMP = savedRunnerTemp;
+      if (savedApiUrl === undefined) delete process.env.GITHUB_API_URL;
+      else process.env.GITHUB_API_URL = savedApiUrl;
     }
 
     const [withTools, without] = mockSpawn.mock.calls.map(call => call[1] as string[]);
@@ -442,6 +446,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
       `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15'])}`,
       '-c mcp_servers.manki.default_tools_approval_mode="approve"',
       '-c mcp_servers.manki.env.RUNNER_TEMP="/runner/temp"',
+      '-c mcp_servers.manki.env.GITHUB_API_URL="https://ghe.example/api/v3"',
     ].join(' '));
     expect(withTools).toContain('features.shell_tool=false');
     expect(without.join(' ')).not.toContain('mcp_servers');

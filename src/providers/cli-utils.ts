@@ -467,7 +467,7 @@ export function stepHookCommand(dir: string, steps: number): MankiCommand {
 export function repoToolsPrompt({ root, steps, related }: RepoTools, fileTools: string): string {
   return `## Tools
 
-The PR's head commit is checked out at \`${root}\`. ${fileTools} read files under that directory, \`git_history\` lists the commits behind a file or a range of its lines, and \`ast_grep\` finds code by syntax. Nothing outside \`${root}\` is readable.
+The PR's head commit is checked out at \`${root}\`. ${fileTools} read files under that directory, \`git_history\` lists the commits behind a file or a range of its lines, and \`ast_grep\` finds code by syntax. Nothing outside \`${root}\` is readable. \`repo_info\` tells whether a GitHub repository, named as \`owner/name\`, exists and is public, archived or a fork, and names its default branch, so ask it instead of guessing when a finding depends on that.
 
 Use the tools to follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome. Check each claim you make against the code. You have ${steps} tool steps, and each tool call takes one. When ${WRAP_UP_STEPS} are left, a note from Manki comes with a tool result and asks you to wrap up. Once they are used up, Manki refuses every further call, so give your final answer then. Your last message must be the JSON your instructions ask for, with nothing after it.${related ? `\n\n${relatedReposPrompt(related.repos)}` : ''}`;
 }

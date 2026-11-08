@@ -91,15 +91,16 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
 
 /**
  * Returns the `-c` overrides that give Codex Manki's tool server. Its tools are read-only, so they run without
- * approval. Codex starts the server with a few default variables only, so the runner temp folder is passed on.
+ * approval. Codex starts the server with a few default variables only, so the runner temp folder and the GitHub API
+ * URL are passed on.
  */
 function codexToolServerArgs({ command, args }: MankiCommand): string[] {
-  const runnerTemp = process.env.RUNNER_TEMP;
+  const env = ['RUNNER_TEMP', 'GITHUB_API_URL'].flatMap(name => process.env[name] ? ['-c', `mcp_servers.manki.env.${name}=${JSON.stringify(process.env[name])}`] : []);
   return [
     '-c', `mcp_servers.manki.command=${JSON.stringify(command)}`,
     '-c', `mcp_servers.manki.args=${JSON.stringify(args)}`,
     '-c', 'mcp_servers.manki.default_tools_approval_mode="approve"',
-    ...(runnerTemp ? ['-c', `mcp_servers.manki.env.RUNNER_TEMP=${JSON.stringify(runnerTemp)}`] : []),
+    ...env,
   ];
 }
 
