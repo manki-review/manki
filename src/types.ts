@@ -1542,7 +1542,8 @@ export interface FindingFingerprintEntry {
 
 /** One call a run made to the token service. */
 export interface TokenServiceCall {
-  endpoint: 'token' | 'state' | 'state/report' | 'resolve';
+  /** The endpoint path, such as `token`, `state`, `state/report`, `resolve` or a memory endpoint. */
+  endpoint: string;
   /** The HTTP status. Unset when the run had no OIDC token or the request failed. */
   status?: number;
   /** Why the call failed: the service's error, `no OIDC token`, or the request's error. */
