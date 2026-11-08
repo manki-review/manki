@@ -1776,6 +1776,7 @@ jest.mock('./judge', () => ({
   JudgeInput: {},
   computeProvenanceMap: jest.fn().mockReturnValue([]),
   collectPriorBlockers: jest.requireActual('./judge').collectPriorBlockers,
+  foldInto: jest.requireActual('./judge').foldInto,
 }));
 
 jest.mock('./memory', () => ({
@@ -2115,6 +2116,37 @@ describe('runReview', () => {
     const unnamed = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(unnamed.outcome).toBe('ADDRESS_FIRST');
     expect(unnamed.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'The retry loop never ends.', description: 'The retry loop never ends.' })]);
+
+    // A kept finding that names the problem of a reader blocker folds into it, so the problem gets one thread. The
+    // finders graded it a warning six lines away, and each cites the other's line as proof. A nearby finding about
+    // something else stays.
+    const sameCause = makeClients(JSON.stringify([{ severity: 'warning', title: 'Lock held', file: 'src/a.ts', line: 6, description: 'Deadlock.' }]));
+    mockedRunJudgeAgent.mockResolvedValueOnce({
+      summary: 'One warning.',
+      findings: [
+        {
+          severity: 'warning', title: '`join` holds the `tasks` lock while joining, against its doc comment', file: 'src/a.ts', line: 6, description: 'Deadlock.',
+          suggestedFix: 'let tasks = take(&mut *lock);', reviewers: ['Finder A', 'Finder B'], evidence: { checks: ['src/a.ts:6 takes the lock'], proof: ['src/a.ts:6', 'src/a.ts:12'] },
+        },
+        { severity: 'suggestion', title: 'Rename the helper', file: 'src/a.ts', line: 9, description: 'Clearer.', reviewers: ['Finder A'] },
+      ],
+    });
+    jest.mocked(sameCause.judge.sendMessage).mockResolvedValue({
+      content: JSON.stringify({
+        verdict: 'ADDRESS_FIRST',
+        blockers: [{ file: 'src/a.ts', line: 12, title: '`join` holds the `tasks` lock while it waits on them', description: 'Stop hangs.', evidence: ['src/a.ts:12 awaits under the lock'], proof: ['src/a.ts:6-7', 'src/a.ts:12'] }],
+        summary: 'Deadlock.', whatThisDoes: '', whatToTest: '',
+      }),
+    });
+    const folded = await runReview(sameCause, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    expect(folded.findings).toEqual([
+      expect.objectContaining({ severity: 'suggestion', title: 'Rename the helper' }),
+      expect.objectContaining({
+        severity: 'blocker', line: 12, title: '`join` holds the `tasks` lock while it waits on them', reviewers: ['Verdict reader', 'Finder A', 'Finder B'],
+        suggestedFix: 'let tasks = take(&mut *lock);', evidence: { checks: ['src/a.ts:12 awaits under the lock', 'src/a.ts:6 takes the lock'], proof: ['src/a.ts:6-7', 'src/a.ts:12', 'src/a.ts:6'] },
+      }),
+    ]);
+    expect(folded.verdictTrace?.survivingBlockers.map(e => e.title)).toEqual(['`join` holds the `tasks` lock while it waits on them']);
 
     // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof keeps it a
     // blocker, and its reason shows under "How this was checked".
