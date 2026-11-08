@@ -142,7 +142,7 @@ memory:
 | `drafts` | `skip` or `review` | `skip` | `skip` reviews a draft only on request, `review` reviews it automatically. A draft review never approves and does not count toward `convergence.max_auto_rounds`. |
 | `auto_review_max_lines` | positive integer | `8000` | Reviewable lines, after `exclude_paths`, above which a PR gets no automatic review, only a request to split it, with Force review in its settings block. Read from the base branch. |
 | `max_diff_lines` | positive integer | `15000` | Reviewable lines above which Manki never reviews a PR, even when forced. Read from the base branch. |
-| `slice_lines` | integer, at least 200 | `1500` | Changed lines a finder reads in one call. A larger diff is read in slices of this size, four at a time. Read from the base branch. |
+| `slice_lines` | integer, at least 200 | `1500` | Changed lines a finder or the verdict reader reads in one call. A larger diff is read in slices of this size, and of at most 50,000 characters, four at a time. Read from the base branch. |
 | `models` | map | see below | The model of each stage. A model id picks its provider: `claude-*` is Anthropic, `gpt-*` and the o-series are OpenAI, `gemini-*` is Gemini. `provider/model` names one explicitly. |
 | `models.planner` | model id | `claude-haiku-5-5` | The planner, a fast pass that triages the change before the review. |
 | `models.reviewer` | model id | `claude-sonnet-5-5` | The finder on every round, and `@reviewer` in a review group. |

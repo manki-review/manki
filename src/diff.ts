@@ -360,37 +360,148 @@ function sourceKey(path: string): string {
   return dir ? `${dir}/${stem}` : stem;
 }
 
+/** Characters of diff one prompt holds. `sliceDiff` keeps each slice within it, so no prompt cuts the diff. */
+export const MAX_SLICE_CHARS = 50_000;
+/** Characters of one diff line a prompt shows in full. A longer added line makes the round incomplete. */
+export const MAX_LINE_CHARS = 20_000;
+/** Room left for the `@@ -a,b +c,d @@` header of each piece of a split hunk. */
+const HUNK_HEADER_CHARS = 64;
+
+/** An added line longer than `MAX_LINE_CHARS`, by its line number in the new file. */
+export interface OverlongLine {
+  file: string;
+  line: number;
+  length: number;
+}
+
 /**
- * Splits `diff` into slices of at most about `maxLines` changed lines. A file and its test stay in one
- * slice, and files of one folder are packed next to each other. A unit over `maxLines` gets a slice of its own.
+ * Returns each added line longer than `MAX_LINE_CHARS`, which no prompt can show in full. A removed line is left out:
+ * cutting it hides no new code, and a PR that deletes such a file could never be reviewed otherwise.
  */
-export function sliceDiff(diff: ParsedDiff, maxLines: number): ParsedDiff[] {
+export function overlongChangedLines(diff: ParsedDiff): OverlongLine[] {
+  const found: OverlongLine[] = [];
+  for (const file of diff.files) {
+    for (const hunk of file.hunks) {
+      let newLine = hunk.newStart;
+      for (const line of hunk.content.split('\n')) {
+        if (line.startsWith('-') || line.startsWith('\\')) continue;
+        if (line.startsWith('+') && line.length - 1 > MAX_LINE_CHARS) found.push({ file: file.path, line: newLine, length: line.length - 1 });
+        newLine++;
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Splits `diff` into slices of at most about `maxLines` changed lines and at most `maxChars` characters. A file and its
+ * test stay in one slice, and files of one folder are packed next to each other. A unit over `maxLines` gets a slice of
+ * its own, and a unit over `maxChars` is split at hunk boundaries, or within a hunk at line boundaries. A line over
+ * `MAX_LINE_CHARS` is shortened, so every slice fits.
+ */
+export function sliceDiff(diff: ParsedDiff, maxLines: number, maxChars = MAX_SLICE_CHARS): ParsedDiff[] {
   const lines = (f: DiffFile) => f.additions !== undefined ? f.additions + (f.deletions ?? 0) : Object.values(countChangedLines(f)).reduce((a, b) => a + b, 0);
-  if (diff.files.reduce((sum, f) => sum + lines(f), 0) <= maxLines) return [diff];
+  const files = diff.files.map(shortenLongLines);
+  const chars = (group: DiffFile[]) => group.reduce((sum, f) => sum + fileChars(f), 0);
+  if (diff.files.reduce((sum, f) => sum + lines(f), 0) <= maxLines && chars(files) <= maxChars) return [{ ...diff, files }];
 
   const units = new Map<string, DiffFile[]>();
-  for (const file of diff.files) {
+  for (const file of files) {
     const key = sourceKey(file.path);
     units.set(key, [...(units.get(key) ?? []), file]);
   }
+  const groups = [...units.keys()].sort().flatMap(key => {
+    const unit = units.get(key)!;
+    return chars(unit) <= maxChars ? [unit] : unit.flatMap(f => splitFile(f, maxChars)).map(part => [part]);
+  });
   const slices: DiffFile[][] = [];
   let current: DiffFile[] = [];
   let currentLines = 0;
-  for (const key of [...units.keys()].sort()) {
-    const files = units.get(key)!;
-    const unitLines = files.reduce((sum, f) => sum + lines(f), 0);
-    if (current.length > 0 && currentLines + unitLines > maxLines) {
+  let currentChars = 0;
+  for (const group of groups) {
+    const groupLines = group.reduce((sum, f) => sum + lines(f), 0);
+    const groupChars = chars(group);
+    if (current.length > 0 && (currentLines + groupLines > maxLines || currentChars + groupChars > maxChars)) {
       slices.push(current);
       current = [];
       currentLines = 0;
+      currentChars = 0;
     }
-    current.push(...files);
-    currentLines += unitLines;
+    current.push(...group);
+    currentLines += groupLines;
+    currentChars += groupChars;
   }
   if (current.length > 0) slices.push(current);
-  return slices.map(files => ({
-    files,
-    totalAdditions: files.reduce((sum, f) => sum + (f.additions ?? 0), 0),
-    totalDeletions: files.reduce((sum, f) => sum + (f.deletions ?? 0), 0),
+  return slices.map(slice => ({
+    files: slice,
+    totalAdditions: slice.reduce((sum, f) => sum + (f.additions ?? 0), 0),
+    totalDeletions: slice.reduce((sum, f) => sum + (f.deletions ?? 0), 0),
   }));
+}
+
+/** Characters `file` takes in `rebuildRawDiff`, with the line that joins it to the next file. */
+function fileChars(file: DiffFile): number {
+  return rebuildRawDiff({ files: [file], totalAdditions: 0, totalDeletions: 0 }).length + 1;
+}
+
+/** Shortens each line of `file` over `MAX_LINE_CHARS`, with a note of how much was cut. */
+export function shortenLongLines(file: DiffFile): DiffFile {
+  const shorten = (line: string) => line.length - 1 > MAX_LINE_CHARS
+    ? `${line.slice(0, MAX_LINE_CHARS + 1)} ... (${line.length - 1 - MAX_LINE_CHARS} more characters of this line cut)`
+    : line;
+  if (!file.hunks.some(h => h.content.split('\n').some(line => line.length - 1 > MAX_LINE_CHARS))) return file;
+  return { ...file, hunks: file.hunks.map(h => ({ ...h, content: h.content.split('\n').map(shorten).join('\n') })) };
+}
+
+/** Splits `file` into parts of at most `maxChars` characters each, at hunk boundaries, and within a hunk at line boundaries. */
+function splitFile(file: DiffFile, maxChars: number): DiffFile[] {
+  const room = maxChars - fileChars({ ...file, hunks: [] });
+  const pieces = file.hunks.flatMap(h => hunkChars(h) <= room ? [h] : splitHunk(h, room));
+  const parts: DiffHunk[][] = [];
+  let current: DiffHunk[] = [];
+  let used = 0;
+  for (const piece of pieces) {
+    if (current.length > 0 && used + hunkChars(piece) > room) {
+      parts.push(current);
+      current = [];
+      used = 0;
+    }
+    current.push(piece);
+    used += hunkChars(piece);
+  }
+  if (current.length > 0) parts.push(current);
+  return parts.map(hunks => {
+    const counts = hunks.flatMap(h => h.content.split('\n'));
+    return { ...file, hunks, additions: counts.filter(l => l.startsWith('+')).length, deletions: counts.filter(l => l.startsWith('-')).length };
+  });
+}
+
+function hunkChars(hunk: DiffHunk): number {
+  return `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@\n${hunk.content}\n`.length;
+}
+
+/** Splits `hunk` at line boundaries into hunks of at most `room` characters, each with its own line numbers. */
+function splitHunk(hunk: DiffHunk, room: number): DiffHunk[] {
+  const budget = room - HUNK_HEADER_CHARS;
+  const pieces: DiffHunk[] = [];
+  let oldStart = hunk.oldStart;
+  let newStart = hunk.newStart;
+  let lines: string[] = [];
+  let used = 0;
+  const flush = () => {
+    const oldLines = lines.filter(l => !l.startsWith('+') && !l.startsWith('\\')).length;
+    const newLines = lines.filter(l => !l.startsWith('-') && !l.startsWith('\\')).length;
+    pieces.push({ oldStart, oldLines, newStart, newLines, content: lines.join('\n') });
+    oldStart += oldLines;
+    newStart += newLines;
+    lines = [];
+    used = 0;
+  };
+  for (const line of hunk.content.split('\n')) {
+    if (lines.length > 0 && used + line.length + 1 > budget) flush();
+    lines.push(line);
+    used += line.length + 1;
+  }
+  if (lines.length > 0) flush();
+  return pieces;
 }

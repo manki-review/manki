@@ -18,7 +18,7 @@ const VERDICT_TIMEOUT_MS = 900_000;
 // looking for defects.
 const VERDICT_READER_SYSTEM_PROMPT = `You give the final merge-readiness verdict on a pull request.
 
-Read the WHOLE diff, every file in it. Not a sample, not the interesting-looking parts. You are the only pass guaranteed to see all of it, so a file you skip is a file nothing checked.
+Read the WHOLE diff you are given, every file in it. Not a sample, not the interesting-looking parts. No other pass reads it cold, so a file you skip is a file nothing checked. When the message says you read one slice of a larger diff, the other slices are read in calls of their own: code that is missing from your slice, such as a caller, a test or the rest of a split hunk, is no defect.
 
 Your job is to find a reason this change should NOT merge. Be adversarial, and judge the code cold. Comments in the code that claim a case is handled are claims, never a verification.
 
@@ -156,4 +156,21 @@ export async function runVerdictReader(client: LLMClient, userMessage: string): 
     },
     (error) => core.warning(`Verdict reader reply could not be used (${error}), asking once more`),
   );
+}
+
+/**
+ * Combines the reports of the slices one diff was read in. The diff is `READY` only when every slice is, its blockers are
+ * those of all slices, and its notes and checks are joined in slice order.
+ */
+export function combineVerdictReports(reports: VerdictReport[]): VerdictReport {
+  if (reports.length === 1) return reports[0];
+  const joined = (texts: Array<string | undefined>) => texts.map(t => t?.trim()).filter(Boolean).join(' ');
+  const setup = joined(reports.map(r => r.whatToTest.setup));
+  return {
+    verdict: reports.every(r => r.verdict === 'READY') ? 'READY' : 'ADDRESS_FIRST',
+    blockers: reports.flatMap(r => r.blockers),
+    summary: joined(reports.map(r => r.summary)),
+    whatThisDoes: joined(reports.map(r => r.whatThisDoes)),
+    whatToTest: { ...(setup && { setup }), steps: reports.flatMap(r => r.whatToTest.steps).slice(0, MAX_TEST_STEPS) },
+  };
 }

@@ -8,6 +8,9 @@ import {
   sliceDiff,
   compareChanges,
   ownChangeSince,
+  overlongChangedLines,
+  MAX_LINE_CHARS,
+  MAX_SLICE_CHARS,
   rebuildRawDiff,
   tagFindingOrigins,
 } from './diff';
@@ -628,5 +631,45 @@ describe('sliceDiff', () => {
 
   it('gives a unit over the slice size a slice of its own', () => {
     expect(paths(sliceDiff(diffOf(file('a.ts', 100), file('b.ts', 2000), file('c.ts', 100)), 1500))).toEqual([['a.ts'], ['b.ts'], ['c.ts']]);
+  });
+
+  const added = (path: string, lines: string[]) =>
+    `diff --git a/${path} b/${path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}\n`;
+
+  it('splits a file over the character budget within its hunk, keeping every line and its line number', () => {
+    const lines = Array.from({ length: 3000 }, (_, i) => `const line${i} = '${'x'.repeat(40)}';`);
+    const slices = sliceDiff(parsePRDiff(added('src/big.ts', lines)), 100_000);
+
+    expect(slices.length).toBeGreaterThan(1);
+    for (const slice of slices) expect(rebuildRawDiff(slice).length).toBeLessThanOrEqual(MAX_SLICE_CHARS);
+    const shown = slices.flatMap(s => s.files.flatMap(f => f.hunks.flatMap(h => h.content.split('\n').map((l, i) => [h.newStart + i, l.slice(1)]))));
+    expect(shown).toEqual(lines.map((l, i) => [i + 1, l]));
+    expect(slices.reduce((sum, s) => sum + s.totalAdditions, 0)).toBe(3000);
+  });
+
+  it('splits at hunk boundaries and packs small files next to a split one', () => {
+    const hunk = (start: number) => `@@ -${start},1 +${start},1 @@\n-${'a'.repeat(9000)}\n+${'b'.repeat(9000)}`;
+    const big = `diff --git a/big.ts b/big.ts\nindex 1111111..2222222 100644\n--- a/big.ts\n+++ b/big.ts\n${[1, 10, 20, 30].map(hunk).join('\n')}\n`;
+    const slices = sliceDiff(parsePRDiff(`${big}${added('small.ts', ['x'])}`), 1500);
+
+    expect(paths(slices)).toEqual([['big.ts'], ['big.ts', 'small.ts']]);
+    expect(slices.flatMap(s => s.files.filter(f => f.path === 'big.ts').flatMap(f => f.hunks.map(h => h.newStart)))).toEqual([1, 10, 20, 30]);
+  });
+
+  it('shortens a line over the line limit, so the slice still fits', () => {
+    const long = 'z'.repeat(MAX_LINE_CHARS + 5000);
+    const [slice] = sliceDiff(parsePRDiff(added('min.js', [long])), 1500);
+    expect(slice.files[0].hunks[0].content).toBe(`+${'z'.repeat(MAX_LINE_CHARS)} ... (5000 more characters of this line cut)`);
+  });
+});
+
+describe('overlongChangedLines', () => {
+  it('names each added line over the limit by its new line number, and leaves out removed and context lines', () => {
+    const long = 'q'.repeat(MAX_LINE_CHARS + 1);
+    const raw = `diff --git a/a.ts b/a.ts\nindex 1111111..2222222 100644\n--- a/a.ts\n+++ b/a.ts\n@@ -5,4 +5,4 @@\n ${long}\n-${long}\n+short\n+${long}\n ${'q'.repeat(MAX_LINE_CHARS)}\n`;
+    expect(overlongChangedLines(parsePRDiff(raw))).toEqual([{ file: 'a.ts', line: 7, length: MAX_LINE_CHARS + 1 }]);
+    const deleted = `diff --git a/vendor/app.min.js b/vendor/app.min.js\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/vendor/app.min.js\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-${long}\n`;
+    expect(overlongChangedLines(parsePRDiff(deleted))).toEqual([]);
+    expect(overlongChangedLines(parsePRDiff(MULTI_FILE_DIFF))).toEqual([]);
   });
 });

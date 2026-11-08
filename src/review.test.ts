@@ -27,7 +27,7 @@ import {
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG } from './config';
-import { filterRawDiff } from './diff';
+import { filterRawDiff, parsePRDiff } from './diff';
 import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
@@ -3575,7 +3575,7 @@ describe('runReview', () => {
     const reviewerSend = jest.fn().mockImplementation(async (_system: string, user: string) => {
       await new Promise(resolve => setTimeout(resolve, 20));
       return {
-        content: JSON.stringify([{ severity: 'suggestion', title: user.includes('src/b.ts') ? 'In b' : 'In a', file: user.includes('src/b.ts') ? 'src/b.ts' : 'src/a.ts', line: 1, description: 'Desc' }]),
+        content: JSON.stringify([{ severity: 'suggestion', title: user.includes('+++ b/src/b.ts') ? 'In b' : 'In a', file: user.includes('+++ b/src/b.ts') ? 'src/b.ts' : 'src/a.ts', line: 1, description: 'Desc' }]),
         usage: { inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
         latencyMs: 1,
       };
@@ -3591,11 +3591,54 @@ describe('runReview', () => {
     const finders = result.agentNames.length;
     expect(reviewerSend).toHaveBeenCalledTimes(2 * finders);
     const sliceMessages = reviewerSend.mock.calls.slice(0, 2).map(([, user]) => user as string);
-    expect(sliceMessages.find(m => m.includes('src/a.ts'))).toEqual(expect.stringContaining('src/a.test.ts'));
-    expect(sliceMessages.find(m => m.includes('src/b.ts'))).not.toContain('src/a.ts');
+    for (const message of sliceMessages) expect(message).toMatch(/^## Slice\n\nThis is slice [12] of 2 of the PR's diff\./);
+    expect(sliceMessages.find(m => m.includes('+++ b/src/a.ts'))).toEqual(expect.stringContaining('+++ b/src/a.test.ts'));
+    expect(sliceMessages.find(m => m.includes('+++ b/src/b.ts'))).not.toContain('+++ b/src/a.ts');
     expect(result.rawFindings!.map(f => f.title).sort()).toEqual(Array.from({ length: finders }, () => ['In a', 'In b']).flat().sort());
     // The duration is the elapsed time of all slices, not the latency one call reports.
     for (const [, ms] of result.agentDurationMs!) expect(ms).toBeGreaterThanOrEqual(15);
+    const readerMessages = jest.mocked(clients.judge.sendMessage).mock.calls.map(([, user]) => user as string);
+    expect(readerMessages).toHaveLength(2);
+    const bSlice = readerMessages.find(m => m.includes('+++ b/src/b.ts'))!;
+    expect(bSlice).not.toContain('+++ b/src/a.ts');
+    expect(bSlice).toMatch(/This is slice \d of 2 of the PR's diff\. [\s\S]*These changed files are not in this slice:\n\n```\nsrc\/a\.ts\nsrc\/a\.test\.ts\n```/);
+  });
+
+  it('shows the verdict reader every changed line of a diff over the character budget, and needs every slice READY', async () => {
+    const lines = Array.from({ length: 3000 }, (_, i) => `const value${i} = '${'v'.repeat(40)}';`);
+    const rawDiff = `diff --git a/src/big.ts b/src/big.ts\n--- /dev/null\n+++ b/src/big.ts\n@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}`;
+    expect(rawDiff.length).toBeGreaterThan(100_000);
+    const clients = makeClients();
+    jest.mocked(clients.judge.sendMessage).mockImplementation(async (_system: string, user: string) => ({
+      content: user.includes('const value2999') ? JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/big.ts', line: 3000, title: 'The last value is wrong', description: 'd' }], summary: 'One defect.', whatThisDoes: 'Adds values.', whatToTest: 'Read them.' }) : READY_VERDICT,
+    }));
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    const result = await runReview(clients, { config: makeConfig({ slice_lines: 5000 }), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '' });
+
+    const readerMessages = jest.mocked(clients.judge.sendMessage).mock.calls.map(([, user]) => user as string);
+    expect(readerMessages.length).toBeGreaterThan(2);
+    for (const message of readerMessages) expect(message).not.toContain('more lines in this file truncated');
+    for (const line of lines) expect(readerMessages.some(m => m.includes(`+${line}`))).toBe(true);
+    expect(result.outcome).toBe('ADDRESS_FIRST');
+    expect(result.findings).toEqual([expect.objectContaining({ severity: 'blocker', file: 'src/big.ts', line: 3000 })]);
+  });
+
+  it('ends the round INCOMPLETE without a model call when a changed line is too long to show, naming the line', async () => {
+    const rawDiff = `diff --git a/src/blob.ts b/src/blob.ts\n--- a/src/blob.ts\n+++ b/src/blob.ts\n@@ -1,1 +1,3 @@\n ctx\n+const blob = '${'A'.repeat(60_000)}';\n+const payload = run();`;
+    const clients = makeClients();
+
+    const result = await runReview(clients, { config: makeConfig(), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '' });
+
+    expect(result.outcome).toBe('INCOMPLETE');
+    expect(result.reviewComplete).toBe(false);
+    expect(result.summary).toContain('`src/blob.ts:2` (60016 characters)');
+    expect(clients.reviewer.sendMessage).not.toHaveBeenCalled();
+    expect(clients.judge.sendMessage).not.toHaveBeenCalled();
+
+    const deleted = `diff --git a/vendor/app.min.js b/vendor/app.min.js\ndeleted file mode 100644\n--- a/vendor/app.min.js\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-${'A'.repeat(60_000)}`;
+    const deletion = await runReview(makeClients(), { config: makeConfig(), diff: parsePRDiff(deleted), rawDiff: deleted, repoContext: '' });
+    expect(deletion.outcome).not.toBe('INCOMPLETE');
   });
 
   it('records `agentFailureReasons` when an agent fails after all retries', async () => {
