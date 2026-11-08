@@ -67,6 +67,7 @@ jest.mock('./auth', () => ({
   createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, bot: { logins: ['manki-review[bot]'] } }),
   TokenServiceError: jest.requireActual('./auth').TokenServiceError,
   changeThreadThroughService: jest.fn().mockResolvedValue(false),
+  tokenServiceCalls: jest.fn().mockReturnValue([]),
   fetchPrState: jest.fn().mockResolvedValue(null),
   reportPrState: jest.fn().mockResolvedValue(undefined),
 }));
@@ -3619,6 +3620,42 @@ describe('runFullReview orchestration', () => {
       expect(call[9]).toMatchObject({ memorySkip: message });
       const metadata = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![5];
       expect(metadata?.config.memoryRepo).toBe(`skipped: ${reason}`);
+    });
+
+    it('records why the round paused, the prompt versions, what memory loaded and hid, and the token service calls', async () => {
+      const blocker = { file: 'src/app.ts', line: 5, title: 'Bug', fingerprint: 'k' };
+      const call = (stage: string, promptDigest: string, extra: Partial<LLMCall> = {}): LLMCall => ({
+        stage, attempt: 1, promptDigest, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0, ...extra,
+      });
+      const hidden = { severity: 'suggestion' as const, title: 'Rename the helper', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['general'], suppressedBy: 'sup-1' };
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING' as const, summary: 'Paused',
+        findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
+        needsHuman: { cause: 'repeated', blockers: [blocker] },
+        llmCalls: [
+          call('reviewer', 'bbbbbbbbbbbb', { agent: 'general', stepBudget: 15, wrapUpNoted: true }), call('reviewer', 'aaaaaaaaaaaa', { agent: 'security' }),
+          call('reviewer', 'aaaaaaaaaaaa', { agent: 'general', attempt: 2 }), call('judge', 'cccccccccccc'),
+        ],
+        memoryLoaded: { learnings: 4, suppressions: 2 },
+        memorySuppressed: [hidden],
+      });
+      const tokenService = [
+        { endpoint: 'token' as const, error: 'TypeError: fetch failed', durationMs: 3 },
+        { endpoint: 'token' as const, status: 200, durationMs: 40 },
+        { endpoint: 'state' as const, status: 429, error: 'Too many requests', requestId: 'r-1', durationMs: 5 },
+      ];
+      jest.mocked(authModule.tokenServiceCalls).mockReturnValue(tokenService);
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7]!;
+      expect(rc.meta.needsHuman).toEqual({ cause: 'repeated', blockers: [blocker] });
+      expect(rc.meta.promptVersions).toEqual({ reviewer: ['aaaaaaaaaaaa', 'bbbbbbbbbbbb'], judge: ['cccccccccccc'] });
+      expect(rc.usage.llmCalls?.[0]).toMatchObject({ stepBudget: 15, wrapUpNoted: true });
+      expect(rc.memory).toMatchObject({
+        loaded: { learnings: 4, suppressions: 2 },
+        suppressed: [{ title: 'Rename the helper', file: 'src/app.ts', line: 9, severity: 'suggestion', suppressionId: 'sup-1' }],
+      });
+      expect(rc.tokenService).toEqual(tokenService);
     });
 
     it('populates `recap` with `priorRoundCount`, `reclassifiedPriorCount`, and `reclassifiedPriors`', async () => {

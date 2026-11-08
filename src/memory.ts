@@ -275,7 +275,7 @@ export function applySuppressions(
     const match = suppressions.find(s => matchesSuppression(finding, s));
     if (match) {
       core.info(`Suppressed finding "${finding.title}" — matched suppression "${match.id}": ${match.reason}`);
-      suppressed.push(finding);
+      suppressed.push({ ...finding, suppressedBy: match.id });
     } else {
       kept.push(finding);
     }

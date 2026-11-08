@@ -3551,7 +3551,7 @@ describe('runReview', () => {
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
 
     expect(result.llmCalls!.filter(c => c.stage === 'reviewer')).toEqual(result.agentNames.map(agent => ({
-      stage: 'reviewer', agent, model: 'claude-sonnet-5-5', effort: 'high', attempt: 1, durationMs: 1500,
+      stage: 'reviewer', agent, model: 'claude-sonnet-5-5', effort: 'high', attempt: 1, durationMs: 1500, promptDigest: expect.stringMatching(/^[0-9a-f]{12}$/),
       inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: 0, reasoningTokens: 0,
       costUsd: (95 * 2 + 5 * 0.2 + 20 * 10) / 1_000_000,
     })));
@@ -4632,13 +4632,31 @@ describe('recordCalls', () => {
     await withRefusalFallback(recordCalls(refusing, finder, calls), recordCalls(fallback, { ...finder, fallback: true }, calls), () => {}).sendMessage('sys', 'user');
 
     const none = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
+    // The digest is the first 12 hex digits of the SHA-256 of the system prompt, `sys` here.
+    const promptDigest = '518b67e65253';
+    // The counts a prompt quotes leave the digest alone.
+    const counted: LLMCall[] = [];
+    for (const count of ['2', '13']) await recordCalls(fallback, finder, counted).sendMessage(`${count} open threads`, 'user');
+    expect(counted[0].promptDigest).toBe(counted[1].promptDigest);
     expect(calls).toEqual([
-      { stage: 'judge', effort: 'high', attempt: 1, model: 'claude-opus-5-5', durationMs: 40, ...usage, costUsd: (500 * 4 + 200 * 0.2 + 300 * 5 + 100 * 20) / 1_000_000 },
-      { stage: 'judge', attempt: 2, failed: true, error: 'timed out', durationMs: expect.any(Number), ...none, costUsd: null },
-      { stage: 'judge', attempt: 3, model: 'claude-opus-5-5', durationMs: 5, ...none, costUsd: null },
-      { stage: 'judge', attempt: 4, model: 'claude-opus-5-5', durationMs: 5, ...none, costUsd: null },
-      { ...finder, attempt: 1, failed: true, error: 'declined', durationMs: expect.any(Number), ...none, costUsd: null },
-      { ...finder, fallback: true, attempt: 2, model: 'gpt-5', toolSteps: [{ tool: 'Read', durationMs: 3 }], durationMs: 60, ...usage, costUsd: null },
+      { stage: 'judge', effort: 'high', attempt: 1, promptDigest, model: 'claude-opus-5-5', durationMs: 40, ...usage, costUsd: (500 * 4 + 200 * 0.2 + 300 * 5 + 100 * 20) / 1_000_000 },
+      { stage: 'judge', attempt: 2, promptDigest, failed: true, error: 'timed out', durationMs: expect.any(Number), ...none, costUsd: null },
+      { stage: 'judge', attempt: 3, promptDigest, model: 'claude-opus-5-5', durationMs: 5, ...none, costUsd: null },
+      { stage: 'judge', attempt: 4, promptDigest, model: 'claude-opus-5-5', durationMs: 5, ...none, costUsd: null },
+      { ...finder, attempt: 1, promptDigest, failed: true, error: 'declined', durationMs: expect.any(Number), ...none, costUsd: null },
+      { ...finder, fallback: true, attempt: 2, promptDigest, model: 'gpt-5', toolSteps: [{ tool: 'Read', durationMs: 3 }], durationMs: 60, ...usage, costUsd: null },
+    ]);
+
+    // A call with tools keeps its step budget, and whether it used enough steps to be told to wrap up. A client
+    // without tools ignores them, so it records no budget.
+    const budgeted: LLMCall[] = [];
+    for (const steps of [4, 5]) await recordCalls(fallback, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps } });
+    await recordCalls(refusing, finder, budgeted).sendMessage('other', 'user', { repoTools: { root: '/work', steps: 4 } }).catch(() => undefined);
+    // A client that reports no tool steps, such as Codex, leaves it unknown whether the model was told to wrap up.
+    const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5' }), repoTools: true } as unknown as LLMClient;
+    await recordCalls(silent, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } });
+    expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest])).toEqual([
+      [4, true, true], [5, undefined, true], [undefined, undefined, false], [3, undefined, true],
     ]);
     expect([recordCalls(fallback, finder, []).repoTools, judge.repoTools]).toEqual([true, undefined]);
     expect(summarizeCalls(calls)).toEqual({

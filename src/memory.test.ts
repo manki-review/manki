@@ -55,6 +55,7 @@ describe('applySuppressions', () => {
     expect(kept).toHaveLength(0);
     expect(suppressed).toHaveLength(1);
     expect(suppressed[0].title).toBe('Unused variable detected');
+    expect(suppressed[0].suppressedBy).toBe(suppressions[0].id);
   });
 
   it('keeps finding that does not match any suppression', () => {

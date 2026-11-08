@@ -195,6 +195,8 @@ export interface Finding {
   lead?: OpenLead;
   /** How the judge's attempt to refute the finding with tools came out. Set on blockers and open leads only. */
   refutation?: Refutation;
+  /** The id of the memory suppression that hid the finding. */
+  suppressedBy?: string;
 }
 
 export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
@@ -336,6 +338,10 @@ export interface ReviewResult {
   /** Per-drop cross-round dedup attribution: both `deduplicateFindings` (static) and `llmDeduplicateFindings` (llm) entries, in the order they were dropped. */
   duplicateMatches?: RoundDedupDuplicateMatch[];
   suppressionCount?: number;
+  /** The findings memory suppressions hid, each with `suppressedBy`. */
+  memorySuppressed?: Finding[];
+  /** The learnings and suppressions loaded from memory for the round. */
+  memoryLoaded?: { learnings: number; suppressions: number };
   inPrSuppressedCount?: number;
   agentResponseLengths?: Map<string, number>;
   /** Aggregated wall-clock duration per agent across all passes/retries. */
@@ -930,6 +936,8 @@ export interface RoundContext {
    */
   recap?: RoundRecap;
   staticAnalysis?: RoundStaticAnalysis;
+  /** The token service calls the run made before it posted the review. */
+  tokenService?: TokenServiceCall[];
   /**
    * Lengths of what the round composed, in characters. The record goes out with the review, so a comment
    * GitHub refuses afterwards, or a body rewritten to carry it, is not reflected.
@@ -948,6 +956,10 @@ export interface RoundOutput {
 export interface RoundStaticAnalysis {
   /** Each enabled analyzer and how it ended. */
   analyzers?: RoundAnalyzerRun[];
+  /** Each other enabled source, the checks, code scanning and dependency review, and how it ended. */
+  sources?: RoundSignalSourceRun[];
+  /** Hidden characters found in added lines, which are looked for whatever the config says. */
+  hiddenCharacters?: number;
   /** Check runs from `wait_for_checks` that had not finished when the wait timed out. */
   checksStillPending?: string[];
 }
@@ -958,6 +970,15 @@ export interface RoundAnalyzerRun {
   /** Results on lines in the diff. */
   results?: number;
   /** Why the analyzer was skipped. */
+  reason?: string;
+}
+
+export interface RoundSignalSourceRun {
+  source: Exclude<StaticSignalSource, AnalyzerName | 'hidden_characters'>;
+  status: 'ran' | 'skipped';
+  /** Results on lines in the diff. */
+  results?: number;
+  /** Why the source gave nothing, such as an HTTP 403. */
   reason?: string;
 }
 
@@ -995,6 +1016,8 @@ export interface RoundMeta {
   trigger?: RoundTrigger;
   /** How the round ended. Optional so older context blocks keep parsing. */
   outcome?: RoundOutcome;
+  /** Why a `NOT_CONVERGING` round paused automatic review, and the blockers it names. */
+  needsHuman?: NeedsHuman;
   /** Set when the round reviewed a draft, which does not count toward the round cap. */
   draft?: boolean;
   /** Set when the record was too large for the review even compressed, and its per-file and per-finding diagnostics were left out. */
@@ -1076,12 +1099,8 @@ export interface RoundTrigger {
   sender: string;
 }
 
-/** Version identifiers for the prompt templates used by each pipeline stage. */
-export interface PromptVersions {
-  judge: string;
-  reviewer: string;
-  planner: string;
-}
+/** Per stage, the distinct `LLMCall.promptDigest`s of its calls in the round, sorted. Finders can differ by focus. */
+export type PromptVersions = Record<string, string[]>;
 
 /** Effective config snapshot for the round: AI pipeline behavior fields (model behavior, pass configuration, memory). Convergence/post-processing rules are not included. */
 export interface RoundConfig {
@@ -1406,6 +1425,10 @@ export type MemorySkipReason = 'private_repo' | 'no_token' | 'memory_repo_unread
 
 export interface RoundMemory {
   suppressionsApplied?: number;
+  /** The learnings and suppressions loaded for the round. */
+  loaded?: { learnings: number; suppressions: number };
+  /** Each finding a memory suppression hid, with the suppression's id. */
+  suppressed?: RoundSuppressedFinding[];
   /**
    * Outcome of the memory-load step. `disabled` when `config.memory.enabled`
    * is false, `skipped` with `skipReason` when the run may not use memory,
@@ -1418,6 +1441,14 @@ export interface RoundMemory {
   skipReason?: MemorySkipReason;
   /** Truncated error message recorded when `loadStatus === 'failed'`. */
   loadError?: string;
+}
+
+export interface RoundSuppressedFinding {
+  title: string;
+  file: string;
+  line: number;
+  severity: FindingSeverity;
+  suppressionId: string;
 }
 
 /**
@@ -1509,6 +1540,19 @@ export interface FindingFingerprintEntry {
   refutation?: Refutation;
 }
 
+/** One call a run made to the token service. */
+export interface TokenServiceCall {
+  /** The endpoint path, such as `token`, `state`, `state/report`, `resolve` or a memory endpoint. */
+  endpoint: string;
+  /** The HTTP status. Unset when the run had no OIDC token or the request failed. */
+  status?: number;
+  /** Why the call failed: the service's error, `no OIDC token`, or the request's error. */
+  error?: string;
+  /** The service's request id of a failed call, which names its log line in the Worker. */
+  requestId?: string;
+  durationMs: number;
+}
+
 /** What a reply-handler run, Manki answering in a thread or to a command, records in its comment. */
 export interface ReplyRecord {
   kind: 'thread-reply' | 'explain' | 'question';
@@ -1516,6 +1560,8 @@ export interface ReplyRecord {
   timestamp: string;
   mankiVersion: string;
   usage: RoundUsage;
+  /** The token service calls the run made before the reply. */
+  tokenService?: TokenServiceCall[];
 }
 
 /** The round's LLM usage: totals over its calls, per stage and per model, and the calls themselves. */

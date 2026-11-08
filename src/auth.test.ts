@@ -4,7 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 
-import { changeThreadThroughService, createAuthenticatedOctokit, fetchPrState, reportPrState, resolveGitHubToken, TokenResult, TokenServiceError } from './auth';
+import { changeThreadThroughService, createAuthenticatedOctokit, fetchPrState, reportPrState, resolveGitHubToken, tokenServiceCalls, TokenResult, TokenServiceError } from './auth';
 
 jest.mock('@actions/core');
 jest.mock('@actions/github');
@@ -205,6 +205,39 @@ describe('reportPrState', () => {
     arrange();
     await expect(reportPrState(OWNER, REPO, 12, { pause: { reason: 'Paused.' } })).resolves.toBeUndefined();
     expect(core.warning).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('tokenServiceCalls', () => {
+  beforeEach(() => {
+    mockGetInput.mockReset().mockReturnValue('');
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('logs every call with its endpoint and status, and why a failed one failed, with the service\'s request id', async () => {
+    const before = tokenServiceCalls().length;
+    mockFetch(async () => Response.json({ active: [], queue: [], settings: {}, last_reviewed: null }));
+    await fetchPrState(OWNER, REPO, 12, 7);
+    mockFetch(async () => Response.json({ error: 'Too many requests', request_id: 'req-1' }, { status: 429 }));
+    await reportPrState(OWNER, REPO, 12, { pause: null });
+    mockFetch(async () => { throw new TypeError('fetch failed'); });
+    await reportPrState(OWNER, REPO, 12, { pause: null });
+    mockFetch(async () => new Response('Bad gateway', { status: 502 }));
+    await fetchPrState(OWNER, REPO, 12, 7);
+    jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC'));
+    await reportPrState(OWNER, REPO, 12, { pause: null });
+
+    expect(tokenServiceCalls().slice(before)).toEqual([
+      { endpoint: 'state', status: 200, durationMs: expect.any(Number) },
+      { endpoint: 'state/report', status: 429, error: 'Too many requests', requestId: 'req-1', durationMs: expect.any(Number) },
+      { endpoint: 'state/report', error: 'TypeError: fetch failed', durationMs: expect.any(Number) },
+      { endpoint: 'state', status: 502, durationMs: expect.any(Number) },
+      { endpoint: 'state/report', error: 'no OIDC token', durationMs: expect.any(Number) },
+    ]);
   });
 });
 

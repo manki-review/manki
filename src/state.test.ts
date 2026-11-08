@@ -10,6 +10,7 @@ import * as authModule from './auth';
 
 jest.mock('./auth', () => ({
   changeThreadThroughService: jest.fn().mockResolvedValue(false),
+  tokenServiceCalls: jest.fn().mockReturnValue([]),
   fetchPrState: jest.fn().mockResolvedValue(null),
   reportPrState: jest.fn().mockResolvedValue(undefined),
 }));

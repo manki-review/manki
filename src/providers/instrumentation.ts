@@ -1,3 +1,6 @@
+import { createHash } from 'crypto';
+
+import { WRAP_UP_STEPS } from '../tool-steps';
 import { estimateCostUsd } from './model-registry';
 import { addUsage, LLMCall, LLMClient, LLMUsage, RefusalError, UsageSummary, ZERO_USAGE } from './types';
 import { sanitizeLogOutput } from './cli-utils';
@@ -74,12 +77,25 @@ export function withSignal(client: LLMClient, signal: AbortSignal | undefined): 
 }
 
 /** Appends one `LLMCall` to `calls` for every request sent through the returned client, failed ones included. */
+/**
+ * Returns the first 12 hex digits of the SHA-256 of `systemPrompt`, with every run of digits replaced first. A prompt
+ * quotes counts that change each round, such as open threads or tool steps, and those must not split one version.
+ */
+function promptDigest(systemPrompt: string): string {
+  return createHash('sha256').update(systemPrompt.replace(/\d+/g, '#')).digest('hex').slice(0, 12);
+}
+
 export function recordCalls(client: LLMClient, label: { stage: string; agent?: string; fallback?: true }, calls: LLMCall[]): LLMClient {
   return {
     sendMessage: async (...args) => {
-      const opts = args[2];
+      const [systemPrompt, , opts] = args;
       const attempt = calls.filter(c => c.stage === label.stage && c.agent === label.agent).length + 1;
-      const base = { ...label, ...(opts?.effort && { effort: opts.effort }), attempt };
+      const stepBudget = client.repoTools ? opts?.repoTools?.steps : undefined;
+      const base = {
+        ...label, ...(opts?.effort && { effort: opts.effort }), attempt,
+        promptDigest: promptDigest(systemPrompt),
+        ...(stepBudget !== undefined && { stepBudget }),
+      };
       const start = Date.now();
       try {
         const response = await client.sendMessage(...args);
@@ -88,6 +104,8 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
           ...base,
           ...(response.model && { model: response.model }),
           ...(response.toolSteps && { toolSteps: response.toolSteps }),
+          // Only a client that reports its tool steps shows whether the model was told to wrap up.
+          ...(stepBudget !== undefined && response.toolSteps && response.toolSteps.length >= stepBudget - WRAP_UP_STEPS && { wrapUpNoted: true as const }),
           durationMs: response.latencyMs ?? Date.now() - start,
           ...usage,
           // Some paths report zeros when the provider sent no counts, and no real call uses no tokens.

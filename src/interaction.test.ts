@@ -8,6 +8,7 @@ import { LLMClient } from './providers';
 import * as memory from './memory';
 import * as ghUtils from './github';
 import * as state from './state';
+import * as auth from './auth';
 import { makeRoundContext, TEST_BOT, TEST_LINKS } from './test-utils';
 
 jest.mock('@actions/core', () => ({
@@ -23,6 +24,11 @@ jest.mock('@actions/github', () => ({
     repo: { owner: 'test-owner', repo: 'test-repo' },
     actor: 'test-user',
   },
+}));
+
+jest.mock('./auth', () => ({
+  ...jest.requireActual('./auth'),
+  tokenServiceCalls: jest.fn().mockReturnValue([]),
 }));
 
 jest.mock('./memory', () => ({
@@ -654,6 +660,8 @@ describe('handleReviewCommentReply', () => {
     const octokit = createMockOctokit();
     const usage = { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
     const client = { sendMessage: jest.fn().mockResolvedValue({ content: 'AI response here', usage, latencyMs: 30, model: 'claude-sonnet-5-5' }) } as unknown as LLMClient;
+    const tokenService = [{ endpoint: 'token' as const, status: 200, durationMs: 40 }];
+    jest.mocked(auth.tokenServiceCalls).mockReturnValueOnce(tokenService);
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
     expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 1, 'eyes');
     expect(client.sendMessage).toHaveBeenCalledWith(
@@ -672,6 +680,7 @@ describe('handleReviewCommentReply', () => {
     expect(record).toMatchObject({
       kind: 'thread-reply', prNumber: 1,
       usage: { calls: 1, inputTokens: 1000, outputTokens: 100, estimatedCostUsd: 0.003, llmCalls: [{ stage: 'reply', model: 'claude-sonnet-5-5', durationMs: 30, costUsd: 0.003 }] },
+      tokenService,
     });
     expect(core.info).toHaveBeenCalledWith('Posted reply to review comment');
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
