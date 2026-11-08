@@ -4,7 +4,7 @@ export const ISSUE_BOX_ANCHOR = '<!-- manki-issue-box -->';
 const ISSUE_BOX_LABEL = 'Create an issue for this';
 
 // A box is a task list line that ends with the finding's id. GitHub turns `[ ]` into `[x]` on a tick.
-const ISSUE_BOX_LINE = /^[ \t]*[-*] \[([ xX])\] .*<!-- manki-box:issue:(.+?) -->[ \t]*$/;
+const ISSUE_BOX_LINE = /^[ \t]*[-*] \[([ xX])\] .*<!-- manki-box:issue:(.+?) -->[ \t]*\r?$/;
 
 const FENCE_RE = /^[ \t]*(`{3,}|~{3,})/;
 
@@ -23,23 +23,33 @@ export function issueBox(id: string): string {
  * outside a code fence, so a box line a model wrote into a fix, which Manki posts fenced and uncleaned, is never one.
  */
 function issueBoxes(lines: string[]): Array<{ line: number; id: string; ticked: boolean }> {
-  const boxes: Array<{ line: number; id: string; ticked: boolean }> = [];
+  const fenced = fencedLines(lines);
+  return lines.flatMap((text, i) => {
+    const match = fenced[i] ? null : text.match(ISSUE_BOX_LINE);
+    return match && lines[i - 1]?.trim() === ISSUE_BOX_ANCHOR ? [{ line: i, id: match[2], ticked: match[1] !== ' ' }] : [];
+  });
+}
+
+/** Returns, for each of `lines`, whether it is a code fence or inside one. */
+function fencedLines(lines: string[]): boolean[] {
   let fence: string | undefined;
-  lines.forEach((text, i) => {
+  return lines.map(text => {
     const opener = text.match(FENCE_RE)?.[1];
     if (fence) {
       // A fence closes on a line of the same character, at least as long, and nothing else.
       if (opener && opener[0] === fence[0] && opener.length >= fence.length && text.trim() === opener) fence = undefined;
-      return;
+      return true;
     }
-    if (opener) {
-      fence = opener;
-      return;
-    }
-    const match = text.match(ISSUE_BOX_LINE);
-    if (match && lines[i - 1]?.trim() === ISSUE_BOX_ANCHOR) boxes.push({ line: i, id: match[2], ticked: match[1] !== ' ' });
+    if (opener) fence = opener;
+    return !!opener;
   });
-  return boxes;
+}
+
+/** Returns `body` with every line inside a code fence blanked, so a search finds only what Manki wrote outside one. */
+export function withoutFences(body: string): string {
+  const lines = body.split('\n');
+  const fenced = fencedLines(lines);
+  return lines.map((text, i) => (fenced[i] ? ' '.repeat(text.length) : text)).join('\n');
 }
 
 /** Returns the ids of the issue boxes ticked in `body`. */
@@ -57,7 +67,8 @@ export function issueBoxOffset(body: string, id: string): number {
 /** Returns `body` with the box line of `id` replaced by `text`, and every other line as it was. */
 export function replaceIssueBox(body: string, id: string, text: string): string {
   const lines = body.split('\n');
-  for (const box of issueBoxes(lines)) if (box.id === id) lines[box.line] = text;
+  // A body someone saved in the web editor ends its lines with CRLF, which the replaced line keeps.
+  for (const box of issueBoxes(lines)) if (box.id === id) lines[box.line] = `${text}${lines[box.line].endsWith('\r') ? '\r' : ''}`;
   return lines.join('\n');
 }
 

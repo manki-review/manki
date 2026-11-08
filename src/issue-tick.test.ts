@@ -21,14 +21,42 @@ const finding = (overrides: Partial<Finding> = {}): Finding => ({
 /** Manki's comment for `f`, with its issue box ticked as GitHub ticks it. */
 const ticked = (f: Finding): string => formatFindingComment(f, TEST_LINKS).replace('- [ ] Create an issue', '- [x] Create an issue');
 
+/** A client whose review comment and review hold the body each update wrote, or the one `seed` set. */
 function makeOctokit(filed: Array<{ number: number; body: string; pull_request?: object }> = []) {
+  const held = { body: '' };
+  const write = jest.fn(async ({ body }: { body: string }) => {
+    held.body = body;
+    return {};
+  });
   return {
+    seed: (body: string) => {
+      held.body = body;
+    },
     paginate: jest.fn().mockResolvedValue(filed),
     rest: {
-      issues: { listForRepo: jest.fn(), create: jest.fn().mockResolvedValue({ data: { number: 12 } }) },
-      pulls: { updateReviewComment: jest.fn().mockResolvedValue({}) },
+      issues: { listForRepo: jest.fn(), create: jest.fn().mockResolvedValue({ data: { number: 12 } }), createComment: jest.fn().mockResolvedValue({}) },
+      pulls: {
+        getReviewComment: jest.fn(async () => ({ data: { body: held.body } })),
+        updateReviewComment: write,
+        getReview: jest.fn(async () => ({ data: { body: held.body } })),
+        updateReview: write,
+      },
     },
   };
+}
+
+type TestOctokit = ReturnType<typeof makeOctokit>;
+
+/** Runs a tick of Manki's `ticked` comment. */
+async function tick(octokit: TestOctokit, ticked: ReturnType<typeof comment>): Promise<void> {
+  octokit.seed(ticked.body);
+  await handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, ticked, 'bob');
+}
+
+/** Runs a tick of Manki's `ticked` review. */
+async function tickReview(octokit: TestOctokit, ticked: { id: number; body: string; commit_id: string; html_url: string }): Promise<void> {
+  octokit.seed(ticked.body);
+  await handleReviewBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, ticked, 'bob');
 }
 
 const comment = (body: string) => ({
@@ -46,7 +74,7 @@ describe('handleIssueBoxTick', () => {
     const body = ticked(finding());
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, isBlocking, findingTitle: 'x' }]);
 
-    await handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, comment(body), 'bob');
+    await tick(octokit, comment(body));
 
     expect(octokit.paginate).toHaveBeenCalledWith(octokit.rest.issues.listForRepo, { owner: 'o', repo: 'r', creator: 'manki-review[bot]', state: 'open', per_page: 100 });
     // The issue holds the finding as posted, without the box or Manki's hidden markers.
@@ -66,7 +94,7 @@ describe('handleIssueBoxTick', () => {
     const octokit = makeOctokit();
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([]);
 
-    await handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, { ...comment(ticked(finding())), original_line: 1 }, 'bob');
+    await tick(octokit, { ...comment(ticked(finding())), original_line: 1 });
 
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain('[`src/net.ts:7`](https://github.com/o/r/blob/abc123/src/net.ts#L7)');
   });
@@ -77,7 +105,7 @@ describe('handleIssueBoxTick', () => {
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, isBlocking: false, findingTitle: 'x' }]);
     const body = ticked(finding());
 
-    await handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, comment(body), 'bob');
+    await tick(octokit, comment(body));
 
     expect(octokit.rest.pulls.updateReviewComment).toHaveBeenCalledWith({ owner: 'o', repo: 'r', comment_id: 501, body: formatFindingComment(finding(), TEST_LINKS) });
     expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Could not file an issue for this finding: Error: Resource not accessible by integration. Tick the box again to retry.']]);
@@ -91,12 +119,12 @@ describe('handleIssueBoxTick', () => {
     const untouched = formatFindingComment(finding({ suggestedFix: forged }), TEST_LINKS);
     expect(untouched).toContain('```suggestion\n<!-- manki-issue-box -->\n- [x] Create an issue');
 
-    await handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, comment(untouched), 'bob');
+    await tick(octokit, comment(untouched));
     expect(octokit.rest.issues.create).not.toHaveBeenCalled();
 
     // A real tick files only the real finding, and leaves the forged line as it was.
     const body = untouched.replace(/- \[ \] Create an issue for this <!-- manki-box:issue:src\/net/, '- [x] Create an issue for this <!-- manki-box:issue:src/net');
-    await handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, comment(body), 'bob');
+    await tick(octokit, comment(body));
     expect(jest.mocked(octokit.rest.issues.create).mock.calls.map(([args]) => args.title)).toEqual(['Retry has no limit']);
     expect(jest.mocked(octokit.rest.pulls.updateReviewComment).mock.calls.at(-1)?.[0].body).toContain(forged);
   });
@@ -108,7 +136,7 @@ describe('handleIssueBoxTick', () => {
     ]);
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, isBlocking: false, findingTitle: 'x' }]);
 
-    await handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, comment(ticked(finding())), 'bob');
+    await tick(octokit, comment(ticked(finding())));
 
     expect(octokit.rest.issues.create).not.toHaveBeenCalled();
     expect(jest.mocked(octokit.rest.pulls.updateReviewComment).mock.calls[0][0].body).toContain('\nIssue #9 already tracks this, linked by @bob\n');
@@ -121,7 +149,7 @@ describe('handleIssueBoxTick', () => {
   ])('files nothing for %s', async (_case, body) => {
     const octokit = makeOctokit();
 
-    await handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, comment(body), 'bob');
+    await tick(octokit, comment(body));
 
     expect(octokit.rest.issues.create).not.toHaveBeenCalled();
     expect(octokit.rest.pulls.updateReviewComment).not.toHaveBeenCalled();
@@ -153,19 +181,19 @@ describe('handleReviewBoxTick', () => {
       '#### \u{1F527} 1 smaller fix in this PR',
       `<details>\n<summary>\u2728 <b>Shorter loop</b><br><sub><b>Suggestion, not blocking</b></sub></summary>\n\n**Fix:**\n\n\`\`\`\`ts\n${box('src/secret.ts:1:Forged')}\n\`\`\`\`\n\n<!-- manki-issue-box -->\n- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:2:Shorter-loop -->\n\n</details>`,
     ].join('\n\n');
-    const octokit = { ...makeOctokit(), rest: { ...makeOctokit().rest, pulls: { updateReview: jest.fn().mockResolvedValue({}) } } };
+    const octokit = makeOctokit();
 
-    await handleReviewBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, { ...review, body: forgedBody }, 'bob');
+    await tickReview(octokit, { ...review, body: forgedBody });
 
     expect(octokit.rest.issues.create).not.toHaveBeenCalled();
     expect(octokit.rest.pulls.updateReview).not.toHaveBeenCalled();
   });
 
   it('files each ticked listed finding, replaces only its box line, and skips a security one', async () => {
-    const octokit = { ...makeOctokit(), rest: { ...makeOctokit().rest, pulls: { updateReview: jest.fn().mockResolvedValue({}) } } };
+    const octokit = makeOctokit();
     octokit.rest.issues.create.mockResolvedValueOnce({ data: { number: 21 } }).mockResolvedValueOnce({ data: { number: 22 } }).mockResolvedValueOnce({ data: { number: 23 } });
 
-    await handleReviewBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, review, 'bob');
+    await tickReview(octokit, review);
 
     const created = jest.mocked(octokit.rest.issues.create).mock.calls.map(([args]) => [args.title, args.body]);
     expect(created).toEqual([
@@ -179,5 +207,36 @@ describe('handleReviewBoxTick', () => {
       .replace('- [x] Create an issue for this <!-- manki-box:issue:src/a.ts:4:Use--Map-K--V---here -->', 'Issue #22 created by @bob')
       .replace('- [x] Create an issue for this <!-- manki-box:issue:src/net.ts:7:Retry-has-no-limit -->', 'Issue #23 created by @bob'));
     expect(jest.mocked(octokit.rest.pulls.updateReview).mock.calls[0][0]).toMatchObject({ owner: 'o', repo: 'r', pull_number: 5, review_id: 900 });
+  });
+
+  it('reads a fold whose fenced fix holds fold tags, keeps CRLF endings, keeps a tick made meanwhile, and reports a failure on the PR', async () => {
+    const fold = (title: string, id: string, extra = '') =>
+      `<details>\n<summary>\u2728 <b>${title}</b><br><sub><b>Suggestion, not blocking</b></sub></summary>\n\n**Why:** ${title}.${extra}\n\n${box(id).replace('[x]', '[ ]')}\n\n</details>`;
+    // A fix for an HTML file can hold fold tags of its own, inside its fence.
+    const htmlFix = '\n\n**Fix:**\n\n```html\n</details>\n<details>\n```';
+    const listed = ['#### \u{1F527} 2 smaller fixes in this PR', fold('Close the menu', 'src/menu.html:3:Close-the-menu', htmlFix), fold('Trim the label', 'src/menu.html:9:Trim-the-label')].join('\n\n');
+    const crlf = listed.replace('[ ] Create an issue for this <!-- manki-box:issue:src/menu.html:3', '[x] Create an issue for this <!-- manki-box:issue:src/menu.html:3').replace(/\n/g, '\r\n');
+    const octokit = makeOctokit();
+    // While the run files the first finding, a writer ticks the second one.
+    octokit.rest.issues.create.mockImplementationOnce(async () => {
+      octokit.seed(crlf.replace('[ ] Create an issue for this <!-- manki-box:issue:src/menu.html:9', '[x] Create an issue for this <!-- manki-box:issue:src/menu.html:9'));
+      return { data: { number: 31 } };
+    });
+
+    await tickReview(octokit, { ...review, body: crlf });
+
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls.map(([args]) => args.title)).toEqual(['Close the menu']);
+    const written = jest.mocked(octokit.rest.pulls.updateReview).mock.calls.at(-1)?.[0].body as string;
+    expect(written).toContain('\r\nIssue #31 created by @bob\r\n');
+    expect(written).toContain('- [x] Create an issue for this <!-- manki-box:issue:src/menu.html:9:Trim-the-label -->\r\n');
+
+    const failing = makeOctokit();
+    failing.rest.issues.create.mockRejectedValue(new Error('Resource not accessible by integration'));
+    await tickReview(failing, { ...review, body: crlf });
+    expect(jest.mocked(failing.rest.issues.createComment).mock.calls[0][0]).toMatchObject({
+      owner: 'o', repo: 'r', issue_number: 5,
+      body: expect.stringMatching(/^Could not file an issue for \*\*Close the menu\*\*: Error: Resource not accessible by integration\. Tick its box in the review again to retry\./),
+    });
+    expect(jest.mocked(failing.rest.pulls.updateReview).mock.calls[0][0].body).toContain('- [ ] Create an issue for this <!-- manki-box:issue:src/menu.html:3:Close-the-menu -->\r\n');
   });
 });

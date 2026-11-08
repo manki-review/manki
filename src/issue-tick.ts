@@ -1,10 +1,11 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity } from './github';
-import { filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes } from './issue-box';
+import { BotIdentity, sanitizeMarkdown } from './github';
+import { filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
 import { isSecurityThread, parseFindingData } from './recap';
-import { fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
+import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
+import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -50,10 +51,11 @@ async function findFiledIssue(octokit: Octokit, bot: BotIdentity, owner: string,
   return undefined;
 }
 
-/** Returns `text` without the issue box after its anchor and without Manki's hidden markers. */
-function postedText(text: string): string {
-  const anchor = text.indexOf(ISSUE_BOX_ANCHOR);
-  return (anchor >= 0 ? text.slice(0, anchor) : text).replace(/^<!-- manki[^\n]*-->\n?/gm, '').trim();
+/** Returns `text` up to the anchor of the box of `id`, without Manki's hidden markers. */
+function postedText(text: string, id: string): string {
+  const box = issueBoxOffset(text, id);
+  const anchor = box >= 0 ? text.lastIndexOf(ISSUE_BOX_ANCHOR, box) : -1;
+  return (anchor >= 0 ? text.slice(0, anchor) : text).replace(/^<!-- manki[^\n]*-->\r?\n?/gm, '').trim();
 }
 
 /** Files `source` as an issue with a permalink to its line and a link to where it was posted, or links the open one. */
@@ -66,7 +68,7 @@ async function fileOrLink(
   const permalink = `${github.context.serverUrl}/${owner}/${repo}/blob/${source.commit}/${source.file}${source.line > 0 ? `#L${source.line}` : ''}`;
   const where = source.file ? ` at [\`${location}\`](${permalink})` : '';
   const body = [
-    postedText(source.text),
+    postedText(source.text, id),
     `Found by Manki in #${prNumber}${where}. See the [${source.postedIn}](${source.postedAt}).`,
     filedIssueMarker(id),
   ].join('\n\n');
@@ -103,7 +105,6 @@ export async function handleIssueBoxTick(
     postedIn: 'review thread',
   };
   const thread = (await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber)).find(t => t.rootCommentId === comment.id);
-  let body = comment.body;
   let allFiled = true;
   for (const id of ids) {
     let filed: { number: number; existing: boolean } | undefined;
@@ -115,9 +116,9 @@ export async function handleIssueBoxTick(
       allFiled = false;
       if (thread) await replyToReviewThread(octokit, thread.id, `Could not file an issue for this finding: ${String(error).slice(0, 200)}. Tick the box again to retry.`);
     }
-    // Each box is saved as soon as it is handled, so a later failure keeps the issues already filed.
-    body = replaceIssueBox(body, id, filedLine(id, filed, editor));
-    await octokit.rest.pulls.updateReviewComment({ owner, repo, comment_id: comment.id, body });
+    // Each box is saved as soon as it is handled, on the comment as it is now, so a tick made meanwhile stays.
+    const { data: current } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: comment.id });
+    await octokit.rest.pulls.updateReviewComment({ owner, repo, comment_id: comment.id, body: replaceIssueBox(current.body, id, filedLine(id, filed, editor)) });
     // Opening with "Agreed." records the deferral, so a later round does not raise the finding in a new thread.
     if (filed && thread) await replyToReviewThread(octokit, thread.id, `Agreed. Filed as #${filed.number} for later work.`);
   }
@@ -165,7 +166,9 @@ function decodeHtml(text: string): string {
 function bodyFinding(body: string, id: string): { title: string; text: string; security: boolean } | undefined {
   const box = issueBoxOffset(body, id);
   if (box < 0) return undefined;
-  const { open, close } = enclosingFold(body, box);
+  // Tags and headers inside a fenced fix are a model's text, never Manki's structure.
+  const plain = withoutFences(body);
+  const { open, close } = enclosingFold(plain, box);
   if (open >= 0 && close > box) {
     const fold = body.slice(open, close);
     const end = fold.indexOf('</summary>');
@@ -173,7 +176,7 @@ function bodyFinding(body: string, id: string): { title: string; text: string; s
     const title = summary.match(/<summary>[^<]*<b>(.*?)<\/b>/)?.[1];
     return title ? { title: decodeHtml(title), text: fold.slice(end + '</summary>'.length), security: / · Security\b/.test(decodeHtml(summary)) } : undefined;
   }
-  const start = [...body.slice(0, box).matchAll(BLOCK_HEADER_RE)].pop()?.index;
+  const start = [...plain.slice(0, box).matchAll(BLOCK_HEADER_RE)].pop()?.index;
   if (start === undefined) return undefined;
   const block = body.slice(start, box);
   const [header, titleLine] = block.split('\n');
@@ -189,7 +192,6 @@ function bodyFinding(body: string, id: string): { title: string; text: string; s
 export async function handleReviewBoxTick(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, review: TickedReview, editor: string,
 ): Promise<void> {
-  let body = review.body;
   for (const id of tickedIssueBoxes(review.body)) {
     const finding = bodyFinding(review.body, id);
     if (!finding) {
@@ -211,8 +213,14 @@ export async function handleReviewBoxTick(
       core.info(`${filed.existing ? 'Linked' : 'Filed'} issue #${filed.number} for finding ${id}`);
     } catch (error) {
       core.warning(`Failed to file an issue for finding ${id}: ${error}`);
+      // The review has no thread to reply in, so the PR gets the reason.
+      await octokit.rest.issues.createComment({
+        owner, repo, issue_number: prNumber,
+        body: withMarkers(`Could not file an issue for **${sanitizeMarkdown(finding.title)}**: ${String(error).slice(0, 200)}. Tick its box in the review again to retry.`, BOT_MARKER),
+      });
     }
-    body = replaceIssueBox(body, id, filedLine(id, filed, editor));
-    await octokit.rest.pulls.updateReview({ owner, repo, pull_number: prNumber, review_id: review.id, body });
+    // Each box is saved as soon as it is handled, on the review as it is now, so a tick made meanwhile stays.
+    const { data: current } = await octokit.rest.pulls.getReview({ owner, repo, pull_number: prNumber, review_id: review.id });
+    await octokit.rest.pulls.updateReview({ owner, repo, pull_number: prNumber, review_id: review.id, body: replaceIssueBox(current.body, id, filedLine(id, filed, editor)) });
   }
 }
