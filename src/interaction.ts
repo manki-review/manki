@@ -10,7 +10,7 @@ import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isSecurityThread, mayClearSecurityThread, parseFindingData } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, fixedMarker, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, resolveReviewThread } from './state';
-import { ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
+import { ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage } from './round-context';
 import { safeTruncate, withMarkers } from './utils';
@@ -72,6 +72,19 @@ ${WRITING_RULES}`;
 const RESOLVING_REPLY_RE = /^\**(Fixed|Agreed|Withdrawn)\b/;
 
 type ReplyOutcome = 'Fixed' | 'Agreed' | 'Withdrawn';
+
+/**
+ * Returns what a thread reply decided for the record: the outcome it opens with, and what happens to the thread. A
+ * reply that settles nothing records nothing.
+ */
+function replyDecision(
+  outcome: ReplyOutcome | undefined, thread: ReviewThread | 'lookup_failed' | undefined, mayResolve: boolean, staysOpen: boolean,
+): ReplyDecision | undefined {
+  if (!outcome) return undefined;
+  if (thread === 'lookup_failed') return { outcome, thread };
+  const fate: ReplyDecision['thread'] = !thread ? 'not_found' : thread.isResolved ? 'already_resolved' : staysOpen ? 'stays_open' : !mayResolve ? 'no_permission' : 'resolves';
+  return { outcome, thread: fate };
+}
 
 /** Returns how a Manki thread reply settles the finding, from the word it opens with, or `undefined` when it settles nothing. */
 function replyOutcome(reply: string): ReplyOutcome | undefined {
@@ -195,12 +208,13 @@ async function askWithRecord(
   systemPrompt: string,
   userMessage: string,
   options?: SendMessageOptions,
-): Promise<{ content: string; record: string }> {
+): Promise<{ content: string; record: (decision?: ReplyDecision) => string }> {
   const calls: LLMCall[] = [];
   const response = await recordCalls(client, { stage: 'reply' }, calls).sendMessage(systemPrompt, userMessage, options);
   const tokenService = tokenServiceCalls();
-  const record = formatReplyRecord({
-    kind, prNumber, timestamp: new Date().toISOString(), mankiVersion: MANKI_VERSION, usage: buildRoundUsage(calls), ...(tokenService.length > 0 && { tokenService }),
+  const record = (decision?: ReplyDecision) => formatReplyRecord({
+    kind, prNumber, timestamp: new Date().toISOString(), mankiVersion: MANKI_VERSION, usage: buildRoundUsage(calls),
+    ...(tokenService.length > 0 && { tokenService }), ...(decision && { decision }),
   });
   return { content: response.content, record };
 }
@@ -319,9 +333,11 @@ export async function handleReviewCommentReply(
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     const outcome = replyOutcome(reply);
     // The live thread also counts a found-again reply that made it block, which the first comment does not show.
+    let lookupFailed = false;
     const thread = outcome
       ? await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch((error: unknown) => {
         core.warning(`Failed to read the thread of the reply: ${error}`);
+        lookupFailed = true;
         return undefined;
       })
       : undefined;
@@ -333,7 +349,7 @@ export async function handleReviewCommentReply(
     if (contradicted) {
       await octokit.rest.pulls.createReplyForReviewComment({
         owner, repo, pull_number: prNumber, comment_id: comment.id,
-        body: withMarkers(roundPointer(contradicted.commit, contradicted.evaluation), BOT_MARKER, response.record),
+        body: withMarkers(roundPointer(contradicted.commit, contradicted.evaluation), BOT_MARKER, response.record({ outcome: 'Fixed', thread: 'deferred_to_round' })),
       });
       core.info(`Deferred the reply to the review of ${contradicted.commit.slice(0, 7)}, which found the thread ${contradicted.evaluation.status}`);
       return;
@@ -362,7 +378,7 @@ export async function handleReviewCommentReply(
         repo,
         pull_number: prNumber,
         comment_id: comment.id,
-        body: withMarkers([reply, ...notes].join('\n\n'), BOT_MARKER, response.record, ...(outcome === 'Fixed' && head ? [fixedMarker(head)] : [])),
+        body: withMarkers([reply, ...notes].join('\n\n'), BOT_MARKER, response.record(replyDecision(outcome, lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen)), ...(outcome === 'Fixed' && head ? [fixedMarker(head)] : [])),
       });
       core.info('Posted reply to review comment');
     }
@@ -508,7 +524,7 @@ async function handleExplain(
     owner,
     repo,
     issue_number: prNumber,
-    body: withMarkers(sanitizeMarkdown(response.content).trim(), BOT_MARKER, response.record),
+    body: withMarkers(sanitizeMarkdown(response.content).trim(), BOT_MARKER, response.record()),
   });
 }
 
@@ -855,7 +871,7 @@ async function handleGenericQuestion(
     owner,
     repo,
     issue_number: prNumber,
-    body: withMarkers(sanitizeMarkdown(response.content).trim(), BOT_MARKER, response.record),
+    body: withMarkers(sanitizeMarkdown(response.content).trim(), BOT_MARKER, response.record()),
   });
 }
 

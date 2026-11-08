@@ -9,7 +9,7 @@ import { resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, titlesMatch } from './review';
-import { Finding, ParsedDiff, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, UNPROVEN_TAG } from './types';
+import { Finding, gradeStep, ParsedDiff, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, UNPROVEN_TAG } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
 
 const REFUTE_STEPS = 15;
@@ -136,7 +136,7 @@ function applyRefutation(finding: Finding, refutation: Refutation): Finding {
   const note = `Refutation ${refutation.outcome}: ${refutation.reason}`;
   const graded: Finding = { ...finding, refutation, judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${note}` : note };
   if (refutation.outcome !== 'confirmed' && finding.tags?.includes(SECURITY_TAG)) return graded;
-  if (refutation.outcome === 'disproved') return finding.severity === 'blocker' ? graded : { ...graded, severity: 'ignore' };
+  if (refutation.outcome === 'disproved') return finding.severity === 'blocker' ? graded : { ...graded, ...gradeStep(finding, 'ignore', 'refutation', refutation.reason) };
   if (refutation.outcome === 'confirmed') {
     const proof = [...new Set([...(finding.evidence?.proof ?? []), ...(refutation.proof ?? [])])];
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
@@ -144,12 +144,12 @@ function applyRefutation(finding: Finding, refutation: Refutation): Finding {
     const unproven = finding.tags?.includes(UNPROVEN_TAG) && finding.severity === 'warning';
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
     return {
-      ...confirmed, severity: unproven ? 'blocker' : finding.severity, evidence: { ...(finding.evidence ?? { checks: [] }), proof },
+      ...confirmed, ...(unproven && gradeStep(finding, 'blocker', 'refutation', refutation.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
       ...(tags && { tags }),
     };
   }
   // An open lead nobody could settle is dropped, since it never was a finding, unless the judge graded it a blocker.
-  if (finding.lead && finding.severity !== 'blocker') return { ...graded, severity: 'ignore' };
+  if (finding.lead && finding.severity !== 'blocker') return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', 'an open lead nobody could settle') };
   return graded;
 }
 

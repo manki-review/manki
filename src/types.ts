@@ -171,6 +171,8 @@ export interface Finding {
   originalSeverity?: FindingSeverity;
   /** Severity the reviewer gave, when the judge graded the finding differently. The judge never sees it. */
   reviewerSeverity?: FindingSeverity;
+  /** Each change of the finding's severity after the reviewer graded it, in order, with what changed it. */
+  gradePath?: GradeStep[];
   /** Fingerprint key of the prior-round blocker that names the same defect. */
   sameAs?: string;
   /** ID of the still open thread where an earlier round raised this blocker. The review points at that thread instead of opening a new one. */
@@ -201,6 +203,49 @@ export interface Finding {
   suppressedBy?: string;
   /** Why the defect exists without this PR's change, when the reviewer says so. The judge must keep it, or it is cleared. */
   preExisting?: string;
+  /** How a claim in `preExisting` was checked against the diff: held, or the condition that failed. */
+  preExistingCheck?: PreExistingCheck;
+}
+
+/**
+ * How a pre-existing claim the reviewer made and the judge kept was checked: `pre_existing` when it held, or the
+ * condition that failed: no location, a file `exclude_paths` left out, a file the PR deletes, or a line or proof
+ * inside the diff.
+ */
+export type PreExistingCheck = 'pre_existing' | 'no_location' | 'excluded_file' | 'deleted_file' | 'touches_diff';
+
+/** How a round split a diff too large to read at once. */
+export interface RoundSlicing {
+  /** The changed files in each slice. A file split across slices counts in each. */
+  files: number[];
+  /** The verdict reader's answer on each slice, when it ran. */
+  reader?: Array<{ verdict: VerdictReport['verdict']; blockers: number }>;
+}
+
+/** What changed a finding's severity. */
+export type GradeChange =
+  | 'judge' | 'unproven' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'contradiction' | 'ratchet' | 'resolved_thread'
+  | 'pre_existing';
+
+/** One change of a finding's severity. */
+export interface GradeStep {
+  from: FindingSeverity;
+  to: FindingSeverity;
+  by: GradeChange;
+  /** Why, in one short line, when the stage that changed it said. */
+  reason?: string;
+}
+
+const MAX_GRADE_REASON_CHARS = 200;
+
+/**
+ * Returns the fields that move `finding` to severity `to`, with the step appended to its `gradePath`. Spread them into
+ * a copy of the finding, or assign them to it. A step that keeps the severity adds no step.
+ */
+export function gradeStep(finding: Finding, to: FindingSeverity, by: GradeChange, reason?: string): Pick<Finding, 'severity' | 'gradePath'> {
+  if (finding.severity === to) return { severity: to };
+  const step: GradeStep = { from: finding.severity, to, by, ...(reason && { reason: reason.slice(0, MAX_GRADE_REASON_CHARS) }) };
+  return { severity: to, gradePath: [...(finding.gradePath ?? []), step] };
 }
 
 export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
@@ -348,6 +393,12 @@ export interface ReviewResult {
   memoryLoaded?: { learnings: number; suppressions: number };
   /** Pre-existing findings not worth posting, such as suggestions. Only the round record keeps them. */
   unpostedPreExisting?: Finding[];
+  /** How the diff was split, when it was read in several slices. */
+  slicing?: RoundSlicing;
+  /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
+  changedSinceLastRoundCount?: number;
+  /** The open or earlier threads where someone claimed a fix: resolved, answered by a person, or confirmed by a round. */
+  fixClaimedThreadIds?: string[];
   inPrSuppressedCount?: number;
   agentResponseLengths?: Map<string, number>;
   /** Aggregated wall-clock duration per agent across all passes/retries. */
@@ -944,6 +995,13 @@ export interface RoundContext {
   staticAnalysis?: RoundStaticAnalysis;
   /** The token service calls the run made before it posted the review. */
   tokenService?: TokenServiceCall[];
+  /** How the diff was split, when it was read in several slices. */
+  slicing?: RoundSlicing;
+  /**
+   * Set on a round that approved: whether the approval was held, and why: a conflict with the base, a draft, a config
+   * that failed to load, or files the review could not read.
+   */
+  approval?: { held: false | 'conflict' | 'draft' | 'config' | 'unread' };
   /**
    * Lengths of what the round composed, in characters. The record goes out with the review, so a comment
    * GitHub refuses afterwards, or a body rewritten to carry it, is not reflected.
@@ -1131,6 +1189,8 @@ export interface RoundDiffPerFile {
 export interface RoundDiff {
   /** `changeDigest` of the reviewed diff, so rounds that reviewed the same change share it. Optional so older context blocks keep parsing. */
   changeDigest?: string;
+  /** The changed files the push since the last round touched, which the finders were told about. Unset on a first round. */
+  changedSinceLastRound?: number;
   lines: number;
   additions: number;
   deletions: number;
@@ -1269,6 +1329,8 @@ export interface RoundJudgeDrop {
   judgeConfidence?: 'high' | 'medium' | 'low';
   judgeNotes?: string;
   refutation?: Refutation;
+  /** How the finding's severity changed until it was dropped. */
+  gradePath?: GradeStep[];
 }
 
 export interface RoundAgentMetric {
@@ -1372,6 +1434,8 @@ export interface RoundJudge {
   interRoundDiffBytes?: number;
   /** True when the inter-round diff exceeded `MAX_INTER_ROUND_DIFF_CHARS` and was truncated before being passed to the judge prompt. */
   interRoundDiffTruncated?: boolean;
+  /** The threads where someone claimed a fix, which a blocker coming back counts against. */
+  fixClaimedThreads?: string[];
   /** Counts from the post-judge thread-resolution loop: `addressed` evaluations dropped, `not_addressed` evaluations synthesised by the empty-diff override, and `uncertain` evaluations emitted. */
   threadResolutionOverrides?: ThreadResolutionOverrides;
 }
@@ -1546,6 +1610,10 @@ export interface FindingFingerprintEntry {
   notChecked?: boolean;
   /** Mirrors `Finding.refutation`. */
   refutation?: Refutation;
+  /** Mirrors `Finding.gradePath`. */
+  gradePath?: GradeStep[];
+  /** The reviewer's pre-existing claim kept by the judge, and how it was checked against the diff. */
+  preExisting?: { reason: string; check: PreExistingCheck };
 }
 
 /** One call a run made to the token service. */
@@ -1570,6 +1638,18 @@ export interface ReplyRecord {
   usage: RoundUsage;
   /** The token service calls the run made before the reply. */
   tokenService?: TokenServiceCall[];
+  /** What a thread reply that settles the finding decided. */
+  decision?: ReplyDecision;
+}
+
+/**
+ * What a thread reply decided: the word it opens with, and what happens to the thread. `stays_open` is a blocking or
+ * security thread only a maintainer may close, `lookup_failed` a thread GitHub could not list, and `deferred_to_round`
+ * a fix a later round already judged.
+ */
+export interface ReplyDecision {
+  outcome: 'Fixed' | 'Agreed' | 'Withdrawn';
+  thread: 'resolves' | 'stays_open' | 'no_permission' | 'already_resolved' | 'not_found' | 'lookup_failed' | 'deferred_to_round';
 }
 
 /** The round's LLM usage: totals over its calls, per stage and per model, and the calls themselves. */

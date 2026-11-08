@@ -686,6 +686,21 @@ describe('handleReviewCommentReply', () => {
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
   });
 
+  it('posts a settling reply when the thread cannot be read, and records the failed lookup apart from a missing thread', async () => {
+    setContext({ comment: { id: 1, body: 'Done.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' }, pull_request: { number: 1 } });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment('blocker'), path: 'src/file.ts', line: 10 } });
+    const client = createMockClient();
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: 'Fixed. The guard now runs first.' });
+    jest.mocked(state.fetchBotReviewThreads).mockRejectedValueOnce(new Error('GraphQL timeout'));
+
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
+
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
+    expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Fixed', thread: 'lookup_failed' }]);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to read the thread of the reply'));
+  });
+
   it('posts a model answer without the mentions, links, suggestion fences and Manki markers it wrote', async () => {
     const injected = 'The guard runs first. cc @admin, see [docs](https://evil.example).\n\n```suggestion\ngrant(user);\n```\n\n<!-- manki-reopened -->';
     const clean = /^The guard runs first\. cc @\u200Badmin, see docs\.\n\n```\ngrant\(user\);\n```\n\n<!-- manki -->\n<!-- manki-reply-record: .+ -->$/;
@@ -792,6 +807,12 @@ describe('handleReviewCommentReply', () => {
     const note = `\n\nThis is a ${kind === 'security' ? 'security' : 'blocking'} finding, so the thread stays open until ${until}.`;
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${staysOpen ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason ? [[octokit, 'PRRT_this', reason]] : []);
+    // The reply record keeps what the reply decided for the thread.
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
+    const [record] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
+    const outcome = /^\**(Fixed|Agreed|Withdrawn)\b/.exec(reply)?.[1];
+    const fate = resolved ? 'already_resolved' : reason ? 'resolves' : staysOpen ? 'stays_open' : 'no_permission';
+    expect(record.decision).toEqual(outcome ? { outcome, thread: fate } : undefined);
   });
 
   it.each([
@@ -841,6 +862,7 @@ describe('handleReviewCommentReply', () => {
     if (pointer) {
       expect(body).toMatch(new RegExp(`^${pointer.replace(/[.*+?^${}()|[\]\\`]/g, '\\$&')}\n\n<!-- manki -->\n<!-- manki-reply-record: `));
       expect(state.resolveReviewThread).not.toHaveBeenCalled();
+      expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Fixed', thread: 'deferred_to_round' }]);
     } else {
       expect(body.startsWith(answer)).toBe(true);
       // A "Fixed." answer records the head it confirms, so the round on that head adds no "Fixed in" line.

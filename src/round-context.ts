@@ -246,6 +246,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
     ...(f.judgeNotes && { judgeNotes: f.judgeNotes }),
     ...(f.refutation && { refutation: f.refutation }),
+    ...(f.gradePath && { gradePath: f.gradePath }),
   }));
   const toEntry = (f: Finding): FindingFingerprintEntry => ({
     fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
@@ -267,6 +268,8 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.evidence && { evidence: f.evidence }),
     ...(f.notChecked && { notChecked: true }),
     ...(f.refutation && { refutation: f.refutation }),
+    ...(f.gradePath && { gradePath: f.gradePath }),
+    ...(f.preExisting && f.preExistingCheck && { preExisting: { reason: f.preExisting.slice(0, 200), check: f.preExistingCheck } }),
   });
   const unposted = (result.unpostedPreExisting ?? []).map(toEntry);
   return {
@@ -289,6 +292,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     },
     diff: {
       changeDigest: input.changeDigest,
+      ...(result.changedSinceLastRoundCount != null && { changedSinceLastRound: result.changedSinceLastRoundCount }),
       lines: diff.totalAdditions + diff.totalDeletions,
       additions: diff.totalAdditions,
       deletions: diff.totalDeletions,
@@ -381,6 +385,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       interRoundDiffState,
       ...(interRoundDiffBytes != null && { interRoundDiffBytes }),
       interRoundDiffTruncated,
+      ...(result.fixClaimedThreadIds && { fixClaimedThreads: result.fixClaimedThreadIds }),
       ...(threadResolutionOverrides && { threadResolutionOverrides }),
     },
     dedup: {
@@ -415,6 +420,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     recap: buildRoundRecap(recap),
     ...(staticAnalysis && { staticAnalysis }),
     ...(tokenServiceCalls && tokenServiceCalls.length > 0 && { tokenService: tokenServiceCalls }),
+    ...(result.slicing && { slicing: result.slicing }),
   };
 }
 

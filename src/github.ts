@@ -1397,7 +1397,11 @@ export async function postReview(
   const body = highlightCode(renderBody(), codeTokens);
   const postedComments = [...validComments, ...fileComments].map(highlight);
   const record = (context
-    ? formatRecordTrailer({ ...context, output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) } }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
+    ? formatRecordTrailer({
+      ...context,
+      output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
+      ...(event === 'APPROVE' && { approval: { held: approvalHeld } }),
+    }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
     : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
 
   if (invalidComments.length > 0) {

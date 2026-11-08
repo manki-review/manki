@@ -20,7 +20,7 @@ import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { refuteBlockers } from './refute';
 import { criticalAreaOf, resolveRouting } from './routing';
-import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNPROVEN_TAG } from './types';
+import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNPROVEN_TAG } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1227,7 +1227,7 @@ export function applyInPrSuppression(
       const attribution = match.authorLogin ? ` [reply by @${match.authorLogin}]` : '';
       core.info(`In-PR suppression (${match.reason}): "${finding.title}" at ${finding.file}:${finding.line}${attribution}`);
       next.originalSeverity = next.originalSeverity ?? finding.severity;
-      next.severity = 'ignore';
+      Object.assign(next, gradeStep(finding, 'ignore', 'in_pr_suppression', match.reason));
     }
     next.tags = addTag(next.tags, IN_PR_SUPPRESSED_TAG);
     return next;
@@ -1263,7 +1263,7 @@ export function mapJudgedToFindings(
     if (!match?.preExisting) delete finding.preExisting;
     if (match) {
       if (match.severity !== o.severity) finding.reviewerSeverity = o.severity;
-      finding.severity = match.severity;
+      Object.assign(finding, gradeStep(o, match.severity, 'judge'));
       finding.judgeNotes = match.reasoning;
       finding.judgeConfidence = match.confidence;
       if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
@@ -1311,7 +1311,10 @@ function capUnprovenBlocker(finding: Finding): Finding {
   if (!reason) return finding;
   core.info(`Posting blocker "${finding.title}" as a warning: ${reason}`);
   const note = `Posted as a warning, since ${reason}.`;
-  return { ...finding, severity: 'warning', tags: addTag(finding.tags, UNPROVEN_TAG), judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${note}` : note };
+  return {
+    ...finding, ...gradeStep(finding, 'warning', 'unproven', reason), tags: addTag(finding.tags, UNPROVEN_TAG),
+    judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${note}` : note,
+  };
 }
 
 /**
@@ -1412,7 +1415,7 @@ function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): 
   if (finding.severity !== 'suggestion' && finding.severity !== 'nitpick') return;
 
   finding.originalSeverity ??= finding.severity;
-  finding.severity = 'ignore';
+  Object.assign(finding, gradeStep(finding, 'ignore', 'own_proposal'));
 
   finding.tags = addTag(finding.tags, OWN_PROPOSAL_TAG);
 
@@ -1538,10 +1541,10 @@ export function applyCrossRoundSuppression(
       ),
     );
     if (contradictionMatch && hasReversalWord(current) && (current.severity === 'warning' || current.severity === 'suggestion')) {
-      current.originalSeverity ??= current.severity;
-      current.severity = 'nitpick';
-      current.tags = addTag(current.tags, CONTRADICTION_TAG);
       const note = `Contradicts round ${contradictionMatch.round} guidance accepted by author`;
+      current.originalSeverity ??= current.severity;
+      Object.assign(current, gradeStep(current, 'nitpick', 'contradiction', note));
+      current.tags = addTag(current.tags, CONTRADICTION_TAG);
       current.judgeNotes = current.judgeNotes ? `${current.judgeNotes} ${note}` : note;
       demotedCount++;
       return current;
@@ -1569,7 +1572,7 @@ export function applyCrossRoundSuppression(
       );
     });
     if (ratchetMatch && current.severity !== 'blocker') {
-      current.severity = 'ignore';
+      Object.assign(current, gradeStep(current, 'ignore', ratchetMatch.source === 'resolved' ? 'resolved_thread' : 'ratchet', `matches round ${ratchetMatch.round}`));
       current.tags = addTag(current.tags, ratchetMatch.source === 'resolved' ? RESOLVED_THREAD_SUPPRESSED_TAG : RATCHET_SUPPRESSED_TAG);
       suppressedCount++;
       return current;

@@ -2069,6 +2069,9 @@ describe('runReview', () => {
       ['Old helper could be shorter', ['pre-existing']],
       ['Old retry may spin', ['pre-existing']],
     ]);
+    // The record keeps how each claim was checked, and the lowered blocker's grade step with the reviewer's reason.
+    expect(pre.findings.map(f => f.preExistingCheck)).toEqual(['pre_existing', 'pre_existing', 'pre_existing']);
+    expect(pre.findings[0].gradePath?.at(-1)).toEqual({ from: 'blocker', to: 'warning', by: 'pre_existing', reason: old });
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [changed, oldInjection], summary: 'Two defects.' });
     const security = await run(makeClients());
@@ -2079,11 +2082,15 @@ describe('runReview', () => {
     ]);
 
     // Each of these sits outside every hunk, but something ties it to this PR, so it keeps blocking.
+    const checks: Array<Finding['preExistingCheck']> = [];
     for (const tied of [callerProof, callerUnmarked, deleted, excluded]) {
       mockedRunJudgeAgent.mockResolvedValue({ findings: [tied], summary: 'One defect.' });
       const result = await run(makeClients());
       expect([tied.title, result.outcome, result.findings[0].severity, result.findings[0].tags]).toEqual([tied.title, 'ADDRESS_FIRST', 'blocker', undefined]);
+      checks.push(result.findings[0].preExistingCheck);
     }
+    // A claim the diff or the files contradict records which condition failed, and an unmarked finding records none.
+    expect(checks).toEqual(['touches_diff', undefined, 'deleted_file', 'excluded_file']);
 
     // The verdict reader's blockers have no judge to confirm a pre-existing mark, so they always block.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
@@ -2193,9 +2200,12 @@ describe('runReview', () => {
     expect(rebased.outcome).toBe('ADDRESS_FIRST');
     expect(rebased.needsHuman).toBeUndefined();
     expect(rebased.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', threadId: 'T1' })]);
+    expect(rebased.fixClaimedThreadIds).toBeUndefined();
 
     const replied = await runOn(makeClients(), 'sha2', [openThread], [thread('replied')]);
     expect(replied.outcome).toBe('NOT_CONVERGING');
+    // The round records the threads where someone claimed a fix.
+    expect(replied.fixClaimedThreadIds).toEqual(['T1']);
     expect(replied.verdict).toBe('REQUEST_CHANGES');
     expect(replied.needsHuman).toEqual({
       cause: 'repeated',
@@ -3681,6 +3691,8 @@ describe('runReview', () => {
     const bSlice = readerMessages.find(m => m.includes('+++ b/src/b.ts'))!;
     expect(bSlice).not.toContain('+++ b/src/a.ts');
     expect(bSlice).toMatch(/This is slice \d of 2 of the PR's diff\. [\s\S]*These changed files are not in this slice:\n\n```\nsrc\/a\.ts\nsrc\/a\.test\.ts\n```/);
+    // The round records the files in each slice and the reader's answer on each.
+    expect(result.slicing).toEqual({ files: [2, 1], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'READY', blockers: 0 }] });
   });
 
   it('shows the verdict reader every changed line of a diff over the character budget, and needs every slice READY', async () => {
@@ -3954,7 +3966,8 @@ describe('runReview', () => {
         interRoundDiff,
       },
     );
-    await round2(round2Clients, delta);
+    const followUp = await round2(round2Clients, delta);
+    expect(followUp.changedSinceLastRoundCount).toBe(1);
 
     const round1Calls = (round1Clients.reviewer.sendMessage as jest.Mock).mock.calls as [string, string][];
     const round2Calls = (round2Clients.reviewer.sendMessage as jest.Mock).mock.calls as [string, string][];
@@ -3976,7 +3989,7 @@ describe('runReview', () => {
 
     // An unknown change since the last round lists nothing.
     const unknownClients = makeClients();
-    await round2(unknownClients, undefined);
+    expect((await round2(unknownClients, undefined)).changedSinceLastRoundCount).toBeUndefined();
     expect((unknownClients.reviewer.sendMessage as jest.Mock).mock.calls).toEqual(round1Calls);
 
     // The judge still gets the history.

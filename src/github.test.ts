@@ -1232,6 +1232,18 @@ describe('postReview body lead', () => {
     expect(body.slice(output.bodyLength)).toMatch(/^\n\n<!-- manki-stats: /);
   });
 
+  it('records whether an approval was held and why, and no approval on a round that requests changes', async () => {
+    const approval = async (result: ReviewResult) => {
+      mockCreateReview.mockClear();
+      await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, makeContext({}), 1000);
+      return (JSON.parse(extractReviewRecords((mockCreateReview.mock.calls[0][0] as { body: string }).body).records[0]) as RoundContext).approval;
+    };
+    expect(await approval(ready)).toEqual({ held: false });
+    mockGet.mockResolvedValueOnce({ data: { mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
+    expect(await approval(ready)).toEqual({ held: 'conflict' });
+    expect(await approval({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker] })).toBeUndefined();
+  });
+
   it.each([
     ['mergeable is false', { mergeable: false, mergeable_state: 'dirty' }],
     ['the merge state is dirty', { mergeable: null, mergeable_state: 'dirty' }],
