@@ -1850,6 +1850,7 @@ describe('runFullReview orchestration', () => {
       ['conflict', 'Approval held: the PR conflicts with its base'],
       ['draft', 'Approval held: the PR is a draft'],
       ['config', 'Approval held: the base branch config did not load'],
+      ['unread', 'Approval held: some changed files were not read'],
     ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {
       jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld: held });
 
@@ -3550,6 +3551,9 @@ describe('runFullReview orchestration', () => {
 
       expect(rc!.diff.excludedFiles).toEqual([{ path: 'dist/index.js', matchedPattern: 'dist/**' }]);
       expect(rc!.diff.binarySkipped).toEqual(['assets/logo.png']);
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.skipped).toEqual({
+        excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [{ path: 'assets/logo.png', header: '' }],
+      });
       expect(rc!.diff.oversizedHandled).toBe(false);
       expect(rc!.diff.perFile).toEqual([
         { path: 'src/app.ts', additions: 10, deletions: 5, changeType: 'modified' },

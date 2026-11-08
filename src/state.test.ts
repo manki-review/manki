@@ -859,6 +859,21 @@ describe('checkAndAutoApprove', () => {
       );
     });
 
+    it('skips approval when the review of the head holds its approval for a person', async () => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const octokit = makeMockOctokit({
+        threads: [],
+        prHeadSha: 'head-sha',
+        createReviewFn: createReviewMock,
+        existingReviews: [
+          { body: '**Approval held:** no model read some of the files\n\n<!-- manki-held-for-person --><!-- manki -->', state: 'COMMENTED', commit_id: 'head-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        ],
+      });
+
+      expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
+      expect(createReviewMock).not.toHaveBeenCalled();
+    });
+
     it('skips approval when the only review on the head is no verdict, such as an unread or incomplete round', async () => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const octokit = makeMockOctokit({

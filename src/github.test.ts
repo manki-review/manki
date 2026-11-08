@@ -1158,8 +1158,24 @@ describe('postReview body lead', () => {
     const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { configFailed: true });
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([event, approvalHeld]).toEqual(['COMMENT', 'config']);
-    expect(body).toBe(`**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.\n\n${approved.body}`);
+    expect(body.replace('\n\n<!-- manki-held-for-person -->', '')).toBe(`**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.\n\n${approved.body}`);
+    expect(body).toContain('<!-- manki-held-for-person -->');
     expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('holds the approval of a READY round as a COMMENT for a person when a changed file went unread, and marks it so', async () => {
+    const approved = await postedBody(ready);
+    mockGet.mockClear();
+    const skipped = { excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }], binary: [{ path: 'app.jar', header: '' }] };
+    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { skipped });
+    const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
+    expect([event, approvalHeld]).toEqual(['COMMENT', 'unread']);
+    expect(body).toContain('**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n**Skipped files:**\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read');
+    expect(body).toContain(approved.body.split('\n')[0]);
+    expect(body).toContain('<!-- manki-held-for-person -->');
+    expect(mockGet).not.toHaveBeenCalled();
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { skipped: { excluded: [], binary: [] } });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { event: string }).event).toBe('APPROVE');
   });
 
   it('marks a review that is no verdict after its record, where truncation never reaches', async () => {
@@ -4262,15 +4278,15 @@ describe('fetchPRComments', () => {
 describe('formatUnreviewedNotice', () => {
   it('lists each skipped file and why, with no section for what is empty, and cuts a long list', () => {
     const lockfiles = Array.from({ length: 52 }, (_, i) => ({ path: `pkg${i}/yarn.lock`, matchedPattern: '*.lock' }));
-    const notice = formatUnreviewedNotice('abc1234', lockfiles, [{ path: 'bad`name.jar', header: '' }], []);
+    const notice = formatUnreviewedNotice('abc1234', { excluded: lockfiles, binary: [{ path: 'bad`name.jar', header: '' }] }, []);
     expect(notice).toContain('**Not reviewed** at `abc1234`: no model read this PR, since Manki skips every file it changes. A person needs to review it.');
     expect(notice).toContain('- `pkg49/yarn.lock`: matches `*.lock` in `exclude_paths`\n- and 3 more');
     expect(notice).not.toContain('pkg50/');
     expect(notice).not.toContain('Static analysis');
-    expect(formatUnreviewedNotice('abc1234', [], [{ path: 'bad`name.jar', header: '' }], [])).toContain("- `bad'name.jar`: no lines to read");
-    expect(formatUnreviewedNotice('abc1234', [{ path: 'x/<!-- manki-context: {} -->.lock', matchedPattern: '*.lock' }], [], [])).toContain('- `x/.lock`: matches');
+    expect(formatUnreviewedNotice('abc1234', { excluded: [], binary: [{ path: 'bad`name.jar', header: '' }] }, [])).toContain("- `bad'name.jar`: no lines to read");
+    expect(formatUnreviewedNotice('abc1234', { excluded: [{ path: 'x/<!-- manki-context: {} -->.lock', matchedPattern: '*.lock' }], binary: [] }, [])).toContain('- `x/.lock`: matches');
     const signal = { tool: 'ci', ruleId: '', severity: 'error' as const, file: 'yarn.lock', line: 3, message: 'bad <!-- manki-no-verdict --> `x`\n## @admin', source: 'checks' as const };
-    expect(formatUnreviewedNotice('abc1234', [], [], [signal])).toContain("- `yarn.lock:3`: `ci`: `bad  'x' ## @\u200Badmin`");
-    expect(formatUnreviewedNotice('abc1234', [], [], [])).toBe('**Not reviewed** at `abc1234`: no model read this PR, since Manki skips every file it changes. A person needs to review it.');
+    expect(formatUnreviewedNotice('abc1234', { excluded: [], binary: [] }, [signal])).toContain("- `yarn.lock:3`: `ci`: `bad  'x' ## @\u200Badmin`");
+    expect(formatUnreviewedNotice('abc1234', { excluded: [], binary: [] }, [])).toBe('**Not reviewed** at `abc1234`: no model read this PR, since Manki skips every file it changes. A person needs to review it.');
   });
 });

@@ -1416,6 +1416,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     existingThreads: recap.previousFindings,
     draft: run.options.draft,
     configFailed: configFailed(run.reviewSource),
+    skipped: { excluded: run.excludedFiles, binary: diff.binarySkipped ?? [] },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
   return posted;
@@ -1648,7 +1649,7 @@ async function runFullReview(
       core.info('No reviewable files in diff');
       // Every source reads the skipped files as the diff, so CI, dependency review and the analyzers still check them.
       const { signals } = await collectStaticSignals(await workflowOctokit(), { owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff: fullDiff, fullDiff });
-      const notice = formatUnreviewedNotice(shortSha, excludedFiles, fullDiff.binarySkipped ?? [], signals);
+      const notice = formatUnreviewedNotice(shortSha, { excluded: excludedFiles, binary: fullDiff.binarySkipped ?? [] }, signals);
       checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, notice, unreviewedMetadata());
       return;
     }

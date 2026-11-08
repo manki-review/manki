@@ -31,7 +31,7 @@ const REVIEWS = 'how-reviews-work.md';
 export const SETTINGS: Setting[] = [
   { key: 'auto_review', type: 'boolean', description: 'Review a PR automatically when it opens and on every push. With `false`, Manki reviews only on request, such as `@manki review`.' },
   { key: 'auto_approve', type: 'boolean', description: 'Approve the PR once every blocking thread is resolved, without a new review.' },
-  { key: 'exclude_paths', type: 'list of globs', description: 'Files the reviewers never read. A PR that changes only such files is never approved: a person must review it. Some analyzers still check them, see [Running Manki\'s analyzers](' + REVIEWS + '#running-mankis-analyzers).' },
+  { key: 'exclude_paths', type: 'list of globs', description: 'Files the reviewers never read. Manki never approves a PR that changes such a file: a person must approve it. Some analyzers still check them, see [Running Manki\'s analyzers](' + REVIEWS + '#running-mankis-analyzers).' },
   { key: 'skip_labels', type: 'list of strings', description: 'PRs with any of these labels get no automatic review. Compared case-insensitively, and read from the base branch. See [Skipping PRs](' + REVIEWS + '#skipping-prs).' },
   { key: 'skip_authors', type: 'list of strings', description: 'PRs by any of these authors, such as `dependabot[bot]`, get no automatic review. Compared case-insensitively, and read from the base branch.' },
   { key: 'skip_branches', type: 'list of globs', description: 'PRs whose head branch in the repo itself matches, such as `dependabot/**`, get no automatic review. Never matches a fork\'s branch. Read from the base branch.' },
