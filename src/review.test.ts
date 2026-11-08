@@ -2076,7 +2076,7 @@ describe('runReview', () => {
       expect([tied.title, result.outcome, result.findings[0].severity, result.findings[0].tags]).toEqual([tied.title, 'ADDRESS_FIRST', 'blocker', undefined]);
     }
 
-    // A verdict reader blocker it marks pre-existing on unchanged code does not block either.
+    // The verdict reader's blockers have no judge to confirm a pre-existing mark, so they always block.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
     const reading = makeClients();
     jest.mocked(reading.judge.sendMessage).mockResolvedValue({
@@ -2086,8 +2086,9 @@ describe('runReview', () => {
       }),
     });
     const read = await run(reading);
-    expect(read.outcome).toBe('READY');
-    expect(read.findings).toEqual([expect.objectContaining({ severity: 'warning', originalSeverity: 'blocker', tags: ['pre-existing'] })]);
+    expect(read.outcome).toBe('ADDRESS_FIRST');
+    expect(read.findings).toEqual([expect.objectContaining({ severity: 'blocker', file: 'src/pool.ts' })]);
+    expect(read.findings[0].tags).toBeUndefined();
   });
 
   it('turns every warning into a follow-up in every round, security ones included, while a verdict reader blocker still blocks', async () => {

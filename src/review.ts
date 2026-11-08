@@ -67,8 +67,8 @@ function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: R
   });
 }
 
-/** Tells a finder or the verdict reader when to mark a finding pre-existing. */
-export const PRE_EXISTING_RULE = 'When the defect sits on code this PR did not change and exists without this PR\'s change, set `"preExisting": true` and say in `preExistingReason`, in one line, why the code before this PR already had it. Never set it when this PR causes or exposes the defect, such as an unchanged caller that breaks because the PR changed what a function returns or takes. A pre-existing finding never blocks unless it is a security defect.';
+/** Tells a finder when to mark a finding pre-existing. */
+const PRE_EXISTING_RULE = 'When the defect sits on code this PR did not change and exists without this PR\'s change, set `"preExisting": true` and say in `preExistingReason`, in one line, why the code before this PR already had it. Never set it when this PR causes or exposes the defect, such as an unchanged caller that breaks because the PR changed what a function returns or takes. A pre-existing finding never blocks unless it is a security defect.';
 
 const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   READY: 'APPROVE',
@@ -1254,17 +1254,14 @@ export async function runReview(
         return sameAs ? { ...f, sameAs } : f;
       });
       // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found.
-      const readerFindings = markPreExisting(refutation
+      const readerFindings = refutation
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff })
-        : readerBlockers, diff, excludedPaths);
+        : readerBlockers;
       finalFindings = [...finalFindings, ...readerFindings];
-      const stillBlocking = readerFindings.filter(f => f.severity === 'blocker');
-      if (stillBlocking.length > 0) {
-        threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
-        outcome = 'ADDRESS_FIRST';
-        verdictReason = 'verdict_reader';
-        verdictTrace = { survivingBlockers: stillBlocking.map(findingToTraceEntry), unresolvedPriors: [] };
-      }
+      threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+      outcome = 'ADDRESS_FIRST';
+      verdictReason = 'verdict_reader';
+      verdictTrace = { survivingBlockers: readerFindings.map(findingToTraceEntry), unresolvedPriors: [] };
     }
   }
 
@@ -1728,7 +1725,7 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
 }
 
 /** Reads `preExisting: true` with its one-line `preExistingReason`. A mark without a reason is dropped. */
-export function preExistingOf(f: Record<string, unknown>): Pick<Finding, 'preExisting'> {
+function preExistingOf(f: Record<string, unknown>): Pick<Finding, 'preExisting'> {
   const reason = f.preExisting === true ? textOf(f.preExistingReason) : '';
   return reason ? { preExisting: reason } : {};
 }
