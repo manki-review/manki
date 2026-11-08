@@ -190,7 +190,7 @@ memory:
 | `reviewers[].name` | string | required | The check's name. |
 | `reviewers[].focus` | string | required | What the finders check for. |
 | `convergence` | map | see below | How rounds end. See [Severity tiers](how-reviews-work.md#severity-tiers). |
-| `convergence.max_auto_rounds` | non-negative integer | `3` | Automatic rounds since Manki last approved. After the last one, automatic review pauses until `@manki review`, and the notice asks the author to reconsider the approach. `0` turns the cap off. |
+| `convergence.max_auto_rounds` | non-negative integer | `5` | Automatic rounds since Manki last approved. After the last one, automatic review pauses until `@manki review`, and the notice asks the author to reconsider the approach. `0` turns the cap off. |
 | `convergence.test_path_patterns` | list of globs | `["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]` | Test files. From the second round, suggestions and nitpicks on them are dropped. |
 | `convergence.suppress_resolved_threads` | boolean | `true` | A finding whose thread a person resolved, or Manki resolved as addressed, suppresses matching findings in later rounds. |
 | `memory` | map | see below | Review memory. See [Review memory](memory.md). |

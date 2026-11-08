@@ -45,7 +45,7 @@ describe('config', () => {
     });
 
     it('exposes default convergence settings', () => {
-      expect(DEFAULT_CONFIG.convergence?.max_auto_rounds).toBe(3);
+      expect(DEFAULT_CONFIG.convergence?.max_auto_rounds).toBe(5);
       expect(DEFAULT_CONFIG.convergence?.suppress_resolved_threads).toBe(true);
       expect(DEFAULT_CONFIG.convergence?.test_path_patterns).toContain('**/*.test.*');
       expect(DEFAULT_CONFIG.convergence?.test_path_patterns).toContain('**/__tests__/**');
