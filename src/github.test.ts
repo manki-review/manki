@@ -63,7 +63,9 @@ describe('formatFindingComment', () => {
     ['suggestion', 'high', '\u2728 **Suggestion, not blocking** (eslint)', 'eslint'],
   ] as const)('opens a %s finding with its severity icon and label, and no other emoji', (severity, judgeConfidence, label, toolSource) => {
     const comment = render({ ...baseFinding, severity, judgeConfidence, toolSource });
-    expect(comment.startsWith(`${label}\n\n**${baseFinding.title}**\n\n${baseFinding.description}`)).toBe(true);
+    // A blocking finding says what goes wrong, and any other says why it is worth changing.
+    const said = severity === 'blocker' || severity === 'warning' ? '**What goes wrong:**' : '**Why:**';
+    expect(comment.startsWith(`${label}\n\n**${baseFinding.title}**\n\n${said} ${baseFinding.description}`)).toBe(true);
     expect(comment.slice(label.length)).not.toMatch(EMOJI_RE);
     expect(comment).not.toMatch(DASH_SEPARATOR_RE);
     expect(comment).not.toContain('Manki is not sure');
@@ -78,7 +80,7 @@ describe('formatFindingComment', () => {
 
   it('adds a note under the label when the judge is not confident', () => {
     const comment = render({ ...baseFinding, severity: 'warning', judgeConfidence: 'low' });
-    expect(comment.startsWith(`\u26A0\uFE0F **Warning**\n\n**${baseFinding.title}**\n\n_Manki is not sure this applies, so please check it._\n\n${baseFinding.description}`)).toBe(true);
+    expect(comment.startsWith(`\u26A0\uFE0F **Warning**\n\n**${baseFinding.title}**\n\n_Manki is not sure this applies, so please check it._\n\n**What goes wrong:** ${baseFinding.description}`)).toBe(true);
     expect(comment).not.toMatch(/\u{1F534}|\u{1F7E0}|\u{1F7E1}/u);
   });
 
@@ -103,7 +105,9 @@ describe('formatFindingComment', () => {
   ])('never puts prose or a fence in a suggestion block: %s', (_label, suggestedFix, prose, code) => {
     const comment = render({ ...baseFinding, suggestedFix });
     expect(suggestionBlocks(comment)).toEqual([]);
-    if (prose) expect(comment).toContain(`\n\n${prose}`);
+    // Prose in a fix gets the label, and a fix that is only code does not.
+    if (prose) expect(comment).toContain(`\n\n**Fix:** ${prose}`);
+    if (!prose) expect(comment).not.toContain('**Fix:**');
     if (code) expect(comment).toContain(code);
   });
 
@@ -163,6 +167,11 @@ describe('formatFindingComment', () => {
     const oneLong = render({ ...baseFinding, description: `${'A very long only sentence '.repeat(40)}ends here.` });
     expect(visible(oneLong)).toBeLessThan(700);
     expect(oneLong).toContain('<summary>Details</summary>\n\nA very long only sentence');
+    // A description with no text before its code shows no empty label.
+    expect(render({ ...baseFinding, description: '' })).not.toContain('What goes wrong');
+    expect(render({ ...baseFinding, description: '```ts\nuse(value);\n```\nThen more.' })).not.toContain('What goes wrong');
+    // A description that opens with a list gets the label on its own line, so the list marker stays a marker.
+    expect(render({ ...baseFinding, description: '- It throws.\n- It logs.' })).toContain('**What goes wrong:**\n\n- It throws.\n- It logs.');
     expect(wordy).toContain('<summary>Details</summary>\n\nA very long first sentence');
 
     expect(render(baseFinding)).not.toContain('<details>');
@@ -377,7 +386,7 @@ describe('postReview generalFindings', () => {
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const call = mockCreateReview.mock.calls[0][0];
     expect(call.event).toBe('APPROVE');
-    expect(call.body).toContain('**Suggested fix**\n\n```\ntry { op(); } catch (e) { handle(e); }\n```');
+    expect(call.body).toContain('**Fix:**\n\n```\ntry { op(); } catch (e) { handle(e); }\n```');
   });
 
   it('omits the suggested fix when finding has no suggestedFix', async () => {
@@ -455,7 +464,7 @@ describe('postReview generalFindings', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('**Suggested fix**\n\n```\nuse `foo` instead of `bar`\n```');
+    expect(body).toContain('**Fix:**\n\n```\nuse `foo` instead of `bar`\n```');
   });
 
   it('uses longer fence when suggestedFix contains triple backticks', async () => {
@@ -1420,7 +1429,7 @@ describe('postReview body lead', () => {
       '<details>',
       '<summary>\u2728 <b>Extract helper</b><br><sub><b>Suggestion, not blocking</b> · <a href="https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L47"><code>src/a.ts:47</code></a></sub></summary>',
       '',
-      'Duplicated.',
+      '**Why:** Duplicated.',
       '',
       'https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L45-L47',
       '',
@@ -3513,7 +3522,7 @@ describe('postReview fallback paths', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff);
     const body = createReviewMock.mock.calls[0][0].body as string;
-    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Warning**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\nDesc.\n<!-- manki-checks -->\nOn the flagged line: Shows the failure.');
+    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Warning**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\n**What goes wrong:** Desc.\n<!-- manki-checks -->\nOn the flagged line: Shows the failure.');
     expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
   });
 
@@ -3623,7 +3632,7 @@ describe('postReview fallback paths', () => {
         expect(review.body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker still open from an earlier review\./u);
         expect(review.body).toContain('**Still open from earlier reviews:**\n- `src/a.ts:2`: Floor class runs on one model ([view thread](https://github.com/owner/repo/pull/1#discussion_r1))\n\n  This round names it as:\n\n  **Blocker**\n  **Floor class weakened by the PR**\n  [`src/a.ts:');
       }
-      expect(createReview.mock.calls[1][0].body).toContain('  [`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n  Desc.');
+      expect(createReview.mock.calls[1][0].body).toContain('  [`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n  **What goes wrong:** Desc.');
     });
 
     it.each([
@@ -3657,7 +3666,7 @@ describe('postReview fallback paths', () => {
       const update = updateReview.mock.calls[0][0].body as string;
       expect(update).toContain('*(Review body truncated)*');
       expect(extractReviewRecords(update).records.map(r => JSON.parse(r))).toEqual([{ ...context, output: { bodyLength: expect.any(Number), commentLengths: [expect.any(Number)] } }]);
-      expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\nDesc.\n\n<!-- manki-stats: ');
+      expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n**What goes wrong:** Desc.\n\n<!-- manki-stats: ');
       expect(update.length).toBeLessThanOrEqual(60000 + 200);
     });
 
@@ -3740,7 +3749,7 @@ describe('postReview non-blocking findings', () => {
     const review = createReview.mock.calls[0][0];
     expect(createReviewComment).not.toHaveBeenCalled();
     expect(review.comments.map((c: { line: number }) => c.line)).toEqual([5]);
-    expect(review.comments[0].body).toMatch(/^\u2728 \*\*Suggestion, not blocking\*\*\n\n\*\*Extract helper\*\*\n\nIt goes wrong\./u);
+    expect(review.comments[0].body).toMatch(/^\u2728 \*\*Suggestion, not blocking\*\*\n\n\*\*Extract helper\*\*\n\n\*\*Why:\*\* It goes wrong\./u);
     expect(review.comments[0].body).toContain('<!-- manki:suggestion:Extract-helper -->');
     expect(review.body).toContain('#### \u{1F4DD} 1 nitpick\n\n<details>\n<summary>\u{1F4DD} <b>Typo in name</b>');
     expect(review.body).toContain([
@@ -3751,18 +3760,18 @@ describe('postReview non-blocking findings', () => {
       '',
       '_Manki is not sure this applies, so please check it._',
       '',
-      'It goes wrong. Second sentence.',
+      '**Why:** It goes wrong. Second sentence.',
       '',
-      '**Suggested fix:** Use the shared helper.',
+      '**Fix:** Use the shared helper.',
       '',
       '</details>',
       '',
       '<details>',
       '<summary>\u2728 <b>Off the diff</b><br><sub><b>Suggestion, not blocking</b> · <a href="https://github.com/owner/repo/blob/abc1234/src/a.ts#L40"><code>src/a.ts:40</code></a></sub></summary>',
       '',
-      'It goes wrong. Second sentence.',
+      '**Why:** It goes wrong. Second sentence.',
       '',
-      '**Suggested fix**',
+      '**Fix:**',
       '',
       '```ts',
       'if (a) {',
@@ -3873,8 +3882,8 @@ describe('postReview non-blocking findings', () => {
       'This came up again, and the code here is worse than when this thread was answered.',
       expect.stringContaining('**Warning'),
       '**Retry has no `limit`**',
-      'It retries forever.',
-      '**Suggested fix**',
+      '**What goes wrong:** It retries forever.',
+      '**Fix:**',
       '```ts\nCap it.\n```',
     ]);
   });

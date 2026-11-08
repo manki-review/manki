@@ -1028,11 +1028,15 @@ function buildLineLink(owner: string, repo: string, commitSha: string, serverUrl
   return (file, line, end = line) => `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(encodeURIComponent).join('/')}${line > 0 ? `#L${line}${end > line ? `-L${end}` : ''}` : ''}`;
 }
 
+const WHAT_GOES_WRONG_LABEL = '**What goes wrong:**';
+const WHY_LABEL = '**Why:**';
+const FIX_LABEL = '**Fix:**';
+
 /** Renders a fix for the body: prose after the label, or the label above text and fenced code blocks. */
 function formatBodyFix(fix: string, file: string): string {
   const parts = splitFix(safeTruncate(fix, 600), file);
-  if (parts.every(p => p.kind === 'prose')) return `**Suggested fix:** ${sanitizeMarkdown(parts.map(p => p.lines.join(' ')).join(' '))}`;
-  return `**Suggested fix**\n\n${renderFixParts(parts, file)}`;
+  if (parts.every(p => p.kind === 'prose')) return `${FIX_LABEL} ${sanitizeMarkdown(parts.map(p => p.lines.join(' ')).join(' '))}`;
+  return `${FIX_LABEL}\n\n${renderFixParts(parts, file)}`;
 }
 
 /**
@@ -1058,10 +1062,19 @@ function findingLocation(finding: Finding): string {
 }
 
 /** Returns what goes wrong and the fix, as listed under a finding in the review body. */
+/**
+ * Returns `description` under its label: what goes wrong for a blocking severity, why it is worth changing for the rest.
+ * The label goes on its own line above a list, heading or quote, whose marker would show as text after it.
+ */
+function labelDescription(finding: Finding, description: string): string {
+  const label = isBlockingSeverity(finding.severity) ? WHAT_GOES_WRONG_LABEL : WHY_LABEL;
+  return `${label}${/^(?:[-*+]\s|#{1,6}\s|>|\d+[.)]\s)/.test(description) ? '\n\n' : ' '}${description}`;
+}
+
 function formatFindingDetail(finding: Finding): string[] {
   const lines = finding.judgeConfidence === 'low' ? [LOW_CONFIDENCE_NOTE] : [];
   const description = splitLead(sanitizeMarkdown(finding.description), 2, 300).lead;
-  if (description) lines.push(description);
+  if (description) lines.push(labelDescription(finding, description));
   if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
   return lines;
 }
@@ -1830,7 +1843,9 @@ function formatSuggestedFix(fix: string, file: string): string {
     return `${fence}suggestion\n${code[0]}\n${fence}`;
   }
   const rendered = renderFixParts(parts, file);
-  return isShort ? rendered : `<details>\n<summary>Suggested fix</summary>\n\n${rendered}\n</details>`;
+  if (!isShort) return `<details>\n<summary>Suggested fix</summary>\n\n${rendered}\n</details>`;
+  // A fix that is only code needs no label, since GitHub labels a suggestion and the code shows what it is.
+  return parts[0]?.kind === 'prose' ? `${FIX_LABEL} ${rendered}` : rendered;
 }
 
 /** Returns the line a finding opens with: severity, the reporting tool if any, category and effort. */
@@ -2005,12 +2020,14 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
   if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
   const fix = finding.suggestedFix?.trim() ? `\n\n${formatSuggestedFix(finding.suggestedFix, finding.file)}` : '';
   const checks = checksSection(finding, links, 'commented');
-  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - visibleLength(fix) - visibleLength(checks.join('\n\n')));
+  const label = labelDescription(finding, '');
+  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - label.length - visibleLength(fix) - visibleLength(checks.join('\n\n')));
   const description = sanitizeMarkdown(finding.description);
   const { lead, rest } = splitLead(description, 3, room);
   // A fold never holds a single sentence, so one sentence past the lead shows with it, unless the lead was cut short.
   const folds = rest.includes('\n') || rest.split(/(?<=[.!?])\s+/).length > 1 || !description.trim().startsWith(lead);
-  comment += `${folds ? lead : description.trim()}${fix}`;
+  const shown = folds ? lead : description.trim();
+  comment += `${shown ? labelDescription(finding, shown) : ''}${fix}`;
   if (folds) {
     comment += `\n\n<details>\n<summary>Details</summary>\n\n${rest}\n\n</details>`;
   }
@@ -2512,5 +2529,5 @@ async function postConfigErrorComment(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

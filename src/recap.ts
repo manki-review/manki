@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
+import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
 import { isSecurityFinding } from './review';
@@ -718,6 +718,7 @@ function parseFindingFromComment(body: string): FindingMetadata {
     '\n```',
     '\n<details>',
     `\n${CHECKS_MARKER}`,
+    `\n${FIX_LABEL}`,
     '\n<!-- manki:',
     '\n<!-- manki-finding:',
   ];
@@ -732,6 +733,8 @@ function parseFindingFromComment(body: string): FindingMetadata {
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
   if (descSlice.startsWith(LOW_CONFIDENCE_NOTE)) descSlice = descSlice.slice(LOW_CONFIDENCE_NOTE.length).replace(/^\s+/, '');
+  const label = [WHAT_GOES_WRONG_LABEL, WHY_LABEL].find(l => descSlice === l || descSlice.startsWith(`${l} `));
+  if (label) descSlice = descSlice.slice(label.length).trimStart();
   const remainingSubs = descSlice.match(/^(?:<sub>[^\n]*<\/sub>\s*\n?)+/);
   if (remainingSubs) descSlice = descSlice.slice(remainingSubs[0].length).replace(/^\s+/, '');
   if (descSlice.length > 500) descSlice = descSlice.slice(0, 500) + '...';
