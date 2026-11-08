@@ -888,7 +888,7 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.reviews).toEqual([]);
     expect(mockGitHub.comments.map(c => [c.user.login, c.body])).toEqual([[
       ACTIONS_LOGIN,
-      '⚠️ **Review incomplete:** Could not get a token from the Manki token service (no OIDC token, so the workflow needs `id-token: write`). Retry the run.',
+      '⏸️ **Review incomplete:** Could not get a token from the Manki token service (no OIDC token, so the workflow needs `id-token: write`). Retry the run.',
     ]]);
     expect(core.setFailed).toHaveBeenCalledWith(expect.stringContaining('Could not get a token from the Manki token service'));
   });
