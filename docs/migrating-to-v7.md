@@ -10,7 +10,7 @@
 |--------------|-------------------------|
 | Drafts get no automatic review | Set `drafts: review` on the base branch |
 | A PR over 8,000 reviewable lines gets no automatic review, and one over 15,000 is never reviewed | Raise `auto_review_max_lines` and `max_diff_lines` on the base branch. v6 reviewed up to 50,000 lines |
-| Only blockers block. Warnings, security warnings included, are listed as smaller fixes | No setting |
+| Only blockers block. Warnings, security warnings included, are listed under the warnings in the review body | No setting |
 | Provider CLIs get only the environment variables they need | No setting. Pass a provider's settings through its documented variables |
 | Codex reviewers have no shell, image reader or web search | No setting |
 | `stats` is ignored, and the round record is always hidden | No setting |

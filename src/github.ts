@@ -107,7 +107,7 @@ const MANKI_VERSION: string = (() => {
 const VERSION_MARKER = `${VERSION_MARKER_PREFIX} ${MANKI_VERSION} -->`;
 const BOT_MARKERS = [BOT_MARKER, VERSION_MARKER];
 const REVIEW_FAILED_LINE = '🔴 **Review failed**';
-const REVIEW_INCOMPLETE_LINE = '⚠️ **Review incomplete:**';
+const REVIEW_INCOMPLETE_LINE = '⏸️ **Review incomplete:**';
 
 const VERSION_MARKER_REGEX = /<!-- manki-version:\s*([^\s]+)\s*-->/;
 
@@ -221,12 +221,17 @@ const SKIPPED_REASON: Record<NonNullable<BinaryFile['kind']> | 'binary', string>
 };
 
 /** Lists each skipped file and why, or returns an empty string when there is none. */
-function formatSkippedFiles({ excluded, binary }: SkippedFiles): string {
-  const lines = [
+function formatSkippedFiles(skipped: SkippedFiles): string {
+  const list = skippedFileList(skipped);
+  return list ? `**Skipped files:**\n${list}` : '';
+}
+
+/** Lists each skipped file and why, one per line, or returns an empty string when there is none. */
+function skippedFileList({ excluded, binary }: SkippedFiles): string {
+  return cutList([
     ...excluded.map(f => `- ${inline(f.path)}: matches ${inline(f.matchedPattern)} in \`exclude_paths\``),
     ...binary.map(f => `- ${inline(f.path)}: ${SKIPPED_REASON[f.kind ?? 'binary']}`),
-  ];
-  return lines.length > 0 ? `**Skipped files:**\n${cutList(lines)}` : '';
+  ]);
 }
 
 function cutList(lines: string[]): string {
@@ -1083,7 +1088,8 @@ function labelDescription(finding: Finding, description: string): string {
 /** Returns what goes wrong and the fix, as listed under a finding in the review body. `fixDiff` replaces the fix's own rendering. */
 function formatFindingDetail(finding: Finding, fixDiff?: string): string[] {
   const lines = finding.judgeConfidence === 'low' ? [LOW_CONFIDENCE_NOTE] : [];
-  const description = splitLead(sanitizeMarkdown(finding.description), 2, 300).lead;
+  // A fix the reviewer could not give as code is described at the end, so the whole description shows.
+  const description = sanitizeMarkdown(finding.description).trim();
   if (description) lines.push(labelDescription(finding, description));
   if (fixDiff) lines.push(fixDiff);
   else if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
@@ -1127,6 +1133,9 @@ function inlineHtml(markdown: string): string {
     .replace(/(`+)\s?(.+?)\s?\1|\*\*(.+?)\*\*/g, (_, _ticks, code, bold) => (code !== undefined ? `<code>${code}</code>` : `<b>${bold}</b>`));
 }
 
+/** Tags a finding that sits on code an earlier round already reviewed. */
+const MISSED_EARLIER = 'Missed by an earlier review';
+
 /** Lines shown on each side of the flagged line in a finding's code preview. */
 const PREVIEW_CONTEXT = 2;
 
@@ -1138,7 +1147,8 @@ const PREVIEW_CONTEXT = 2;
 function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = false): string {
   const { linkTo, files } = links;
   const location = finding.file ? ` · <a href="${linkTo(finding.file, finding.line)}"><code>${inlineHtml(findingLocation(finding))}</code></a>` : '';
-  const summary = `<summary>${SEVERITY_EMOJI[finding.severity]} <b>${inlineHtml(sanitizeMarkdown(finding.title))}</b><br><sub>${inlineHtml(formatFindingHeader(finding))}${location}</sub></summary>`;
+  const missed = finding.origin === 'reviewed' && !isPreExisting(finding) ? ` · ${MISSED_EARLIER}` : '';
+  const summary = `<summary>${SEVERITY_EMOJI[finding.severity]} <b>${inlineHtml(sanitizeMarkdown(finding.title))}</b><br><sub>${inlineHtml(formatFindingHeader(finding))}${missed}${location}</sub></summary>`;
   const fixDiff = formatFixDiff(finding, files);
   const last = files.get(finding.file)?.length;
   // A diff already shows the flagged line, so the fold previews it only without one.
@@ -1156,14 +1166,12 @@ function formatFindingSection(heading: string, folds: string[], intro?: string):
   return [`#### ${heading}`, ...(intro ? [`<sub>${intro}</sub>`] : []), ...folds].join('\n\n');
 }
 
-function formatSmallerFindings(entries: string[], nitpicks: string[], previouslyMissed: string[], preExisting: string[]): string | null {
-  const sections = [
-    formatFindingSection(`🔧 ${countOf(entries.length, 'smaller fix', 'smaller fixes')} in this PR`, entries),
-    formatFindingSection(`🔶 Previously missed: ${countOf(previouslyMissed.length, 'smaller fix', 'smaller fixes')}`, previouslyMissed, 'These sit on code an earlier review already covered. None of them blocks.'),
-    formatFindingSection(`📝 ${countOf(nitpicks.length, 'nitpick', 'nitpicks')}`, nitpicks),
-    formatFindingSection(`Pre-existing: ${countOf(preExisting.length, 'finding')}`, preExisting, 'These sit on code this PR did not change, so none of them blocks. A blocker among them is listed as a warning.'),
-  ].filter(section => section !== null);
-  return sections.length > 0 ? sections.join('\n\n') : null;
+/** Returns one section per severity of the findings listed in the review body, most severe first. */
+function formatSeveritySections(findings: Finding[], links: CodeLinks): string[] {
+  return SEVERITY_ORDER.flatMap(severity => {
+    const listed = findings.filter(f => f.severity === severity);
+    return listed.length > 0 ? [formatFindingSection(`${SEVERITY_EMOJI[severity]} ${countOf(listed.length, severity)}`, listed.map(f => formatFindingFold(f, links, true)))!] : [];
+  });
 }
 
 /**
@@ -1178,11 +1186,12 @@ async function postFileLevelComments(
   prNumber: number,
   commitSha: string,
   comments: Array<{ path: string; body: string; finding: Finding }>,
-): Promise<Finding[]> {
+): Promise<{ refused: Finding[]; urls: Map<Finding, string> }> {
   const refused: Finding[] = [];
+  const urls = new Map<Finding, string>();
   for (const c of comments) {
     try {
-      await octokit.rest.pulls.createReviewComment({
+      const response = await octokit.rest.pulls.createReviewComment({
         owner,
         repo,
         pull_number: prNumber,
@@ -1191,12 +1200,33 @@ async function postFileLevelComments(
         body: c.body,
         subject_type: 'file',
       });
+      if (response?.data?.html_url) urls.set(c.finding, response.data.html_url);
     } catch (error) {
       core.warning(`Could not post file-level comment on ${c.path}: ${error instanceof Error ? error.message : error}`);
       refused.push(c.finding);
     }
   }
-  return refused;
+  return { refused, urls };
+}
+
+/**
+ * Returns the URL of the thread each of `findings` opened in review `reviewId`, matched by the marker its comment
+ * carries. A finding whose comment can't be found, or a failed lookup, gets none, and the body keeps its line link.
+ */
+async function fetchThreadUrls(octokit: Octokit, owner: string, repo: string, prNumber: number, reviewId: number, findings: Finding[]): Promise<Map<Finding, string>> {
+  const urls = new Map<Finding, string>();
+  if (findings.length === 0) return urls;
+  try {
+    const comments = await octokit.paginate(octokit.rest.pulls.listCommentsForReview, { owner, repo, pull_number: prNumber, review_id: reviewId, per_page: 100 });
+    for (const finding of findings) {
+      const marker = `<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;
+      const comment = comments.find(c => c.path === finding.file && c.body.includes(marker));
+      if (comment) urls.set(finding, comment.html_url);
+    }
+  } catch (error) {
+    core.info(`Could not look up the new threads, so the review body links their lines: ${error instanceof Error ? error.message : error}`);
+  }
+  return urls;
 }
 
 const AGREED_ANSWER_RE = /^\**Agreed\./;
@@ -1267,11 +1297,11 @@ export async function postReview(
   const fileComments: Array<{ path: string; body: string; finding: Finding }> = [];
   const invalidComments: string[] = [];
   const generalFindings: string[] = [];
-  const smallerFindings: string[] = [];
-  const nitpicks: string[] = [];
   const stillOpen: string[] = [];
-  const previouslyMissed: string[] = [];
-  const preExisting: string[] = [];
+  /** The findings posted as threads this round, listed under the verdict. */
+  const threadFindings: Finding[] = [];
+  /** The findings listed as folds in the review body, under one section per severity. */
+  const bodyFindings: Finding[] = [];
   let carriedBlockers = 0;
   const carriedThreadIds = new Set<string>();
   const nonBlocking: Finding[] = [];
@@ -1288,10 +1318,8 @@ export async function postReview(
         core.info(`Skipping "${f.title}" on ${f.file}: it goes as a reply in its answered thread ${f.answeredIn.threadId}`);
       } else if (hasOpenThread(f, existingThreads)) {
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
-      } else if (isPreExisting(f)) {
-        preExisting.push(formatFindingFold(f, links, true));
-      } else if (f.origin === 'reviewed') {
-        previouslyMissed.push(formatFindingFold(f, links, true));
+      } else if (isPreExisting(f) || f.origin === 'reviewed') {
+        bodyFindings.push(f);
       } else {
         nonBlocking.push(f);
       }
@@ -1319,16 +1347,16 @@ export async function postReview(
 
     const commentBody = formatFindingComment(f, links);
 
-    if (!diff) {
+    if (!diff || (diffFile && f.line > 0 && isLineInDiff(diffFile, f.line))) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
+      threadFindings.push(f);
     } else if (!diffFile) {
       invalidComments.push(formatFindingBlock(f, links, true));
-    } else if (f.line > 0 && isLineInDiff(diffFile, f.line)) {
-      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
     } else if (hasOpenThread(f, existingThreads)) {
       core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: an open thread already carries it`);
     } else {
       fileComments.push({ path: f.file, body: commentBody, finding: f });
+      threadFindings.push(f);
     }
   }
 
@@ -1339,23 +1367,29 @@ export async function postReview(
   for (const f of nonBlocking) {
     if (inline.has(f)) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
+      threadFindings.push(f);
     } else {
-      (f.severity === 'nitpick' ? nitpicks : smallerFindings).push(formatFindingFold(f, links, true));
+      bodyFindings.push(f);
     }
   }
 
-  const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl);
+  const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl, context, reviewTimeMs);
+  threadFindings.sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
   const earlier = carriedThreadIds.size + (result.verdictTrace?.unresolvedPriors.length ?? 0);
-  const lead = formatLead(result, blockingFindings, { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (context?.meta.round ?? 1) > 1 });
+  const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (context?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configFailed ? { reason: 'config' }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
   const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
-  const heldLine = hold && approvalHoldLine(hold);
+  // An approval held for unread files says so in its verdict line, so only the other holds get a line of their own.
+  const heldLine = hold && hold.reason !== 'unread' && approvalHoldLine(hold);
 
-  const renderBody = (): string => {
+  /** Renders the body. `threadUrls` links each listed thread once GitHub has posted it, and the flagged line until then. */
+  const renderBody = (threadUrls: ReadonlyMap<Finding, string> = new Map()): string => {
+    const threadList = threadFindings.map(f => `- ${SEVERITY_EMOJI[f.severity]} [${linkText(f.title)}](${threadUrls.get(f) ?? linkTo(f.file, f.line)}) · ${inlineCode(findingLocation(f))}`).join('\n');
+    const lead = formatLead(result, blockingFindings, blockerCounts, { threads: threadFindings, listed: bodyFindings, hold }, threadList);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
@@ -1364,35 +1398,20 @@ export async function postReview(
     if (readyReport) {
       head += `\n\n${readyReport}`;
     }
-    let b = '';
-    const needsHuman = formatNeedsHuman(result);
-    if (needsHuman) {
-      b += `\n\n${needsHuman}`;
-    }
     const blockingThreads = formatBlockingPriorThreads(result);
-    if (blockingThreads || stillOpen.length > 0) {
-      b += `\n\n${[blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n')}`;
-    }
-    if (generalFindings.length > 0) {
-      b += `\n\n**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`;
-    }
-    if (invalidComments.length > 0) {
-      b += `\n\n**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`;
-    }
-    const smaller = formatSmallerFindings(smallerFindings, nitpicks, previouslyMissed, preExisting);
-    if (smaller) {
-      b += `\n\n${smaller}`;
-    }
-    const agreed = formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.');
-    if (agreed) {
-      b += `\n\n${agreed}`;
-    }
     const overrides = event === 'APPROVE' && formatSecurityOverrides(existingThreads.flatMap(t =>
       t.securityOverride ? [{ title: t.title, threadUrl: t.threadUrl, login: t.securityOverride.login }] : []));
-    if (overrides) {
-      b += `\n\n${overrides}`;
-    }
-    return b && readyReport ? `${head}\n\n---${b}` : `${head}${b}`;
+    const sections = [
+      formatNeedsHuman(result),
+      (blockingThreads || stillOpen.length > 0) && [blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n'),
+      generalFindings.length > 0 && `**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`,
+      invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
+      ...formatSeveritySections(bodyFindings, links),
+      formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
+      overrides,
+    ].filter((section): section is string => !!section);
+    // A rule sets each section apart, and the footer gets one of its own.
+    return sections.length > 0 ? `${head}\n\n---\n\n${sections.join('\n\n---\n\n')}` : head;
   };
 
   // Generated text often names code without backticks, so every posted body is highlighted before it goes out.
@@ -1421,25 +1440,37 @@ export async function postReview(
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
   const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter);
-  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
-  if (refused.length > 0) {
+  const { refused, urls: fileThreadUrls } = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
+  // GitHub gives a thread its URL only once it is posted, so the body links each listed thread in an update.
+  // A review posted without its line comments, after GitHub refused their lines, keeps the body it was posted with.
+  const postedAsRendered = review.body === truncateBody(body, REVIEW_BODY_BUDGET - record.length);
+  const threadUrls = postedAsRendered
+    ? new Map([...await fetchThreadUrls(octokit, owner, repo, prNumber, review.id, threadFindings), ...fileThreadUrls])
+    : new Map<Finding, string>();
+  if (refused.length > 0 || threadUrls.size > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
-    const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links, true)).join('\n\n')}`, codeTokens);
+    const section = refused.length > 0
+      ? highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links, true)).join('\n\n')}`, codeTokens)
+      : '';
     // Truncate the existing body, never the blocking findings appended to it or the round record.
     const room = REVIEW_BODY_BUDGET - section.length - record.length;
     if (room <= 0) {
       throw new Error(`Could not post blocking findings as threads or fit them in review #${review.id}: ${titles}`);
     }
+    const linked = threadUrls.size > 0 ? highlightCode(renderBody(threadUrls), codeTokens) : review.body;
     try {
       await octokit.rest.pulls.updateReview({
         owner,
         repo,
         pull_number: prNumber,
         review_id: review.id,
-        body: appendReviewFooter(`${truncateBody(review.body, room)}${section}${record}`, reviewedCommitFooter),
+        body: appendReviewFooter(`${truncateBody(linked, room)}${section}${record}`, reviewedCommitFooter),
       });
     } catch (error) {
-      throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
+      if (refused.length > 0) {
+        throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
+      }
+      core.warning(`Could not link the new threads in review #${review.id}: ${error instanceof Error ? error.message : error}`);
     }
   }
   return { id: review.id, approvalHeld };
@@ -1552,8 +1583,15 @@ function fenceText(text: string, info = ''): string {
   return `${fence}${info}\n${text}\n${fence}`;
 }
 
-function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string, serverUrl: string): string {
-  return `Reviewed [\`${commitSha.slice(0, 7)}\`](${repoUrl(serverUrl, owner, repo)}/commit/${commitSha}).`;
+/** Returns the footer under a rule: the reviewed commit, and with a round context the round, the time and the lines read. */
+function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string, serverUrl: string, context?: RoundContext, reviewTimeMs?: number): string {
+  const parts = [
+    `Reviewed [\`${commitSha.slice(0, 7)}\`](${repoUrl(serverUrl, owner, repo)}/commit/${commitSha})`,
+    ...(context ? [`round ${context.meta.round}`] : []),
+    ...(reviewTimeMs ? [formatDuration(reviewTimeMs)] : []),
+    ...(context ? [countOf(context.diff.lines, 'changed line')] : []),
+  ];
+  return `---\n\n<sub>${parts.join(' · ')}</sub>`;
 }
 
 function appendReviewFooter(body: string, footer: string): string {
@@ -1589,9 +1627,17 @@ function asSentence(text: string): string {
 const APPROVED_LINE = '✅ **Approved.**';
 
 /** The first line of the review body for each outcome. Its emoji is the only one in the review. */
-const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: BlockerCounts) => string> = {
-  READY: () => APPROVED_LINE,
-  ADDRESS_FIRST: (_result, blockers) => `🔴 **Changes requested:** ${formatBlockerCounts(blockers)}.`,
+const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: BlockerCounts, posted: PostedFindings) => string> = {
+  READY: (_result, _blockers, { threads, listed, hold }) => {
+    if (hold?.reason === 'unread') return `✅ **Approved, held for a person:** no model read ${hold.skipped.excluded.length + hold.skipped.binary.length} of the changed files.`;
+    const all = [...threads, ...listed].filter(f => !isBlockingFinding(f));
+    return all.length > 0 ? `${APPROVED_LINE} ${formatSeverityCounts(all)}, none of them blocks.` : APPROVED_LINE;
+  },
+  ADDRESS_FIRST: (_result, blockers, { threads }) => {
+    // A blocking warning already counts as a blocker.
+    const others = threads.filter(f => !isBlockingFinding(f));
+    return `🔴 **Changes requested:** ${formatBlockerCounts(blockers)}${others.length > 0 ? `, plus ${formatSeverityCounts(others)} in threads` : ''}.`;
+  },
   INCOMPLETE: result => `${REVIEW_INCOMPLETE_LINE} ${asSentence(sanitizeMarkdown(result.summary.trim()) || 'The review did not finish')}`,
   NOT_CONVERGING: result => {
     const blockers = countOf(result.needsHuman?.blockers.length ?? 0, 'blocker');
@@ -1600,6 +1646,22 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: Block
       : `🛑 **Needs a human:** ${blockers} came back after a fix.`;
   },
 };
+
+/** The findings this round posts: as threads, listed in the body, and the hold on an approval. */
+interface PostedFindings {
+  threads: Finding[];
+  listed: Finding[];
+  hold?: ApprovalHold;
+}
+
+/** Returns how many findings of each severity there are, most severe first, as "1 warning and 2 suggestions". */
+function formatSeverityCounts(findings: Finding[]): string {
+  const parts = SEVERITY_ORDER.flatMap(s => {
+    const n = findings.filter(f => f.severity === s).length;
+    return n > 0 ? [countOf(n, s)] : [];
+  });
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts.join('');
+}
 
 /** The blockers first raised this round, those still open from an earlier review, and whether earlier reviews exist. */
 interface BlockerCounts {
@@ -1626,12 +1688,20 @@ function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string 
   return top ? sanitizeMarkdown(top.description.trim()).split(/(?<=[.!?])\s+/).slice(0, 2).join(' ') : '';
 }
 
-/** Returns the verdict line and the sentences under it that open the review body. */
-function formatLead(result: ReviewResult, blocking: Finding[], blockers: BlockerCounts): string {
+/**
+ * Returns what opens the review body: the verdict line, the threads posted this round as `threadList`, the files no
+ * model read when that holds an approval, and the summary.
+ */
+function formatLead(result: ReviewResult, blocking: Finding[], blockers: BlockerCounts, posted: PostedFindings, threadList: string): string {
   if (!result.outcome) return sanitizeMarkdown(result.summary.trim());
-  const line = VERDICT_LINES[result.outcome](result, blockers);
   const detail = formatVerdictDetail(result, blocking);
-  return detail ? `${line}\n\n${detail}` : line;
+  const unread = result.outcome === 'READY' && posted.hold?.reason === 'unread' ? skippedFileList(posted.hold.skipped) : '';
+  return [VERDICT_LINES[result.outcome](result, blockers, posted), threadList, unread, detail && `**Summary:** ${detail}`].filter(Boolean).join('\n\n');
+}
+
+/** Returns `text` for a link label, with the brackets that would end the label escaped. */
+function linkText(text: string): string {
+  return sanitizeMarkdown(text).replace(/[[\]]/g, '\\$&');
 }
 
 /**

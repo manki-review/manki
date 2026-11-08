@@ -619,7 +619,7 @@ describe('postReview reviewed-commit footer', () => {
 
   const fullSha = 'ede627f1234567890abcdef0123456789abcdef0';
   const shortSha = fullSha.slice(0, 7);
-  const expectedFooter = `Reviewed [\`${shortSha}\`](https://github.com/acme/widgets/commit/${fullSha}).`;
+  const expectedFooter = `---\n\n<sub>Reviewed [\`${shortSha}\`](https://github.com/acme/widgets/commit/${fullSha})</sub>`;
   const expectedEnd = `${expectedFooter}${TRAILING_MARKERS}`;
 
   beforeEach(() => {
@@ -651,13 +651,13 @@ describe('postReview reviewed-commit footer', () => {
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain(expectedFooter);
     expect(shortSha).toBe(fullSha.slice(0, 7));
-    expect(body).toMatch(/Reviewed \[`[0-9a-f]{7}`\]\(https:\/\/github\.com\/acme\/widgets\/commit\/[0-9a-f]+\)\.\n\n<!-- manki-bot -->/);
+    expect(body).toMatch(/<sub>Reviewed \[`[0-9a-f]{7}`\]\(https:\/\/github\.com\/acme\/widgets\/commit\/[0-9a-f]+\)<\/sub>\n\n<!-- manki-bot -->/);
   });
 
   it('uses a custom serverUrl for GHE and strips trailing slashes', async () => {
     const gheServerUrl = 'https://github.example.com/';
     const gheShortSha = fullSha.slice(0, 7);
-    const expectedGheFooter = `Reviewed [\`${gheShortSha}\`](https://github.example.com/acme/widgets/commit/${fullSha}).`;
+    const expectedGheFooter = `<sub>Reviewed [\`${gheShortSha}\`](https://github.example.com/acme/widgets/commit/${fullSha})</sub>`;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const ghCtx = require('@actions/github').context;
     const originalServerUrl = ghCtx.serverUrl;
@@ -1059,7 +1059,8 @@ describe('postReview with context', () => {
     expect(body).toContain('<!-- manki-stats: 3 findings (2 suggestions, 1 nitpick), 200 lines, 60s -->\n<!-- manki-context: ');
     expect(body).not.toContain('<details>');
     expect(body.endsWith(TRAILING_MARKERS)).toBe(true);
-    expect(body.slice(0, -TRAILING_MARKERS.length)).toMatch(/-->\n\nReviewed \[`abc`\]\([^)]+\)\.$/);
+    // The footer closes the body under a rule, with the round, the time and the lines read.
+    expect(body.slice(0, -TRAILING_MARKERS.length)).toMatch(new RegExp(`-->\\n\\n---\\n\\n<sub>Reviewed \\[\`abc\`\\]\\([^)]+\\) · round ${ctx.meta.round} · 1m 0s · 200 changed lines</sub>$`));
     expect(body).not.toContain('\u{1F4CA}');
     expect(body).toContain('"reviewer":"claude-sonnet-4-20250514"');
   });
@@ -1206,8 +1207,11 @@ describe('postReview body lead', () => {
     const { body, event, approvalHeld } = await postedBody(ready);
     expect(event).toBe('APPROVE');
     expect(approvalHeld).toBe(false);
+    // The verdict counts what this round posted, and each thread is listed by name, linked to its line until it is posted.
     expect(lead(body)).toBe([
-      '\u2705 **Approved.**',
+      '\u2705 **Approved.** 1 suggestion, none of them blocks.',
+      '',
+      '- \u2728 [Extract helper](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L7) · `src/a.ts:7`',
       '',
       '**What this does:** Adds a cache in front of the API. x',
       '',
@@ -1220,15 +1224,18 @@ describe('postReview body lead', () => {
       '',
       '</details>',
       '',
-      'Reviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234).',
+      '---',
+      '',
+      '<sub>Reviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)</sub>',
     ].join('\n'));
   });
 
   it('puts what the change does under the verdict, with its first two sentences, and a rule before the findings', async () => {
     const offDiff: Finding = { severity: 'suggestion', title: 'Rename cache', file: 'src/b.ts', line: 3, description: 'Unclear.', reviewers: [] };
     const { body } = await postedBody({ ...ready, verdictReport: { ...verdictReport, whatThisDoes: 'Adds a cache. It halves requests. It also logs hits.' }, findings: [offDiff] });
-    expect(body).toMatch(/^\u2705 \*\*Approved\.\*\*\n\n\*\*What this does:\*\* Adds a cache\. It halves requests\.\n\n<details>\n<summary>What to test<\/summary>/u);
-    expect(body).toContain('\n\n</details>\n\n---\n\n#### \u{1F527} 1 smaller fix in this PR\n\n<details>\n<summary>');
+    expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 suggestion, none of them blocks\.\n\n\*\*What this does:\*\* Adds a cache\. It halves requests\.\n\n<details>\n<summary>What to test<\/summary>/u);
+    // Findings in the body sit under one heading per severity, set apart by a rule.
+    expect(body).toContain('\n\n</details>\n\n---\n\n#### \u2728 1 suggestion\n\n<details>\n<summary>');
   });
 
   it('records the length of the body and of each comment it posts', async () => {
@@ -1298,9 +1305,9 @@ describe('postReview body lead', () => {
     const memorySkip = 'this repo is private, and the central memory repository keeps only public repos\' memory. Set `memory.repo` to a private memory repo of the same owner, and pass `memory_repo_token`.';
     const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { memorySkip });
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
-    const [lead, ...rest] = approved.body.split('\n\n');
+    const [verdict, threads, ...rest] = approved.body.split('\n\n');
     expect([event, approvalHeld]).toEqual(['APPROVE', false]);
-    expect(body).toBe([lead, `**Memory skipped:** ${memorySkip}`, ...rest].join('\n\n'));
+    expect(body).toBe([verdict, threads, `**Memory skipped:** ${memorySkip}`, ...rest].join('\n\n'));
   });
 
   it('holds the approval of a READY round as a COMMENT for a person when a changed file went unread, and marks it so', async () => {
@@ -1310,8 +1317,11 @@ describe('postReview body lead', () => {
     const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { skipped });
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([event, approvalHeld]).toEqual(['COMMENT', 'unread']);
-    expect(body).toContain('**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n**Skipped files:**\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read, such as a binary, a rename, a mode change or an empty file\n- `vendor/lib`: a submodule bump');
-    expect(body).toContain(approved.body.split('\n')[0]);
+    // The verdict line says the approval is held, and the unread files follow the threads.
+    expect(body).toMatch(/^\u2705 \*\*Approved, held for a person:\*\* no model read 3 of the changed files\.\n\n- \u2728 \[Extract helper\]/u);
+    expect(body).toContain('`src/a.ts:7`\n\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read, such as a binary, a rename, a mode change or an empty file\n- `vendor/lib`: a submodule bump');
+    expect(body).toContain(approved.body.split('\n\n').find(p => p.startsWith('**What this does:**'))!);
+    expect(body).not.toContain('**Approval held:**');
     expect(body).toContain('<!-- manki-held-for-person -->');
     expect(mockGet).not.toHaveBeenCalled();
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, { skipped });
@@ -1365,11 +1375,12 @@ describe('postReview body lead', () => {
       findings: [{ ...blocker, severity: 'warning', title: 'Retry drops the error' }, blocker],
     });
     expect(event).toBe('REQUEST_CHANGES');
-    expect(lead(body).split('\n\n').slice(0, 2)).toEqual([
+    // Each thread is named under the verdict, most severe first, and the summary that follows is labelled.
+    expect(lead(body).split('\n\n').slice(0, 3)).toEqual([
       '\u{1F534} **Changes requested:** 2 blockers.',
-      'A client synced from a checkpoint can no longer start.',
+      `- \u{1F6AB} [${blocker.title}](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L5) · \`src/a.ts:5\`\n- \u26A0\uFE0F [Retry drops the error](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L5) · \`src/a.ts:5\``,
+      '**Summary:** A client synced from a checkpoint can no longer start.',
     ]);
-    expect(lead(body).split('\n\n').slice(0, 2).join('\n')).not.toContain(blocker.title);
     expect(body).not.toContain('What this does');
   });
 
@@ -1391,6 +1402,7 @@ describe('postReview body lead', () => {
     expect(stuck.event).toBe('REQUEST_CHANGES');
     expect(lead(stuck.body)).toMatch(new RegExp([
       '^\u{1F6D1} \\*\\*Needs a human:\\*\\* 2 blockers came back after a fix\\.',
+      '---',
       'Automatic review is paused until someone comments `@manki review`\\.',
       '- `src/a\\.ts:10`: Cache never invalidated \\(\\[view thread\\]\\(https://github\\.com/o/r/pull/1#t1\\)\\)\\n- No migration',
     ].join('\n\n'), 'u'));
@@ -1437,7 +1449,7 @@ describe('postReview body lead', () => {
       summary: 'Nothing to flag.',
       findings: [{ ...blocker, file: '', line: 0, description: 'A synced client cannot start. Storage starts above 0. Handle `None`.' }],
     });
-    expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\nA synced client cannot start\. Storage starts above 0\.\n\n\*\*Blockers not tied to a line:\*\*/u);
+    expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*Summary:\*\* A synced client cannot start\. Storage starts above 0\.\n\n---\n\n\*\*Blockers not tied to a line:\*\*/u);
     expect(body).not.toContain('Nothing to flag');
   });
 
@@ -1448,7 +1460,7 @@ describe('postReview body lead', () => {
     const priorOnly = { ...blocked, verdictReason: 'prior_unaddressed' as const, findings: [], verdictTrace: { survivingBlockers: [], unresolvedPriors: [prior] } };
     const followUp = makeContext({ meta: { ...makeContext().meta, round: 2 } });
 
-    expect(lead((await postedBody(priorOnly)).body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker still open from an earlier review\.\n\n\*\*Still open from earlier reviews:\*\*\n- `src\/a\.ts:3`: Cache never expires\n/u);
+    expect(lead((await postedBody(priorOnly)).body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker still open from an earlier review\.\n\n---\n\n\*\*Still open from earlier reviews:\*\*\n- `src\/a\.ts:3`: Cache never expires\n/u);
     expect((await postedBody({ ...priorOnly, verdictTrace: { survivingBlockers: [], unresolvedPriors: [prior, other] } })).body)
       .toMatch(/^\u{1F534} \*\*Changes requested:\*\* 2 blockers still open from earlier reviews\./u);
 
@@ -1475,10 +1487,10 @@ describe('postReview body lead', () => {
 
   it('opens an INCOMPLETE review with the verdict line and the reason', async () => {
     const { body } = await postedBody({ ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary: 'The judge failed', findings: [] });
-    expect(lead(body)).toBe('\u26A0\uFE0F **Review incomplete:** The judge failed.\n\nReviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234).');
+    expect(lead(body)).toBe('\u23F8\uFE0F **Review incomplete:** The judge failed.\n\n---\n\n<sub>Reviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)</sub>');
   });
 
-  it('lists follow-up warnings off the diff with the smaller fixes in one section, security ones included', async () => {
+  it('lists follow-up warnings off the diff under the warnings, security ones included, each severity under its own heading', async () => {
     const followUp = (title: string, line: number, suggestedFix?: string): Finding => ({
       severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: ['r'], tags: ['follow-up'], ...(suggestedFix && { suggestedFix }),
     });
@@ -1494,7 +1506,12 @@ describe('postReview body lead', () => {
     const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number; body: string }> };
     expect(comments.map(c => c.line)).toEqual([5]);
     expect(body).not.toContain('Blockers in files outside this diff');
-    expect(body).toContain('#### \u{1F527} 3 smaller fixes in this PR\n\n<details>\n<summary>\u26A0\uFE0F <b>Unbounded retry</b><br><sub><b>Warning, not blocking</b>');
+    expect(body).toContain('#### \u26A0\uFE0F 2 warnings\n\n<details>\n<summary>\u26A0\uFE0F <b>Unbounded retry</b><br><sub><b>Warning, not blocking</b>');
+    expect(body).toContain('\n\n---\n\n#### \u2728 1 suggestion\n\n<details>\n<summary>\u2728 <b>Extract helper</b>');
+    expect(body).toContain([
+      '<details>',
+      '<summary>\u26A0\uFE0F <b>Tagged both ways</b><br><sub><b>Warning, not blocking</b> · <a href="https://github.com/owner/repo/blob/abcdef1234/src/gone.ts#L41"><code>src/gone.ts:41</code></a></sub></summary>',
+    ].join('\n'));
     expect(body).toContain([
       '<details>',
       '<summary>\u2728 <b>Extract helper</b><br><sub><b>Suggestion, not blocking</b> · <a href="https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L47"><code>src/a.ts:47</code></a></sub></summary>',
@@ -1507,14 +1524,11 @@ describe('postReview body lead', () => {
       '',
       '<!-- manki-issue-box -->',
       '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:47:Extract-helper -->',
-      '',
-      '<details>',
-      '<summary>\u26A0\uFE0F <b>Tagged both ways</b><br><sub><b>Warning, not blocking</b> · <a href="https://github.com/owner/repo/blob/abcdef1234/src/gone.ts#L41"><code>src/gone.ts:41</code></a></sub></summary>',
     ].join('\n'));
-    expect(body.match(/smaller fix/g)).toHaveLength(1);
+    expect(body).not.toContain('smaller fix');
   });
 
-  it('writes one emoji, at the start of the verdict line, and no dash clause separators in any outcome', async () => {
+  it('writes one emoji at the start of the verdict line, besides the severity of each listed thread, and no dash clause separators in any outcome', async () => {
     const results: ReviewResult[] = [
       ready,
       { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, summary: 'It breaks.', findings: [blocker, { ...blocker, file: '', line: 0 }, { ...blocker, file: 'src/gone.ts' }] },
@@ -1524,8 +1538,10 @@ describe('postReview body lead', () => {
     for (const result of results) {
       const { body } = await postedBody(result);
       const verdictLine = lead(body).split('\n')[0];
-      expect(verdictLine).toMatch(/^(?:\u2705|\u{1F534}|\u26A0\uFE0F|\u{1F6D1}) \*\*/u);
-      expect(body.replace(verdictLine, '')).not.toMatch(EMOJI_RE);
+      expect(verdictLine).toMatch(/^(?:\u2705|\u{1F534}|\u23F8\uFE0F|\u{1F6D1}) \*\*/u);
+      // Besides the verdict, only the severity icon of each thread listed under it shows.
+      const threads = /^- (?:\u{1F6AB}|\u26A0\uFE0F|\u2728|\u{1F4DD}) \[/gmu;
+      expect(body.replace(verdictLine, '').replace(threads, '- [')).not.toMatch(EMOJI_RE);
       expect(body).not.toMatch(DASH_SEPARATOR_RE);
       expect(body).not.toMatch(/^> /m);
     }
@@ -3725,9 +3741,9 @@ describe('postReview fallback paths', () => {
       expect(updateReview).toHaveBeenCalledTimes(1);
       const update = updateReview.mock.calls[0][0];
       expect(update.review_id).toBe(7);
-      expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\nReviewed [')))).toBe(true);
+      expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\n---\n\n<sub>Reviewed [')))).toBe(true);
       expect(update.body).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)');
-      expect(update.body).toMatch(/Reviewed \[`sha`\]\([^)]+\)\.\n\n<!-- manki-bot -->/);
+      expect(update.body).toMatch(/<sub>Reviewed \[`sha`\]\([^)]+\)<\/sub>\n\n<!-- manki-bot -->/);
     });
 
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
@@ -3791,6 +3807,33 @@ describe('postReview non-blocking findings', () => {
 
   const nonBlocking = (severity: Finding['severity'], title: string, line: number, extra: Partial<Finding> = {}): Finding => ({
     severity, title, file: 'src/a.ts', line, description: 'It goes wrong. Second sentence. Third sentence.', reviewers: [], ...extra,
+  });
+
+  it('links each thread listed under the verdict to its thread once GitHub has posted it', async () => {
+    const blocking = nonBlocking('blocker', 'Cache never expires', 5);
+    const fileLevel = nonBlocking('blocker', 'Lock order flips', 40);
+    const createReview = jest.fn().mockResolvedValue({ data: { id: 7 } });
+    const updateReview = jest.fn().mockResolvedValue({});
+    const createReviewComment = jest.fn().mockResolvedValue({ data: { html_url: 'https://github.com/owner/repo/pull/1#discussion_r2' } });
+    const paginate = jest.fn().mockResolvedValue([
+      { path: 'src/a.ts', body: `x\n<!-- manki:blocker:${titleToSlug(blocking.title)} -->`, html_url: 'https://github.com/owner/repo/pull/1#discussion_r1' },
+    ]);
+    const octokit = { paginate, rest: { pulls: { createReview, createReviewComment, updateReview, listCommentsForReview: jest.fn() }, repos: { getContent: jest.fn().mockRejectedValue(new Error('Not Found')) } } } as unknown as Parameters<typeof postReview>[0];
+    const result: ReviewResult = { ...buildResult([blocking, fileLevel]), verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: 'It breaks.' };
+
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', result, diff);
+    // Posted first with each title linked to its line, then updated once the threads exist.
+    expect(createReview.mock.calls[0][0].body).toContain('- \u{1F6AB} [Cache never expires](https://github.com/owner/repo/blob/abc1234/src/a.ts#L5) · `src/a.ts:5`');
+    expect(paginate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ review_id: 7 }));
+    const updated = updateReview.mock.calls[0][0].body as string;
+    expect(updated).toContain('- \u{1F6AB} [Cache never expires](https://github.com/owner/repo/pull/1#discussion_r1) · `src/a.ts:5`\n- \u{1F6AB} [Lock order flips](https://github.com/owner/repo/pull/1#discussion_r2) · `src/a.ts:40`');
+    expect(updated).toContain('**Summary:** It breaks.');
+
+    // When the threads can't be looked up, the body keeps its line links and is not rewritten.
+    updateReview.mockClear();
+    paginate.mockRejectedValueOnce(new Error('boom'));
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...result, findings: [blocking] }, diff);
+    expect(updateReview).not.toHaveBeenCalled();
   });
 
   it('shows a small code fix in the body as a diff against the flagged line, and anything else as before', async () => {
@@ -3866,15 +3909,16 @@ describe('postReview non-blocking findings', () => {
     expect(review.comments[0].body).toMatch(/^\u2728 \*\*Suggestion, not blocking\*\*\n\n\*\*Extract helper\*\*\n\n\*\*Why:\*\* It goes wrong\./u);
     expect(review.comments[0].body).toContain('<!-- manki:suggestion:Extract-helper -->');
     expect(review.body).toContain('#### \u{1F4DD} 1 nitpick\n\n<details>\n<summary>\u{1F4DD} <b>Typo in name</b>');
+    // A fold shows the whole description, since a fix the reviewer gave as text comes at its end.
     expect(review.body).toContain([
-      '#### \u{1F527} 2 smaller fixes in this PR',
+      '#### \u2728 2 suggestions',
       '',
       '<details>',
       '<summary>\u2728 <b>Missing file context</b><br><sub><b>Suggestion, not blocking</b></sub></summary>',
       '',
       '_Manki is not sure this applies, so please check it._',
       '',
-      '**Why:** It goes wrong. Second sentence.',
+      '**Why:** It goes wrong. Second sentence. Third sentence.',
       '',
       '**Fix:** Use the shared helper.',
       '',
@@ -3886,7 +3930,7 @@ describe('postReview non-blocking findings', () => {
       '<details>',
       '<summary>\u2728 <b>Off the diff</b><br><sub><b>Suggestion, not blocking</b> · <a href="https://github.com/owner/repo/blob/abc1234/src/a.ts#L40"><code>src/a.ts:40</code></a></sub></summary>',
       '',
-      '**Why:** It goes wrong. Second sentence.',
+      '**Why:** It goes wrong. Second sentence. Third sentence.',
       '',
       '**Fix:**',
       '',
@@ -3906,7 +3950,7 @@ describe('postReview non-blocking findings', () => {
       '<!-- manki-issue-box -->',
       '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:40:Off-the-diff -->',
     ].join('\n'));
-    expect(review.body.indexOf('smaller fixes in this PR')).toBeLessThan(review.body.indexOf('1 nitpick'));
+    expect(review.body.indexOf('2 suggestions')).toBeLessThan(review.body.indexOf('1 nitpick'));
     expect(review.body).not.toContain('not listed');
   });
 
@@ -3929,7 +3973,7 @@ describe('postReview non-blocking findings', () => {
     expect([...byLine.keys()].sort()).toEqual([2, 3, 4, 6, 8]);
     expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning, not blocking\*\*\n\n\*\*Deferred warning\*\*\n/u);
     expect(byLine.get(3)).toContain('<!-- manki:warning:Deferred-warning -->');
-    expect(review.body).toContain('#### \u{1F527} 1 smaller fix in this PR\n\n<details>\n<summary>\u2728 <b>Suggestion five</b>');
+    expect(review.body).toContain('#### \u2728 1 suggestion\n\n<details>\n<summary>\u2728 <b>Suggestion five</b>');
     expect(review.body).toContain('#### \u{1F4DD} 2 nitpicks\n\n<details>\n<summary>\u{1F4DD} <b>Nit one</b>');
   });
 
@@ -4008,7 +4052,7 @@ describe('postReview non-blocking findings', () => {
     ]);
   });
 
-  it('lists smaller findings on reviewed code as previously missed, pre-existing ones after them, and keeps a blocker there inline', async () => {
+  it('lists smaller findings on reviewed code by severity, tags them as missed earlier or pre-existing, and keeps a blocker there inline', async () => {
     const { octokit, createReview } = makeOctokit();
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
@@ -4022,10 +4066,12 @@ describe('postReview non-blocking findings', () => {
 
     const review = createReview.mock.calls[0][0];
     expect(review.comments.map((c: { body: string }) => c.body.split('\n')[2])).toEqual(['**Old blocker**', '**On new code**']);
-    expect(review.body).toContain('#### \u{1F536} Previously missed: 2 smaller fixes\n\n<sub>These sit on code an earlier review already covered. None of them blocks.</sub>\n\n<details>\n<summary>\u2728 <b>On old code</b>');
-    expect(review.body).toContain('<b>Untouched file</b><br><sub><b>Nitpick, not blocking</b> · <a href="https://github.com/owner/repo/blob/sha/src/b.ts#L3"><code>src/b.ts:3</code></a>');
-    expect(review.body).not.toMatch(/not listed|smaller fix(es)? in this PR/);
-    expect(review.body).toMatch(/Previously missed[\s\S]*Nitpick[\s\S]*#### Pre-existing: 1 finding\n\n<sub>These sit on code this PR did not change, so none of them blocks\. A blocker among them is listed as a warning\.<\/sub>\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · /);
+    // Each severity gets its heading, most severe first, and each fold says where its code stands.
+    expect(review.body).toMatch(/#### \u26A0\uFE0F 1 warning\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · <a /u);
+    expect(review.body).toContain('#### \u2728 1 suggestion\n\n<details>\n<summary>\u2728 <b>On old code</b><br><sub><b>Suggestion, not blocking</b> · Missed by an earlier review · <a ');
+    expect(review.body).toContain('#### \u{1F4DD} 1 nitpick\n\n<details>\n<summary>\u{1F4DD} <b>Untouched file</b><br><sub><b>Nitpick, not blocking</b> · Missed by an earlier review · <a href="https://github.com/owner/repo/blob/sha/src/b.ts#L3"><code>src/b.ts:3</code></a>');
+    expect(review.body.indexOf('1 warning')).toBeLessThan(review.body.indexOf('1 suggestion'));
+    expect(review.body).not.toMatch(/not listed|smaller fix|Previously missed/);
     // A security finding on unchanged code still blocks, and its header says where it sits.
     expect(formatFindingComment(nonBlocking('blocker', 'Old SQL injection', 90, { tags: ['security', 'pre-existing'] }), TEST_LINKS).split('\n')[0]).toBe('\u{1F6AB} **Blocker** · Pre-existing');
   });
@@ -4264,11 +4310,11 @@ describe('hasBotReviewOnCommit', () => {
   });
 
   it('does not count an incomplete review, so a later run still reviews the commit', async () => {
-    const incomplete = { state: 'COMMENTED', commit_id: 'sha-123', body: `⚠️ **Review incomplete:** Claude subscription limit reached.\n\n${BOT_MARKER}`, user: { login: BOT_LOGIN, type: 'Bot' } };
+    const incomplete = { state: 'COMMENTED', commit_id: 'sha-123', body: `⏸️ **Review incomplete:** Claude subscription limit reached.\n\n${BOT_MARKER}`, user: { login: BOT_LOGIN, type: 'Bot' } };
     expect(await hasBotReviewOnCommit(makeMockOctokit([incomplete]), TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
 
     // A blocking review that quotes the incomplete line elsewhere in its body still counts.
-    const quoting = { ...incomplete, state: 'CHANGES_REQUESTED', body: `🔴 **Changes requested:** 1 blocker.\n\n⚠️ **Review incomplete:** quoted\n\n${BOT_MARKER}` };
+    const quoting = { ...incomplete, state: 'CHANGES_REQUESTED', body: `🔴 **Changes requested:** 1 blocker.\n\n⏸️ **Review incomplete:** quoted\n\n${BOT_MARKER}` };
     expect(await hasBotReviewOnCommit(makeMockOctokit([quoting, incomplete]), TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
   });
 

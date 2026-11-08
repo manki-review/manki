@@ -1590,7 +1590,7 @@ describe('main', () => {
     const createComment = jest.fn(async ({ body }: { body: string }) => { comments.push({ body }); });
     const workflowClient = { paginate: jest.fn(async () => comments), rest: { issues: { listComments: {}, createComment } } };
     jest.mocked(github.getOctokit).mockReturnValue(workflowClient as unknown as ReturnType<typeof github.getOctokit>);
-    const reviewNote = '⚠️ **Review incomplete:** Could not get a token from the Manki token service (HTTP 503). Retry the run.';
+    const reviewNote = '⏸️ **Review incomplete:** Could not get a token from the Manki token service (HTTP 503). Retry the run.';
 
     try {
       await main();
