@@ -312,15 +312,19 @@ function pauseState({ priorRounds, lastApprovalAt }: Pick<RecapState, 'priorRoun
 }
 
 /** Returns why no automatic review will run on a new head commit, with how to start one, or `undefined` when a push review will run. */
-async function autoReviewHalt(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config: ReviewConfig): Promise<string | undefined> {
+async function autoReviewHalt(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config: ReviewConfig,
+): Promise<{ cause: 'auto_review_off' | 'settings_paused' | 'automatic_pause'; text: string } | undefined> {
   if (!config.auto_review) {
-    return 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.';
+    return { cause: 'auto_review_off', text: 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.' };
   }
   if ((await fetchPrState(owner, repo, prNumber, github.context.runId))?.settings.paused) {
-    return 'Automatic review is paused in the settings block. Untick **Pause automatic reviews** there, or comment `@manki review`, to review it.';
+    return { cause: 'settings_paused', text: 'Automatic review is paused in the settings block. Untick **Pause automatic reviews** there, or comment `@manki review`, to review it.' };
   }
   const { reason } = pauseState(await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
-  return reason && `${reason} Automatic review is paused. Tick **Force review** in the settings block, or comment \`@manki review\`, to review it.`;
+  return reason
+    ? { cause: 'automatic_pause', text: `${reason} Automatic review is paused. Tick **Force review** in the settings block, or comment \`@manki review\`, to review it.` }
+    : undefined;
 }
 
 function isBotReview(bot: BotIdentity, r: ReviewEntry): boolean {
@@ -349,7 +353,7 @@ async function explainUnreviewedHead(octokit: Octokit, bot: BotIdentity, owner: 
   if (await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews)) return undefined;
   const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
   return halt
-    ? `Manki has not reviewed ${head}. ${halt}`
+    ? `Manki has not reviewed ${head}. ${halt.text}`
     : `Manki has not reviewed ${head} yet. A push review should start shortly, and approval follows from its verdict.`;
 }
 
@@ -513,7 +517,7 @@ async function checkAndAutoApprove(
     // A push review takes about a minute to post its progress comment, so the lack of one does not mean no review is coming.
     const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
     if (halt) {
-      await postStaleApproveSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, staleSha, halt, approvalRecord('withheld', halt, pr.head.sha));
+      await postStaleApproveSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, staleSha, halt.text, approvalRecord('withheld', halt.cause, pr.head.sha));
     } else {
       core.info(`A push review covers ${pr.head.sha.slice(0, 7)}, so no withheld notice is posted`);
     }
