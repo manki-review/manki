@@ -39,6 +39,11 @@ function fenceOpeners(markdown: string): string[] {
   return infos;
 }
 
+/** The "About this review" fold that closes a review body, for a commit with no round context. */
+function aboutFold(commitLink: string): string {
+  return `<details>\n<summary>About this review</summary>\n\n- Reviewed ${commitLink}\n- [How Manki reviews](https://github.com/manki-review/manki/blob/main/docs/how-reviews-work.md)\n\n</details>`;
+}
+
 function suggestionBlocks(comment: string): string[] {
   return [...comment.matchAll(/^(`{3,})suggestion\n([\s\S]*?)\n\1$/gm)].map(m => m[2]);
 }
@@ -578,7 +583,7 @@ describe('postReview generalFindings', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body.length).toBeLessThanOrEqual(60000 + 200); // cap + truncation notice + footer appended after truncation
+    expect(body.length).toBeLessThanOrEqual(60000 + 600); // cap + truncation notice + footer appended after truncation
     expect(body).toContain('*(Review body truncated)*');
   });
 
@@ -619,7 +624,7 @@ describe('postReview reviewed-commit footer', () => {
 
   const fullSha = 'ede627f1234567890abcdef0123456789abcdef0';
   const shortSha = fullSha.slice(0, 7);
-  const expectedFooter = `---\n\n<sub>Reviewed [\`${shortSha}\`](https://github.com/acme/widgets/commit/${fullSha})</sub>`;
+  const expectedFooter = aboutFold(`[\`${shortSha}\`](https://github.com/acme/widgets/commit/${fullSha})`);
   const expectedEnd = `${expectedFooter}${TRAILING_MARKERS}`;
 
   beforeEach(() => {
@@ -651,13 +656,13 @@ describe('postReview reviewed-commit footer', () => {
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain(expectedFooter);
     expect(shortSha).toBe(fullSha.slice(0, 7));
-    expect(body).toMatch(/<sub>Reviewed \[`[0-9a-f]{7}`\]\(https:\/\/github\.com\/acme\/widgets\/commit\/[0-9a-f]+\)<\/sub>\n\n<!-- manki-bot -->/);
+    expect(body).toMatch(/- Reviewed \[`[0-9a-f]{7}`\]\(https:\/\/github\.com\/acme\/widgets\/commit\/[0-9a-f]+\)\n[^\n]*\n\n<\/details>\n\n<!-- manki-bot -->/);
   });
 
   it('uses a custom serverUrl for GHE and strips trailing slashes', async () => {
     const gheServerUrl = 'https://github.example.com/';
     const gheShortSha = fullSha.slice(0, 7);
-    const expectedGheFooter = `<sub>Reviewed [\`${gheShortSha}\`](https://github.example.com/acme/widgets/commit/${fullSha})</sub>`;
+    const expectedGheFooter = `- Reviewed [\`${gheShortSha}\`](https://github.example.com/acme/widgets/commit/${fullSha})`;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const ghCtx = require('@actions/github').context;
     const originalServerUrl = ghCtx.serverUrl;
@@ -681,7 +686,8 @@ describe('postReview reviewed-commit footer', () => {
     } as unknown as Parameters<typeof postReview>[0];
 
     const result: ReviewResult = {
-      verdict: 'COMMENT',
+      verdict: 'REQUEST_CHANGES',
+      outcome: 'ADDRESS_FIRST',
       summary: 'Summary.',
       findings: [{
         severity: 'blocker',
@@ -700,6 +706,9 @@ describe('postReview reviewed-commit footer', () => {
     const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
     expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
     expect(fallbackBody).toContain('**Inline comments could not be posted:**\n- \u{1F6AB} **Blocker** **Issue**');
+    // The first try listed the comment as a thread. The review GitHub took lists it only as not posted.
+    expect(createReviewMock.mock.calls[0][0].body).toContain('- \u{1F6AB} [Issue]');
+    expect(fallbackBody).not.toContain('[Issue]');
   });
 
   it('keeps the footer at the bottom when APPROVE falls back to COMMENT due to permissions', async () => {
@@ -1057,10 +1066,11 @@ describe('postReview with context', () => {
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 60000);
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('<!-- manki-stats: 3 findings (2 suggestions, 1 nitpick), 200 lines, 60s -->\n<!-- manki-context: ');
-    expect(body).not.toContain('<details>');
+    // The only fold is the footer's, so the stats never show as one.
+    expect(body.match(/<details>/g)).toHaveLength(1);
     expect(body.endsWith(TRAILING_MARKERS)).toBe(true);
-    // The footer closes the body under a rule, with the round, the time and the lines read.
-    expect(body.slice(0, -TRAILING_MARKERS.length)).toMatch(new RegExp(`-->\\n\\n---\\n\\n<sub>Reviewed \\[\`abc\`\\]\\([^)]+\\) · round ${ctx.meta.round} · 1m 0s · 200 changed lines</sub>$`));
+    // The footer closes the body as a fold with the commit, round, lines, time and models.
+    expect(body.slice(0, -TRAILING_MARKERS.length)).toMatch(/-->\n\n<details>\n<summary>About this review<\/summary>\n\n- Reviewed \[`abc`\]\([^)]+\), round \d+\n- 200 changed lines read in 1m 0s\n- Found by `claude-sonnet-4-20250514`, judged by `[^`]+`\n- \[How Manki reviews\]\([^)]+\)\n\n<\/details>$/);
     expect(body).not.toContain('\u{1F4CA}');
     expect(body).toContain('"reviewer":"claude-sonnet-4-20250514"');
   });
@@ -1097,7 +1107,7 @@ describe('postReview with context', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body.length).toBeLessThanOrEqual(60000 + 200);
+    expect(body.length).toBeLessThanOrEqual(60000 + 600);
     expect(body).not.toContain('<!-- manki-context: ');
     expect(body).toContain('word word');
     expect(body).not.toContain('*(Review body truncated)*');
@@ -1215,6 +1225,8 @@ describe('postReview body lead', () => {
       '',
       '**What this does:** Adds a cache in front of the API. x',
       '',
+      '---',
+      '',
       '<details>',
       '<summary>What to test</summary>',
       '',
@@ -1224,18 +1236,16 @@ describe('postReview body lead', () => {
       '',
       '</details>',
       '',
-      '---',
-      '',
-      '<sub>Reviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)</sub>',
+      aboutFold('[`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)'),
     ].join('\n'));
   });
 
   it('puts what the change does under the verdict, with its first two sentences, and a rule before the findings', async () => {
     const offDiff: Finding = { severity: 'suggestion', title: 'Rename cache', file: 'src/b.ts', line: 3, description: 'Unclear.', reviewers: [] };
     const { body } = await postedBody({ ...ready, verdictReport: { ...verdictReport, whatThisDoes: 'Adds a cache. It halves requests. It also logs hits.' }, findings: [offDiff] });
-    expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 suggestion, none of them blocks\.\n\n\*\*What this does:\*\* Adds a cache\. It halves requests\.\n\n<details>\n<summary>What to test<\/summary>/u);
-    // Findings in the body sit under one heading per severity, set apart by a rule.
-    expect(body).toContain('\n\n</details>\n\n---\n\n#### \u2728 1 suggestion\n\n<details>\n<summary>');
+    expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 suggestion, none of them blocks\.\n\n\*\*What this does:\*\* Adds a cache\. It halves requests\.\n\n---\n\n### Findings · 1 suggestion\n\n<details>\n<summary>/u);
+    // The findings come first, and how to test the change follows them, set apart by a rule.
+    expect(body).toMatch(/Create an issue for this <!-- [^\n]+ -->\n\n---\n\n<details>\n<summary>What to test<\/summary>/);
   });
 
   it('records the length of the body and of each comment it posts', async () => {
@@ -1317,9 +1327,9 @@ describe('postReview body lead', () => {
     const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { skipped });
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([event, approvalHeld]).toEqual(['COMMENT', 'unread']);
-    // The verdict line says the approval is held, and the unread files follow the threads.
-    expect(body).toMatch(/^\u2705 \*\*Approved, held for a person:\*\* no model read 3 of the changed files\.\n\n- \u2728 \[Extract helper\]/u);
-    expect(body).toContain('`src/a.ts:7`\n\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read, such as a binary, a rename, a mode change or an empty file\n- `vendor/lib`: a submodule bump');
+    // The verdict line says the approval is held, and the unread files get their own section.
+    expect(body).toMatch(/^\u2705 \*\*Approved, but a person must approve:\*\* no model read 3 of the changed files\.\n\n- \u2728 \[Extract helper\]/u);
+    expect(body).toContain('---\n\n### Not read by any model · 3 files\n\nA person needs to look at these before the PR merges.\n\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read, such as a binary, a rename, a mode change or an empty file\n- `vendor/lib`: a submodule bump');
     expect(body).toContain(approved.body.split('\n\n').find(p => p.startsWith('**What this does:**'))!);
     expect(body).not.toContain('**Approval held:**');
     expect(body).toContain('<!-- manki-held-for-person -->');
@@ -1375,11 +1385,11 @@ describe('postReview body lead', () => {
       findings: [{ ...blocker, severity: 'warning', title: 'Retry drops the error' }, blocker],
     });
     expect(event).toBe('REQUEST_CHANGES');
-    // Each thread is named under the verdict, most severe first, and the summary that follows is labelled.
+    // Each thread is named under the verdict, most severe first, and what blocks follows.
     expect(lead(body).split('\n\n').slice(0, 3)).toEqual([
       '\u{1F534} **Changes requested:** 2 blockers.',
       `- \u{1F6AB} [${blocker.title}](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L5) · \`src/a.ts:5\`\n- \u26A0\uFE0F [Retry drops the error](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L5) · \`src/a.ts:5\``,
-      '**Summary:** A client synced from a checkpoint can no longer start.',
+      '**What blocks:** A client synced from a checkpoint can no longer start.',
     ]);
     expect(body).not.toContain('What this does');
   });
@@ -1449,7 +1459,7 @@ describe('postReview body lead', () => {
       summary: 'Nothing to flag.',
       findings: [{ ...blocker, file: '', line: 0, description: 'A synced client cannot start. Storage starts above 0. Handle `None`.' }],
     });
-    expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*Summary:\*\* A synced client cannot start\. Storage starts above 0\.\n\n---\n\n\*\*Blockers not tied to a line:\*\*/u);
+    expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*What blocks:\*\* A synced client cannot start\. Storage starts above 0\.\n\n---\n\n\*\*Blockers not tied to a line:\*\*/u);
     expect(body).not.toContain('Nothing to flag');
   });
 
@@ -1487,10 +1497,10 @@ describe('postReview body lead', () => {
 
   it('opens an INCOMPLETE review with the verdict line and the reason', async () => {
     const { body } = await postedBody({ ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary: 'The judge failed', findings: [] });
-    expect(lead(body)).toBe('\u23F8\uFE0F **Review incomplete:** The judge failed.\n\n---\n\n<sub>Reviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)</sub>');
+    expect(lead(body)).toBe(`\u23F8\uFE0F **Review incomplete:** The judge failed.\n\n${aboutFold('[`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)')}`);
   });
 
-  it('lists follow-up warnings off the diff under the warnings, security ones included, each severity under its own heading', async () => {
+  it('lists follow-up warnings off the diff with the other findings, security ones included, most severe first', async () => {
     const followUp = (title: string, line: number, suggestedFix?: string): Finding => ({
       severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: ['r'], tags: ['follow-up'], ...(suggestedFix && { suggestedFix }),
     });
@@ -1506,8 +1516,9 @@ describe('postReview body lead', () => {
     const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number; body: string }> };
     expect(comments.map(c => c.line)).toEqual([5]);
     expect(body).not.toContain('Blockers in files outside this diff');
-    expect(body).toContain('#### \u26A0\uFE0F 2 warnings\n\n<details>\n<summary>\u26A0\uFE0F <b>Unbounded retry</b><br><sub><b>Warning, not blocking</b>');
-    expect(body).toContain('\n\n---\n\n#### \u2728 1 suggestion\n\n<details>\n<summary>\u2728 <b>Extract helper</b>');
+    // On a first round the findings listed in the body are just "Findings", most severe first.
+    expect(body).toContain('---\n\n### Findings · 2 warnings and 1 suggestion\n\n<details>\n<summary>\u26A0\uFE0F <b>Unbounded retry</b><br><sub><b>Warning, not blocking</b>');
+    expect(body.indexOf('<b>Tagged both ways</b>')).toBeLessThan(body.indexOf('<b>Extract helper</b>'));
     expect(body).toContain([
       '<details>',
       '<summary>\u26A0\uFE0F <b>Tagged both ways</b><br><sub><b>Warning, not blocking</b> · <a href="https://github.com/owner/repo/blob/abcdef1234/src/gone.ts#L41"><code>src/gone.ts:41</code></a></sub></summary>',
@@ -3741,9 +3752,9 @@ describe('postReview fallback paths', () => {
       expect(updateReview).toHaveBeenCalledTimes(1);
       const update = updateReview.mock.calls[0][0];
       expect(update.review_id).toBe(7);
-      expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\n---\n\n<sub>Reviewed [')))).toBe(true);
+      expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\n<details>\n<summary>About this review')))).toBe(true);
       expect(update.body).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)');
-      expect(update.body).toMatch(/<sub>Reviewed \[`sha`\]\([^)]+\)<\/sub>\n\n<!-- manki-bot -->/);
+      expect(update.body).toMatch(/- Reviewed \[`sha`\]\([^)]+\)\n[^\n]*\n\n<\/details>\n\n<!-- manki-bot -->/);
     });
 
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
@@ -3758,7 +3769,7 @@ describe('postReview fallback paths', () => {
       expect(update).toContain('*(Review body truncated)*');
       expect(extractReviewRecords(update).records.map(r => JSON.parse(r))).toEqual([{ ...context, output: { bodyLength: expect.any(Number), commentLengths: [expect.any(Number)] } }]);
       expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n**What goes wrong:** Desc.\n\n<!-- manki-issue-box -->\n- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:40:Refused-thread -->\n\n<!-- manki-stats: ');
-      expect(update.length).toBeLessThanOrEqual(60000 + 200);
+      expect(update.length).toBeLessThanOrEqual(60000 + 600);
     });
 
     it('fails the run naming the findings when they cannot fit in the review body', async () => {
@@ -3827,7 +3838,7 @@ describe('postReview non-blocking findings', () => {
     expect(paginate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ review_id: 7 }));
     const updated = updateReview.mock.calls[0][0].body as string;
     expect(updated).toContain('- \u{1F6AB} [Cache never expires](https://github.com/owner/repo/pull/1#discussion_r1) · `src/a.ts:5`\n- \u{1F6AB} [Lock order flips](https://github.com/owner/repo/pull/1#discussion_r2) · `src/a.ts:40`');
-    expect(updated).toContain('**Summary:** It breaks.');
+    expect(updated).toContain('**What blocks:** It breaks.');
 
     // When the threads can't be looked up, the body keeps its line links and is not rewritten.
     updateReview.mockClear();
@@ -3908,10 +3919,9 @@ describe('postReview non-blocking findings', () => {
     expect(review.comments.map((c: { line: number }) => c.line)).toEqual([5]);
     expect(review.comments[0].body).toMatch(/^\u2728 \*\*Suggestion, not blocking\*\*\n\n\*\*Extract helper\*\*\n\n\*\*Why:\*\* It goes wrong\./u);
     expect(review.comments[0].body).toContain('<!-- manki:suggestion:Extract-helper -->');
-    expect(review.body).toContain('#### \u{1F4DD} 1 nitpick\n\n<details>\n<summary>\u{1F4DD} <b>Typo in name</b>');
     // A fold shows the whole description, since a fix the reviewer gave as text comes at its end.
     expect(review.body).toContain([
-      '#### \u2728 2 suggestions',
+      '### Findings · 2 suggestions and 1 nitpick',
       '',
       '<details>',
       '<summary>\u2728 <b>Missing file context</b><br><sub><b>Suggestion, not blocking</b></sub></summary>',
@@ -3950,7 +3960,7 @@ describe('postReview non-blocking findings', () => {
       '<!-- manki-issue-box -->',
       '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:40:Off-the-diff -->',
     ].join('\n'));
-    expect(review.body.indexOf('2 suggestions')).toBeLessThan(review.body.indexOf('1 nitpick'));
+    expect(review.body.indexOf('<b>Off the diff</b>')).toBeLessThan(review.body.indexOf('<b>Typo in name</b>'));
     expect(review.body).not.toContain('not listed');
   });
 
@@ -3973,8 +3983,7 @@ describe('postReview non-blocking findings', () => {
     expect([...byLine.keys()].sort()).toEqual([2, 3, 4, 6, 8]);
     expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning, not blocking\*\*\n\n\*\*Deferred warning\*\*\n/u);
     expect(byLine.get(3)).toContain('<!-- manki:warning:Deferred-warning -->');
-    expect(review.body).toContain('#### \u2728 1 suggestion\n\n<details>\n<summary>\u2728 <b>Suggestion five</b>');
-    expect(review.body).toContain('#### \u{1F4DD} 2 nitpicks\n\n<details>\n<summary>\u{1F4DD} <b>Nit one</b>');
+    expect(review.body).toContain('### Findings · 1 suggestion and 2 nitpicks\n\n<details>\n<summary>\u2728 <b>Suggestion five</b>');
   });
 
   it('previews the flagged line with two lines each side at the reviewed commit, kept inside the file', async () => {
@@ -4052,7 +4061,7 @@ describe('postReview non-blocking findings', () => {
     ]);
   });
 
-  it('lists smaller findings on reviewed code by severity, tags them as missed earlier or pre-existing, and keeps a blocker there inline', async () => {
+  it('lists smaller findings by where they sit, found this round, missed earlier or pre-existing, and keeps a blocker on reviewed code inline', async () => {
     const { octokit, createReview } = makeOctokit();
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
@@ -4066,12 +4075,15 @@ describe('postReview non-blocking findings', () => {
 
     const review = createReview.mock.calls[0][0];
     expect(review.comments.map((c: { body: string }) => c.body.split('\n')[2])).toEqual(['**Old blocker**', '**On new code**']);
-    // Each severity gets its heading, most severe first, and each fold says where its code stands.
-    expect(review.body).toMatch(/#### \u26A0\uFE0F 1 warning\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · <a /u);
-    expect(review.body).toContain('#### \u2728 1 suggestion\n\n<details>\n<summary>\u2728 <b>On old code</b><br><sub><b>Suggestion, not blocking</b> · Missed by an earlier review · <a ');
-    expect(review.body).toContain('#### \u{1F4DD} 1 nitpick\n\n<details>\n<summary>\u{1F4DD} <b>Untouched file</b><br><sub><b>Nitpick, not blocking</b> · Missed by an earlier review · <a href="https://github.com/owner/repo/blob/sha/src/b.ts#L3"><code>src/b.ts:3</code></a>');
-    expect(review.body.indexOf('1 warning')).toBeLessThan(review.body.indexOf('1 suggestion'));
-    expect(review.body).not.toMatch(/not listed|smaller fix|Previously missed/);
+    // Each origin gets its section with exact counts, and the sections follow each other under rules.
+    expect(review.body).toContain('### Missed by an earlier review · 1 suggestion and 1 nitpick\n\nThese sit on lines an earlier round already reviewed, so none of them blocks this PR.\n\n<details>\n<summary>\u2728 <b>On old code</b><br><sub><b>Suggestion, not blocking</b> · <a ');
+    expect(review.body).toContain('<summary>\u{1F4DD} <b>Untouched file</b><br><sub><b>Nitpick, not blocking</b> · <a href="https://github.com/owner/repo/blob/sha/src/b.ts#L3"><code>src/b.ts:3</code></a>');
+    expect(review.body).toMatch(/\n\n---\n\n### Pre-existing · 1 warning\n\nThese sit on code this PR did not change, so none of them blocks\. A blocker among them is listed as a warning\.\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · <a /u);
+    expect(review.body.indexOf('Missed by an earlier review')).toBeLessThan(review.body.indexOf('### Pre-existing'));
+    expect(review.body).not.toMatch(/not listed|smaller fix|Previously missed|Found this round/);
+    // From the second round, the findings new to this round are "Found this round".
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([nonBlocking('nitpick', 'New nit', 11, { origin: 'new' })]), diff, makeContext({ meta: { ...makeContext().meta, round: 2 } }));
+    expect(createReview.mock.calls[1][0].body).toContain('### Found this round · 1 nitpick\n\n<details>\n<summary>\u{1F4DD} <b>New nit</b>');
     // A security finding on unchanged code still blocks, and its header says where it sits.
     expect(formatFindingComment(nonBlocking('blocker', 'Old SQL injection', 90, { tags: ['security', 'pre-existing'] }), TEST_LINKS).split('\n')[0]).toBe('\u{1F6AB} **Blocker** · Pre-existing');
   });
