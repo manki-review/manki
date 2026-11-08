@@ -40,6 +40,12 @@ export function makeScratchDir(prefix: string): string {
   return realpathSync(mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), `manki-${prefix}-`)));
 }
 
+/** Whether this user owns `path` and no one else can write it, so another user of a shared folder cannot have planted it. */
+export function writableOnlyByUs(path: string): boolean {
+  const { uid, mode } = statSync(path);
+  return process.getuid === undefined || (uid === process.getuid() && (mode & 0o022) === 0);
+}
+
 /** Whether `data` has the digest `integrity`, which is in Subresource Integrity form. */
 function matchesIntegrity(data: Buffer, integrity: string): boolean {
   const separator = integrity.indexOf('-');
@@ -57,10 +63,8 @@ function sharedInstall({ url, integrity }: PinnedDownload): { path: string; read
   if (!runnerTemp) return undefined;
   const path = join(realpathSync(runnerTemp), `manki-pinned-${createHash('sha256').update(integrity).digest('hex').slice(0, 16)}`);
   if (!existsSync(join(path, INSTALLED_MARKER))) return { path, ready: false };
-  const { uid, mode } = statSync(path);
-  const own = process.getuid === undefined || (uid === process.getuid() && (mode & 0o022) === 0);
   const download = join(path, basename(new URL(url).pathname));
-  return own && existsSync(download) && matchesIntegrity(readFileSync(download), integrity) ? { path, ready: true } : undefined;
+  return writableOnlyByUs(path) && existsSync(download) && matchesIntegrity(readFileSync(download), integrity) ? { path, ready: true } : undefined;
 }
 
 async function downloadAndInstall(download: PinnedDownload): Promise<string> {
