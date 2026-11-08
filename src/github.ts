@@ -90,7 +90,7 @@ const AUTO_APPROVE_MARKER = '<!-- manki-auto-approve -->';
 const CANCELLED_MARKER = '<!-- manki-review-cancelled -->';
 /** Marks a review that is no verdict on its commit, such as a round no model finished, so auto-approve never builds on it. */
 const NO_VERDICT_MARKER = '<!-- manki-no-verdict -->';
-/** Marks a clean review whose approval only a person can give, such as one with unread files, so auto-approve never gives it. */
+/** Marks a review after which only a person can approve, such as one with unread files, whatever its verdict, so auto-approve never does. */
 const HELD_FOR_PERSON_MARKER = '<!-- manki-held-for-person -->';
 const VERSION_MARKER_PREFIX = '<!-- manki-version:';
 /** Holds the id of the progress comment the run posted, for the post step. */
@@ -1334,7 +1334,7 @@ export async function postReview(
   const postedComments = [...validComments, ...fileComments].map(highlight);
   const record = (context
     ? formatRecordTrailer({ ...context, output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) } }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
-    : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold && hold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
+    : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
 
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);

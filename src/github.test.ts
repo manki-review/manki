@@ -1174,8 +1174,10 @@ describe('postReview body lead', () => {
     expect(body).toContain(approved.body.split('\n')[0]);
     expect(body).toContain('<!-- manki-held-for-person -->');
     expect(mockGet).not.toHaveBeenCalled();
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, { skipped });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toContain('<!-- manki-held-for-person -->');
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { skipped: { excluded: [], binary: [] } });
-    expect((mockCreateReview.mock.calls.at(-1)![0] as { event: string }).event).toBe('APPROVE');
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { event: string; body: string })).toEqual(expect.objectContaining({ event: 'APPROVE', body: expect.not.stringContaining('held-for-person') }));
   });
 
   it('marks a review that is no verdict after its record, where truncation never reaches', async () => {
