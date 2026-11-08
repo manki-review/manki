@@ -113,15 +113,17 @@ describe('parseFindings', () => {
     expect(findings[0].evidence).toBeUndefined();
   });
 
-  it('reads the evidence, keeps only proof entries that start with a location, and marks open leads not checked', () => {
+  it('reads the evidence, keeps only proof entries that start with a location, marks open leads not checked, and reads a pre-existing mark with its reason', () => {
     const json = JSON.stringify([
       {
         severity: 'blocker', title: 'Division by zero', file: 'src/api.ts', line: 42, description: 'd',
         evidence: ['src/api.ts:42 divides by `page`', '', 7],
         proof: ['`src/api.ts:42`', 'src/api.ts:40-42 (the loop)', 'the division', 'Makefile:3.'],
         claimsMissing: true, emptySearch: 'grep `page === 0` under src: no match',
+        preExisting: true, preExistingReason: 'The division predates this PR.',
       },
-      { severity: 'warning', title: 'Unchecked', file: 'src/b.ts', line: 1, description: 'd', claimsMissing: true, notChecked: true },
+      // A mark without a reason does not count.
+      { severity: 'warning', title: 'Unchecked', file: 'src/b.ts', line: 1, description: 'd', claimsMissing: true, notChecked: true, preExisting: true },
       { lead: true, severity: 'blocker', title: 'Cache may go stale', file: 'src/c.ts', line: 3, description: '', checked: 'read src/c.ts:3', left: 'find the writers' },
     ]);
 
@@ -133,6 +135,7 @@ describe('parseFindings', () => {
       emptySearch: 'grep `page === 0` under src: no match',
     });
     expect(checked.notChecked).toBeUndefined();
+    expect([checked.preExisting, unchecked.preExisting]).toEqual(['The division predates this PR.', undefined]);
     expect([unchecked.evidence, unchecked.notChecked]).toEqual([{ checks: [], proof: [], emptySearch: '' }, true]);
     expect([lead.lead, lead.notChecked, lead.evidence]).toEqual([{ checked: 'read src/c.ts:3', left: 'find the writers' }, true, undefined]);
     expect(lead.description).toBe('A reviewer raised this as a suspicion it had not finished checking. It had checked: read src/c.ts:3. Still to check: find the writers.');
@@ -2030,21 +2033,30 @@ describe('runReview', () => {
 
   it('posts a non-security blocker on code the PR did not change as a pre-existing warning, while a security one still blocks', async () => {
     const diff = makeDiff({
-      files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 5, newStart: 10, newLines: 5, content: '' }] }],
-      totalAdditions: 5, totalDeletions: 5,
+      files: [
+        { path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 5, newStart: 10, newLines: 5, content: '' }] },
+        { path: 'src/legacy.ts', changeType: 'deleted', hunks: [{ oldStart: 1, oldLines: 30, newStart: 0, newLines: 0, content: '' }] },
+      ],
+      totalAdditions: 5, totalDeletions: 35,
     });
+    const old = 'The code before this PR already had it.';
     const blocker = (title: string, file: string, line: number, extra: Partial<Finding> = {}): Finding =>
-      ({ severity: 'blocker', title, file, line, description: 'd', reviewers: ['r'], ...extra });
-    const changed = blocker('New null dereference', 'src/a.ts', 12);
+      ({ severity: 'blocker', title, file, line, description: 'd', reviewers: ['r'], preExisting: old, ...extra });
+    const changed = blocker('New null dereference', 'src/a.ts', 12, { preExisting: undefined });
     const oldLine = blocker('Old null dereference', 'src/a.ts', 40);
     const oldFile = blocker('Old race in the pool', 'src/pool.ts', 3);
     const oldInjection = blocker('Old SQL injection', 'src/a.ts', 50, { tags: ['security'] });
-    const run = (clients: ReviewClients) => runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    // `parse()` now returns null at src/a.ts:12, and an untouched caller dereferences it. The PR causes that.
+    const callerProof = blocker('Caller dereferences the null parse() result', 'src/b.ts', 20, { evidence: { checks: [], proof: ['src/b.ts:20', 'src/a.ts:11-12'] } });
+    const callerUnmarked = blocker('Caller dereferences the null parse() result', 'src/b.ts', 20, { preExisting: undefined });
+    const deleted = blocker('Deleted module is still imported', 'src/legacy.ts', 4);
+    const excluded = blocker('Generated client drops the auth header', 'gen/client.ts', 8);
+    const run = (clients: ReviewClients) => runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', excludedPaths: ['gen/client.ts'] });
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile], summary: 'Two old defects.' });
-    const old = await run(makeClients());
-    expect(old.outcome).toBe('READY');
-    expect(old.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags])).toEqual([
+    const pre = await run(makeClients());
+    expect(pre.outcome).toBe('READY');
+    expect(pre.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags])).toEqual([
       ['Old null dereference', 'warning', 'blocker', ['pre-existing', 'follow-up']],
       ['Old race in the pool', 'warning', 'blocker', ['pre-existing', 'follow-up']],
     ]);
@@ -2057,11 +2069,21 @@ describe('runReview', () => {
       ['Old SQL injection', 'blocker', ['security', 'pre-existing']],
     ]);
 
-    // A verdict reader blocker on unchanged code does not block either.
+    // Each of these sits outside every hunk, but something ties it to this PR, so it keeps blocking.
+    for (const tied of [callerProof, callerUnmarked, deleted, excluded]) {
+      mockedRunJudgeAgent.mockResolvedValue({ findings: [tied], summary: 'One defect.' });
+      const result = await run(makeClients());
+      expect([tied.title, result.outcome, result.findings[0].severity, result.findings[0].tags]).toEqual([tied.title, 'ADDRESS_FIRST', 'blocker', undefined]);
+    }
+
+    // A verdict reader blocker it marks pre-existing on unchanged code does not block either.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
     const reading = makeClients();
     jest.mocked(reading.judge.sendMessage).mockResolvedValue({
-      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/pool.ts', line: 3, title: 'Old race in the pool.' }], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
+      content: JSON.stringify({
+        verdict: 'ADDRESS_FIRST', summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y',
+        blockers: [{ file: 'src/pool.ts', line: 3, title: 'Old race in the pool.', preExisting: true, preExistingReason: old }],
+      }),
     });
     const read = await run(reading);
     expect(read.outcome).toBe('READY');

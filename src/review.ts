@@ -34,21 +34,41 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
   return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
 }
 
+/** Whether the `file:line` or `file:start-end` location `at` cites a line inside a hunk of `diff`. */
+function citesChangedLine(at: string, diff: ParsedDiff): boolean {
+  const [, file, start, end] = at.match(/^(.+):(\d+)(?:-(\d+))?$/) ?? [];
+  const diffFile = file ? diff.files.find(df => df.path === file) : undefined;
+  return !!diffFile && isLineInDiff(diffFile, Number(start), Number(end ?? start));
+}
+
 /**
- * Tags each finding on lines outside every hunk of `diff` as pre-existing. A non-security blocker among them becomes
- * a warning, so no check that reads the severity, in this round or a later one, lets it block.
+ * Whether `f` is about code this PR did not change. Each of these must hold, so no model's answer alone can lower a
+ * blocker: the reviewer said the defect exists without this PR and the judge kept that, the finding sits outside every
+ * hunk, no line it cites as proof is in the diff, and the PR neither deletes its file nor left it out by `exclude_paths`.
  */
-function markPreExisting(findings: Finding[], diff: ParsedDiff): Finding[] {
+function isPreExistingFinding(f: Finding, diff: ParsedDiff, excludedPaths: ReadonlySet<string>): boolean {
+  if (!f.preExisting || !f.file || f.line <= 0 || excludedPaths.has(f.file)) return false;
+  const diffFile = diff.files.find(df => df.path === f.file);
+  if (diffFile && (diffFile.changeType === 'deleted' || isLineInDiff(diffFile, f.line))) return false;
+  return !(f.evidence?.proof ?? []).some(at => citesChangedLine(at, diff));
+}
+
+/**
+ * Tags each finding on code this PR did not change as pre-existing. A non-security blocker among them becomes a
+ * warning, so no check that reads the severity, in this round or a later one, lets it block.
+ */
+function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: ReadonlySet<string>): Finding[] {
   return findings.map(f => {
-    if (!f.file || f.line <= 0) return f;
-    const diffFile = diff.files.find(df => df.path === f.file);
-    if (diffFile && isLineInDiff(diffFile, f.line)) return f;
+    if (!isPreExistingFinding(f, diff, excludedPaths)) return f;
     const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG] };
     if (f.severity !== 'blocker' || isSecurityFinding(f.tags, f.reviewers)) return tagged;
     core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the PR did not change that line`);
     return { ...tagged, severity: 'warning', originalSeverity: f.originalSeverity ?? 'blocker' };
   });
 }
+
+/** Tells a finder or the verdict reader when to mark a finding pre-existing. */
+export const PRE_EXISTING_RULE = 'When the defect sits on code this PR did not change and exists without this PR\'s change, set `"preExisting": true` and say in `preExistingReason`, in one line, why the code before this PR already had it. Never set it when this PR causes or exposes the defect, such as an unchanged caller that breaks because the PR changed what a function returns or takes. A pre-existing finding never blocks unless it is a security defect.';
 
 const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   READY: 'APPROVE',
@@ -541,6 +561,8 @@ export interface ReviewOptions {
   workspace?: string;
   /** A Deeper review: two finders on every group, each one effort level higher. */
   deeper?: boolean;
+  /** Files the PR changes that `exclude_paths` left out of `diff`. A finding there is never pre-existing. */
+  excludedPaths?: string[];
 }
 
 export async function runReview(
@@ -1146,7 +1168,8 @@ export async function runReview(
     memorySuppressed = suppressed;
   }
   // After the suppressions, so a blocker the PR did not touch keeps their blocker guard.
-  finalFindings = markPreExisting(finalFindings, diff);
+  const excludedPaths = new Set(options.excludedPaths);
+  finalFindings = markPreExisting(finalFindings, diff, excludedPaths);
 
   // Mechanism B: drop low-severity findings on test files starting at round 2.
   // Test scaffolding nits are the most common runaway-feedback driver in late
@@ -1233,7 +1256,7 @@ export async function runReview(
       // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found.
       const readerFindings = markPreExisting(refutation
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff })
-        : readerBlockers, diff);
+        : readerBlockers, diff, excludedPaths);
       finalFindings = [...finalFindings, ...readerFindings];
       const stillBlocking = readerFindings.filter(f => f.severity === 'blocker');
       if (stillBlocking.length > 0) {
@@ -1526,7 +1549,8 @@ Example of one finding:
 
 - In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each. Start each line with its \`file:line\` and quote the key code it refers to in backticks, such as "src/sync.ts:42 passes \`fh_bound\` to \`truncate_above\`". When the quoted code holds a backtick itself, wrap it in double backticks with a space inside, as in \`\` a \`b\` \`\`.
 - A \`blocker\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most.
-- When a finding says something is missing or handled nowhere, set \`"claimsMissing": true\` and put the search that came back empty in \`emptySearch\`, such as "grep \`close(\` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.${tools ? `
+- When a finding says something is missing or handled nowhere, set \`"claimsMissing": true\` and put the search that came back empty in \`emptySearch\`, such as "grep \`close(\` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.
+- ${PRE_EXISTING_RULE}${tools ? `
 - When Manki tells you to wrap up, report what you have. Set \`"notChecked": true\` on a finding you could not finish checking.
 - Report each suspicion you were still checking as an open lead: an entry with \`"lead": true\`, the \`severity\` it would have, the suspicion as \`title\` and \`description\`, its \`file\` and \`line\`, what you \`checked\` so far and what is \`left\`. The judge settles a lead you would grade \`blocker\`. Other leads are listed as not finished, never posted.` : ''}
 
@@ -1698,8 +1722,15 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
       ...(evidence && { evidence }),
       ...((lead || f.notChecked === true) && { notChecked: true }),
       ...(lead && { lead }),
+      ...preExistingOf(f),
     };
   });
+}
+
+/** Reads `preExisting: true` with its one-line `preExistingReason`. A mark without a reason is dropped. */
+export function preExistingOf(f: Record<string, unknown>): Pick<Finding, 'preExisting'> {
+  const reason = f.preExisting === true ? textOf(f.preExistingReason) : '';
+  return reason ? { preExisting: reason } : {};
 }
 
 const EVIDENCE_LINE_CHARS = 300;

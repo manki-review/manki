@@ -199,6 +199,8 @@ export interface Finding {
   refutation?: Refutation;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;
+  /** Why the defect exists without this PR's change, when the reviewer says so. The judge must keep it, or it is cleared. */
+  preExisting?: string;
 }
 
 export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';

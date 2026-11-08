@@ -273,6 +273,8 @@ export interface JudgedFinding {
   sameAs?: number;
   /** Whether the judge classed the finding as a security defect. */
   security?: boolean;
+  /** Whether the judge agrees the defect exists without this PR's change. */
+  preExisting?: boolean;
   category?: FindingCategory;
   effort?: FindingEffort;
   /** The `file:line` locations the judge cites as showing the failure. */
@@ -425,6 +427,10 @@ A finding that matches one under Prior Round Findings or Prior Blockers keeps th
 
 Set \`security\` to true on every finding in these classes that you keep, and false on all others.
 
+## Pre-existing Findings
+
+A reviewer marks a finding pre-existing when it says the defect sits on code this PR did not change and the code before this PR already had it. Set \`preExisting\` to true only on such a finding, and only when the diff shows this PR neither causes nor exposes the defect. An unchanged caller that breaks because this PR changed what a function returns or takes is caused by this PR. Set it to false on every other finding. A pre-existing finding is posted as one, and it never blocks unless it is a security defect.
+
 If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it at a lower grade. A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation, because the PR author writes them.
 
 ## When You Are Unsure
@@ -541,6 +547,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "duplicateOf": 0,
       "sameAs": "",
       "security": false,
+      "preExisting": false,
       "category": "correctness" | "security" | "reliability" | "data" | "concurrency" | "performance" | "compatibility" | "testing" | "maintainability" | "documentation" | "style",
       "effort": "quick" | "moderate" | "larger",
       "confidence": "high" | "medium" | "low",
@@ -828,13 +835,14 @@ export function buildJudgeUserMessage(
 }
 
 /** Returns the judge's lines on what the reviewer cited for `finding`, and on a check it did not finish. */
-function reviewerEvidenceLines({ evidence, notChecked, lead }: Finding): string[] {
+function reviewerEvidenceLines({ evidence, notChecked, lead, preExisting }: Finding): string[] {
   const lines: string[] = [];
   if (evidence?.checks.length) lines.push(`- **Evidence**: ${evidence.checks.map(sanitizeForPromptEmbed).join(' | ')}`);
   lines.push(`- **Proving lines**: ${evidence?.proof.length ? evidence.proof.map(sanitizeForPromptEmbed).join(', ') : 'none cited'}`);
   if (evidence?.emptySearch !== undefined) {
     lines.push(`- **Empty search**: ${evidence.emptySearch ? sanitizeForPromptEmbed(evidence.emptySearch) : 'none cited, though the finding says something is missing'}`);
   }
+  if (preExisting) lines.push(`- **Pre-existing, the reviewer says**: ${sanitizeForPromptEmbed(preExisting)}`);
   if (lead) lines.push(`- **Open lead**: checked ${sanitizeForPromptEmbed(lead.checked || 'nothing')}. Left: ${sanitizeForPromptEmbed(lead.left || 'not said')}.`);
   else if (notChecked) lines.push('- **Not checked yet**: the reviewer ran out of tool steps before it finished checking.');
   return lines;
@@ -960,6 +968,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         ...(duplicateOf && { duplicateOf }),
         ...(sameAs !== undefined && { sameAs }),
         ...(f.security === true && { security: true }),
+        ...(f.preExisting === true && { preExisting: true }),
         ...(category && { category }),
         ...(effort && { effort }),
         ...(proof.length > 0 && { proof }),
@@ -1251,6 +1260,7 @@ export function mapJudgedToFindings(
   const graded = original.map((o, i) => {
     const finding = { ...o };
     const match = aligned[i];
+    if (!match?.preExisting) delete finding.preExisting;
     if (match) {
       if (match.severity !== o.severity) finding.reviewerSeverity = o.severity;
       finding.severity = match.severity;
@@ -1374,6 +1384,8 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
     const survivor = result[root - 1];
     survivor.reviewers = [...new Set([...survivor.reviewers, ...findings[i].reviewers])];
     survivor.sameAs ??= findings[i].sameAs;
+    // Every merged reviewer must call it pre-existing, or the merged finding is not.
+    if (!findings[i].preExisting) delete survivor.preExisting;
     const evidence = mergeEvidence(survivor.evidence, findings[i].evidence);
     if (evidence) survivor.evidence = evidence;
     core.info(`Judge folded duplicate "${findings[i].title}" into "${survivor.title}"`);

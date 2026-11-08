@@ -1727,6 +1727,7 @@ async function runFullReview(
       finalRound: !paused && countsTowardCap && maxAutoRounds > 0 && capRounds + 1 === maxAutoRounds,
       workspace,
       deeper: options.deeper,
+      excludedPaths: excludedFiles.map(f => f.path),
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.
     stop.signal.throwIfAborted();

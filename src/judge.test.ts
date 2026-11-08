@@ -1425,6 +1425,36 @@ describe('runJudgeAgent', () => {
     expect(result.findings.map(f => f.category)).toEqual(['security', undefined, undefined]);
   });
 
+  it('keeps a reviewer\'s pre-existing mark only when the judge keeps it and every merged reviewer made it', async () => {
+    const old = 'The loop had no bound before this PR.';
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({
+      summary: 'Old defects.',
+      findings: [
+        { id: 1, title: 'Unbounded retry', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
+        { id: 2, title: 'Caller breaks on null', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: false },
+        { id: 3, title: 'Leaked handle', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
+        { id: 4, title: 'Leaked handle again', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 3 },
+      ],
+    }) });
+    const input: JudgeInput = {
+      findings: [
+        makeFinding({ title: 'Unbounded retry', preExisting: old }),
+        makeFinding({ title: 'Caller breaks on null', preExisting: old }),
+        makeFinding({ title: 'Leaked handle', preExisting: old }),
+        makeFinding({ title: 'Leaked handle again' }),
+      ],
+      diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 2,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(mockSendMessage.mock.calls[0][1]).toContain(`- **Pre-existing, the reviewer says**: ${old}`);
+    expect(result.findings.map(f => [f.title, f.preExisting])).toEqual([
+      ['Unbounded retry', old],
+      ['Caller breaks on null', undefined],
+      ['Leaked handle', undefined],
+    ]);
+  });
+
   it('calls judge with only openThreads when findings are empty', async () => {
     const judgedResponse = JSON.stringify({
       summary: 'Threads evaluated.',
