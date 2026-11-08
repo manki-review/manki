@@ -61,6 +61,7 @@ describe('refuteBlockers', () => {
       'Disproved in its own file': { outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] },
       'Disproved by an unrelated file': { outcome: 'disproved', reason: 'The README says so.', proof: ['README.md:1'] },
       'Unproven disproved': { outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] },
+      'Lead disproved': { outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] },
       'Security disproved': { outcome: 'disproved', reason: 'A comment says it is intended.', proof: ['src/api.ts:9'] },
       'Lead unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
       'Blocking lead unsettled': { outcome: 'unsettled', reason: 'Ran out of tool calls.' },
@@ -79,6 +80,7 @@ describe('refuteBlockers', () => {
       finding('Disproved in its own file', { notChecked: true, lead }),
       finding('Disproved by an unrelated file', { notChecked: true, lead }),
       finding('Unproven disproved', { severity: 'warning', tags: ['unproven-blocker'] }),
+      finding('Lead disproved', { severity: 'warning', notChecked: true, lead }),
       finding('Security disproved', { tags: ['security'] }),
       finding('Lead unsettled', { severity: 'warning', notChecked: true, lead }),
       finding('Blocking lead unsettled', { notChecked: true, lead }),
@@ -105,11 +107,13 @@ describe('refuteBlockers', () => {
       ['Disproved without proof', 'blocker', 'unsettled'],
       // A citation of a file the workspace lacks, or of a line past its end, settles nothing.
       ['Disproved on made-up lines', 'blocker', 'unsettled'],
-      // A disproof drops a lead when it cites the finding's own file or the diff, so PR text cannot point it at any file.
-      ['Disproved in its own file', 'ignore', 'disproved'],
+      // A lead the judge graded blocker keeps blocking too, even when the disproof cites its own file.
+      ['Disproved in its own file', 'blocker', 'disproved'],
+      // A disproof that cites neither the finding's file nor the diff settles nothing.
       ['Disproved by an unrelated file', 'blocker', 'unsettled'],
-      // It also drops a finding capped below blocker for want of proof.
+      // A disproof drops only a finding graded below blocker: one capped for want of proof, or a lead.
       ['Unproven disproved', 'ignore', 'disproved'],
+      ['Lead disproved', 'ignore', 'disproved'],
       // PR content the refuter reads could steer it, so only a confirmation changes a security finding.
       ['Security disproved', 'blocker', 'disproved'],
       ['Lead unsettled', 'ignore', 'unsettled'],
@@ -126,7 +130,7 @@ describe('refuteBlockers', () => {
     expect([result[4].lead, result[4].notChecked]).toEqual([undefined, undefined]);
     expect(result[5].tags).toEqual([]);
     // Every blocker and lead was asked once, and the warning never.
-    expect(client.calls.map(([title]) => title).sort()).toEqual(['Blocking lead unsettled', 'Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved by an unrelated file', 'Disproved in its own file', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead unsettled', 'Security disproved', 'Unproven and contradicted', 'Unproven disproved', 'Unproven lead confirmed', 'Unsettled']);
+    expect(client.calls.map(([title]) => title).sort()).toEqual(['Blocking lead unsettled', 'Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved by an unrelated file', 'Disproved in its own file', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead disproved', 'Lead unsettled', 'Security disproved', 'Unproven and contradicted', 'Unproven disproved', 'Unproven lead confirmed', 'Unsettled']);
     expect(client.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15 }, timeoutMs: 600_000 });
   });
 
