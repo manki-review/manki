@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { BotIdentity } from './github';
-import { filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, replaceIssueBox, tickedIssueBoxes } from './issue-box';
+import { filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes } from './issue-box';
 import { isSecurityThread, parseFindingData } from './recap';
 import { fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
 
@@ -163,7 +163,7 @@ function decodeHtml(text: string): string {
  * opens with its severity.
  */
 function bodyFinding(body: string, id: string): { title: string; text: string; security: boolean } | undefined {
-  const box = body.indexOf(`<!-- manki-box:issue:${id} -->`);
+  const box = issueBoxOffset(body, id);
   if (box < 0) return undefined;
   const { open, close } = enclosingFold(body, box);
   if (open >= 0 && close > box) {
