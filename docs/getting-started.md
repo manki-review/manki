@@ -349,7 +349,7 @@ You can also forward `severity_counts` or `findings_json` to a metrics sink (Sla
 | `pull_request: [closed]` | On merge, records how many posted findings were fixed, dismissed or left untouched (see `metrics.fix_rate` in [Configuration](configuration.md)). Closing without merging does nothing |
 | `issue_comment: [created, edited]` | `/manki` commands on PRs and issues, and ticks in the settings block. PR-only commands: `review`, `check`, `explain`. Available on both: `help`, `dismiss`, `remember`, `forget`, and free-form questions. |
 | `pull_request_review_comment: [created, edited]` | Replies to review comment threads, and ticks of a finding's "Create an issue for this" box |
-| `pull_request_review: [submitted, dismissed]` | Auto-approve check when reviews change state |
+| `pull_request_review: [submitted, dismissed, edited]` | Auto-approve check when reviews change state, and ticks of a finding's issue box in Manki's review |
 | `pull_request_review_thread: [resolved, unresolved]` | Auto-approve check when someone resolves the last open thread by hand |
 
 The service starts no run for anything Manki or another bot did, a PR closed without merging, or a comment that doesn't mention `@manki` or `/manki`.

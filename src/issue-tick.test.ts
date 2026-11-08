@@ -1,5 +1,5 @@
 import { formatFindingComment } from './github';
-import { handleIssueBoxTick } from './issue-tick';
+import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import * as state from './state';
 import { Finding } from './types';
 import { TEST_BOT, TEST_LINKS } from './test-utils';
@@ -109,5 +109,41 @@ describe('handleIssueBoxTick', () => {
     expect(octokit.rest.issues.create).not.toHaveBeenCalled();
     expect(octokit.rest.pulls.updateReviewComment).not.toHaveBeenCalled();
     expect(state.replyToReviewThread).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleReviewBoxTick', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const box = (id: string) => `<!-- manki-issue-box -->\n- [x] Create an issue for this <!-- manki-box:issue:${id} -->`;
+  // A listed finding as `formatFindingFold` posts it, a blocker without a thread as `formatFindingBlock` posts it,
+  // and a security fold someone added a box to by hand.
+  const body = [
+    '\u{1F534} **Changes requested:** 1 blocker.',
+    '**Blockers in files outside this diff:**',
+    `**Blocker** · Correctness\n**Pool leaks a connection**\n[\`src/pool.ts:12\`](https://github.com/o/r/blob/abc123/src/pool.ts#L12)\n**What goes wrong:** The pool never closes it.\n\n${box('src/pool.ts:12:Pool-leaks-a-connection')}`,
+    '#### \u{1F527} 2 smaller fixes in this PR',
+    `<details>\n<summary>✨ <b>Use <code>Map&lt;K, V&gt;</code> here</b><br><sub><b>Suggestion, not blocking</b> · Maintainability</sub></summary>\n\n**Why:** A map reads clearer.\n\n${box('src/a.ts:4:Use--Map-K--V---here')}\n\n</details>`,
+    `<details>\n<summary>⚠️ <b>Token in the log</b><br><sub><b>Warning, not blocking</b> · Security · Quick fix</sub></summary>\n\n**What goes wrong:** It logs the token.\n\n${box('src/log.ts:9:Token-in-the-log')}\n\n</details>`,
+    '<!-- manki-context: {"meta":{"round":1}} -->',
+  ].join('\n\n');
+  const review = { id: 900, body, commit_id: 'abc123', html_url: 'https://github.com/o/r/pull/5#pullrequestreview-900' };
+
+  it('files each ticked listed finding, replaces only its box line, and skips a security one', async () => {
+    const octokit = { ...makeOctokit(), rest: { ...makeOctokit().rest, pulls: { updateReview: jest.fn().mockResolvedValue({}) } } };
+    octokit.rest.issues.create.mockResolvedValueOnce({ data: { number: 21 } }).mockResolvedValueOnce({ data: { number: 22 } });
+
+    await handleReviewBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, review, 'bob');
+
+    const created = jest.mocked(octokit.rest.issues.create).mock.calls.map(([args]) => [args.title, args.body]);
+    expect(created).toEqual([
+      ['Pool leaks a connection', expect.stringMatching(/^\*\*Blocker\*\* · Correctness\n\*\*Pool leaks a connection\*\*\n[\s\S]*The pool never closes it\.\n\nFound by Manki in #5 at \[`src\/pool\.ts:12`\]\(https:\/\/github\.com\/o\/r\/blob\/abc123\/src\/pool\.ts#L12\)\. See the \[review\]\(https:\/\/github\.com\/o\/r\/pull\/5#pullrequestreview-900\)\.\n\n<!-- manki-issue:src\/pool\.ts:12:Pool-leaks-a-connection -->$/)],
+      ['Use Map<K, V> here', expect.stringMatching(/^\*\*Why:\*\* A map reads clearer\.\n\nFound by Manki in #5 at \[`src\/a\.ts:4`\]/)],
+    ]);
+    const updates = jest.mocked(octokit.rest.pulls.updateReview).mock.calls.map(([args]) => args.body);
+    expect(updates.at(-1)).toBe(body
+      .replace('- [x] Create an issue for this <!-- manki-box:issue:src/pool.ts:12:Pool-leaks-a-connection -->', 'Issue #21 created by @bob')
+      .replace('- [x] Create an issue for this <!-- manki-box:issue:src/a.ts:4:Use--Map-K--V---here -->', 'Issue #22 created by @bob'));
+    expect(jest.mocked(octokit.rest.pulls.updateReview).mock.calls[0][0]).toMatchObject({ owner: 'o', repo: 'r', pull_number: 5, review_id: 900 });
   });
 });

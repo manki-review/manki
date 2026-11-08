@@ -142,6 +142,7 @@ jest.mock('./interaction', () => ({
 
 jest.mock('./issue-tick', () => ({
   handleIssueBoxTick: jest.fn().mockResolvedValue(undefined),
+  handleReviewBoxTick: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('./memory', () => ({
@@ -775,6 +776,25 @@ describe('run', () => {
       expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['a writer ticks a box in Manki\'s review', 'manki-review[bot]', '[x]', true, true],
+      ['an editor without write access ticks it', 'manki-review[bot]', '[x]', false, false],
+      ['an edit of Manki\'s review ticks no box', 'manki-review[bot]', '[ ]', true, false],
+      ['a writer ticks a copy of the box in someone else\'s review', 'alice', '[x]', true, false],
+    ])('files an issue from the review body only when %s', async (_case, author, tick, writer, files) => {
+      if (tick === '[x]') jest.mocked(ghUtils.hasWriteAccess).mockResolvedValueOnce(writer);
+      const review = {
+        id: 900, body: `Body\n\n<!-- manki-issue-box -->\n- ${tick} Create an issue for this <!-- manki-box:issue:src/a.ts:3:Off-by-one -->`,
+        user: { login: author, type: author.endsWith('[bot]') ? 'Bot' : 'User' }, commit_id: 'abc',
+      };
+      setContext({ eventName: 'pull_request_review', payload: { action: 'edited', sender: { login: 'bob', type: 'User' }, review, pull_request: { number: 5 } } });
+
+      await run();
+
+      expect(jest.mocked(issueTick.handleReviewBoxTick).mock.calls).toEqual(files ? [[mockOctokitInstance, { logins: ['manki-review[bot]'] }, 'test-owner', 'test-repo', 5, review, 'bob']] : []);
+      expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
+    });
+
     it('skips own review comments containing manki marker', async () => {
       setContext({
         eventName: 'pull_request_review_comment',
@@ -869,13 +889,13 @@ describe('run', () => {
     it('skips non-submitted/dismissed actions', async () => {
       setContext({
         eventName: 'pull_request_review',
-        payload: { action: 'edited', sender: { login: 'user' } },
+        payload: { action: 'requested', sender: { login: 'user' } },
       });
 
       await run();
 
       expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-        'Ignoring pull_request_review action: edited',
+        'Ignoring pull_request_review action: requested',
       );
     });
 

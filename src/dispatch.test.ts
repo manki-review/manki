@@ -64,6 +64,9 @@ describe('restoreDispatchedEvent', () => {
       { comment: ISSUE_COMMENT, issue: ISSUE }, { login: 'carol', type: 'User' }],
     ['a review, as its author', { event: 'pull_request_review', action: 'submitted', pr: '7', review_id: '12', head_sha: HEAD },
       { review: REVIEW, pull_request: PR }, BOB],
+    // A tick of a box in Manki's review is an edit by someone else, so the editor is the sender.
+    ['an edited review, as its last editor', { event: 'pull_request_review', action: 'edited', pr: '7', review_id: '12', head_sha: HEAD },
+      { review: REVIEW, pull_request: PR }, { login: 'carol', type: 'User' }],
     ['a thread reply, as its author', { event: 'pull_request_review_comment', action: 'created', pr: '7', comment_id: '13' },
       { comment: REVIEW_COMMENT, pull_request: PR }, BOB],
     // A tick of a box in Manki's review comment is an edit by someone else, so the editor is the sender.

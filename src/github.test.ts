@@ -1500,6 +1500,9 @@ describe('postReview body lead', () => {
       '',
       'https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L45-L47',
       '',
+      '<!-- manki-issue-box -->',
+      '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:47:Extract-helper -->',
+      '',
       '</details>',
       '',
       '<details>',
@@ -3733,7 +3736,7 @@ describe('postReview fallback paths', () => {
       const update = updateReview.mock.calls[0][0].body as string;
       expect(update).toContain('*(Review body truncated)*');
       expect(extractReviewRecords(update).records.map(r => JSON.parse(r))).toEqual([{ ...context, output: { bodyLength: expect.any(Number), commentLengths: [expect.any(Number)] } }]);
-      expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n**What goes wrong:** Desc.\n\n<!-- manki-stats: ');
+      expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n**What goes wrong:** Desc.\n\n<!-- manki-issue-box -->\n- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:40:Refused-thread -->\n\n<!-- manki-stats: ');
       expect(update.length).toBeLessThanOrEqual(60000 + 200);
     });
 
@@ -3870,6 +3873,9 @@ describe('postReview non-blocking findings', () => {
       '',
       '**Fix:** Use the shared helper.',
       '',
+      '<!-- manki-issue-box -->',
+      '- [ ] Create an issue for this <!-- manki-box:issue::0:Missing-file-context -->',
+      '',
       '</details>',
       '',
       '<details>',
@@ -3889,6 +3895,9 @@ describe('postReview non-blocking findings', () => {
       '',
       '<!-- manki-checks -->',
       '**Checked:** Read `src/a.ts`:40',
+      '',
+      '<!-- manki-issue-box -->',
+      '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:40:Off-the-diff -->',
       '',
       '</details>',
     ].join('\n'));
@@ -3931,8 +3940,8 @@ describe('postReview non-blocking findings', () => {
     const { body } = createReview.mock.calls[0][0];
     expect(getContent).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/a.ts', ref: 'abc1234' }));
     expect(body).toContain('<summary>\u2728 <b>Near the end of <code>Vec&lt;u8&gt;</code> &amp; co</b>');
-    expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L41\n\n</details>');
-    expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/c.ts#L1-L3\n\n</details>');
+    expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L41\n\n<!-- manki-issue-box -->');
+    expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/c.ts#L1-L3\n\n<!-- manki-issue-box -->');
     expect(body).not.toContain('#L48');
     expect(body).toContain('<b>Past the end</b>');
   });

@@ -24,7 +24,7 @@ import { collectStaticSignals } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
-import { handleIssueBoxTick } from './issue-tick';
+import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
 import { ConfigSource, DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases } from './types';
 import {
@@ -206,7 +206,8 @@ async function run(): Promise<void> {
 
   // Prevent self-triggering — skip events caused by any bot
   const senderType = github.context.payload.sender?.type ?? '';
-  const reviewAuthorType = github.context.payload.review?.user?.type ?? '';
+  // A tick in Manki's own review is an edit of a bot's review by a person, whose write access is checked below.
+  const reviewAuthorType = action === 'edited' ? '' : github.context.payload.review?.user?.type ?? '';
   if (senderType === 'Bot' || reviewAuthorType === 'Bot') {
     const actor = senderType === 'Bot'
       ? (github.context.payload.sender?.login ?? 'unknown bot')
@@ -294,7 +295,21 @@ async function run(): Promise<void> {
     }
     if (!issueTick && !await commenterAllowed()) return;
   } else if (eventName === 'pull_request_review') {
-    if (action !== 'submitted' && action !== 'dismissed') {
+    if (action === 'edited') {
+      // Only a tick of an issue box in Manki's own review matters. The editor needs write access.
+      const review = github.context.payload.review;
+      if (tickedIssueBoxes(review?.body ?? '').length === 0) {
+        core.info('Edited review has no ticked issue box, ignoring');
+        return;
+      }
+      if (!await commenterAllowed()) return;
+      const { bot } = await getAuth();
+      if (!isBotLogin(bot, review?.user?.login)) {
+        core.info('Edited review is not one of Manki\'s, ignoring');
+        return;
+      }
+      issueTick = true;
+    } else if (action !== 'submitted' && action !== 'dismissed') {
       core.info(`Ignoring pull_request_review action: ${action}`);
       return;
     }
@@ -338,6 +353,10 @@ async function run(): Promise<void> {
       break;
 
     case 'pull_request_review':
+      if (issueTick) {
+        await handleIssueTick();
+        break;
+      }
       core.info('Review submitted/dismissed — checking if auto-approve is warranted');
       await handleReviewStateCheck();
       break;
@@ -1911,13 +1930,14 @@ async function handleIssueInteraction(): Promise<void> {
   await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memory, config);
 }
 
-/** Files the findings whose issue box the editor ticked in Manki's review comment. */
+/** Files the findings whose issue box the editor ticked in Manki's review comment or review body. */
 async function handleIssueTick(): Promise<void> {
-  const { comment, pull_request: pr, sender } = github.context.payload;
-  if (!comment || !pr || !sender?.login) return;
+  const { comment, review, pull_request: pr, sender } = github.context.payload;
+  if (!pr || !sender?.login) return;
   const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
-  await handleIssueBoxTick(octokit, bot, owner, repo, pr.number, comment as Parameters<typeof handleIssueBoxTick>[5], sender.login);
+  if (comment) await handleIssueBoxTick(octokit, bot, owner, repo, pr.number, comment as Parameters<typeof handleIssueBoxTick>[5], sender.login);
+  else if (review) await handleReviewBoxTick(octokit, bot, owner, repo, pr.number, review as Parameters<typeof handleReviewBoxTick>[5], sender.login);
 }
 
 async function handleReviewCommentInteraction(): Promise<void> {

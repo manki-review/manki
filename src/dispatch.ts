@@ -161,7 +161,9 @@ async function fetchEvent(octokit: Octokit, inputs: DispatchInputs): Promise<Fet
       const pull_request = await fetchPullRequest(octokit, owner, repo, number);
       const { data: review } = await octokit.rest.pulls.getReview({ owner, repo, pull_number: number, review_id: objectId });
       assertPartOf(review.pull_request_url, pullPath, `Review ${objectId}`, number);
-      return { objects: { review, pull_request }, sender: userOf(review.user) };
+      // A tick of a box in Manki's review is an edit by someone else, so the editor is the sender.
+      const sender = inputs.action === 'edited' ? await lastEditor(octokit, review.node_id) : undefined;
+      return { objects: { review, pull_request }, sender: sender ?? userOf(review.user) };
     }
     case 'pull_request_review_comment': {
       const { data: comment } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: objectId });
