@@ -6255,7 +6255,7 @@ describe('runFullReview orchestration', () => {
 
     it.each([
       ['@manki review', 'issue_comment:created:@manki review', 'manual_review_command' as const],
-      ['a settings box', 'issue_comment:edited:settings:force', 'force_review' as const],
+      ['a settings box', 'issue_comment:edited:settings:again', 'force_review' as const],
     ])('never skips on %s', async (_label, event, bypassHint) => {
       seedPush('APPROVE', REBASED_DIFF);
 

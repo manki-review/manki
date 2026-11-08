@@ -430,7 +430,7 @@ function reviewRound(trigger = 'pull_request:opened', force = false): Promise<vo
 
 /** Runs a second round on the same commit, as a Review again tick does. */
 function forcedRound(): Promise<void> {
-  return reviewRound('issue_comment:edited:settings:force', true);
+  return reviewRound('issue_comment:edited:settings:again', true);
 }
 
 /** Runs Manki as the webhook service dispatches it, for the event `inputs` name. */
