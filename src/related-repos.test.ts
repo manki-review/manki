@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { devNull, tmpdir } from 'os';
 import { join } from 'path';
 
-import { fetchedRelatedRepos, relatedRepoLoader, RelatedRepoLoaderOptions, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
+import { fetchedRelatedRepos, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { RelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -118,9 +118,20 @@ describe('relatedRepoLoader', () => {
     await expect(loader([hung], { run, timeoutMs: 100 })('dashpay/hung')).rejects.toThrow("another reviewer's fetch of dashpay/hung did not finish in time");
     expect(run).not.toHaveBeenCalled();
 
-    // A lock that never got an outcome warns too.
+    // A lock that never got an outcome warns too, and a repo no call named is unused.
     lock('dashpay%2Fsilent');
-    warnRelatedRepoFailures(stateDir);
+    const silent: RelatedRepo = { repo: 'dashpay/silent', kind: 'reference' };
+    const unused: RelatedRepo = { repo: 'dashpay/unused', kind: 'consumer', ref: 'main' };
+    const outcomes = relatedRepoOutcomes([DIPS, DASH, hung, PLATFORM, silent, unused], stateDir);
+    expect(outcomes).toEqual([
+      { repo: 'dashpay/dips', status: 'fetched', durationMs: expect.any(Number) },
+      { repo: 'dashpay/dash', ref: 'v23.0.0', status: 'failed', reason: 'fatal: repository not found', durationMs: expect.any(Number) },
+      { repo: 'dashpay/hung', status: 'failed', reason: "another reviewer's fetch of dashpay/hung did not finish in time", durationMs: expect.any(Number) },
+      { repo: 'dashpay/platform', status: 'failed', reason: 'the reviewer fetching dashpay/platform stopped before it finished', durationMs: expect.any(Number) },
+      { repo: 'dashpay/silent', status: 'failed', reason: 'the fetch never finished' },
+      { repo: 'dashpay/unused', ref: 'main', status: 'unused' },
+    ]);
+    expect(outcomes.every(o => o.durationMs === undefined || o.durationMs >= 0)).toBe(true);
     expect(jest.mocked(core.warning).mock.calls.map(([message]) => message)).toEqual([
       'Could not fetch related repo dashpay/dash, which must be public on github.com: fatal: repository not found',
       "Could not fetch related repo dashpay/hung, which must be public on github.com: another reviewer's fetch of dashpay/hung did not finish in time",
@@ -240,7 +251,7 @@ describe('relatedRepoLoader', () => {
     expect(readdirSync(stateDir).sort()).toEqual(['dashpay%2Fdash.done', 'dashpay%2Fdash.lock', 'dashpay%2Fdips.failed', 'dashpay%2Fdips.lock']);
     expect(fetchedRelatedRepos(stateDir)).toEqual(new Map([['dashpay/dash', join(cacheDir, 'dashpay', 'dash')]]));
 
-    warnRelatedRepoFailures(stateDir);
+    expect(relatedRepoOutcomes([DASH, DIPS], stateDir).map(o => o.status)).toEqual(['fetched', 'failed']);
     expect(core.warning).toHaveBeenCalledTimes(1);
     expect(core.warning).toHaveBeenCalledWith(
       "Could not fetch related repo dashpay/dips, which must be public on github.com: fatal: could not read Username for 'https://github.com': terminal prompts disabled",

@@ -97,6 +97,15 @@ export interface ReviewStats {
   changedSinceLastRound: number[];
   /** Per round, the threads with a fix claim. */
   fixClaims: number[];
+  /** Per configured related repo, the rounds that listed it, the reads of each round that read it, and its failures. */
+  relatedRepos: Map<string, RelatedRepoStats>;
+}
+
+interface RelatedRepoStats {
+  rounds: number;
+  reads: number[];
+  failed: number;
+  skipped: number;
 }
 
 function tally(stats: ReviewStats, decision: Decision, value: string, by = 1): void {
@@ -158,6 +167,7 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
     blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), keptByMany: 0, readerRounds: 0, readerBlockers: 0,
     refutations: new Map(), costPerPr: [], costPerRound: [], followUpRounds: 0, interRoundDiffCutOrUnknown: 0,
     decisions: new Map(), learningsLoaded: [], suppressionsLoaded: [], slicesPerRound: [], changedSinceLastRound: [], fixClaims: [],
+    relatedRepos: new Map(),
   };
   for (const pr of prs) {
     if (pr.rounds.length === 0) {
@@ -252,6 +262,14 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
   if (round.diff?.changedSinceLastRound !== undefined) stats.changedSinceLastRound.push(round.diff.changedSinceLastRound);
   if (round.judge?.fixClaimedThreads !== undefined) stats.fixClaims.push(round.judge.fixClaimedThreads.length);
   for (const call of round.tokenService ?? []) tally(stats, 'Token service calls', tokenCallKey(call));
+  for (const related of round.relatedRepos ?? []) {
+    const stat = stats.relatedRepos.get(related.repo) ?? { rounds: 0, reads: [], failed: 0, skipped: 0 };
+    stats.relatedRepos.set(related.repo, stat);
+    stat.rounds++;
+    if (related.reads) stat.reads.push(related.reads);
+    if (related.status === 'failed') stat.failed++;
+    if (related.status === 'skipped') stat.skipped++;
+  }
 }
 
 function summary(values: number[], digits = 1): string {
@@ -319,6 +337,17 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     `- Memory loaded per round: learnings ${summary(stats.learningsLoaded)}, suppressions ${summary(stats.suppressionsLoaded)}`,
     `- Slices per round read in slices: ${summary(stats.slicesPerRound)}`,
     '',
+    '## Related repositories',
+    '',
+    ...(stats.relatedRepos.size > 0
+      ? [
+        '| repo | rounds it was configured | rounds that read it | reads per round that read it | fetch failures | skipped rounds |',
+        '| --- | ---: | ---: | --- | ---: | ---: |',
+        ...[...stats.relatedRepos.entries()].sort((a, b) => b[1].rounds - a[1].rounds || a[0].localeCompare(b[0]))
+          .map(([repo, r]) => `| ${tableCell(repo)} | ${r.rounds} | ${r.reads.length} | ${summary(r.reads)} | ${r.failed} | ${r.skipped} |`),
+      ]
+      : ['None recorded.']),
+    '',
     '## Decisions',
     ...DECISIONS.flatMap(decision => decisionTable(decision, stats.decisions.get(decision))),
   ];
@@ -327,13 +356,18 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
 
 const MAX_DECISION_ROWS = 15;
 
+/** A value from a record as one table cell, so it never breaks the table. */
+function tableCell(value: string): string {
+  return value.replace(/\s+/g, ' ').replace(/\|/g, '\\|');
+}
+
 function decisionTable(decision: Decision, counts: Map<string, number> | undefined): string[] {
   if (!counts || counts.size === 0) return ['', `### ${decision}`, '', 'None recorded.'];
   const rows = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   const more = rows.length > MAX_DECISION_ROWS ? [``, `${rows.length - MAX_DECISION_ROWS} more values are left out.`] : [];
   return [
     '', `### ${decision}`, '', '| value | count |', '| --- | ---: |',
-    ...rows.slice(0, MAX_DECISION_ROWS).map(([value, count]) => `| ${value.replace(/\s+/g, ' ').replace(/\|/g, '\\|')} | ${count} |`), ...more,
+    ...rows.slice(0, MAX_DECISION_ROWS).map(([value, count]) => `| ${tableCell(value)} | ${count} |`), ...more,
   ];
 }
 

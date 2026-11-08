@@ -21,6 +21,8 @@ export interface LLMResponse {
   truncated?: boolean;
   /** The tools the model called while it answered, in order. Unset when it called none. */
   toolSteps?: ToolStep[];
+  /** Tool calls that read each related repo, by `owner/name`. Unset when none did. */
+  relatedReads?: Record<string, number>;
 }
 
 /**
@@ -105,6 +107,8 @@ export interface LLMCall extends LLMUsage {
   costUsd: number | null;
   /** Tool steps the call took. Unset when it took none. */
   toolSteps?: ToolStep[];
+  /** Tool calls that read each related repo, by `owner/name`. Unset when none did. */
+  relatedReads?: Record<string, number>;
   /**
    * The first 12 hex digits of the SHA-256 of the call's system prompt with its digits replaced, so calls before and
    * after a prompt change compare, and the counts a prompt quotes do not split one version.

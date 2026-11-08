@@ -132,6 +132,11 @@ describe('review stats', () => {
       slicing: { files: [2, 1], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] },
       approval: { held: 'conflict' },
       tokenService: [{ endpoint: 'token', status: 200, durationMs: 1 }, { endpoint: 'state', status: 429, error: 'Too many requests', durationMs: 1 }],
+      relatedRepos: [
+        { repo: 'dashpay/dash', ref: 'v23', status: 'fetched', durationMs: 900, reads: 5 },
+        { repo: 'dashpay/dips', status: 'failed', reason: 'fatal: repository not found' },
+        { repo: 'dashpay/platform', status: 'unused' },
+      ],
     });
     const reply = { kind: 'thread-reply', prNumber: 4, timestamp: 't', mankiVersion: '7', usage: {}, decision: { outcome: 'Fixed', thread: 'stays_open' }, tokenService: [{ endpoint: 'resolve', error: 'no OIDC token', durationMs: 1 }] };
     const approval = (decision: ApprovalRecord['decision'], reason: string) => formatApprovalRecord({
@@ -147,7 +152,9 @@ describe('review stats', () => {
     });
 
     // A round of a release that recorded no fix claims adds nothing to their series.
-    const older = prRecords('o/r', 5, { reviews: [review(2, makeRoundContext(1))], threadComments: [] });
+    const older = prRecords('o/r', 5, { reviews: [review(2, makeRoundContext(1, { relatedRepos: [
+      { repo: 'dashpay/dash', status: 'fetched', durationMs: 700, reads: 1 }, { repo: 'dashpay/dips', status: 'skipped', reason: 'no finder has repository tools' },
+    ] }))], threadComments: [] });
     const stats = computeStats([pr, older]);
     const decisions = Object.fromEntries([...stats.decisions].map(([name, counts]) => [name, Object.fromEntries(counts)]));
     expect(decisions).toEqual({
@@ -173,8 +180,18 @@ describe('review stats', () => {
     expect(report).toContain('- Threads with a fix claim, per round: mean 2.0, median 2.0, max 2.0');
     // A value from a record never breaks the table.
     expect(report).toContain('| dependency_review skipped: Bad \\| injected \\| row | 1 |');
+    expect(report).toContain([
+      '## Related repositories',
+      '',
+      '| repo | rounds it was configured | rounds that read it | reads per round that read it | fetch failures | skipped rounds |',
+      '| --- | ---: | ---: | --- | ---: | ---: |',
+      '| dashpay/dash | 2 | 2 | mean 3.0, median 3.0, max 5.0 | 0 | 0 |',
+      '| dashpay/dips | 2 | 0 | - | 1 | 1 |',
+      '| dashpay/platform | 1 | 0 | - | 0 | 0 |',
+    ].join('\n'));
     // A record from before a field existed shows it as none recorded.
     expect(renderStats(computeStats([]))).toContain('### Approvals\n\nNone recorded.');
+    expect(renderStats(computeStats([]))).toContain('## Related repositories\n\nNone recorded.');
   });
 
   it('prints a report for no PRs without dividing by zero', () => {

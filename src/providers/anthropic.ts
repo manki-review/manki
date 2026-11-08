@@ -7,7 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { installPinned } from '../tool-install';
-import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, MankiCommand, matchQuotaText, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, MankiCommand, matchQuotaText, readRelatedReads, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -287,10 +287,13 @@ export class AnthropicClient implements LLMClient {
       if (repoTools) {
         const stepsDir = join(promptDir, 'steps');
         mkdirSync(stepsDir);
-        tools = { mcpConfigPath: writeToolServerConfig(promptDir, toolServerCommand(repoTools.root, { related: repoTools.related })), stepHook: stepHookCommand(stepsDir, repoTools.steps) };
+        const readsFile = relatedReadsFile(promptDir);
+        tools = { mcpConfigPath: writeToolServerConfig(promptDir, toolServerCommand(repoTools.root, { related: repoTools.related, readsFile })), stepHook: stepHookCommand(stepsDir, repoTools.steps) };
       }
       const args = claudeCliArgs(this.model, systemPromptPath, options, tools);
-      return this.runOAuthCli(cliPath, args, fullPrompt.length + userMessage.length, userMessage, options);
+      const response = await this.runOAuthCli(cliPath, args, fullPrompt.length + userMessage.length, userMessage, options);
+      const relatedReads = repoTools?.related && readRelatedReads(relatedReadsFile(promptDir));
+      return relatedReads ? { ...response, relatedReads } : response;
     });
   }
 

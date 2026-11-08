@@ -9,9 +9,9 @@ import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeP
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
-import { fetchedRelatedRepos, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
+import { fetchedRelatedRepos, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
@@ -1025,7 +1025,13 @@ export async function runReview(
   }
 
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
-  if (related) warnRelatedRepoFailures(related.stateDir);
+  // Every configured related repo is recorded: fetched, failed, unused, or skipped when no finder could read it.
+  const relatedRepos: RoundRelatedRepo[] | undefined = related
+    ? relatedRepoOutcomes(related.repos, related.stateDir)
+    : config.related_repos?.map(({ repo, ref }) => ({
+      repo, ...(ref && { ref }), status: 'skipped' as const,
+      reason: workspace ? 'no finder has repository tools' : 'the PR head was not checked out for the tools',
+    }));
 
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
@@ -1045,6 +1051,7 @@ export async function runReview(
       failedAgents,
       ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
       llmCalls,
+      ...(relatedRepos?.length && { relatedRepos }),
       ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
     };
   }
@@ -1207,6 +1214,7 @@ export async function runReview(
       reviewComplete: false,
       agentNames: team.finders.map(a => a.name),
       llmCalls,
+      ...(relatedRepos?.length && { relatedRepos }),
       ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
     };
   }
@@ -1302,6 +1310,7 @@ export async function runReview(
         reviewComplete: false,
         agentNames: team.finders.map(a => a.name),
         llmCalls,
+        ...(relatedRepos?.length && { relatedRepos }),
         ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
       };
     }
@@ -1404,6 +1413,7 @@ export async function runReview(
     ...(staticSignalMatches.length > 0 && { staticSignalMatches }),
     ...(modelFallbacks.length > 0 && { modelFallbacks }),
     llmCalls,
+    ...(relatedRepos?.length && { relatedRepos }),
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
   };
 }

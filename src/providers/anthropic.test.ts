@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { existsSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import Anthropic from '@anthropic-ai/sdk';
@@ -490,6 +490,9 @@ describe('sendViaOAuth — error paths', () => {
       const cliArgs = args[1] as string[];
       systemPromptFile = readFileSync(cliArgs[cliArgs.indexOf('--system-prompt-file') + 1], 'utf-8');
       mcpConfig = JSON.parse(readFileSync(cliArgs[cliArgs.indexOf('--mcp-config') + 1], 'utf-8'));
+      // The tool server keeps its related repo reads in the file the CLI is given, which the call reads back.
+      const serverArgs = mcpConfig!.mcpServers.manki.args;
+      writeFileSync(serverArgs[serverArgs.indexOf('--reads-file') + 1], JSON.stringify({ 'dashpay/dash': 3, 'dashpay/platform': 'many' }));
       return spawnProc(...args);
     });
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' });
@@ -516,7 +519,7 @@ describe('sendViaOAuth — error paths', () => {
     expect(hook[0].hooks[0].command.startsWith(`'${process.execPath}' '${process.argv[1]}' `)).toBe(true);
     expect(valueOf('--setting-sources')).toBe('');
     expect(mcpConfig!.mcpServers.manki).toEqual({
-      type: 'stdio', command: process.execPath, args: [process.argv[1], 'mcp-server', '/work/repo', '--related-repos', JSON.stringify(related)],
+      type: 'stdio', command: process.execPath, args: [process.argv[1], 'mcp-server', '/work/repo', '--related-repos', JSON.stringify(related), '--reads-file', expect.stringMatching(/\/related-reads\.json$/)],
       env: { CLAUDE_CODE_OAUTH_TOKEN: '', GITHUB_API_URL: 'https://ghe.example/api/v3' },
     });
     expect(Object.keys(mcpConfig!.mcpServers)).toEqual(['manki']);
@@ -535,6 +538,7 @@ describe('sendViaOAuth — error paths', () => {
     ].join('\n'));
     expect(systemPromptFile).toContain('A change that breaks a consumer is a `warning` that lists the consumer\'s call sites');
     expect(response.toolSteps).toEqual([{ tool: 'Read', durationMs: expect.any(Number) }, { tool: 'mcp__manki__git_history', durationMs: expect.any(Number) }]);
+    expect(response.relatedReads).toEqual({ 'dashpay/dash': 3 });
   });
 
   it('fails when the CLI uses all its turns before it answers', async () => {
