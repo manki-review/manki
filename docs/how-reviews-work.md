@@ -278,4 +278,8 @@ To see whether a change to the review helps, run `npm run review-stats -- --repo
 - how blocker threads ended: fixed, withdrawn by Manki, or other;
 - per finder model, the raw findings, the kept findings only that model raised, and the tool steps per call, plus the kept findings two or more finders raised;
 - the verdict reader's blockers and the refutation outcomes;
-- the cost per PR and per round, and the share of follow-up rounds whose inter-round diff was cut or unknown.
+- the cost per PR and per round, and the share of follow-up rounds whose inter-round diff was cut or unknown;
+- how often each finder model was told to wrap up, the files changed since the last round, the fix claims, the memory loaded and the slices per round;
+- a table per decision the records keep: prompt versions per stage, pause causes, static analysis sources with skip reasons, grade changes, pre-existing claims, memory suppressions, the verdict reader per slice, approvals, thread reply decisions and token service calls.
+
+A scheduled workflow, `.github/workflows/review-stats.yml`, runs the report for manki and token-service every Monday and posts it as a comment on the open issue titled "Weekly review statistics", which it opens the first time. It uses only the workflow's own token, with read access and `issues: write`. Run it by hand from the Actions tab.

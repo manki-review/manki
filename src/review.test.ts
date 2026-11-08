@@ -2200,7 +2200,7 @@ describe('runReview', () => {
     expect(rebased.outcome).toBe('ADDRESS_FIRST');
     expect(rebased.needsHuman).toBeUndefined();
     expect(rebased.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', threadId: 'T1' })]);
-    expect(rebased.fixClaimedThreadIds).toBeUndefined();
+    expect(rebased.fixClaimedThreadIds).toEqual([]);
 
     const replied = await runOn(makeClients(), 'sha2', [openThread], [thread('replied')]);
     expect(replied.outcome).toBe('NOT_CONVERGING');

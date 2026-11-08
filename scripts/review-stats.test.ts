@@ -1,7 +1,7 @@
 import type { LLMCall } from '../src/providers';
-import { formatReviewRecord } from '../src/review-record';
+import { formatReplyRecord, formatReviewRecord } from '../src/review-record';
 import { makeFindingFingerprintEntry, makeRoundContext } from '../src/test-utils';
-import type { RoundContext } from '../src/types';
+import type { ReplyRecord, RoundContext } from '../src/types';
 import { computeStats, prRecords, renderStats } from './review-stats';
 
 const bot = { login: 'manki-review[bot]', type: 'Bot' };
@@ -35,7 +35,7 @@ describe('review stats', () => {
       usage: {
         estimatedCostUsd: 0.5,
         llmCalls: [
-          call('claude-sonnet', 4), call('claude-opus', 10), { ...call('j', 3), stage: 'judge' },
+          { ...call('claude-sonnet', 4), stepBudget: 15 }, { ...call('claude-opus', 10), stepBudget: 12, wrapUpNoted: true }, { ...call('j', 3), stage: 'judge' },
           // A fallback that answered for the Sonnet finder on another model still counts for that finder.
           { ...call('gpt-5', 2), agent: 'Sonnet', fallback: true },
         ],
@@ -88,8 +88,8 @@ describe('review stats', () => {
     });
     expect(Object.fromEntries(stats.refutations)).toEqual({ 'blocker disproved': 1 });
     expect(Object.fromEntries(stats.finders)).toEqual({
-      'claude-sonnet': { rounds: 1, rawFindings: 3, keptOnlyBy: 1, toolSteps: [4, 2] },
-      'claude-opus': { rounds: 1, rawFindings: 1, keptOnlyBy: 0, toolSteps: [10] },
+      'claude-sonnet': { rounds: 1, rawFindings: 3, keptOnlyBy: 1, toolSteps: [4, 2], budgetedCalls: 1, wrapUps: 0 },
+      'claude-opus': { rounds: 1, rawFindings: 1, keptOnlyBy: 0, toolSteps: [10], budgetedCalls: 1, wrapUps: 1 },
     });
 
     const report = renderStats(stats);
@@ -98,9 +98,75 @@ describe('review stats', () => {
     expect(report).toContain('- Needed 5 or more rounds: 50% (1 of 2)');
     expect(report).toContain('| blocker | 1 | 0.14 |');
     expect(report).toContain('- Blocker threads: 3, fixed 1, withdrawn 1, other 1');
-    expect(report).toContain('| claude-sonnet | 1 | 3 | 3.00 | 1 | mean 3.0, median 3.0, max 4.0 |');
+    expect(report).toContain('| claude-sonnet | 1 | 3 | 3.00 | 1 | mean 3.0, median 3.0, max 4.0 | 0% (0 of 1) |');
+    expect(report).toContain('| claude-opus | 1 | 1 | 1.00 | 0 | mean 10.0, median 10.0, max 10.0 | 100% (1 of 1) |');
     expect(report).toContain('| blocker disproved | 1 |');
     expect(report).toContain('- Follow-up rounds whose inter-round diff was cut or unknown: 40% (2 of 5)');
+  });
+
+  it('tallies every decision the round and reply records keep, and lists each in the report', () => {
+    const round = makeRoundContext(2, {
+      meta: {
+        prNumber: 4, commitSha: 'd', round: 2, timestamp: 't', mankiVersion: '7', outcome: 'NOT_CONVERGING',
+        promptVersions: { reviewer: ['aaaaaaaaaaaa'], judge: ['bbbbbbbbbbbb'] },
+        needsHuman: { cause: 'repeated', blockers: [] },
+      },
+      staticAnalysis: {
+        sources: [{ source: 'checks', status: 'ran', results: 1 }, { source: 'code_scanning', status: 'skipped', reason: 'the token cannot read it (HTTP 403)' }, { source: 'dependency_review', status: 'skipped', reason: 'Bad\n| injected | row' }],
+        analyzers: [{ analyzer: 'secrets', status: 'ran', results: 0 }],
+      },
+      findings: {
+        count: 1, severityCounts: {},
+        entries: [{ ...makeFindingFingerprintEntry({ severity: 'warning' }), gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] }],
+        unposted: [{
+          ...makeFindingFingerprintEntry({ severity: 'suggestion' }), preExisting: { reason: 'Old.', check: 'pre_existing' },
+          gradePath: [{ from: 'warning', to: 'suggestion', by: 'judge' }],
+        }],
+      },
+      judge: {
+        summary: '', fixClaimedThreads: ['T1', 'T2'],
+        dropped: [{ title: 't', file: 'a', line: 1, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'r' }] }],
+      },
+      diff: { lines: 1, additions: 1, deletions: 0, filesReviewed: 1, fileTypes: {}, changedSinceLastRound: 3 },
+      memory: { loaded: { learnings: 4, suppressions: 2 }, suppressed: [{ title: 't', file: 'a', line: 1, severity: 'nitpick', suppressionId: 'sup-1' }] },
+      slicing: { files: [2, 1], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] },
+      approval: { held: 'conflict' },
+      tokenService: [{ endpoint: 'token', status: 200, durationMs: 1 }, { endpoint: 'state', status: 429, error: 'Too many requests', durationMs: 1 }],
+    });
+    const reply = { kind: 'thread-reply', prNumber: 4, timestamp: 't', mankiVersion: '7', usage: {}, decision: { outcome: 'Fixed', thread: 'stays_open' }, tokenService: [{ endpoint: 'resolve', error: 'no OIDC token', durationMs: 1 }] };
+    const pr = prRecords('o/r', 4, {
+      reviews: [review(1, round)],
+      threadComments: [{ id: 60, in_reply_to_id: 59, body: `Fixed.\n${formatReplyRecord(reply as ReplyRecord)}`, user: bot }],
+    });
+
+    // A round of a release that recorded no fix claims adds nothing to their series.
+    const older = prRecords('o/r', 5, { reviews: [review(2, makeRoundContext(1))], threadComments: [] });
+    const stats = computeStats([pr, older]);
+    const decisions = Object.fromEntries([...stats.decisions].map(([name, counts]) => [name, Object.fromEntries(counts)]));
+    expect(decisions).toEqual({
+      'Prompt versions (rounds per stage and digest)': { 'reviewer aaaaaaaaaaaa': 1, 'judge bbbbbbbbbbbb': 1 },
+      'Pause causes': { repeated: 1 },
+      'Static analysis sources': {
+        'checks ran': 1, 'code_scanning skipped: the token cannot read it (HTTP 403)': 1, 'dependency_review skipped: Bad\n| injected | row': 1, 'secrets ran': 1,
+      },
+      'Grade changes': { 'unproven: blocker to warning': 1, 'judge: warning to suggestion': 1, 'refutation: warning to ignore': 1 },
+      'Pre-existing claims (how each was checked)': { pre_existing: 1 },
+      'Memory suppressions (findings hidden per suppression)': { 'sup-1': 1 },
+      'Verdict reader per slice': { READY: 1, ADDRESS_FIRST: 1 },
+      Approvals: { 'held: conflict': 1 },
+      'Thread reply decisions': { 'Fixed, stays_open': 1 },
+      'Token service calls': { 'token ok': 1, 'state failed: 429': 1, 'resolve failed: no OIDC token': 1 },
+    });
+    expect(stats).toMatchObject({ learningsLoaded: [4], suppressionsLoaded: [2], slicesPerRound: [2], changedSinceLastRound: [3], fixClaims: [2] });
+
+    const report = renderStats(stats);
+    expect(report).toContain('### Pause causes\n\n| value | count |\n| --- | ---: |\n| repeated | 1 |');
+    expect(renderStats(stats, 'o/r')).toMatch(/^# Review statistics for o\/r over 2 merged PRs and 2 rounds\n/);
+    expect(report).toContain('- Threads with a fix claim, per round: mean 2.0, median 2.0, max 2.0');
+    // A value from a record never breaks the table.
+    expect(report).toContain('| dependency_review skipped: Bad \\| injected \\| row | 1 |');
+    // A record from before a field existed shows it as none recorded.
+    expect(renderStats(computeStats([]))).toContain('### Approvals\n\nNone recorded.');
   });
 
   it('prints a report for no PRs without dividing by zero', () => {

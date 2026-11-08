@@ -1,0 +1,52 @@
+name: Review statistics
+
+# Posts the review statistics of manki and token-service once a week on one tracking issue, so trends show without
+# anyone running the script. It only reads pull requests, and comments on that issue.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: review-stats
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7  # first-party GitHub action
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7  # first-party GitHub action
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
+      - name: Build the report
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          for repo in manki-review/manki manki-review/token-service; do
+            npm run -s review-stats -- --repo "$repo"
+            echo
+          done > report.md
+      - name: Comment on the tracking issue, opening it the first time
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: Weekly review statistics
+        run: |
+          # Only the issue this workflow opened, so nobody can redirect the report by opening one with the same title.
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --author app/github-actions --search "\"$TITLE\" in:title" --json number,title \
+            --jq "map(select(.title == env.TITLE))[0].number // empty")
+          if [ -z "$number" ]; then
+            url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" \
+              --body 'The review statistics workflow comments here every week with `npm run review-stats` for manki and token-service.')
+            number=${url##*/}
+          fi
+          gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file report.md

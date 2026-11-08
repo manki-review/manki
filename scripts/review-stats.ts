@@ -12,7 +12,7 @@ import * as github from '@actions/github';
 
 import { replyOutcome } from '../src/interaction';
 import { threadSeverity } from '../src/recap';
-import type { RoundContext } from '../src/types';
+import type { ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
 import { githubToken, historyLines } from './review-history';
 
 const DEFAULT_LAST = 40;
@@ -29,6 +29,8 @@ interface ThreadComment extends Posted {
 export interface PrRecords {
   number: number;
   rounds: RoundContext[];
+  /** The records of Manki's thread replies. */
+  replies: ReplyRecord[];
   threadComments: ThreadComment[];
 }
 
@@ -37,7 +39,26 @@ interface FinderStats {
   rawFindings: number;
   keptOnlyBy: number;
   toolSteps: number[];
+  /** Calls with a step budget, and those told to wrap up. */
+  budgetedCalls: number;
+  wrapUps: number;
 }
+
+/** The decision tallies the report lists, each as a table of how often each value occurred. */
+const DECISIONS = [
+  'Prompt versions (rounds per stage and digest)',
+  'Pause causes',
+  'Static analysis sources',
+  'Grade changes',
+  'Pre-existing claims (how each was checked)',
+  'Memory suppressions (findings hidden per suppression)',
+  'Verdict reader per slice',
+  'Approvals',
+  'Thread reply decisions',
+  'Token service calls',
+] as const;
+
+type Decision = (typeof DECISIONS)[number];
 
 export interface ReviewStats {
   /** PRs with at least one round record. Only they count in the statistics. */
@@ -61,12 +82,34 @@ export interface ReviewStats {
   costPerRound: number[];
   followUpRounds: number;
   interRoundDiffCutOrUnknown: number;
+  /** How often each value of each decision occurred. */
+  decisions: Map<Decision, Map<string, number>>;
+  /** Per round that loaded memory, the learnings and the suppressions it loaded. */
+  learningsLoaded: number[];
+  suppressionsLoaded: number[];
+  /** Per round read in slices, the slice count. */
+  slicesPerRound: number[];
+  /** Per follow-up round, the changed files the push since the last round touched. */
+  changedSinceLastRound: number[];
+  /** Per round, the threads with a fix claim. */
+  fixClaims: number[];
+}
+
+function tally(stats: ReviewStats, decision: Decision, value: string, by = 1): void {
+  const counts = stats.decisions.get(decision) ?? new Map<string, number>();
+  counts.set(value, (counts.get(value) ?? 0) + by);
+  stats.decisions.set(decision, counts);
 }
 
 /** Returns the round records and thread comments of `number` from what GitHub lists for it. */
 export function prRecords(repo: string, number: number, posted: { reviews: Posted[]; threadComments: ThreadComment[] }): PrRecords {
-  const rounds = historyLines(repo, number, { reviews: posted.reviews, comments: [] }).map(line => line.record as RoundContext);
-  return { number, rounds, threadComments: posted.threadComments };
+  const lines = historyLines(repo, number, { reviews: posted.reviews, comments: posted.threadComments });
+  return {
+    number,
+    rounds: lines.filter(line => line.kind === 'round').map(line => line.record as RoundContext),
+    replies: lines.filter(line => line.kind === 'reply').map(line => line.record as ReplyRecord),
+    threadComments: posted.threadComments,
+  };
 }
 
 /**
@@ -86,7 +129,7 @@ function blockerOutcomes(comments: ThreadComment[]): ReviewStats['blockerOutcome
 }
 
 function finder(stats: ReviewStats, model: string): FinderStats {
-  const found = stats.finders.get(model) ?? { rounds: 0, rawFindings: 0, keptOnlyBy: 0, toolSteps: [] };
+  const found = stats.finders.get(model) ?? { rounds: 0, rawFindings: 0, keptOnlyBy: 0, toolSteps: [], budgetedCalls: 0, wrapUps: 0 };
   stats.finders.set(model, found);
   return found;
 }
@@ -97,6 +140,7 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
     prs: 0, unreviewed: 0, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, severityCounts: {}, findings: 0, onReviewedCode: 0,
     blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), keptByMany: 0, readerRounds: 0, readerBlockers: 0,
     refutations: new Map(), costPerPr: [], costPerRound: [], followUpRounds: 0, interRoundDiffCutOrUnknown: 0,
+    decisions: new Map(), learningsLoaded: [], suppressionsLoaded: [], slicesPerRound: [], changedSinceLastRound: [], fixClaims: [],
   };
   for (const pr of prs) {
     if (pr.rounds.length === 0) {
@@ -131,9 +175,14 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
       for (const [name, count] of Object.entries(round.reviewers?.keptOnlyBy ?? {})) finder(stats, models.get(name) ?? name).keptOnlyBy += count;
       stats.keptByMany += round.reviewers?.keptByMany ?? 0;
       for (const call of round.usage?.llmCalls ?? []) {
+        if (call.stage !== 'reviewer') continue;
         // A fallback answers on another model, and a failed call names none, so the finder's own model keys the call.
-        if (call.stage === 'reviewer') finder(stats, (call.agent && models.get(call.agent)) || call.model || call.agent || 'unknown').toolSteps.push(call.toolSteps?.length ?? 0);
+        const stat = finder(stats, (call.agent && models.get(call.agent)) || call.model || call.agent || 'unknown');
+        stat.toolSteps.push(call.toolSteps?.length ?? 0);
+        if (call.stepBudget !== undefined) stat.budgetedCalls++;
+        if (call.wrapUpNoted) stat.wrapUps++;
       }
+      tallyRound(stats, round);
       if (round.judge?.verdictReason === 'verdict_reader') {
         stats.readerRounds++;
         stats.readerBlockers += round.judge.verdictTrace?.survivingBlockers.length ?? 0;
@@ -146,8 +195,45 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
     stats.costPerPr.push(prCost);
     const outcomes = blockerOutcomes(pr.threadComments);
     for (const key of ['fixed', 'withdrawn', 'other'] as const) stats.blockerOutcomes[key] += outcomes[key];
+    for (const reply of pr.replies) {
+      if (reply.decision) tally(stats, 'Thread reply decisions', `${reply.decision.outcome}, ${reply.decision.thread}`);
+      for (const call of reply.tokenService ?? []) tally(stats, 'Token service calls', tokenCallKey(call));
+    }
   }
   return stats;
+}
+
+function tokenCallKey(call: TokenServiceCall): string {
+  return call.status !== undefined && call.status < 300 ? `${call.endpoint} ok` : `${call.endpoint} failed: ${call.status ?? call.error ?? 'unknown'}`;
+}
+
+/** Adds the decisions one round records to the tallies. Records from before a field existed add nothing for it. */
+function tallyRound(stats: ReviewStats, round: RoundContext): void {
+  for (const [stage, digests] of Object.entries(round.meta.promptVersions ?? {})) {
+    for (const digest of digests) tally(stats, 'Prompt versions (rounds per stage and digest)', `${stage} ${digest}`);
+  }
+  if (round.meta.needsHuman) tally(stats, 'Pause causes', round.meta.needsHuman.cause);
+  for (const source of [...(round.staticAnalysis?.sources ?? []).map(s => ({ ...s, name: s.source })), ...(round.staticAnalysis?.analyzers ?? []).map(a => ({ ...a, name: a.analyzer }))]) {
+    tally(stats, 'Static analysis sources', source.status === 'ran' ? `${source.name} ran` : `${source.name} skipped: ${source.reason ?? 'no reason'}`);
+  }
+  const entries = [...(round.findings?.entries ?? []), ...(round.findings?.unposted ?? [])];
+  for (const step of [...entries, ...(round.judge?.dropped ?? [])].flatMap(f => f.gradePath ?? [])) {
+    tally(stats, 'Grade changes', `${step.by}: ${step.from} to ${step.to}`);
+  }
+  for (const entry of entries) if (entry.preExisting) tally(stats, 'Pre-existing claims (how each was checked)', entry.preExisting.check);
+  if (round.memory?.loaded) {
+    stats.learningsLoaded.push(round.memory.loaded.learnings);
+    stats.suppressionsLoaded.push(round.memory.loaded.suppressions);
+  }
+  for (const hidden of round.memory?.suppressed ?? []) tally(stats, 'Memory suppressions (findings hidden per suppression)', hidden.suppressionId);
+  if (round.slicing) {
+    stats.slicesPerRound.push(round.slicing.files.length);
+    for (const slice of round.slicing.reader ?? []) tally(stats, 'Verdict reader per slice', slice.verdict);
+  }
+  if (round.approval) tally(stats, 'Approvals', round.approval.held ? `held: ${round.approval.held}` : 'approved');
+  if (round.diff?.changedSinceLastRound !== undefined) stats.changedSinceLastRound.push(round.diff.changedSinceLastRound);
+  if (round.judge?.fixClaimedThreads !== undefined) stats.fixClaims.push(round.judge.fixClaimedThreads.length);
+  for (const call of round.tokenService ?? []) tally(stats, 'Token service calls', tokenCallKey(call));
 }
 
 function summary(values: number[], digits = 1): string {
@@ -163,12 +249,13 @@ function share(part: number, whole: number): string {
   return whole > 0 ? `${Math.round((part / whole) * 100)}% (${part} of ${whole})` : '-';
 }
 
-export function renderStats(stats: ReviewStats): string {
+/** Renders the report, headed with `repo` when one is given. */
+export function renderStats(stats: ReviewStats, repo?: string): string {
   const perRound = (count: number) => (stats.rounds > 0 ? (count / stats.rounds).toFixed(2) : '-');
   const finders = [...stats.finders.entries()].sort((a, b) => b[1].rounds - a[1].rounds || a[0].localeCompare(b[0]));
   const blockerThreads = stats.blockerOutcomes.fixed + stats.blockerOutcomes.withdrawn + stats.blockerOutcomes.other;
   const lines = [
-    `# Review statistics over ${stats.prs} merged PRs and ${stats.rounds} rounds`,
+    `# Review statistics${repo ? ` for ${repo}` : ''} over ${stats.prs} merged PRs and ${stats.rounds} rounds`,
     '',
     ...(stats.unreviewed > 0
       ? [`${stats.unreviewed} more merged ${stats.unreviewed === 1 ? 'PR has no round record and is' : 'PRs have no round record and are'} left out.`, '']
@@ -192,9 +279,9 @@ export function renderStats(stats: ReviewStats): string {
     '',
     '## Finders',
     '',
-    '| model | rounds | raw findings | per round | kept only by it | tool steps per call |',
-    '| --- | ---: | ---: | ---: | ---: | --- |',
-    ...finders.map(([model, f]) => `| ${model} | ${f.rounds} | ${f.rawFindings} | ${f.rounds > 0 ? (f.rawFindings / f.rounds).toFixed(2) : '-'} | ${f.keptOnlyBy} | ${summary(f.toolSteps)} |`),
+    '| model | rounds | raw findings | per round | kept only by it | tool steps per call | told to wrap up |',
+    '| --- | ---: | ---: | ---: | ---: | --- | ---: |',
+    ...finders.map(([model, f]) => `| ${model} | ${f.rounds} | ${f.rawFindings} | ${f.rounds > 0 ? (f.rawFindings / f.rounds).toFixed(2) : '-'} | ${f.keptOnlyBy} | ${summary(f.toolSteps)} | ${share(f.wrapUps, f.budgetedCalls)} |`),
     '',
     `- Kept findings raised by two or more finders: ${stats.keptByMany}`,
     '',
@@ -209,8 +296,27 @@ export function renderStats(stats: ReviewStats): string {
     `- Cost per PR in USD: ${summary(stats.costPerPr, 2)}`,
     `- Cost per round in USD: ${summary(stats.costPerRound, 2)}`,
     `- Follow-up rounds whose inter-round diff was cut or unknown: ${share(stats.interRoundDiffCutOrUnknown, stats.followUpRounds)}`,
+    `- Files changed since the last round, per follow-up round: ${summary(stats.changedSinceLastRound)}`,
+    `- Threads with a fix claim, per round: ${summary(stats.fixClaims)}`,
+    `- Memory loaded per round: learnings ${summary(stats.learningsLoaded)}, suppressions ${summary(stats.suppressionsLoaded)}`,
+    `- Slices per round read in slices: ${summary(stats.slicesPerRound)}`,
+    '',
+    '## Decisions',
+    ...DECISIONS.flatMap(decision => decisionTable(decision, stats.decisions.get(decision))),
   ];
   return `${lines.join('\n')}\n`;
+}
+
+const MAX_DECISION_ROWS = 15;
+
+function decisionTable(decision: Decision, counts: Map<string, number> | undefined): string[] {
+  if (!counts || counts.size === 0) return ['', `### ${decision}`, '', 'None recorded.'];
+  const rows = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const more = rows.length > MAX_DECISION_ROWS ? [``, `${rows.length - MAX_DECISION_ROWS} more values are left out.`] : [];
+  return [
+    '', `### ${decision}`, '', '| value | count |', '| --- | ---: |',
+    ...rows.slice(0, MAX_DECISION_ROWS).map(([value, count]) => `| ${value.replace(/\s+/g, ' ').replace(/\|/g, '\\|')} | ${count} |`), ...more,
+  ];
 }
 
 function parseArgs(args: string[]): { owner: string; repo: string; last: number } | undefined {
@@ -249,7 +355,7 @@ async function main(args: string[]): Promise<number> {
     ]);
     prs.push(prRecords(`${owner}/${repo}`, number, { reviews, threadComments }));
   }
-  process.stdout.write(renderStats(computeStats(prs)));
+  process.stdout.write(renderStats(computeStats(prs), `${owner}/${repo}`));
   return 0;
 }
 
