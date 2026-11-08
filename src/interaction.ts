@@ -9,7 +9,7 @@ import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isSecurityThread, mayClearSecurityThread, parseFindingData } from './recap';
-import { ResolutionReason, ReviewThread, announceSecurityOverrides, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, resolveReviewThread } from './state';
+import { ResolutionReason, ReviewThread, announceSecurityOverrides, fixedMarker, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, resolveReviewThread } from './state';
 import { ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage } from './round-context';
@@ -319,9 +319,14 @@ export async function handleReviewCommentReply(
         return undefined;
       })
       : undefined;
+    const head: string | undefined = github.context.payload.pull_request?.head?.sha;
+    if (outcome === 'Fixed' && head && thread?.fixedOn?.includes(head)) {
+      core.info(`Thread ${thread.id} already confirms the fix on ${head.slice(0, 7)}, so the reply adds nothing`);
+      return;
+    }
     // A round that finished after the reply, on the same head, has the newer judgment of a blocking or security thread.
     const contradicted = outcome === 'Fixed' && thread && isGuarded(thread)
-      ? await openAfterRound(octokit, bot, owner, repo, prNumber, thread, github.context.payload.pull_request?.head?.sha, comment.created_at)
+      ? await openAfterRound(octokit, bot, owner, repo, prNumber, thread, head, comment.created_at)
       : undefined;
     if (contradicted) {
       await octokit.rest.pulls.createReplyForReviewComment({
@@ -351,7 +356,7 @@ export async function handleReviewCommentReply(
       repo,
       pull_number: prNumber,
       comment_id: comment.id,
-      body: withMarkers([reply, ...notes].join('\n\n'), BOT_MARKER, response.record),
+      body: withMarkers([reply, ...notes].join('\n\n'), BOT_MARKER, response.record, ...(outcome === 'Fixed' && head ? [fixedMarker(head)] : [])),
     });
 
     core.info('Posted reply to review comment');

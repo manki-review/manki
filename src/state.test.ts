@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, explainUnreviewedHead, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
+import { areAllFindingsResolved, fetchBotReviewThreads, fixedMarker, checkAndAutoApprove, explainUnreviewedHead, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT } from './test-utils';
 import { formatFindingComment } from './github';
@@ -127,7 +127,14 @@ describe('fetchBotReviewThreads', () => {
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:null-check --> **Blocker**: null check', databaseId: 501 }),
-        makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:suggestion:rename-var --> **Suggestion**: rename var', isResolved: true }),
+        makeGraphqlFetchThreadNode({
+          id: 't2', body: '<!-- manki:suggestion:rename-var --> **Suggestion**: rename var', isResolved: true,
+          // Only Manki's own reply counts as a fix confirmation, not a developer who copies its marker.
+          replies: [
+            { body: `Fixed in abababa.\n\n${fixedMarker('ab'.repeat(20))}`, author: { login: 'manki-review' } },
+            { body: `Done.\n\n${fixedMarker('cd'.repeat(20))}`, author: { login: 'alice' } },
+          ],
+        }),
       ]),
     );
 
@@ -136,7 +143,7 @@ describe('fetchBotReviewThreads', () => {
 
     expect(threads).toHaveLength(2);
     expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, findingTitle: 'null check' });
-    expect(threads[1]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var' });
+    expect(threads[1]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', fixedOn: ['ab'.repeat(20)] });
   });
 
   it('reads every page of review threads', async () => {
