@@ -12,3 +12,7 @@ instructions: |
 
 memory:
   enabled: true
+
+# The token service depends on Manki's dispatch inputs, progress comment and settings boxes.
+related_repos:
+  - { repo: manki-review/token-service, kind: consumer, paths: [src/, README.md] }
