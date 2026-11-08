@@ -297,9 +297,12 @@ function modeChange(file: parseDiff.File): Pick<DiffFile, 'modeChange'> {
 const LFS_POINTER_LINE = /^(?:version https:\/\/git-lfs\.github\.com\/spec\/v1|oid sha256:[0-9a-f]{64}|size \d+|ext-\d+-\w+ sha256:[0-9a-f]{64})$/;
 const SUBMODULE_LINE = /^Subproject commit [0-9a-f]{40,64}(?:-dirty)?$/;
 
-/** Returns whether a file's lines are only a Git LFS pointer or a submodule commit, or `undefined` for any other file. */
+/**
+ * Returns whether the new side of a file is only a Git LFS pointer or a submodule commit, or `undefined` for any other
+ * file. The removed lines do not count, so a text file turned into a pointer is caught too.
+ */
 function unreadableKind(file: parseDiff.File): BinaryFile['kind'] {
-  const lines = file.chunks.flatMap(c => c.changes).map(c => c.content).filter(l => !l.startsWith('\\')).map(l => l.slice(1));
+  const lines = file.chunks.flatMap(c => c.changes).filter(c => c.type !== 'del').map(c => c.content).filter(l => !l.startsWith('\\')).map(l => l.slice(1));
   if (lines.length === 0) return undefined;
   if (lines.every(l => SUBMODULE_LINE.test(l))) return 'submodule';
   return lines.every(l => LFS_POINTER_LINE.test(l)) && lines.some(l => l.startsWith('oid ')) ? 'lfs' : undefined;

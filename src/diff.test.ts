@@ -202,11 +202,18 @@ describe('parsePRDiff', () => {
       ' size 10', `+${oid('e')}`, '+and a real line',
     ].join('\n');
 
-    const result = parsePRDiff(`${lfs}\n${submodule}\n${lookalike}\n${SIMPLE_DIFF}`);
+    const converted = [
+      'diff --git a/data.csv b/data.csv', 'index 7777777..8888888 100644', '--- a/data.csv', '+++ b/data.csv', '@@ -1,2 +1,3 @@',
+      '-id,name', '-1,alice', '+version https://git-lfs.github.com/spec/v1', `+${oid('f')}`, '+size 30',
+    ].join('\n');
 
+    const result = parsePRDiff(`${lfs}\n${submodule}\n${lookalike}\n${converted}\n${SIMPLE_DIFF}`);
+
+    // A text file turned into a pointer counts too, since only its new side is checked.
     expect(result.binarySkipped).toEqual([
       expect.objectContaining({ path: 'model.bin', kind: 'lfs' }),
       expect.objectContaining({ path: 'vendor/lib', kind: 'submodule' }),
+      expect.objectContaining({ path: 'data.csv', kind: 'lfs' }),
     ]);
     expect(result.files.map(f => f.path)).toEqual(['notes.txt', ...parsePRDiff(SIMPLE_DIFF).files.map(f => f.path)]);
     // A PR of only such changes leaves no file a model reads.
