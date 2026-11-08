@@ -31,7 +31,7 @@ import { filterRawDiff, parsePRDiff } from './diff';
 import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
+import { Finding, FindingSeverity, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
@@ -1943,6 +1943,82 @@ describe('runReview', () => {
     // A blocker from the judge already settles the round, so the verdict reader never runs.
     expect(clients.judge.sendMessage).not.toHaveBeenCalled();
     expect(result.verdictReport).toBeUndefined();
+  });
+
+  describe('open leads', () => {
+    const leadOf = (severity: string, title: string, file: string, line: number) => ({ lead: true, severity, title, file, line, description: `${title}.`, checked: 'read the file', left: 'check the caller' });
+    const refuted = (outcome: 'confirmed' | 'disproved' | 'unsettled') => ({ outcome, reason: `It is ${outcome}.`, files: ['src/a.ts'], codeDigest: 'abc' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    /** Clients whose first finder reports `reply`, and whose judge has tools when `tools` is set. */
+    const leadClients = (reply: unknown[], tools: boolean) => {
+      const clients = makeClients();
+      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(reply) });
+      if (tools) Object.assign(clients.judge, { repoTools: true });
+      return clients;
+    };
+
+    it('settles warning leads with the judge\'s tools, lists the unsettled ones, and records each outcome', async () => {
+      const clients = leadClients([
+        leadOf('warning', 'The token may not read the other repository', 'src/a.ts', 1),
+        leadOf('warning', 'The retry may loop forever on a 404', 'src/b.ts', 2),
+        leadOf('warning', 'The cache may go stale after a deploy', 'src/c.ts', 3),
+        leadOf('suggestion', 'The helper name may confuse a reader', 'src/d.ts', 4),
+      ], true);
+      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
+        summary: 'ok',
+        findings: input.findings.map(f => {
+          if (f.file === 'src/a.ts') { const { lead: _lead, ...confirmed } = f; return { ...confirmed, refutation: refuted('confirmed') }; }
+          if (f.file === 'src/b.ts') return { ...f, severity: 'ignore' as const, refutation: refuted('disproved') };
+          return { ...f, refutation: refuted('unsettled') };
+        }),
+      }));
+
+      const result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
+
+      expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.file)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+      expect(result.findings.map(f => [f.file, f.severity])).toEqual([['src/a.ts', 'warning']]);
+      expect(result.openLeads?.map(f => f.file)).toEqual(['src/d.ts', 'src/c.ts']);
+      expect(result.leads?.map(l => [l.file, l.outcome, l.since, !!l.posted])).toEqual([
+        ['src/a.ts', 'confirmed', 1, true],
+        ['src/b.ts', 'disproved', 1, false],
+        ['src/c.ts', 'unsettled', 1, false],
+        ['src/d.ts', 'not_checked', 1, false],
+      ]);
+    });
+
+    it('lists a warning lead without sending it to a judge that has no tools to settle it', async () => {
+      const clients = leadClients([leadOf('warning', 'The token may not read the other repository', 'src/a.ts', 1)], false);
+      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings }));
+
+      const result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '' });
+
+      expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([]);
+      expect(result.openLeads?.map(f => f.file)).toEqual(['src/a.ts']);
+      expect(result.leads?.map(l => l.outcome)).toEqual(['not_checked']);
+    });
+
+    it('carries over a lead the last round left unsettled, once, with the round it first came up in', async () => {
+      const lead = { checked: 'read the file', left: 'check the caller' };
+      const earlier = (title: string, file: string, severity: FindingSeverity, outcome: RoundLead['outcome'], extra: Partial<RoundLead> = {}): RoundLead => ({
+        title, file, line: 1, severity, reviewers: ['Claude Sonnet 5.5 · high'], description: `${title}.`, lead, outcome, since: 1, ...extra,
+      });
+      const last = buildPriorRound(2, []);
+      last.leads = [
+        earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'unsettled'),
+        earlier('The helper name may confuse a reader', 'src/d.ts', 'suggestion', 'not_checked'),
+        earlier('The cache may go stale after a deploy', 'src/c.ts', 'warning', 'confirmed', { posted: true }),
+      ];
+      const clients = leadClients([leadOf('suggestion', 'The helper name may confuse a reader', 'src/d.ts', 7)], true);
+      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings.map(f => ({ ...f, refutation: refuted('unsettled') })) }));
+
+      const result = await runReview(clients, {
+        config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head', priorRounds: [buildPriorRound(1, []), last],
+      });
+
+      expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({ file: 'src/a.ts', lead, leadSince: 1 })]);
+      expect(result.openLeads?.map(f => [f.file, f.line, f.leadSince])).toEqual([['src/d.ts', 7, 1], ['src/a.ts', 1, 1]]);
+      expect(result.leads?.map(l => [l.file, l.outcome, l.since])).toEqual([['src/d.ts', 'not_checked', 1], ['src/a.ts', 'unsettled', 1]]);
+    });
   });
 
   it('requests changes with the verdict reader\'s blockers as blocking findings', async () => {

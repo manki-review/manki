@@ -327,8 +327,12 @@ export function buildJudgeSystemPrompt(
   openThreadsCount: number = 0,
   relatedRepos?: RelatedRepo[],
   openBlockerCount: number = 0,
+  toolsSettleLeads = false,
 ): string {
   const hasOpenThreads = openThreadsCount > 0;
+  const leadRule = toolsSettleLeads
+    ? 'An **Open lead** is a suspicion the reviewer could not finish checking. Mark it `ignore` only when the code shown disproves it. Otherwise grade it like any finding: Manki checks each lead graded `blocker` or `warning` with tools next, posts it only when they confirm it, and lists it as not finished when they cannot tell.'
+    : 'An **Open lead** is a suspicion the reviewer could not finish checking. Keep it only when the code shown proves it, and grade it like any finding. Otherwise mark it `ignore`.';
   const openBlockers = openBlockerCount === 1
     ? 'One of the Open Review Threads in the user message is an earlier blocker'
     : `${openBlockerCount} of the Open Review Threads in the user message are earlier blockers`;
@@ -501,7 +505,7 @@ A reviewer finding can carry the reviewer's **Evidence**: what it read or search
 - A \`blocker\` needs proving lines: the \`file:line\` of each line that shows the failure. List them in \`proof\`. When neither you nor the reviewer can cite them, grade it \`warning\` at most.
 - A claim that something is missing or handled nowhere is never a \`blocker\` on its own. Without a cited empty search it is a \`warning\` at most.
 - **Not checked yet** means the reviewer ran out of tool steps before it finished checking the finding. Grade it by what the code shown proves.
-- An **Open lead** is a suspicion the reviewer could not finish checking. Keep it only when the code shown proves it, and grade it like any finding. Otherwise mark it \`ignore\`.
+- ${leadRule}
 
 ## Acceptance Criteria
 
@@ -837,7 +841,7 @@ export function buildJudgeUserMessage(
 }
 
 /** Returns the judge's lines on what the reviewer cited for `finding`, and on a check it did not finish. */
-function reviewerEvidenceLines({ evidence, notChecked, lead, preExisting }: Finding): string[] {
+function reviewerEvidenceLines({ evidence, notChecked, lead, leadSince, preExisting }: Finding): string[] {
   const lines: string[] = [];
   if (evidence?.checks.length) lines.push(`- **Evidence**: ${evidence.checks.map(sanitizeForPromptEmbed).join(' | ')}`);
   lines.push(`- **Proving lines**: ${evidence?.proof.length ? evidence.proof.map(sanitizeForPromptEmbed).join(', ') : 'none cited'}`);
@@ -845,6 +849,7 @@ function reviewerEvidenceLines({ evidence, notChecked, lead, preExisting }: Find
     lines.push(`- **Empty search**: ${evidence.emptySearch ? sanitizeForPromptEmbed(evidence.emptySearch) : 'none cited, though the finding says something is missing'}`);
   }
   if (preExisting) lines.push(`- **Pre-existing, the reviewer says**: ${sanitizeForPromptEmbed(preExisting)}`);
+  if (lead && leadSince) lines.push(`- **Earlier lead**: first raised in round ${leadSince}, and no check has settled it since.`);
   if (lead) lines.push(`- **Open lead**: checked ${sanitizeForPromptEmbed(lead.checked || 'nothing')}. Left: ${sanitizeForPromptEmbed(lead.left || 'not said')}.`);
   else if (notChecked) lines.push('- **Not checked yet**: the reviewer ran out of tool steps before it finished checking.');
   return lines;
@@ -1094,10 +1099,10 @@ export async function runJudgeAgent(
   const changedFiles = diff.files;
 
   const openBlockerCount = openThreads ? earlierBlockerThreadIds(openThreads, priorRounds).size : 0;
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos, openBlockerCount);
-  // The prompt's sections follow the round: a follow-up, open threads, earlier blockers and a second finder. Every one
-  // is on here, so the recorded digest changes only with the template or the repository's rules.
-  const promptTemplate = buildJudgeSystemPrompt(config, 2, true, 1, relatedRepos, 2);
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos, openBlockerCount, !!refutation);
+  // The prompt's sections follow the round: a follow-up, open threads, earlier blockers, a second finder and the tools
+  // that settle leads. Every one is on here, so the recorded digest changes only with the template or the repository's rules.
+  const promptTemplate = buildJudgeSystemPrompt(config, 2, true, 1, relatedRepos, 2, true);
   const { classes } = resolveRouting(config.review);
   const findingNotes = (f: Finding): string[] => {
     const area = criticalAreaOf(classes, f.file);

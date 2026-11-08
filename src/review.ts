@@ -9,7 +9,7 @@ import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeP
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, gradeStep, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
 import { makeScratchDir } from './tool-install';
@@ -1043,7 +1043,14 @@ export async function runReview(
     diff, rawDiff, fileContents, signals: staticSignals,
     ...(related && { related: { names: related.repos.map(r => r.repo), checkouts: fetchedRelatedRepos(related.stateDir) } }),
   };
-  const { findings: checkedFindings, openLeads } = splitOpenLeads(allFindings);
+  const round = (priorRounds?.length ?? 0) + 1;
+  // Warning leads need the judge's tools to be settled, so without them they stay only listed.
+  const settleLeads = !!(workspace && clients.judge.repoTools);
+  const lastRound = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round).at(-1);
+  const { current, carried } = withEarlierLeads(allFindings, lastRound?.leads);
+  if (carried.length > 0) core.info(`Carrying over ${carried.length} open lead(s) the last round left unsettled`);
+  const { findings: checkedFindings, openLeads: listedLeads } = splitOpenLeads([...current, ...carried], settleLeads);
+  const openLeads = [...listedLeads];
   const finderFindings: Finding[] = checkedFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
   // Alerts go first, so a reviewer finding that repeats one folds into the alert and keeps its source label.
   const toolAlerts = toolAlertFindings(staticSignals);
@@ -1166,7 +1173,11 @@ export async function runReview(
     judgeInterRoundDiffEmptyOverride = judgeResult.interRoundDiffEmptyOverride;
     inPrSuppressedCount = judgeResult.inPrSuppressedCount ?? 0;
     finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
-    core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored)`);
+    // A lead the judge's tools left unsettled is no finding, so below blocker it is listed as not finished, never posted.
+    const unsettled = refutation ? finalFindings.filter(f => f.lead && f.severity !== 'blocker') : [];
+    finalFindings = finalFindings.filter(f => !unsettled.includes(f));
+    openLeads.push(...unsettled);
+    core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored or left unsettled)`);
   } catch (error) {
     core.warning(`Judge failed: ${error}`);
     logOutputTokens('Judge', judgeWrap.getTotals().usage);
@@ -1328,6 +1339,8 @@ export async function runReview(
   }
   core.endGroup();
 
+  const leads = recordLeads([...current, ...carried].filter(f => f.lead), listedLeads, allJudgedFindings ?? [], finalFindings, round);
+
   return {
     verdict,
     outcome,
@@ -1339,12 +1352,13 @@ export async function runReview(
     findings: finalFindings,
     highlights: [],
     reviewComplete: true,
-    rawFindingCount: allFindings.length - openLeads.length,
+    rawFindingCount: current.length - listedLeads.filter(f => current.includes(f)).length,
     ...(toolAlerts.length > 0 && { toolAlertCount: toolAlerts.length }),
     agentNames: team.finders.map(a => a.name),
     allJudgedFindings,
     rawFindings: allFindings,
     ...(openLeads.length > 0 && { openLeads }),
+    ...(leads.length > 0 && { leads }),
     threadEvaluations,
     plannerResult: plannerResult ?? undefined,
     staticDedupCount,
@@ -1585,7 +1599,7 @@ Example of one finding:
 - When a finding says something is missing or handled nowhere, set \`"claimsMissing": true\` and put the search that came back empty in \`emptySearch\`, such as "grep \`close(\` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.
 - ${PRE_EXISTING_RULE}${tools ? `
 - When Manki tells you to wrap up, report what you have. Set \`"notChecked": true\` on a finding you could not finish checking.
-- Report each suspicion you were still checking as an open lead: an entry with \`"lead": true\`, the \`severity\` it would have, the suspicion as \`title\` and \`description\`, its \`file\` and \`line\`, what you \`checked\` so far and what is \`left\`. The judge settles a lead you would grade \`blocker\`. Other leads are listed as not finished, never posted.` : ''}
+- Report each suspicion you were still checking as an open lead: an entry with \`"lead": true\`, the \`severity\` it would have, the suspicion as \`title\` and \`description\`, its \`file\` and \`line\`, what you \`checked\` so far and what is \`left\`. The judge settles a lead you would grade \`blocker\` or \`warning\`. Other leads are listed as not finished, never posted.` : ''}
 
 ## How to Search
 
@@ -1795,11 +1809,46 @@ export function parseEvidence(f: Record<string, unknown>): FindingEvidence | und
 
 /**
  * Takes the open leads out of the finders' findings. A lead the reviewer would grade `blocker` stays, so the judge
- * settles it. The others come back in `openLeads`, to be listed as not finished checking.
+ * settles it, and with `settleWarnings` so does one graded `warning`, which needs the judge's tools to be settled. The
+ * others come back in `openLeads`, to be listed as not finished checking.
  */
-function splitOpenLeads(all: Finding[]): { findings: Finding[]; openLeads: Finding[] } {
-  const openLeads = all.filter(f => f.lead && f.severity !== 'blocker');
+function splitOpenLeads(all: Finding[], settleWarnings: boolean): { findings: Finding[]; openLeads: Finding[] } {
+  const openLeads = all.filter(f => f.lead && f.severity !== 'blocker' && !(settleWarnings && f.severity === 'warning'));
   return { findings: all.filter(f => !openLeads.includes(f)), openLeads };
+}
+
+const sameLead = (a: Pick<Finding, 'file' | 'title'>, b: Pick<Finding, 'file' | 'title'>) => a.file === b.file && titlesMatch(a.title, b.title);
+
+/**
+ * Carries over the leads the previous round left unsettled and only listed. A finding of this round on the same file
+ * with a matching title takes the place of its earlier lead, keeping the round the lead first came up in. Returns this
+ * round's findings, and the earlier leads no finding took the place of.
+ */
+function withEarlierLeads(findings: Finding[], earlier: RoundLead[] = []): { current: Finding[]; carried: Finding[] } {
+  const open = earlier.filter(l => !l.posted && (l.outcome === 'unsettled' || l.outcome === 'not_checked'));
+  const current = findings.map(f => {
+    const match = f.lead && open.find(l => sameLead(l, f));
+    return match ? { ...f, leadSince: match.since } : f;
+  });
+  const carried = open.filter(l => !findings.some(f => sameLead(l, f))).map((l): Finding => ({
+    severity: l.severity, title: l.title, file: l.file, line: l.line, description: l.description, reviewers: l.reviewers, lead: l.lead, leadSince: l.since,
+  }));
+  return { current, carried };
+}
+
+/** Records how each open lead of the round ended, from what the judge made of it and whether it was posted. */
+function recordLeads(leads: Finding[], listed: Finding[], judged: Finding[], posted: Finding[], round: number): RoundLead[] {
+  return leads.map(l => {
+    const verdict = judged.find(j => sameLead(j, l) && j.line === l.line) ?? judged.find(j => sameLead(j, l));
+    const outcome: LeadOutcome = listed.includes(l) ? 'not_checked'
+      : !verdict ? 'dropped'
+      : verdict.severity === 'ignore' ? (verdict.refutation?.outcome === 'disproved' ? 'disproved' : 'dropped')
+      : verdict.lead ? 'unsettled' : 'confirmed';
+    return {
+      title: l.title, file: l.file, line: l.line, severity: l.severity, reviewers: l.reviewers, description: l.description, lead: l.lead!,
+      outcome, since: l.leadSince ?? round, ...(posted.some(p => sameLead(p, l)) && { posted: true as const }),
+    };
+  });
 }
 
 export function validateSeverity(severity: unknown): Finding['severity'] {

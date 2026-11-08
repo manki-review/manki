@@ -197,6 +197,8 @@ export interface Finding {
   notChecked?: boolean;
   /** Set on a suspicion the reviewer was still checking when it wrapped up, instead of a finished finding. */
   lead?: OpenLead;
+  /** The round an open lead first came up in, when an earlier round left it unsettled. */
+  leadSince?: number;
   /** How the judge's attempt to refute the finding with tools came out. Set on blockers and open leads only. */
   refutation?: Refutation;
   /** The id of the memory suppression that hid the finding. */
@@ -289,6 +291,28 @@ export interface OpenLead {
   left: string;
 }
 
+/**
+ * How an open lead ended in a round: `confirmed` and posted, `disproved` by the judge's tools, `dropped` by the judge,
+ * `unsettled` by the tools, or `not_checked` because it went to no check and was only listed.
+ */
+export type LeadOutcome = 'confirmed' | 'disproved' | 'dropped' | 'unsettled' | 'not_checked';
+
+/** An open lead as a round recorded it, so the next round can carry it over while it stays unsettled. */
+export interface RoundLead {
+  title: string;
+  file: string;
+  line: number;
+  severity: FindingSeverity;
+  reviewers: string[];
+  description: string;
+  lead: OpenLead;
+  outcome: LeadOutcome;
+  /** The round the lead first came up in. */
+  since: number;
+  /** Set when the lead was posted as a finding, so the next round does not carry it over. */
+  posted?: true;
+}
+
 /** `none` means no tool spoke to the claim. Silence is never evidence against a finding. */
 export type ToolEvidenceStatus = 'confirmed' | 'contradicted' | 'none';
 
@@ -378,6 +402,8 @@ export interface ReviewResult {
   rawFindings?: Finding[];
   /** Open leads below blocker, which are listed in the progress comment and never posted. */
   openLeads?: Finding[];
+  /** How each open lead of the round ended, carried-over ones included. */
+  leads?: RoundLead[];
   threadEvaluations?: ThreadEvaluation[];
   plannerResult?: PlannerResult;
   failedAgents?: string[];
@@ -921,7 +947,7 @@ export interface DashboardData {
   /** The review class and group the round's readers came from, shown in the review header. */
   routing?: Pick<TeamRouting, 'class' | 'group'>;
   /** Open leads below blocker that the reviewers did not finish checking. They are listed, never posted. */
-  unfinishedChecks?: Pick<Finding, 'title' | 'file' | 'line'>[];
+  unfinishedChecks?: Pick<Finding, 'title' | 'file' | 'line' | 'leadSince'>[];
   /** Blockers and open leads the judge disproved with tools, with the reason. They are dropped. */
   disproved?: (Pick<Finding, 'title' | 'file' | 'line'> & { reason: string })[];
 }
@@ -997,6 +1023,8 @@ export interface RoundContext {
   tokenService?: TokenServiceCall[];
   /** How the diff was split, when it was read in several slices. */
   slicing?: RoundSlicing;
+  /** How each open lead ended, so the next round carries over the ones still unsettled. */
+  leads?: RoundLead[];
   /**
    * Set on a round that approved: whether the approval was held, and why: a conflict with the base, a draft, a config
    * that failed to load, or files the review could not read.

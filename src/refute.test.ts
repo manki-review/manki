@@ -116,7 +116,8 @@ describe('refuteBlockers', () => {
       ['Lead disproved', 'ignore', 'disproved'],
       // PR content the refuter reads could steer it, so only a confirmation changes a security finding.
       ['Security disproved', 'blocker', 'disproved'],
-      ['Lead unsettled', 'ignore', 'unsettled'],
+      // A lead the tools left unsettled keeps its grade, so the review lists it as not finished.
+      ['Lead unsettled', 'warning', 'unsettled'],
       ['Blocking lead unsettled', 'blocker', 'unsettled'],
       ['Failing', 'blocker', undefined],
       ['A warning', 'warning', undefined],
@@ -131,7 +132,6 @@ describe('refuteBlockers', () => {
       'Unproven lead confirmed': [{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'It overflows.' }],
       'Unproven disproved': [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'The signature bounds it.' }],
       'Lead disproved': [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'The signature bounds it.' }],
-      'Lead unsettled': [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'an open lead nobody could settle' }],
     });
     expect(result[1].evidence?.proof).toEqual(['src/math.ts:2', 'src/api.ts:4']);
     expect([result[4].lead, result[4].notChecked]).toEqual([undefined, undefined]);
