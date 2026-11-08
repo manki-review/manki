@@ -1093,6 +1093,9 @@ export async function runJudgeAgent(
 
   const openBlockerCount = openThreads ? earlierBlockerThreadIds(openThreads, priorRounds).size : 0;
   const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos, openBlockerCount);
+  // The prompt's sections follow the round: a follow-up, open threads, earlier blockers and a second finder. Every one
+  // is on here, so the recorded digest changes only with the template or the repository's rules.
+  const promptTemplate = buildJudgeSystemPrompt(config, 2, true, 1, relatedRepos, 2);
   const { classes } = resolveRouting(config.review);
   const findingNotes = (f: Finding): string[] => {
     const area = criticalAreaOf(classes, f.file);
@@ -1112,7 +1115,7 @@ export async function runJudgeAgent(
   const effort = input.effort ?? 'high';
   let judgeResult = await sendWithParseRetry(
     userMessage,
-    message => client.sendMessage(systemPrompt, message, { effort, timeoutMs: JUDGE_TIMEOUT_MS }),
+    message => client.sendMessage(systemPrompt, message, { effort, timeoutMs: JUDGE_TIMEOUT_MS, promptTemplate }),
     (reply) => {
       if (reply.truncated) {
         throw new Error(`judge reply truncated at the output token limit (length ${reply.content.length})`);
@@ -1139,7 +1142,7 @@ export async function runJudgeAgent(
       const retryUserMessage = `${reminder}\n\nOriginal message:\n${userMessage}`;
       let retryResult: JudgeResult | undefined;
       try {
-        const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, { effort, timeoutMs: JUDGE_TIMEOUT_MS });
+        const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, { effort, timeoutMs: JUDGE_TIMEOUT_MS, promptTemplate });
         retryResult = parseJudgeResponse(retryResponse.content);
       } catch (err) {
         core.warning(`Judge retry failed (${err}); synthesizing 'uncertain' for ${missing.length} missing thread(s).`);

@@ -4,12 +4,13 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, NO_VERDICT_MARKER, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, NO_VERDICT_MARKER, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
 import { fetchPriorRoundContexts, foundAgainAsBlocker, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
-import { ReviewConfig, RoundContext, SecurityOverride } from './types';
+import { formatApprovalRecord } from './review-record';
+import { ApprovalRecord, ReviewConfig, RoundContext, SecurityOverride } from './types';
 import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -380,6 +381,7 @@ async function postStaleApproveSkippedComment(
   headSha: string,
   latestReviewSha: string,
   halt: string,
+  record?: string,
 ): Promise<void> {
   const shortHead = headSha.slice(0, 7);
   const shortLatest = latestReviewSha.slice(0, 7);
@@ -389,7 +391,7 @@ async function postStaleApproveSkippedComment(
     halt,
   ].join('\n');
   try {
-    await postNoticeOnce(octokit, bot, owner, repo, prNumber, staleApproveMarker(headSha), text);
+    await postNoticeOnce(octokit, bot, owner, repo, prNumber, staleApproveMarker(headSha), record ? `${text}\n\n${record}` : text);
   } catch (error) {
     core.warning(`Failed to post stale-approve-skipped comment: ${error instanceof Error ? error.message : error}`);
   }
@@ -401,13 +403,15 @@ async function postStaleApproveSkippedComment(
  */
 async function holdApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, draftWhenUnread = false,
+  recordFor?: (reason: string) => string,
 ): Promise<ApprovalHeld> {
   const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
   if (!hold) return false;
   core.info(`${hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so it is not approved`);
   assertWritesAllowed();
   try {
-    await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, approvalHoldLine(hold));
+    const line = approvalHoldLine(hold);
+    await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, recordFor ? `${line}\n\n${recordFor(hold.reason)}` : line);
   } catch (error) {
     core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
   }
@@ -458,6 +462,9 @@ async function checkAndAutoApprove(
 
   const totalCount = threads.length;
   const resolvedCount = threads.filter(t => t.isResolved).length;
+  const approvalRecord = (decision: ApprovalRecord['decision'], reason: string, head: string) => formatApprovalRecord({
+    decision, reason, head, threads: { total: totalCount, resolved: resolvedCount }, timestamp: new Date().toISOString(), mankiVersion: MANKI_VERSION,
+  });
 
   core.info(`Review threads: ${resolvedCount}/${totalCount} resolved`);
 
@@ -506,7 +513,7 @@ async function checkAndAutoApprove(
     // A push review takes about a minute to post its progress comment, so the lack of one does not mean no review is coming.
     const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
     if (halt) {
-      await postStaleApproveSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, staleSha, halt);
+      await postStaleApproveSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, staleSha, halt, approvalRecord('withheld', halt, pr.head.sha));
     } else {
       core.info(`A push review covers ${pr.head.sha.slice(0, 7)}, so no withheld notice is posted`);
     }
@@ -525,7 +532,7 @@ async function checkAndAutoApprove(
     return false;
   }
 
-  if (await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
+  if (await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, reason => approvalRecord('held', reason, pr.head.sha))) {
     await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
     return false;
   }
@@ -537,7 +544,10 @@ async function checkAndAutoApprove(
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
   // for any subsequent force-review tick on the same commit ([#840]).
   const overrideLine = formatSecurityOverrides(overrides);
-  const body = withMarkers(`${APPROVED_LINE} All blocking threads are resolved.${overrideLine ? `\n\n${overrideLine}` : ''}`, BOT_MARKER, AUTO_APPROVE_MARKER);
+  const reason = overrides.length > 0 ? `all blocking threads are resolved, ${overrides.length} by a security override` : 'all blocking threads are resolved';
+  const body = withMarkers(
+    `${APPROVED_LINE} All blocking threads are resolved.${overrideLine ? `\n\n${overrideLine}` : ''}`, BOT_MARKER, AUTO_APPROVE_MARKER, approvalRecord('approved', reason, pr.head.sha),
+  );
 
   try {
     try {

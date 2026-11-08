@@ -146,6 +146,11 @@ export interface SendMessageOptions {
   signal?: AbortSignal;
   /** Gives the call read-only tools on a repository. A client without `repoTools` ignores it. */
   repoTools?: RepoTools;
+  /**
+   * The call's prompt template, rendered with fixed values for what changes each round. The recorded `promptDigest`
+   * hashes it in place of the system prompt, so the digest changes only when the template does. No provider sends it.
+   */
+  promptTemplate?: string;
 }
 
 export interface LLMClient {

@@ -20,7 +20,7 @@ import {
   JudgedFinding,
   MAX_INTER_ROUND_DIFF_CHARS,
 } from './judge';
-import { LLMClient } from './providers';
+import { LLMClient, SendMessageOptions } from './providers';
 import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
@@ -1228,6 +1228,19 @@ describe('runJudgeAgent', () => {
     expect(userMessage).not.toContain('diff --git a/src/other.ts');
   });
 
+  it('names one prompt template for its digest whatever the round holds', async () => {
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', severity: 'suggestion', reasoning: 'r', confidence: 'high' }] }) });
+    const base: JudgeInput = { findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1 };
+    await runJudgeAgent(mockClient, makeConfig(), base);
+    await runJudgeAgent(mockClient, makeConfig(), {
+      ...base, agentCount: 2, isFollowUp: true, openThreads: [{ threadId: 'T1', title: 'Old', file: 'src/a.ts', line: 1, severity: 'blocker' } as OpenThread],
+    });
+    const [first, second] = mockSendMessage.mock.calls.map(([system, , options]) => [system, (options as SendMessageOptions).promptTemplate]);
+    // The rounds send different system prompts, but the same template.
+    expect(first[0]).not.toBe(second[0]);
+    expect(first[1]).toBe(second[1]);
+  });
+
   it('passes effort option to sendMessage', async () => {
     const judgedResponse = JSON.stringify({
       summary: 'Real issue found.',
@@ -1250,7 +1263,7 @@ describe('runJudgeAgent', () => {
     expect(mockSendMessage).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(String),
-      { effort: 'high', timeoutMs: 300_000 },
+      { effort: 'high', timeoutMs: 300_000, promptTemplate: expect.any(String) },
     );
   });
 

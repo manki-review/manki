@@ -93,7 +93,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
       const stepBudget = client.repoTools ? opts?.repoTools?.steps : undefined;
       const base = {
         ...label, ...(opts?.effort && { effort: opts.effort }), attempt,
-        promptDigest: promptDigest(systemPrompt),
+        promptDigest: promptDigest(opts?.promptTemplate ?? systemPrompt),
         ...(stepBudget !== undefined && { stepBudget }),
       };
       const start = Date.now();

@@ -1619,6 +1619,20 @@ export interface FindingFingerprintEntry {
   preExisting?: { reason: string; check: PreExistingCheck };
 }
 
+/**
+ * What a review state check decided about approving: `approved`, `held` for a conflict or a draft, or `withheld`
+ * because Manki has not reviewed the head. It rides on the approval review or the notice the check posts.
+ */
+export interface ApprovalRecord {
+  decision: 'approved' | 'held' | 'withheld';
+  reason: string;
+  head: string;
+  /** Manki's review threads on the PR, and how many of them are resolved. */
+  threads: { total: number; resolved: number };
+  timestamp: string;
+  mankiVersion: string;
+}
+
 /** One call a run made to the token service. */
 export interface TokenServiceCall {
   /** The endpoint path, such as `token`, `state`, `state/report`, `resolve` or a memory endpoint. */
