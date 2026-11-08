@@ -1833,8 +1833,10 @@ function withEarlierLeads(
   findings: Finding[], earlier: RoundLead[] = [], round: number, diff: ParsedDiff, changedSinceLastRound?: string[],
 ): { current: Finding[]; carried: Finding[] } {
   const inPr = new Set(diff.files.map(f => f.path));
-  const open = earlier.filter(l => !l.posted && (l.outcome === 'unsettled' || l.outcome === 'not_checked')
-    && round - l.since <= MAX_LEAD_ROUNDS && inPr.has(l.file) && !changedSinceLastRound?.includes(l.file));
+  // Without the change since the last round, no file is known to be unchanged, so nothing carries over.
+  const open = earlier.filter((l, i) => !l.posted && (l.outcome === 'unsettled' || l.outcome === 'not_checked')
+    && round - l.since <= MAX_LEAD_ROUNDS && inPr.has(l.file) && changedSinceLastRound !== undefined && !changedSinceLastRound.includes(l.file)
+    && earlier.findIndex(other => sameLead(other, l)) === i);
   const current = findings.map(f => {
     const match = f.lead && open.find(l => sameLead(l, f));
     return match ? { ...f, leadSince: match.since } : f;

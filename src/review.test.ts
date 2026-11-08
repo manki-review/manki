@@ -2018,6 +2018,7 @@ describe('runReview', () => {
         earlier('The file is gone from the pull request', 'src/gone.ts', 'warning', 'unsettled'),
         earlier('The author changed this file since then', 'src/b.ts', 'warning', 'unsettled'),
         earlier('The lead has been open for too many rounds', 'src/c.ts', 'warning', 'unsettled', { since: -1 }),
+        earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'unsettled'),
       ];
       const clients = leadClients([leadOf('suggestion', 'The helper name may confuse a reader', 'src/d.ts', 7)], true);
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings.map(f => ({ ...f, refutation: refuted('unsettled') })) }));
@@ -2030,6 +2031,11 @@ describe('runReview', () => {
       expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({ file: 'src/a.ts', lead, leadSince: 1 })]);
       expect(result.openLeads?.map(f => [f.file, f.line, f.leadSince])).toEqual([['src/d.ts', 7, 1], ['src/a.ts', 1, 1]]);
       expect(result.leads?.map(l => [l.file, l.outcome, l.since])).toEqual([['src/d.ts', 'not_checked', 1], ['src/a.ts', 'unsettled', 1]]);
+
+      jest.mocked(clients.reviewer.sendMessage).mockResolvedValue({ content: '[]' });
+      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings }));
+      const unknownChange = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head', priorRounds: [buildPriorRound(1, []), last] });
+      expect(unknownChange.leads ?? []).toEqual([]);
     });
   });
 
