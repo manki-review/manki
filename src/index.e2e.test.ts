@@ -86,6 +86,11 @@ const PR_DIFF = [
   '',
 ].join('\n');
 
+// The PR's change once the author adds the range check the blocker asks for.
+const FIXED_PR_DIFF = PR_DIFF
+  .replace('@@ -1,3 +1,4 @@', '@@ -1,3 +1,5 @@')
+  .replace('+  return sum;', '+  if (!Number.isSafeInteger(sum)) throw new RangeError(\'sum out of range\');\n+  return sum;');
+
 const MATH_TS = 'export function add(a: number, b: number): number {\n  const sum = a + b;\n  return sum;\n}\n';
 
 interface FakeUser { login: string; type: string }
@@ -108,6 +113,8 @@ class FakeGitHub {
   /** Runs before a write is answered, which waits for it. */
   onWrite?: (write: string) => void | Promise<void>;
   headSha = HEAD_SHA;
+  /** The PR's diff against its base at each head commit, `PR_DIFF` unless set. */
+  prDiffs: Record<string, string> = {};
   mergeable: boolean | null = true;
   /** Refuses `resolveReviewThread`, and the token service's `/resolve`, the way GitHub does for a token without the permission. */
   refuseResolve = false;
@@ -160,7 +167,7 @@ class FakeGitHub {
     let match: RegExpMatchArray | null;
 
     if (method === 'GET' && route === `/pulls/${PR_NUMBER}`) {
-      if (headers.get('accept')?.includes('diff')) return text(PR_DIFF);
+      if (headers.get('accept')?.includes('diff')) return text(this.prDiffs[this.headSha] ?? PR_DIFF);
       return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: 'User' }, mergeable: this.mergeable, mergeable_state: this.mergeable === false ? 'dirty' : 'clean' });
     }
     if ((match = route.match(/^\/pulls\/comments\/(\d+)(\/reactions)?$/))) {
@@ -235,7 +242,7 @@ class FakeGitHub {
       this.addThread(body.path, 0, body.body, login);
       return json({ id: this.nextId++ }, 201);
     }
-    if (method === 'GET' && route.startsWith('/compare/') && headers.get('accept')?.includes('diff')) return text(PR_DIFF);
+    if (method === 'GET' && route.startsWith('/compare/') && headers.get('accept')?.includes('diff')) return text(this.prDiffs[route.split('...').at(-1) ?? ''] ?? PR_DIFF);
     const config = this.configs[searchParams.get('ref') ?? ''];
     if (method === 'GET' && route === `/contents/${INPUTS.config_path}` && config) {
       return json({ type: 'file', encoding: 'base64', size: config.length, content: Buffer.from(config).toString('base64') });
@@ -825,16 +832,20 @@ describe('runFullReview end to end', () => {
     const rebased = postedReviews()[1];
     expect(rebased.state).toBe('CHANGES_REQUESTED');
     expect(mockGitHub.roundContext(rebased).meta.outcome).toBe('ADDRESS_FIRST');
+    // The rebase left the PR's own change as it was, so the round saw no change since the last one.
+    expect(mockGitHub.roundContext(rebased).judge.interRoundDiffState).toBe('empty');
     expect(rebased.body).toContain('**Still open from earlier reviews:**\n- `src/math.ts:2`: Sum is never range checked ([view thread](https://github.com/acme/widgets/pull/42#discussion_PRRT_1))');
     expect(mockGitHub.threads).toHaveLength(1);
 
     mockGitHub.headSha = 'c3'.repeat(20);
+    mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
     Object.assign(mockLLM.replies, READY_REPLIES, {
       judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
     });
     await reviewRound();
 
     expect(postedReviews()[2].state).toBe('APPROVED');
+    expect(mockGitHub.roundContext(postedReviews()[2]).judge.interRoundDiffState).toBe('changed');
     const [thread] = mockGitHub.threads;
     expect(thread.isResolved).toBe(true);
     expect(mockGitHub.writes).toContain('POST /resolve');
@@ -854,6 +865,7 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.threads).toHaveLength(1);
 
     mockGitHub.headSha = 'c3'.repeat(20);
+    mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
     mockGitHub.refuseResolve = true;
     Object.assign(mockLLM.replies, READY_REPLIES, {
       judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
@@ -984,6 +996,7 @@ describe('runFullReview end to end', () => {
       await reviewRound();
       const [thread] = mockGitHub.threads;
       mockGitHub.headSha = 'c3'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
       const round = async () => {
         Object.assign(mockLLM.replies, READY_REPLIES, {
           judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
