@@ -664,13 +664,12 @@ describe('sliceDiff', () => {
 });
 
 describe('overlongChangedLines', () => {
-  it('names each added or removed line over the limit by its line on its side, and leaves out context lines', () => {
+  it('names each added line over the limit by its new line number, and leaves out removed and context lines', () => {
     const long = 'q'.repeat(MAX_LINE_CHARS + 1);
     const raw = `diff --git a/a.ts b/a.ts\nindex 1111111..2222222 100644\n--- a/a.ts\n+++ b/a.ts\n@@ -5,4 +5,4 @@\n ${long}\n-${long}\n+short\n+${long}\n ${'q'.repeat(MAX_LINE_CHARS)}\n`;
-    expect(overlongChangedLines(parsePRDiff(raw))).toEqual([
-      { file: 'a.ts', line: 6, side: 'removed', length: MAX_LINE_CHARS + 1 },
-      { file: 'a.ts', line: 7, side: 'added', length: MAX_LINE_CHARS + 1 },
-    ]);
+    expect(overlongChangedLines(parsePRDiff(raw))).toEqual([{ file: 'a.ts', line: 7, length: MAX_LINE_CHARS + 1 }]);
+    const deleted = `diff --git a/vendor/app.min.js b/vendor/app.min.js\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/vendor/app.min.js\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-${long}\n`;
+    expect(overlongChangedLines(parsePRDiff(deleted))).toEqual([]);
     expect(overlongChangedLines(parsePRDiff(MULTI_FILE_DIFF))).toEqual([]);
   });
 });

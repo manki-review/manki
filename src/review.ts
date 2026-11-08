@@ -47,7 +47,7 @@ const MAX_LISTED_LINES = 10;
 
 /** Names the changed lines no prompt can show in full, and how to get the PR reviewed. */
 function overlongSummary(lines: OverlongLine[]): string {
-  const listed = lines.slice(0, MAX_LISTED_LINES).map(l => `\`${sanitizeFilePath(l.file)}:${l.line}\` (${l.side} line, ${l.length} characters)`);
+  const listed = lines.slice(0, MAX_LISTED_LINES).map(l => `\`${sanitizeFilePath(l.file)}:${l.line}\` (${l.length} characters)`);
   const more = lines.length > MAX_LISTED_LINES ? `, and ${lines.length - MAX_LISTED_LINES} more` : '';
   return `No model read this PR in full: ${listed.join(', ')}${more} ${lines.length === 1 ? 'is' : 'are'} longer than ${MAX_LINE_CHARS} characters, the most a prompt shows of one line. Split the line, or exclude its file in \`exclude_paths\` on the base branch, and push again.`;
 }

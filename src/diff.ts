@@ -362,38 +362,31 @@ function sourceKey(path: string): string {
 
 /** Characters of diff one prompt holds. `sliceDiff` keeps each slice within it, so no prompt cuts the diff. */
 export const MAX_SLICE_CHARS = 50_000;
-/** Characters of one diff line a prompt shows in full. A longer changed line makes the round incomplete. */
+/** Characters of one diff line a prompt shows in full. A longer added line makes the round incomplete. */
 export const MAX_LINE_CHARS = 20_000;
 /** Room left for the `@@ -a,b +c,d @@` header of each piece of a split hunk. */
 const HUNK_HEADER_CHARS = 64;
 
-/** A changed line longer than `MAX_LINE_CHARS`, by its line number on the side it is on. */
+/** An added line longer than `MAX_LINE_CHARS`, by its line number in the new file. */
 export interface OverlongLine {
   file: string;
   line: number;
-  side: 'added' | 'removed';
   length: number;
 }
 
-/** Returns each added or removed line longer than `MAX_LINE_CHARS`, which no prompt can show in full. */
+/**
+ * Returns each added line longer than `MAX_LINE_CHARS`, which no prompt can show in full. A removed line is left out:
+ * cutting it hides no new code, and a PR that deletes such a file could never be reviewed otherwise.
+ */
 export function overlongChangedLines(diff: ParsedDiff): OverlongLine[] {
   const found: OverlongLine[] = [];
   for (const file of diff.files) {
     for (const hunk of file.hunks) {
-      let oldLine = hunk.oldStart;
       let newLine = hunk.newStart;
       for (const line of hunk.content.split('\n')) {
-        const length = line.length - 1;
-        if (line.startsWith('+')) {
-          if (length > MAX_LINE_CHARS) found.push({ file: file.path, line: newLine, side: 'added', length });
-          newLine++;
-        } else if (line.startsWith('-')) {
-          if (length > MAX_LINE_CHARS) found.push({ file: file.path, line: oldLine, side: 'removed', length });
-          oldLine++;
-        } else if (!line.startsWith('\\')) {
-          oldLine++;
-          newLine++;
-        }
+        if (line.startsWith('-') || line.startsWith('\\')) continue;
+        if (line.startsWith('+') && line.length - 1 > MAX_LINE_CHARS) found.push({ file: file.path, line: newLine, length: line.length - 1 });
+        newLine++;
       }
     }
   }

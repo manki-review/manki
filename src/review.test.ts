@@ -3632,9 +3632,13 @@ describe('runReview', () => {
 
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.reviewComplete).toBe(false);
-    expect(result.summary).toContain('`src/blob.ts:2` (added line, 60016 characters)');
+    expect(result.summary).toContain('`src/blob.ts:2` (60016 characters)');
     expect(clients.reviewer.sendMessage).not.toHaveBeenCalled();
     expect(clients.judge.sendMessage).not.toHaveBeenCalled();
+
+    const deleted = `diff --git a/vendor/app.min.js b/vendor/app.min.js\ndeleted file mode 100644\n--- a/vendor/app.min.js\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-${'A'.repeat(60_000)}`;
+    const deletion = await runReview(makeClients(), { config: makeConfig(), diff: parsePRDiff(deleted), rawDiff: deleted, repoContext: '' });
+    expect(deletion.outcome).not.toBe('INCOMPLETE');
   });
 
   it('records `agentFailureReasons` when an agent fails after all retries', async () => {
