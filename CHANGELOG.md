@@ -9,7 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.1.1] - 2026-11-09
 
-Manki 7.1 makes Manki safe to run for people who only want a review, and makes each round find more. The security work from the v7.0.0 audit ([#1116](https://github.com/manki-review/manki/issues/1116)) means nobody gains write access they should not have, Manki never approves code no model read, and no answer from a single model can unblock a change. Review memory moves to a central repository the Manki service writes. The review body is grouped by where findings sit, and any finding can be filed as an issue with a tick. Finders search the whole PR in every round, and the round records keep enough diagnostics for a weekly statistics report. A review on a Claude or Codex subscription warns before a usage limit runs out. v7.0.1 and v7.1.0 were never published, and their changes are part of this release.
+Manki 7.1.1 warns before a Claude or Codex subscription usage limit runs out, so a used-up limit no longer ends a round as a surprise.
+
+### Review format
+
+- When a Claude or Codex subscription usage window reaches 70%, the review body shows a caution box under the verdict that names the window and the 70, 80 or 90% mark it passed. The Review metadata in the progress comment lists every window with its used share and reset time ([#1216](https://github.com/manki-review/manki/pull/1216)).
+- The verdict line and the section intros read in the singular for one finding, such as "1 warning, which doesn't block" ([#1217](https://github.com/manki-review/manki/pull/1217)).
+
+### Review records and statistics
+
+- The round record keeps each configured related repository's fetch outcome and how often each finder read it, and the newest reading of each subscription usage window. `review-stats` reports both ([#1215](https://github.com/manki-review/manki/pull/1215), [#1216](https://github.com/manki-review/manki/pull/1216)).
+
+### Internal
+
+- Manki's own reviews read `manki-review/token-service` as a related repository ([#1214](https://github.com/manki-review/manki/pull/1214)).
+
+## [7.1.0] - 2026-11-09
+
+Manki 7.1 makes Manki safe to run for people who only want a review, and makes each round find more. The security work from the v7.0.0 audit ([#1116](https://github.com/manki-review/manki/issues/1116)) means nobody gains write access they should not have, Manki never approves code no model read, and no answer from a single model can unblock a change. Review memory moves to a central repository the Manki service writes. The review body is grouped by where findings sit, and any finding can be filed as an issue with a tick. Finders search the whole PR in every round, and the round records keep enough diagnostics for a weekly statistics report.
 
 ### Upgrading
 
@@ -44,7 +61,6 @@ Manki 7.1 makes Manki safe to run for people who only want a review, and makes e
 - The verdict reader's blockers carry evidence and proving lines, and go through the refuter like the judge's ([#1151](https://github.com/manki-review/manki/pull/1151), [#1155](https://github.com/manki-review/manki/pull/1155)).
 - A finding on code the PR did not change, which the reviewer, the judge and the diff all agree existed before, no longer blocks unless it is a security finding. It is listed under "Pre-existing" ([#1171](https://github.com/manki-review/manki/pull/1171), [#1185](https://github.com/manki-review/manki/pull/1185), [#1188](https://github.com/manki-review/manki/pull/1188), [#1191](https://github.com/manki-review/manki/pull/1191)).
 - With repository tools, the judge settles open leads graded warning as it does blocker leads. A lead it cannot settle carries over to the next round instead of coming back as new ([#1193](https://github.com/manki-review/manki/pull/1193)).
-- The verdict line on a follow-up round counts new blockers apart from those still open from earlier reviews ([#1095](https://github.com/manki-review/manki/pull/1095)).
 - Each thread gets one Manki "Fixed" reply per commit, and a reply written while a round ran waits for that round's judgment ([#1154](https://github.com/manki-review/manki/pull/1154), [#1139](https://github.com/manki-review/manki/pull/1139)).
 - After a rebase, the judge checks earlier threads against the PR's own change only, not the base branch's ([#1153](https://github.com/manki-review/manki/pull/1153)).
 - An earlier blocker is matched to its thread by the line its finding names, so a resolved thread always backs it ([#1152](https://github.com/manki-review/manki/pull/1152)).
@@ -52,12 +68,11 @@ Manki 7.1 makes Manki safe to run for people who only want a review, and makes e
 
 ### Review format
 
-- The review body is grouped by where findings sit: found this round, missed by an earlier review, pre-existing, and files no model read. The verdict line counts what was posted, in the singular for one finding, the threads are listed by name under it, and a collapsed "About this review" closes the body ([#1205](https://github.com/manki-review/manki/pull/1205), [#1210](https://github.com/manki-review/manki/pull/1210), [#1217](https://github.com/manki-review/manki/pull/1217)).
+- The review body is grouped by where findings sit: found this round, missed by an earlier review, pre-existing, and files no model read. The verdict line counts what was posted, the threads are listed by name under it, and a collapsed "About this review" closes the body ([#1205](https://github.com/manki-review/manki/pull/1205), [#1210](https://github.com/manki-review/manki/pull/1210)).
 - Every finding, in a thread or in the review body, has a `Create an issue for this` box. A tick by someone with write access files the finding as an issue and links it. A non-blocking thread is then resolved ([#1196](https://github.com/manki-review/manki/pull/1196), [#1200](https://github.com/manki-review/manki/pull/1200)).
 - "How this was checked" shows a code preview under each check, with the refuter's outcome first ([#1172](https://github.com/manki-review/manki/pull/1172), [#1179](https://github.com/manki-review/manki/pull/1179)).
 - A finding labels "What goes wrong" (or "Why" for a suggestion or nitpick) and "Fix" ([#1177](https://github.com/manki-review/manki/pull/1177)).
 - A small code fix in the review body shows as a diff against the flagged line ([#1183](https://github.com/manki-review/manki/pull/1183)).
-- When a Claude or Codex subscription usage window reaches 70%, the review body shows a caution box under the verdict that names the window and the 70, 80 or 90% mark it passed. The Review metadata in the progress comment lists every window with its used share and reset time ([#1216](https://github.com/manki-review/manki/pull/1216)).
 - The progress comment's headline shows how long the review took, such as "Review complete in 4m 12s" ([#1176](https://github.com/manki-review/manki/pull/1176)).
 - A successful auto-approve leaves only the approval, and the Manki service's rebase note is removed once a review posts ([#1156](https://github.com/manki-review/manki/pull/1156), [#1199](https://github.com/manki-review/manki/pull/1199)).
 
@@ -83,7 +98,6 @@ Manki 7.1 makes Manki safe to run for people who only want a review, and makes e
 ### Review records and statistics
 
 - The hidden round and reply records keep each call's prompt digest and tool budget, the pause, memory, token service calls, how each finding's grade changed and why, how a sliced diff was read, and each approval decision ([#1178](https://github.com/manki-review/manki/pull/1178), [#1184](https://github.com/manki-review/manki/pull/1184), [#1192](https://github.com/manki-review/manki/pull/1192), [#1189](https://github.com/manki-review/manki/pull/1189)).
-- The round record keeps each configured related repository's fetch outcome and how often each finder read it, and the newest reading of each subscription usage window. `review-stats` reports both ([#1215](https://github.com/manki-review/manki/pull/1215), [#1216](https://github.com/manki-review/manki/pull/1216)).
 - `npm run review-stats -- --repo <owner/repo>` reports the recorded decisions of recent merged PRs, and a weekly workflow posts the report on a tracking issue ([#1169](https://github.com/manki-review/manki/pull/1169), [#1186](https://github.com/manki-review/manki/pull/1186)).
 
 ### Reliability
@@ -92,10 +106,15 @@ Manki 7.1 makes Manki safe to run for people who only want a review, and makes e
 
 ### Internal
 
-- Manki's own reviews read `manki-review/token-service` as a related repository ([#1214](https://github.com/manki-review/manki/pull/1214)).
 - Test and doc follow-ups ([#1144](https://github.com/manki-review/manki/pull/1144), [#1182](https://github.com/manki-review/manki/pull/1182), [#1211](https://github.com/manki-review/manki/pull/1211)).
 
-Also: the Manki service runs a thread reply before a review that arrives at the same time ([manki-review/token-service#48](https://github.com/manki-review/token-service/pull/48)).
+## [7.0.1] - 2026-11-07
+
+### Review loop and verdicts
+
+- The verdict line on a follow-up round says how many blockers are new and how many are still open from earlier reviews, such as "1 new blocker and 2 still open". The summary under it no longer says nothing blocks while an earlier blocker is open, and a round with a new blocker also lists the earlier blockers still open ([#1095](https://github.com/manki-review/manki/pull/1095)).
+
+Also: the Manki service now runs a thread reply before a review that arrives at the same time, so a push and a reply on a Manki thread no longer get a request for changes that the reply withdraws a minute later. The service is updated live, with no Manki release needed ([manki-review/token-service#48](https://github.com/manki-review/token-service/pull/48)).
 
 ## [7.0.0] - 2026-11-07
 
