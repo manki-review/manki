@@ -361,7 +361,7 @@ function sourceKey(path: string): string {
 }
 
 /** Characters of diff one prompt holds. `sliceDiff` keeps each slice within it, so no prompt cuts the diff. */
-export const MAX_SLICE_CHARS = 50_000;
+export const MAX_SLICE_CHARS = 200_000;
 /** Characters of one diff line a prompt shows in full. A longer added line makes the round incomplete. */
 export const MAX_LINE_CHARS = 20_000;
 /** Room left for the `@@ -a,b +c,d @@` header of each piece of a split hunk. */

@@ -27,7 +27,7 @@ import {
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG } from './config';
-import { filterRawDiff, parsePRDiff } from './diff';
+import { filterRawDiff, MAX_SLICE_CHARS, parsePRDiff } from './diff';
 import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
@@ -1512,14 +1512,14 @@ describe('titlesMatch', () => {
 });
 
 describe('buildReviewerUserMessage truncation', () => {
-  it('truncates diff at newline boundary when exceeding 50000 chars', () => {
-    const longDiff = ('a'.repeat(99) + '\n').repeat(600); // 60000 chars
+  it('truncates diff at newline boundary when exceeding the slice budget', () => {
+    const longDiff = ('a'.repeat(99) + '\n').repeat(MAX_SLICE_CHARS / 100 + 100);
     const message = buildReviewerUserMessage(longDiff, '');
     expect(message).toContain('more lines in this file truncated');
     expect(message.length).toBeLessThan(longDiff.length);
   });
 
-  it('does not truncate diff under 50000 chars', () => {
+  it('does not truncate diff under the slice budget', () => {
     const shortDiff = 'short diff content';
     const message = buildReviewerUserMessage(shortDiff, '');
     expect(message).not.toContain('more lines in this file truncated');
@@ -3795,23 +3795,23 @@ describe('runReview', () => {
   });
 
   it('shows the verdict reader every changed line of a diff over the character budget, and needs every slice READY', async () => {
-    const lines = Array.from({ length: 3000 }, (_, i) => `const value${i} = '${'v'.repeat(40)}';`);
+    const lines = Array.from({ length: 12_000 }, (_, i) => `const value${i} = '${'v'.repeat(40)}';`);
     const rawDiff = `diff --git a/src/big.ts b/src/big.ts\n--- /dev/null\n+++ b/src/big.ts\n@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}`;
-    expect(rawDiff.length).toBeGreaterThan(100_000);
+    expect(rawDiff.length).toBeGreaterThan(2 * MAX_SLICE_CHARS);
     const clients = makeClients();
     jest.mocked(clients.judge.sendMessage).mockImplementation(async (_system: string, user: string) => ({
-      content: user.includes('const value2999') ? JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/big.ts', line: 3000, title: 'The last value is wrong', description: 'd' }], summary: 'One defect.', whatThisDoes: 'Adds values.', whatToTest: 'Read them.' }) : READY_VERDICT,
+      content: user.includes('const value11999') ? JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/big.ts', line: 12_000, title: 'The last value is wrong', description: 'd' }], summary: 'One defect.', whatThisDoes: 'Adds values.', whatToTest: 'Read them.' }) : READY_VERDICT,
     }));
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
 
-    const result = await runReview(clients, { config: makeConfig({ slice_lines: 5000 }), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '' });
+    const result = await runReview(clients, { config: makeConfig({ slice_lines: 20_000 }), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '' });
 
     const readerMessages = jest.mocked(clients.judge.sendMessage).mock.calls.map(([, user]) => user as string);
     expect(readerMessages.length).toBeGreaterThan(2);
     for (const message of readerMessages) expect(message).not.toContain('more lines in this file truncated');
     for (const line of lines) expect(readerMessages.some(m => m.includes(`+${line}`))).toBe(true);
     expect(result.outcome).toBe('ADDRESS_FIRST');
-    expect(result.findings).toEqual([expect.objectContaining({ severity: 'blocker', file: 'src/big.ts', line: 3000 })]);
+    expect(result.findings).toEqual([expect.objectContaining({ severity: 'blocker', file: 'src/big.ts', line: 12_000 })]);
   });
 
   it('ends the round INCOMPLETE without a model call when a changed line is too long to show, naming the line', async () => {
