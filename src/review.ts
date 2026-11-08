@@ -16,6 +16,7 @@ import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
+import { refuteBlockers } from './refute';
 import { runVerdictReader, verdictBlockerToFinding } from './verdict';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
@@ -1041,6 +1042,12 @@ export async function runReview(
   let judgeDurationMs: number | undefined;
   let judgeRetryCount = 0;
   const judgeWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge'));
+  // Its own label keeps the refutation calls out of the judge's retry count. A fallback without tools could not read the
+  // code, so without one a refused call fails and the finding keeps its grade.
+  const refutation = workspace && clients.judge.repoTools ? {
+    client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge?.client.repoTools ? clients.fallbacks.judge : undefined }, 'judge', 'refute'),
+    workspace,
+  } : undefined;
   try {
     core.info(`Running judge on ${findingsForJudge.length} findings...`);
     const judgeInput: JudgeInput = {
@@ -1062,14 +1069,7 @@ export async function runReview(
       resolvedThreadIds,
       suppressResolvedThreads,
       ...(related && { relatedRepos: related.repos }),
-      ...(workspace && clients.judge.repoTools && {
-        // Its own label keeps the refutation calls out of the judge's retry count. A fallback without tools could not
-        // read the code, so without one a refused call fails and the finding keeps the judge's grade.
-        refutation: {
-          client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge?.client.repoTools ? clients.fallbacks.judge : undefined }, 'judge', 'refute'),
-          workspace,
-        },
-      }),
+      ...(refutation && { refutation }),
     };
     const judgeStart = Date.now();
     const judgeResult = await runJudgeAgent(judgeWrap.client, config, judgeInput);
@@ -1185,10 +1185,14 @@ export async function runReview(
     logOutputTokens('Verdict reader', verdictUsage);
     core.info(`Verdict reader: ${verdictReport.verdict}. ${verdictReport.summary}`);
     if (verdictReport.verdict === 'ADDRESS_FIRST') {
-      const readerFindings = verdictReport.blockers.map(verdictBlockerToFinding).map(f => {
+      const readerBlockers = verdictReport.blockers.map(verdictBlockerToFinding).map(f => {
         const sameAs = matchPriorBlocker(f, priorBlockers);
         return sameAs ? { ...f, sameAs } : f;
       });
+      // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found.
+      const readerFindings = refutation
+        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff })
+        : readerBlockers;
       finalFindings = [...finalFindings, ...readerFindings];
       threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
       outcome = 'ADDRESS_FIRST';
