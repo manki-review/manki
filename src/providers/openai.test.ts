@@ -126,13 +126,15 @@ describe('readCodexLimits', () => {
   beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'manki-codex-limits-')); });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
-  it('reads the last recorded limits of the newest session written since the call started', () => {
+  it('reads the last recorded limits of the newest session written since the call started that has any', () => {
     writeSession('rollout-old.jsonl', [tokenCount({ primary: { used_percent: 99, window_minutes: 300 } })], 1000);
     writeSession('rollout-new.jsonl', [
       tokenCount({ primary: { used_percent: 10, window_minutes: 300 } }),
       tokenCount({ primary: { used_percent: 72.4, window_minutes: 300, resets_at: 1794000000 }, secondary: { used_percent: 91, window_minutes: 10080 } }),
       JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message' } }),
     ], 2000);
+    // A call running in parallel started a newer session that has no readings yet.
+    writeSession('rollout-parallel.jsonl', [JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message' } })], 3000);
 
     expect(readCodexLimits(home, 1500 * 1000)).toEqual([
       { account: 'ChatGPT subscription', window: '5-hour', usedPercent: 72, resetsAt: 1794000000 },

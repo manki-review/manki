@@ -39,7 +39,12 @@ function listSessionFiles(dir: string): { path: string; mtimeMs: number }[] {
     return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) return listSessionFiles(path);
-      return entry.isFile() && entry.name.endsWith('.jsonl') ? [{ path, mtimeMs: statSync(path).mtimeMs }] : [];
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) return [];
+      try {
+        return [{ path, mtimeMs: statSync(path).mtimeMs }];
+      } catch {
+        return [];
+      }
     });
   } catch {
     return [];
@@ -47,17 +52,26 @@ function listSessionFiles(dir: string): { path: string; mtimeMs: number }[] {
 }
 
 /**
- * Reads the usage limits Codex last recorded in the newest session file under `codexHome` written since `since`, in
- * milliseconds. Codex records them as `rate_limits` on its `token_count` events. Returns none when nothing was recorded.
+ * Reads the usage limits Codex recorded as `rate_limits` under `codexHome` since `since`, in milliseconds, from the newest
+ * session file that has any. Calls run in parallel, so the newest file can be another call's with none yet. Every file
+ * reads the same account. Returns none when nothing was recorded.
  */
 export function readCodexLimits(codexHome: string, since: number): LimitUsage[] {
-  const newest = listSessionFiles(join(codexHome, 'sessions'))
+  const files = listSessionFiles(join(codexHome, 'sessions'))
     .filter(f => f.mtimeMs >= since)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
-  if (!newest) return [];
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const file of files) {
+    const limits = readSessionLimits(file.path);
+    if (limits.length > 0) return limits;
+  }
+  return [];
+}
+
+/** Reads the usage limits last recorded in the Codex session file at `path`, or none. */
+function readSessionLimits(path: string): LimitUsage[] {
   let lines: string[];
   try {
-    lines = readFileSync(newest.path, 'utf8').split('\n');
+    lines = readFileSync(path, 'utf8').split('\n');
   } catch {
     return [];
   }
