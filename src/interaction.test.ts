@@ -962,7 +962,7 @@ describe('handleDismiss (via handlePRComment)', () => {
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1);
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
-      body: 'Dismissed. Review memory is off, so later reviews can raise it again.\n\n<!-- manki -->',
+      body: 'Dismissed. Review memory is off or was skipped for this run, so later reviews can raise it again.\n\n<!-- manki -->',
     }));
   });
 });

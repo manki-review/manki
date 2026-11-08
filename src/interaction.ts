@@ -102,7 +102,7 @@ function staysOpenNote(isSecurity: boolean, fixed: boolean): string {
 
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
 
-const MEMORY_DISABLED = 'Review memory is off for this repo. Add `memory.enabled: true` to `.manki.yml` to turn it on.';
+const MEMORY_DISABLED = 'Review memory is off for this repo. Add `memory.enabled: true` to `.manki.yml` to turn it on. When it is on already, the run log says why memory was skipped, such as `memory.repo` without `memory_repo_token`.';
 
 const GLOBAL_MEMORY_BY_HAND = 'Nothing was stored. Global memory applies to every repo, so the owner of the memory repository edits `_global/` by hand.';
 
@@ -533,7 +533,7 @@ async function handleDismiss(
   }
 
   const memoryNote = !memory
-    ? 'Review memory is off, so later reviews can raise it again.'
+    ? 'Review memory is off or was skipped for this run, so later reviews can raise it again.'
     : isTrusted
       ? 'Stored as a suppression in review memory.'
       : 'Only collaborators can store a dismissal in review memory, so later reviews can raise it again.';
