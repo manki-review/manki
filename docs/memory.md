@@ -34,6 +34,8 @@ The review body then says **Memory skipped:** with the reason and the fix, the r
 
 To keep memory in a repository of your own, set `memory.repo` and pass a token that writes it in the `memory_repo_token` input (see [Review memory token](#review-memory-token)). Manki then reads and writes that repository directly, with the repo's files in a folder named after the repo. For a private repo, the memory repo must be private and have the same owner. Without the token, Manki skips memory for the run and says so in the review. It does not fall back to the central repository. With [your own GitHub App](getting-started.md#your-own-github-app), Manki mints no memory token from it either: pass `memory_repo_token` the same way.
 
+Create the memory repo and seed its folders:
+
 ```bash
 gh repo create <owner>/review-memory --private --description "Review memory for Manki"
 git clone https://github.com/<owner>/review-memory
@@ -59,6 +61,8 @@ git add -A
 git commit -m "chore: seed review memory"
 git push
 ```
+
+Then point `.manki.yml` at it:
 
 ```yaml
 memory:
