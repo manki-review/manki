@@ -18,6 +18,7 @@ import {
   synthesizeMissingThreadEvaluations,
   JudgeInput,
   JudgedFinding,
+  MAX_INTER_ROUND_DIFF_CHARS,
 } from './judge';
 import { LLMClient } from './providers';
 import { AnthropicClient } from './providers/anthropic';
@@ -1622,6 +1623,18 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('## Open Thread Code Regions');
     expect(userMessage).toContain('PRRT_x');
     expect(userMessage).toContain('>>> 5: flagged()');
+    expect(userMessage).not.toContain('The diff is cut at');
+
+    // A diff past the cap says where it was cut, so the judge does not read a missing file as unchanged.
+    mockSendMessage.mockClear();
+    const long = `diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+${'x'.repeat(MAX_INTER_ROUND_DIFF_CHARS)}\n`;
+    await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3,
+      openThreads: [{ threadId: 'PRRT_x', title: 'Null check', file: 'src/a.ts', line: 5, severity: 'warning' }],
+      priorRounds: priorRounds.map(roundContextFromLegacy),
+      interRoundDiff: long,
+    });
+    expect(mockSendMessage.mock.calls[0][1]).toContain(`The diff is cut at ${MAX_INTER_ROUND_DIFF_CHARS} of its ${long.length} characters, so changes after the cut are missing.`);
   });
 
   it('renders OpenThread `description` and `suggestedFix` in the open-thread block', async () => {

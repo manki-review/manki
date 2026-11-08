@@ -120,6 +120,7 @@ jest.mock('./diff', () => {
       return { diff: { ...diff, files: included }, excluded };
     }),
     filterRawDiff: jest.fn((rawDiff: string) => rawDiff),
+    ownChangeSince: jest.fn((sinceLastRound: string) => sinceLastRound),
     addCodeContext: jest.requireActual('./diff').addCodeContext,
     tagFindingOrigins: jest.requireActual('./diff').tagFindingOrigins,
     compareChanges: jest.requireActual('./diff').compareChanges,
@@ -4947,6 +4948,27 @@ describe('runFullReview orchestration', () => {
     );
     // The PR's change at the prior commit comes from the base branch diffed against that commit.
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', expect.any(String), 'prior-sha');
+    // Only the files whose PR change moved since that commit stay, so a rebase adds nothing.
+    expect(jest.mocked(diffModule.ownChangeSince)).toHaveBeenCalledWith(
+      'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
+      expect.objectContaining({ files: expect.any(Array) }),
+      expect.objectContaining({ files: expect.any(Array) }),
+    );
+  });
+
+  it('leaves the inter-round diff unknown when the PR\'s change at the prior commit cannot be fetched', async () => {
+    // The compare of the two heads alone would show what a rebase brought in as the author's change.
+    setupParallelFetchCase();
+    jest.mocked(ghUtils.fetchInterRoundDiff).mockImplementation(async (_octokit, _owner, _repo, _base, head) => {
+      if (head === 'prior-sha') throw new Error('compare API down');
+      return 'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n';
+    });
+
+    await callRunFullReview();
+
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].interRoundDiff).toBeUndefined();
+    expect(jest.mocked(diffModule.ownChangeSince)).not.toHaveBeenCalled();
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('the inter-round diff cannot leave out a rebase'));
   });
 
   it('handles both inter-round diff and linked issues fetch rejecting simultaneously', async () => {

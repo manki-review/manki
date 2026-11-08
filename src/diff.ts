@@ -118,6 +118,11 @@ export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
   return rebuildRawDiff(filterDiff(parsePRDiff(rawDiff), excludePaths).diff);
 }
 
+/** The change a file's diff makes, without hunk positions, so a rebase that moves it keeps it. */
+function fileChange(file: DiffFile): unknown[] {
+  return [file.changeType, file.oldPath, file.path, file.modeChange, file.hunks.map(h => h.content)];
+}
+
 /**
  * Returns a SHA-256 digest of the change `diff` makes, excluded files included, so a change to a file no model reads
  * still changes it. Hunk positions are left out, so a diff moved by a rebase keeps its digest. A file with no lines,
@@ -125,9 +130,26 @@ export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
  */
 export function changeDigest(diff: ParsedDiff): string {
   return createHash('sha256').update(JSON.stringify([
-    diff.files.map(f => [f.changeType, f.oldPath, f.path, f.modeChange, f.hunks.map(h => h.content)]),
+    diff.files.map(fileChange),
     diff.binarySkipped?.map(f => f.header),
   ])).digest('hex');
+}
+
+/**
+ * Keeps the files of `sinceLastRound`, the diff from the last reviewed commit to the head, whose change in the PR differs
+ * between `before` and `after`, the PR's diffs against its base at those two commits. A file only a rebase onto the base
+ * branch touched is dropped, so a push that only rebases yields an empty diff.
+ */
+export function ownChangeSince(sinceLastRound: string, before: ParsedDiff, after: ParsedDiff): string {
+  const key = (file: DiffFile) => JSON.stringify(fileChange(file));
+  const beforeByPath = new Map(before.files.map(file => [file.path, key(file)]));
+  const afterPaths = new Set(after.files.map(file => file.path));
+  const changed = new Set([
+    ...after.files.filter(file => beforeByPath.get(file.path) !== key(file)).map(file => file.path),
+    ...before.files.filter(file => !afterPaths.has(file.path)).map(file => file.path),
+  ]);
+  const diff = parsePRDiff(sinceLastRound);
+  return rebuildRawDiff({ ...diff, files: diff.files.filter(file => changed.has(file.path) || (!!file.oldPath && changed.has(file.oldPath))) });
 }
 
 /**
