@@ -1180,7 +1180,7 @@ export async function runJudgeAgent(
 
   const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations };
 
-  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds)), diff);
+  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds), diff), diff);
   const suppression = applyCrossRoundSuppression(mapped, priorRounds, crossRoundOptions);
   const { findings: suppressed, count: inPrCount } = applyInPrSuppression(suppression.findings, inPrSuppressions);
   const checked = refutation ? await refuteBlockers(refutation.client, suppressed, { workspace: refutation.workspace, priorRounds, effort, diff }) : suppressed;
@@ -1255,6 +1255,7 @@ export function mapJudgedToFindings(
   judged: JudgedFinding[],
   provenanceMap?: ProvenanceEntry[],
   priorBlockers: PriorBlocker[] = [],
+  diff?: ParsedDiff,
 ): Finding[] {
   const aligned = alignJudgedToFindings(original, judged);
   const graded = original.map((o, i) => {
@@ -1278,7 +1279,7 @@ export function mapJudgedToFindings(
     }
     return finding;
   });
-  return foldDuplicates(graded, aligned).map(capUnprovenBlocker);
+  return foldDuplicates(graded, aligned, diff).map(capUnprovenBlocker);
 }
 
 /**
@@ -1368,7 +1369,7 @@ function closestTitle(title: string, candidates: Array<string | undefined>): num
  * `findings[i]` is "Finding i + 1" and `judged[i]` is the judge's entry for it. A self-reference, a forward pointer or an
  * out-of-range pointer is ignored. A duplicate of a finding graded `ignore` is removed while that finding stays `ignore`.
  */
-function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undefined>): Finding[] {
+function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undefined>, diff?: ParsedDiff): Finding[] {
   const rootOf = (n: number): number => {
     let node = n;
     for (;;) {
@@ -1387,8 +1388,8 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
     const survivor = result[root - 1];
     survivor.reviewers = [...new Set([...survivor.reviewers, ...findings[i].reviewers])];
     survivor.sameAs ??= findings[i].sameAs;
-    // Every merged reviewer must call it pre-existing, or the merged finding is not.
-    if (!findings[i].preExisting) delete survivor.preExisting;
+    // Every merged copy must be marked pre-existing and stay off the diff, or the merged finding is not pre-existing.
+    if (!findings[i].preExisting || (diff && touchesChangedCode(findings[i], diff))) delete survivor.preExisting;
     const evidence = mergeEvidence(survivor.evidence, findings[i].evidence);
     if (evidence) survivor.evidence = evidence;
     core.info(`Judge folded duplicate "${findings[i].title}" into "${survivor.title}"`);
