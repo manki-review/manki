@@ -45,7 +45,7 @@ Example of one finding:
 
 ## Evidence
 
-- In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each. Start each line with its \`file:line\` and quote the key code it refers to in backticks, such as "src/sync.ts:42 passes \`fh_bound\` to \`truncate_above\`".
+- In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each. Start each line with its \`file:line\` and quote the key code it refers to in backticks, such as "src/sync.ts:42 passes \`fh_bound\` to \`truncate_above\`". When the quoted code holds a backtick itself, wrap it in double backticks with a space inside, as in \`\` a \`b\` \`\`.
 - A \`blocker\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most.
 - When a finding says something is missing or handled nowhere, set \`"claimsMissing": true\` and put the search that came back empty in \`emptySearch\`, such as "grep \`close(\` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.
 

@@ -1874,8 +1874,12 @@ const MAX_CHECK_PREVIEWS = 3;
 const CHECK_PREVIEW_LINES = 5;
 /** Lines a preview shows for checks close together in one file, which share it. */
 const SHARED_PREVIEW_LINES = 8;
-// A `path:line` or `path:start-end` at the start of a check, with the path in backticks or not.
-const CHECK_LOCATION_RE = /^`?([^\s`:]+)`?:(\d+)(?:-(\d+))?`?(?![\w-])[\s:,;.]*/;
+// A `path:line` or `path:start-end` at the start of a check: bare, all in backticks, or with only the path in them.
+const CHECK_LOCATION_RE = /^(?:`([^\s`:]+):(\d+)(?:-(\d+))?`|`([^\s`:]+)`:(\d+)(?:-(\d+))?|([^\s`:]+):(\d+)(?:-(\d+))?)(?![\w`-])[\s:,;.]*/;
+// A backtick run that can open inline code: at the start or after a space or an opening mark, and before text.
+const OPENS_CODE_RE = /^$|[\s([{"'=]$/;
+// A backtick run that can close inline code: at the end or before a space or a closing mark.
+const CLOSES_CODE_RE = /^$|^[\s.,;:!?)\]}"']/;
 // A repository path made only of characters that cannot end a Markdown link or start another URL.
 const LINKABLE_PATH_RE = /^[\w@+.-]+(?:\/[\w@+.-]+)*$/;
 
@@ -1894,7 +1898,67 @@ const REFUTATION_SUMMARY: Record<RefutationOutcome, string> = { confirmed: 'doub
 /** Shortens model text to one plain line, so no raw tool output or code block reaches the comment. */
 function oneLine(text: string): string {
   const line = sanitizeMarkdown(text).replace(/```/g, '').replace(/\s+/g, ' ').trim();
-  return line.length <= MAX_CHECK_CHARS ? line : `${line.slice(0, MAX_CHECK_CHARS - 1).trimEnd()}…`;
+  return balanceCodeSpans(line.length <= MAX_CHECK_CHARS ? line : `${line.slice(0, MAX_CHECK_CHARS - 1).trimEnd()}…`);
+}
+
+// A backtick run Markdown reads as code, not one escaped with a backslash.
+const LIVE_BACKTICKS_RE = /(?<!\\)`+/g;
+
+/** Returns `line` with every live backtick escaped, so it shows as text. */
+function escapeBackticks(line: string): string {
+  return line.replace(/(?<!\\)`/g, '\\`');
+}
+
+/** Whether every backtick run in `runs` opens or closes inline code as Markdown pairs them, with none left over. */
+function pairsAsMarkdown(runs: RegExpMatchArray[]): boolean {
+  let open: number | undefined;
+  for (const run of runs) {
+    if (open === undefined) open = run[0].length;
+    else if (run[0].length === open) open = undefined;
+  }
+  return open === undefined;
+}
+
+/**
+ * Returns `line` with inline code that cannot break the Markdown after it. A model often quotes code that holds a
+ * backtick in single backticks, which Markdown closes at the inner one. Such a line is paired by where each run sits:
+ * one before text opens, one after text closes the runs it matches exactly. Each outermost span is written again with
+ * a longer backtick run. A line that cannot be paired either way shows every backtick as text.
+ */
+function balanceCodeSpans(line: string): string {
+  const runs = [...line.matchAll(LIVE_BACKTICKS_RE)];
+  if (pairsAsMarkdown(runs)) return line;
+  let out = '';
+  let last = 0;
+  // The lengths of the runs still open, and where the outermost one starts.
+  const open: number[] = [];
+  let outer = 0;
+  for (const run of runs) {
+    const at = run.index!;
+    const length = run[0].length;
+    const before = line.slice(0, at);
+    const after = line.slice(at + length);
+    if (open.length > 0 && /\S$/.test(before) && CLOSES_CODE_RE.test(after.slice(0, 1))) {
+      // A closing run closes whole opening runs, the latest first, and none partly.
+      let left = length;
+      let closed = 0;
+      while (left > 0 && open.length > 0 && open[open.length - 1] <= left) {
+        closed = open.pop()!;
+        left -= closed;
+      }
+      if (left > 0) return escapeBackticks(line);
+      if (open.length === 0) {
+        out += line.slice(last, outer) + inlineCode(line.slice(outer + closed, at + length - closed));
+        last = at + length;
+      }
+    } else if (OPENS_CODE_RE.test(before.slice(-1)) && /^\S/.test(after)) {
+      if (open.length === 0) outer = at;
+      open.push(length);
+    } else {
+      return escapeBackticks(line);
+    }
+  }
+  return open.length === 0 ? out + line.slice(last) : escapeBackticks(line);
 }
 
 /** Lines `start` to `end` of `file`. */
@@ -1909,13 +1973,14 @@ interface CodeLinks { linkTo: LineLink; lineCounts: ReadonlyMap<string, number> 
 function parseCheck(entry: string): Check | undefined {
   // The path is model output that PR content can steer, so only a plain repository path becomes a link.
   const match = entry.match(CHECK_LOCATION_RE);
-  const located = match && LINKABLE_PATH_RE.test(match[1]) && !match[1].split('/').some(segment => segment === '.' || segment === '..') ? match : null;
-  const start = located ? Number(located[2]) : 0;
-  const end = located?.[3] ? Number(located[3]) : start;
+  const [path, line, last] = match ? [1, 4, 7].map(i => match.slice(i, i + 3)).find(group => group[0] !== undefined)! : [];
+  const located = match && LINKABLE_PATH_RE.test(path) && !path.split('/').some(segment => segment === '.' || segment === '..') ? match : null;
+  const start = located ? Number(line) : 0;
+  const end = located && last ? Number(last) : start;
   const rest = oneLine(located && start > 0 && end >= start ? entry.slice(located[0].length) : entry);
   const text = rest ? `${rest[0].toUpperCase()}${rest.slice(1)}` : '';
   if (!located || start <= 0 || end < start) return text ? { text } : undefined;
-  return { text: text || 'Shows the failure.', at: { file: sanitizeFilePath(located[1]), start, end } };
+  return { text: text || 'Shows the failure.', at: { file: sanitizeFilePath(path), start, end } };
 }
 
 const overlaps = (a: CodeRange, b: CodeRange): boolean => a.file === b.file && a.start <= b.end && b.start <= a.end;
