@@ -1398,16 +1398,20 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
     const root = rootOf(i + 1);
     if (root === i + 1) continue;
     folded.add(i);
-    const survivor = result[root - 1];
-    survivor.reviewers = [...new Set([...survivor.reviewers, ...findings[i].reviewers])];
-    survivor.sameAs ??= findings[i].sameAs;
-    // Every merged copy must pass the pre-existing checks on its own, or the merged finding is not pre-existing.
-    if (!findings[i].preExisting || (staysPreExisting && !staysPreExisting(findings[i]))) delete survivor.preExisting;
-    const evidence = mergeEvidence(survivor.evidence, findings[i].evidence);
-    if (evidence) survivor.evidence = evidence;
-    core.info(`Judge folded duplicate "${findings[i].title}" into "${survivor.title}"`);
+    foldInto(result[root - 1], findings[i], staysPreExisting);
+    core.info(`Judge folded duplicate "${findings[i].title}" into "${result[root - 1].title}"`);
   }
   return result.filter((_, i) => !folded.has(i));
+}
+
+/** Merges the duplicate `copy` into `survivor`: its reviewers, its prior-round match and what it cites. */
+export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (copy: Finding) => boolean): void {
+  survivor.reviewers = [...new Set([...survivor.reviewers, ...copy.reviewers])];
+  survivor.sameAs ??= copy.sameAs;
+  // Every merged copy must pass the pre-existing checks on its own, or the merged finding is not pre-existing.
+  if (!copy.preExisting || (staysPreExisting && !staysPreExisting(copy))) delete survivor.preExisting;
+  const evidence = mergeEvidence(survivor.evidence, copy.evidence);
+  if (evidence) survivor.evidence = evidence;
 }
 
 /** Returns the prior-round fix that the code under `finding` applies, if any. */
