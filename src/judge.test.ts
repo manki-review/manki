@@ -3708,15 +3708,17 @@ describe('buildJudgeUserMessage with linked issues', () => {
 });
 
 describe('deduplicateFindings', () => {
-  it('removes findings with identical title and file', () => {
+  it('removes findings with identical title and file, and keeps a pre-existing mark only when every copy has it', () => {
     const findings = [
-      makeFinding({ title: 'Null check', file: 'src/a.ts', line: 10, reviewers: ['R1'] }),
+      makeFinding({ title: 'Null check', file: 'src/a.ts', line: 10, reviewers: ['R1'], preExisting: 'Old code.' }),
       makeFinding({ title: 'Null check', file: 'src/a.ts', line: 20, reviewers: ['R2'] }),
     ];
 
     const result = deduplicateFindings(findings);
     expect(result).toHaveLength(1);
     expect(result[0].reviewers).toEqual(['R1']);
+    expect(result[0].preExisting).toBeUndefined();
+    expect(deduplicateFindings([findings[0], { ...findings[1], preExisting: 'Old code.' }])[0].preExisting).toBe('Old code.');
   });
 
   it('keeps findings with same title but different files', () => {

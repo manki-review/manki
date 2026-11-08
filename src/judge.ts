@@ -1587,13 +1587,19 @@ function hasReversalWord(finding: Finding): boolean {
 }
 
 export function deduplicateFindings(findings: Finding[]): Finding[] {
-  const seen = new Set<string>();
-  return findings.filter(f => {
+  const kept = new Map<string, Finding>();
+  for (const f of findings) {
     const key = `${f.title}::${f.file}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+    const first = kept.get(key);
+    if (!first) {
+      kept.set(key, f);
+    } else if (first.preExisting && !f.preExisting) {
+      // The kept finding stays pre-existing only when every copy of it was marked so.
+      const { preExisting: _preExisting, ...unmarked } = first;
+      kept.set(key, unmarked);
+    }
+  }
+  return [...kept.values()];
 }
 
 function findingKey(f: Finding): string {
