@@ -1059,7 +1059,8 @@ async function collectOpenThreads(
       threadUrl: f.threadUrl,
       title: f.title,
       file: f.file,
-      line: f.line,
+      // A thread posted on a fallback line names its finding's own line, which is where the judge has to look.
+      line: f.findingLine ?? f.line,
       severity: f.severity,
       description: f.description,
       suggestedFix: f.suggestedFix,

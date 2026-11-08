@@ -48,18 +48,21 @@ interface PostedThread {
   file: string;
   line: number;
   originalLine?: number;
+  /** Line the finding names, which differs from the posted line when the finding was posted on a fallback line. */
+  findingLine?: number;
   markerSlug?: string;
 }
 
 /**
  * Returns the ID of the thread posted for a finding: same file and marker slug, nearest
- * line within `PRIOR_THREAD_LINE_TOLERANCE`. A file-level thread matches any line.
+ * line within `PRIOR_THREAD_LINE_TOLERANCE`. A file-level thread matches any line. The line is the one the finding
+ * names, which a thread posted on a fallback line still records, so such a thread matches too.
  */
 export function findPriorThreadId(fp: FindingFingerprint, threads: PostedThread[]): string | undefined {
   let best: { threadId: string; distance: number } | undefined;
   for (const t of threads) {
     if (t.file !== fp.file || t.markerSlug !== fp.slug) continue;
-    const line = t.originalLine ?? t.line;
+    const line = t.findingLine ?? t.originalLine ?? t.line;
     // A file-level thread has no line, so it matches on file and slug alone, behind any line thread.
     const distance = !line
       ? PRIOR_THREAD_LINE_TOLERANCE

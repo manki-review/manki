@@ -3706,16 +3706,22 @@ describe('postReview non-blocking findings', () => {
 
   it('does not post a non-blocking finding again while its open thread carries it, or when it repeats an answered thread', async () => {
     const { octokit, createReview } = makeOctokit();
-    const existingThreads = [{ title: 'Extract helper', file: 'src/a.ts', line: 5, severity: 'suggestion' as const, status: 'open' as const, threadId: 'T1', markerSlug: 'Extract-helper' }];
+    // `Fallback line` was posted on line 1 because its line was outside that round's diff.
+    const existingThreads = [
+      { title: 'Extract helper', file: 'src/a.ts', line: 5, severity: 'suggestion' as const, status: 'open' as const, threadId: 'T1', markerSlug: 'Extract-helper' },
+      { title: 'Fallback line', file: 'src/a.ts', line: 1, findingLine: 30, severity: 'suggestion' as const, status: 'open' as const, threadId: 'T3', markerSlug: 'Fallback-line' },
+    ];
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
       nonBlocking('suggestion', 'Extract helper', 5),
+      nonBlocking('suggestion', 'Fallback line', 30),
       nonBlocking('suggestion', 'Worse retry', 11, { answeredIn: { threadId: 'T2', answer: 'Withdrawn. Fine.' } }),
     ]), diff, undefined, undefined, { existingThreads });
 
     const review = createReview.mock.calls[0][0];
     expect(review.comments).toEqual([]);
     expect(review.body).not.toContain('Extract helper');
+    expect(review.body).not.toContain('Fallback line');
     expect(review.body).not.toContain('Worse retry');
   });
 

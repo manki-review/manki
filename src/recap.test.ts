@@ -1182,6 +1182,43 @@ describe('fetchRecapState', () => {
       expect(determineOutcome([], unattached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts', 'src/bar.ts'])).outcome).toBe('ADDRESS_FIRST');
     });
 
+    it('matches a blocker posted on a fallback line to its thread by the line its finding data names', async () => {
+      const title = 'Auto-approve still approves unread files';
+      const slug = titleToSlug(title);
+      const entry = { fingerprint: { file: 'src/state.ts', lineStart: 512, lineEnd: 512, slug }, severity: 'blocker' as const, title };
+      const ctx = makeRoundContext(12, { findings: { count: 1, severityCounts: { blocker: 1, warning: 0, suggestion: 0, nitpick: 0 }, entries: [entry] } });
+      // Line 512 was not in that round's diff, so the thread went on line 1 and only its finding data names 512.
+      const data = JSON.stringify({ file: 'src/state.ts', line: 512, severity: 'blocker', title });
+      const octokit = mockOctokit([
+        makeThread({
+          id: 'T_FALLBACK',
+          isResolved: true,
+          path: 'src/state.ts',
+          line: 1,
+          originalLine: 1,
+          comments: { nodes: [{ body: `\u{1F6AB} **Blocker**: ${title}\n\nDesc.\n\n<!-- manki:blocker:${slug} -->\n<!-- manki-finding: ${data} -->`, author: { login: BOT_LOGIN } }] },
+        }),
+      ], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
+
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
+      const priors = state.priorRounds[0].findings.entries;
+      expect(priors.map(e => e.threadId)).toEqual(['T_FALLBACK']);
+      expect(state.previousFindings[0]).toMatchObject({ line: 1, findingLine: 512 });
+      // The resolved thread backs its blocker, so the next round ends without `prior_unaddressed`.
+      const { outcome, verdictReason } = determineOutcome([], priors, [], collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/state.ts']));
+      expect({ outcome, verdictReason }).toEqual({ outcome: 'READY', verdictReason: 'only_nit_or_suggestion' });
+      // A finding raised again on line 512 matches the thread as well, in dedup and in the in-PR suppressions.
+      const again = makeFinding({ title, file: 'src/state.ts', line: 512, severity: 'warning' });
+      expect(deduplicateFindings([again], state.previousFindings).duplicates).toHaveLength(1);
+      expect(collectInPrSuppressions(state.previousFindings).map(s => s.fingerprint)).toEqual([expect.objectContaining({ lineStart: 512, lineEnd: 512 })]);
+      // Without the finding data the thread stays unmatched and the blocker keeps blocking, as before.
+      const bare = mockOctokit([
+        makeThread({ id: 'T_BARE', isResolved: true, path: 'src/state.ts', line: 1, originalLine: 1, comments: { nodes: [{ body: `**Blocker**: ${title}\n\n<!-- manki:blocker:${slug} -->`, author: { login: BOT_LOGIN } }] } }),
+      ], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
+      const bareState = await fetchRecapState(bare, TEST_BOT, 'owner', 'repo', 1);
+      expect(bareState.priorRounds[0].findings.entries.map(e => e.threadId)).toEqual([undefined]);
+    });
+
     it('counts a thread Manki resolved as dismissed only when the judge marked it addressed', async () => {
       const title = 'Missing null check';
       const slug = titleToSlug(title);
