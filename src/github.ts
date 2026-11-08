@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, SECURITY_TAG, VERDICT_READER_NAME, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -1109,10 +1109,11 @@ function formatFixDiff(finding: Finding, files: ReadonlyMap<string, readonly str
 }
 
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
-function formatFindingBlock(finding: Finding, links: CodeLinks): string {
+function formatFindingBlock(finding: Finding, links: CodeLinks, offerIssue = false): string {
   const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
   if (finding.file) lines.push(`[${inlineCode(findingLocation(finding))}](${links.linkTo(finding.file, finding.line)})`);
-  return [...lines, ...formatFindingDetail(finding, formatFixDiff(finding, links.files)), ...checksSection(finding, links, 'flagged')].join('\n');
+  const block = [...lines, ...formatFindingDetail(finding, formatFixDiff(finding, links.files)), ...checksSection(finding, links, 'flagged')].join('\n');
+  return offerIssue ? `${block}\n\n${issueBoxFor(finding)}` : block;
 }
 
 /**
@@ -1134,7 +1135,7 @@ const PREVIEW_CONTEXT = 2;
  * the location. Inside are what goes wrong, the fix, and a permalink to the flagged lines, which GitHub shows as code.
  * The file's lines keep the permalink inside it, since GitHub shows a range past the end as a bare link.
  */
-function formatFindingFold(finding: Finding, links: CodeLinks): string {
+function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = false): string {
   const { linkTo, files } = links;
   const location = finding.file ? ` · <a href="${linkTo(finding.file, finding.line)}"><code>${inlineHtml(findingLocation(finding))}</code></a>` : '';
   const summary = `<summary>${SEVERITY_EMOJI[finding.severity]} <b>${inlineHtml(sanitizeMarkdown(finding.title))}</b><br><sub>${inlineHtml(formatFindingHeader(finding))}${location}</sub></summary>`;
@@ -1144,7 +1145,9 @@ function formatFindingFold(finding: Finding, links: CodeLinks): string {
   const preview = !fixDiff && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
     ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))]
     : [];
-  return `<details>\n${summary}\n\n${[...formatFindingDetail(finding, fixDiff), ...preview, ...checksSection(finding, links, 'flagged')].join('\n\n')}\n\n</details>`;
+  const fold = `<details>\n${summary}\n\n${[...formatFindingDetail(finding, fixDiff), ...preview, ...checksSection(finding, links, 'flagged')].join('\n\n')}\n\n</details>`;
+  // The box goes right under the fold, so it shows without opening it.
+  return offerIssue ? `${fold}\n\n${issueBoxFor(finding)}` : fold;
 }
 
 /** Returns one list of the review body: a heading, an optional intro, then one fold per finding. */
@@ -1286,9 +1289,9 @@ export async function postReview(
       } else if (hasOpenThread(f, existingThreads)) {
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
       } else if (isPreExisting(f)) {
-        preExisting.push(formatFindingFold(f, links));
+        preExisting.push(formatFindingFold(f, links, true));
       } else if (f.origin === 'reviewed') {
-        previouslyMissed.push(formatFindingFold(f, links));
+        previouslyMissed.push(formatFindingFold(f, links, true));
       } else {
         nonBlocking.push(f);
       }
@@ -1310,7 +1313,7 @@ export async function postReview(
 
     const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
     if (!f.file || (f.line <= 0 && !diffFile)) {
-      generalFindings.push(formatFindingBlock(f, links));
+      generalFindings.push(formatFindingBlock(f, links, true));
       continue;
     }
 
@@ -1319,7 +1322,7 @@ export async function postReview(
     if (!diff) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
     } else if (!diffFile) {
-      invalidComments.push(formatFindingBlock(f, links));
+      invalidComments.push(formatFindingBlock(f, links, true));
     } else if (f.line > 0 && isLineInDiff(diffFile, f.line)) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
     } else if (hasOpenThread(f, existingThreads)) {
@@ -1337,7 +1340,7 @@ export async function postReview(
     if (inline.has(f)) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
     } else {
-      (f.severity === 'nitpick' ? nitpicks : smallerFindings).push(formatFindingFold(f, links));
+      (f.severity === 'nitpick' ? nitpicks : smallerFindings).push(formatFindingFold(f, links, true));
     }
   }
 
@@ -1421,7 +1424,7 @@ export async function postReview(
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
-    const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links)).join('\n\n')}`, codeTokens);
+    const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links, true)).join('\n\n')}`, codeTokens);
     // Truncate the existing body, never the blocking findings appended to it or the round record.
     const room = REVIEW_BODY_BUDGET - section.length - record.length;
     if (room <= 0) {
@@ -2124,9 +2127,11 @@ function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: 
   return [`${CHECKS_MARKER}\n<details>\n<summary>How this was checked: ${counts.join(', ')}</summary>\n\n${parts.join('\n\n')}\n\n</details>`];
 }
 
-/** Returns the id a finding's issue box carries: its file, line and title slug. */
-function issueBoxId(finding: Finding): string {
-  return `${finding.file}:${finding.line}:${titleToSlug(finding.title)}`;
+/** Returns the box that files `finding` as an issue, with its file, line and title slug as the id. */
+function issueBoxFor(finding: Finding): string {
+  // A file name with `-->` or a line break would end the hidden comment that carries the id, so those are encoded.
+  const file = finding.file.replace(/[%<>\r\n]/g, encodeURIComponent);
+  return issueBox(`${file}:${finding.line}:${titleToSlug(finding.title)}`);
 }
 
 function formatFindingComment(finding: Finding, links: CodeLinks): string {
@@ -2146,8 +2151,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
     comment += `\n\n<details>\n<summary>Details</summary>\n\n${rest}\n\n</details>`;
   }
   for (const section of checks) comment += `\n\n${section}`;
-  // A public issue would disclose a security defect. The verdict reader cannot mark one, so its blockers get no box either.
-  if (!finding.tags?.includes(SECURITY_TAG) && !finding.reviewers.includes(VERDICT_READER_NAME)) comment += `\n\n${issueBox(issueBoxId(finding))}`;
+  comment += `\n\n${issueBoxFor(finding)}`;
 
   const data: Record<string, unknown> = {
     file: finding.file,
