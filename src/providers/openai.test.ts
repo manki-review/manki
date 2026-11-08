@@ -489,6 +489,17 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     expect(withRelated.relatedReads).toEqual({ 'dashpay/dash': 2 });
     expect(withoutRelated.relatedReads).toBeUndefined();
     expect((mockSpawn.mock.calls[1][1] as string[]).join(' ')).not.toContain('--reads-file');
+
+    // A call that fails still reports the reads it made, on its error.
+    setupSpawnMock('', { exitCode: 1, stderr: 'ERROR: something broke' });
+    const failingSpawn = mockSpawn.getMockImplementation()!;
+    mockSpawn.mockImplementation((...spawnArgs: Parameters<typeof failingSpawn>) => {
+      const serverArgs = JSON.parse((spawnArgs[1] as string[]).find(arg => arg.startsWith('mcp_servers.manki.args='))!.slice('mcp_servers.manki.args='.length)) as string[];
+      writeFileSync(serverArgs[serverArgs.indexOf('--reads-file') + 1], JSON.stringify({ 'dashpay/dash': 4 }));
+      return failingSpawn(...spawnArgs);
+    });
+    const failure = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related } }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ message: expect.stringContaining('Codex CLI invocation failed'), relatedReads: { 'dashpay/dash': 4 } });
   });
 
   it('passes model_reasoning_effort override when effort is set on o-series model', async () => {

@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, carryRelatedReads, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -239,6 +239,7 @@ export class OpenAIClient implements LLMClient {
       const toolArgs = repoTools
         ? codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, related: repoTools.related, readsFile }), env)
         : [];
+      const reads = () => (repoTools?.related ? readRelatedReads(readsFile) : undefined);
       const exit = await runCli({
         label: 'Codex',
         cliPath,
@@ -249,8 +250,8 @@ export class OpenAIClient implements LLMClient {
         signal: options?.signal,
         onStdout: (chunk) => { output += chunk; },
         stderrResetsStale: true,
-      });
-      return { ...exit, relatedReads: repoTools?.related && readRelatedReads(readsFile) };
+      }).catch((error: unknown) => { throw carryRelatedReads(error, reads()); });
+      return { ...exit, relatedReads: reads() };
     }).catch((error: unknown) => {
       warnReplyTail('Codex CLI', output);
       throw error;
@@ -263,7 +264,7 @@ export class OpenAIClient implements LLMClient {
       if (quota && !quota.overloaded) {
         const message = `ChatGPT subscription limit reached: ${errorLine}`;
         core.warning(message);
-        throw new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token');
+        throw carryRelatedReads(new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token'), relatedReads);
       }
       const msg = buildExitDiagnostics({
         exitCode: code,
@@ -277,7 +278,7 @@ export class OpenAIClient implements LLMClient {
       });
       core.warning(`Codex CLI failed (${msg})`);
       warnReplyTail('Codex CLI', output);
-      throw new Error(`Codex CLI invocation failed (${msg})`);
+      throw carryRelatedReads(new Error(`Codex CLI invocation failed (${msg})`), relatedReads);
     }
     const content = output.trim();
     core.debug(sanitizeLogOutput(content.slice(0, 200)));

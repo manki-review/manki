@@ -539,6 +539,18 @@ describe('sendViaOAuth — error paths', () => {
     expect(systemPromptFile).toContain('A change that breaks a consumer is a `warning` that lists the consumer\'s call sites');
     expect(response.toolSteps).toEqual([{ tool: 'Read', durationMs: expect.any(Number) }, { tool: 'mcp__manki__git_history', durationMs: expect.any(Number) }]);
     expect(response.relatedReads).toEqual({ 'dashpay/dash': 3 });
+
+    // A call that fails still reports the reads it made, on its error.
+    setupSpawnMock({ exitCode: 1, stderr: 'Error: something broke' });
+    const failingSpawn = mockSpawn.getMockImplementation()!;
+    mockSpawn.mockImplementationOnce((...args: Parameters<typeof failingSpawn>) => {
+      const cliArgs = args[1] as string[];
+      const serverArgs = (JSON.parse(readFileSync(cliArgs[cliArgs.indexOf('--mcp-config') + 1], 'utf-8')) as { mcpServers: { manki: { args: string[] } } }).mcpServers.manki.args;
+      writeFileSync(serverArgs[serverArgs.indexOf('--reads-file') + 1], JSON.stringify({ 'dashpay/platform': 2 }));
+      return failingSpawn(...args);
+    });
+    const failure = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related } }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ relatedReads: { 'dashpay/platform': 2 } });
   });
 
   it('fails when the CLI uses all its turns before it answers', async () => {

@@ -4893,9 +4893,14 @@ describe('recordCalls', () => {
     // A client that reports no tool steps, such as Codex, leaves it unknown whether the model was told to wrap up.
     const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5', relatedReads: { 'o/r': 2 } }), repoTools: true } as unknown as LLMClient;
     await recordCalls(silent, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } });
+    // A call that failed keeps the related repo reads its error carries.
+    const timedOut = Object.assign(new Error('Codex CLI timed out'), { relatedReads: { 'o/r': 1 } });
+    const failing = { sendMessage: jest.fn().mockRejectedValue(timedOut), repoTools: true } as unknown as LLMClient;
+    await recordCalls(failing, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } }).catch(() => undefined);
     expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest, c.relatedReads])).toEqual([
-      [4, true, true, undefined], [5, undefined, true, undefined], [undefined, undefined, false, undefined], [3, undefined, true, { 'o/r': 2 }],
+      [4, true, true, undefined], [5, undefined, true, undefined], [undefined, undefined, false, undefined], [3, undefined, true, { 'o/r': 2 }], [3, undefined, true, { 'o/r': 1 }],
     ]);
+    expect(budgeted.at(-1)).toMatchObject({ failed: true, error: 'Codex CLI timed out' });
     expect([recordCalls(fallback, finder, []).repoTools, judge.repoTools]).toEqual([true, undefined]);
     expect(summarizeCalls(calls)).toEqual({
       calls: 6, failedCalls: 2, unpricedCalls: 3,

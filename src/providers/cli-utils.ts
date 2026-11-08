@@ -466,6 +466,17 @@ export function relatedReadsFile(dir: string): string {
   return join(dir, 'related-reads.json');
 }
 
+/** Puts the related repo reads of a call that failed on its error and returns it, so the failed call's record keeps them. */
+export function carryRelatedReads(error: unknown, reads: Record<string, number> | undefined): unknown {
+  if (reads && error && typeof error === 'object') (error as { relatedReads?: Record<string, number> }).relatedReads = reads;
+  return error;
+}
+
+/** Returns the related repo reads `carryRelatedReads` put on `error`, if any. */
+export function relatedReadsOf(error: unknown): Record<string, number> | undefined {
+  return error && typeof error === 'object' ? (error as { relatedReads?: Record<string, number> }).relatedReads : undefined;
+}
+
 /** Returns the related repo read counts a tool server kept in `path`, or `undefined` when it kept none. */
 export function readRelatedReads(path: string): Record<string, number> | undefined {
   if (!existsSync(path)) return undefined;

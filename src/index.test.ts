@@ -3713,7 +3713,7 @@ describe('runFullReview orchestration', () => {
         llmCalls: [
           call('reviewer', 'bbbbbbbbbbbb', { agent: 'general', stepBudget: 15, wrapUpNoted: true, relatedReads: { 'o/r': 3 } }),
           call('reviewer', 'aaaaaaaaaaaa', { agent: 'security', relatedReads: { 'o/r': 1 } }),
-          call('reviewer', 'aaaaaaaaaaaa', { agent: 'general', attempt: 2 }), call('judge', 'cccccccccccc'),
+          call('reviewer', 'aaaaaaaaaaaa', { agent: 'general', attempt: 2, failed: true, relatedReads: { 'o/r': 2 } }), call('judge', 'cccccccccccc'),
         ],
         relatedRepos: [{ repo: 'o/r', status: 'fetched', durationMs: 900 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }],
         memoryLoaded: { learnings: 4, suppressions: 2 },
@@ -3743,8 +3743,8 @@ describe('runFullReview orchestration', () => {
       expect(rc.tokenService).toEqual(tokenService);
       expect(rc.judge.dropped).toEqual([expect.objectContaining({ gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }] })]);
       expect(rc.slicing).toEqual({ files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] });
-      // Each related repo carries the reads of every call of the round, and each call its own.
-      expect(rc.relatedRepos).toEqual([{ repo: 'o/r', status: 'fetched', durationMs: 900, reads: 4 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }]);
+      // Each related repo carries the reads of every call of the round, a failed one too, and each call its own.
+      expect(rc.relatedRepos).toEqual([{ repo: 'o/r', status: 'fetched', durationMs: 900, reads: 6 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }]);
       expect(rc.usage.llmCalls?.[1]).toMatchObject({ relatedReads: { 'o/r': 1 } });
       expect(rc.diff.changedSinceLastRound).toBe(2);
       expect(rc.judge.fixClaimedThreads).toEqual(['T1']);
