@@ -17,7 +17,7 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
-import { fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
+import { currentFindingLine, fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
@@ -1059,8 +1059,8 @@ async function collectOpenThreads(
       threadUrl: f.threadUrl,
       title: f.title,
       file: f.file,
-      // A thread posted on a fallback line names its finding's own line, which is where the judge has to look.
-      line: f.findingLine ?? f.line,
+      // A thread posted on a fallback line sits away from its finding, and the judge has to look at the finding.
+      line: currentFindingLine(f),
       severity: f.severity,
       description: f.description,
       suggestedFix: f.suggestedFix,

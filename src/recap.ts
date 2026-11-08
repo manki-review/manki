@@ -273,8 +273,9 @@ interface PreviousFinding extends FindingMetadata {
   /** Line the thread was posted on. Stays set after the thread goes outdated, unlike `line`. */
   originalLine?: number;
   /**
-   * Line the finding names, from the thread's hidden finding data. A finding on a line outside the diff is posted on a
-   * fallback line, so only this line matches it to its round record.
+   * Line the finding named when it was posted, from the thread's hidden finding data. A finding on a line outside the
+   * diff is posted on a fallback line, so only this line matches it to its round record. `currentFindingLine` gives
+   * where it sits now.
    */
   findingLine?: number;
   authorReplyText?: string;
@@ -307,6 +308,16 @@ interface PreviousFinding extends FindingMetadata {
  * other than the PR author with write access. `resolved-thread` suppressions are
  * unaffected because resolving a thread already requires repository write access.
  */
+/**
+ * Returns the line a thread's finding sits on now. GitHub moves `line` with the code, so it is the answer unless the
+ * thread was posted on a fallback line, in which case the gap to the finding's own line is added. An outdated thread
+ * keeps `line` 0.
+ */
+function currentFindingLine(t: { line: number; originalLine?: number; findingLine?: number }): number {
+  if (!t.line || !t.findingLine || !t.originalLine || t.findingLine === t.originalLine) return t.line;
+  return t.line + (t.findingLine - t.originalLine);
+}
+
 function collectInPrSuppressions(
   previousFindings: PreviousFinding[],
   prAuthorLogin?: string,
@@ -317,8 +328,9 @@ function collectInPrSuppressions(
     if (!pf.line || pf.fixed) continue;
     const reason = inPrSuppressionReasonFor(pf, prAuthorLogin);
     if (!reason) continue;
-    const lineStart = pf.findingLine ?? pf.lineStart ?? pf.line;
-    const lineEnd = pf.findingLine ?? pf.line;
+    const moved = currentFindingLine(pf);
+    const lineStart = moved === pf.line ? pf.lineStart ?? pf.line : moved;
+    const lineEnd = moved;
     const entry: InPrSuppression = {
       fingerprint: fingerprintFinding(pf.title, pf.file, lineStart, lineEnd),
       reason,
@@ -952,7 +964,7 @@ function mayWaive(prev: PreviousFinding, finding: Finding): boolean {
 /** Returns `finding` with a note for the judge. A finding next to a fixed one can be a new defect, so dedup never drops it. */
 function resemblingFixed(finding: Finding, fixed: PreviousFinding): Finding {
   core.info(`Dedup: "${finding.title}" resembles fixed "${fixed.title}", sending it to the judge`);
-  return finding.resemblesFixed ? finding : { ...finding, resemblesFixed: { title: fixed.title, file: fixed.file, line: fixed.findingLine ?? fixed.line } };
+  return finding.resemblesFixed ? finding : { ...finding, resemblesFixed: { title: fixed.title, file: fixed.file, line: currentFindingLine(fixed) } };
 }
 
 /**
@@ -1002,7 +1014,7 @@ function matchPreviousType(finding: Finding, previous: PreviousFinding): Duplica
 
   // Relax line proximity when word overlap is strong (>= 70%)
   const maxLineDelta = wordOverlapRatio(finding.title, previous.title) >= 0.7 ? 20 : 5;
-  if (Math.abs(finding.line - (previous.findingLine ?? previous.line)) > maxLineDelta) return null;
+  if (Math.abs(finding.line - currentFindingLine(previous)) > maxLineDelta) return null;
 
   return matchType;
 }
@@ -1076,4 +1088,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { currentFindingLine, DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };

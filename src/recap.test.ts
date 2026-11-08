@@ -1211,6 +1211,17 @@ describe('fetchRecapState', () => {
       const again = makeFinding({ title, file: 'src/state.ts', line: 512, severity: 'warning' });
       expect(deduplicateFindings([again], state.previousFindings).duplicates).toHaveLength(1);
       expect(collectInPrSuppressions(state.previousFindings).map(s => s.fingerprint)).toEqual([expect.objectContaining({ lineStart: 512, lineEnd: 512 })]);
+      // GitHub moves a thread with the code. A normal thread is matched where it sits now, and a thread on a fallback
+      // line keeps its gap to the finding's own line.
+      const moved = (line: number, originalLine: number, findingLine: number) => ({
+        ...state.previousFindings[0], status: 'resolved' as const, line, originalLine, findingLine,
+      });
+      const at = (line: number) => makeFinding({ title, file: 'src/state.ts', line, severity: 'warning' });
+      expect(deduplicateFindings([at(40)], [moved(40, 10, 10)]).duplicates).toHaveLength(1);
+      expect(deduplicateFindings([at(10)], [moved(40, 10, 10)]).duplicates).toHaveLength(0);
+      expect(deduplicateFindings([at(520)], [moved(9, 1, 512)]).duplicates).toHaveLength(1);
+      expect(collectInPrSuppressions([moved(9, 1, 512)]).map(s => s.fingerprint)).toEqual([expect.objectContaining({ lineStart: 520, lineEnd: 520 })]);
+
       // Without the finding data the thread stays unmatched and the blocker keeps blocking, as before.
       const bare = mockOctokit([
         makeThread({ id: 'T_BARE', isResolved: true, path: 'src/state.ts', line: 1, originalLine: 1, comments: { nodes: [{ body: `**Blocker**: ${title}\n\n<!-- manki:blocker:${slug} -->`, author: { login: BOT_LOGIN } }] } }),
