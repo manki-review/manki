@@ -18,7 +18,7 @@ import {
   Learning,
   RepoMemory,
 } from './memory';
-import { Finding } from './types';
+import { Finding, UNPROVEN_TAG } from './types';
 import { registerSecret } from './utils';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
@@ -95,16 +95,19 @@ describe('applySuppressions', () => {
     expect(suppressed).toHaveLength(0);
   });
 
-  it('never suppresses required-severity findings', () => {
+  it('never suppresses a blocker, a security finding, a tool alert or a blocker the judge lowered', () => {
     const findings = [
       makeFinding({ severity: 'blocker', title: 'Unused variable in auth' }),
+      makeFinding({ severity: 'warning', title: 'Unused variable leaks the token', tags: ['security'] }),
+      makeFinding({ severity: 'warning', title: 'no-unused-vars: Unused variable', toolSource: 'ESLint' }),
+      makeFinding({ severity: 'warning', title: 'Unused variable skips the check', tags: [UNPROVEN_TAG] }),
+      makeFinding({ severity: 'warning', title: 'Unused variable hides the error', refutation: { outcome: 'unsettled', reason: 'r', files: [], codeDigest: 'd' } }),
     ];
     const suppressions = [makeSuppression({ pattern: 'unused variable' })];
 
     const { kept, suppressed } = applySuppressions(findings, suppressions);
-    expect(kept).toHaveLength(1);
+    expect(kept).toEqual(findings);
     expect(suppressed).toHaveLength(0);
-    expect(kept[0].severity).toBe('blocker');
   });
 
   it('never suppresses ignore-severity findings', () => {

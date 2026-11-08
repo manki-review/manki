@@ -2431,7 +2431,7 @@ describe('runFullReview orchestration', () => {
     ]);
   });
 
-  it('excludes memory suppressions from mergedDuplicates metric', async () => {
+  it('counts memory-suppressed findings as judged in mergedDuplicates metric', async () => {
     const testFiles = [
       { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
     ];
@@ -2443,13 +2443,14 @@ describe('runFullReview orchestration', () => {
     const findings = [
       { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
     ];
-    const allJudged = [...findings];
     const rawFindings = [
       { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
       { severity: 'nitpick' as const, title: 'Suppressed1', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'] },
       { severity: 'nitpick' as const, title: 'Suppressed2', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] },
       { severity: 'suggestion' as const, title: 'Judge-merged', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] },
     ];
+    // Memory suppressions run after the judge, so the judge saw both suppressed findings.
+    const allJudged = [...findings, rawFindings[1], rawFindings[2]];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
@@ -2471,7 +2472,7 @@ describe('runFullReview orchestration', () => {
     const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
     expect(statsArg).toBeDefined();
 
-    // mergedDuplicates excludes memory suppressions: 4 - 2 (suppressed) - 0 - 0 - 1 (judged) = 1
+    // 4 raw - 0 - 0 - 3 judged = 1
     expect(statsArg!.judge.mergedDuplicates).toBe(1);
   });
 
@@ -4291,7 +4292,6 @@ describe('runFullReview orchestration', () => {
             phase: 'judging',
             rawFindingCount: 5,
             judgeInputCount: 3,
-            suppressionCount: 1,
             staticDedupCount: 1,
             llmDedupCount: 0,
           });
@@ -4299,7 +4299,7 @@ describe('runFullReview orchestration', () => {
         return {
           verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
-          agentNames: [],
+          agentNames: [], suppressionCount: 1,
         };
       },
     );

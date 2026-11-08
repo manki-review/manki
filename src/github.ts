@@ -496,7 +496,6 @@ function reviewHeading(routing: DashboardData['routing']): string {
 function preJudgeDrops(data: DashboardData): string {
   const repeats = (data.staticDedupCount ?? 0) + (data.llmDedupCount ?? 0);
   return [
-    ...(data.suppressionCount ? [`${data.suppressionCount} suppressed by memory`] : []),
     ...(repeats > 0 ? [countOf(repeats, 'dropped as a repeat of an earlier resolved finding', 'dropped as repeats of earlier resolved findings')] : []),
   ].join(', ');
 }
@@ -578,6 +577,7 @@ export function buildDashboard(data: DashboardData): string {
     }
     const drops = preJudgeDrops(data);
     if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
+    if (data.suppressionCount) judgeLines.push(`${INDENT}suppressed by memory: ${data.suppressionCount}`);
     if (data.testNitSuppressedCount != null && data.testNitSuppressedCount > 0) {
       judgeLines.push(`${INDENT}suppressed: ${data.testNitSuppressedCount} test-only nit${data.testNitSuppressedCount === 1 ? '' : 's'} (round ≥2 throttle)`);
     }

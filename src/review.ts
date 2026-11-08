@@ -266,7 +266,6 @@ export interface ReviewProgress {
   agentStatus?: 'success' | 'failure' | 'retrying';
   rawFindingCount?: number;
   judgeInputCount?: number;
-  suppressionCount?: number;
   staticDedupCount?: number;
   llmDedupCount?: number;
   completedAgents?: number;
@@ -965,18 +964,8 @@ export async function runReview(
     ...(related && { related: { names: related.repos.map(r => r.repo), checkouts: fetchedRelatedRepos(related.stateDir) } }),
   };
   const { findings: checkedFindings, openLeads } = splitOpenLeads(allFindings);
-  let finderFindings: Finding[] = checkedFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
-  let suppressionCount = 0;
-  if (memory?.suppressions && memory.suppressions.length > 0) {
-    const { kept, suppressed } = applySuppressions(finderFindings, memory.suppressions);
-    if (suppressed.length > 0) {
-      core.info(`Suppressed ${suppressed.length} findings before judge evaluation`);
-    }
-    finderFindings = kept;
-    suppressionCount = suppressed.length;
-  }
-  // Memory suppressions never hide a tool alert, only the judge can refute one. Alerts go first, so a reviewer
-  // finding that repeats one folds into the alert and keeps its source label.
+  const finderFindings: Finding[] = checkedFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
+  // Alerts go first, so a reviewer finding that repeats one folds into the alert and keeps its source label.
   const toolAlerts = toolAlertFindings(staticSignals);
   let findingsForJudge = [...toolAlerts, ...finderFindings];
 
@@ -987,7 +976,7 @@ export async function runReview(
   const duplicateMatches: RoundDedupDuplicateMatch[] = [];
   if (previousFindings && previousFindings.length > 0 && findingsForJudge.length > 0) {
     const changedSinceLastRound = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
-    const { unique, duplicates } = deduplicateFindings(findingsForJudge, previousFindings, memory?.suppressions, changedSinceLastRound);
+    const { unique, duplicates } = deduplicateFindings(findingsForJudge, previousFindings, changedSinceLastRound);
     if (duplicates.length > 0) {
       core.info(`Static dedup removed ${duplicates.length} findings matching earlier resolved ones before judge`);
     }
@@ -1020,7 +1009,6 @@ export async function runReview(
       phase: 'judging',
       rawFindingCount: allFindings.length,
       judgeInputCount: findingsForJudge.length,
-      suppressionCount,
       staticDedupCount,
       llmDedupCount,
       totalAgents: team.finders.length,
@@ -1115,6 +1103,15 @@ export async function runReview(
     };
   }
   await checkpoint?.();
+
+  // Memory suppressions apply after the judge, so the judge's severity and security tag decide what they may hide.
+  let suppressionCount = 0;
+  if (memory?.suppressions && memory.suppressions.length > 0) {
+    const { kept, suppressed } = applySuppressions(finalFindings, memory.suppressions);
+    if (suppressed.length > 0) core.info(`Suppressed ${suppressed.length} findings by memory after the judge`);
+    finalFindings = kept;
+    suppressionCount = suppressed.length;
+  }
 
   // Mechanism B: drop low-severity findings on test files starting at round 2.
   // Test scaffolding nits are the most common runaway-feedback driver in late
@@ -1253,7 +1250,7 @@ export async function runReview(
     staticDedupCount,
     llmDedupCount,
     ...(duplicateMatches.length > 0 && { duplicateMatches }),
-    suppressionCount,
+    ...(suppressionCount > 0 && { suppressionCount }),
     ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
     agentResponseLengths,
     agentDurationMs,

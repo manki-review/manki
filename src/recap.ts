@@ -4,7 +4,6 @@ import { LLMClient } from './providers';
 import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
-import { matchesSuppression, Suppression } from './memory';
 import { isSecurityFinding } from './review';
 import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
 
@@ -877,10 +876,6 @@ async function fetchReviewThreads(
   }
 }
 
-/**
- * Filter out findings that duplicate previous ones or match stored suppressions.
- * Returns only genuinely new findings.
- */
 interface DuplicateMatch {
   finding: Finding;
   matchedTitle: string;
@@ -895,17 +890,8 @@ interface DuplicateMatch {
 function deduplicateFindings(
   newFindings: Finding[],
   previousFindings: PreviousFinding[],
-  suppressions?: Suppression[],
   changedFiles?: ReadonlySet<string>,
 ): { unique: Finding[]; duplicates: DuplicateMatch[] } {
-  if (suppressions && suppressions.length > 0) {
-    newFindings = newFindings.filter(f => {
-      const match = suppressions.some(s => matchesSuppression(f, s));
-      if (match) core.info(`Suppressed by memory: "${f.title}"`);
-      return !match;
-    });
-  }
-
   const unique: Finding[] = [];
   const duplicates: DuplicateMatch[] = [];
   const resolved = previousFindings.filter(f => f.status === 'resolved');
