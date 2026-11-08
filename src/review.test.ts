@@ -1012,6 +1012,14 @@ describe('buildReviewerUserMessage', () => {
     expect(message).toContain('@@ -1,1 +1,2 @@\n const a = 1;\n+const b = 2;');
   });
 
+  it('lists the files changed since the last round ahead of everything else, and nothing for an empty list', () => {
+    const message = buildReviewerUserMessage('diff content', 'repo', { changedSinceLastRound: ['src/a.ts', 'src/b.ts'], prContext: { title: 't', body: '', baseBranch: 'main' } });
+    expect(message.indexOf('## Changed Since the Last Review')).toBe(0);
+    expect(message).toContain('```\nsrc/a.ts\nsrc/b.ts\n```');
+    expect(message.indexOf('## Pull Request\n')).toBeGreaterThan(message.indexOf('src/b.ts'));
+    expect(buildReviewerUserMessage('diff content', 'repo', { changedSinceLastRound: [] })).toBe(buildReviewerUserMessage('diff content', 'repo'));
+  });
+
   it('includes repo context when provided', () => {
     const message = buildReviewerUserMessage('diff content', 'This is a TypeScript project.');
     expect(message).toContain('Repository Context');
@@ -3775,9 +3783,10 @@ describe('runReview', () => {
     expect(judgeInput.provenanceMap).toEqual(provenance);
   });
 
-  it('sends reviewers the same prompts on a follow-up round as on round 1 for the same diff', async () => {
+  it('sends reviewers the whole diff on a follow-up round, with the files changed since the last round listed first', async () => {
     const config = makeConfig();
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const file = (path: string) => ({ path, changeType: 'modified' as const, hunks: [] });
+    const diff = makeDiff({ files: [file('src/x.ts'), file('src/y.ts')], totalAdditions: 10, totalDeletions: 5 });
     const fileContents = new Map([['src/x.ts', 'const a = 1;\nconst b = 2;']]);
     const priorTitle = 'Prior round finding title';
     const delta = '--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-old\n+new\n';
@@ -3789,8 +3798,8 @@ describe('runReview', () => {
       file: 'src/x.ts', lineStart: 2, lineEnd: 2, originatingRound: 1, originatingTitle: priorTitle,
     }]);
     const round2Clients = makeClients();
-    await runReview(
-      round2Clients, {
+    const round2 = (clients: ReviewClients, interRoundDiff: string | undefined) => runReview(
+      clients, {
         config,
         diff,
         rawDiff: 'raw diff',
@@ -3800,20 +3809,33 @@ describe('runReview', () => {
         openThreads: [makePriorOpenThread({ title: priorTitle })],
         previousFindings: [{ title: priorTitle, file: 'src/x.ts', line: 10, severity: 'warning', status: 'open', threadId: 'T1' }],
         priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ title: priorTitle })])],
-        interRoundDiff: delta,
+        interRoundDiff,
       },
     );
+    await round2(round2Clients, delta);
 
-    const round1Calls = (round1Clients.reviewer.sendMessage as jest.Mock).mock.calls;
-    const round2Calls = (round2Clients.reviewer.sendMessage as jest.Mock).mock.calls;
+    const round1Calls = (round1Clients.reviewer.sendMessage as jest.Mock).mock.calls as [string, string][];
+    const round2Calls = (round2Clients.reviewer.sendMessage as jest.Mock).mock.calls as [string, string][];
     expect(round2Calls.length).toBeGreaterThan(0);
-    expect(round2Calls).toEqual(round1Calls);
-    for (const [systemPrompt, userMessage] of round2Calls as [string, string][]) {
-      const prompt = `${systemPrompt}\n${userMessage}`;
-      expect(prompt).not.toContain(priorTitle);
-      expect(prompt).not.toMatch(/round \d/i);
-      expect(prompt).not.toContain(delta);
+    expect(round1Calls.every(([, userMessage]) => !userMessage.includes('## Changed Since the Last Review'))).toBe(true);
+    // The same system prompt and the same whole diff, with only `src/x.ts` listed ahead of it as changed since the last round.
+    for (const [i, [systemPrompt, userMessage]] of round2Calls.entries()) {
+      expect(systemPrompt).toBe(round1Calls[i][0]);
+      expect(userMessage).toMatch(/^## Changed Since the Last Review\n\n.*Check the new code in them first\. Then review the rest of the diff as thoroughly as a first round would/s);
+      expect(userMessage).toContain('```\nsrc/x.ts\n```');
+      expect(userMessage.endsWith(round1Calls[i][1])).toBe(true);
+      expect(userMessage).not.toContain(priorTitle);
+      expect(userMessage).not.toContain(delta);
     }
+
+    // The verdict reader also gets the list ahead of the whole diff.
+    const [[, readerMessage]] = (round2Clients.judge.sendMessage as jest.Mock).mock.calls as [string, string][];
+    expect(readerMessage).toMatch(/^## Changed Since the Last Review\n[\s\S]*```\nsrc\/x\.ts\n```[\s\S]*## Pull Request Diff/);
+
+    // An unknown change since the last round lists nothing.
+    const unknownClients = makeClients();
+    await round2(unknownClients, undefined);
+    expect((unknownClients.reviewer.sendMessage as jest.Mock).mock.calls).toEqual(round1Calls);
 
     // The judge still gets the history.
     const judgeInput = mockedRunJudgeAgent.mock.calls[1][2];
