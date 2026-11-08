@@ -5,7 +5,7 @@ import { MANKI_VERSION } from './github';
 import type { MemorySkip } from './memory';
 import { parseModelSpec, summarizeCalls } from './providers';
 import { routingDigest } from './routing';
-import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall } from './types';
+import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall, PRE_EXISTING_TAG } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   OWN_PROPOSAL_TAG,
@@ -14,6 +14,7 @@ const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   RESOLVED_THREAD_SUPPRESSED_TAG,
   FOLLOW_UP_TAG,
   SECURITY_TAG,
+  PRE_EXISTING_TAG,
 ]);
 
 /** What `buildRoundContext` records about the round besides the review result. */

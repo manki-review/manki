@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
@@ -1002,7 +1002,13 @@ function isFollowUp(finding: Finding): boolean {
   return !!finding.tags?.includes(FOLLOW_UP_TAG);
 }
 
+function isPreExisting(finding: Finding): boolean {
+  return !!finding.tags?.includes(PRE_EXISTING_TAG);
+}
+
+/** Whether a finding is posted as a thread. A pre-existing one is only when it still blocks, as a security finding does. */
 function isBlockingFinding(finding: Finding): boolean {
+  if (isPreExisting(finding)) return finding.severity === 'blocker';
   return isBlockingSeverity(finding.severity) && !isFollowUp(finding);
 }
 
@@ -1122,11 +1128,12 @@ function formatFindingSection(heading: string, folds: string[], intro?: string):
   return [`#### ${heading}`, ...(intro ? [`<sub>${intro}</sub>`] : []), ...folds].join('\n\n');
 }
 
-function formatSmallerFindings(entries: string[], nitpicks: string[], previouslyMissed: string[]): string | null {
+function formatSmallerFindings(entries: string[], nitpicks: string[], previouslyMissed: string[], preExisting: string[]): string | null {
   const sections = [
     formatFindingSection(`🔧 ${countOf(entries.length, 'smaller fix', 'smaller fixes')} in this PR`, entries),
     formatFindingSection(`🔶 Previously missed: ${countOf(previouslyMissed.length, 'smaller fix', 'smaller fixes')}`, previouslyMissed, 'These sit on code an earlier review already covered. None of them blocks.'),
     formatFindingSection(`📝 ${countOf(nitpicks.length, 'nitpick', 'nitpicks')}`, nitpicks),
+    formatFindingSection(`Pre-existing: ${countOf(preExisting.length, 'finding')}`, preExisting, 'These sit on code this PR did not change, so none of them blocks. A blocker among them is listed as a warning.'),
   ].filter(section => section !== null);
   return sections.length > 0 ? sections.join('\n\n') : null;
 }
@@ -1236,6 +1243,7 @@ export async function postReview(
   const nitpicks: string[] = [];
   const stillOpen: string[] = [];
   const previouslyMissed: string[] = [];
+  const preExisting: string[] = [];
   let carriedBlockers = 0;
   const carriedThreadIds = new Set<string>();
   const nonBlocking: Finding[] = [];
@@ -1252,6 +1260,8 @@ export async function postReview(
         core.info(`Skipping "${f.title}" on ${f.file}: it goes as a reply in its answered thread ${f.answeredIn.threadId}`);
       } else if (hasOpenThread(f, existingThreads)) {
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
+      } else if (isPreExisting(f)) {
+        preExisting.push(formatFindingFold(f, linkTo, lineCounts));
       } else if (f.origin === 'reviewed') {
         previouslyMissed.push(formatFindingFold(f, links));
       } else {
@@ -1341,7 +1351,7 @@ export async function postReview(
     if (invalidComments.length > 0) {
       b += `\n\n**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`;
     }
-    const smaller = formatSmallerFindings(smallerFindings, nitpicks, previouslyMissed);
+    const smaller = formatSmallerFindings(smallerFindings, nitpicks, previouslyMissed, preExisting);
     if (smaller) {
       b += `\n\n${smaller}`;
     }
@@ -1858,7 +1868,7 @@ function formatFindingHeader(finding: Finding): string {
   const severity = `${finding.severity[0].toUpperCase()}${finding.severity.slice(1)}`;
   const label = `**${isBlockingFinding(finding) ? severity : `${severity}, not blocking`}**`;
   const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource)})` : '';
-  const kind = [finding.category && FINDING_CATEGORIES[finding.category], finding.effort && FINDING_EFFORTS[finding.effort]].filter(Boolean);
+  const kind = [isPreExisting(finding) && 'Pre-existing', finding.category && FINDING_CATEGORIES[finding.category], finding.effort && FINDING_EFFORTS[finding.effort]].filter(Boolean);
   return [`${label}${tool}`, ...kind].join(' · ');
 }
 

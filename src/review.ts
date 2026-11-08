@@ -9,8 +9,8 @@ import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeP
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
-import { countChangedLines, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
+import { FOLLOW_UP_TAG, PRE_EXISTING_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
@@ -32,6 +32,22 @@ const LEGACY_SECURITY_AGENT_NAME = 'Security & Safety';
  */
 export function isSecurityFinding(tags: string[] | undefined, priorReviewers: ReadonlyArray<string | undefined> = []): boolean {
   return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
+}
+
+/**
+ * Tags each finding on lines outside every hunk of `diff` as pre-existing. A non-security blocker among them becomes
+ * a warning, so no check that reads the severity, in this round or a later one, lets it block.
+ */
+function markPreExisting(findings: Finding[], diff: ParsedDiff): Finding[] {
+  return findings.map(f => {
+    if (!f.file || f.line <= 0) return f;
+    const diffFile = diff.files.find(df => df.path === f.file);
+    if (diffFile && isLineInDiff(diffFile, f.line)) return f;
+    const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG] };
+    if (f.severity !== 'blocker' || isSecurityFinding(f.tags, f.reviewers)) return tagged;
+    core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the PR did not change that line`);
+    return { ...tagged, severity: 'warning', originalSeverity: f.originalSeverity ?? 'blocker' };
+  });
 }
 
 const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
@@ -1129,6 +1145,8 @@ export async function runReview(
     suppressionCount = suppressed.length;
     memorySuppressed = suppressed;
   }
+  // After the suppressions, so a blocker the PR did not touch keeps their blocker guard.
+  finalFindings = markPreExisting(finalFindings, diff);
 
   // Mechanism B: drop low-severity findings on test files starting at round 2.
   // Test scaffolding nits are the most common runaway-feedback driver in late
@@ -1213,14 +1231,17 @@ export async function runReview(
         return sameAs ? { ...f, sameAs } : f;
       });
       // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found.
-      const readerFindings = refutation
+      const readerFindings = markPreExisting(refutation
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff })
-        : readerBlockers;
+        : readerBlockers, diff);
       finalFindings = [...finalFindings, ...readerFindings];
-      threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
-      outcome = 'ADDRESS_FIRST';
-      verdictReason = 'verdict_reader';
-      verdictTrace = { survivingBlockers: readerFindings.map(findingToTraceEntry), unresolvedPriors: [] };
+      const stillBlocking = readerFindings.filter(f => f.severity === 'blocker');
+      if (stillBlocking.length > 0) {
+        threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+        outcome = 'ADDRESS_FIRST';
+        verdictReason = 'verdict_reader';
+        verdictTrace = { survivingBlockers: stillBlocking.map(findingToTraceEntry), unresolvedPriors: [] };
+      }
     }
   }
 

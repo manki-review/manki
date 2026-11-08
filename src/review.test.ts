@@ -70,6 +70,13 @@ const makeDiff = (overrides: Partial<ParsedDiff> = {}): ParsedDiff => ({
   ...overrides,
 });
 
+/** A diff that changes every line of `paths`, so a finding there is on code the PR changed. */
+const diffChanging = (...paths: string[]): ParsedDiff => makeDiff({
+  files: paths.map(path => ({ path, changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1000, newStart: 1, newLines: 1000, content: '' }] })),
+  totalAdditions: 10,
+  totalDeletions: 5,
+});
+
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   severity: 'suggestion',
   title: 'Test finding',
@@ -1955,7 +1962,7 @@ describe('runReview', () => {
         whatToTest: 'Load twice.',
       }),
     });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const diff = diffChanging('src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'a.ts');
 
     const result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(result.reviewComplete).toBe(true);
@@ -2021,10 +2028,50 @@ describe('runReview', () => {
     }
   });
 
+  it('posts a non-security blocker on code the PR did not change as a pre-existing warning, while a security one still blocks', async () => {
+    const diff = makeDiff({
+      files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 5, newStart: 10, newLines: 5, content: '' }] }],
+      totalAdditions: 5, totalDeletions: 5,
+    });
+    const blocker = (title: string, file: string, line: number, extra: Partial<Finding> = {}): Finding =>
+      ({ severity: 'blocker', title, file, line, description: 'd', reviewers: ['r'], ...extra });
+    const changed = blocker('New null dereference', 'src/a.ts', 12);
+    const oldLine = blocker('Old null dereference', 'src/a.ts', 40);
+    const oldFile = blocker('Old race in the pool', 'src/pool.ts', 3);
+    const oldInjection = blocker('Old SQL injection', 'src/a.ts', 50, { tags: ['security'] });
+    const run = (clients: ReviewClients) => runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile], summary: 'Two old defects.' });
+    const old = await run(makeClients());
+    expect(old.outcome).toBe('READY');
+    expect(old.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags])).toEqual([
+      ['Old null dereference', 'warning', 'blocker', ['pre-existing', 'follow-up']],
+      ['Old race in the pool', 'warning', 'blocker', ['pre-existing', 'follow-up']],
+    ]);
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [changed, oldInjection], summary: 'Two defects.' });
+    const security = await run(makeClients());
+    expect(security.outcome).toBe('ADDRESS_FIRST');
+    expect(security.findings.map(f => [f.title, f.severity, f.tags])).toEqual([
+      ['New null dereference', 'blocker', undefined],
+      ['Old SQL injection', 'blocker', ['security', 'pre-existing']],
+    ]);
+
+    // A verdict reader blocker on unchanged code does not block either.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
+    const reading = makeClients();
+    jest.mocked(reading.judge.sendMessage).mockResolvedValue({
+      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/pool.ts', line: 3, title: 'Old race in the pool.' }], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
+    });
+    const read = await run(reading);
+    expect(read.outcome).toBe('READY');
+    expect(read.findings).toEqual([expect.objectContaining({ severity: 'warning', originalSeverity: 'blocker', tags: ['pre-existing'] })]);
+  });
+
   it('turns every warning into a follow-up in every round, security ones included, while a verdict reader blocker still blocks', async () => {
     const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const diff = diffChanging('src/a.ts');
     const runAtRound = (clients: ReviewClients, round: number) => runReview(
       clients, {
         config: makeConfig(),
@@ -2091,7 +2138,7 @@ describe('runReview', () => {
   it('ends NOT_CONVERGING only when a blocker comes back after a fix was claimed', async () => {
     const prior = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })]);
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const diff = diffChanging('src/x.ts');
     const openThread = makePriorOpenThread({ severity: 'blocker', threadUrl: 'https://github.com/o/r/pull/1#t1' });
     const thread = (status: PreviousFinding['status']): PreviousFinding => ({ title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'blocker', status, threadId: 'T1' });
     const runOn = (clients: ReviewClients, headSha: string, openThreads = [openThread], previousFindings = [thread('open')]) => runReview(
@@ -2154,7 +2201,7 @@ describe('runReview', () => {
     const runWith = (interRoundDiff: string | undefined) => runReview(
       makeClients(), {
         config: makeConfig(),
-        diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }),
+        diff: diffChanging('src/x.ts'),
         rawDiff: 'raw diff',
         repoContext: 'repo context',
         isFollowUp: true,
@@ -2193,7 +2240,7 @@ describe('runReview', () => {
 
   it('ends the last automatic round READY when nothing blocks, otherwise NOT_CONVERGING', async () => {
     const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const diff = diffChanging('src/a.ts');
     const runFinal = (clients: ReviewClients) => runReview(
       clients, {
         config: makeConfig(),
@@ -2235,7 +2282,7 @@ describe('runReview', () => {
     const result = await runReview(
       makeClients(), {
         config: makeConfig(),
-        diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }),
+        diff: diffChanging('src/a.ts'),
         rawDiff: 'raw diff',
         repoContext: 'repo context',
         isFollowUp: false,
@@ -3979,7 +4026,7 @@ describe('runReview post-judge suppression', () => {
     const result = await runReview(
       makeClients(), {
         config: makeConfig(),
-        diff: makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
+        diff: diffChanging('src/foo.test.ts'),
         rawDiff: 'raw',
         repoContext: 'ctx',
         priorRounds: [buildPriorRound(1)],

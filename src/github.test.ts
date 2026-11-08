@@ -3936,7 +3936,7 @@ describe('postReview non-blocking findings', () => {
     ]);
   });
 
-  it('lists smaller findings on reviewed code as previously missed, and keeps a blocker there inline', async () => {
+  it('lists smaller findings on reviewed code as previously missed, pre-existing ones after them, and keeps a blocker there inline', async () => {
     const { octokit, createReview } = makeOctokit();
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
@@ -3944,6 +3944,8 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('suggestion', 'On old code', 3, { origin: 'reviewed' }),
       nonBlocking('nitpick', 'Untouched file', 3, { file: 'src/b.ts', origin: 'reviewed' }),
       nonBlocking('blocker', 'Old blocker', 3, { origin: 'reviewed' }),
+      // A blocker on code the PR did not change, lowered to a warning without the follow-up tag a verdict reader blocker lacks.
+      nonBlocking('warning', 'Old race in the pool', 90, { origin: 'reviewed', tags: ['pre-existing'], originalSeverity: 'blocker' }),
     ]), diff);
 
     const review = createReview.mock.calls[0][0];
@@ -3951,6 +3953,9 @@ describe('postReview non-blocking findings', () => {
     expect(review.body).toContain('#### \u{1F536} Previously missed: 2 smaller fixes\n\n<sub>These sit on code an earlier review already covered. None of them blocks.</sub>\n\n<details>\n<summary>\u2728 <b>On old code</b>');
     expect(review.body).toContain('<b>Untouched file</b><br><sub><b>Nitpick, not blocking</b> · <a href="https://github.com/owner/repo/blob/sha/src/b.ts#L3"><code>src/b.ts:3</code></a>');
     expect(review.body).not.toMatch(/not listed|smaller fix(es)? in this PR/);
+    expect(review.body).toMatch(/Previously missed[\s\S]*Nitpick[\s\S]*#### Pre-existing: 1 finding\n\n<sub>These sit on code this PR did not change, so none of them blocks\. A blocker among them is listed as a warning\.<\/sub>\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · /);
+    // A security finding on unchanged code still blocks, and its header says where it sits.
+    expect(formatFindingComment(nonBlocking('blocker', 'Old SQL injection', 90, { tags: ['security', 'pre-existing'] })).split('\n')[0]).toBe('\u{1F6AB} **Blocker** · Pre-existing');
   });
 });
 
