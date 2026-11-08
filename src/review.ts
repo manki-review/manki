@@ -1047,7 +1047,7 @@ export async function runReview(
   // Warning leads need the judge's tools to be settled, so without them they stay only listed.
   const settleLeads = !!(workspace && clients.judge.repoTools);
   const lastRound = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round).at(-1);
-  const { current, carried } = withEarlierLeads(allFindings, lastRound?.leads);
+  const { current, carried } = withEarlierLeads(allFindings, lastRound?.leads, round, diff, changedSinceLastRound);
   if (carried.length > 0) core.info(`Carrying over ${carried.length} open lead(s) the last round left unsettled`);
   const { findings: checkedFindings, openLeads: listedLeads } = splitOpenLeads([...current, ...carried], settleLeads);
   const openLeads = [...listedLeads];
@@ -1174,7 +1174,8 @@ export async function runReview(
     inPrSuppressedCount = judgeResult.inPrSuppressedCount ?? 0;
     finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
     // A lead the judge's tools left unsettled is no finding, so below blocker it is listed as not finished, never posted.
-    const unsettled = refutation ? finalFindings.filter(f => f.lead && f.severity !== 'blocker') : [];
+    // A security lead stays posted, since only a confirmation may change a security finding.
+    const unsettled = refutation ? finalFindings.filter(f => f.lead && f.severity !== 'blocker' && !isSecurityFinding(f.tags, f.reviewers)) : [];
     finalFindings = finalFindings.filter(f => !unsettled.includes(f));
     openLeads.push(...unsettled);
     core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored or left unsettled)`);
@@ -1352,7 +1353,7 @@ export async function runReview(
     findings: finalFindings,
     highlights: [],
     reviewComplete: true,
-    rawFindingCount: current.length - listedLeads.filter(f => current.includes(f)).length,
+    rawFindingCount: checkedFindings.length,
     ...(toolAlerts.length > 0 && { toolAlertCount: toolAlerts.length }),
     agentNames: team.finders.map(a => a.name),
     allJudgedFindings,
@@ -1819,13 +1820,21 @@ function splitOpenLeads(all: Finding[], settleWarnings: boolean): { findings: Fi
 
 const sameLead = (a: Pick<Finding, 'file' | 'title'>, b: Pick<Finding, 'file' | 'title'>) => a.file === b.file && titlesMatch(a.title, b.title);
 
+/** Rounds after the one it first came up in that an unsettled lead is carried over before it is let go. */
+const MAX_LEAD_ROUNDS = 3;
+
 /**
- * Carries over the leads the previous round left unsettled and only listed. A finding of this round on the same file
- * with a matching title takes the place of its earlier lead, keeping the round the lead first came up in. Returns this
- * round's findings, and the earlier leads no finding took the place of.
+ * Carries over the leads the previous round left unsettled and only listed, while their file is still in the PR, the
+ * author has not changed it since, and they came up at most `MAX_LEAD_ROUNDS` rounds ago. A finding of this round on
+ * the same file with a matching title takes the place of its earlier lead, keeping the round the lead first came up in.
+ * Returns this round's findings, and the earlier leads no finding took the place of.
  */
-function withEarlierLeads(findings: Finding[], earlier: RoundLead[] = []): { current: Finding[]; carried: Finding[] } {
-  const open = earlier.filter(l => !l.posted && (l.outcome === 'unsettled' || l.outcome === 'not_checked'));
+function withEarlierLeads(
+  findings: Finding[], earlier: RoundLead[] = [], round: number, diff: ParsedDiff, changedSinceLastRound?: string[],
+): { current: Finding[]; carried: Finding[] } {
+  const inPr = new Set(diff.files.map(f => f.path));
+  const open = earlier.filter(l => !l.posted && (l.outcome === 'unsettled' || l.outcome === 'not_checked')
+    && round - l.since <= MAX_LEAD_ROUNDS && inPr.has(l.file) && !changedSinceLastRound?.includes(l.file));
   const current = findings.map(f => {
     const match = f.lead && open.find(l => sameLead(l, f));
     return match ? { ...f, leadSince: match.since } : f;
@@ -1840,9 +1849,11 @@ function withEarlierLeads(findings: Finding[], earlier: RoundLead[] = []): { cur
 function recordLeads(leads: Finding[], listed: Finding[], judged: Finding[], posted: Finding[], round: number): RoundLead[] {
   return leads.map(l => {
     const verdict = judged.find(j => sameLead(j, l) && j.line === l.line) ?? judged.find(j => sameLead(j, l));
+    // A disproof never lowers a blocker, so a disproved blocker lead keeps its grade and its `lead` flag.
     const outcome: LeadOutcome = listed.includes(l) ? 'not_checked'
       : !verdict ? 'dropped'
-      : verdict.severity === 'ignore' ? (verdict.refutation?.outcome === 'disproved' ? 'disproved' : 'dropped')
+      : verdict.refutation?.outcome === 'disproved' ? 'disproved'
+      : verdict.severity === 'ignore' ? 'dropped'
       : verdict.lead ? 'unsettled' : 'confirmed';
     return {
       title: l.title, file: l.file, line: l.line, severity: l.severity, reviewers: l.reviewers, description: l.description, lead: l.lead!,
