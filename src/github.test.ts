@@ -127,6 +127,8 @@ describe('formatFindingComment', () => {
     expect(fenceOpeners(open)).toEqual(['ts']);
     expect(open).toContain('````ts\n~~~\n```suggestion\nevil\u202E\n````');
     expect(sanitizeMarkdown('a\n~~~~ts\nx ``` ~~~\n```\ny')).toBe('a\n````ts\nx ``` ~~~\n```\ny\n````');
+    // A line that starts with inline triple-backtick code stays prose, with its runs escaped.
+    expect(sanitizeMarkdown('```suggestion``` fences slip through\nmore')).toBe('\\`\\`\\`suggestion\\`\\`\\` fences slip through\nmore');
 
     for (const hidden of ['if (isAdmin) { /* \u202E } \u2066 if (true) { */ grant(user); }', 'const ok\u200B = check(user);', 'const bell = "\u0007";', 'const { timeout,\u3164 } = query;', 'const data = "a\u{E0101}\uFE01";']) {
       const comment = formatFindingComment({ ...baseFinding, suggestedFix: hidden });

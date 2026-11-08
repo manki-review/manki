@@ -1701,6 +1701,11 @@ function splitFences(lines: string[]): FixPart[] {
     if (!marker) {
       current.lines.push(line);
     } else if (fence === null) {
+      // A backtick run followed by another backtick on the line is inline code, not a fence.
+      if (marker[1][0] === '`' && marker[2].includes('`')) {
+        current.lines.push(line);
+        continue;
+      }
       parts.push(current);
       fence = marker[1];
       current = { kind: 'code', lines: [], lang: marker[2].trim() };
