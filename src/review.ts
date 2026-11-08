@@ -5,7 +5,7 @@ import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveReviewerModel } from './config';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { mapWithConcurrency, parseRetryNote } from './utils';
-import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
+import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
@@ -34,11 +34,17 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
   return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
 }
 
+/** Parses the `file:line` or `file:start-end` location `at`. */
+function parseLocation(at: string): { file: string; start: number; end: number } | undefined {
+  const [, file, start, end] = at.match(/^(.+):(\d+)(?:-(\d+))?$/) ?? [];
+  return file ? { file, start: Number(start), end: Number(end ?? start) } : undefined;
+}
+
 /** Whether the `file:line` or `file:start-end` location `at` cites a line inside a hunk of `diff`. */
 function citesChangedLine(at: string, diff: ParsedDiff): boolean {
-  const [, file, start, end] = at.match(/^(.+):(\d+)(?:-(\d+))?$/) ?? [];
-  const diffFile = file ? diff.files.find(df => df.path === file) : undefined;
-  return !!diffFile && isLineInDiff(diffFile, Number(start), Number(end ?? start));
+  const location = parseLocation(at);
+  const diffFile = location && diff.files.find(df => df.path === location.file);
+  return !!diffFile && isLineInDiff(diffFile, location.start, location.end);
 }
 
 /** Whether `f` sits inside a hunk of `diff`, or cites a line inside one as proof. */
@@ -1323,10 +1329,12 @@ export async function runReview(
         return sameAs ? { ...f, sameAs } : f;
       });
       // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found.
-      const readerFindings = refutation
+      const refuted = refutation
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff })
         : readerBlockers;
-      finalFindings = [...finalFindings, ...readerFindings];
+      const folded = foldIntoReaderBlockers(finalFindings, refuted);
+      const readerFindings = folded.blockers;
+      finalFindings = [...folded.findings, ...readerFindings];
       threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
       outcome = 'ADDRESS_FIRST';
       verdictReason = 'verdict_reader';
@@ -2147,6 +2155,45 @@ function confirmFixes(
       return { ...e, status: 'uncertain', reason: `The push did not change \`${thread.file}\`, so the fix is not confirmed.` };
     }
     return e;
+  });
+}
+
+/**
+ * Folds each kept finding that names the problem of a verdict reader blocker into that blocker, so one problem gets one
+ * thread. The blocker keeps its grade and takes the finding's reviewers and evidence. It takes the finding's fix only
+ * when it has none and both sit on one line, since a one-line fix replaces the line its comment sits on.
+ */
+function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { findings: Finding[]; blockers: Finding[] } {
+  const merged = blockers.map(b => ({ ...b }));
+  const kept = findings.filter(f => {
+    const blocker = merged.find(b => sameProblem(b, f));
+    if (!blocker) return true;
+    foldInto(blocker, f);
+    if (!blocker.suggestedFix && f.suggestedFix && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
+    if (f.tags?.includes(SECURITY_TAG) && !blocker.tags?.includes(SECURITY_TAG)) blocker.tags = [...(blocker.tags ?? []), SECURITY_TAG];
+    core.info(`Folded ${f.severity} "${f.title}" into the verdict reader's blocker "${blocker.title}"`);
+    return false;
+  });
+  return { findings: kept, blockers: merged };
+}
+
+/**
+ * Whether the findings `a` and `b` in one file name one problem. When one title contains the other, a few lines apart or
+ * one citing the other's line is enough. Titles that only share words, which short titles do by chance, must both cite
+ * the other's line.
+ */
+function sameProblem(a: Finding, b: Finding): boolean {
+  const overlap = a.file === b.file ? titleOverlapType(a.title, b.title) : null;
+  if (overlap === null) return false;
+  if (overlap === 'word_overlap') return citesLineOf(a, b) && citesLineOf(b, a);
+  return citesLineOf(a, b) || citesLineOf(b, a) || Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
+}
+
+/** Whether `a` cites the line of `b` as proof, in a span no wider than `DISMISSED_LINE_TOLERANCE`. */
+function citesLineOf(a: Finding, b: Finding): boolean {
+  return (a.evidence?.proof ?? []).some(at => {
+    const location = parseLocation(at);
+    return location?.file === b.file && location.start <= b.line && b.line <= location.end && location.end - location.start <= DISMISSED_LINE_TOLERANCE;
   });
 }
 

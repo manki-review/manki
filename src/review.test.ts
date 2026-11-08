@@ -1776,6 +1776,7 @@ jest.mock('./judge', () => ({
   JudgeInput: {},
   computeProvenanceMap: jest.fn().mockReturnValue([]),
   collectPriorBlockers: jest.requireActual('./judge').collectPriorBlockers,
+  foldInto: jest.requireActual('./judge').foldInto,
 }));
 
 jest.mock('./memory', () => ({
@@ -2115,6 +2116,46 @@ describe('runReview', () => {
     const unnamed = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(unnamed.outcome).toBe('ADDRESS_FIRST');
     expect(unnamed.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'The retry loop never ends.', description: 'The retry loop never ends.' })]);
+
+    // A kept finding that names the problem of a reader blocker folds into it, so the problem gets one thread. The
+    // finders graded it a warning six lines away, and each cites the other's line as proof. Its fix was written for its
+    // own line, so the blocker does not take it. Nearby findings about something else stay, also one whose title shares
+    // words with the blocker's by chance, and one that cites the blocker's line but sits only in a wide range it cites.
+    const sameCause = makeClients(JSON.stringify([{ severity: 'warning', title: 'Lock held', file: 'src/a.ts', line: 6, description: 'Deadlock.' }]));
+    mockedRunJudgeAgent.mockResolvedValueOnce({
+      summary: 'One warning.',
+      findings: [
+        {
+          severity: 'warning', title: '`join` holds the `tasks` lock while joining, against its doc comment', file: 'src/a.ts', line: 6, description: 'Deadlock.',
+          suggestedFix: 'let tasks = take(&mut *lock);', reviewers: ['Finder A', 'Finder B'], evidence: { checks: ['src/a.ts:6 takes the lock'], proof: ['src/a.ts:6', 'src/a.ts:12'] },
+        },
+        { severity: 'suggestion', title: 'Rename the helper', file: 'src/a.ts', line: 9, description: 'Clearer.', reviewers: ['Finder A'] },
+        { severity: 'warning', title: 'The `tasks` lock is never released on error', file: 'src/a.ts', line: 14, description: 'Leaks.', reviewers: ['Finder B'] },
+        {
+          severity: 'warning', title: '`join` retries the `tasks` lock forever', file: 'src/a.ts', line: 30, description: 'Spins.', reviewers: ['Finder B'],
+          evidence: { checks: [], proof: ['src/a.ts:12', 'src/a.ts:30'] },
+        },
+      ],
+    });
+    jest.mocked(sameCause.judge.sendMessage).mockResolvedValue({
+      content: JSON.stringify({
+        verdict: 'ADDRESS_FIRST',
+        blockers: [{ file: 'src/a.ts', line: 12, title: '`join` holds the `tasks` lock while it waits on them', description: 'Stop hangs.', evidence: ['src/a.ts:12 awaits under the lock'], proof: ['src/a.ts:6-7', 'src/a.ts:12', 'src/a.ts:20-60'] }],
+        summary: 'Deadlock.', whatThisDoes: '', whatToTest: '',
+      }),
+    });
+    const folded = await runReview(sameCause, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    expect(folded.findings).toEqual([
+      expect.objectContaining({ severity: 'suggestion', title: 'Rename the helper' }),
+      expect.objectContaining({ severity: 'warning', title: 'The `tasks` lock is never released on error' }),
+      expect.objectContaining({ severity: 'warning', title: '`join` retries the `tasks` lock forever' }),
+      expect.objectContaining({
+        severity: 'blocker', line: 12, title: '`join` holds the `tasks` lock while it waits on them', reviewers: ['Verdict reader', 'Finder A', 'Finder B'],
+        evidence: { checks: ['src/a.ts:12 awaits under the lock', 'src/a.ts:6 takes the lock'], proof: ['src/a.ts:6-7', 'src/a.ts:12', 'src/a.ts:20-60', 'src/a.ts:6'] },
+      }),
+    ]);
+    expect(folded.findings[3]).not.toHaveProperty('suggestedFix');
+    expect(folded.verdictTrace?.survivingBlockers.map(e => e.title)).toEqual(['`join` holds the `tasks` lock while it waits on them']);
 
     // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof keeps it a
     // blocker, and its reason shows under "How this was checked".
