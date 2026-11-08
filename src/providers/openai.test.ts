@@ -428,7 +428,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     const savedSecret = process.env.OPENAI_API_KEY;
     process.env.RUNNER_TEMP = '/runner/temp';
     process.env.GITHUB_API_URL = 'https://ghe.example/api/v3';
-    process.env.HTTPS_PROXY = 'http://proxy:3128';
+    process.env.HTTPS_PROXY = 'http://user:secret@proxy:3128';
     process.env.OPENAI_API_KEY = 'sk-not-for-the-server';
     try {
       const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
@@ -454,14 +454,15 @@ describe('sendViaOAuth (Codex CLI path)', () => {
       `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15'])}`,
       '-c mcp_servers.manki.default_tools_approval_mode="approve"',
     ].join(' '));
-    // The server gets the CLI's own environment, with the proxy settings `repo_info` needs, and no secret.
-    const serverEnv = withTools.filter(arg => arg.startsWith('mcp_servers.manki.env.'));
-    expect(serverEnv).toEqual(expect.arrayContaining([
-      'mcp_servers.manki.env.RUNNER_TEMP="/runner/temp"',
-      'mcp_servers.manki.env.HTTPS_PROXY="http://proxy:3128"',
-      'mcp_servers.manki.env.GITHUB_API_URL="https://ghe.example/api/v3"',
-    ]));
-    expect(serverEnv.some(arg => /TOKEN|_KEY/.test(arg))).toBe(false);
+    // The server gets the CLI's own environment by name, so no value, such as a proxy password, is on the command line.
+    const envVars = JSON.parse(withTools.find(arg => arg.startsWith('mcp_servers.manki.env_vars='))!.slice('mcp_servers.manki.env_vars='.length)) as string[];
+    expect(envVars).toEqual(expect.arrayContaining(['RUNNER_TEMP', 'HTTPS_PROXY', 'GITHUB_API_URL']));
+    expect(envVars).not.toContain('OPENAI_API_KEY');
+    expect(withTools.join(' ')).not.toContain('secret@proxy');
+    expect(withTools.some(arg => arg.startsWith('mcp_servers.manki.env.'))).toBe(false);
+    const { env: codexEnv } = mockSpawn.mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+    expect(codexEnv).toMatchObject({ RUNNER_TEMP: '/runner/temp', HTTPS_PROXY: 'http://user:secret@proxy:3128', GITHUB_API_URL: 'https://ghe.example/api/v3' });
+    expect(codexEnv).not.toHaveProperty('OPENAI_API_KEY');
     expect(withTools).toContain('features.shell_tool=false');
     expect(without.join(' ')).not.toContain('mcp_servers');
     expect(instructions[0]).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\. `read_file`, `grep` and `glob` read files/);
