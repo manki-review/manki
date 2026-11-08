@@ -57,6 +57,8 @@ describe('highlightCode', () => {
     const unclosed = 'Adds `x += `${`y`} `` here.\n- [`src/github.ts:3`](https://example.com/a) and `createReview`.';
     expect(highlightCode(unclosed, tokens)).toBe(unclosed);
     expect(highlightCode('Opens ` here.\n\nThen createReview runs.', tokens)).toBe('Opens ` here.\n\nThen `createReview` runs.');
+    // An escaped backtick is text, so it opens no span that would swallow the code after it.
+    expect(highlightCode('Calls \\`run( then `src/github.ts` and createReview.', tokens)).toBe('Calls \\`run( then `src/github.ts` and `createReview`.');
   });
 
   it('wraps tokens in a summary in code tags, since GitHub does not parse Markdown there', () => {

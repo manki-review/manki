@@ -1896,6 +1896,14 @@ function oneLine(text: string): string {
   return balanceCodeSpans(line.length <= MAX_CHECK_CHARS ? line : `${line.slice(0, MAX_CHECK_CHARS - 1).trimEnd()}…`);
 }
 
+// A backtick run Markdown reads as code, not one escaped with a backslash.
+const LIVE_BACKTICKS_RE = /(?<!\\)`+/g;
+
+/** Returns `line` with every live backtick escaped, so it shows as text. */
+function escapeBackticks(line: string): string {
+  return line.replace(/(?<!\\)`/g, '\\`');
+}
+
 /** Whether every backtick run in `runs` opens or closes inline code as Markdown pairs them, with none left over. */
 function pairsAsMarkdown(runs: RegExpMatchArray[]): boolean {
   let open: number | undefined;
@@ -1909,36 +1917,43 @@ function pairsAsMarkdown(runs: RegExpMatchArray[]): boolean {
 /**
  * Returns `line` with inline code that cannot break the Markdown after it. A model often quotes code that holds a
  * backtick in single backticks, which Markdown closes at the inner one. Such a line is paired by where each run sits:
- * one before text opens, one after text closes. Each outermost span is written again with a longer backtick run. A
- * line that cannot be paired either way shows every backtick as text.
+ * one before text opens, one after text closes the runs it matches exactly. Each outermost span is written again with
+ * a longer backtick run. A line that cannot be paired either way shows every backtick as text.
  */
 function balanceCodeSpans(line: string): string {
-  const runs = [...line.matchAll(/`+/g)];
+  const runs = [...line.matchAll(LIVE_BACKTICKS_RE)];
   if (pairsAsMarkdown(runs)) return line;
   let out = '';
   let last = 0;
-  let depth = 0;
-  let outer: { start: number; length: number } | undefined;
+  // The lengths of the runs still open, and where the outermost one starts.
+  const open: number[] = [];
+  let outer = 0;
   for (const run of runs) {
     const at = run.index!;
+    const length = run[0].length;
     const before = line.slice(0, at);
-    const after = line.slice(at + run[0].length);
-    const closes = depth > 0 && /\S$/.test(before) && CLOSES_CODE_RE.test(after.slice(0, 1));
-    if (closes && run[0].length <= depth) {
-      depth -= run[0].length;
-      if (depth === 0 && outer) {
-        out += line.slice(last, outer.start) + inlineCode(line.slice(outer.start + outer.length, at + run[0].length - outer.length));
-        last = at + run[0].length;
-        outer = undefined;
+    const after = line.slice(at + length);
+    if (open.length > 0 && /\S$/.test(before) && CLOSES_CODE_RE.test(after.slice(0, 1))) {
+      // A closing run closes whole opening runs, the latest first, and none partly.
+      let left = length;
+      let closed = 0;
+      while (left > 0 && open.length > 0 && open[open.length - 1] <= left) {
+        closed = open.pop()!;
+        left -= closed;
+      }
+      if (left > 0) return escapeBackticks(line);
+      if (open.length === 0) {
+        out += line.slice(last, outer) + inlineCode(line.slice(outer + closed, at + length - closed));
+        last = at + length;
       }
     } else if (OPENS_CODE_RE.test(before.slice(-1)) && /^\S/.test(after)) {
-      if (depth === 0) outer = { start: at, length: run[0].length };
-      depth += run[0].length;
+      if (open.length === 0) outer = at;
+      open.push(length);
     } else {
-      return line.replace(/`/g, '\\`');
+      return escapeBackticks(line);
     }
   }
-  return depth === 0 ? out + line.slice(last) : line.replace(/`/g, '\\`');
+  return open.length === 0 ? out + line.slice(last) : escapeBackticks(line);
 }
 
 /** Lines `start` to `end` of `file`. */

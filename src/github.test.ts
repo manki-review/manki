@@ -289,6 +289,14 @@ describe('formatFindingComment', () => {
     expect(comment).toContain('- Appends each section with `` comment += `\\n\\n${section}` ``, so with no fix it directly follows the description');
     expect(comment).toContain('- Calls \\`run( and stops');
     expect(render({ ...baseFinding, evidence: { checks: ['`src/a.ts`:3 reads `x`'], proof: [] } })).toContain(`Reads \`x\`\n${links.linkTo('src/a.ts', 2, 3)}`);
+
+    // An escaped backtick stays text, also for highlighting, so a later code span on the same line keeps its own pair.
+    const joined = highlightCode(render({ ...baseFinding, evidence: { checks: ['src/main.ts:42 calls `run( and stops', 'src/main.ts:42 reads `src/a.ts` later'], proof: [] } }), new Set(['src/a.ts']));
+    expect(joined).toContain('On the commented line: Calls \\`run( and stops Reads `src/a.ts` later');
+    // A closing run closes whole opening runs only, so nothing is cut from the code, and escaped runs count as text.
+    const odd = render({ ...baseFinding, evidence: { checks: ['Reads ``foo` and bar` here', 'Reads ```x and `y z`'], proof: [] } });
+    expect(odd).toContain('- Reads \\`\\`foo\\` and bar\\` here\n- Reads \\`\\`\\`x and `y z`');
+    expect(odd.split('\n').filter(line => !pairs(line))).toEqual([]);
   });
 
   it('omits the fix when there is none', () => {
