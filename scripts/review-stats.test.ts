@@ -112,7 +112,7 @@ describe('review stats', () => {
         needsHuman: { cause: 'repeated', blockers: [] },
       },
       staticAnalysis: {
-        sources: [{ source: 'checks', status: 'ran', results: 1 }, { source: 'code_scanning', status: 'skipped', reason: 'the token cannot read it (HTTP 403)' }],
+        sources: [{ source: 'checks', status: 'ran', results: 1 }, { source: 'code_scanning', status: 'skipped', reason: 'the token cannot read it (HTTP 403)' }, { source: 'dependency_review', status: 'skipped', reason: 'Bad\n| injected | row' }],
         analyzers: [{ analyzer: 'secrets', status: 'ran', results: 0 }],
       },
       findings: {
@@ -139,12 +139,16 @@ describe('review stats', () => {
       threadComments: [{ id: 60, in_reply_to_id: 59, body: `Fixed.\n${formatReplyRecord(reply as ReplyRecord)}`, user: bot }],
     });
 
-    const stats = computeStats([pr]);
+    // A round of a release that recorded no fix claims adds nothing to their series.
+    const older = prRecords('o/r', 5, { reviews: [review(2, makeRoundContext(1))], threadComments: [] });
+    const stats = computeStats([pr, older]);
     const decisions = Object.fromEntries([...stats.decisions].map(([name, counts]) => [name, Object.fromEntries(counts)]));
     expect(decisions).toEqual({
       'Prompt versions (rounds per stage and digest)': { 'reviewer aaaaaaaaaaaa': 1, 'judge bbbbbbbbbbbb': 1 },
       'Pause causes': { repeated: 1 },
-      'Static analysis sources': { 'checks ran': 1, 'code_scanning skipped: the token cannot read it (HTTP 403)': 1, 'secrets ran': 1 },
+      'Static analysis sources': {
+        'checks ran': 1, 'code_scanning skipped: the token cannot read it (HTTP 403)': 1, 'dependency_review skipped: Bad\n| injected | row': 1, 'secrets ran': 1,
+      },
       'Grade changes': { 'unproven: blocker to warning': 1, 'judge: warning to suggestion': 1, 'refutation: warning to ignore': 1 },
       'Pre-existing claims (how each was checked)': { pre_existing: 1 },
       'Memory suppressions (findings hidden per suppression)': { 'sup-1': 1 },
@@ -157,8 +161,10 @@ describe('review stats', () => {
 
     const report = renderStats(stats);
     expect(report).toContain('### Pause causes\n\n| value | count |\n| --- | ---: |\n| repeated | 1 |');
-    expect(renderStats(stats, 'o/r')).toMatch(/^# Review statistics for o\/r over 1 merged PRs and 1 rounds\n/);
+    expect(renderStats(stats, 'o/r')).toMatch(/^# Review statistics for o\/r over 2 merged PRs and 2 rounds\n/);
     expect(report).toContain('- Threads with a fix claim, per round: mean 2.0, median 2.0, max 2.0');
+    // A value from a record never breaks the table.
+    expect(report).toContain('| dependency_review skipped: Bad \\| injected \\| row | 1 |');
     // A record from before a field existed shows it as none recorded.
     expect(renderStats(computeStats([]))).toContain('### Approvals\n\nNone recorded.');
   });

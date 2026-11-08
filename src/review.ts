@@ -1353,7 +1353,7 @@ export async function runReview(
     ...(memorySuppressed.length > 0 && { memorySuppressed }),
     ...(slicing && { slicing }),
     ...(changedSinceLastRound && { changedSinceLastRoundCount: changedSinceLastRound.length }),
-    ...(fixClaimed.size > 0 && { fixClaimedThreadIds: [...fixClaimed] }),
+    fixClaimedThreadIds: [...fixClaimed],
     ...(memory && { memoryLoaded: { learnings: memory.learnings.length, suppressions: memory.suppressions.length } }),
     ...(unpostedPreExisting.length > 0 && { unpostedPreExisting }),
     ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),

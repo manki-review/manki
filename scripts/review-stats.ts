@@ -232,7 +232,7 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
   }
   if (round.approval) tally(stats, 'Approvals', round.approval.held ? `held: ${round.approval.held}` : 'approved');
   if (round.diff?.changedSinceLastRound !== undefined) stats.changedSinceLastRound.push(round.diff.changedSinceLastRound);
-  stats.fixClaims.push(round.judge?.fixClaimedThreads?.length ?? 0);
+  if (round.judge?.fixClaimedThreads !== undefined) stats.fixClaims.push(round.judge.fixClaimedThreads.length);
   for (const call of round.tokenService ?? []) tally(stats, 'Token service calls', tokenCallKey(call));
 }
 
@@ -315,7 +315,7 @@ function decisionTable(decision: Decision, counts: Map<string, number> | undefin
   const more = rows.length > MAX_DECISION_ROWS ? [``, `${rows.length - MAX_DECISION_ROWS} more values are left out.`] : [];
   return [
     '', `### ${decision}`, '', '| value | count |', '| --- | ---: |',
-    ...rows.slice(0, MAX_DECISION_ROWS).map(([value, count]) => `| ${value.replace(/\|/g, '\\|')} | ${count} |`), ...more,
+    ...rows.slice(0, MAX_DECISION_ROWS).map(([value, count]) => `| ${value.replace(/\s+/g, ' ').replace(/\|/g, '\\|')} | ${count} |`), ...more,
   ];
 }
 

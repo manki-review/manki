@@ -41,7 +41,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TITLE: Weekly review statistics
         run: |
-          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number,title \
+          # Only the issue this workflow opened, so nobody can redirect the report by opening one with the same title.
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --author app/github-actions --search "\"$TITLE\" in:title" --json number,title \
             --jq "map(select(.title == env.TITLE))[0].number // empty")
           if [ -z "$number" ]; then
             url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" \

@@ -1434,7 +1434,7 @@ export interface RoundJudge {
   interRoundDiffBytes?: number;
   /** True when the inter-round diff exceeded `MAX_INTER_ROUND_DIFF_CHARS` and was truncated before being passed to the judge prompt. */
   interRoundDiffTruncated?: boolean;
-  /** The threads where someone claimed a fix, which a blocker coming back counts against. */
+  /** The threads where someone claimed a fix, which a blocker coming back counts against. Empty when none did. */
   fixClaimedThreads?: string[];
   /** Counts from the post-judge thread-resolution loop: `addressed` evaluations dropped, `not_addressed` evaluations synthesised by the empty-diff override, and `uncertain` evaluations emitted. */
   threadResolutionOverrides?: ThreadResolutionOverrides;
