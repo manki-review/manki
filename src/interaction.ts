@@ -129,9 +129,10 @@ async function findBotThread(
 const MAX_ROUND_REASON_CHARS = 300;
 
 /**
- * Returns the latest round's evaluation of the thread rooted at `rootCommentId` when that round reviewed `head` and
- * finished after the reply written at `repliedAt`. The reply was queued behind that round, so its judgment is the newer
- * one, and a verdict of the reply run could contradict it.
+ * Returns the latest round's evaluation of the blocking or security thread rooted at `rootCommentId` when that round
+ * reviewed `head` and finished after the reply written at `repliedAt`. The reply was queued behind that round, so its
+ * judgment is the newer one, and a verdict of the reply run could contradict it. Any other thread is answered as usual,
+ * since a deferral or a withdrawal there can still resolve it.
  */
 async function roundEvaluationAfterReply(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, rootCommentId: number,
@@ -144,7 +145,7 @@ async function roundEvaluationAfterReply(
     core.warning(`Failed to read the thread of the reply: ${error}`);
     return undefined;
   });
-  const evaluation = thread && latest.judge.threadEvaluations?.find(e => e.threadId === thread.id);
+  const evaluation = thread && isGuarded(thread) ? latest.judge.threadEvaluations?.find(e => e.threadId === thread.id) : undefined;
   return evaluation && { commit: head, evaluation };
 }
 

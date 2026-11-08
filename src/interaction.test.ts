@@ -774,7 +774,8 @@ describe('handleReviewCommentReply', () => {
     ['written after the round', '14:36:00', 'head', 'not_addressed', undefined],
     ['on a head that moved since the round', '14:32:05', 'other', 'not_addressed', undefined],
     ['on a thread the round did not evaluate', '14:32:05', 'head', undefined, undefined],
-  ])('defers to the latest round for a reply %s', async (_case, repliedAt, roundHead, status, pointer) => {
+    ['written during the round on a warning thread, where a deferral can still resolve it', '14:32:05', 'head', 'not_addressed', undefined, false],
+  ])('defers to the latest round for a reply %s', async (_case, repliedAt, roundHead, status, pointer, blocking = true) => {
     const head = 'a'.repeat(40);
     setContext({
       comment: { id: 1, body: 'Fixed in 7e3f21d.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER', created_at: `2026-11-06T${repliedAt}Z` },
@@ -791,7 +792,7 @@ describe('handleReviewCommentReply', () => {
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: 'Fixed. The guard now runs first.' });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, findingTitle: 'This' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: blocking, findingTitle: 'This' },
     ]);
     jest.mocked(state.resolveReviewThread).mockClear();
 
