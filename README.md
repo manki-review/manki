@@ -49,7 +49,7 @@ See [How reviews work](docs/how-reviews-work.md#review-pipeline) for the full wa
 
 | Command | What it does |
 |---------|-------------|
-| `/manki review` | Review the head commit, unless Manki already has a complete review of it. Then the settings block shows it as up to date, and ticking Full review there reviews the commit again |
+| `/manki review` | Review the head commit, unless Manki already has a complete review of it. Then the settings block shows it as up to date, and ticking Review again there reviews the commit again |
 | `/manki explain [topic]` | Ask about the PR changes |
 | `/manki dismiss [finding]` | Dismiss a finding (stored as suppression in memory). In a Manki thread, it also resolves the thread |
 | `/manki remember <instruction>` | Teach it something for future reviews |

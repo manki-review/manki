@@ -3158,7 +3158,7 @@ describe('updateProgressDashboard', () => {
 
   it('ends with the settings block, keeping a box a person ticked on the live comment, unless the comment lost its block', async () => {
     const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    const running: SettingsView = { head: 'abc1234', status: 'review running', boxes: new Set(['pause', 'full', 'cancel']), ticked: new Set() };
+    const running: SettingsView = { head: 'abc1234', status: 'review running', boxes: new Set(['pause', 'again', 'cancel']), ticked: new Set() };
     const live = withSettingsBlock('**Review in progress**', running).replace('- [ ] Pause', '- [x] Pause');
     const updateCommentMock = jest.fn().mockResolvedValue({});
     const getCommentMock = jest.fn().mockResolvedValueOnce({ data: { body: live } }).mockRejectedValueOnce(new Error('boom'))
@@ -3184,7 +3184,7 @@ describe('updateProgressDashboard', () => {
 
 describe('settings block placement', () => {
   type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
-  const view: SettingsView = { lastReviewed: 'aaa1111', head: 'bbb2222', status: 'review running', boxes: new Set(['pause', 'full', 'cancel']), ticked: new Set() };
+  const view: SettingsView = { lastReviewed: 'aaa1111', head: 'bbb2222', status: 'review running', boxes: new Set(['pause', 'again', 'cancel']), ticked: new Set() };
 
   function makeOctokit(comments: Array<{ id: number; body: string; login?: string }>) {
     const updateComment = jest.fn().mockResolvedValue({});
@@ -3202,12 +3202,12 @@ describe('settings block placement', () => {
       { id: 2, body: ticked },
     ]);
 
-    await showSettings(octokit, TEST_BOT, 'owner', 'repo', 1, { head: 'ccc3333', status: 'up to date', boxes: new Set(['pause', 'full']), ticked: new Set() }, 'Unused');
+    await showSettings(octokit, TEST_BOT, 'owner', 'repo', 1, { head: 'ccc3333', status: 'up to date', boxes: new Set(['pause', 'again']), ticked: new Set() }, 'Unused');
     expect(createComment).not.toHaveBeenCalled();
     expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 2 }));
     const body = updateComment.mock.calls[0][0].body as string;
     expect(body.startsWith(withMarkers('**Review complete**', BOT_MARKER))).toBe(true);
-    expect(parseSettingsBlock(body)).toEqual({ lastReviewed: 'aaa1111', head: 'ccc3333', status: 'up to date', boxes: new Set(['pause', 'full']), ticked: new Set(['pause']) });
+    expect(parseSettingsBlock(body)).toEqual({ lastReviewed: 'aaa1111', head: 'ccc3333', status: 'up to date', boxes: new Set(['pause', 'again']), ticked: new Set(['pause']) });
 
     await showSettings(octokit, TEST_BOT, 'owner', 'repo', 1, { lastReviewed: 'ccc3333', head: 'ccc3333', status: 'up to date', boxes: new Set(['pause']), ticked: new Set() }, 'Unused');
     expect(parseSettingsBlock(updateComment.mock.calls[1][0].body)?.lastReviewed).toBe('ccc3333');
@@ -4059,13 +4059,13 @@ describe('markOwnProgressCommentCancelled', () => {
   });
 
   it('keeps the settings block last, saying the review was cancelled and offering no Cancel box', async () => {
-    const view: SettingsView = { head: 'abc1234', status: 'review running', boxes: new Set(['pause', 'full', 'cancel']), ticked: new Set(['pause']) };
+    const view: SettingsView = { head: 'abc1234', status: 'review running', boxes: new Set(['pause', 'again', 'cancel']), ticked: new Set(['pause']) };
     const { octokit, updateComment } = makeOctokit({ body: withSettingsBlock(running, view) });
 
     expect(await markOwnProgressCommentCancelled(octokit, 'owner', 'repo')).toBe(true);
     const body = updateComment.mock.calls[0][0].body as string;
     expect(body).toContain(`${running}\n\n</details>`);
-    expect(parseSettingsBlock(body)).toEqual({ head: 'abc1234', status: 'review cancelled', boxes: new Set(['pause', 'full']), ticked: new Set(['pause']) });
+    expect(parseSettingsBlock(body)).toEqual({ head: 'abc1234', status: 'review cancelled', boxes: new Set(['pause', 'again']), ticked: new Set(['pause']) });
   });
 
   it.each([

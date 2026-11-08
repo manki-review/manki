@@ -121,14 +121,14 @@ describe('fetchPrState', () => {
 
   it('reads the settings, the last reviewed commit, the modes of this run and the modes still queued', async () => {
     mockFetch(async () => Response.json({
-      active: [{ run_id: 7, modes: ['full', 'bogus'] }, { run_id: 8, modes: ['deeper'] }],
-      queue: [{ modes: ['force'] }, { modes: 'draft' }, null],
+      active: [{ run_id: 7, modes: ['again', 'bogus', 'full'] }, { run_id: 8, modes: ['deeper'] }],
+      queue: [{ modes: ['force', 'again'] }, { modes: 'draft' }, null],
       settings: { paused: true },
       last_reviewed: { commit: 'a'.repeat(40), run_id: 6, at: '2026-11-07T00:00:00.000Z' },
     }));
 
     expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({
-      settings: { paused: true }, lastReviewed: 'a'.repeat(40), runModes: new Set(['full']), queuedModes: new Set(['force']),
+      settings: { paused: true }, lastReviewed: 'a'.repeat(40), runModes: new Set(['again']), queuedModes: new Set(['again']),
     });
     const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('https://manki-api.dustinface.me/state');

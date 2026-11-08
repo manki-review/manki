@@ -612,7 +612,7 @@ describe('isLLMAccessAllowed', () => {
   it('checks only the editor on an edit of another user\'s comment', async () => {
     setContext({
       action: 'edited',
-      comment: { id: 42, body: '- [x] Force review', user: { login: 'manki-review[bot]' }, author_association: 'COLLABORATOR' },
+      comment: { id: 42, body: '- [x] Review again', user: { login: 'manki-review[bot]' }, author_association: 'COLLABORATOR' },
       sender: { login: 'reader' },
       issue: { pull_request: { url: 'https://...' }, user: { login: 'reader' } },
     });

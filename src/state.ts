@@ -325,7 +325,7 @@ async function autoReviewHalt(
   }
   const { reason } = pauseState(await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
   return reason
-    ? { cause: 'automatic_pause', text: `${reason} Automatic review is paused. Tick **Force review** in the settings block, or comment \`@manki review\`, to review it.` }
+    ? { cause: 'automatic_pause', text: `${reason} Automatic review is paused. Tick **Review again** in the settings block, or comment \`@manki review\`, to review it.` }
     : undefined;
 }
 

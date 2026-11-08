@@ -379,9 +379,9 @@ async function loadSettings(owner: string, repo: string, prNumber: number): Prom
   return await fetchPrState(owner, repo, prNumber, github.context.runId) ?? NO_SETTINGS;
 }
 
-/** The boxes that apply to a PR: Pause, Full review and Deeper review always, Review this draft on a draft, and `extra`. */
+/** The boxes that apply to a PR: Pause and both Review again boxes always, Review this draft on a draft, and `extra`. */
 function settingsBoxes(draft: boolean, extra: SettingsBox[] = []): Set<SettingsBox> {
-  return new Set<SettingsBox>(['pause', 'full', 'deeper', ...(draft ? ['draft' as const] : []), ...extra]);
+  return new Set<SettingsBox>(['pause', 'again', 'deeper', ...(draft ? ['draft' as const] : []), ...extra]);
 }
 
 /** The boxes the coordinator state ticks: Pause while paused, and each box whose run is still queued. */
@@ -390,11 +390,11 @@ function tickedBoxes(settings: PrState): Set<SettingsBox> {
 }
 
 /**
- * How a run reviews. Any box a writer ticked reviews even a draft or an already reviewed or paused PR.
- * `full` counts every finding as new, and `deeper` runs two finders on every group, each one effort level higher.
+ * How a run reviews. Any box a writer ticked reviews even a draft, or an already reviewed, paused or too big PR.
+ * `again` counts every finding as new, and `deeper` runs two finders on every group, each one effort level higher.
  */
 function reviewModes({ runModes }: PrState): { forced: boolean; fullReview: boolean; deeper: boolean } {
-  return { forced: runModes.size > 0, fullReview: runModes.has('full'), deeper: runModes.has('deeper') };
+  return { forced: runModes.size > 0, fullReview: runModes.has('again'), deeper: runModes.has('deeper') };
 }
 
 /**
@@ -410,7 +410,7 @@ async function showRunStatus(
   }, text);
 }
 
-/** Shows an already reviewed `commitSha` as up to date in the settings block. Its Full review box reviews it again. */
+/** Shows an already reviewed `commitSha` as up to date in the settings block. Its Review again box reviews it again. */
 async function showAlreadyReviewed(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string, settings: PrState, draft = false,
 ): Promise<void> {
@@ -527,7 +527,7 @@ async function handleCommentTrigger(settingsTick = false): Promise<void> {
   });
   const draft = !!pr.draft;
 
-  // An approved head counts as reviewed here, so a review command on it shows up to date, and Full review reviews it again.
+  // An approved head counts as reviewed here, so a review command on it shows up to date, and Review again reviews it again.
   if (!forced && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
     core.info(`Bot already reviewed commit ${pr.head.sha.slice(0, 7)} — skipping`);
     await showAlreadyReviewed(octokit, bot, owner, repo, prNumber, pr.head.sha, settings, draft);
@@ -1026,15 +1026,15 @@ async function replaceWithNotice(target: RunTarget, progress: RunProgress, marke
 
 /**
  * Replaces the progress comment with a request to split a PR too big to review, and dismisses Manki's earlier
- * approvals, since no reviewer read the new code. Posts no review, so a request for changes stays. `offerForce`
- * offers Force review in the settings block.
+ * approvals, since no reviewer read the new code. Posts no review, so a request for changes stays. `offerReview`
+ * keeps the Review again boxes, which review the PR anyway.
  */
-async function postTooBigNotice(target: RunTarget, progress: RunProgress, text: string, offerForce: boolean, lastRoundAt?: string): Promise<CheckReport> {
+async function postTooBigNotice(target: RunTarget, progress: RunProgress, text: string, offerReview: boolean, lastRoundAt?: string): Promise<CheckReport> {
   const { octokit, owner, repo, prNumber } = target;
   await dismissPreviousReviews(octokit, owner, repo, prNumber, undefined, 'APPROVED');
-  const offered = progressSettings(target, progress, offerForce ? 'too big for automatic review' : 'too big to review', { boxes: ['force'] });
+  const offered = progressSettings(target, progress, offerReview ? 'too big for automatic review' : 'too big to review');
   // Above the hard limit no box can review the PR, so only Pause stays.
-  const settings = offered && (offerForce ? offered : { ...offered, boxes: new Set<SettingsBox>(['pause']) });
+  const settings = offered && (offerReview ? offered : { ...offered, boxes: new Set<SettingsBox>(['pause']) });
   const body = withSettingsBlock(withMarkers(text, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, TOO_BIG_MARKER), settings);
   await replaceWithNotice(target, progress, TOO_BIG_MARKER, body, lastRoundAt);
   // A diff no reviewer read must not pass a required check, so it waits for a person.
@@ -1049,7 +1049,7 @@ function pauseReport({ reason }: PauseState): StateReport['pause'] {
 /**
  * Replaces the progress comment with a notice that automatic review is paused, listing the blocking threads still open.
  * Each push during the same pause updates the notice from after `lastRoundAt` instead of adding another.
- * The notice's settings block offers Force review.
+ * The notice's settings block offers Review again, which reviews the PR anyway.
  */
 async function postPauseNotice(
   target: RunTarget, progress: RunProgress, pause: PauseState, maxAutoRounds: number,
@@ -1059,7 +1059,7 @@ async function postPauseNotice(
   core.info(capReached
     ? `Round cap reached (${capRounds} rounds with new changes since the last approval >= max ${maxAutoRounds}) — skipping auto review`
     : 'Last round did not converge — skipping auto review');
-  const settings = progressSettings(target, progress, 'automatic review paused', { boxes: ['force'] });
+  const settings = progressSettings(target, progress, 'automatic review paused');
   const blockers = formatOpenBlockers(previousFindings);
   const body = withSettingsBlock(
     withMarkers(`${reason} Automatic review is paused.${blockers ? `\n\n${blockers}` : ''}`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER),
@@ -1080,7 +1080,7 @@ async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: st
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
     return comments.find(c => isBotLogin(bot, c.user?.login) && !!c.body?.includes(marker)
-      && !c.body.includes('- [x] Force review') && Date.parse(c.updated_at) > since);
+      && !c.body.includes('- [x] Review again') && Date.parse(c.updated_at) > since);
   } catch (error) {
     core.warning(`Failed to look up an earlier notice: ${error}`);
     return undefined;
@@ -1693,12 +1693,12 @@ async function runFullReview(
     }
     if (lineCount > autoLimit && !forceReview && !skipCap) {
       core.info(`No automatic review: ${lineCount} reviewable lines > ${autoLimit}`);
-      checkReport = await postTooBigNotice(target, progress, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick Force review to review it in full.`, true, recap.priorRounds.at(-1)?.meta.timestamp);
+      checkReport = await postTooBigNotice(target, progress, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick Review again to review it in full.`, true, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
     if (charCount > MAX_AUTO_REVIEW_CHARS && !forceReview && !skipCap) {
       core.info(`No automatic review: ${charCount} reviewable characters > ${MAX_AUTO_REVIEW_CHARS}`);
-      checkReport = await postTooBigNotice(target, progress, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${charCount} characters of reviewable diff, above the limit of ${MAX_AUTO_REVIEW_CHARS} for automatic review. Split it into smaller PRs, or tick Force review to review it in full.`, true, recap.priorRounds.at(-1)?.meta.timestamp);
+      checkReport = await postTooBigNotice(target, progress, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${charCount} characters of reviewable diff, above the limit of ${MAX_AUTO_REVIEW_CHARS} for automatic review. Split it into smaller PRs, or tick Review again to review it in full.`, true, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 

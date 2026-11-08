@@ -398,7 +398,7 @@ The inputs carry only the event kind and its ids. Manki reads the PR, comment or
 gh workflow run manki.yml -f event=pull_request -f action=synchronize -f pr=<number> -f head_sha=<full head SHA>
 ```
 
-The service does not queue a run started by hand, so it can overlap a run the service started and review the same commit twice. To review again, prefer a review command or Full review in the settings block.
+The service does not queue a run started by hand, so it can overlap a run the service started and review the same commit twice. To review again, prefer a review command or Review again in the settings block.
 
 ## Verification
 
@@ -410,9 +410,9 @@ After setup, create a test PR to verify everything works:
 4. Check the Actions tab for the review run
 5. The PR should receive inline review comments and an APPROVE/REQUEST_CHANGES review
 
-You can also trigger a review manually by commenting `/manki review` on any PR. Manki reviews each commit once. The command reviews the PR's current head when Manki has no complete review of it yet, and an incomplete or failed review does not count. On a head Manki already reviewed, it posts no review, and the settings block shows the head as up to date. Ticking Full review there reviews the same commit again.
+You can also trigger a review manually by commenting `/manki review` on any PR. Manki reviews each commit once. The command reviews the PR's current head when Manki has no complete review of it yet, and an incomplete or failed review does not count. On a head Manki already reviewed, it posts no review, and the settings block shows the head as up to date. Ticking Review again there reviews the same commit again.
 
-Manki's newest progress comment ends with a settings block. It holds a status line, such as "Last reviewed `abc1234` · head `def5678` · review running" or "up to date", and the boxes that apply to the PR: Pause automatic reviews, Full review, Deeper review, Cancel this review while a review runs, Review this draft on a draft, and Force review while automatic review is paused or the PR is too big for automatic review. Pause stays ticked until someone unticks it. The other boxes start one run each. Full review counts every finding as new code. Deeper review runs two finders on every group, moving a group with one finder up to the built-in `pair` group, and runs each finder one effort level higher. The block moves to the newest progress comment, and older comments lose it. A PR paused by the round cap or too big for automatic review gets no separate notice: the status line says so, and the block offers the box that reviews it. A push to a draft, unless the base branch sets `drafts: review`, or to a PR with Pause ticked starts no run at all. Review this draft or Full review reviews it on request. A PR above the hard size limit gets only the Pause box, since no box can review it.
+Manki's newest progress comment ends with a settings block. It holds a status line, such as "Last reviewed `abc1234` · head `def5678` · review running" or "up to date", and the boxes that apply to the PR: Pause automatic reviews, Review again, Review again, deeper (two reviewers, higher effort), Cancel this review while a review runs, and Review this draft on a draft. Pause stays ticked until someone unticks it. The other boxes start one run each. Review again reviews the current commit now, also while automatic review is paused or the PR is too big for automatic review, and counts every finding as new code. Review again, deeper runs two finders on every group, moving a group with one finder up to the built-in `pair` group, and runs each finder one effort level higher. The block moves to the newest progress comment, and older comments lose it. A PR paused by the round cap or too big for automatic review gets no separate notice: the status line says so, and the block offers the box that reviews it. A push to a draft, unless the base branch sets `drafts: review`, or to a PR with Pause ticked starts no run at all. Review this draft or Review again reviews it on request. A PR above the hard size limit gets only the Pause box, since no box can review it.
 
 ## Troubleshooting
 
@@ -424,7 +424,7 @@ Manki's newest progress comment ends with a settings block. It holds a status li
 | Review says "Not reviewed" and lists skipped files | Every changed file matches `exclude_paths` or has no code to read, such as a binary, a Git LFS pointer or a submodule bump, so a person must review the PR. Check `exclude_paths` in config if a file should be read |
 | Memory not loading | The run log names the cause. With `memory.repo` set, pass `memory_repo_token` with Contents read/write on that repo. Without it, the token service must have started the run |
 | No run starts | The Manki workflow must be on the default branch and declare the dispatch inputs, no other workflow may run Manki on events, and the repository's account must be one the service serves (see [Step 3](#step-3-add-the-workflow)) |
-| "above the limit ... for automatic review" | Split the PR, tick Force review to review it in full, or raise `auto_review_max_lines` |
+| "above the limit ... for automatic review" | Split the PR, tick Review again to review it in full, or raise `auto_review_max_lines` |
 | "above the limit ... that Manki reviews" | Split the PR, or raise `max_diff_lines` |
 | Auto-approve not working | Check that `auto_approve: true` is set in `.manki.yml` |
 | Inline comments land on wrong lines | The judge agent validated line numbers but the diff may have shifted. A blocking finding that is not on a changed line is posted as a comment on its file instead |

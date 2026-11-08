@@ -84,7 +84,7 @@ async function hasWriteAccess(octokit: Octokit, owner: string, repo: string, log
 
 const BOT_MARKER = '<!-- manki-bot -->';
 const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
-/** Marks a pause notice, whose settings block offers Force review. */
+/** Marks a pause notice, whose settings block offers Review again. */
 const PAUSE_NOTICE_MARKER = '<!-- manki-paused -->';
 /** Marks the approval auto-approve posts. It stays in the body after GitHub dismisses the review. */
 const AUTO_APPROVE_MARKER = '<!-- manki-auto-approve -->';

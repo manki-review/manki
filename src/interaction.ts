@@ -622,7 +622,7 @@ async function handleHelp(
     owner,
     repo,
     issue_number: prNumber,
-    body: withMarkers(`| Command | What it does |\n|---|---|\n| \`/manki review\` | Reviews the head commit unless Manki already has a complete review of it. Tick Full review in the settings block to review it again |\n| \`/manki explain [topic]\` | Explains something about this PR |\n| \`/manki check\` | Checks for open blocking threads and approves when there are none |\n| \`/manki dismiss [finding]\` | Dismisses a finding |\n| \`/manki remember <instruction>\` | Stores an instruction for future reviews |\n| \`/manki forget <text>\` | Removes a learning or suppression |\n| \`/manki help\` | Shows this message |\n\n\`@manki\` and \`@manki-review\` work as the prefix too. A reply to a Manki review comment gets an answer in its thread.`, BOT_MARKER),
+    body: withMarkers(`| Command | What it does |\n|---|---|\n| \`/manki review\` | Reviews the head commit unless Manki already has a complete review of it. Tick Review again in the settings block to review it again |\n| \`/manki explain [topic]\` | Explains something about this PR |\n| \`/manki check\` | Checks for open blocking threads and approves when there are none |\n| \`/manki dismiss [finding]\` | Dismisses a finding |\n| \`/manki remember <instruction>\` | Stores an instruction for future reviews |\n| \`/manki forget <text>\` | Removes a learning or suppression |\n| \`/manki help\` | Shows this message |\n\n\`@manki\` and \`@manki-review\` work as the prefix too. A reply to a Manki review comment gets an answer in its thread.`, BOT_MARKER),
   });
 }
 
