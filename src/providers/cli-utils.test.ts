@@ -2,6 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+import * as core from '@actions/core';
+
 import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
 
@@ -67,7 +69,17 @@ describe('cliEnv', () => {
       INPUT_GITHUB_TOKEN: 'ghs_input',
       INPUT_MODEL: 'claude-opus-4-6',
       XDG_SESSION_TOKEN: 'xdg-secret',
+      OPENAI_API_KEY_PROD: 'sk-prod',
+      GOOGLE_CREDENTIALS_JSON: '{"private_key":"pk"}',
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Api-Key: gateway-key',
+      XDG_AUTH_HEADERS_DIR: '/run/headers',
     };
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    for (const provider of ['claude', 'claude', 'gemini'] as const) {
+      expect(Object.keys(cliEnv(provider, {}, undefined, env))).toEqual(Object.keys(cliEnv('codex', {}, undefined, env)));
+    }
+    expect(warning.mock.calls).toEqual([[expect.stringMatching(/^ANTHROPIC_CUSTOM_HEADERS is not passed to the Claude CLI/)]]);
+    warning.mockRestore();
     expect(cliEnv('codex', {}, undefined, env)).toEqual({
       PATH: '/usr/bin',
       HOME: '/home/runner',
@@ -98,6 +110,9 @@ describe('cliEnv', () => {
       AWS_PROFILE: 'bedrock',
       AWS_ROLE_ARN: 'arn:aws:iam::1:role/bedrock',
       AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/token',
+      AWS_SHARED_CREDENTIALS_FILE: '/home/runner/.aws/credentials',
+      AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.23/v1/credentials',
+      CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
       DISABLE_TELEMETRY: '1',
       CLAUDE_CONFIG_DIR: '/home/runner/.claude',
       API_TIMEOUT_MS: '600000',
@@ -124,6 +139,9 @@ describe('cliEnv', () => {
       AWS_PROFILE: 'bedrock',
       AWS_ROLE_ARN: 'arn:aws:iam::1:role/bedrock',
       AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/token',
+      AWS_SHARED_CREDENTIALS_FILE: '/home/runner/.aws/credentials',
+      AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.23/v1/credentials',
+      CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
       DISABLE_TELEMETRY: '1',
       CLAUDE_CONFIG_DIR: '/home/runner/.claude',
       API_TIMEOUT_MS: '600000',
@@ -142,13 +160,19 @@ describe('cliEnv', () => {
       AWS_BEARER_TOKEN_BEDROCK: 'bedrock-api-key',
       GOOGLE_APPLICATION_CREDENTIALS: '/secrets/gcp-key.json',
       ANTHROPIC_AUTH_TOKEN: 'gateway-auth-token',
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Gateway-Key: gateway-header-key\nAuthorization: Bearer bare-gateway-bearer',
     };
     expect(cliEnv('claude', {}, undefined, credentials)).toEqual({});
 
     const on = { ...credentials, CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: 'true', ANTHROPIC_BASE_URL: 'https://gateway.example' };
     expect(cliEnv('claude', {}, undefined, on)).toEqual(on);
     expect(cliEnv('claude', {}, undefined, { ...credentials, CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' })).toEqual({ CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' });
-    expect(redactSecrets('aws-secret-access-key gateway-auth-token')).toBe('[REDACTED] [REDACTED]');
+    expect(redactSecrets('aws-secret-access-key gateway-auth-token gateway-header-key bare-gateway-bearer')).toBe('[REDACTED] [REDACTED] [REDACTED] [REDACTED]');
+    // A Bedrock or Vertex gateway gets the headers too, but not the Anthropic gateway token.
+    for (const url of ['ANTHROPIC_BEDROCK_BASE_URL', 'ANTHROPIC_VERTEX_BASE_URL']) {
+      expect(cliEnv('claude', {}, undefined, { ...credentials, [url]: 'https://gateway.example' }))
+        .toEqual({ [url]: 'https://gateway.example', ANTHROPIC_CUSTOM_HEADERS: credentials.ANTHROPIC_CUSTOM_HEADERS });
+    }
     const keyFile = join(mkdtempSync(join(tmpdir(), 'manki-gcp-')), 'key.json');
     writeFileSync(keyFile, JSON.stringify({ private_key_id: 'key-id-0123456789', private_key: '-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQ\n-----END PRIVATE KEY-----\n', client_email: 'reviewer@project.iam.gserviceaccount.com' }));
     cliEnv('claude', {}, undefined, { CLAUDE_CODE_USE_VERTEX: '1', GOOGLE_APPLICATION_CREDENTIALS: keyFile });

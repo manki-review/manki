@@ -9,6 +9,7 @@ jest.mock('@actions/core', () => ({
   error: jest.fn(),
   getInput: jest.fn().mockReturnValue(''),
   setOutput: jest.fn(),
+  setSecret: jest.fn(),
   setFailed: jest.fn(),
   getState: jest.fn().mockReturnValue(''),
   saveState: jest.fn(),
@@ -239,7 +240,7 @@ import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInte
 import { buildRoundRecap } from './round-context';
 import type { ParsedDiff, PrState, ReviewConfig, RunMode } from './types';
 import { SettingsView, withSettingsBlock } from './settings';
-import { withMarkers } from './utils';
+import { registerSecret, withMarkers } from './utils';
 import { createLLMClient, LLMCall, parseModelSpec } from './providers';
 import { fetchWorkspace } from './workspace';
 import * as interaction from './interaction';
@@ -2261,8 +2262,9 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
+    registerSecret('finding-secret-0123456789');
     const findings = [
-      { severity: 'blocker' as const, title: 'Bug found', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] },
+      { severity: 'blocker' as const, title: 'Bug found', file: 'src/app.ts', line: 5, description: 'desc\nleaks finding-secret-0123456789', reviewers: ['general'] },
     ];
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const,
@@ -2298,6 +2300,8 @@ describe('runFullReview orchestration', () => {
     expect(counts).toEqual({ blocker: 1, warning: 0, suggestion: 0, nitpick: 0 });
     expect(counts).not.toHaveProperty('required');
     expect(counts).not.toHaveProperty('nit');
+    const findingsJson = setOutputCalls.find(c => c[0] === 'findings_json')![1] as string;
+    expect(JSON.parse(findingsJson)[0].description).toBe('desc\nleaks [REDACTED]');
   });
 
   it('populates enriched stats fields (agentMetrics, judgeMetrics, fileMetrics, model split)', async () => {
