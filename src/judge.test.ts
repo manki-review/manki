@@ -1440,7 +1440,8 @@ describe('runJudgeAgent', () => {
         { id: 8, title: 'Old lock order again', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 7 },
         { id: 9, title: 'Old parser leak', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
         { id: 10, title: 'Old parser leak in generated code', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 9 },
-        { id: 11, title: 'Old parser leak in the removed module', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 9 },
+        { id: 11, title: 'Old buffer reuse', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
+        { id: 12, title: 'Old buffer reuse in the removed module', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 11 },
       ],
     }) });
     // The default diff changes lines 1-20 of src/index.ts.
@@ -1456,10 +1457,11 @@ describe('runJudgeAgent', () => {
         makeFinding({ title: 'Stale cache again', preExisting: old, ...off(12) }),
         makeFinding({ title: 'Old lock order', preExisting: old, ...off(60) }),
         makeFinding({ title: 'Old lock order again', preExisting: old, ...off(70) }),
-        // Each folded copy sits in a file the checks refuse: excluded, then deleted by the PR.
+        // Each survivor gets one folded copy in a file the checks refuse: excluded, then deleted by the PR.
         makeFinding({ title: 'Old parser leak', preExisting: old, ...off(80) }),
         makeFinding({ title: 'Old parser leak in generated code', preExisting: old, file: 'gen/parser.ts', ...off(5) }),
-        makeFinding({ title: 'Old parser leak in the removed module', preExisting: old, file: 'src/legacy.ts', ...off(5) }),
+        makeFinding({ title: 'Old buffer reuse', preExisting: old, ...off(90) }),
+        makeFinding({ title: 'Old buffer reuse in the removed module', preExisting: old, file: 'src/legacy.ts', ...off(5) }),
       ],
       diff: makeDiff([makeDiffFile(), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] })]),
       excludedPaths: ['gen/parser.ts'], rawDiff: '', repoContext: '', agentCount: 2,
@@ -1474,6 +1476,7 @@ describe('runJudgeAgent', () => {
       ['Stale cache', undefined],
       ['Old lock order', old],
       ['Old parser leak', undefined],
+      ['Old buffer reuse', undefined],
     ]);
   });
 
