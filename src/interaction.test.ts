@@ -8,7 +8,7 @@ import { LLMClient } from './providers';
 import * as memory from './memory';
 import * as ghUtils from './github';
 import * as state from './state';
-import { makeRoundContext, TEST_BOT } from './test-utils';
+import { makeRoundContext, TEST_BOT, TEST_LINKS } from './test-utils';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -360,7 +360,7 @@ function findingComment(kind: FindingKind): string {
   return jest.requireActual('./github').formatFindingComment({
     severity: kind === 'warning' || kind === 'reraised' ? 'warning' : 'blocker', title: 'Token leaks into logs', file: 'src/file.ts', line: 10, description: 'd', reviewers: [],
     ...(kind === 'security' && { tags: ['security'] }),
-  });
+  }, TEST_LINKS);
 }
 
 function createMockOctokit() {

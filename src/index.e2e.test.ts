@@ -546,8 +546,8 @@ describe('runFullReview end to end', () => {
       const progress = mockGitHub.comments.find(c => c.body.startsWith('✅ **Review complete**'))!.body;
       expect(progress).not.toContain('Disproved by the judge');
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
-      // A disproof never clears a blocker, so it is posted with the refuter's reason under "How this was checked".
-      expect(mockGitHub.threads.map(t => t.comments[0].body)).toEqual([expect.stringContaining('a disproof alone never clears a blocker or a security finding: Both inputs are bounded at src/api.ts:3.')]);
+      // A disproof never clears a blocker, so it is posted with the refuter's reason.
+      expect(mockGitHub.threads.map(t => t.comments[0].body)).toEqual([expect.stringContaining('a disproof alone never clears a blocker or a security finding, so please check it yourself. Both inputs are bounded at src/api.ts:3.')]);
       // The refutation call is recorded under its own label, so it is no judge retry.
       const record = mockGitHub.roundContext(postedReviews()[0]);
       expect([record.judge.retryCount, record.usage.llmCalls?.filter(c => c.agent === 'refute').length]).toEqual([0, 1]);
