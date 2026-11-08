@@ -44,6 +44,8 @@ export interface RoundRecordInput {
 export interface RoundDurations {
   plannerDurationMs?: number;
   judgeDurationMs: number;
+  /** Wall-clock time of the run up to the review it posts. */
+  wallClockMs?: number;
 }
 
 export function buildRoundRecap(recap: {
@@ -86,7 +88,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     priorRoundCount, maxAutoRounds, diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, staticAnalysis,
   } = input;
   const { skipCap, forceReview, bypassHint } = options;
-  const { plannerDurationMs, judgeDurationMs } = durations;
+  const { plannerDurationMs, judgeDurationMs, wallClockMs } = durations;
   const filteredFiles = diff.files;
   const severityMap: Record<string, number> = { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 };
   for (const f of result.findings) {
@@ -215,7 +217,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     bypassReason: bypassHint ?? (forceReview ? 'force_review' : skipCap ? 'skip_cap' : 'within_cap'),
   };
 
-  const usage = buildRoundUsage(llmCalls);
+  const usage = { ...buildRoundUsage(llmCalls), ...(wallClockMs != null && { wallClockMs }) };
   const rawFindingRecords: RoundRawFinding[] = (result.rawFindings ?? []).map(f => ({
     title: f.title,
     file: f.file,

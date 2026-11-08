@@ -2541,7 +2541,7 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Planner** (3s)');
-    expect(md).toContain('**Judge:** 6 kept · 4 dropped (65s)');
+    expect(md).toContain('**Judge:** 6 kept · 4 dropped (1m 5s)');
   });
 
   it('renders retrying agent status with retry count', () => {
@@ -2669,6 +2669,18 @@ describe('updateProgressComment', () => {
     expect(body).toContain('**Planner**');
     expect(body).toContain('**Judge:**');
     expect(body).not.toContain('Review metadata');
+  });
+
+  it.each([
+    [45_200, '45s'],
+    [252_000, '4m 12s'],
+    [3_720_000, '1h 2m'],
+  ])('shows a run of %ims as its total time in the finished headline, complete or not', async (ms, shown) => {
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, { ...baseDashboard, totalDurationMs: ms }, baseMetadata);
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, { ...baseDashboard, totalDurationMs: ms });
+    const [complete, incomplete] = mockUpdateComment.mock.calls.map(([args]) => (args as { body: string }).body);
+    expect(complete.startsWith(`✅ **Review complete** in ${shown}\n`)).toBe(true);
+    expect(incomplete.startsWith(`🔴 **Review failed** in ${shown}\n`)).toBe(true);
   });
 
   it('marks a superseded review terminal and names the new commit', async () => {

@@ -2287,6 +2287,7 @@ describe('runFullReview orchestration', () => {
     expect([analyzed, changed]).toEqual([expect.objectContaining({ files: file ? [file] : [], binarySkipped }), analyzed]);
     expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED']]);
     expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'action_required', output: expect.objectContaining({ title: 'Not reviewed' }) }));
+    expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4].totalDurationMs).toEqual(expect.any(Number));
     // Metadata is what makes the progress comment read as complete rather than failed.
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(
       expect.anything(), 'test-owner', 'test-repo', expect.any(Number), expect.anything(),
@@ -2667,8 +2668,10 @@ describe('runFullReview orchestration', () => {
     expect(ctx!.usage).toMatchObject({
       calls: 5, failedCalls: 1, unpricedCalls: 1,
       inputTokens: 410, outputTokens: 85, totalTokens: 495, cacheReadTokens: 5, cacheWriteTokens: 7, reasoningTokens: 25, durationMs: 500,
-      llmCalls,
+      llmCalls, wallClockMs: expect.any(Number),
     });
+    const headline = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4];
+    expect(headline.totalDurationMs).toBe(ctx!.usage.wallClockMs);
     expect(ctx!.usage.estimatedCostUsd).toBeCloseTo(0.007);
     expect(ctx!.usage.perStage).toEqual({
       planner: expect.objectContaining({ calls: 1, inputTokens: 30, outputTokens: 5, estimatedCostUsd: 0.001 }),
@@ -2984,6 +2987,7 @@ describe('runFullReview orchestration', () => {
       expect.anything(), undefined, undefined, { noVerdict: true },
     );
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith('Review incomplete: Review incomplete');
+    expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4].totalDurationMs).toEqual(expect.any(Number));
     expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', 'abc123']]);
     // Should not call dedup since we return early
     expect(jest.mocked(recapModule.deduplicateFindings)).not.toHaveBeenCalled();

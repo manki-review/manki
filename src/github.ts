@@ -528,8 +528,14 @@ function renderAgentLines(agents: AgentProgressEntry[]): string {
   }).join('\n');
 }
 
+/** Formats a duration such as `850ms`, `45s`, `4m 12s` or `1h 2m`. */
 function formatDuration(ms: number): string {
-  return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 function validPrTypeOrNull(prType: string): string | null {
@@ -819,8 +825,9 @@ export async function updateProgressComment(
   metadata?: ReviewMetadata,
   settings?: SettingsView,
 ): Promise<void> {
+  const took = dashboard.totalDurationMs != null ? ` in ${formatDuration(dashboard.totalDurationMs)}` : '';
   const parts: string[] = [
-    metadata ? '✅ **Review complete**' : REVIEW_FAILED_LINE,
+    `${metadata ? '✅ **Review complete**' : REVIEW_FAILED_LINE}${took}`,
     '',
     buildDashboard({ ...dashboard, phase: 'complete' }),
   ];
