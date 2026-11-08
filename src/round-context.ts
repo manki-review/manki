@@ -247,7 +247,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.judgeNotes && { judgeNotes: f.judgeNotes }),
     ...(f.refutation && { refutation: f.refutation }),
   }));
-  const findingEntries = result.findings.map(f => ({
+  const findingEntries = [...result.findings, ...(result.unpostedPreExisting ?? [])].map(f => ({
     fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
     ...((f.threadId ?? f.answeredIn?.threadId) && { threadId: f.threadId ?? f.answeredIn?.threadId }),
     severity: f.severity,

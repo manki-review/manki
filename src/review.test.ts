@@ -2053,12 +2053,21 @@ describe('runReview', () => {
     const excluded = blocker('Generated client drops the auth header', 'gen/client.ts', 8);
     const run = (clients: ReviewClients) => runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', excludedPaths: ['gen/client.ts'] });
 
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile], summary: 'Two old defects.' });
+    // Only blockers and warnings the judge is highly confident in are posted. The rest stay in the round record.
+    const oldSuggestion = blocker('Old helper could be shorter', 'src/a.ts', 60, { severity: 'suggestion' });
+    const oldUnsure = blocker('Old retry may spin', 'src/a.ts', 70, { severity: 'warning', judgeConfidence: 'medium' });
+    const oldSure = blocker('Old timeout is never cleared', 'src/a.ts', 80, { severity: 'warning', judgeConfidence: 'high' });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile, oldSuggestion, oldUnsure, oldSure], summary: 'Old defects.' });
     const pre = await run(makeClients());
     expect(pre.outcome).toBe('READY');
     expect(pre.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags])).toEqual([
       ['Old null dereference', 'warning', 'blocker', ['pre-existing', 'follow-up']],
       ['Old race in the pool', 'warning', 'blocker', ['pre-existing', 'follow-up']],
+      ['Old timeout is never cleared', 'warning', undefined, ['pre-existing', 'follow-up']],
+    ]);
+    expect(pre.unpostedPreExisting?.map(f => [f.title, f.tags])).toEqual([
+      ['Old helper could be shorter', ['pre-existing']],
+      ['Old retry may spin', ['pre-existing']],
     ]);
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [changed, oldInjection], summary: 'Two defects.' });

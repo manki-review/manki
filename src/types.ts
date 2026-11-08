@@ -346,6 +346,8 @@ export interface ReviewResult {
   memorySuppressed?: Finding[];
   /** The learnings and suppressions loaded from memory for the round. */
   memoryLoaded?: { learnings: number; suppressions: number };
+  /** Pre-existing findings not worth posting, such as suggestions. Only the round record keeps them. */
+  unpostedPreExisting?: Finding[];
   inPrSuppressedCount?: number;
   agentResponseLengths?: Map<string, number>;
   /** Aggregated wall-clock duration per agent across all passes/retries. */

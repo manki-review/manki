@@ -56,15 +56,31 @@ function isPreExistingFinding(f: Finding, diff: ParsedDiff, excludedPaths: Reado
 /**
  * Tags each finding on code this PR did not change as pre-existing. A non-security blocker among them becomes a
  * warning, so no check that reads the severity, in this round or a later one, lets it block.
+ * Only the pre-existing findings worth an author's time are `posted`: blockers, warnings the judge is highly confident
+ * in, and security findings. The rest are `unposted`, for the round record only.
  */
-function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: ReadonlySet<string>): Finding[] {
-  return findings.map(f => {
-    if (!isPreExistingFinding(f, diff, excludedPaths)) return f;
+function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: ReadonlySet<string>): { posted: Finding[]; unposted: Finding[] } {
+  const posted: Finding[] = [];
+  const unposted: Finding[] = [];
+  for (const f of findings) {
+    if (!isPreExistingFinding(f, diff, excludedPaths)) {
+      posted.push(f);
+      continue;
+    }
     const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG] };
-    if (f.severity !== 'blocker' || isSecurityFinding(f.tags, f.reviewers)) return tagged;
-    core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the PR did not change that line`);
-    return { ...tagged, severity: 'warning', originalSeverity: f.originalSeverity ?? 'blocker' };
-  });
+    if (isSecurityFinding(f.tags, f.reviewers)) {
+      posted.push(tagged);
+    } else if (f.severity === 'blocker') {
+      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the PR did not change that line`);
+      posted.push({ ...tagged, severity: 'warning', originalSeverity: f.originalSeverity ?? 'blocker' });
+    } else if (f.severity === 'warning' && f.judgeConfidence === 'high') {
+      posted.push(tagged);
+    } else {
+      core.info(`Recording pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it`);
+      unposted.push(tagged);
+    }
+  }
+  return { posted, unposted };
 }
 
 /** Tells a finder when to mark a finding pre-existing. */
@@ -1169,7 +1185,8 @@ export async function runReview(
   }
   // After the suppressions, so a blocker the PR did not touch keeps their blocker guard.
   const excludedPaths = new Set(options.excludedPaths);
-  finalFindings = markPreExisting(finalFindings, diff, excludedPaths);
+  const { posted, unposted: unpostedPreExisting } = markPreExisting(finalFindings, diff, excludedPaths);
+  finalFindings = posted;
 
   // Mechanism B: drop low-severity findings on test files starting at round 2.
   // Test scaffolding nits are the most common runaway-feedback driver in late
@@ -1321,6 +1338,7 @@ export async function runReview(
     ...(suppressionCount > 0 && { suppressionCount }),
     ...(memorySuppressed.length > 0 && { memorySuppressed }),
     ...(memory && { memoryLoaded: { learnings: memory.learnings.length, suppressions: memory.suppressions.length } }),
+    ...(unpostedPreExisting.length > 0 && { unpostedPreExisting }),
     ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
     agentResponseLengths,
     agentDurationMs,
@@ -1581,7 +1599,7 @@ These rules hold in every round. A later round searches the whole PR as fully as
 
 ## Rules
 
-- Report defects the PR causes: in lines it adds, changes or removes, or in unchanged code whose behavior the change breaks. Don't report problems in unchanged code that the change does not affect.
+- Report defects the PR causes: in lines it adds, changes or removes, or in unchanged code whose behavior the change breaks. Also report real defects you find in unchanged code the change does not affect, marked \`"preExisting": true\` with the reason.
 - Be precise with line numbers. They must correspond to lines in the NEW version of the file.
 - Don't flag TODO comments, or intentional patterns such as known workarounds in code the PR does not add. When the PR's own text calls code it adds intended or a known workaround, that is a claim to check, never a reason to skip it.
 - ${UNTRUSTED_CONTENT_RULE}
