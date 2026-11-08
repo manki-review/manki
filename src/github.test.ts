@@ -1225,7 +1225,7 @@ describe('postReview body lead', () => {
     expect(approvalHeld).toBe(false);
     // The verdict counts what this round posted, and each thread is listed by name, linked to its line until it is posted.
     expect(lead(body)).toBe([
-      '\u2705 **Approved.** 1 suggestion, none of them blocks.',
+      '\u2705 **Approved.** 1 suggestion, which doesn\'t block.',
       '',
       '- \u2728 [Extract helper](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L7) · `src/a.ts:7`',
       '',
@@ -1249,7 +1249,16 @@ describe('postReview body lead', () => {
   it('puts what the change does under the verdict, with its first two sentences, and a rule before the findings', async () => {
     const offDiff: Finding = { severity: 'suggestion', title: 'Rename cache', file: 'src/b.ts', line: 3, description: 'Unclear.', reviewers: [] };
     const { body } = await postedBody({ ...ready, verdictReport: { ...verdictReport, whatThisDoes: 'Adds a cache. It halves requests. It also logs hits.' }, findings: [offDiff] });
-    expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 suggestion, none of them blocks\.\n\n\*\*What this does:\*\* Adds a cache\. It halves requests\.\n\n---\n\n### Findings · 1 suggestion\n\n<details>\n<summary>/u);
+    expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 suggestion, which doesn't block\.\n\n\*\*What this does:\*\* Adds a cache\. It halves requests\.\n\n---\n\n### Findings · 1 suggestion\n\n<details>\n<summary>/u);
+    // Several findings, of one kind or of mixed kinds, read as plural.
+    const several = (severities: Finding['severity'][]) => severities.map((severity, i) => ({ ...offDiff, severity, title: `Finding ${i}`, line: 3 + i }));
+    for (const [severities, line] of [
+      [['suggestion', 'suggestion'], '2 suggestions, none of which block.'],
+      [['suggestion', 'nitpick', 'suggestion'], '2 suggestions and 1 nitpick, none of which block.'],
+    ] as const) {
+      const { body: plural } = await postedBody({ ...ready, findings: several([...severities]) });
+      expect(plural.split('\n')[0]).toBe(`\u2705 **Approved.** ${line}`);
+    }
     // The findings come first, and how to test the change follows them, set apart by a rule.
     expect(body).toMatch(/Create an issue for this <!-- [^\n]+ -->\n\n---\n\n<details>\n<summary>What to test<\/summary>/);
   });
@@ -4093,10 +4102,20 @@ describe('postReview non-blocking findings', () => {
     const review = createReview.mock.calls[0][0];
     expect(review.comments.map((c: { body: string }) => c.body.split('\n')[2])).toEqual(['**Old blocker**', '**On new code**']);
     // Each origin gets its section with exact counts, and the sections follow each other under rules.
-    expect(review.body).toContain('### Missed by an earlier review · 1 suggestion and 1 nitpick\n\nThese sit on lines an earlier round already reviewed, so none of them blocks this PR.\n\n<details>\n<summary>\u2728 <b>On old code</b><br><sub><b>Suggestion, not blocking</b> · <a ');
+    expect(review.body).toContain('### Missed by an earlier review · 1 suggestion and 1 nitpick\n\nThese sit on lines an earlier round already reviewed, so none of them block this PR.\n\n<details>\n<summary>\u2728 <b>On old code</b><br><sub><b>Suggestion, not blocking</b> · <a ');
     expect(review.body).toContain('<summary>\u{1F4DD} <b>Untouched file</b><br><sub><b>Nitpick, not blocking</b> · <a href="https://github.com/owner/repo/blob/sha/src/b.ts#L3"><code>src/b.ts:3</code></a>');
-    expect(review.body).toMatch(/\n\n---\n\n### Pre-existing · 1 warning\n\nThese sit on code this PR did not change, so none of them blocks\. A blocker among them is listed as a warning\.\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · <a /u);
+    expect(review.body).toMatch(/\n\n---\n\n### Pre-existing · 1 warning\n\nIt sits on code this PR did not change, so it doesn't block\. If it is a blocker, it is listed as a warning\.\n\n<details>\n<summary>\u26A0\uFE0F <b>Old race in the pool<\/b><br><sub><b>Warning, not blocking<\/b> · Pre-existing · <a /u);
     expect(review.body.indexOf('Missed by an earlier review')).toBeLessThan(review.body.indexOf('### Pre-existing'));
+    // One missed finding reads as singular, and several pre-existing ones as plural.
+    const counting = makeOctokit();
+    await postReview(counting.octokit, 'owner', 'repo', 1, 'sha', buildResult([
+      nonBlocking('suggestion', 'On old code', 3, { origin: 'reviewed' }),
+      nonBlocking('warning', 'Old race', 90, { origin: 'reviewed', tags: ['pre-existing'] }),
+      nonBlocking('nitpick', 'Old name', 91, { origin: 'reviewed', tags: ['pre-existing'] }),
+    ]), diff);
+    const counted = counting.createReview.mock.calls[0][0].body as string;
+    expect(counted).toContain('### Missed by an earlier review · 1 suggestion\n\nIt sits on lines an earlier round already reviewed, so it doesn\'t block this PR.');
+    expect(counted).toContain('### Pre-existing · 1 warning and 1 nitpick\n\nThese sit on code this PR did not change, so none of them block. A blocker among them is listed as a warning.');
     expect(review.body).not.toMatch(/not listed|smaller fix|Previously missed|Found this round/);
     // From the second round, the findings new to this round are "Found this round".
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([nonBlocking('nitpick', 'New nit', 11, { origin: 'new' })]), diff, makeContext({ meta: { ...makeContext().meta, round: 2 } }));
