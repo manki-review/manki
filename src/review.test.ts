@@ -70,6 +70,13 @@ const makeDiff = (overrides: Partial<ParsedDiff> = {}): ParsedDiff => ({
   ...overrides,
 });
 
+/** A diff that changes every line of `paths`, so a finding there is on code the PR changed. */
+const diffChanging = (...paths: string[]): ParsedDiff => makeDiff({
+  files: paths.map(path => ({ path, changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1000, newStart: 1, newLines: 1000, content: '' }] })),
+  totalAdditions: 10,
+  totalDeletions: 5,
+});
+
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   severity: 'suggestion',
   title: 'Test finding',
@@ -106,15 +113,17 @@ describe('parseFindings', () => {
     expect(findings[0].evidence).toBeUndefined();
   });
 
-  it('reads the evidence, keeps only proof entries that start with a location, and marks open leads not checked', () => {
+  it('reads the evidence, keeps only proof entries that start with a location, marks open leads not checked, and reads a pre-existing mark with its reason', () => {
     const json = JSON.stringify([
       {
         severity: 'blocker', title: 'Division by zero', file: 'src/api.ts', line: 42, description: 'd',
         evidence: ['src/api.ts:42 divides by `page`', '', 7],
         proof: ['`src/api.ts:42`', 'src/api.ts:40-42 (the loop)', 'the division', 'Makefile:3.'],
         claimsMissing: true, emptySearch: 'grep `page === 0` under src: no match',
+        preExisting: true, preExistingReason: 'The division predates this PR.',
       },
-      { severity: 'warning', title: 'Unchecked', file: 'src/b.ts', line: 1, description: 'd', claimsMissing: true, notChecked: true },
+      // A mark without a reason does not count.
+      { severity: 'warning', title: 'Unchecked', file: 'src/b.ts', line: 1, description: 'd', claimsMissing: true, notChecked: true, preExisting: true },
       { lead: true, severity: 'blocker', title: 'Cache may go stale', file: 'src/c.ts', line: 3, description: '', checked: 'read src/c.ts:3', left: 'find the writers' },
     ]);
 
@@ -126,6 +135,7 @@ describe('parseFindings', () => {
       emptySearch: 'grep `page === 0` under src: no match',
     });
     expect(checked.notChecked).toBeUndefined();
+    expect([checked.preExisting, unchecked.preExisting]).toEqual(['The division predates this PR.', undefined]);
     expect([unchecked.evidence, unchecked.notChecked]).toEqual([{ checks: [], proof: [], emptySearch: '' }, true]);
     expect([lead.lead, lead.notChecked, lead.evidence]).toEqual([{ checked: 'read src/c.ts:3', left: 'find the writers' }, true, undefined]);
     expect(lead.description).toBe('A reviewer raised this as a suspicion it had not finished checking. It had checked: read src/c.ts:3. Still to check: find the writers.');
@@ -1955,7 +1965,7 @@ describe('runReview', () => {
         whatToTest: 'Load twice.',
       }),
     });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const diff = diffChanging('src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'a.ts');
 
     const result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(result.reviewComplete).toBe(true);
@@ -2021,10 +2031,79 @@ describe('runReview', () => {
     }
   });
 
+  it('posts a non-security blocker on code the PR did not change as a pre-existing warning, while a security one still blocks', async () => {
+    const diff = makeDiff({
+      files: [
+        { path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 5, newStart: 10, newLines: 5, content: '' }] },
+        { path: 'src/legacy.ts', changeType: 'deleted', hunks: [{ oldStart: 1, oldLines: 30, newStart: 0, newLines: 0, content: '' }] },
+      ],
+      totalAdditions: 5, totalDeletions: 35,
+    });
+    const old = 'The code before this PR already had it.';
+    const blocker = (title: string, file: string, line: number, extra: Partial<Finding> = {}): Finding =>
+      ({ severity: 'blocker', title, file, line, description: 'd', reviewers: ['r'], preExisting: old, ...extra });
+    const changed = blocker('New null dereference', 'src/a.ts', 12, { preExisting: undefined });
+    const oldLine = blocker('Old null dereference', 'src/a.ts', 40);
+    const oldFile = blocker('Old race in the pool', 'src/pool.ts', 3);
+    const oldInjection = blocker('Old SQL injection', 'src/a.ts', 50, { tags: ['security'] });
+    // `parse()` now returns null at src/a.ts:12, and an untouched caller dereferences it. The PR causes that.
+    const callerProof = blocker('Caller dereferences the null parse() result', 'src/b.ts', 20, { evidence: { checks: [], proof: ['src/b.ts:20', 'src/a.ts:11-12'] } });
+    const callerUnmarked = blocker('Caller dereferences the null parse() result', 'src/b.ts', 20, { preExisting: undefined });
+    const deleted = blocker('Deleted module is still imported', 'src/legacy.ts', 4);
+    const excluded = blocker('Generated client drops the auth header', 'gen/client.ts', 8);
+    const run = (clients: ReviewClients) => runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', excludedPaths: ['gen/client.ts'] });
+
+    // Only blockers and warnings the judge is highly confident in are posted. The rest stay in the round record.
+    const oldSuggestion = blocker('Old helper could be shorter', 'src/a.ts', 60, { severity: 'suggestion' });
+    const oldUnsure = blocker('Old retry may spin', 'src/a.ts', 70, { severity: 'warning', judgeConfidence: 'medium' });
+    const oldSure = blocker('Old timeout is never cleared', 'src/a.ts', 80, { severity: 'warning', judgeConfidence: 'high' });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile, oldSuggestion, oldUnsure, oldSure], summary: 'Old defects.' });
+    const pre = await run(makeClients());
+    expect(pre.outcome).toBe('READY');
+    expect(pre.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags])).toEqual([
+      ['Old null dereference', 'warning', 'blocker', ['pre-existing', 'follow-up']],
+      ['Old race in the pool', 'warning', 'blocker', ['pre-existing', 'follow-up']],
+      ['Old timeout is never cleared', 'warning', undefined, ['pre-existing', 'follow-up']],
+    ]);
+    expect(pre.unpostedPreExisting?.map(f => [f.title, f.tags])).toEqual([
+      ['Old helper could be shorter', ['pre-existing']],
+      ['Old retry may spin', ['pre-existing']],
+    ]);
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [changed, oldInjection], summary: 'Two defects.' });
+    const security = await run(makeClients());
+    expect(security.outcome).toBe('ADDRESS_FIRST');
+    expect(security.findings.map(f => [f.title, f.severity, f.tags])).toEqual([
+      ['New null dereference', 'blocker', undefined],
+      ['Old SQL injection', 'blocker', ['security', 'pre-existing']],
+    ]);
+
+    // Each of these sits outside every hunk, but something ties it to this PR, so it keeps blocking.
+    for (const tied of [callerProof, callerUnmarked, deleted, excluded]) {
+      mockedRunJudgeAgent.mockResolvedValue({ findings: [tied], summary: 'One defect.' });
+      const result = await run(makeClients());
+      expect([tied.title, result.outcome, result.findings[0].severity, result.findings[0].tags]).toEqual([tied.title, 'ADDRESS_FIRST', 'blocker', undefined]);
+    }
+
+    // The verdict reader's blockers have no judge to confirm a pre-existing mark, so they always block.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
+    const reading = makeClients();
+    jest.mocked(reading.judge.sendMessage).mockResolvedValue({
+      content: JSON.stringify({
+        verdict: 'ADDRESS_FIRST', summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y',
+        blockers: [{ file: 'src/pool.ts', line: 3, title: 'Old race in the pool.', preExisting: true, preExistingReason: old }],
+      }),
+    });
+    const read = await run(reading);
+    expect(read.outcome).toBe('ADDRESS_FIRST');
+    expect(read.findings).toEqual([expect.objectContaining({ severity: 'blocker', file: 'src/pool.ts' })]);
+    expect(read.findings[0].tags).toBeUndefined();
+  });
+
   it('turns every warning into a follow-up in every round, security ones included, while a verdict reader blocker still blocks', async () => {
     const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const diff = diffChanging('src/a.ts');
     const runAtRound = (clients: ReviewClients, round: number) => runReview(
       clients, {
         config: makeConfig(),
@@ -2091,7 +2170,7 @@ describe('runReview', () => {
   it('ends NOT_CONVERGING only when a blocker comes back after a fix was claimed', async () => {
     const prior = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })]);
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const diff = diffChanging('src/x.ts');
     const openThread = makePriorOpenThread({ severity: 'blocker', threadUrl: 'https://github.com/o/r/pull/1#t1' });
     const thread = (status: PreviousFinding['status']): PreviousFinding => ({ title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'blocker', status, threadId: 'T1' });
     const runOn = (clients: ReviewClients, headSha: string, openThreads = [openThread], previousFindings = [thread('open')]) => runReview(
@@ -2154,7 +2233,7 @@ describe('runReview', () => {
     const runWith = (interRoundDiff: string | undefined) => runReview(
       makeClients(), {
         config: makeConfig(),
-        diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }),
+        diff: diffChanging('src/x.ts'),
         rawDiff: 'raw diff',
         repoContext: 'repo context',
         isFollowUp: true,
@@ -2193,7 +2272,7 @@ describe('runReview', () => {
 
   it('ends the last automatic round READY when nothing blocks, otherwise NOT_CONVERGING', async () => {
     const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const diff = diffChanging('src/a.ts');
     const runFinal = (clients: ReviewClients) => runReview(
       clients, {
         config: makeConfig(),
@@ -2235,7 +2314,7 @@ describe('runReview', () => {
     const result = await runReview(
       makeClients(), {
         config: makeConfig(),
-        diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }),
+        diff: diffChanging('src/a.ts'),
         rawDiff: 'raw diff',
         repoContext: 'repo context',
         isFollowUp: false,
@@ -3979,7 +4058,7 @@ describe('runReview post-judge suppression', () => {
     const result = await runReview(
       makeClients(), {
         config: makeConfig(),
-        diff: makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
+        diff: diffChanging('src/foo.test.ts'),
         rawDiff: 'raw',
         repoContext: 'ctx',
         priorRounds: [buildPriorRound(1)],

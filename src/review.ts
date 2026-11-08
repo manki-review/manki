@@ -9,8 +9,8 @@ import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeP
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
-import { countChangedLines, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
+import { FOLLOW_UP_TAG, PRE_EXISTING_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
@@ -33,6 +33,58 @@ const LEGACY_SECURITY_AGENT_NAME = 'Security & Safety';
 export function isSecurityFinding(tags: string[] | undefined, priorReviewers: ReadonlyArray<string | undefined> = []): boolean {
   return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
 }
+
+/** Whether the `file:line` or `file:start-end` location `at` cites a line inside a hunk of `diff`. */
+function citesChangedLine(at: string, diff: ParsedDiff): boolean {
+  const [, file, start, end] = at.match(/^(.+):(\d+)(?:-(\d+))?$/) ?? [];
+  const diffFile = file ? diff.files.find(df => df.path === file) : undefined;
+  return !!diffFile && isLineInDiff(diffFile, Number(start), Number(end ?? start));
+}
+
+/**
+ * Whether `f` is about code this PR did not change. Each of these must hold, so no model's answer alone can lower a
+ * blocker: the reviewer said the defect exists without this PR and the judge kept that, the finding sits outside every
+ * hunk, no line it cites as proof is in the diff, and the PR neither deletes its file nor left it out by `exclude_paths`.
+ */
+function isPreExistingFinding(f: Finding, diff: ParsedDiff, excludedPaths: ReadonlySet<string>): boolean {
+  if (!f.preExisting || !f.file || f.line <= 0 || excludedPaths.has(f.file)) return false;
+  const diffFile = diff.files.find(df => df.path === f.file);
+  if (diffFile && (diffFile.changeType === 'deleted' || isLineInDiff(diffFile, f.line))) return false;
+  return !(f.evidence?.proof ?? []).some(at => citesChangedLine(at, diff));
+}
+
+/**
+ * Tags each finding on code this PR did not change as pre-existing. A non-security blocker among them becomes a
+ * warning, so no check that reads the severity, in this round or a later one, lets it block.
+ * Only the pre-existing findings worth an author's time are `posted`: blockers, warnings the judge is highly confident
+ * in, and security findings. The rest are `unposted`, for the round record only.
+ */
+function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: ReadonlySet<string>): { posted: Finding[]; unposted: Finding[] } {
+  const posted: Finding[] = [];
+  const unposted: Finding[] = [];
+  for (const f of findings) {
+    if (!isPreExistingFinding(f, diff, excludedPaths)) {
+      posted.push(f);
+      continue;
+    }
+    const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG] };
+    if (isSecurityFinding(f.tags, f.reviewers)) {
+      posted.push(tagged);
+    } else if (f.severity === 'blocker') {
+      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the PR did not change that line`);
+      posted.push({ ...tagged, severity: 'warning', originalSeverity: f.originalSeverity ?? 'blocker' });
+    } else if (f.severity === 'warning' && f.judgeConfidence === 'high') {
+      posted.push(tagged);
+    } else {
+      core.info(`Recording pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it`);
+      unposted.push(tagged);
+    }
+  }
+  return { posted, unposted };
+}
+
+/** Tells a finder when to mark a finding pre-existing. */
+const PRE_EXISTING_RULE = 'When the defect sits on code this PR did not change and exists without this PR\'s change, set `"preExisting": true` and say in `preExistingReason`, in one line, why the code before this PR already had it. Never set it when this PR causes or exposes the defect, such as an unchanged caller that breaks because the PR changed what a function returns or takes. A pre-existing finding never blocks unless it is a security defect.';
 
 const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   READY: 'APPROVE',
@@ -525,6 +577,8 @@ export interface ReviewOptions {
   workspace?: string;
   /** A Deeper review: two finders on every group, each one effort level higher. */
   deeper?: boolean;
+  /** Files the PR changes that `exclude_paths` left out of `diff`. A finding there is never pre-existing. */
+  excludedPaths?: string[];
 }
 
 export async function runReview(
@@ -1129,6 +1183,10 @@ export async function runReview(
     suppressionCount = suppressed.length;
     memorySuppressed = suppressed;
   }
+  // After the suppressions, so a blocker the PR did not touch keeps their blocker guard.
+  const excludedPaths = new Set(options.excludedPaths);
+  const { posted, unposted: unpostedPreExisting } = markPreExisting(finalFindings, diff, excludedPaths);
+  finalFindings = posted;
 
   // Mechanism B: drop low-severity findings on test files starting at round 2.
   // Test scaffolding nits are the most common runaway-feedback driver in late
@@ -1280,6 +1338,7 @@ export async function runReview(
     ...(suppressionCount > 0 && { suppressionCount }),
     ...(memorySuppressed.length > 0 && { memorySuppressed }),
     ...(memory && { memoryLoaded: { learnings: memory.learnings.length, suppressions: memory.suppressions.length } }),
+    ...(unpostedPreExisting.length > 0 && { unpostedPreExisting }),
     ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
     agentResponseLengths,
     agentDurationMs,
@@ -1505,7 +1564,8 @@ Example of one finding:
 
 - In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each. Start each line with its \`file:line\` and quote the key code it refers to in backticks, such as "src/sync.ts:42 passes \`fh_bound\` to \`truncate_above\`". When the quoted code holds a backtick itself, wrap it in double backticks with a space inside, as in \`\` a \`b\` \`\`.
 - A \`blocker\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most.
-- When a finding says something is missing or handled nowhere, set \`"claimsMissing": true\` and put the search that came back empty in \`emptySearch\`, such as "grep \`close(\` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.${tools ? `
+- When a finding says something is missing or handled nowhere, set \`"claimsMissing": true\` and put the search that came back empty in \`emptySearch\`, such as "grep \`close(\` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.
+- ${PRE_EXISTING_RULE}${tools ? `
 - When Manki tells you to wrap up, report what you have. Set \`"notChecked": true\` on a finding you could not finish checking.
 - Report each suspicion you were still checking as an open lead: an entry with \`"lead": true\`, the \`severity\` it would have, the suspicion as \`title\` and \`description\`, its \`file\` and \`line\`, what you \`checked\` so far and what is \`left\`. The judge settles a lead you would grade \`blocker\`. Other leads are listed as not finished, never posted.` : ''}
 
@@ -1539,7 +1599,7 @@ These rules hold in every round. A later round searches the whole PR as fully as
 
 ## Rules
 
-- Report defects the PR causes: in lines it adds, changes or removes, or in unchanged code whose behavior the change breaks. Don't report problems in unchanged code that the change does not affect.
+- Report defects the PR causes: in lines it adds, changes or removes, or in unchanged code whose behavior the change breaks. Also report real defects you find in unchanged code the change does not affect, marked \`"preExisting": true\` with the reason.
 - Be precise with line numbers. They must correspond to lines in the NEW version of the file.
 - Don't flag TODO comments, or intentional patterns such as known workarounds in code the PR does not add. When the PR's own text calls code it adds intended or a known workaround, that is a claim to check, never a reason to skip it.
 - ${UNTRUSTED_CONTENT_RULE}
@@ -1677,8 +1737,15 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
       ...(evidence && { evidence }),
       ...((lead || f.notChecked === true) && { notChecked: true }),
       ...(lead && { lead }),
+      ...preExistingOf(f),
     };
   });
+}
+
+/** Reads `preExisting: true` with its one-line `preExistingReason`. A mark without a reason is dropped. */
+function preExistingOf(f: Record<string, unknown>): Pick<Finding, 'preExisting'> {
+  const reason = f.preExisting === true ? textOf(f.preExistingReason) : '';
+  return reason ? { preExisting: reason } : {};
 }
 
 const EVIDENCE_LINE_CHARS = 300;

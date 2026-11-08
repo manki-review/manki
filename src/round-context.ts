@@ -5,7 +5,7 @@ import { MANKI_VERSION } from './github';
 import type { MemorySkip } from './memory';
 import { parseModelSpec, summarizeCalls } from './providers';
 import { routingDigest } from './routing';
-import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall } from './types';
+import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall, PRE_EXISTING_TAG, Finding, FindingFingerprintEntry } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   OWN_PROPOSAL_TAG,
@@ -14,6 +14,7 @@ const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   RESOLVED_THREAD_SUPPRESSED_TAG,
   FOLLOW_UP_TAG,
   SECURITY_TAG,
+  PRE_EXISTING_TAG,
 ]);
 
 /** What `buildRoundContext` records about the round besides the review result. */
@@ -246,7 +247,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.judgeNotes && { judgeNotes: f.judgeNotes }),
     ...(f.refutation && { refutation: f.refutation }),
   }));
-  const findingEntries = result.findings.map(f => ({
+  const toEntry = (f: Finding): FindingFingerprintEntry => ({
     fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
     ...((f.threadId ?? f.answeredIn?.threadId) && { threadId: f.threadId ?? f.answeredIn?.threadId }),
     severity: f.severity,
@@ -266,7 +267,8 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.evidence && { evidence: f.evidence }),
     ...(f.notChecked && { notChecked: true }),
     ...(f.refutation && { refutation: f.refutation }),
-  }));
+  });
+  const unposted = (result.unpostedPreExisting ?? []).map(toEntry);
   return {
     meta: {
       prNumber,
@@ -405,7 +407,8 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     findings: {
       count: result.findings.length,
       severityCounts: severityMap,
-      entries: findingEntries,
+      entries: result.findings.map(toEntry),
+      ...(unposted.length > 0 && { unposted }),
     },
     usage,
     verdict: result.verdict,

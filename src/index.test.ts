@@ -2409,6 +2409,7 @@ describe('runFullReview orchestration', () => {
       allJudgedFindings: allJudged,
       rawFindings,
       verdictReason: 'required_present',
+      unpostedPreExisting: [{ severity: 'suggestion', title: 'Old helper name', file: 'src/old.ts', line: 4, description: 'd', reviewers: ['general'], tags: ['pre-existing'] }],
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
@@ -2435,6 +2436,9 @@ describe('runFullReview orchestration', () => {
       ['suggestion', undefined, undefined],
       ['nitpick', 'warning', 'suggestion'],
     ]);
+    // A pre-existing finding Manki did not post is recorded apart, so nothing that reads posted findings counts it.
+    expect(statsArg!.findings.unposted?.map(e => [e.title, e.tags])).toEqual([['Old helper name', ['pre-existing']]]);
+    expect(statsArg!.findings.count).toBe(3);
 
     expect(statsArg!.diff.fileTypes).toEqual({ '.ts': 1, '.js': 1 });
 

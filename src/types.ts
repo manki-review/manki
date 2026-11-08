@@ -63,6 +63,8 @@ export const IN_PR_SUPPRESSED_TAG = 'suppressed-in-pr' as const;
 export const FOLLOW_UP_TAG = 'follow-up' as const;
 /** Marks a security defect, which blocks at every round and never becomes a follow-up. */
 export const SECURITY_TAG = 'security' as const;
+/** Marks a finding on lines outside every hunk of the PR's diff. Unless it is a security finding, it never blocks. */
+export const PRE_EXISTING_TAG = 'pre-existing' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
 export const UNPROVEN_TAG = 'unproven-blocker' as const;
 
@@ -197,6 +199,8 @@ export interface Finding {
   refutation?: Refutation;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;
+  /** Why the defect exists without this PR's change, when the reviewer says so. The judge must keep it, or it is cleared. */
+  preExisting?: string;
 }
 
 export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
@@ -342,6 +346,8 @@ export interface ReviewResult {
   memorySuppressed?: Finding[];
   /** The learnings and suppressions loaded from memory for the round. */
   memoryLoaded?: { learnings: number; suppressions: number };
+  /** Pre-existing findings not worth posting, such as suggestions. Only the round record keeps them. */
+  unpostedPreExisting?: Finding[];
   inPrSuppressedCount?: number;
   agentResponseLengths?: Map<string, number>;
   /** Aggregated wall-clock duration per agent across all passes/retries. */
@@ -1497,6 +1503,8 @@ export interface RoundFindings {
   count: number;
   severityCounts: Record<string, number>;
   entries: FindingFingerprintEntry[];
+  /** Pre-existing findings Manki recorded without posting them. Nothing that reads posted findings sees them. */
+  unposted?: FindingFingerprintEntry[];
 }
 
 export interface FindingFingerprintEntry {
