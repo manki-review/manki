@@ -1135,9 +1135,11 @@ async function collectRoundSignals(
   }
 
   if (shouldFetchDiff) {
-    if (diffResult.status === 'fulfilled') {
+    if (diffResult.status === 'fulfilled' && priorChange && diffResult.value !== undefined) {
       // The two heads also differ by what a rebase brought in, so only the files whose PR change moved are kept.
-      interRoundDiff = priorChange && diffResult.value !== undefined ? ownChangeSince(diffResult.value, priorChange, diff) : diffResult.value;
+      interRoundDiff = ownChangeSince(diffResult.value, priorChange, diff);
+    } else if (diffResult.status === 'fulfilled') {
+      core.warning('Without the PR\'s change at the last reviewed commit, the inter-round diff cannot leave out a rebase, so it is not used');
     } else {
       core.warning(`Failed to fetch inter-round diff: ${diffResult.reason}`);
     }
