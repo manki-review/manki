@@ -950,6 +950,16 @@ describe('handleDismiss (via handlePRComment)', () => {
     );
   });
 
+  it('says a dismissal was not stored when the suppression write fails', async () => {
+    jest.mocked(memory.writeSuppression).mockRejectedValueOnce(new Error('the token service answered 502'));
+    setContext({ comment: { id: 42, body: '@manki dismiss null-check-warning', user: { type: 'User' }, author_association: 'OWNER' }, sender: { login: 'owner' } });
+    const octokit = createMockOctokit();
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, MEMORY);
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: 'Dismissed: `null-check-warning`. Could not store it in review memory, so later reviews can raise it again. The run log has the reason.\n\n<!-- manki -->',
+    }));
+  });
+
   it('warns when finding reference is too short', async () => {
     setContext({ comment: { id: 42, body: '@manki dismiss ab', user: { type: 'User' }, author_association: 'OWNER' } });
     const octokit = createMockOctokit();

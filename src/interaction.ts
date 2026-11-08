@@ -532,18 +532,7 @@ async function handleDismiss(
     core.info('Dismiss from non-collaborator — acknowledging but not persisting suppression');
   }
 
-  const memoryNote = !memory
-    ? 'Review memory is off or was skipped for this run, so later reviews can raise it again.'
-    : isTrusted
-      ? 'Stored as a suppression in review memory.'
-      : 'Only collaborators can store a dismissal in review memory, so later reviews can raise it again.';
-  await octokit.rest.issues.createComment({
-    owner,
-    repo,
-    issue_number: prNumber,
-    body: withMarkers(`Dismissed${sanitizedPattern ? `: \`${sanitizedPattern}\`` : ''}. ${memoryNote}`, BOT_MARKER),
-  });
-
+  let stored = false;
   if (isTrusted && memory && sanitizedPattern) {
     try {
       await writeSuppression(memory, {
@@ -554,11 +543,28 @@ async function handleDismiss(
         created_at: new Date().toISOString().split('T')[0],
         pr_ref: `${owner}/${repo}#${prNumber}`,
       });
+      stored = true;
       core.info(`Wrote suppression for "${findingRef}" to memory repo`);
     } catch (error) {
       core.warning(`Failed to write suppression: ${error}`);
     }
   }
+
+  const memoryNote = !memory
+    ? 'Review memory is off or was skipped for this run, so later reviews can raise it again.'
+    : !isTrusted
+      ? 'Only collaborators can store a dismissal in review memory, so later reviews can raise it again.'
+      : stored
+        ? 'Stored as a suppression in review memory.'
+        : !sanitizedPattern
+          ? 'Nothing was stored in review memory, since no finding was named.'
+          : 'Could not store it in review memory, so later reviews can raise it again. The run log has the reason.';
+  await octokit.rest.issues.createComment({
+    owner,
+    repo,
+    issue_number: prNumber,
+    body: withMarkers(`Dismissed${sanitizedPattern ? `: \`${sanitizedPattern}\`` : ''}. ${memoryNote}`, BOT_MARKER),
+  });
 }
 
 /**
