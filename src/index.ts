@@ -1015,6 +1015,8 @@ function pauseReport({ reason }: PauseState): StateReport['pause'] {
  * Each push during the same pause updates the notice from after `lastRoundAt` instead of adding another.
  * The notice's settings block offers Force review.
  */
+const RETHINK_LINE = 'Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes.';
+
 async function postPauseNotice(
   target: RunTarget, progress: RunProgress, pause: PauseState, maxAutoRounds: number,
   previousFindings: PreviousFinding[], lastRoundAt?: string,
@@ -1025,8 +1027,9 @@ async function postPauseNotice(
     : 'Last round did not converge — skipping auto review');
   const settings = progressSettings(target, progress, 'automatic review paused', { boxes: ['force'] });
   const blockers = formatOpenBlockers(previousFindings);
+  const rethink = capReached ? ` ${RETHINK_LINE}` : '';
   const body = withSettingsBlock(
-    withMarkers(`${reason} Automatic review is paused.${blockers ? `\n\n${blockers}` : ''}`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER),
+    withMarkers(`${reason} Automatic review is paused.${rethink}${blockers ? `\n\n${blockers}` : ''}`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER),
     settings,
   );
   await replaceWithNotice(target, progress, PAUSE_NOTICE_MARKER, body, lastRoundAt);

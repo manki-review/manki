@@ -5647,6 +5647,7 @@ describe('runFullReview orchestration', () => {
       expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
       const notice = updateComment.mock.calls.find(([args]) => args.comment_id === 1)![0].body as string;
       expect(notice.startsWith('The last Manki round found a blocker that came back after a fix. Automatic review is paused.')).toBe(true);
+      expect(notice).not.toContain('step back and reconsider');
       expect(notice.endsWith(withSettingsBlock('', {
         lastReviewed: 'sha2', head: 'abc123', status: 'automatic review paused', boxes: new Set(['pause', 'full', 'deeper', 'force']), ticked: new Set(),
       }).trimStart())).toBe(true);
@@ -5690,7 +5691,7 @@ describe('runFullReview orchestration', () => {
       expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
       const link = (n: number) => `([view thread](https://github.com/test-owner/test-repo/pull/42#discussion_r${n}))`;
       expect(pauseNotice()).toBe(withSettingsBlock([
-        'Manki has reviewed new changes in 5/5 rounds on this PR. Automatic review is paused.',
+        'Manki has reviewed new changes in 5/5 rounds on this PR. Automatic review is paused. Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes.',
         '',
         '**Still open from earlier reviews:**',
         `- \`src/app.ts:1\`: Null check missing ${link(1)}`,
