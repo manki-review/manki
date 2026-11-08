@@ -118,6 +118,11 @@ export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
   return rebuildRawDiff(filterDiff(parsePRDiff(rawDiff), excludePaths).diff);
 }
 
+/** The change a file's diff makes, without hunk positions, so a rebase that moves it keeps it. */
+function fileChange(file: DiffFile): unknown[] {
+  return [file.changeType, file.oldPath, file.path, file.modeChange, file.hunks.map(h => h.content)];
+}
+
 /**
  * Returns a SHA-256 digest of the change `diff` makes, excluded files included, so a change to a file no model reads
  * still changes it. Hunk positions are left out, so a diff moved by a rebase keeps its digest. A file with no lines,
@@ -125,7 +130,7 @@ export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
  */
 export function changeDigest(diff: ParsedDiff): string {
   return createHash('sha256').update(JSON.stringify([
-    diff.files.map(f => [f.changeType, f.oldPath, f.path, f.modeChange, f.hunks.map(h => h.content)]),
+    diff.files.map(fileChange),
     diff.binarySkipped?.map(f => f.header),
   ])).digest('hex');
 }
