@@ -1061,7 +1061,6 @@ function findingLocation(finding: Finding): string {
   return `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
 }
 
-/** Returns what goes wrong and the fix, as listed under a finding in the review body. */
 /**
  * Returns `description` under its label: what goes wrong for a blocking severity, why it is worth changing for the rest.
  * The label goes on its own line above a list, heading or quote, whose marker would show as text after it.
@@ -1071,19 +1070,38 @@ function labelDescription(finding: Finding, description: string): string {
   return `${label}${/^(?:[-*+]\s|#{1,6}\s|>|\d+[.)]\s)/.test(description) ? '\n\n' : ' '}${description}`;
 }
 
-function formatFindingDetail(finding: Finding): string[] {
+/** Returns what goes wrong and the fix, as listed under a finding in the review body. `fixDiff` replaces the fix's own rendering. */
+function formatFindingDetail(finding: Finding, fixDiff?: string): string[] {
   const lines = finding.judgeConfidence === 'low' ? [LOW_CONFIDENCE_NOTE] : [];
   const description = splitLead(sanitizeMarkdown(finding.description), 2, 300).lead;
   if (description) lines.push(labelDescription(finding, description));
-  if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
+  if (fixDiff) lines.push(fixDiff);
+  else if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
   return lines;
+}
+
+/** Changed lines up to which a code fix in the review body shows as a diff against the flagged line. */
+const MAX_DIFF_FIX_LINES = 10;
+
+/**
+ * Returns a small code fix as a `diff` block: the flagged line at the reviewed commit, then the code that replaces it.
+ * Returns none for a prose fix, a fix that says where its code goes, a fix over `MAX_DIFF_FIX_LINES` changed lines,
+ * and a fix whose flagged line was not read.
+ */
+function formatFixDiff(finding: Finding, files: ReadonlyMap<string, readonly string[]>): string | undefined {
+  const parts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
+  const original = finding.line > 0 ? files.get(finding.file)?.[finding.line - 1] : undefined;
+  if (parts.length !== 1 || parts[0].kind !== 'code' || original === undefined) return undefined;
+  const fix = parts[0].lines;
+  if (fix.length + 1 > MAX_DIFF_FIX_LINES || PLACEMENT_COMMENT_RE.test(fix[0])) return undefined;
+  return `${FIX_LABEL}\n\n${fenceText([`-${original}`, ...fix.map(line => `+${line}`)].join('\n'), 'diff')}`;
 }
 
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
 function formatFindingBlock(finding: Finding, links: CodeLinks): string {
   const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
   if (finding.file) lines.push(`[${inlineCode(findingLocation(finding))}](${links.linkTo(finding.file, finding.line)})`);
-  return [...lines, ...formatFindingDetail(finding), ...checksSection(finding, links, 'flagged')].join('\n');
+  return [...lines, ...formatFindingDetail(finding, formatFixDiff(finding, links.files)), ...checksSection(finding, links, 'flagged')].join('\n');
 }
 
 /**
@@ -1109,11 +1127,13 @@ function formatFindingFold(finding: Finding, links: CodeLinks): string {
   const { linkTo, files } = links;
   const location = finding.file ? ` · <a href="${linkTo(finding.file, finding.line)}"><code>${inlineHtml(findingLocation(finding))}</code></a>` : '';
   const summary = `<summary>${SEVERITY_EMOJI[finding.severity]} <b>${inlineHtml(sanitizeMarkdown(finding.title))}</b><br><sub>${inlineHtml(formatFindingHeader(finding))}${location}</sub></summary>`;
+  const fixDiff = formatFixDiff(finding, files);
   const last = files.get(finding.file)?.length;
-  const preview = finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
+  // A diff already shows the flagged line, so the fold previews it only without one.
+  const preview = !fixDiff && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
     ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))]
     : [];
-  return `<details>\n${summary}\n\n${[...formatFindingDetail(finding), ...preview, ...checksSection(finding, links, 'flagged')].join('\n\n')}\n\n</details>`;
+  return `<details>\n${summary}\n\n${[...formatFindingDetail(finding, fixDiff), ...preview, ...checksSection(finding, links, 'flagged')].join('\n\n')}\n\n</details>`;
 }
 
 /** Returns one list of the review body: a heading, an optional intro, then one fold per finding. */
@@ -2246,7 +2266,7 @@ const MAX_CONTENT_API_BYTES = 1024 * 1024;
 async function fetchFileLines(octokit: Octokit, owner: string, repo: string, ref: string, files: string[]): Promise<Map<string, string[]>> {
   if (files.length === 0) return new Map();
   const contents = await fetchFileContents(octokit, owner, repo, ref, files, MAX_CONTENT_API_BYTES, Infinity);
-  return new Map([...contents].map(([path, text]) => [path, (text.endsWith('\n') ? text.slice(0, -1) : text).split('\n')]));
+  return new Map([...contents].map(([path, text]) => [path, text.replace(/\r?\n$/, '').split(/\r?\n/)]));
 }
 
 export interface LinkedIssue {

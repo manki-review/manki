@@ -3766,6 +3766,40 @@ describe('postReview non-blocking findings', () => {
     severity, title, file: 'src/a.ts', line, description: 'It goes wrong. Second sentence. Third sentence.', reviewers: [], ...extra,
   });
 
+  it('shows a small code fix in the body as a diff against the flagged line, and anything else as before', async () => {
+    const file = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`);
+    file[40] = '  return retry(fn);';
+    file[42] = '  const out = `a` + b;';
+    file[46] = 'const fence = "```";';
+    const { octokit, createReview } = makeOctokit({ 'src/a.ts': `${file.join('\r\n')}\r\n` });
+    const longFix = Array.from({ length: 10 }, (_, i) => `step${i}();`).join('\n');
+
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([
+      nonBlocking('nitpick', 'One line', 41, { suggestedFix: '  return retry(fn, 3);' }),
+      nonBlocking('nitpick', 'Two lines', 43, { suggestedFix: '  const head = `a`;\n  const out = head + b;' }),
+      nonBlocking('nitpick', 'Too long', 44, { suggestedFix: longFix }),
+      nonBlocking('nitpick', 'Past the end', 70, { suggestedFix: 'x();' }),
+      nonBlocking('nitpick', 'In prose', 45, { suggestedFix: 'Handle the `None` case separately.' }),
+      nonBlocking('nitpick', 'Fence in code', 47, { suggestedFix: 'const fence = "~~~";' }),
+    ]), diff);
+    const body = createReview.mock.calls[0][0].body as string;
+    const fold = (title: string) => body.match(new RegExp(`<details>\n<summary>\\u{1F4DD} <b>${title}</b>[\\s\\S]*?\n</details>`, 'u'))![0];
+
+    // The flagged line comes from the file at the reviewed commit, and the diff replaces the preview of it.
+    expect(fold('One line')).toContain('**Fix:**\n\n```diff\n-  return retry(fn);\n+  return retry(fn, 3);\n```');
+    expect(fold('One line')).not.toContain('src/a.ts#L39-L43');
+    expect(fold('Two lines')).toContain('**Fix:**\n\n```diff\n-  const out = `a` + b;\n+  const head = `a`;\n+  const out = head + b;\n```');
+    // A fix over ten changed lines, or one whose flagged line was not read, keeps its code block and the preview.
+    expect(fold('Too long')).toContain(`**Fix:**\n\n\`\`\`ts\n${longFix}\n\`\`\``);
+    expect(fold('Too long')).toContain('https://github.com/owner/repo/blob/abc1234/src/a.ts#L42-L46');
+    expect(fold('Past the end')).toContain('**Fix:**\n\n```ts\nx();\n```');
+    expect(fold('In prose')).toContain('**Fix:** Handle the `None` case separately.');
+    expect(fold('In prose')).toContain('https://github.com/owner/repo/blob/abc1234/src/a.ts#L43-L47');
+    // A fence run in the code gets a longer fence around the diff.
+    expect(fold('Fence in code')).toContain('**Fix:**\n\n````diff\n-const fence = "```";\n+const fence = "~~~";\n````');
+    expect(body).not.toContain('\r');
+  });
+
   it('previews the code each check cites inside its file, also in an inline comment', async () => {
     const { octokit, createReview, getContent } = makeOctokit({ 'src/b.ts': 'one\ntwo\nthree\n' });
 
