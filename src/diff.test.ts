@@ -637,18 +637,20 @@ describe('sliceDiff', () => {
     `diff --git a/${path} b/${path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}\n`;
 
   it('splits a file over the character budget within its hunk, keeping every line and its line number', () => {
-    const lines = Array.from({ length: 3000 }, (_, i) => `const line${i} = '${'x'.repeat(40)}';`);
+    const lines = Array.from({ length: Math.ceil(2.5 * MAX_SLICE_CHARS / 60) }, (_, i) => `const line${i} = '${'x'.repeat(40)}';`);
     const slices = sliceDiff(parsePRDiff(added('src/big.ts', lines)), 100_000);
 
     expect(slices.length).toBeGreaterThan(1);
     for (const slice of slices) expect(rebuildRawDiff(slice).length).toBeLessThanOrEqual(MAX_SLICE_CHARS);
     const shown = slices.flatMap(s => s.files.flatMap(f => f.hunks.flatMap(h => h.content.split('\n').map((l, i) => [h.newStart + i, l.slice(1)]))));
     expect(shown).toEqual(lines.map((l, i) => [i + 1, l]));
-    expect(slices.reduce((sum, s) => sum + s.totalAdditions, 0)).toBe(3000);
+    expect(slices.reduce((sum, s) => sum + s.totalAdditions, 0)).toBe(lines.length);
   });
 
   it('splits at hunk boundaries and packs small files next to a split one', () => {
-    const hunk = (start: number) => `@@ -${start},1 +${start},1 @@\n-${'a'.repeat(9000)}\n+${'b'.repeat(9000)}`;
+    // Each hunk takes over a third of a slice, so two fit in one.
+    const side = (mark: string) => Array.from({ length: 4 }, () => `${mark}${'x'.repeat(MAX_SLICE_CHARS / 22)}`).join('\n');
+    const hunk = (start: number) => `@@ -${start},4 +${start},4 @@\n${side('-')}\n${side('+')}`;
     const big = `diff --git a/big.ts b/big.ts\nindex 1111111..2222222 100644\n--- a/big.ts\n+++ b/big.ts\n${[1, 10, 20, 30].map(hunk).join('\n')}\n`;
     const slices = sliceDiff(parsePRDiff(`${big}${added('small.ts', ['x'])}`), 1500);
 

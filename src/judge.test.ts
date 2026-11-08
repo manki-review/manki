@@ -572,7 +572,7 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('untrusted PR author content');
     expect(msg.indexOf('## Pull Request Diff')).toBeLessThan(msg.indexOf('## Findings to Evaluate'));
 
-    const largeDiff = `${prDiff}\n${'+filler line\n'.repeat(6000)}+tail marker`;
+    const largeDiff = `${prDiff}\n${'+filler line\n'.repeat(20_000)}+tail marker`;
     const truncatedMsg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, undefined, undefined, largeDiff);
     expect(truncatedMsg).toContain(truncateDiff(largeDiff));
     expect(truncatedMsg).toContain('more lines in this file truncated)');

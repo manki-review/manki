@@ -656,7 +656,7 @@ async function dropProgressComment(target: RunTarget, progress: RunProgress, set
   await setSettingsBlock(octokit, owner, repo, previousId, progressSettings(target, progress, status));
 }
 
-/** Characters of reviewable diff above which a PR gets no automatic review, since each 50,000 of them cost a call per reader. */
+/** Characters of reviewable diff above which a PR gets no automatic review, since each `MAX_SLICE_CHARS` of them cost a call per reader. */
 const MAX_AUTO_REVIEW_CHARS = 2_000_000;
 /** Characters of reviewable diff above which Manki never reviews a PR, even when forced. */
 const MAX_REVIEW_CHARS = 4_000_000;
