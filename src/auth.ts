@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
-import { ACTIONS_BOT_LOGIN, BOT_LOGIN, BotIdentity } from './github';
+import { BOT_LOGIN, BotIdentity } from './github';
 import type { PrState, RunMode, StateReport } from './types';
 import { redactSecretsDeep, registerSecret } from './utils';
 
@@ -48,37 +48,24 @@ type AppAuth = ReturnType<typeof createAppAuth>;
 export interface AuthResult {
   octokit: Octokit;
   appMemory?: AppMemory;
-  identity: 'app' | 'actions';
   bot: BotIdentity;
-}
-
-// Without custom App credentials a run posts as `manki-review[bot]`, or as `github-actions[bot]` when the App token
-// is unavailable, or as the token's user for a personal access token. Earlier rounds can carry any of these logins.
-const MANKI_BOT: BotIdentity = { logins: [BOT_LOGIN, ACTIONS_BOT_LOGIN] };
-
-// Installation tokens, including the workflow's `GITHUB_TOKEN`, carry this prefix. Any other token belongs to a user.
-const INSTALLATION_TOKEN_PREFIX = 'ghs_';
-
-/** Adds the token's user to `MANKI_BOT` for a personal access token, since a run then posts as that user. */
-async function resolveTokenUserBot(octokit: Octokit, token: string): Promise<BotIdentity> {
-  if (token.startsWith(INSTALLATION_TOKEN_PREFIX)) return MANKI_BOT;
-  try {
-    const { data: user } = await octokit.rest.users.getAuthenticated();
-    if (!user?.login) throw new Error('GET /user returned no login');
-    core.info(`Using personal access token identity ${user.login}`);
-    return { logins: [...MANKI_BOT.logins, user.login] };
-  } catch (error) {
-    core.warning(`Could not resolve the token's user, so comments posted as that user are not recognised: ${error}`);
-    return MANKI_BOT;
-  }
 }
 
 export interface TokenResult {
   token: string;
   /** The token service's `memory_token`, which writes only the owner's `review-memory`. */
   memoryToken?: string;
-  identity: 'app' | 'actions';
 }
+
+/** The token service gave no token, so the run cannot post as Manki. */
+export class TokenServiceError extends Error {
+  constructor(reason: string) {
+    super(`Could not get a token from the Manki token service (${reason}). Retry the run.`);
+    this.name = 'TokenServiceError';
+  }
+}
+
+const TOKEN_RETRY_DELAY_MS = 2000;
 
 const OIDC_AUDIENCE = 'manki-api.dustinface.me';
 
@@ -114,45 +101,38 @@ async function postToTokenService(url: string, body: unknown): Promise<{ ok: boo
 }
 
 /**
- * Auto-detect manki-review GitHub App installation and fetch an app token
- * from the token service. Falls back to the provided github_token on any failure.
+ * Fetches the manki-review App's token for the repo from the token service. A timeout, network error or 5xx is tried
+ * once more after a short wait. Throws `TokenServiceError` when no token comes back.
  */
-export async function resolveGitHubToken(
-  githubToken: string,
-  tokenUrl: string,
-  owner: string,
-  repo: string,
-): Promise<TokenResult> {
-  try {
-    const tokenResponse = await postToTokenService(tokenUrl, { owner, repo, memory: true });
-    if (!tokenResponse) {
-      core.info('OIDC token not available — using github-actions[bot] identity');
-      return { token: githubToken, identity: 'actions' };
+export async function resolveGitHubToken(tokenUrl: string, owner: string, repo: string): Promise<TokenResult> {
+  let response: Awaited<ReturnType<typeof postToTokenService>> | undefined;
+  for (let attempt = 1; !response; attempt++) {
+    let failure: string;
+    try {
+      const reply = await postToTokenService(tokenUrl, { owner, repo, memory: true });
+      if (!reply) throw new TokenServiceError('no OIDC token, so the workflow needs `id-token: write`');
+      if (reply.ok || reply.status < 500) {
+        response = reply;
+        break;
+      }
+      failure = `HTTP ${reply.status}`;
+    } catch (error) {
+      if (error instanceof TokenServiceError) throw error;
+      failure = String(error);
     }
-
-    if (!tokenResponse.ok) {
-      core.info(`Manki app not available for ${owner}/${repo} — using github-actions[bot] identity`);
-      return { token: githubToken, identity: 'actions' };
-    }
-
-    const tokenData = tokenResponse.data as { token?: unknown; expires_at?: unknown; memory_token?: unknown } | null;
-
-    if (!tokenData || !tokenData.token || typeof tokenData.token !== 'string') {
-      core.warning('Token service returned invalid response — falling back to github-actions[bot]');
-      return { token: githubToken, identity: 'actions' };
-    }
-
-    core.info(`Using ${BOT_LOGIN} identity (token expires ${tokenData.expires_at})`);
-    registerSecret(tokenData.token);
-    if (typeof tokenData.memory_token !== 'string' || !tokenData.memory_token) {
-      return { token: tokenData.token, identity: 'app' };
-    }
-    registerSecret(tokenData.memory_token);
-    return { token: tokenData.token, memoryToken: tokenData.memory_token, identity: 'app' };
-  } catch (error) {
-    core.info(`App token resolution failed: ${error} — using github-actions[bot] identity`);
-    return { token: githubToken, identity: 'actions' };
+    if (attempt === 2) throw new TokenServiceError(failure);
+    core.info(`The token service failed (${failure}), trying again`);
+    await new Promise((resolve) => setTimeout(resolve, TOKEN_RETRY_DELAY_MS));
   }
+  if (!response.ok) throw new TokenServiceError(`HTTP ${response.status}`);
+  const tokenData = response.data as { token?: unknown; expires_at?: unknown; memory_token?: unknown } | null;
+  if (!tokenData || !tokenData.token || typeof tokenData.token !== 'string') throw new TokenServiceError('a reply without a token');
+
+  core.info(`Using ${BOT_LOGIN} identity (token expires ${tokenData.expires_at})`);
+  registerSecret(tokenData.token);
+  if (typeof tokenData.memory_token !== 'string' || !tokenData.memory_token) return { token: tokenData.token };
+  registerSecret(tokenData.memory_token);
+  return { token: tokenData.token, memoryToken: tokenData.memory_token };
 }
 
 const RUN_MODES: ReadonlySet<string> = new Set<RunMode>(['full', 'deeper', 'draft', 'force']);
@@ -225,36 +205,29 @@ export async function reportPrState(owner: string, repo: string, prNumber: numbe
 }
 
 /**
- * Create an authenticated Octokit client.
- * Priority: explicit App credentials > auto-detect manki-review app > github_token.
+ * Create the client Manki reads and posts with: the custom App's when `github_app_id` and `github_app_private_key` are
+ * set, else the manki-review App's from the token service. Throws `TokenServiceError` when the token service fails.
  */
 export async function createAuthenticatedOctokit(): Promise<AuthResult> {
   const appId = core.getInput('github_app_id');
   const privateKey = core.getInput('github_app_private_key');
-  const githubToken = core.getInput('github_token');
 
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
     const { token, slug, appMemory } = await getInstallationToken(appId, privateKey);
-    return { octokit: createOctokit(token), appMemory, identity: 'app', bot: { logins: [`${slug}[bot]`] } };
+    return { octokit: createOctokit(token), appMemory, bot: { logins: [`${slug}[bot]`] } };
   }
 
-  if (!githubToken) {
-    throw new Error('No authentication configured. Provide either github_token or both github_app_id and github_app_private_key.');
-  }
-
-  const tokenUrl = tokenServiceUrl();
   const { owner, repo: repoName } = github.context.repo;
-  const { token, memoryToken, identity } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
+  const { token, memoryToken } = await resolveGitHubToken(tokenServiceUrl(), owner, repoName);
 
   const octokit = createOctokit(token);
-  if (identity === 'app') serviceClients.add(octokit);
-  const bot = identity === 'actions' ? await resolveTokenUserBot(octokit, token) : MANKI_BOT;
+  serviceClients.add(octokit);
   const serviceMemoryRepo = `${owner}/review-memory`.toLowerCase();
   const appMemory: AppMemory | undefined = memoryToken
     ? { tokenFor: async (memoryRepo) => (memoryRepo.toLowerCase() === serviceMemoryRepo ? memoryToken : null) }
     : undefined;
-  return { octokit, appMemory, identity, bot };
+  return { octokit, appMemory, bot: { logins: [BOT_LOGIN] } };
 }
 
 /**

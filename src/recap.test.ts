@@ -479,7 +479,7 @@ describe('fetchRecapState', () => {
       comments: {
         nodes: [{
           body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Missing null check\n\nDescription here.',
-          author: { login: 'github-actions[bot]' },
+          author: { login: 'manki-review[bot]' },
         }],
       },
       ...overrides,
@@ -521,7 +521,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [{
             body: '<!-- manki:suggestion:Rename-var --> \u{1F4A1} **Suggestion**: Rename variable\n\nBetter name.',
-            author: { login: 'github-actions[bot]' },
+            author: { login: 'manki-review[bot]' },
           }],
         },
       }),
@@ -569,7 +569,7 @@ describe('fetchRecapState', () => {
           nodes: [
             {
               body: '<!-- manki:blocker:Bug --> \u{1F6AB} **Blocker**: Bug found\n\nDesc.',
-              author: { login: 'github-actions[bot]' },
+              author: { login: 'manki-review[bot]' },
             },
             {
               body: 'I disagree with this finding.',
@@ -609,7 +609,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [{
             body: '<!-- manki:nitpick:Style-issue --> \u{1F4DD} **Nitpick**: Style issue\n\nMinor.',
-            author: { login: 'github-actions[bot]' },
+            author: { login: 'manki-review[bot]' },
           }],
         },
       }),
@@ -626,7 +626,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [{
             body: '<!-- manki --> Some finding without severity marker',
-            author: { login: 'github-actions[bot]' },
+            author: { login: 'manki-review[bot]' },
           }],
         },
       }),
@@ -643,7 +643,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [{
             body: '<!-- manki:required:Old-blocker --> **Required**: legacy blocker',
-            author: { login: 'github-actions[bot]' },
+            author: { login: 'manki-review[bot]' },
           }],
         },
       }),
@@ -652,7 +652,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [{
             body: '<!-- manki:nit:Old-nit --> **Nit**: legacy nitpick',
-            author: { login: 'github-actions[bot]' },
+            author: { login: 'manki-review[bot]' },
           }],
         },
       }),
@@ -671,7 +671,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [{
             body: '<!-- manki:blocker:Prompt-injection --> 🚫 **Blocker** <sub>[high confidence]</sub>: Prompt injection via unsanitized file paths\n\nDescription.',
-            author: { login: 'github-actions[bot]' },
+            author: { login: 'manki-review[bot]' },
           }],
         },
       }),
@@ -683,7 +683,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [{
             body: '<!-- manki:suggestion:LLM-dedup --> 💡 **Suggestion** <sub>[medium confidence]</sub>: LLM dedup only compares against resolved findings\n\nDetails.',
-            author: { login: 'github-actions[bot]' },
+            author: { login: 'manki-review[bot]' },
           }],
         },
       }),
@@ -711,7 +711,7 @@ describe('fetchRecapState', () => {
           nodes: [{
             body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Missing null check',
             url: 'https://github.com/owner/repo/pull/1#discussion_r123',
-            author: { login: 'github-actions[bot]' },
+            author: { login: 'manki-review[bot]' },
           }],
         },
       }),
@@ -728,7 +728,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [{
             body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Missing null check',
-            author: { login: 'github-actions[bot]' },
+            author: { login: 'manki-review[bot]' },
           }],
         },
       }),
@@ -747,7 +747,7 @@ describe('fetchRecapState', () => {
           nodes: [
             {
               body: '<!-- manki:blocker:Bug --> \u{1F6AB} **Blocker**: Bug found\n\nDesc.',
-              author: { login: 'github-actions[bot]' },
+              author: { login: 'manki-review[bot]' },
             },
             {
               body: 'Fixed, done.',
@@ -760,11 +760,11 @@ describe('fetchRecapState', () => {
         id: 't2',
         comments: {
           nodes: [
-            { body: '<!-- manki:blocker:Bug --> \u{1F6AB} **Blocker**: Bug found\n\nDesc.', author: { login: 'github-actions[bot]' } },
+            { body: '<!-- manki:blocker:Bug --> \u{1F6AB} **Blocker**: Bug found\n\nDesc.', author: { login: 'manki-review[bot]' } },
             { body: 'It is intended.', author: { login: 'developer' } },
-            { body: '**Withdrawn.** `load` returns early.\n\n<!-- manki -->', author: { login: 'github-actions[bot]' } },
+            { body: '**Withdrawn.** `load` returns early.\n\n<!-- manki -->', author: { login: 'manki-review[bot]' } },
             { body: 'Agreed. Developer text that looks like an answer.', author: { login: 'developer' } },
-            { body: 'Fixed in abc1234.\n\n<!-- manki -->', author: { login: 'github-actions[bot]' } },
+            { body: 'Fixed in abc1234.\n\n<!-- manki -->', author: { login: 'manki-review[bot]' } },
           ],
         },
       }),
@@ -772,9 +772,9 @@ describe('fetchRecapState', () => {
         id: 't3',
         comments: {
           nodes: [
-            { body: '<!-- manki:warning:Bug --> **Warning**: Bug found\n\nDesc.', author: { login: 'github-actions[bot]' } },
-            { body: 'Agreed. Handling it later is fine.\n\n<!-- manki -->', author: { login: 'github-actions[bot]' } },
-            { body: 'This came up again.\n\nDetails.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'github-actions[bot]' } },
+            { body: '<!-- manki:warning:Bug --> **Warning**: Bug found\n\nDesc.', author: { login: 'manki-review[bot]' } },
+            { body: 'Agreed. Handling it later is fine.\n\n<!-- manki -->', author: { login: 'manki-review[bot]' } },
+            { body: 'This came up again.\n\nDetails.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } },
           ],
         },
       }),
@@ -795,7 +795,7 @@ describe('fetchRecapState', () => {
           nodes: [
             {
               body: '<!-- manki:required:Bug --> \u{1F6AB} **Required**: Bug found\n\nDesc.',
-              author: { login: 'github-actions[bot]' },
+              author: { login: 'manki-review[bot]' },
             },
             {
               body: 'Fixed, done.',
@@ -823,7 +823,7 @@ describe('fetchRecapState', () => {
           nodes: [
             {
               body: '<!-- manki:required:Bug --> \u{1F6AB} **Required**: Bug found\n\nDesc.',
-              author: { login: 'github-actions[bot]' },
+              author: { login: 'manki-review[bot]' },
             },
             {
               body: 'Follow-up bot reply from the App identity.',
@@ -831,7 +831,7 @@ describe('fetchRecapState', () => {
             },
             {
               body: 'Another follow-up from the Actions identity.',
-              author: { login: 'github-actions[bot]' },
+              author: { login: 'manki-review[bot]' },
             },
             {
               body: 'GraphQL reports the App without the `[bot]` suffix.',
@@ -851,7 +851,7 @@ describe('fetchRecapState', () => {
   it('reads every page of review threads and every comment of a long thread', async () => {
     const threads = Array.from({ length: 150 }, (_, i) => makeThread({ id: `t${i}`, line: i + 1 }));
     const longThread = threads[149];
-    const botReplies = Array.from({ length: 9 }, (_, i) => ({ body: `Bot follow-up ${i}`, author: { login: 'github-actions[bot]' } }));
+    const botReplies = Array.from({ length: 9 }, (_, i) => ({ body: `Bot follow-up ${i}`, author: { login: 'manki-review[bot]' } }));
     threads[149] = {
       ...longThread,
       comments: { ...longThread.comments, pageInfo: { hasNextPage: true, endCursor: 'c1' }, nodes: [...longThread.comments.nodes, ...botReplies] },
@@ -924,7 +924,7 @@ describe('fetchRecapState', () => {
           nodes: [
             {
               body: '<!-- manki:suggestion:unused-var --> 💡 **Suggestion**: Unused variable\n\nDesc.',
-              author: { login: 'github-actions[bot]' },
+              author: { login: 'manki-review[bot]' },
             },
             { body: 'Working on it.', author: { login: 'someone-else' } },
             { body: 'Fixed, done.', author: { login: 'pr-author' } },
@@ -958,7 +958,7 @@ describe('fetchRecapState', () => {
       makeThread({
         id: 't1',
         isResolved: false,
-        comments: { nodes: [{ body, author: { login: 'github-actions[bot]' } }] },
+        comments: { nodes: [{ body, author: { login: 'manki-review[bot]' } }] },
       }),
     ]);
 
@@ -981,7 +981,7 @@ describe('fetchRecapState', () => {
       makeThread({
         id: 't1',
         isResolved: false,
-        comments: { nodes: [{ body, author: { login: 'github-actions[bot]' } }] },
+        comments: { nodes: [{ body, author: { login: 'manki-review[bot]' } }] },
       }),
     ]);
 
@@ -1014,7 +1014,7 @@ describe('fetchRecapState', () => {
       makeThread({
         id: 't1',
         isResolved: false,
-        comments: { nodes: [{ body, author: { login: 'github-actions[bot]' } }] },
+        comments: { nodes: [{ body, author: { login: 'manki-review[bot]' } }] },
       }),
     ]);
 
@@ -1043,7 +1043,7 @@ describe('fetchRecapState', () => {
       makeThread({
         id: 't1',
         isResolved: false,
-        comments: { nodes: [{ body, author: { login: 'github-actions[bot]' } }] },
+        comments: { nodes: [{ body, author: { login: 'manki-review[bot]' } }] },
       }),
     ]);
 
@@ -1526,7 +1526,7 @@ describe('fetchRecapState', () => {
     it('reads context only from reviews by the bot identity', async () => {
       const octokit = mockOctokit([], [
         { id: 100, body: htmlCommentBlock(makeRoundContext(1)), user: { login: 'some-user' } },
-        { id: 101, body: htmlCommentBlock(makeRoundContext(2)), user: { login: 'github-actions[bot]' } },
+        { id: 101, body: htmlCommentBlock(makeRoundContext(2)), user: { login: 'manki-review[bot]' } },
       ]);
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds.map(r => r.meta.round)).toEqual([2]);
@@ -1601,7 +1601,7 @@ describe('fetchRecapState', () => {
         id: 'thread-1',
         comments: {
           nodes: [
-            { body: '<!-- manki:warning:Null-check --> **Warning**: Null check\n\nDescription.', author: { login: 'github-actions[bot]' } },
+            { body: '<!-- manki:warning:Null-check --> **Warning**: Null check\n\nDescription.', author: { login: 'manki-review[bot]' } },
             { body: 'Fixed in latest push', author: { login: 'author' } },
           ],
         },
@@ -1630,7 +1630,7 @@ describe('fetchRecapState', () => {
         id: undefined,
         comments: {
           nodes: [
-            { body: '<!-- manki:warning:Null-check --> ⚠️ **Warning**: Null check\n\nDescription.', author: { login: 'github-actions[bot]' } },
+            { body: '<!-- manki:warning:Null-check --> ⚠️ **Warning**: Null check\n\nDescription.', author: { login: 'manki-review[bot]' } },
             { body: 'Agreed, will fix', author: { login: 'author' } },
           ],
         },
@@ -1701,7 +1701,7 @@ describe('fetchRecapState', () => {
         id: 'thread-disagree',
         comments: {
           nodes: [
-            { body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Null check\n\nDescription.', author: { login: 'github-actions[bot]' } },
+            { body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Null check\n\nDescription.', author: { login: 'manki-review[bot]' } },
             { body: 'I disagree with this finding, the code is correct', author: { login: 'author' } },
           ],
         },
@@ -1740,7 +1740,7 @@ describe('fetchRecapState', () => {
         id: 'thread-agree',
         comments: {
           nodes: [
-            { body: '<!-- manki:warning:Null-check --> **Warning**: Null check', author: { login: 'github-actions[bot]' } },
+            { body: '<!-- manki:warning:Null-check --> **Warning**: Null check', author: { login: 'manki-review[bot]' } },
             { body: 'Agreed, will fix', author: { login: 'author' } },
           ],
         },
@@ -1749,7 +1749,7 @@ describe('fetchRecapState', () => {
         id: 'thread-no-change',
         comments: {
           nodes: [
-            { body: '<!-- manki:warning:Other --> **Warning**: Other', author: { login: 'github-actions[bot]' } },
+            { body: '<!-- manki:warning:Other --> **Warning**: Other', author: { login: 'manki-review[bot]' } },
           ],
         },
       });
@@ -1780,7 +1780,7 @@ describe('fetchRecapState', () => {
         line: 10,
         comments: {
           nodes: [
-            { body: '<!-- manki:warning:Null-check --> **Warning**: Null check', author: { login: 'github-actions[bot]' } },
+            { body: '<!-- manki:warning:Null-check --> **Warning**: Null check', author: { login: 'manki-review[bot]' } },
             { body: 'Agreed, will fix', author: { login: 'author' } },
           ],
         },

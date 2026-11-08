@@ -21,22 +21,13 @@ Install Manki on a GitHub repository: the App, a provider credential and the wor
    - Set to 1 required review. Manki's APPROVE counts as a review
    - Check **"Dismiss stale pull request approvals when new commits are pushed"**
 
-### Allow GitHub Actions to approve pull requests (only without the App)
-
-Only needed when Manki runs without the [GitHub App](#step-1-install-the-github-app) and posts with the workflow token. With the App, leave it off. This setting lets every workflow approve PRs with `GITHUB_TOKEN`, so anyone who can push a workflow change can approve their own PR. Without it, Manki on the workflow token cannot post APPROVE or REQUEST_CHANGES, and CI shows "Failed to post APPROVE review".
-
-1. Go to **Settings > Actions > General**
-2. Scroll to **Workflow permissions**
-3. Check **"Allow GitHub Actions to create and approve pull requests"**
-4. Click Save
-
 > **Note**: If the action finds blocking issues, it posts REQUEST_CHANGES which blocks the merge. Non-blocking suggestions still result in APPROVE.
 
-When Manki posts a new review, it dismisses its own earlier REQUEST_CHANGES review. If a ruleset turns on **Restrict who can dismiss reviews** (in its **Require a pull request before merging** rule), add the identity Manki posts as to the allowed actors: the Manki app, or GitHub Actions when Manki runs without the app. Otherwise GitHub refuses the dismissal, and the old REQUEST_CHANGES keeps blocking the merge after Manki approves.
+When Manki posts a new review, it dismisses its own earlier REQUEST_CHANGES review. If a ruleset turns on **Restrict who can dismiss reviews** (in its **Require a pull request before merging** rule), add the App Manki posts as to the allowed actors: the Manki app, or your own App. Otherwise GitHub refuses the dismissal, and the old REQUEST_CHANGES keeps blocking the merge after Manki approves.
 
 ## Step 1: Install the GitHub App
 
-Install the [Manki GitHub App](https://github.com/apps/manki-review) on the repositories you want reviewed. This gives Manki its own identity: reviews appear as `manki-review[bot]` with a distinct avatar instead of the generic `github-actions[bot]`.
+Install the [Manki GitHub App](https://github.com/apps/manki-review) on the repositories you want reviewed. Manki reviews and posts with the App's token, as `manki-review[bot]`.
 
 1. Go to [github.com/apps/manki-review](https://github.com/apps/manki-review)
 2. Click **Install**
@@ -48,7 +39,7 @@ The app requires these permissions:
 |------------|--------|---------|
 | Contents | Read and write | Read repository files and diffs. GitHub needs write to resolve a review thread, and the token Manki gets covers only the reviewed repo |
 | Pull requests | Read and write | Post review comments and approvals |
-| Issues | Read and write | Post progress comments and app warnings; read linked issues for review context |
+| Issues | Read and write | Post progress comments; read linked issues for review context |
 | Actions | Read and write | Start the Manki workflow and follow its runs (see [What the Manki App needs](#what-the-manki-app-needs)). Set on the App by its maintainers, so you only approve it |
 | Checks | Read and write | Show a `Manki` check on the PR. Set on the App by its maintainers, so you only approve it |
 
@@ -58,7 +49,7 @@ Instead of the manki-review App, Manki can post as an App you create, with the `
 
 ## Step 2: Authentication Secrets
 
-> **Do you need a GitHub token?** No. `github_token` defaults to the workflow's own token. With the GitHub App installed (Step 1), Manki uses the App's token instead and posts as `manki-review[bot]`. Without the App, it posts with the workflow token as `github-actions[bot]`. For review memory, Manki gets a second App token that can write only the `review-memory` repo of the same account, when the App is installed on it. A memory repo with any other name needs the `memory_repo_token` input.
+> **Do you need a GitHub token?** No. `github_token` defaults to the workflow's own token. Manki reviews and posts with the GitHub App's token (Step 1) as `manki-review[bot]`, and uses the workflow token only to read the dispatched event and CI results. When the token service gives no App token, Manki tries once more, then fails the run and says so on the PR with the workflow token. For review memory, Manki gets a second App token that can write only the `review-memory` repo of the same account, when the App is installed on it. A memory repo with any other name needs the `memory_repo_token` input.
 
 ### Choosing a provider
 
@@ -191,7 +182,7 @@ on:
 permissions:
   contents: read          # read repo files and diffs
   pull-requests: write    # post review comments and approvals
-  issues: write           # post progress comments and app warnings on PRs
+  issues: write           # post a note on the PR when the token service gives no token
   id-token: write         # OIDC token for GitHub App identity
   actions: read           # verify workflow run is legitimate
   # checks: read          # optional: read CI annotations, see "Reading CI results"
@@ -291,7 +282,7 @@ models:
 
 ### Action inputs
 
-The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents) and optionally `memory_repo_token`. `github_token` defaults to the workflow token, so set it only to post with a different token. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). To post as [your own GitHub App](#your-own-github-app), set `github_app_id` and `github_app_private_key`. `manki_token_url` points at a different token service. See [`action.yml`](../action.yml) for the full input reference.
+The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents) and optionally `memory_repo_token`. `github_token` defaults to the workflow token, so set it only to read with a different token. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). To post as [your own GitHub App](#your-own-github-app), set `github_app_id` and `github_app_private_key`. `manki_token_url` points at a different token service. See [`action.yml`](../action.yml) for the full input reference.
 
 ### Action outputs
 
@@ -428,7 +419,7 @@ Manki's newest progress comment ends with a settings block. It holds a status li
 |---------|----------|
 | "spawn claude ENOENT" | Add the "Install Claude Code CLI" step before the action |
 | "Claude subscription limit reached" or another quota message | The provider's limit is used up. Wait for the reset time the review names, or switch to another token or key |
-| "Failed to post APPROVE review" | Install the [GitHub App](#step-1-install-the-github-app), or without it enable "Allow GitHub Actions to create and approve pull requests" in repo settings (see [the risk](#allow-github-actions-to-approve-pull-requests-only-without-the-app)) |
+| "Failed to post APPROVE review" | Check that the [GitHub App](#step-1-install-the-github-app) is installed on the repo with **Pull requests** read and write |
 | Review says "No reviewable files" | Check `exclude_paths` in config -- dotfiles are included by default |
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
 | No run starts | The Manki workflow must be on the default branch and declare the dispatch inputs, no other workflow may run Manki on events, and the repository's account must be one the service serves (see [Step 3](#step-3-add-the-workflow)) |
