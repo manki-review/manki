@@ -51,13 +51,32 @@ function listSessionFiles(dir: string): { path: string; mtimeMs: number }[] {
   }
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Returns the `sessions/YYYY/MM/DD` folders under `codexHome` that can hold a session started since `since`, so the scan
+ * never walks the whole history. Codex names them by its local date. The UTC dates cover a CLI in another time zone.
+ */
+function sessionFolders(codexHome: string, since: number): string[] {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const folders = new Set<string>();
+  const now = Date.now();
+  for (let time = since; ; time = Math.min(time + DAY_MS, now)) {
+    const date = new Date(time);
+    folders.add(join(codexHome, 'sessions', String(date.getFullYear()), pad(date.getMonth() + 1), pad(date.getDate())));
+    folders.add(join(codexHome, 'sessions', String(date.getUTCFullYear()), pad(date.getUTCMonth() + 1), pad(date.getUTCDate())));
+    if (time >= now) break;
+  }
+  return [...folders];
+}
+
 /**
  * Reads the usage limits Codex recorded as `rate_limits` under `codexHome` since `since`, in milliseconds, from the newest
  * session file that has any. Calls run in parallel, so the newest file can be another call's with none yet. Every file
  * reads the same account. Returns none when nothing was recorded.
  */
 export function readCodexLimits(codexHome: string, since: number): LimitUsage[] {
-  const files = listSessionFiles(join(codexHome, 'sessions'))
+  const files = sessionFolders(codexHome, since).flatMap(dir => listSessionFiles(dir))
     .filter(f => f.mtimeMs >= since)
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
   for (const file of files) {
