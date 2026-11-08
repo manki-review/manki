@@ -20,6 +20,8 @@ type ReviewEntry = { body?: string | null; state?: string; commit_id?: string | 
 const BOT_MARKER = '<!-- manki -->';
 const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
 const APPROVAL_HELD_MARKER_PREFIX = '<!-- manki-approval-held:';
+/** Marks the token service's note that a PR conflicting with its base waits for a rebase before Manki reviews it. */
+const CONFLICT_NOTE_MARKER = '<!-- manki-conflict-note -->';
 
 function staleApproveMarker(headSha: string): string {
   return `${STALE_APPROVE_MARKER_PREFIX}${headSha} -->`;
@@ -423,7 +425,8 @@ async function holdApproval(
 }
 
 /**
- * Deletes the auto-approve withheld notice for `headSha` and every approval-held notice. Call it once a review posts its verdict on `headSha`.
+ * Deletes the auto-approve withheld notice for `headSha`, every approval-held notice and the token service's conflict
+ * note. Call it once a review posts its verdict on `headSha`.
  * Marks every older failed or incomplete review progress comment as superseded by that verdict, whatever commit it was for.
  * With `pauseLifted`, when that round lifted the pause, each pause notice that lost its settings block is marked as resumed.
  */
@@ -439,7 +442,7 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
   for (const c of comments) {
     if (!isBotLogin(bot, c.user?.login) || !c.body) continue;
     try {
-      if (c.body.includes(marker) || c.body.includes(APPROVAL_HELD_MARKER_PREFIX)) {
+      if (c.body.includes(marker) || c.body.includes(APPROVAL_HELD_MARKER_PREFIX) || c.body.includes(CONFLICT_NOTE_MARKER)) {
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
       } else if (isFailedProgress(c.body)) {
         await markProgressCommentSuperseded(octokit, owner, repo, c.id, { reviewedSha: headSha, headSha });
