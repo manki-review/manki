@@ -153,8 +153,10 @@ function legacyFindingToFingerprintEntry(f: LegacyHandoverFindingFixture): Findi
 /** The identity a run without custom App credentials resolves to. */
 export const TEST_BOT: BotIdentity = { logins: ['manki-review[bot]'] };
 
-/** Links a finding comment's checks to a fixed commit, with the line counts of two files. */
+const numberedLines = (count: number): string[] => Array.from({ length: count }, (_, i) => `line ${i + 1}`);
+
+/** Links a finding comment's code to a fixed commit, with the lines of two files. */
 export const TEST_LINKS: CodeLinks = {
   linkTo: (file, line, end = line) => `https://github.com/o/r/blob/sha/${file}#L${line}${end > line ? `-L${end}` : ''}`,
-  lineCounts: new Map([['src/main.ts', 60], ['src/util.ts', 30]]),
+  files: new Map([['src/main.ts', numberedLines(60)], ['src/util.ts', numberedLines(30)]]),
 };
