@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import { WRAP_UP_STEPS } from '../tool-steps';
 import { estimateCostUsd } from './model-registry';
 import { addUsage, LLMCall, LLMClient, LLMUsage, RefusalError, UsageSummary, ZERO_USAGE } from './types';
-import { sanitizeLogOutput } from './cli-utils';
+import { relatedReadsOf, sanitizeLogOutput } from './cli-utils';
 
 export interface UsageTotals {
   usage: LLMUsage;
@@ -104,6 +104,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
           ...base,
           ...(response.model && { model: response.model }),
           ...(response.toolSteps && { toolSteps: response.toolSteps }),
+          ...(response.relatedReads && { relatedReads: response.relatedReads }),
           // Only a client that reports its tool steps shows whether the model was told to wrap up.
           ...(stepBudget !== undefined && response.toolSteps && response.toolSteps.length >= stepBudget - WRAP_UP_STEPS && { wrapUpNoted: true as const }),
           durationMs: response.latencyMs ?? Date.now() - start,
@@ -117,6 +118,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
           ...base,
           failed: true,
           error: sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 300),
+          ...(relatedReadsOf(error) && { relatedReads: relatedReadsOf(error) }),
           durationMs: Date.now() - start,
           ...ZERO_USAGE,
           costUsd: null,

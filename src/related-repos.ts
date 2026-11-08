@@ -1,10 +1,10 @@
 import * as core from '@actions/core';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { devNull, tmpdir } from 'os';
 import { dirname, join, resolve, sep } from 'path';
 
 import { runTool } from './binary-analyzers';
-import { RelatedRepo, RelatedRepoTools } from './types';
+import { RelatedRepo, RelatedRepoTools, RoundRelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
 // A tool call that runs for the fetch and the wait after it must end before the CLI's 90 second stale limit.
@@ -112,15 +112,25 @@ export function fetchedRelatedRepos(stateDir: string): Map<string, string> {
   return new Map(done.map(f => [decodeURIComponent(f.slice(0, -'.done'.length)), readFileSync(join(stateDir, f), 'utf-8')]));
 }
 
-/** Warns about each related repo a tool server of the round in `stateDir` could not fetch or never finished fetching. */
-export function warnRelatedRepoFailures(stateDir: string): void {
+const MAX_REASON_CHARS = 300;
+
+/**
+ * Returns how each of `repos` fared in the round in `stateDir`: fetched, failed with the reason, or unused when no tool
+ * call named it, with how long a fetch took from its lock to its outcome. Warns about each repo it could not fetch.
+ */
+export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string): RoundRelatedRepo[] {
   const files = new Set(readdirSync(stateDir));
-  for (const lock of [...files].filter(f => f.endsWith('.lock')).sort()) {
-    const marker = lock.slice(0, -'.lock'.length);
-    if (files.has(`${marker}.done`)) continue;
-    const reason = files.has(`${marker}.failed`) ? readFileSync(join(stateDir, `${marker}.failed`), 'utf-8') : 'the fetch never finished';
-    core.warning(`Could not fetch related repo ${decodeURIComponent(marker)}, which must be public on github.com: ${reason}`);
-  }
+  return repos.map(({ repo, ref }) => {
+    const marker = encodeURIComponent(repo);
+    const base = { repo, ...(ref && { ref }) };
+    if (!files.has(`${marker}.lock`)) return { ...base, status: 'unused' as const };
+    const took = (outcome: string) => ({ durationMs: Math.max(0, Math.round(statSync(join(stateDir, outcome)).mtimeMs - statSync(join(stateDir, `${marker}.lock`)).mtimeMs)) });
+    if (files.has(`${marker}.done`)) return { ...base, status: 'fetched' as const, ...took(`${marker}.done`) };
+    const failed = files.has(`${marker}.failed`);
+    const reason = failed ? readFileSync(join(stateDir, `${marker}.failed`), 'utf-8') : 'the fetch never finished';
+    core.warning(`Could not fetch related repo ${repo}, which must be public on github.com: ${reason}`);
+    return { ...base, status: 'failed' as const, reason: reason.slice(0, MAX_REASON_CHARS), ...(failed && took(`${marker}.failed`)) };
+  });
 }
 
 /**

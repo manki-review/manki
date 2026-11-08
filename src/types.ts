@@ -219,6 +219,22 @@ export interface Finding {
 export type PreExistingCheck = 'pre_existing' | 'no_location' | 'excluded_file' | 'deleted_file' | 'touches_diff';
 
 /** How a round split a diff too large to read at once. */
+/** How one configured related repo fared in a round, and how often the round's finders read it. */
+export interface RoundRelatedRepo {
+  repo: string;
+  ref?: string;
+  /**
+   * `fetched`, `failed` with the `reason`, `unused` when no tool call named it, or `skipped` with the `reason` when the
+   * round gave no finder the repo.
+   */
+  status: 'fetched' | 'failed' | 'unused' | 'skipped';
+  reason?: string;
+  /** How long the fetch took, when it ended. */
+  durationMs?: number;
+  /** Tool calls that read the repo, over every call of the round. */
+  reads?: number;
+}
+
 export interface RoundSlicing {
   /** The changed files in each slice. A file split across slices counts in each. */
   files: number[];
@@ -423,6 +439,8 @@ export interface ReviewResult {
   unpostedPreExisting?: Finding[];
   /** How the diff was split, when it was read in several slices. */
   slicing?: RoundSlicing;
+  /** The configured related repos, with the outcome of each fetch. */
+  relatedRepos?: RoundRelatedRepo[];
   /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
   changedSinceLastRoundCount?: number;
   /** The open or earlier threads where someone claimed a fix: resolved, answered by a person, or confirmed by a round. */
@@ -1027,6 +1045,8 @@ export interface RoundContext {
   tokenService?: TokenServiceCall[];
   /** How the diff was split, when it was read in several slices. */
   slicing?: RoundSlicing;
+  /** The configured related repos, with the outcome of each fetch. */
+  relatedRepos?: RoundRelatedRepo[];
   /** How each open lead ended, so the next round carries over the ones still unsettled. */
   leads?: RoundLead[];
   /**

@@ -7,7 +7,7 @@ import { StringDecoder } from 'string_decoder';
 import * as core from '@actions/core';
 
 import { isSecretName, registerSecret, safeJsonParse, sanitizeTokens, SYSTEM_ENV } from '../utils';
-import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, RELATED_REPOS_FLAG, STEPS_FLAG } from '../mcp-server';
+import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, READS_FILE_FLAG, RELATED_REPOS_FLAG, STEPS_FLAG } from '../mcp-server';
 import { STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
 import { RelatedRepo, RelatedRepoTools } from '../types';
 import { RepoTools, SendMessageOptions } from './types';
@@ -445,17 +445,45 @@ function mankiCommand(args: string[]): MankiCommand {
 /**
  * Starts the tool server for `root`. With `fileTools` the server also offers `read_file`, `grep` and `glob`, for a CLI
  * without its own. With `steps` it refuses every call after that many, for a CLI whose every tool comes from this server.
- * With `related` a `repo` argument also reads those repos.
+ * With `related` a `repo` argument also reads those repos, and with `readsFile` the server keeps there how many calls
+ * read each of them.
  */
 export function toolServerCommand(
-  root: string, { fileTools = false, steps, related }: { fileTools?: boolean; steps?: number; related?: RelatedRepoTools } = {},
+  root: string,
+  { fileTools = false, steps, related, readsFile }: { fileTools?: boolean; steps?: number; related?: RelatedRepoTools; readsFile?: string } = {},
 ): MankiCommand {
   return mankiCommand([
     MCP_SERVER_COMMAND, root,
     ...(fileTools ? [FILE_TOOLS_FLAG] : []),
     ...(steps ? [STEPS_FLAG, String(steps)] : []),
     ...(related ? [RELATED_REPOS_FLAG, JSON.stringify(related)] : []),
+    ...(related && readsFile ? [READS_FILE_FLAG, readsFile] : []),
   ]);
+}
+
+/** The file in a call's own folder where its tool server keeps how many calls read each related repo. */
+export function relatedReadsFile(dir: string): string {
+  return join(dir, 'related-reads.json');
+}
+
+/** Puts the related repo reads of a call that failed on its error and returns it, so the failed call's record keeps them. */
+export function carryRelatedReads(error: unknown, reads: Record<string, number> | undefined): unknown {
+  if (reads && error && typeof error === 'object') (error as { relatedReads?: Record<string, number> }).relatedReads = reads;
+  return error;
+}
+
+/** Returns the related repo reads `carryRelatedReads` put on `error`, if any. */
+export function relatedReadsOf(error: unknown): Record<string, number> | undefined {
+  return error && typeof error === 'object' ? (error as { relatedReads?: Record<string, number> }).relatedReads : undefined;
+}
+
+/** Returns the related repo read counts a tool server kept in `path`, or `undefined` when it kept none. */
+export function readRelatedReads(path: string): Record<string, number> | undefined {
+  if (!existsSync(path)) return undefined;
+  const parsed = safeJsonParse(readFileSync(path, 'utf8'));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const reads = Object.entries(parsed).filter((entry): entry is [string, number] => Number.isInteger(entry[1]) && entry[1] > 0);
+  return reads.length > 0 ? Object.fromEntries(reads) : undefined;
 }
 
 /** Starts the Claude CLI hook that counts the tool steps of one call in `dir` and refuses every call after `steps`. */

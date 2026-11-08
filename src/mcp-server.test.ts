@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -281,7 +281,8 @@ describe('Manki tool server', () => {
       writeFileSync(join(stateDir, marker), outcome);
     }
     const related: RelatedRepoTools = { repos: [{ repo: 'o/r', kind: 'consumer' }, { repo: 'o/missing', kind: 'reference' }], cacheDir, stateDir };
-    const claude = await connect(repo, { related });
+    const readsFile = join(base, 'related-reads.json');
+    const claude = await connect(repo, { related, readsFile });
     const codex = await connect(repo, { fileTools: true, related });
     try {
       // A client with its own file tools gets these for related repos only, so `repo` is required there.
@@ -307,6 +308,8 @@ describe('Manki tool server', () => {
         .toEqual({ text: 'o/missing could not be fetched, so it cannot be read: fatal: repository not found', isError: true });
       expect((await call(claude, 'read_file', { repo: 'o/other', path: 'lib.rs' })).isError).toBe(true);
       expect((await call(claude, 'read_file', { path: 'src/a.ts' })).isError).toBe(true);
+      // Every call that named a related repo counts, a refused one too, and a call on the PR's repository does not.
+      expect(JSON.parse(readFileSync(readsFile, 'utf8'))).toEqual({ 'o/r': 7, 'o/missing': 1 });
     } finally {
       await claude.close();
       await codex.close();

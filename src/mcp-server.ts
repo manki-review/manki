@@ -32,6 +32,9 @@ export const STEPS_FLAG = '--steps';
 /** The argument that gives the tool server, as the JSON of `RelatedRepoTools` in the next argument, the related repos it may read. */
 export const RELATED_REPOS_FLAG = '--related-repos';
 
+/** The argument before the file where the tool server keeps, as JSON, how many calls read each related repo. */
+export const READS_FILE_FLAG = '--reads-file';
+
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
 const MAX_OUTPUT_CHARS = 20_000;
@@ -401,6 +404,8 @@ export interface McpServerOptions {
   steps?: number;
   /** Related repos a `repo` argument reads instead of `root`, each fetched on the first call that names it. */
   related?: RelatedRepoTools;
+  /** Where to keep how many calls read each related repo. */
+  readsFile?: string;
   loadApi?: () => Promise<AstGrepApi>;
 }
 
@@ -411,7 +416,7 @@ const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: f
  * Returns Manki's tool server for the repository at `root`. Every tool reads only inside `root` and runs no shell, except
  * `repo_info`, which asks GitHub for a repository's public facts.
  */
-export function createMcpServer(root: string, { fileTools = false, steps, related, loadApi = loadAstGrep }: McpServerOptions = {}): McpServer {
+export function createMcpServer(root: string, { fileTools = false, steps, related, readsFile, loadApi = loadAstGrep }: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: 'manki', version: MANKI_VERSION });
   let taken = 0;
   const run = async (tool: () => Promise<string>): Promise<ToolResult> => {
@@ -428,9 +433,14 @@ export function createMcpServer(root: string, { fileTools = false, steps, relate
   // A client with file tools of its own reads the PR's repository with those, so it gets these only for a related repo.
   const repoArg = (optional: boolean): Record<string, z.ZodType<string | undefined>> =>
     names.length === 0 ? {} : { repo: optional ? repoName.optional() : repoName };
+  const reads: Record<string, number> = {};
   const rootOf = async (args: object): Promise<string> => {
     const repo = (args as { repo?: string }).repo;
     if (!repo || !loadRelated) return root;
+    reads[repo] = (reads[repo] ?? 0) + 1;
+    try {
+      if (readsFile) writeFileSync(readsFile, JSON.stringify(reads));
+    } catch { /* the count only feeds the round record */ }
     return loadRelated(repo).catch((error: unknown) => {
       throw new Error(`${repo} could not be fetched, so it cannot be read: ${error instanceof Error ? error.message : String(error)}`);
     });
@@ -501,8 +511,8 @@ export function createMcpServer(root: string, { fileTools = false, steps, relate
 
 /**
  * Serves Manki's tools over stdin and stdout until the client disconnects. `args` are the repository root, then
- * `FILE_TOOLS_FLAG` for the file tools, `STEPS_FLAG` with a number for a step budget and `RELATED_REPOS_FLAG` with
- * the JSON of the related repos. Exits with an error on stderr when the arguments are wrong, the root is not a
+ * `FILE_TOOLS_FLAG` for the file tools, `STEPS_FLAG` with a number for a step budget, `RELATED_REPOS_FLAG` with
+ * the JSON of the related repos and `READS_FILE_FLAG` with the file for their read counts. Exits with an error on stderr when the arguments are wrong, the root is not a
  * directory or the server cannot start.
  */
 export async function runMcpServer(args: string[]): Promise<void> {
@@ -514,7 +524,9 @@ export async function runMcpServer(args: string[]): Promise<void> {
     if (!root || !statSync(root).isDirectory()) throw new Error(`${root ?? 'no root'} is not a directory`);
     const relatedAt = flags.indexOf(RELATED_REPOS_FLAG);
     const related = relatedAt === -1 ? undefined : JSON.parse(flags[relatedAt + 1]) as RelatedRepoTools;
-    await createMcpServer(root, { fileTools: flags.includes(FILE_TOOLS_FLAG), steps, related }).connect(new StdioServerTransport());
+    const readsAt = flags.indexOf(READS_FILE_FLAG);
+    const readsFile = readsAt === -1 ? undefined : flags[readsAt + 1];
+    await createMcpServer(root, { fileTools: flags.includes(FILE_TOOLS_FLAG), steps, related, readsFile }).connect(new StdioServerTransport());
   } catch (error) {
     process.stderr.write(`Manki tool server: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(1);

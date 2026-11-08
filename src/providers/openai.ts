@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, registerAuthFileSecrets, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, carryRelatedReads, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -229,24 +229,29 @@ export class OpenAIClient implements LLMClient {
     // The GitHub API URL is for the tool server's `repo_info`, which Codex starts with names from this environment.
     const apiUrl = process.env.GITHUB_API_URL;
     const env = cliEnv('codex', { CODEX_HOME: codexHome, ...(repoTools && apiUrl && { GITHUB_API_URL: apiUrl }) });
-    if (repoTools) args.push(...codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, related: repoTools.related }), env));
 
     let output = '';
-    const { code, signal, stderr, lastStdoutChunk } = await withPromptDir((promptDir) => {
+    const { code, signal, stderr, lastStdoutChunk, relatedReads } = await withPromptDir(async (promptDir) => {
       // Manki's instructions replace Codex's own, so stdin carries only the untrusted content.
       const instructionsPath = join(promptDir, 'instructions.md');
       writeFileSync(instructionsPath, instructions, { mode: 0o600 });
-      return runCli({
+      const readsFile = relatedReadsFile(promptDir);
+      const toolArgs = repoTools
+        ? codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, related: repoTools.related, readsFile }), env)
+        : [];
+      const reads = () => (repoTools?.related ? readRelatedReads(readsFile) : undefined);
+      const exit = await runCli({
         label: 'Codex',
         cliPath,
-        args: [...args, '-c', `model_instructions_file=${JSON.stringify(instructionsPath)}`, '-'],
+        args: [...args, ...toolArgs, '-c', `model_instructions_file=${JSON.stringify(instructionsPath)}`, '-'],
         env,
         input: userMessage,
         hardTimeoutMs: options?.timeoutMs,
         signal: options?.signal,
         onStdout: (chunk) => { output += chunk; },
         stderrResetsStale: true,
-      });
+      }).catch((error: unknown) => { throw carryRelatedReads(error, reads()); });
+      return { ...exit, relatedReads: reads() };
     }).catch((error: unknown) => {
       warnReplyTail('Codex CLI', output);
       throw error;
@@ -259,7 +264,7 @@ export class OpenAIClient implements LLMClient {
       if (quota && !quota.overloaded) {
         const message = `ChatGPT subscription limit reached: ${errorLine}`;
         core.warning(message);
-        throw new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token');
+        throw carryRelatedReads(new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token'), relatedReads);
       }
       const msg = buildExitDiagnostics({
         exitCode: code,
@@ -273,7 +278,7 @@ export class OpenAIClient implements LLMClient {
       });
       core.warning(`Codex CLI failed (${msg})`);
       warnReplyTail('Codex CLI', output);
-      throw new Error(`Codex CLI invocation failed (${msg})`);
+      throw carryRelatedReads(new Error(`Codex CLI invocation failed (${msg})`), relatedReads);
     }
     const content = output.trim();
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
@@ -281,6 +286,7 @@ export class OpenAIClient implements LLMClient {
       content,
       latencyMs: Date.now() - startTime,
       model: this.model,
+      ...(relatedReads && { relatedReads }),
     };
   }
 

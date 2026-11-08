@@ -5,7 +5,7 @@ import { MANKI_VERSION } from './github';
 import type { MemorySkip } from './memory';
 import { parseModelSpec, summarizeCalls } from './providers';
 import { routingDigest } from './routing';
-import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall, PRE_EXISTING_TAG, Finding, FindingFingerprintEntry } from './types';
+import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRelatedRepo, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall, PRE_EXISTING_TAG, Finding, FindingFingerprintEntry } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   OWN_PROPOSAL_TAG,
@@ -422,7 +422,14 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(tokenServiceCalls && tokenServiceCalls.length > 0 && { tokenService: tokenServiceCalls }),
     ...(result.slicing && { slicing: result.slicing }),
     ...(result.leads && result.leads.length > 0 && { leads: result.leads }),
+    ...(result.relatedRepos && { relatedRepos: result.relatedRepos.map(r => withReads(r, llmCalls)) }),
   };
+}
+
+/** Adds to `repo` the tool calls of `calls` that read it, when any did. */
+function withReads(repo: RoundRelatedRepo, calls: LLMCall[]): RoundRelatedRepo {
+  const reads = calls.reduce((sum, call) => sum + (call.relatedReads?.[repo.repo] ?? 0), 0);
+  return reads > 0 ? { ...repo, reads } : repo;
 }
 
 /** Returns, per stage, the distinct prompt digests of `calls`, sorted. */

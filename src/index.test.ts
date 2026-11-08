@@ -3700,7 +3700,7 @@ describe('runFullReview orchestration', () => {
       expect(metadata?.config.memoryRepo).toBe(`skipped: ${reason}`);
     });
 
-    it('records why the round paused, the prompt versions, what memory loaded and hid, and the token service calls', async () => {
+    it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and the token service calls', async () => {
       const blocker = { file: 'src/app.ts', line: 5, title: 'Bug', fingerprint: 'k' };
       const call = (stage: string, promptDigest: string, extra: Partial<LLMCall> = {}): LLMCall => ({
         stage, attempt: 1, promptDigest, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0, ...extra,
@@ -3711,9 +3711,11 @@ describe('runFullReview orchestration', () => {
         findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
         needsHuman: { cause: 'repeated', blockers: [blocker] },
         llmCalls: [
-          call('reviewer', 'bbbbbbbbbbbb', { agent: 'general', stepBudget: 15, wrapUpNoted: true }), call('reviewer', 'aaaaaaaaaaaa', { agent: 'security' }),
-          call('reviewer', 'aaaaaaaaaaaa', { agent: 'general', attempt: 2 }), call('judge', 'cccccccccccc'),
+          call('reviewer', 'bbbbbbbbbbbb', { agent: 'general', stepBudget: 15, wrapUpNoted: true, relatedReads: { 'o/r': 3 } }),
+          call('reviewer', 'aaaaaaaaaaaa', { agent: 'security', relatedReads: { 'o/r': 1 } }),
+          call('reviewer', 'aaaaaaaaaaaa', { agent: 'general', attempt: 2, failed: true, relatedReads: { 'o/r': 2 } }), call('judge', 'cccccccccccc'),
         ],
+        relatedRepos: [{ repo: 'o/r', status: 'fetched', durationMs: 900 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }],
         memoryLoaded: { learnings: 4, suppressions: 2 },
         memorySuppressed: [hidden],
         allJudgedFindings: [{ ...hidden, severity: 'ignore', gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }] }],
@@ -3741,6 +3743,9 @@ describe('runFullReview orchestration', () => {
       expect(rc.tokenService).toEqual(tokenService);
       expect(rc.judge.dropped).toEqual([expect.objectContaining({ gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }] })]);
       expect(rc.slicing).toEqual({ files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] });
+      // Each related repo carries the reads of every call of the round, a failed one too, and each call its own.
+      expect(rc.relatedRepos).toEqual([{ repo: 'o/r', status: 'fetched', durationMs: 900, reads: 6 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }]);
+      expect(rc.usage.llmCalls?.[1]).toMatchObject({ relatedReads: { 'o/r': 1 } });
       expect(rc.diff.changedSinceLastRound).toBe(2);
       expect(rc.judge.fixClaimedThreads).toEqual(['T1']);
       expect(rc.findings.unposted?.[0].preExisting).toEqual({ reason: 'The helper was long before this PR.', check: 'pre_existing' });

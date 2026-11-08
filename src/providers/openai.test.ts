@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { existsSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import OpenAI from 'openai';
@@ -469,6 +469,37 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     expect(instructions[0]).not.toContain('## Related repos');
     expect(instructions[1]).toBe('Review the diff.');
     expect(stdin.mock.calls.map(c => String(c[0]))).toEqual(['the diff', 'the diff']);
+  });
+
+  it('reads back how often the tool server read each related repo, and passes no reads file without related repos', async () => {
+    setupSpawnMock('[]\n');
+    const spawnFromHelper = mockSpawn.getMockImplementation()!;
+    mockSpawn.mockImplementation((...spawnArgs: Parameters<typeof spawnFromHelper>) => {
+      const serverArgs = JSON.parse((spawnArgs[1] as string[]).find(arg => arg.startsWith('mcp_servers.manki.args='))!.slice('mcp_servers.manki.args='.length)) as string[];
+      const at = serverArgs.indexOf('--reads-file');
+      if (at !== -1) writeFileSync(serverArgs[at + 1], JSON.stringify({ 'dashpay/dash': 2 }));
+      return spawnFromHelper(...spawnArgs);
+    });
+    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
+    const related = { repos: [{ repo: 'dashpay/dash', kind: 'reference' as const }], cacheDir: '/runner/temp/related', stateDir: '/runner/temp/state' };
+
+    const withRelated = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related } });
+    const withoutRelated = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15 } });
+
+    expect(withRelated.relatedReads).toEqual({ 'dashpay/dash': 2 });
+    expect(withoutRelated.relatedReads).toBeUndefined();
+    expect((mockSpawn.mock.calls[1][1] as string[]).join(' ')).not.toContain('--reads-file');
+
+    // A call that fails still reports the reads it made, on its error.
+    setupSpawnMock('', { exitCode: 1, stderr: 'ERROR: something broke' });
+    const failingSpawn = mockSpawn.getMockImplementation()!;
+    mockSpawn.mockImplementation((...spawnArgs: Parameters<typeof failingSpawn>) => {
+      const serverArgs = JSON.parse((spawnArgs[1] as string[]).find(arg => arg.startsWith('mcp_servers.manki.args='))!.slice('mcp_servers.manki.args='.length)) as string[];
+      writeFileSync(serverArgs[serverArgs.indexOf('--reads-file') + 1], JSON.stringify({ 'dashpay/dash': 4 }));
+      return failingSpawn(...spawnArgs);
+    });
+    const failure = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related } }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ message: expect.stringContaining('Codex CLI invocation failed'), relatedReads: { 'dashpay/dash': 4 } });
   });
 
   it('passes model_reasoning_effort override when effort is set on o-series model', async () => {

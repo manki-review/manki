@@ -1850,16 +1850,31 @@ describe('runReview', () => {
         writeFileSync(join(stateDir, 'o%2Fs.lock'), String(process.pid));
         writeFileSync(join(stateDir, 'o%2Fs.done'), checkout);
       }
-      return { content: JSON.stringify([cited]) };
+      return { content: JSON.stringify([cited]), ...(stateDir && { relatedReads: { 'o/s': 2, 'o/r': 1 } }) };
     });
-    const related_repos = [{ repo: 'o/r', kind: 'consumer' as const }, { repo: 'o/s', kind: 'reference' as const }];
+    const related_repos = [{ repo: 'o/r', kind: 'consumer' as const }, { repo: 'o/s', kind: 'reference' as const, ref: 'v1' }, { repo: 'o/t', kind: 'reference' as const }];
     const options = { diff: makeDiff({ files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [] }] }), rawDiff: 'raw diff', repoContext: 'repo context' };
     try {
-      await runReview(clients, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' });
-      await runReview(clients, { ...options, config: makeConfig({ related_repos }) });
-      await runReview(clients, { ...options, config: makeConfig(), workspace: '/work/pr-head' });
+      const results = [
+        await runReview(clients, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' }),
+        await runReview(clients, { ...options, config: makeConfig({ related_repos }) }),
+        await runReview(clients, { ...options, config: makeConfig(), workspace: '/work/pr-head' }),
+      ];
       const withoutTools = makeClients();
-      await runReview(withoutTools, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' });
+      results.push(await runReview(withoutTools, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' }));
+
+      // Each round records every configured related repo, and each finder call how often it read one.
+      expect(results.map(r => r.relatedRepos)).toEqual([
+        [
+          { repo: 'o/r', status: 'failed', reason: 'fatal: repository not found', durationMs: expect.any(Number) },
+          { repo: 'o/s', ref: 'v1', status: 'fetched', durationMs: expect.any(Number) },
+          { repo: 'o/t', status: 'unused' },
+        ],
+        related_repos.map(({ repo, ref }) => ({ repo, ...(ref && { ref }), status: 'skipped', reason: 'the PR head was not checked out for the tools' })),
+        undefined,
+        related_repos.map(({ repo, ref }) => ({ repo, ...(ref && { ref }), status: 'skipped', reason: 'no finder has repository tools' })),
+      ]);
+      expect(results[0].llmCalls?.filter(c => c.stage === 'reviewer').map(c => c.relatedReads)).toEqual([{ 'o/s': 2, 'o/r': 1 }, { 'o/s': 2, 'o/r': 1 }]);
 
       // Two finders per round, and both of a round share its state directory.
       const [first, second, ...rest] = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools);
@@ -4876,11 +4891,16 @@ describe('recordCalls', () => {
     for (const steps of [4, 5]) await recordCalls(fallback, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps } });
     await recordCalls(refusing, finder, budgeted).sendMessage('other', 'user', { repoTools: { root: '/work', steps: 4 } }).catch(() => undefined);
     // A client that reports no tool steps, such as Codex, leaves it unknown whether the model was told to wrap up.
-    const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5' }), repoTools: true } as unknown as LLMClient;
+    const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5', relatedReads: { 'o/r': 2 } }), repoTools: true } as unknown as LLMClient;
     await recordCalls(silent, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } });
-    expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest])).toEqual([
-      [4, true, true], [5, undefined, true], [undefined, undefined, false], [3, undefined, true],
+    // A call that failed keeps the related repo reads its error carries.
+    const timedOut = Object.assign(new Error('Codex CLI timed out'), { relatedReads: { 'o/r': 1 } });
+    const failing = { sendMessage: jest.fn().mockRejectedValue(timedOut), repoTools: true } as unknown as LLMClient;
+    await recordCalls(failing, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } }).catch(() => undefined);
+    expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest, c.relatedReads])).toEqual([
+      [4, true, true, undefined], [5, undefined, true, undefined], [undefined, undefined, false, undefined], [3, undefined, true, { 'o/r': 2 }], [3, undefined, true, { 'o/r': 1 }],
     ]);
+    expect(budgeted.at(-1)).toMatchObject({ failed: true, error: 'Codex CLI timed out' });
     expect([recordCalls(fallback, finder, []).repoTools, judge.repoTools]).toEqual([true, undefined]);
     expect(summarizeCalls(calls)).toEqual({
       calls: 6, failedCalls: 2, unpricedCalls: 3,
