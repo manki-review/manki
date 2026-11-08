@@ -127,6 +127,32 @@ export async function handleIssueBoxTick(
 
 const BLOCK_HEADER_RE = /^\*\*(?:Blocker|Warning|Suggestion|Nitpick)\b/gm;
 
+const FOLD_TAG_RE = /<\/?details>/g;
+
+/**
+ * Returns where the fold that encloses `at` opens and closes, or -1 for both when none does. A fold can hold folds of
+ * its own, such as "How this was checked", so the tags are balanced from `at` outwards.
+ */
+function enclosingFold(body: string, at: number): { open: number; close: number } {
+  let depth = 0;
+  let open = -1;
+  for (const match of [...body.slice(0, at).matchAll(FOLD_TAG_RE)].reverse()) {
+    if (match[0] === '</details>') depth++;
+    else if (depth === 0) {
+      open = match.index;
+      break;
+    } else depth--;
+  }
+  if (open < 0) return { open: -1, close: -1 };
+  depth = 0;
+  for (const match of body.slice(at).matchAll(FOLD_TAG_RE)) {
+    if (match[0] === '<details>') depth++;
+    else if (depth === 0) return { open, close: at + match.index };
+    else depth--;
+  }
+  return { open: -1, close: -1 };
+}
+
 function decodeHtml(text: string): string {
   return text.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
 }
@@ -139,9 +165,8 @@ function decodeHtml(text: string): string {
 function bodyFinding(body: string, id: string): { title: string; text: string; security: boolean } | undefined {
   const box = body.indexOf(`<!-- manki-box:issue:${id} -->`);
   if (box < 0) return undefined;
-  const open = body.lastIndexOf('<details>', box);
-  const close = body.indexOf('</details>', box);
-  if (open >= 0 && close > box && body.lastIndexOf('</details>', box) < open) {
+  const { open, close } = enclosingFold(body, box);
+  if (open >= 0 && close > box) {
     const fold = body.slice(open, close);
     const end = fold.indexOf('</summary>');
     const summary = fold.slice(0, end);
@@ -172,7 +197,10 @@ export async function handleReviewBoxTick(
       continue;
     }
     // A security finding never offers a box, so a box on one was added by hand and filing it would disclose the defect.
-    if (finding.security) continue;
+    if (finding.security) {
+      core.warning(`Not filing ${id}: it is a security finding, and a public issue would disclose it`);
+      continue;
+    }
     // The id names the finding's file and line, which a listed finding has no hidden data for.
     const [, file = '', line = '0'] = id.match(/^(.*):(\d+):[^:]*$/) ?? [];
     let filed: { number: number; existing: boolean } | undefined;

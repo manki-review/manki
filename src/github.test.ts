@@ -310,6 +310,7 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, tags: ['security'] })).not.toContain('manki-box:issue');
     // The verdict reader cannot mark a security defect, so its blockers get no box either.
     expect(render({ ...baseFinding, reviewers: ['Verdict reader'] })).not.toContain('manki-box:issue');
+    expect(render({ ...baseFinding, category: 'security' })).not.toContain('manki-box:issue');
   });
 
   it('keeps the finding data in a hidden comment, never in visible text', () => {

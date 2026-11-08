@@ -2132,7 +2132,7 @@ function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: 
  * disclose a security defect, and the verdict reader cannot mark one, so neither gets a box.
  */
 function issueBoxFor(finding: Finding): string | undefined {
-  if (finding.tags?.includes(SECURITY_TAG) || finding.reviewers.includes(VERDICT_READER_NAME)) return undefined;
+  if (finding.tags?.includes(SECURITY_TAG) || finding.category === 'security' || finding.reviewers.includes(VERDICT_READER_NAME)) return undefined;
   return issueBox(`${finding.file}:${finding.line}:${titleToSlug(finding.title)}`);
 }
 
