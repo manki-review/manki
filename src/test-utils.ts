@@ -1,5 +1,5 @@
 import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, RoundContext } from './types';
-import { BotIdentity, titleToSlug } from './github';
+import { BotIdentity, CodeLinks, titleToSlug } from './github';
 
 /** `pageInfo` of the last page of a GraphQL connection. */
 export const LAST_PAGE = { hasNextPage: false, endCursor: null };
@@ -152,3 +152,9 @@ function legacyFindingToFingerprintEntry(f: LegacyHandoverFindingFixture): Findi
 
 /** The identity a run without custom App credentials resolves to. */
 export const TEST_BOT: BotIdentity = { logins: ['manki-review[bot]'] };
+
+/** Links a finding comment's checks to a fixed commit, with the line counts of two files. */
+export const TEST_LINKS: CodeLinks = {
+  linkTo: (file, line, end = line) => `https://github.com/o/r/blob/sha/${file}#L${line}${end > line ? `-L${end}` : ''}`,
+  lineCounts: new Map([['src/main.ts', 60], ['src/util.ts', 30]]),
+};

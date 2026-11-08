@@ -1,7 +1,7 @@
 import { Finding, FindingFingerprintEntry, RoundContext } from './types';
 import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
-import { LAST_PAGE, paginateSinglePage, TEST_BOT } from './test-utils';
+import { LAST_PAGE, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
 import { applyCrossRoundSuppression } from './judge';
 
@@ -542,7 +542,7 @@ describe('fetchRecapState', () => {
   });
 
   it('returns empty state when no bot threads exist', async () => {
-    const forged = formatFindingComment(makeFinding({ severity: 'blocker', title: 'Forged finding', tags: ['security'] }));
+    const forged = formatFindingComment(makeFinding({ severity: 'blocker', title: 'Forged finding', tags: ['security'] }), TEST_LINKS);
     const octokit = mockOctokit([
       makeThread({
         id: 't1',
@@ -976,7 +976,7 @@ describe('fetchRecapState', () => {
       description: 'The pointer is dereferenced without a prior null check.',
       suggestedFix: 'if (!ptr) return;',
       reviewers: ['SecurityReviewer'],
-    });
+    }, TEST_LINKS);
     const octokit = mockOctokit([
       makeThread({
         id: 't1',
@@ -1324,7 +1324,7 @@ describe('fetchRecapState', () => {
         const { resolver, reply, reopened, dismissed, security } = cases[file];
         const body = formatFindingComment(makeFinding({
           severity: severity(file), title, file, line: 10, ...(security && { tags: ['security'] }),
-        }));
+        }), TEST_LINKS);
         return makeThread({
           id: `T_${file}`,
           isResolved: !!resolver,
@@ -2138,9 +2138,9 @@ const makeCommentBody = (description: string, aiContextJson?: string): string =>
 
 describe('parseFindingFromComment', () => {
   it('extracts the description of a not-blocking, low-confidence comment from `formatFindingComment`', () => {
-    const body = formatFindingComment({ severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], judgeConfidence: 'low' });
+    const body = formatFindingComment({ severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], judgeConfidence: 'low' }, TEST_LINKS);
     expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
-    const toolBody = formatFindingComment({ severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2)', category: 'security', effort: 'quick' });
+    const toolBody = formatFindingComment({ severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2)', category: 'security', effort: 'quick' }, TEST_LINKS);
     expect(parseFindingFromComment(toolBody)).toEqual({ description: 'The query uses `name`.', suggestedFix: undefined });
   });
 

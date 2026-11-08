@@ -4,7 +4,7 @@ import { randomBytes } from 'crypto';
 import { ApprovalHeld, buildDashboard, formatFoundAgainReply, formatUnreviewedNotice, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
-import { paginateSinglePage, TEST_BOT } from './test-utils';
+import { paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { withMarkers } from './utils';
 import { extractReviewRecords } from './review-record';
 import type { PreviousFinding } from './recap';
@@ -43,6 +43,8 @@ function suggestionBlocks(comment: string): string[] {
 }
 
 describe('formatFindingComment', () => {
+  const links = TEST_LINKS;
+  const render = (finding: Finding): string => formatFindingComment(finding, links);
   const baseFinding: Finding = {
     severity: 'blocker',
     title: 'Null pointer dereference',
@@ -60,7 +62,7 @@ describe('formatFindingComment', () => {
     ['warning', 'high', '\u26A0\uFE0F **Warning** (CodeQL)', 'CodeQL'],
     ['suggestion', 'high', '\u2728 **Suggestion, not blocking** (eslint)', 'eslint'],
   ] as const)('opens a %s finding with its severity icon and label, and no other emoji', (severity, judgeConfidence, label, toolSource) => {
-    const comment = formatFindingComment({ ...baseFinding, severity, judgeConfidence, toolSource });
+    const comment = render({ ...baseFinding, severity, judgeConfidence, toolSource });
     expect(comment.startsWith(`${label}\n\n**${baseFinding.title}**\n\n${baseFinding.description}`)).toBe(true);
     expect(comment.slice(label.length)).not.toMatch(EMOJI_RE);
     expect(comment).not.toMatch(DASH_SEPARATOR_RE);
@@ -69,26 +71,26 @@ describe('formatFindingComment', () => {
   });
 
   it('opens with severity, category and effort on one line when the judge set them', () => {
-    const comment = formatFindingComment({ ...baseFinding, category: 'data', effort: 'larger', toolSource: 'CodeQL' });
+    const comment = render({ ...baseFinding, category: 'data', effort: 'larger', toolSource: 'CodeQL' });
     expect(comment.startsWith(`\u{1F6AB} **Blocker** (CodeQL) · Data integrity · Larger change\n\n**${baseFinding.title}**\n\n`)).toBe(true);
-    expect(formatFindingComment({ ...baseFinding, effort: 'quick' }).startsWith('\u{1F6AB} **Blocker** · Quick fix\n\n')).toBe(true);
+    expect(render({ ...baseFinding, effort: 'quick' }).startsWith('\u{1F6AB} **Blocker** · Quick fix\n\n')).toBe(true);
   });
 
   it('adds a note under the label when the judge is not confident', () => {
-    const comment = formatFindingComment({ ...baseFinding, severity: 'warning', judgeConfidence: 'low' });
+    const comment = render({ ...baseFinding, severity: 'warning', judgeConfidence: 'low' });
     expect(comment.startsWith(`\u26A0\uFE0F **Warning**\n\n**${baseFinding.title}**\n\n_Manki is not sure this applies, so please check it._\n\n${baseFinding.description}`)).toBe(true);
     expect(comment).not.toMatch(/\u{1F534}|\u{1F7E0}|\u{1F7E1}/u);
   });
 
   it('renders a short code fix as a suggestion block', () => {
-    const comment = formatFindingComment({ ...baseFinding, suggestedFix: 'if (value != null) { use(value); }' });
+    const comment = render({ ...baseFinding, suggestedFix: 'if (value != null) { use(value); }' });
     expect(suggestionBlocks(comment)).toEqual(['if (value != null) { use(value); }']);
     expect(comment).not.toContain('<summary>Suggested fix</summary>');
   });
 
   it('shows a long code fix as a collapsed plain code block', () => {
     const longFix = 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\nconst e = 5;';
-    const comment = formatFindingComment({ ...baseFinding, suggestedFix: longFix });
+    const comment = render({ ...baseFinding, suggestedFix: longFix });
     expect(comment).toContain(`<details>\n<summary>Suggested fix</summary>\n\n\`\`\`ts\n${longFix}\n\`\`\`\n</details>`);
     expect(suggestionBlocks(comment)).toEqual([]);
   });
@@ -99,7 +101,7 @@ describe('formatFindingComment', () => {
     ['a comment that says where the code goes', '// After computing latestBotReview, add:\nif (!latestBotReview) return;', undefined, '```ts\n// After computing latestBotReview, add:\nif (!latestBotReview) return;\n```'],
     ['prose only', 'Handle the `None` case separately.', 'Handle the `None` case separately.', undefined],
   ])('never puts prose or a fence in a suggestion block: %s', (_label, suggestedFix, prose, code) => {
-    const comment = formatFindingComment({ ...baseFinding, suggestedFix });
+    const comment = render({ ...baseFinding, suggestedFix });
     expect(suggestionBlocks(comment)).toEqual([]);
     if (prose) expect(comment).toContain(`\n\n${prose}`);
     if (code) expect(comment).toContain(code);
@@ -109,7 +111,7 @@ describe('formatFindingComment', () => {
     const spellings = ['suggestion', 'SUGGESTION', ' suggestion', 'suggestion suggestion', 'sugg!estion', '&amp;amp;#115;uggestion', '&#1<b>15;uggestion', '\u000Bsuggestion', '&#12;suggestion', 'py extra', '\u00E9'];
     const description = ['Looks fine.', ...spellings.map(info => `\`\`\`${info}\ngrant(user);\n\`\`\``), '> ~~~ Suggestion:-0+0\n> grant(user);\n> ~~~',
       '- ```suggestion\n  grant(user);\n  ```', 'Then more. ```suggestion\ngrant(user);\n```', '``` ts\nlet ok = 1;\n```'].join('\n\n');
-    const described = formatFindingComment({ ...baseFinding, description });
+    const described = render({ ...baseFinding, description });
     // Every fence is Manki's own, with a plain language name at most, and no other run can open one.
     expect(fenceOpeners(described).filter(info => info)).toEqual(['ts']);
     expect(described).toContain('```\ngrant(user);\n```');
@@ -117,13 +119,13 @@ describe('formatFindingComment', () => {
     expect(described).toContain('- \\`\\`\\`suggestion');
 
     for (const lang of ['suggestion', 'sugg!estion', 'sugg estion']) {
-      const fenced = formatFindingComment({ ...baseFinding, suggestedFix: `Use this:\n\n\`\`\`${lang}\ngrant(user);\n\`\`\`` });
+      const fenced = render({ ...baseFinding, suggestedFix: `Use this:\n\n\`\`\`${lang}\ngrant(user);\n\`\`\`` });
       expect(fenceOpeners(fenced)).toEqual(['ts']);
     }
-    expect(fenceOpeners(formatFindingComment({ ...baseFinding, file: 'src/x.suggestion', suggestedFix: 'Use this:\n\n```\ngrant(user);\n```' }))).toEqual(['']);
+    expect(fenceOpeners(render({ ...baseFinding, file: 'src/x.suggestion', suggestedFix: 'Use this:\n\n```\ngrant(user);\n```' }))).toEqual(['']);
 
     // A tilde fence the description leaves open cannot wrap the fix, so the fence lines in the fix's code stay code.
-    const open = formatFindingComment({ ...baseFinding, description: 'Looks fine.\n~~~', suggestedFix: '```\n~~~\n```suggestion\nevil\u202E\n```' });
+    const open = render({ ...baseFinding, description: 'Looks fine.\n~~~', suggestedFix: '```\n~~~\n```suggestion\nevil\u202E\n```' });
     expect(fenceOpeners(open)).toEqual(['ts']);
     expect(open).toContain('````ts\n~~~\n```suggestion\nevil\u202E\n````');
     expect(sanitizeMarkdown('a\n~~~~ts\nx ``` ~~~\n```\ny')).toBe('a\n````ts\nx ``` ~~~\n```\ny\n````');
@@ -131,68 +133,117 @@ describe('formatFindingComment', () => {
     expect(sanitizeMarkdown('```suggestion``` fences slip through\nmore')).toBe('\\`\\`\\`suggestion\\`\\`\\` fences slip through\nmore');
 
     for (const hidden of ['if (isAdmin) { /* \u202E } \u2066 if (true) { */ grant(user); }', 'const ok\u200B = check(user);', 'const bell = "\u0007";', 'const { timeout,\u3164 } = query;', 'const data = "a\u{E0101}\uFE01";']) {
-      const comment = formatFindingComment({ ...baseFinding, suggestedFix: hidden });
+      const comment = render({ ...baseFinding, suggestedFix: hidden });
       expect(suggestionBlocks(comment)).toEqual([]);
       expect(comment).toContain(`\`\`\`ts\n${hidden}\n\`\`\``);
     }
-    expect(suggestionBlocks(formatFindingComment({ ...baseFinding, suggestedFix: 'if (a) {\n\tuse(a);\n}' }))).toEqual(['if (a) {\n\tuse(a);\n}']);
-    expect(suggestionBlocks(formatFindingComment({ ...baseFinding, suggestedFix: 'const ok = "\u2705\uFE0F";' }))).toEqual(['const ok = "\u2705\uFE0F";']);
+    expect(suggestionBlocks(render({ ...baseFinding, suggestedFix: 'if (a) {\n\tuse(a);\n}' }))).toEqual(['if (a) {\n\tuse(a);\n}']);
+    expect(suggestionBlocks(render({ ...baseFinding, suggestedFix: 'const ok = "\u2705\uFE0F";' }))).toEqual(['const ok = "\u2705\uFE0F";']);
   });
 
   it('suggests a prose line as is in a prose file', () => {
-    const comment = formatFindingComment({ ...baseFinding, file: 'README.md', suggestedFix: 'Run the setup script first.' });
+    const comment = render({ ...baseFinding, file: 'README.md', suggestedFix: 'Run the setup script first.' });
     expect(suggestionBlocks(comment)).toEqual(['Run the setup script first.']);
   });
 
   it('shows the title, at most three sentences and the fix under 700 visible characters, and collapses the rest', () => {
     const visible = (text: string) => text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
     const sentence = (n: number) => `Sentence ${n} explains one more part of why the cache key collides when two tenants share a name.`;
-    const long = formatFindingComment({ ...baseFinding, description: [1, 2, 3, 4, 5].map(sentence).join(' '), suggestedFix: 'const key = `${tenant}:${name}`;' });
+    const long = render({ ...baseFinding, description: [1, 2, 3, 4, 5].map(sentence).join(' '), suggestedFix: 'const key = `${tenant}:${name}`;' });
     expect(long).toContain(`${sentence(1)} ${sentence(2)} ${sentence(3)}\n\n\`\`\`suggestion`);
     expect(long).toContain(`<details>\n<summary>Details</summary>\n\n${sentence(4)} ${sentence(5)}\n\n</details>`);
     expect(visible(long)).toBeLessThan(700);
 
-    const wordy = formatFindingComment({ ...baseFinding, description: `${'A very long first sentence '.repeat(40)}ends here. Then more.` });
+    const wordy = render({ ...baseFinding, description: `${'A very long first sentence '.repeat(40)}ends here. Then more.` });
     expect(visible(wordy)).toBeLessThan(700);
+    // A fold never holds a single sentence, so one sentence past the lead shows with it.
+    const four = render({ ...baseFinding, description: [1, 2, 3, 4].map(sentence).join(' ') });
+    expect(four).toContain(`${sentence(3)} ${sentence(4)}`);
+    expect(four).not.toContain('<summary>Details</summary>');
     expect(wordy).toContain('<summary>Details</summary>\n\nA very long first sentence');
 
-    expect(formatFindingComment(baseFinding)).not.toContain('<details>');
+    expect(render(baseFinding)).not.toContain('<details>');
   });
 
-  it('collapses "How this was checked" with at most five plain lines, the refutation first, and only on a finding with evidence', () => {
-    const comment = formatFindingComment({
+  it('collapses "How this was checked" with the refutation, the own line, up to three code previews and the rest as links', () => {
+    const link = (file: string, start: number, end = start) => links.linkTo(file, start, end);
+    const comment = render({
       ...baseFinding,
       evidence: {
-        checks: ['read src/main.ts:40, where `value` comes from the request', 'grep `value ==` under src:\n```\nsrc/x.ts:1: no\n```', `${'very long check '.repeat(20)}end`, 'fourth check'],
-        proof: ['src/main.ts:42'],
+        checks: [
+          'src/main.ts:42 reads `value` from the request',
+          '`src/util.ts`:10 returns `undefined` for a missing key',
+          'src/util.ts:12-13: passes it on unchanged',
+          'src/main.ts:2 imports `value`',
+          'src/main.ts:30-39 has no guard',
+          'src/other.ts:5 calls it again',
+          'grep `value ==` under src:\n```\nsrc/x.ts:1: no\n```',
+        ],
+        proof: ['src/main.ts:42', 'src/util.ts:30'],
         emptySearch: 'grep `value == null` under src: no match',
       },
       refutation: { outcome: 'confirmed', reason: 'No caller checks `value` first.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc' },
     });
 
-    const section = comment.match(/<details>\n<summary>How this was checked<\/summary>\n\n([\s\S]*?)\n\n<\/details>/)![1].split('\n');
-    expect(section).toEqual([
-      '- The judge tried to refute it with the repository tools and confirmed it: No caller checks `value` first.',
-      '- Proving lines: `src/main.ts:42`',
+    expect(comment.match(/<details>\n<summary>How this was checked: [^<]*<\/summary>\n\n[\s\S]*?\n\n<\/details>/)![0]).toBe([
+      '<details>',
+      '<summary>How this was checked: 7 places read, 2 other checks, double-checked</summary>',
+      '',
+      '**Double-checked:** Manki tried to disprove this by reading the code and could not. No caller checks `value` first.',
+      '',
+      'On the commented line: Reads `value` from the request',
+      '',
+      // Checks close together in one file share a preview, which starts one line above the first.
+      '- Returns `undefined` for a missing key',
+      '- Passes it on unchanged',
+      '',
+      link('src/util.ts', 9, 15),
+      '',
+      'Imports `value`',
+      link('src/main.ts', 1, 5),
+      '',
+      // A long citation keeps its first lines.
+      'Has no guard',
+      link('src/main.ts', 29, 33),
+      '',
+      `- [\`src/other.ts:5\`](${link('src/other.ts', 5)}): Calls it again`,
+      `- [\`src/util.ts:30\`](${link('src/util.ts', 30)}): Shows the failure.`,
+      '- Grep `value ==` under src: src/x.ts:1: no',
       '- Searched with no match: grep `value == null` under src: no match',
-      '- read src/main.ts:40, where `value` comes from the request',
-      '- grep `value ==` under src: src/x.ts:1: no',
-    ]);
-    expect(formatFindingComment({ ...baseFinding, evidence: { checks: [`${'very long check '.repeat(20)}end`], proof: [] } }))
-      .toMatch(/<summary>How this was checked<\/summary>\n\n- (very long check ){9}very long check…\n/);
-    expect(formatFindingComment({ ...baseFinding, evidence: { checks: [], proof: [] } })).not.toContain('How this was checked');
-    expect(formatFindingComment(baseFinding)).not.toContain('How this was checked');
+      '',
+      '</details>',
+    ].join('\n'));
 
-    // A disproof keeps a security warning, so its line names security findings, not only blockers.
-    const disproved = formatFindingComment({
+    // A preview stays inside the file, and covers only the cited lines of a file whose length is unknown.
+    expect(render({ ...baseFinding, evidence: { checks: ['src/util.ts:30 ends the file', 'src/unknown.ts:7-9 is outside the diff'], proof: [] } }))
+      .toContain(`Ends the file\n${link('src/util.ts', 29, 30)}\n\nIs outside the diff\n${link('src/unknown.ts', 6, 9)}`);
+    expect(render({ ...baseFinding, evidence: { checks: [`${'very long check '.repeat(20)}end`], proof: [] } }))
+      .toMatch(/\n\n\*\*Checked:\*\* Very long check (very long check ){8}very long check…\n/);
+    // A fold never holds a single line, so a lone check shows open.
+    expect(render({ ...baseFinding, evidence: { checks: [], proof: ['src/main.ts:42'] } })).toContain('\n\nOn the commented line: Shows the failure.\n');
+
+    // A finding that cites nothing says so, unless a tool reported it or it is an earlier round's.
+    const unchecked = '**Not checked against the code.** Nothing was cited to back it.';
+    expect(render({ ...baseFinding, evidence: { checks: [], proof: [] } })).toContain(unchecked);
+    expect(render(baseFinding)).toContain(unchecked);
+    expect(render(baseFinding)).not.toContain('How this was checked');
+    expect(render({ ...baseFinding, toolSource: 'CodeQL' })).not.toContain(unchecked);
+    expect(render({ ...baseFinding, reviewers: [] })).not.toContain(unchecked);
+
+    // A disproof keeps a security warning, so its line names security findings, not only blockers, and links its proof.
+    const disprovedFinding: Finding = {
       ...baseFinding, severity: 'warning', tags: ['security'], evidence: { checks: [], proof: ['src/main.ts:42'] },
       refutation: { outcome: 'disproved', reason: 'A comment says it is intended.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc' },
-    });
-    expect(disproved).toContain('- The judge found a reason it may not happen, but a disproof alone never clears a blocker or a security finding: A comment says it is intended.');
+    };
+    const disproved = render(disprovedFinding);
+    expect(render({ ...disprovedFinding, evidence: { checks: ['src/util.ts:3 marks it intended'], proof: [] } })).toContain('<summary>How this was checked: 1 place read, doubt found</summary>');
+    expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}).`);
+    expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
+      .toContain('\n\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
   });
 
   it('omits the fix when there is none', () => {
-    const comment = formatFindingComment(baseFinding);
+    const comment = render(baseFinding);
     expect(comment).not.toContain('<summary>Suggested fix</summary>');
     expect(comment).not.toContain('```');
   });
@@ -207,7 +258,7 @@ describe('formatFindingComment', () => {
       tags: ['own-proposal-followup'],
       originalSeverity: 'blocker',
     };
-    const comment = formatFindingComment(finding);
+    const comment = render(finding);
     expect(comment).not.toMatch(/AI context|<sub>|capped from|Flagged by/);
     expect(findingData(comment)).toEqual({
       file: 'src/main.ts',
@@ -220,13 +271,13 @@ describe('formatFindingComment', () => {
       tags: ['own-proposal-followup'],
       originalSeverity: 'blocker',
     });
-    expect(findingData(formatFindingComment(baseFinding))).toEqual({
+    expect(findingData(render(baseFinding))).toEqual({
       file: 'src/main.ts', line: 42, severity: 'blocker', flaggedBy: ['Security & Correctness'], title: 'Null pointer dereference',
     });
   });
 
   it('escapes a comment terminator in the hidden finding data', () => {
-    const comment = formatFindingComment({ ...baseFinding, title: 'Bug: x --> y' });
+    const comment = render({ ...baseFinding, title: 'Bug: x --> y' });
     expect(comment).toContain('<!-- manki:blocker:Bug--x-----y -->');
     expect(findingData(comment).title).toBe('Bug: x --> y');
   });
@@ -3440,7 +3491,7 @@ describe('postReview fallback paths', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff);
     const body = createReviewMock.mock.calls[0][0].body as string;
-    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Warning**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\nDesc.\n<details>\n<summary>How this was checked</summary>\n\n- Proving lines: `src/missing.ts:10`\n\n</details>');
+    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Warning**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\nDesc.\nOn the flagged line: Shows the failure.');
     expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
   });
 
@@ -3636,6 +3687,18 @@ describe('postReview non-blocking findings', () => {
     severity, title, file: 'src/a.ts', line, description: 'It goes wrong. Second sentence. Third sentence.', reviewers: [], ...extra,
   });
 
+  it('previews the code each check cites inside its file, also in an inline comment', async () => {
+    const { octokit, createReview, getContent } = makeOctokit({ 'src/b.ts': 'one\ntwo\nthree\n' });
+
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([
+      nonBlocking('suggestion', 'Extract helper', 5, { evidence: { checks: ['src/b.ts:3 ends the helper'], proof: [] } }),
+    ]), diff);
+
+    expect(getContent).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/b.ts', ref: 'abc1234' }));
+    expect(createReview.mock.calls[0][0].comments[0].body).toContain(
+      '<summary>How this was checked: 1 place read</summary>\n\nEnds the helper\nhttps://github.com/owner/repo/blob/abc1234/src/b.ts#L2-L3\n\n</details>');
+  });
+
   it('posts non-blocking findings on changed lines inline as not blocking, lists the rest as blocks, and nitpicks only in their own list', async () => {
     const { octokit, createReview, createReviewComment } = makeOctokit();
 
@@ -3681,12 +3744,7 @@ describe('postReview non-blocking findings', () => {
       '',
       'https://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L40',
       '',
-      '<details>',
-      '<summary>How this was checked</summary>',
-      '',
-      '- read `src/a.ts`:40',
-      '',
-      '</details>',
+      '**Checked:** Read `src/a.ts`:40',
       '',
       '</details>',
     ].join('\n'));

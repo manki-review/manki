@@ -32,7 +32,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
 import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
-import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
+import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
@@ -2013,9 +2013,9 @@ describe('runReview', () => {
         severity: 'blocker', file: 'a.ts', line: 1, refutation: expect.objectContaining({ outcome: 'disproved', reason: 'Every write clears the cache first.' }),
       })]);
       expect(refuted.verdictTrace?.survivingBlockers).toEqual([expect.objectContaining({ file: 'a.ts', title: 'The cache is never invalidated.' })]);
-      const comment = formatFindingComment(refuted.findings[0]);
-      expect(comment).toMatch(/<summary>How this was checked<\/summary>\n\n- [^\n]*Every write clears the cache first\./);
-      expect(comment).toContain('a.ts:1 builds the cache');
+      const comment = formatFindingComment(refuted.findings[0], TEST_LINKS);
+      expect(comment).toMatch(/<summary>How this was checked: 1 place read, doubt found<\/summary>\n\n\*\*Doubt found:\*\* [^\n]*Every write clears the cache first\./);
+      expect(comment).toContain('On the commented line: Builds the cache');
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

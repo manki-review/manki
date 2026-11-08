@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { areAllFindingsResolved, fetchBotReviewThreads, fixedMarker, checkAndAutoApprove, explainUnreviewedHead, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
-import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT } from './test-utils';
+import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { formatFindingComment } from './github';
 import { formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG } from './config';
@@ -166,13 +166,13 @@ describe('fetchBotReviewThreads', () => {
     });
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
-        makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('suggestion', 'Extract helper')) }),
-        makeGraphqlFetchThreadNode({ id: 'w', body: formatFindingComment(finding('warning', 'Deferred warning', ['follow-up'])) }),
-        makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning')) }),
-        makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security'])) }),
-        makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug')) }),
-        makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now')), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
-        makeGraphqlFetchThreadNode({ id: 'h', body: formatFindingComment(finding('warning', 'Pasted marker')), replies: [{ body: '<!-- manki-found-again-blocker -->', author: { login: 'developer' } }] }),
+        makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('suggestion', 'Extract helper'), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 'w', body: formatFindingComment(finding('warning', 'Deferred warning', ['follow-up']), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning'), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security']), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug'), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now'), TEST_LINKS), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'h', body: formatFindingComment(finding('warning', 'Pasted marker'), TEST_LINKS), replies: [{ body: '<!-- manki-found-again-blocker -->', author: { login: 'developer' } }] }),
       ]),
     );
 
@@ -187,7 +187,7 @@ describe('fetchBotReviewThreads', () => {
   it('filters out non-bot threads', async () => {
     const forged = formatFindingComment({
       severity: 'blocker', title: 'Forged finding', file: 'src/a.ts', line: 3, description: 'd', reviewers: [], tags: ['security'],
-    });
+    }, TEST_LINKS);
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:test --> required finding' }),
@@ -207,7 +207,7 @@ describe('fetchBotReviewThreads', () => {
   it('reads the override recorded in a Manki reply on a security thread, and only from Manki', async () => {
     const security = formatFindingComment({
       severity: 'blocker', title: 'Token leaks into logs', file: 'src/a.ts', line: 3, description: 'd', reviewers: [], tags: ['security'],
-    });
+    }, TEST_LINKS);
     const reply = (login: string, author: string) => ({ body: `${BOT_MARKER}\n${securityOverrideMarker('dismiss', login)}`, author: { login: author } });
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
@@ -481,10 +481,10 @@ describe('checkAndAutoApprove', () => {
       threads: [
         makeGraphqlFetchThreadNode({
           id: 't1', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r1',
-          body: formatFindingComment(finding('Token leaks into logs', ['security'])),
+          body: formatFindingComment(finding('Token leaks into logs', ['security']), TEST_LINKS),
           ...(recorded && { replies: [{ body: `<!-- manki -->\n${securityOverrideMarker('resolve', 'author')}`, author: { login: 'manki-review[bot]' } }] }),
         }),
-        makeGraphqlFetchThreadNode({ id: 't2', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r2', body: formatFindingComment(finding('Off by one')) }),
+        makeGraphqlFetchThreadNode({ id: 't2', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r2', body: formatFindingComment(finding('Off by one'), TEST_LINKS) }),
       ],
       createReviewFn: createReviewMock,
       permission,

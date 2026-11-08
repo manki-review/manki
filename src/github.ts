@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
@@ -1060,10 +1060,10 @@ function formatFindingDetail(finding: Finding): string[] {
 }
 
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
-function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
+function formatFindingBlock(finding: Finding, links: CodeLinks): string {
   const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
-  if (finding.file) lines.push(`[${inlineCode(findingLocation(finding))}](${linkTo(finding.file, finding.line)})`);
-  return [...lines, ...formatFindingDetail(finding), ...checksSection(finding)].join('\n');
+  if (finding.file) lines.push(`[${inlineCode(findingLocation(finding))}](${links.linkTo(finding.file, finding.line)})`);
+  return [...lines, ...formatFindingDetail(finding), ...checksSection(finding, links, 'flagged')].join('\n');
 }
 
 /**
@@ -1085,14 +1085,15 @@ const PREVIEW_CONTEXT = 2;
  * the location. Inside are what goes wrong, the fix, and a permalink to the flagged lines, which GitHub shows as code.
  * `lineCounts` keeps the permalink inside the file, since GitHub shows a range past the end as a bare link.
  */
-function formatFindingFold(finding: Finding, linkTo: LineLink, lineCounts: ReadonlyMap<string, number>): string {
+function formatFindingFold(finding: Finding, links: CodeLinks): string {
+  const { linkTo, lineCounts } = links;
   const location = finding.file ? ` · <a href="${linkTo(finding.file, finding.line)}"><code>${inlineHtml(findingLocation(finding))}</code></a>` : '';
   const summary = `<summary>${SEVERITY_EMOJI[finding.severity]} <b>${inlineHtml(sanitizeMarkdown(finding.title))}</b><br><sub>${inlineHtml(formatFindingHeader(finding))}${location}</sub></summary>`;
   const last = lineCounts.get(finding.file);
   const preview = finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
     ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))]
     : [];
-  return `<details>\n${summary}\n\n${[...formatFindingDetail(finding), ...preview, ...checksSection(finding)].join('\n\n')}\n\n</details>`;
+  return `<details>\n${summary}\n\n${[...formatFindingDetail(finding), ...preview, ...checksSection(finding, links, 'flagged')].join('\n\n')}\n\n</details>`;
 }
 
 /** Returns one list of the review body: a heading, an optional intro, then one fold per finding. */
@@ -1218,8 +1219,9 @@ export async function postReview(
   const nonBlocking: Finding[] = [];
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
   const followUps = agreedFollowUps(existingThreads);
-  const listedFiles = new Set([...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file));
-  const lineCounts = await fetchLineCounts(octokit, owner, repo, commitSha, [...listedFiles]);
+  const listedFiles = [...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file);
+  const lineCounts = await fetchLineCounts(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...result.findings.flatMap(citedFiles)])]);
+  const links: CodeLinks = { linkTo, lineCounts };
 
   for (const f of result.findings) {
     if (!isBlockingFinding(f)) {
@@ -1228,7 +1230,7 @@ export async function postReview(
       } else if (hasOpenThread(f, existingThreads)) {
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
       } else if (f.origin === 'reviewed') {
-        previouslyMissed.push(formatFindingFold(f, linkTo, lineCounts));
+        previouslyMissed.push(formatFindingFold(f, links));
       } else {
         nonBlocking.push(f);
       }
@@ -1243,23 +1245,23 @@ export async function postReview(
       carriedThreadIds.add(threadId);
       if (!result.needsHuman?.blockers.some(b => b.threadId === threadId)) {
         // The finding shows under the link, so a wrong `sameAs` link still shows the defect. The indent keeps it in the list item.
-        stillOpen.push(`${formatTraceEntry(openThread)}\n\n${`This round names it as:\n\n${formatFindingBlock(f, linkTo)}`.replace(/^(?=.)/gm, '  ')}`);
+        stillOpen.push(`${formatTraceEntry(openThread)}\n\n${`This round names it as:\n\n${formatFindingBlock(f, links)}`.replace(/^(?=.)/gm, '  ')}`);
       }
       continue;
     }
 
     const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
     if (!f.file || (f.line <= 0 && !diffFile)) {
-      generalFindings.push(formatFindingBlock(f, linkTo));
+      generalFindings.push(formatFindingBlock(f, links));
       continue;
     }
 
-    const commentBody = formatFindingComment(f);
+    const commentBody = formatFindingComment(f, links);
 
     if (!diff) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
     } else if (!diffFile) {
-      invalidComments.push(formatFindingBlock(f, linkTo));
+      invalidComments.push(formatFindingBlock(f, links));
     } else if (f.line > 0 && isLineInDiff(diffFile, f.line)) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
     } else if (hasOpenThread(f, existingThreads)) {
@@ -1275,9 +1277,9 @@ export async function postReview(
     .slice(0, MAX_NON_BLOCKING_INLINE));
   for (const f of nonBlocking) {
     if (inline.has(f)) {
-      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f) });
+      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
     } else {
-      (f.severity === 'nitpick' ? nitpicks : smallerFindings).push(formatFindingFold(f, linkTo, lineCounts));
+      (f.severity === 'nitpick' ? nitpicks : smallerFindings).push(formatFindingFold(f, links));
     }
   }
 
@@ -1317,7 +1319,7 @@ export async function postReview(
     if (smaller) {
       b += `\n\n${smaller}`;
     }
-    const agreed = formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, linkTo, lineCounts)), 'Agreed in their threads as later work. None of them blocks.');
+    const agreed = formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.');
     if (agreed) {
       b += `\n\n${agreed}`;
     }
@@ -1354,7 +1356,7 @@ export async function postReview(
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
-    const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, linkTo)).join('\n\n')}`, codeTokens);
+    const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links)).join('\n\n')}`, codeTokens);
     // Truncate the existing body, never the blocking findings appended to it or the round record.
     const room = REVIEW_BODY_BUDGET - section.length - record.length;
     if (room <= 0) {
@@ -1837,15 +1839,24 @@ function commentHeadline(body: string): string {
   return body.split('\n\n', 2).join(' ');
 }
 
-const MAX_CHECK_LINES = 5;
 const MAX_CHECK_CHARS = 160;
+/** Code previews in a "How this was checked" fold. Further checks are listed as links. */
+const MAX_CHECK_PREVIEWS = 3;
+/** Lines a preview shows for one check, from the line above the cited ones. A longer citation keeps its first lines. */
+const CHECK_PREVIEW_LINES = 5;
+/** Lines a preview shows for checks close together in one file, which share it. */
+const SHARED_PREVIEW_LINES = 8;
+// A `path:line` or `path:start-end` at the start of a check, with the path in backticks or not.
+const CHECK_LOCATION_RE = /^`?([^\s`:]+)`?:(\d+)(?:-(\d+))?`?(?![\w-])[\s:,;.]*/;
 
 const REFUTATION_LINE: Record<RefutationOutcome, string> = {
-  confirmed: 'The judge tried to refute it with the repository tools and confirmed it',
-  unsettled: 'The judge tried to refute it with the repository tools and could not settle it',
+  confirmed: '**Double-checked:** Manki tried to disprove this by reading the code and could not.',
+  unsettled: '**Not settled:** Manki tried to disprove this by reading the code and could not decide.',
   // A posted disproved finding is a blocker or a security finding, since a disproof drops any other.
-  disproved: 'The judge found a reason it may not happen, but a disproof alone never clears a blocker or a security finding',
+  disproved: '**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself.',
 };
+
+const REFUTATION_SUMMARY: Record<RefutationOutcome, string> = { confirmed: 'double-checked', unsettled: 'not settled', disproved: 'doubt found' };
 
 /** Shortens model text to one plain line, so no raw tool output or code block reaches the comment. */
 function oneLine(text: string): string {
@@ -1853,37 +1864,139 @@ function oneLine(text: string): string {
   return line.length <= MAX_CHECK_CHARS ? line : `${line.slice(0, MAX_CHECK_CHARS - 1).trimEnd()}…`;
 }
 
+/** Lines `start` to `end` of `file`. */
+interface CodeRange { file: string; start: number; end: number }
+
+/** One check behind a finding: what it showed, and the lines it cites when it starts with a location. */
+interface Check { text: string; at?: CodeRange; proofOnly?: boolean }
+
+/** Links a finding's checks to the reviewed commit. `lineCounts` keeps a preview inside its file. */
+interface CodeLinks { linkTo: LineLink; lineCounts: ReadonlyMap<string, number> }
+
+function parseCheck(entry: string): Check | undefined {
+  const located = entry.match(CHECK_LOCATION_RE);
+  const start = located ? Number(located[2]) : 0;
+  const end = located?.[3] ? Number(located[3]) : start;
+  const rest = oneLine(located && start > 0 && end >= start ? entry.slice(located[0].length) : entry);
+  const text = rest ? `${rest[0].toUpperCase()}${rest.slice(1)}` : '';
+  if (!located || start <= 0 || end < start) return text ? { text } : undefined;
+  return { text: text || 'Shows the failure.', at: { file: sanitizeFilePath(located[1]), start, end } };
+}
+
+const overlaps = (a: CodeRange, b: CodeRange): boolean => a.file === b.file && a.start <= b.end && b.start <= a.end;
+
+/** Returns the reviewer's checks, then each proving line no check cites, then the search that came back empty. */
+function findingChecks({ evidence }: Finding): Check[] {
+  const checks = (evidence?.checks ?? []).flatMap(entry => parseCheck(entry) ?? []);
+  for (const proof of evidence?.proof ?? []) {
+    const check = parseCheck(proof);
+    if (check?.at && !checks.some(c => c.at && overlaps(c.at, check.at!))) checks.push({ text: 'Shows the failure.', at: check.at, proofOnly: true });
+  }
+  if (evidence?.emptySearch) checks.push({ text: `Searched with no match: ${oneLine(evidence.emptySearch)}` });
+  return checks;
+}
+
+/** Returns the files a finding's checks cite, whose line counts keep its previews inside them. */
+function citedFiles(finding: Finding): string[] {
+  return findingChecks(finding).flatMap(c => c.at?.file ?? []);
+}
+
+/** The lines a preview of `at` shows: from the line above it, at most `CHECK_PREVIEW_LINES`, inside the file. */
+function previewRange(at: CodeRange, lineCounts: ReadonlyMap<string, number>): CodeRange {
+  const start = Math.max(1, at.start - 1);
+  const last = lineCounts.get(at.file);
+  const end = Math.min(start + CHECK_PREVIEW_LINES - 1, last ?? at.end);
+  return { file: at.file, start, end: Math.max(start, end) };
+}
+
+/** Groups located checks into previews. Checks in one file share a preview when theirs fit in `SHARED_PREVIEW_LINES`. */
+function checkPreviews(checks: Check[], lineCounts: ReadonlyMap<string, number>): { range: CodeRange; checks: Check[] }[] {
+  const previews: { range: CodeRange; checks: Check[] }[] = [];
+  for (const check of checks) {
+    const range = previewRange(check.at!, lineCounts);
+    const shared = previews.find(p => p.range.file === range.file
+      && Math.max(p.range.end, range.end) - Math.min(p.range.start, range.start) < SHARED_PREVIEW_LINES);
+    if (shared) {
+      shared.range = { file: range.file, start: Math.min(shared.range.start, range.start), end: Math.max(shared.range.end, range.end) };
+      shared.checks.push(check);
+    } else {
+      previews.push({ range, checks: [check] });
+    }
+  }
+  for (const preview of previews) preview.checks.sort((a, b) => a.at!.start - b.at!.start);
+  return previews;
+}
+
+function rangeLabel({ file, start, end }: CodeRange): string {
+  return `${file}:${start}${end > start ? `-${end}` : ''}`;
+}
+
+function linkedRange(range: CodeRange, linkTo: LineLink): string {
+  return `[${inlineCode(rangeLabel(range))}](${linkTo(range.file, range.start, range.end)})`;
+}
+
+function refutationLine({ outcome, reason, proof }: Refutation, linkTo: LineLink): string {
+  const cited = outcome === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p)?.at ?? []);
+  return [REFUTATION_LINE[outcome], reason ? oneLine(reason) : '', cited.length ? `See ${cited.map(r => linkedRange(r, linkTo)).join(', ')}.` : '']
+    .filter(Boolean).join(' ');
+}
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
+
 /**
- * Returns the checks behind a finding, at most `MAX_CHECK_LINES` one-line entries: the judge's refutation first, then
- * the proving lines and the reviewer's own checks. A finding nobody checked gets none.
+ * Returns the collapsed "How this was checked" section of `finding`. Its summary counts the places read and names
+ * the refuter's outcome. Inside are that outcome, the check on the finding's own line, a code preview with a sentence
+ * for up to `MAX_CHECK_PREVIEWS` other places, and the rest as links. A finding that cites nothing gets an open line
+ * that says so, unless a tool reported it or it is an earlier round's finding.
  */
-function howThisWasChecked({ evidence, refutation }: Finding): string[] {
-  const lines = [
-    ...(refutation ? [`${REFUTATION_LINE[refutation.outcome]}${refutation.reason ? `: ${oneLine(refutation.reason)}` : '.'}`] : []),
-    ...(evidence?.proof.length ? [`Proving lines: ${evidence.proof.map(p => `\`${sanitizeFilePath(p)}\``).join(', ')}`] : []),
-    ...(evidence?.emptySearch ? [`Searched with no match: ${oneLine(evidence.emptySearch)}`] : []),
-    ...(evidence?.checks ?? []).map(oneLine).filter(line => line.length > 0),
+function checksSection(finding: Finding, { linkTo, lineCounts }: CodeLinks, ownLine: string): string[] {
+  const checks = findingChecks(finding);
+  const { refutation } = finding;
+  if (checks.length === 0 && !refutation) {
+    return finding.toolSource || finding.reviewers.length === 0 ? [] : ['**Not checked against the code.** Nothing was cited to back it.'];
+  }
+  const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
+  // The comment already sits on its own line, so a bare proving line there shows only when nothing else does.
+  const ownChecks = checks.filter(isOwn);
+  const own = ownChecks.filter(c => !c.proofOnly).length > 0 || checks.length > ownChecks.length || refutation
+    ? ownChecks.filter(c => !c.proofOnly) : ownChecks;
+  const previews = checkPreviews(checks.filter(c => c.at && !isOwn(c)), lineCounts);
+  const listed = [...previews.slice(MAX_CHECK_PREVIEWS).flatMap(p => p.checks), ...checks.filter(c => !c.at)];
+  const shown = previews.slice(0, MAX_CHECK_PREVIEWS);
+  const parts = [
+    ...(refutation ? [refutationLine(refutation, linkTo)] : []),
+    ...(own.length ? [`On the ${ownLine} line: ${own.map(c => c.text).join(' ')}`] : []),
+    ...shown.map(({ range, checks: shared }) => {
+      const said = shared.length === 1 ? shared[0].text : `${shared.map(c => `- ${c.text}`).join('\n')}\n`;
+      return `${said}\n${linkTo(range.file, range.start, range.end)}`;
+    }),
+    ...(listed.length ? [listed.map(c => `- ${c.at ? `${linkedRange(c.at, linkTo)}: ` : ''}${c.text}`).join('\n')] : []),
   ];
-  return lines.slice(0, MAX_CHECK_LINES);
+  // A fold never holds a single line, so a lone one shows open.
+  if (parts.length === 1 && shown.length === 0 && !parts[0].includes('\n')) {
+    return [parts[0].startsWith('- ') ? `**Checked:** ${parts[0].slice(2)}` : parts[0]];
+  }
+  const read = checks.filter(c => c.at).length;
+  const other = checks.length - read;
+  const counts = [read && `${read} ${read === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check'), refutation && REFUTATION_SUMMARY[refutation.outcome]].filter(Boolean);
+  return [`<details>\n<summary>How this was checked: ${counts.join(', ')}</summary>\n\n${parts.join('\n\n')}\n\n</details>`];
 }
 
-/** Returns the collapsed "How this was checked" section of `finding`, or none when nobody checked it. */
-function checksSection(finding: Finding): string[] {
-  const checks = howThisWasChecked(finding);
-  return checks.length > 0 ? [`<details>\n<summary>How this was checked</summary>\n\n${checks.map(line => `- ${line}`).join('\n')}\n\n</details>`] : [];
-}
-
-function formatFindingComment(finding: Finding): string {
+function formatFindingComment(finding: Finding, links: CodeLinks): string {
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
   if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
   const fix = finding.suggestedFix?.trim() ? `\n\n${formatSuggestedFix(finding.suggestedFix, finding.file)}` : '';
-  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - visibleLength(fix));
-  const { lead, rest } = splitLead(sanitizeMarkdown(finding.description), 3, room);
-  comment += `${lead}${fix}`;
-  if (rest) {
+  const checks = checksSection(finding, links, 'commented');
+  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - visibleLength(fix) - visibleLength(checks.join('\n\n')));
+  const description = sanitizeMarkdown(finding.description);
+  const { lead, rest } = splitLead(description, 3, room);
+  // A fold never holds a single sentence, so one sentence past the lead shows with it.
+  const folds = rest.includes('\n') || rest.split(/(?<=[.!?])\s+/).length > 1;
+  comment += `${folds ? lead : description.trim()}${fix}`;
+  if (folds) {
     comment += `\n\n<details>\n<summary>Details</summary>\n\n${rest}\n\n</details>`;
   }
-  for (const section of checksSection(finding)) comment += `\n\n${section}`;
+  for (const section of checks) comment += `\n\n${section}`;
 
   const data: Record<string, unknown> = {
     file: finding.file,
@@ -2380,5 +2493,6 @@ async function postConfigErrorComment(
   }
 }
 
+export type { CodeLinks };
 export { APPROVED_LINE, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };
