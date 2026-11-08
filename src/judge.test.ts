@@ -1425,7 +1425,7 @@ describe('runJudgeAgent', () => {
     expect(result.findings.map(f => f.category)).toEqual(['security', undefined, undefined]);
   });
 
-  it('keeps a reviewer\'s pre-existing mark only when the judge keeps it and every merged reviewer made it', async () => {
+  it('keeps a reviewer\'s pre-existing mark only when the judge keeps it, and every merged copy is marked and off the diff', async () => {
     const old = 'The loop had no bound before this PR.';
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 'Old defects.',
@@ -1434,14 +1434,25 @@ describe('runJudgeAgent', () => {
         { id: 2, title: 'Caller breaks on null', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: false },
         { id: 3, title: 'Leaked handle', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
         { id: 4, title: 'Leaked handle again', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 3 },
+        { id: 5, title: 'Stale cache', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
+        { id: 6, title: 'Stale cache again', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 5 },
+        { id: 7, title: 'Old lock order', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
+        { id: 8, title: 'Old lock order again', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 7 },
       ],
     }) });
+    // The default diff changes lines 1-20 of src/index.ts.
+    const off = (line: number) => ({ line, evidence: { checks: [], proof: [] } });
     const input: JudgeInput = {
       findings: [
         makeFinding({ title: 'Unbounded retry', preExisting: old }),
         makeFinding({ title: 'Caller breaks on null', preExisting: old }),
         makeFinding({ title: 'Leaked handle', preExisting: old }),
         makeFinding({ title: 'Leaked handle again' }),
+        makeFinding({ title: 'Stale cache', preExisting: old, ...off(50) }),
+        // The folded copy sits on a changed line, so the merged finding is tied to this PR.
+        makeFinding({ title: 'Stale cache again', preExisting: old, ...off(12) }),
+        makeFinding({ title: 'Old lock order', preExisting: old, ...off(60) }),
+        makeFinding({ title: 'Old lock order again', preExisting: old, ...off(70) }),
       ],
       diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 2,
     };
@@ -1452,6 +1463,8 @@ describe('runJudgeAgent', () => {
       ['Unbounded retry', old],
       ['Caller breaks on null', undefined],
       ['Leaked handle', undefined],
+      ['Stale cache', undefined],
+      ['Old lock order', old],
     ]);
   });
 
