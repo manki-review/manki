@@ -851,6 +851,8 @@ export interface DashboardData {
   testNitSuppressedCount?: number;
   plannerDurationMs?: number;
   judgeDurationMs?: number;
+  /** Wall-clock time of the whole run, shown in the headline once it finished. */
+  totalDurationMs?: number;
   /** True when team selection fell back to the heuristic because the planner failed or timed out. Surfaces a one-line marker in the rendered summary so the broader team set is self-explanatory. */
   heuristicFallback?: boolean;
   /** The review class and group the round's readers came from, shown in the review header. */
@@ -1510,6 +1512,8 @@ export interface ReplyRecord {
 
 /** The round's LLM usage: totals over its calls, per stage and per model, and the calls themselves. */
 export interface RoundUsage extends RoundUsageStage {
+  /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
+  wallClockMs?: number;
   perStage?: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];

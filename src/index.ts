@@ -900,7 +900,7 @@ async function postUnreviewedRound(
   const result = { verdict: 'COMMENT' as const, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
   const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, undefined, undefined, { noVerdict: true });
   await replacePreviousReviews(target, progress, reviewId, 'APPROVED');
-  await updateProgressComment(octokit, owner, repo, commentId, dashboard, metadata, progressSettings(target, progress, 'up to date', { reviewed: true }));
+  await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: metadata.timing.totalMs }, metadata, progressSettings(target, progress, 'up to date', { reviewed: true }));
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
   return { conclusion: 'action_required', title: 'Not reviewed', summary };
 }
@@ -1274,7 +1274,7 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
   const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, undefined, undefined, { noVerdict: true });
   await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId, 'APPROVED', commitSha);
   dashboard.phase = 'complete';
-  await updateProgressComment(octokit, owner, repo, commentId, dashboard, undefined, progressSettings(run, run.progress, 'review incomplete'));
+  await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: Date.now() - run.startTime }, undefined, progressSettings(run, run.progress, 'review incomplete'));
   return outcomeReport('INCOMPLETE', result.summary);
 }
 
@@ -1444,7 +1444,7 @@ function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: stri
 }
 
 /** Marks the progress comment complete with the judge's decisions and the round's timing. */
-async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult): Promise<void> {
+async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult, totalDurationMs: number): Promise<void> {
   const { octokit, owner, repo, commentId, dashboard, config, models, startTime, parseEndTime } = run;
   const { result, reviewEndTime, judgeEndTime } = stage;
 
@@ -1501,6 +1501,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult)
   const completeDashboard: DashboardData = {
     ...dashboard,
     phase: 'complete',
+    totalDurationMs,
     ...(result.routing && { routing: result.routing }),
     keptCount: result.findings.length,
     droppedCount: judgeDroppedCount,
@@ -1747,6 +1748,7 @@ async function runFullReview(
     const buildContext = () => buildRoundContext(run, result, {
       plannerDurationMs: dashboard.plannerDurationMs,
       judgeDurationMs: stage.judgeEndTime - stage.reviewEndTime,
+      wallClockMs: reviewTimeMs,
     });
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
@@ -1769,7 +1771,7 @@ async function runFullReview(
     });
     await replyFixedThreads(run, resolved);
     await replyAnsweredThreads(run, result);
-    await completeProgressComment(run, stage);
+    await completeProgressComment(run, stage, reviewTimeMs);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
     setReviewOutputs(posted.id, context, result);
     checkReport = outcomeReport(result.outcome, result.summary, posted.approvalHeld);
