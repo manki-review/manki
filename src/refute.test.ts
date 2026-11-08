@@ -126,6 +126,13 @@ describe('refuteBlockers', () => {
       ['Dropped lead', 'ignore', undefined],
     ]);
     expect(result[0].judgeNotes).toBe('Refutation disproved: Both inputs are checked at src/api.ts:9.');
+    // Each severity change the refutation makes is a step of the grade path, with the refuter's reason.
+    expect(Object.fromEntries(result.filter(f => f.gradePath).map(f => [f.title, f.gradePath]))).toEqual({
+      'Unproven lead confirmed': [{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'It overflows.' }],
+      'Unproven disproved': [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'The signature bounds it.' }],
+      'Lead disproved': [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'The signature bounds it.' }],
+      'Lead unsettled': [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'an open lead nobody could settle' }],
+    });
     expect(result[1].evidence?.proof).toEqual(['src/math.ts:2', 'src/api.ts:4']);
     expect([result[4].lead, result[4].notChecked]).toEqual([undefined, undefined]);
     expect(result[5].tags).toEqual([]);

@@ -9,7 +9,7 @@ import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeP
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, PRE_EXISTING_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, gradeStep, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
 import { makeScratchDir } from './tool-install';
@@ -53,10 +53,12 @@ export function touchesChangedCode(f: Finding, diff: ParsedDiff): boolean {
  * blocker: the reviewer said the defect exists without this PR and the judge kept that, the finding sits outside every
  * hunk, no line it cites as proof is in the diff, and the PR neither deletes its file nor left it out by `exclude_paths`.
  */
-function isPreExistingFinding(f: Finding, diff: ParsedDiff, excludedPaths: ReadonlySet<string>): boolean {
-  if (!f.preExisting || !f.file || f.line <= 0 || excludedPaths.has(f.file)) return false;
-  if (diff.files.find(df => df.path === f.file)?.changeType === 'deleted') return false;
-  return !touchesChangedCode(f, diff);
+function preExistingCheck(f: Finding, diff: ParsedDiff, excludedPaths: ReadonlySet<string>): PreExistingCheck | undefined {
+  if (!f.preExisting) return undefined;
+  if (!f.file || f.line <= 0) return 'no_location';
+  if (excludedPaths.has(f.file)) return 'excluded_file';
+  if (diff.files.find(df => df.path === f.file)?.changeType === 'deleted') return 'deleted_file';
+  return touchesChangedCode(f, diff) ? 'touches_diff' : 'pre_existing';
 }
 
 /**
@@ -69,16 +71,18 @@ function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: R
   const posted: Finding[] = [];
   const unposted: Finding[] = [];
   for (const f of findings) {
-    if (!isPreExistingFinding(f, diff, excludedPaths)) {
-      posted.push(f);
+    // A claim the diff or the files contradict is kept with why, so the record shows which condition failed.
+    const check = preExistingCheck(f, diff, excludedPaths);
+    if (check !== 'pre_existing') {
+      posted.push(check ? { ...f, preExistingCheck: check } : f);
       continue;
     }
-    const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG] };
+    const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG], preExistingCheck: check };
     if (isSecurityFinding(f.tags, f.reviewers)) {
       posted.push(tagged);
     } else if (f.severity === 'blocker') {
       core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the PR did not change that line`);
-      posted.push({ ...tagged, severity: 'warning', originalSeverity: f.originalSeverity ?? 'blocker' });
+      posted.push({ ...tagged, ...gradeStep(f, 'warning', 'pre_existing', f.preExisting), originalSeverity: f.originalSeverity ?? 'blocker' });
     } else if (f.severity === 'warning' && f.judgeConfidence === 'high') {
       posted.push(tagged);
     } else {
@@ -1242,17 +1246,21 @@ export async function runReview(
 
   let verdictReport: VerdictReport | undefined;
   let verdictUsage: LLMUsage | undefined;
+  const roundSlices = diffSlices(rawDiff, config);
+  const slicing: RoundSlicing | undefined = roundSlices.length > 1 ? { files: roundSlices.map(s => s.paths?.size ?? 0) } : undefined;
   if (outcome === 'READY') {
     const verdictWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict'));
     const readerFiles = fileContents && new Map([...fileContents].filter(([path]) => changedFiles.has(path)));
     // The reader reads the slices the finders read, so no slice of the diff is cut.
-    const slices = diffSlices(rawDiff, config);
+    const slices = roundSlices;
     if (slices.length > 1) core.info(`The verdict reader reads the diff in ${slices.length} slices`);
     try {
-      verdictReport = combineVerdictReports(await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
+      const reports = await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
         runVerdictReader(verdictWrap.client, buildReviewerUserMessage(raw, repoContext, {
           fileContents: readerFiles && filesIn(readerFiles, paths), changedSinceLastRound: pathsIn(changedSinceLastRound, paths), sliceNote: sliceNote(index, slices),
-        }))));
+        })));
+      if (slicing) slicing.reader = reports.map(report => ({ verdict: report.verdict, blockers: report.blockers.length }));
+      verdictReport = combineVerdictReports(reports);
     } catch (error) {
       core.warning(`Verdict reader failed: ${error}`);
       logOutputTokens('Verdict reader', verdictWrap.getTotals().usage);
@@ -1343,6 +1351,9 @@ export async function runReview(
     ...(duplicateMatches.length > 0 && { duplicateMatches }),
     ...(suppressionCount > 0 && { suppressionCount }),
     ...(memorySuppressed.length > 0 && { memorySuppressed }),
+    ...(slicing && { slicing }),
+    ...(changedSinceLastRound && { changedSinceLastRoundCount: changedSinceLastRound.length }),
+    ...(fixClaimed.size > 0 && { fixClaimedThreadIds: [...fixClaimed] }),
     ...(memory && { memoryLoaded: { learnings: memory.learnings.length, suppressions: memory.suppressions.length } }),
     ...(unpostedPreExisting.length > 0 && { unpostedPreExisting }),
     ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),

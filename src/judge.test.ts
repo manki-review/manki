@@ -2249,6 +2249,7 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].originalSeverity).toBe('suggestion');
     expect(result.findings[0].tags).toContain('own-proposal-followup');
     expect(result.findings[0].judgeNotes).toContain('Own-proposal follow-up: implements round 1 finding "Clamp value to safe integer"');
+    expect(result.findings[0].gradePath).toEqual([{ from: 'suggestion', to: 'ignore', by: 'own_proposal' }]);
   });
 
   it('does not demote a blocker finding when priorRounds contain matching suggestedFix in rawDiff', async () => {
@@ -3049,6 +3050,7 @@ describe('applyInPrSuppression', () => {
     const result = applyInPrSuppression(findings, [makeSuppression()]);
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].originalSeverity).toBe('nitpick');
+    expect(result.findings[0].gradePath).toEqual([{ from: 'nitpick', to: 'ignore', by: 'in_pr_suppression', reason: 'resolved-thread' }]);
   });
 
   // Pin that the only protected severity is `blocker`. A regression that
@@ -3147,6 +3149,8 @@ describe('mapJudgedToFindings', () => {
       ['Warning without proof', 'warning'],
     ]);
     expect(result[1].judgeNotes).toBe('Real.\nPosted as a warning, since it cites no lines that prove the failure.');
+    expect(result[1].gradePath).toEqual([{ from: 'blocker', to: 'warning', by: 'unproven', reason: 'it cites no lines that prove the failure' }]);
+    expect(result[0].gradePath).toBeUndefined();
     expect(result[2].evidence).toEqual({ checks: ['read it'], proof: ['src/index.ts:12'] });
   });
 
@@ -3192,6 +3196,7 @@ describe('mapJudgedToFindings', () => {
     expect(result.map(f => [f.category, f.effort])).toEqual([[undefined, undefined], ['reliability', 'quick']]);
     expect(result.map(f => f.reviewerSeverity)).toEqual(['suggestion', 'suggestion']);
     expect(result.map(f => f.originalSeverity)).toEqual([undefined, undefined]);
+    expect(result.map(f => f.gradePath)).toEqual([[{ from: 'suggestion', to: 'nitpick', by: 'judge' }], [{ from: 'suggestion', to: 'blocker', by: 'judge' }]]);
     expect(result[1].judgeNotes).toBe('Lexer crashes.');
   });
 
@@ -3800,6 +3805,7 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.suppressedCount).toBe(1);
     expect(result.demotedCount).toBe(0);
     expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].gradePath).toEqual([{ from: 'suggestion', to: 'ignore', by: 'ratchet', reason: 'matches round 1' }]);
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
   });
 
@@ -3916,6 +3922,7 @@ describe('applyCrossRoundSuppression', () => {
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.demotedCount).toBe(1);
     expect(result.findings[0].judgeNotes).toBe('Prior note Contradicts round 2 guidance accepted by author');
+    expect(result.findings[0].gradePath).toEqual([{ from: 'suggestion', to: 'nitpick', by: 'contradiction', reason: 'Contradicts round 2 guidance accepted by author' }]);
   });
 
   it('cites the most-recent agreeing round when multiple prior rounds match', () => {

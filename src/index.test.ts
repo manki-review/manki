@@ -3642,6 +3642,11 @@ describe('runFullReview orchestration', () => {
         ],
         memoryLoaded: { learnings: 4, suppressions: 2 },
         memorySuppressed: [hidden],
+        allJudgedFindings: [{ ...hidden, severity: 'ignore', gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }] }],
+        slicing: { files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] },
+        changedSinceLastRoundCount: 2,
+        fixClaimedThreadIds: ['T1'],
+        unpostedPreExisting: [{ ...hidden, suppressedBy: undefined, preExisting: 'The helper was long before this PR.', preExistingCheck: 'pre_existing' }],
       });
       const tokenService = [
         { endpoint: 'token' as const, error: 'TypeError: fetch failed', durationMs: 3 },
@@ -3660,6 +3665,11 @@ describe('runFullReview orchestration', () => {
         suppressed: [{ title: 'Rename the helper', file: 'src/app.ts', line: 9, severity: 'suggestion', suppressionId: 'sup-1' }],
       });
       expect(rc.tokenService).toEqual(tokenService);
+      expect(rc.judge.dropped).toEqual([expect.objectContaining({ gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }] })]);
+      expect(rc.slicing).toEqual({ files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] });
+      expect(rc.diff.changedSinceLastRound).toBe(2);
+      expect(rc.judge.fixClaimedThreads).toEqual(['T1']);
+      expect(rc.findings.unposted?.[0].preExisting).toEqual({ reason: 'The helper was long before this PR.', check: 'pre_existing' });
     });
 
     it('populates `recap` with `priorRoundCount`, `reclassifiedPriorCount`, and `reclassifiedPriors`', async () => {

@@ -792,6 +792,12 @@ describe('handleReviewCommentReply', () => {
     const note = `\n\nThis is a ${kind === 'security' ? 'security' : 'blocking'} finding, so the thread stays open until ${until}.`;
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${staysOpen ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason ? [[octokit, 'PRRT_this', reason]] : []);
+    // The reply record keeps what the reply decided for the thread.
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
+    const [record] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
+    const outcome = /^\**(Fixed|Agreed|Withdrawn)\b/.exec(reply)?.[1];
+    const fate = resolved ? 'already_resolved' : reason ? 'resolves' : staysOpen ? 'stays_open' : 'no_permission';
+    expect(record.decision).toEqual(outcome ? { outcome, thread: fate } : undefined);
   });
 
   it.each([
@@ -841,6 +847,7 @@ describe('handleReviewCommentReply', () => {
     if (pointer) {
       expect(body).toMatch(new RegExp(`^${pointer.replace(/[.*+?^${}()|[\]\\`]/g, '\\$&')}\n\n<!-- manki -->\n<!-- manki-reply-record: `));
       expect(state.resolveReviewThread).not.toHaveBeenCalled();
+      expect(extractReplyRecords(body).map(r => (JSON.parse(r) as ReplyRecord).decision)).toEqual([{ outcome: 'Fixed', thread: 'deferred_to_round' }]);
     } else {
       expect(body.startsWith(answer)).toBe(true);
       // A "Fixed." answer records the head it confirms, so the round on that head adds no "Fixed in" line.
