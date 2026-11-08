@@ -1062,15 +1062,19 @@ function findingLocation(finding: Finding): string {
 }
 
 /** Returns what goes wrong and the fix, as listed under a finding in the review body. */
-/** Opens a finding's description: what goes wrong for a blocking severity, why it is worth changing for the rest. */
-function descriptionLabel(finding: Finding): string {
-  return isBlockingSeverity(finding.severity) ? WHAT_GOES_WRONG_LABEL : WHY_LABEL;
+/**
+ * Returns `description` under its label: what goes wrong for a blocking severity, why it is worth changing for the rest.
+ * The label goes on its own line above a list, heading or quote, whose marker would show as text after it.
+ */
+function labelDescription(finding: Finding, description: string): string {
+  const label = isBlockingSeverity(finding.severity) ? WHAT_GOES_WRONG_LABEL : WHY_LABEL;
+  return `${label}${/^(?:[-*+]\s|#{1,6}\s|>|\d+[.)]\s)/.test(description) ? '\n\n' : ' '}${description}`;
 }
 
 function formatFindingDetail(finding: Finding): string[] {
   const lines = finding.judgeConfidence === 'low' ? [LOW_CONFIDENCE_NOTE] : [];
   const description = splitLead(sanitizeMarkdown(finding.description), 2, 300).lead;
-  if (description) lines.push(`${descriptionLabel(finding)} ${description}`);
+  if (description) lines.push(labelDescription(finding, description));
   if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
   return lines;
 }
@@ -2016,14 +2020,14 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
   if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
   const fix = finding.suggestedFix?.trim() ? `\n\n${formatSuggestedFix(finding.suggestedFix, finding.file)}` : '';
   const checks = checksSection(finding, links, 'commented');
-  const label = `${descriptionLabel(finding)} `;
+  const label = labelDescription(finding, '');
   const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - label.length - visibleLength(fix) - visibleLength(checks.join('\n\n')));
   const description = sanitizeMarkdown(finding.description);
   const { lead, rest } = splitLead(description, 3, room);
   // A fold never holds a single sentence, so one sentence past the lead shows with it, unless the lead was cut short.
   const folds = rest.includes('\n') || rest.split(/(?<=[.!?])\s+/).length > 1 || !description.trim().startsWith(lead);
   const shown = folds ? lead : description.trim();
-  comment += `${shown ? `${label}${shown}` : ''}${fix}`;
+  comment += `${shown ? labelDescription(finding, shown) : ''}${fix}`;
   if (folds) {
     comment += `\n\n<details>\n<summary>Details</summary>\n\n${rest}\n\n</details>`;
   }

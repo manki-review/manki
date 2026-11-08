@@ -170,6 +170,8 @@ describe('formatFindingComment', () => {
     // A description with no text before its code shows no empty label.
     expect(render({ ...baseFinding, description: '' })).not.toContain('What goes wrong');
     expect(render({ ...baseFinding, description: '```ts\nuse(value);\n```\nThen more.' })).not.toContain('What goes wrong');
+    // A description that opens with a list gets the label on its own line, so the list marker stays a marker.
+    expect(render({ ...baseFinding, description: '- It throws.\n- It logs.' })).toContain('**What goes wrong:**\n\n- It throws.\n- It logs.');
     expect(wordy).toContain('<summary>Details</summary>\n\nA very long first sentence');
 
     expect(render(baseFinding)).not.toContain('<details>');
