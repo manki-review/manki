@@ -15,7 +15,7 @@ import { rebuildRawDiff, shortenLongLines } from './diff';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { blockerThreadStaysOpen, determineOutcome, filesChangedByPush, parseProof, stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
+import { blockerThreadStaysOpen, determineOutcome, filesChangedByPush, parseProof, stringifyFindingFingerprint, touchesChangedCode, truncateDiff, validateSeverity } from './review';
 import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { refuteBlockers } from './refute';
@@ -1180,7 +1180,7 @@ export async function runJudgeAgent(
 
   const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations };
 
-  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds)));
+  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds)), diff);
   const suppression = applyCrossRoundSuppression(mapped, priorRounds, crossRoundOptions);
   const { findings: suppressed, count: inPrCount } = applyInPrSuppression(suppression.findings, inPrSuppressions);
   const checked = refutation ? await refuteBlockers(refutation.client, suppressed, { workspace: refutation.workspace, priorRounds, effort, diff }) : suppressed;
@@ -1586,15 +1586,18 @@ function hasReversalWord(finding: Finding): boolean {
   return REVERSAL_WORDS.some(word => new RegExp(`\\b${word}\\b`).test(haystack));
 }
 
-export function deduplicateFindings(findings: Finding[]): Finding[] {
+/**
+ * Keeps the first finding per title and file. The kept one stays pre-existing only when every dropped copy was marked
+ * so too, sits outside every hunk of `diff` and cites no line inside one, since a dropped copy's line and proof are lost.
+ */
+export function deduplicateFindings(findings: Finding[], diff?: ParsedDiff): Finding[] {
   const kept = new Map<string, Finding>();
   for (const f of findings) {
     const key = `${f.title}::${f.file}`;
     const first = kept.get(key);
     if (!first) {
       kept.set(key, f);
-    } else if (first.preExisting && !f.preExisting) {
-      // The kept finding stays pre-existing only when every copy of it was marked so.
+    } else if (first.preExisting && (!f.preExisting || (diff && touchesChangedCode(f, diff)))) {
       const { preExisting: _preExisting, ...unmarked } = first;
       kept.set(key, unmarked);
     }

@@ -41,6 +41,13 @@ function citesChangedLine(at: string, diff: ParsedDiff): boolean {
   return !!diffFile && isLineInDiff(diffFile, Number(start), Number(end ?? start));
 }
 
+/** Whether `f` sits inside a hunk of `diff`, or cites a line inside one as proof. */
+export function touchesChangedCode(f: Finding, diff: ParsedDiff): boolean {
+  const diffFile = f.file ? diff.files.find(df => df.path === f.file) : undefined;
+  if (diffFile && f.line > 0 && isLineInDiff(diffFile, f.line)) return true;
+  return (f.evidence?.proof ?? []).some(at => citesChangedLine(at, diff));
+}
+
 /**
  * Whether `f` is about code this PR did not change. Each of these must hold, so no model's answer alone can lower a
  * blocker: the reviewer said the defect exists without this PR and the judge kept that, the finding sits outside every
@@ -48,9 +55,8 @@ function citesChangedLine(at: string, diff: ParsedDiff): boolean {
  */
 function isPreExistingFinding(f: Finding, diff: ParsedDiff, excludedPaths: ReadonlySet<string>): boolean {
   if (!f.preExisting || !f.file || f.line <= 0 || excludedPaths.has(f.file)) return false;
-  const diffFile = diff.files.find(df => df.path === f.file);
-  if (diffFile && (diffFile.changeType === 'deleted' || isLineInDiff(diffFile, f.line))) return false;
-  return !(f.evidence?.proof ?? []).some(at => citesChangedLine(at, diff));
+  if (diff.files.find(df => df.path === f.file)?.changeType === 'deleted') return false;
+  return !touchesChangedCode(f, diff);
 }
 
 /**

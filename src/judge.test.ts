@@ -3719,6 +3719,14 @@ describe('deduplicateFindings', () => {
     expect(result[0].reviewers).toEqual(['R1']);
     expect(result[0].preExisting).toBeUndefined();
     expect(deduplicateFindings([findings[0], { ...findings[1], preExisting: 'Old code.' }])[0].preExisting).toBe('Old code.');
+
+    // A dropped copy on a changed line, or citing one as proof, ties the finding to this PR, so the mark goes.
+    const diff = makeDiff([makeDiffFile({ path: 'src/a.ts', hunks: [{ oldStart: 18, oldLines: 5, newStart: 18, newLines: 5, content: '' }] })]);
+    const marked = { ...findings[1], preExisting: 'Old code.' };
+    expect(deduplicateFindings([findings[0], marked], diff)[0].preExisting).toBeUndefined();
+    const citing = { ...marked, line: 40, evidence: { checks: [], proof: ['src/a.ts:19-20'] } };
+    expect(deduplicateFindings([findings[0], citing], diff)[0].preExisting).toBeUndefined();
+    expect(deduplicateFindings([findings[0], { ...marked, line: 40 }], diff)[0].preExisting).toBe('Old code.');
   });
 
   it('keeps findings with same title but different files', () => {
