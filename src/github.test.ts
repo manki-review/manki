@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto';
 import { ApprovalHeld, buildDashboard, formatFoundAgainReply, formatUnreviewedNotice, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
+import { highlightCode } from './highlight';
 import { paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { withMarkers } from './utils';
 import { extractReviewRecords } from './review-record';
@@ -259,6 +260,35 @@ describe('formatFindingComment', () => {
     expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}).`);
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
+  });
+
+  it('keeps the code spans of every check line balanced, so no line breaks the Markdown after it', () => {
+    // Each line as Markdown reads it: a backtick run closes only on a run of the same length, and `\`` is text.
+    const pairs = (line: string): boolean => {
+      let open: number | undefined;
+      for (const run of line.replace(/\\`/g, '').match(/`+/g) ?? []) {
+        if (open === undefined) open = run.length;
+        else if (run.length === open) open = undefined;
+      }
+      return open === undefined;
+    };
+    const checks = [
+      '`src/github.ts:1153`: `agreedFollowUps` builds a Finding from `t.description`, which is empty for a thread posted without one',
+      '`src/recap.test.ts:2141` calls `formatFindingComment` with `judgeConfidence: \'low\'` and no `evidence`',
+      'Appends each section with `comment += `\\n\\n${section}``, so with no fix it directly follows the description',
+      'Calls `run( and stops',
+    ];
+    const tokens = new Set(['src/github.ts', 'agreedFollowUps', 't.description', 'formatFindingComment']);
+    const comment = highlightCode(render({ ...baseFinding, evidence: { checks, proof: [] } }), tokens);
+
+    expect(comment.split('\n').filter(line => !pairs(line))).toEqual([]);
+    // A location in backticks leaves none behind, whether the path and line share the span or not.
+    expect(comment).toContain(`\`agreedFollowUps\` builds a Finding from \`t.description\`, which is empty for a thread posted without one\n${links.linkTo('src/github.ts', 1152, 1153)}`);
+    expect(comment).toContain(`Calls \`formatFindingComment\` with \`judgeConfidence: 'low'\` and no \`evidence\`\n${links.linkTo('src/recap.test.ts', 2140, 2141)}`);
+    // Quoted code that holds a backtick gets a longer run, and a line that cannot be paired shows its backticks as text.
+    expect(comment).toContain('- Appends each section with `` comment += `\\n\\n${section}` ``, so with no fix it directly follows the description');
+    expect(comment).toContain('- Calls \\`run( and stops');
+    expect(render({ ...baseFinding, evidence: { checks: ['`src/a.ts`:3 reads `x`'], proof: [] } })).toContain(`Reads \`x\`\n${links.linkTo('src/a.ts', 2, 3)}`);
   });
 
   it('omits the fix when there is none', () => {
