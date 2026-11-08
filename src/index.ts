@@ -1427,14 +1427,14 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
   return posted;
 }
 
-function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: string, teamAgents: string[]): ReviewMetadata['config'] {
+function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: string, teamAgents: string[], memorySkip?: MemorySkip): ReviewMetadata['config'] {
   return {
     reviewerModel: models.reviewer,
     judgeModel: models.judge,
     triage,
     teamAgents,
     memoryEnabled: config.memory?.enabled ?? false,
-    memoryRepo: config.memory?.repo || 'central',
+    memoryRepo: memorySkip ? `skipped: ${memorySkip.reason}` : config.memory?.repo || 'central',
   };
 }
 
@@ -1520,7 +1520,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
     ? `trivial=${result.triage.trivial}, subtle=${result.triage.subtle}, paired=${result.triage.paired} (${result.plannerSource ?? 'planner'}${result.sensitivePaths ? ', security-sensitive paths' : ''}${result.ciOrDependencyPaths ? ', CI or dependency paths' : ''})`
     : 'none';
   const metadata: ReviewMetadata = {
-    config: metadataConfig(config, models, triage, result.agentNames),
+    config: metadataConfig(config, models, triage, result.agentNames, run.memorySkip),
     judgeDecisions,
     timing,
   };

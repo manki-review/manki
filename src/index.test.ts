@@ -3617,6 +3617,8 @@ describe('runFullReview orchestration', () => {
       const call = jest.mocked(ghUtils.postReview).mock.calls[0];
       expect(call[7]!.memory).toMatchObject({ loadStatus: 'skipped', skipReason: reason });
       expect(call[9]).toMatchObject({ memorySkip: message });
+      const metadata = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![5];
+      expect(metadata?.config.memoryRepo).toBe(`skipped: ${reason}`);
     });
 
     it('populates `recap` with `priorRoundCount`, `reclassifiedPriorCount`, and `reclassifiedPriors`', async () => {
