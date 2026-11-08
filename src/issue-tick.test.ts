@@ -48,7 +48,7 @@ describe('handleIssueBoxTick', () => {
 
     await handleIssueBoxTick(octokit as never, TEST_BOT, 'o', 'r', 5, comment(body), 'bob');
 
-    expect(octokit.paginate).toHaveBeenCalledWith(octokit.rest.issues.listForRepo, { owner: 'o', repo: 'r', creator: 'manki-review[bot]', state: 'all', per_page: 100 });
+    expect(octokit.paginate).toHaveBeenCalledWith(octokit.rest.issues.listForRepo, { owner: 'o', repo: 'r', creator: 'manki-review[bot]', state: 'open', per_page: 100 });
     // The issue holds the finding as posted, without the box or Manki's hidden markers.
     expect(octokit.rest.issues.create).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r', title: 'Retry has no limit' }));
     const issue: string = jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body;

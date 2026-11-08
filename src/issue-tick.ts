@@ -19,11 +19,11 @@ interface TickedComment {
   html_url: string;
 }
 
-/** Returns the issue Manki already filed for the finding `id`, if any. */
+/** Returns the open issue Manki already filed for the finding `id`, if any. A closed one tracks nothing, so a tick files a new one. */
 async function findFiledIssue(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, id: string): Promise<number | undefined> {
   const marker = filedIssueMarker(id);
   for (const creator of bot.logins) {
-    const issues = await octokit.paginate(octokit.rest.issues.listForRepo, { owner, repo, creator, state: 'all', per_page: 100 });
+    const issues = await octokit.paginate(octokit.rest.issues.listForRepo, { owner, repo, creator, state: 'open', per_page: 100 });
     const filed = issues.find(issue => !issue.pull_request && issue.body?.includes(marker));
     if (filed) return filed.number;
   }
