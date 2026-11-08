@@ -518,6 +518,8 @@ describe('sendViaOAuth — error paths', () => {
     expect(Object.keys(mcpConfig!.mcpServers)).toEqual(['manki']);
     expect(systemPromptFile).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\./);
     expect(systemPromptFile).toContain('You have 15 tool steps, and each tool call takes one. When 3 are left, a note from Manki');
+    expect(systemPromptFile).toContain('Use the tools to follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome.');
+    expect(systemPromptFile).not.toContain('not to explore');
     expect(systemPromptFile).toContain([
       '## Related repos',
       '',

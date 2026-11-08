@@ -871,6 +871,23 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('JSDoc');
   });
 
+  it('asks every finder for a full search in every round, with brevity only for suggestions and nitpicks', () => {
+    for (const noise of ['low', 'medium', 'high'] as const) {
+      const prompt = buildReviewerSystemPrompt(buildFinderAgent([]), makeConfig(), undefined, undefined, noise, true);
+      expect(prompt).toContain('These rules hold in every round. A later round searches the whole PR as fully as the first one.');
+      expect(prompt).toContain('Report every blocker and every security issue you find, not only the strongest.');
+      expect(prompt).toContain('Follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome');
+      expect(prompt).toContain('search the whole PR for the same kind of defect before you report it. Report one finding at the first location, and list every location in `proof` and `evidence`. Never stop at the first instance.');
+      expect(prompt).toContain('Quality over quantity applies to suggestions and nitpicks only.');
+      expect(prompt).toContain('in unchanged code whose behavior the change breaks');
+      expect(prompt).toContain('Look for all of them, not only the first or the worst.');
+      // The proof requirement stays.
+      expect(prompt).toContain('A `blocker` must list in `proof` the `file:line` of each line that shows the failure.');
+      expect(prompt).not.toMatch(/not to explore|Don't comment on unchanged code|only flag issues in the changed code|not pedantic/);
+    }
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig())).toContain('Frame every potential suggestion or nitpick through this lens');
+  });
+
   it('includes scope validation instruction', () => {
     const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
     expect(prompt).toContain('Unrelated change');

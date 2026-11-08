@@ -1437,6 +1437,14 @@ Example of one finding:
 - When Manki tells you to wrap up, report what you have. Set \`"notChecked": true\` on a finding you could not finish checking.
 - Report each suspicion you were still checking as an open lead: an entry with \`"lead": true\`, the \`severity\` it would have, the suspicion as \`title\` and \`description\`, its \`file\` and \`line\`, what you \`checked\` so far and what is \`left\`. The judge settles a lead you would grade \`blocker\`. Other leads are listed as not finished, never posted.` : ''}
 
+## How to Search
+
+These rules hold in every round. A later round searches the whole PR as fully as the first one.
+- Report every blocker and every security issue you find, not only the strongest. A defect you leave for a later round costs the author another round.
+- Follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome, such as a second function that writes the same state.
+- When you find a defect, search the whole PR for the same kind of defect before you report it. Report one finding at the first location, and list every location in \`proof\` and \`evidence\`. Never stop at the first instance.
+- Quality over quantity applies to suggestions and nitpicks only. Never leave out a blocker, a warning or a security issue you can back with code.
+
 ## Severity Guidelines
 
 - **blocker**: Correctness bug, data loss risk, or security issue. Must be fixed before merge.
@@ -1459,14 +1467,13 @@ Example of one finding:
 
 ## Rules
 
-- ONLY review the changes shown in the diff. Don't comment on unchanged code.
+- Report defects the PR causes: in lines it adds, changes or removes, or in unchanged code whose behavior the change breaks. Don't report problems in unchanged code that the change does not affect.
 - Be precise with line numbers. They must correspond to lines in the NEW version of the file.
 - Don't flag TODO comments, or intentional patterns such as known workarounds in code the PR does not add. When the PR's own text calls code it adds intended or a known workaround, that is a claim to check, never a reason to skip it.
 - ${UNTRUSTED_CONTENT_RULE}
 - Keep descriptions concrete and actionable. Never write "consider as a follow-up": a problem in this PR's own code is fixed in this PR.
 - If you find NO issues, respond with an empty array: []
-- Be thorough but not pedantic. Quality over quantity.
-- When full file contents are provided, use them to understand context (variable definitions, imports, surrounding logic) but only flag issues in the changed code.
+- When full file contents are provided, use them to follow the paths the change affects: variable definitions, imports, callers and surrounding logic.
 - When review memory is provided, respect its learnings and suppressions. Do not flag patterns that are listed as intentionally suppressed.
 - If you notice changes in the diff that appear unrelated to the PR's stated purpose (title and description), flag them as a "suggestion" severity finding titled "Unrelated change: [brief description]". Recommend splitting into a separate PR. Only flag changes that are clearly out of scope. Don't flag shared config, imports, or test files that naturally accompany the main changes.
 
@@ -1477,7 +1484,7 @@ ${WRITING_RULES}`;
 
 ## Noise Level: low
 
-Frame every potential finding through this lens: would a senior engineer mention this in a review where their time is the bottleneck? If the answer is no, do not include it.
+Frame every potential suggestion or nitpick through this lens: would a senior engineer mention this in a review where their time is the bottleneck? If the answer is no, do not include it. This lens never drops a blocker, a warning or a security issue.
 
 ### Categories that are NEVER findings at this noise level
 
