@@ -167,6 +167,9 @@ describe('formatFindingComment', () => {
     const oneLong = render({ ...baseFinding, description: `${'A very long only sentence '.repeat(40)}ends here.` });
     expect(visible(oneLong)).toBeLessThan(700);
     expect(oneLong).toContain('<summary>Details</summary>\n\nA very long only sentence');
+    // A description with no text before its code shows no empty label.
+    expect(render({ ...baseFinding, description: '' })).not.toContain('What goes wrong');
+    expect(render({ ...baseFinding, description: '```ts\nuse(value);\n```\nThen more.' })).not.toContain('What goes wrong');
     expect(wordy).toContain('<summary>Details</summary>\n\nA very long first sentence');
 
     expect(render(baseFinding)).not.toContain('<details>');

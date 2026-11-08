@@ -733,8 +733,8 @@ function parseFindingFromComment(body: string): FindingMetadata {
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
   if (descSlice.startsWith(LOW_CONFIDENCE_NOTE)) descSlice = descSlice.slice(LOW_CONFIDENCE_NOTE.length).replace(/^\s+/, '');
-  const label = [WHAT_GOES_WRONG_LABEL, WHY_LABEL].find(l => descSlice.startsWith(`${l} `));
-  if (label) descSlice = descSlice.slice(label.length + 1);
+  const label = [WHAT_GOES_WRONG_LABEL, WHY_LABEL].find(l => descSlice === l || descSlice.startsWith(`${l} `));
+  if (label) descSlice = descSlice.slice(label.length).trimStart();
   const remainingSubs = descSlice.match(/^(?:<sub>[^\n]*<\/sub>\s*\n?)+/);
   if (remainingSubs) descSlice = descSlice.slice(remainingSubs[0].length).replace(/^\s+/, '');
   if (descSlice.length > 500) descSlice = descSlice.slice(0, 500) + '...';

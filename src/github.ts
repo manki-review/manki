@@ -2014,15 +2014,16 @@ function checksSection(finding: Finding, { linkTo, lineCounts }: CodeLinks, ownL
 function formatFindingComment(finding: Finding, links: CodeLinks): string {
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
   if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
-  comment += `${descriptionLabel(finding)} `;
   const fix = finding.suggestedFix?.trim() ? `\n\n${formatSuggestedFix(finding.suggestedFix, finding.file)}` : '';
   const checks = checksSection(finding, links, 'commented');
-  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - visibleLength(fix) - visibleLength(checks.join('\n\n')));
+  const label = `${descriptionLabel(finding)} `;
+  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - label.length - visibleLength(fix) - visibleLength(checks.join('\n\n')));
   const description = sanitizeMarkdown(finding.description);
   const { lead, rest } = splitLead(description, 3, room);
   // A fold never holds a single sentence, so one sentence past the lead shows with it, unless the lead was cut short.
   const folds = rest.includes('\n') || rest.split(/(?<=[.!?])\s+/).length > 1 || !description.trim().startsWith(lead);
-  comment += `${folds ? lead : description.trim()}${fix}`;
+  const shown = folds ? lead : description.trim();
+  comment += `${shown ? `${label}${shown}` : ''}${fix}`;
   if (folds) {
     comment += `\n\n<details>\n<summary>Details</summary>\n\n${rest}\n\n</details>`;
   }
