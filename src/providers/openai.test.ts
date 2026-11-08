@@ -144,7 +144,7 @@ describe('readCodexLimits', () => {
     // A call running in parallel started a newer session that has no readings yet.
     writeSession('rollout-parallel.jsonl', [JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message' } })], T - 500);
     // A folder of an earlier day is never read, even with a file touched since the call started.
-    writeSession('rollout-history.jsonl', [tokenCount({ primary: { used_percent: 50, window_minutes: 300 } })], T - 100, '2026/10/01');
+    writeSession('rollout-history.jsonl', [tokenCount({ primary: { used_percent: 50, window_minutes: 300 } })], T - 100, '2026/11/07');
 
     expect(readCodexLimits(home, (T - 2000) * 1000)).toEqual([
       { account: 'ChatGPT subscription', window: '5-hour', usedPercent: 72, resetsAt: 1794000000 },
@@ -153,10 +153,13 @@ describe('readCodexLimits', () => {
     expect(readCodexLimits(home, (T - 800) * 1000)).toEqual([]);
   });
 
-  it('reads the folder of the day the call started when it ends after midnight', () => {
-    jest.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 10, 10, 0, 5));
-    writeSession('rollout.jsonl', [tokenCount({ primary: { used_percent: 40, window_minutes: 300 } })], Date.UTC(2026, 10, 10, 0, 4) / 1000, '2026/11/09');
-    expect(readCodexLimits(home, Date.UTC(2026, 10, 9, 23, 55))).toEqual([{ account: 'ChatGPT subscription', window: '5-hour', usedPercent: 40 }]);
+  it.each([
+    ['the day the call runs', '2026/11/09'],
+    ['the day before, for a CLI at UTC-12', '2026/11/08'],
+    ['the day after, for a CLI at UTC+14', '2026/11/10'],
+  ])('reads the folder of %s', (_case, folder) => {
+    writeSession('rollout.jsonl', [tokenCount({ primary: { used_percent: 40, window_minutes: 300 } })], T - 60, folder);
+    expect(readCodexLimits(home, (T - 600) * 1000)).toEqual([{ account: 'ChatGPT subscription', window: '5-hour', usedPercent: 40 }]);
   });
 
   it('names other window lengths by days or hours, and skips a window without a length or share', () => {
