@@ -4,7 +4,7 @@ import { minimatch } from 'minimatch';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveReviewerModel } from './config';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
-import { mapWithConcurrency } from './utils';
+import { mapWithConcurrency, parseRetryNote } from './utils';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
@@ -122,6 +122,9 @@ const FINDER_STEPS = 15;
 const RISKY_FINDER_STEPS = 30;
 // A safety net for a finder with tools. The step budget is what normally ends its call.
 const FINDER_TOOLS_TIMEOUT_MS = 600_000;
+
+/** A finder reply that is not the JSON array of findings, which a retry with `parseRetryNote` can correct. */
+class FinderReplyError extends Error {}
 
 class PlannerTimeoutError extends Error {
   constructor() {
@@ -670,6 +673,7 @@ export async function runReview(
   const changedSinceLastRound = filesChangedSinceLastRound(diff, priorRounds, interRoundDiff);
   const finderOptions = (finder: Finder): RunReviewerAgentOptions => ({
     effort: finder.effort, language: plannerResult?.language, context: plannerResult?.context, workspace, related, changedSinceLastRound,
+    retryNote: retryNotes.get(finder.name),
   });
 
   const passes = config.review_passes ?? 1;
@@ -684,9 +688,13 @@ export async function runReview(
   const agentFailureReasons = new Map<string, string>();
   // A finder whose provider reported a used-up limit is not retried: it would fail the same way.
   const quotaErrors = new Map<string, QuotaError>();
+  // A finder whose reply did not parse is retried with a note that names the error.
+  const retryNotes = new Map<string, string>();
   const recordFailure = (name: string, error: unknown): void => {
     agentFailureReasons.set(name, sanitizeLogOutput(String(((error as Error)?.message ?? error) || 'unknown failure')).slice(0, 500));
     if (error instanceof QuotaError) quotaErrors.set(name, error);
+    if (error instanceof FinderReplyError) retryNotes.set(name, parseRetryNote(error, 'array'));
+    else retryNotes.delete(name);
   };
   const retryable = (name: string): boolean => !quotaErrors.has(name);
   const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
@@ -1402,6 +1410,8 @@ interface RunReviewerAgentOptions {
   workspace?: string;
   related?: RelatedRepoTools;
   changedSinceLastRound?: string[];
+  /** The `parseRetryNote` of the reply a retry corrects, added after the user message. */
+  retryNote?: string;
 }
 
 /**
@@ -1494,10 +1504,11 @@ async function runReviewerOnSlice(
   options: RunReviewerAgentOptions = {},
   sliceNote?: string,
 ): Promise<AgentResult> {
-  const { effort, language, context, workspace, related, changedSinceLastRound } = options;
+  const { effort, language, context, workspace, related, changedSinceLastRound, retryNote } = options;
   const tools = !!workspace && !!client.repoTools;
   const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, context, config.noise_level, tools);
-  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, sliceNote });
+  const message = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, sliceNote });
+  const userMessage = retryNote ? `${message}\n\n${retryNote}` : message;
 
   const sendOptions: SendMessageOptions = {
     ...(effort && { effort }),
@@ -1507,7 +1518,12 @@ async function runReviewerOnSlice(
   if (response.truncated) {
     throw new Error(`response truncated at the output token limit (length ${response.content.length})`);
   }
-  const findings = parseFindings(response.content, finder.name);
+  let findings: Finding[];
+  try {
+    findings = parseFindings(response.content, finder.name);
+  } catch (error) {
+    throw new FinderReplyError(error instanceof Error ? error.message : String(error));
+  }
   return {
     findings,
     responseLength: response.content.length,

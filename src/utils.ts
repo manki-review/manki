@@ -147,10 +147,13 @@ export function sanitizeTokens(s: string): string {
 
 const MAX_PARSE_ERROR_CHARS = 300;
 
-/** The note a parse retry adds to its user message, so the model learns what was wrong with its reply. */
-export function parseRetryNote(error: unknown): string {
+/**
+ * The note a parse retry adds to its user message, so the model learns what was wrong with its reply. `shape` names
+ * the JSON the system prompt asks for.
+ */
+export function parseRetryNote(error: unknown, shape: 'object' | 'array' = 'object'): string {
   const reason = safeTruncate(error instanceof Error ? error.message : String(error), MAX_PARSE_ERROR_CHARS);
-  return `Your previous reply could not be used: ${reason}\n\nReply with only the JSON object the system prompt describes, with no text, markdown or code fence around it.`;
+  return `Your previous reply could not be used: ${reason}\n\nReply with only the JSON ${shape} the system prompt describes, with no text, markdown or code fence around it.`;
 }
 
 /**

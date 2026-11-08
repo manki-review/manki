@@ -3820,6 +3820,8 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
     expect(result.failedAgents).toBeUndefined();
     expect(pair).toHaveBeenCalledTimes(2);
+    // A timeout says nothing about the reply, so the retry sends the same request.
+    expect(pair.mock.calls[1][1]).toBe(pair.mock.calls[0][1]);
 
     const agentCompleteCalls = onProgress.mock.calls
       .map((call: [import('./review').ReviewProgress]) => call[0])
@@ -3835,6 +3837,26 @@ describe('runReview', () => {
     expect(pairFailure).toHaveLength(1);
     expect(pairSuccess).toHaveLength(1);
     expect(pairSuccess[0].completedAgents).toBeGreaterThan(pairFailure[0].completedAgents!);
+  });
+
+  it('retries a finder whose reply is prose with a note that names the error, and keeps the findings of the retry', async () => {
+    const finding = { severity: 'blocker', title: 'Unchecked sum', file: 'src/a.ts', line: 5, description: 'Overflows.' };
+    const pair = jest.fn()
+      .mockResolvedValueOnce({ content: 'I checked the changed files and the sum looks fine.' })
+      .mockResolvedValue({ content: JSON.stringify([finding]) });
+    const clients = pairedClients(jest.fn().mockResolvedValue({ content: '[]' }), pair);
+    mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+
+    const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
+    expect(result.reviewComplete).toBe(true);
+    expect(result.failedAgents).toBeUndefined();
+    expect(pair).toHaveBeenCalledTimes(2);
+    const [[firstSystem, firstMessage], [retrySystem, retryMessage]] = pair.mock.calls as [string, string][];
+    expect(retrySystem).toBe(firstSystem);
+    expect(retryMessage).toMatch(/^[\s\S]*\n\nYour previous reply could not be used: malformed response \(length 51\): .+\n\nReply with only the JSON array the system prompt describes, with no text, markdown or code fence around it\.$/);
+    expect(retryMessage.startsWith(firstMessage)).toBe(true);
+    const judged = mockedRunJudgeAgent.mock.calls[0][2].findings;
+    expect(judged.map(f => [f.title, f.reviewers])).toEqual([['Unchecked sum', ['Claude Opus 5.5 · high']]]);
   });
 
   it.each<[string, () => ReviewClients, string[]]>([
