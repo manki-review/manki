@@ -4634,6 +4634,10 @@ describe('recordCalls', () => {
     const none = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
     // The digest is the first 12 hex digits of the SHA-256 of the system prompt, `sys` here.
     const promptDigest = '518b67e65253';
+    // The counts a prompt quotes leave the digest alone.
+    const counted: LLMCall[] = [];
+    for (const count of ['2', '13']) await recordCalls(fallback, finder, counted).sendMessage(`${count} open threads`, 'user');
+    expect(counted[0].promptDigest).toBe(counted[1].promptDigest);
     expect(calls).toEqual([
       { stage: 'judge', effort: 'high', attempt: 1, promptDigest, model: 'claude-opus-5-5', durationMs: 40, ...usage, costUsd: (500 * 4 + 200 * 0.2 + 300 * 5 + 100 * 20) / 1_000_000 },
       { stage: 'judge', attempt: 2, promptDigest, failed: true, error: 'timed out', durationMs: expect.any(Number), ...none, costUsd: null },

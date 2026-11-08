@@ -77,6 +77,14 @@ export function withSignal(client: LLMClient, signal: AbortSignal | undefined): 
 }
 
 /** Appends one `LLMCall` to `calls` for every request sent through the returned client, failed ones included. */
+/**
+ * Returns the first 12 hex digits of the SHA-256 of `systemPrompt`, with every run of digits replaced first. A prompt
+ * quotes counts that change each round, such as open threads or tool steps, and those must not split one version.
+ */
+function promptDigest(systemPrompt: string): string {
+  return createHash('sha256').update(systemPrompt.replace(/\d+/g, '#')).digest('hex').slice(0, 12);
+}
+
 export function recordCalls(client: LLMClient, label: { stage: string; agent?: string; fallback?: true }, calls: LLMCall[]): LLMClient {
   return {
     sendMessage: async (...args) => {
@@ -85,7 +93,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
       const stepBudget = client.repoTools ? opts?.repoTools?.steps : undefined;
       const base = {
         ...label, ...(opts?.effort && { effort: opts.effort }), attempt,
-        promptDigest: createHash('sha256').update(systemPrompt).digest('hex').slice(0, 12),
+        promptDigest: promptDigest(systemPrompt),
         ...(stepBudget !== undefined && { stepBudget }),
       };
       const start = Date.now();
