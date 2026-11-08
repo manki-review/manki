@@ -1038,9 +1038,12 @@ const WHAT_GOES_WRONG_LABEL = '**What goes wrong:**';
 const WHY_LABEL = '**Why:**';
 const FIX_LABEL = '**Fix:**';
 
+/** The most of a fix the review body shows, so one long line cannot crowd out the rest of the review. */
+const MAX_BODY_FIX_CHARS = 600;
+
 /** Renders a fix for the body: prose after the label, or the label above text and fenced code blocks. */
 function formatBodyFix(fix: string, file: string): string {
-  const parts = splitFix(safeTruncate(fix, 600), file);
+  const parts = splitFix(safeTruncate(fix, MAX_BODY_FIX_CHARS), file);
   if (parts.every(p => p.kind === 'prose')) return `${FIX_LABEL} ${sanitizeMarkdown(parts.map(p => p.lines.join(' ')).join(' '))}`;
   return `${FIX_LABEL}\n\n${renderFixParts(parts, file)}`;
 }
@@ -1067,7 +1070,6 @@ function findingLocation(finding: Finding): string {
   return `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
 }
 
-/** Returns what goes wrong and the fix, as listed under a finding in the review body. */
 /**
  * Returns `description` under its label: what goes wrong for a blocking severity, why it is worth changing for the rest.
  * The label goes on its own line above a list, heading or quote, whose marker would show as text after it.
@@ -1077,19 +1079,39 @@ function labelDescription(finding: Finding, description: string): string {
   return `${label}${/^(?:[-*+]\s|#{1,6}\s|>|\d+[.)]\s)/.test(description) ? '\n\n' : ' '}${description}`;
 }
 
-function formatFindingDetail(finding: Finding): string[] {
+/** Returns what goes wrong and the fix, as listed under a finding in the review body. `fixDiff` replaces the fix's own rendering. */
+function formatFindingDetail(finding: Finding, fixDiff?: string): string[] {
   const lines = finding.judgeConfidence === 'low' ? [LOW_CONFIDENCE_NOTE] : [];
   const description = splitLead(sanitizeMarkdown(finding.description), 2, 300).lead;
   if (description) lines.push(labelDescription(finding, description));
-  if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
+  if (fixDiff) lines.push(fixDiff);
+  else if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
   return lines;
+}
+
+/** Changed lines up to which a code fix in the review body shows as a diff against the flagged line. */
+const MAX_DIFF_FIX_LINES = 10;
+
+/**
+ * Returns a small code fix as a `diff` block: the flagged line at the reviewed commit, then the code that replaces it.
+ * Returns none for a prose fix, a fix that says where its code goes, a fix whose flagged line was not read, and a diff
+ * over `MAX_DIFF_FIX_LINES` changed lines or `MAX_BODY_FIX_CHARS`, such as one on a minified file.
+ */
+function formatFixDiff(finding: Finding, files: ReadonlyMap<string, readonly string[]>): string | undefined {
+  const parts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
+  const original = finding.line > 0 ? files.get(finding.file)?.[finding.line - 1] : undefined;
+  if (parts.length !== 1 || parts[0].kind !== 'code' || original === undefined) return undefined;
+  const fix = parts[0].lines;
+  const diff = [`-${original}`, ...fix.map(line => `+${line}`)].join('\n');
+  if (fix.length + 1 > MAX_DIFF_FIX_LINES || diff.length > MAX_BODY_FIX_CHARS || PLACEMENT_COMMENT_RE.test(fix[0])) return undefined;
+  return `${FIX_LABEL}\n\n${fenceText(diff, 'diff')}`;
 }
 
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
 function formatFindingBlock(finding: Finding, links: CodeLinks): string {
   const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
   if (finding.file) lines.push(`[${inlineCode(findingLocation(finding))}](${links.linkTo(finding.file, finding.line)})`);
-  return [...lines, ...formatFindingDetail(finding), ...checksSection(finding, links, 'flagged')].join('\n');
+  return [...lines, ...formatFindingDetail(finding, formatFixDiff(finding, links.files)), ...checksSection(finding, links, 'flagged')].join('\n');
 }
 
 /**
@@ -1109,17 +1131,19 @@ const PREVIEW_CONTEXT = 2;
 /**
  * Renders a finding listed in the review body as a closed fold. Its summary holds the title, the header line and
  * the location. Inside are what goes wrong, the fix, and a permalink to the flagged lines, which GitHub shows as code.
- * `lineCounts` keeps the permalink inside the file, since GitHub shows a range past the end as a bare link.
+ * The file's lines keep the permalink inside it, since GitHub shows a range past the end as a bare link.
  */
 function formatFindingFold(finding: Finding, links: CodeLinks): string {
-  const { linkTo, lineCounts } = links;
+  const { linkTo, files } = links;
   const location = finding.file ? ` · <a href="${linkTo(finding.file, finding.line)}"><code>${inlineHtml(findingLocation(finding))}</code></a>` : '';
   const summary = `<summary>${SEVERITY_EMOJI[finding.severity]} <b>${inlineHtml(sanitizeMarkdown(finding.title))}</b><br><sub>${inlineHtml(formatFindingHeader(finding))}${location}</sub></summary>`;
-  const last = lineCounts.get(finding.file);
-  const preview = finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
+  const fixDiff = formatFixDiff(finding, files);
+  const last = files.get(finding.file)?.length;
+  // A diff already shows the flagged line, so the fold previews it only without one.
+  const preview = !fixDiff && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
     ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))]
     : [];
-  return `<details>\n${summary}\n\n${[...formatFindingDetail(finding), ...preview, ...checksSection(finding, links, 'flagged')].join('\n\n')}\n\n</details>`;
+  return `<details>\n${summary}\n\n${[...formatFindingDetail(finding, fixDiff), ...preview, ...checksSection(finding, links, 'flagged')].join('\n\n')}\n\n</details>`;
 }
 
 /** Returns one list of the review body: a heading, an optional intro, then one fold per finding. */
@@ -1251,8 +1275,8 @@ export async function postReview(
   const followUps = agreedFollowUps(existingThreads);
   const listedFiles = [...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file);
   const cited = [...new Set(result.findings.flatMap(citedFiles))].slice(0, MAX_CITED_FILES);
-  const lineCounts = await fetchLineCounts(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
-  const links: CodeLinks = { linkTo, lineCounts };
+  const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
+  const links: CodeLinks = { linkTo, files };
 
   for (const f of result.findings) {
     if (!isBlockingFinding(f)) {
@@ -1977,8 +2001,8 @@ interface CodeRange { file: string; start: number; end: number }
 /** One check behind a finding: what it showed, and the lines it cites when it starts with a location. */
 interface Check { text: string; at?: CodeRange; proofOnly?: boolean }
 
-/** Links a finding's checks to the reviewed commit. `lineCounts` keeps a preview inside its file. */
-interface CodeLinks { linkTo: LineLink; lineCounts: ReadonlyMap<string, number> }
+/** Links a finding's code to the reviewed commit. `files` holds the lines of the files read there, which keep a preview inside its file. */
+interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]> }
 
 function parseCheck(entry: string): Check | undefined {
   // The path is model output that PR content can steer, so only a plain repository path becomes a link.
@@ -2006,27 +2030,27 @@ function findingChecks({ evidence }: Finding): Check[] {
   return checks;
 }
 
-/** Cited files whose line counts are fetched. A preview in any other file covers only its cited lines. */
+/** Cited files whose lines are fetched. A preview in any other file covers only its cited lines. */
 const MAX_CITED_FILES = 20;
 
-/** Returns the files a finding's checks cite, whose line counts keep its previews inside them. */
+/** Returns the files a finding's checks cite, whose lines keep its previews inside them. */
 function citedFiles(finding: Finding): string[] {
   return findingChecks(finding).flatMap(c => c.at?.file ?? []);
 }
 
 /** The lines a preview of `at` shows: from the line above it, at most `CHECK_PREVIEW_LINES`, inside the file. */
-function previewRange(at: CodeRange, lineCounts: ReadonlyMap<string, number>): CodeRange {
+function previewRange(at: CodeRange, files: ReadonlyMap<string, readonly string[]>): CodeRange {
   const start = Math.max(1, at.start - 1);
-  const last = lineCounts.get(at.file);
+  const last = files.get(at.file)?.length;
   const end = Math.min(start + CHECK_PREVIEW_LINES - 1, last ?? at.end);
   return { file: at.file, start, end: Math.max(start, end) };
 }
 
 /** Groups located checks into previews. Checks in one file share a preview when theirs fit in `SHARED_PREVIEW_LINES`. */
-function checkPreviews(checks: Check[], lineCounts: ReadonlyMap<string, number>): { range: CodeRange; checks: Check[] }[] {
+function checkPreviews(checks: Check[], files: ReadonlyMap<string, readonly string[]>): { range: CodeRange; checks: Check[] }[] {
   const previews: { range: CodeRange; checks: Check[] }[] = [];
   for (const check of checks) {
-    const range = previewRange(check.at!, lineCounts);
+    const range = previewRange(check.at!, files);
     const shared = previews.find(p => p.range.file === range.file
       && Math.max(p.range.end, range.end) - Math.min(p.range.start, range.start) < SHARED_PREVIEW_LINES);
     if (shared) {
@@ -2062,7 +2086,7 @@ const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' 
  * for up to `MAX_CHECK_PREVIEWS` other places, and the rest as links. A finding that cites nothing gets an open line
  * that says so, unless a tool reported it or it is an earlier round's finding.
  */
-function checksSection(finding: Finding, { linkTo, lineCounts }: CodeLinks, ownLine: string): string[] {
+function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: string): string[] {
   const checks = findingChecks(finding);
   const { refutation } = finding;
   if (checks.length === 0 && !refutation) {
@@ -2073,7 +2097,7 @@ function checksSection(finding: Finding, { linkTo, lineCounts }: CodeLinks, ownL
   const ownChecks = checks.filter(isOwn);
   const own = ownChecks.filter(c => !c.proofOnly).length > 0 || checks.length > ownChecks.length || refutation
     ? ownChecks.filter(c => !c.proofOnly) : ownChecks;
-  const previews = checkPreviews(checks.filter(c => c.at && !isOwn(c)), lineCounts);
+  const previews = checkPreviews(checks.filter(c => c.at && !isOwn(c)), files);
   const listed = [...previews.slice(MAX_CHECK_PREVIEWS).flatMap(p => p.checks), ...checks.filter(c => !c.at)];
   const shown = previews.slice(0, MAX_CHECK_PREVIEWS);
   const parts = [
@@ -2252,11 +2276,11 @@ export async function fetchFileContents(
 /** The largest file the contents API returns with its content. */
 const MAX_CONTENT_API_BYTES = 1024 * 1024;
 
-/** Returns the number of lines in each of `files` at `ref`, leaving out any file that can't be read. */
-async function fetchLineCounts(octokit: Octokit, owner: string, repo: string, ref: string, files: string[]): Promise<Map<string, number>> {
+/** Returns the lines of each of `files` at `ref`, leaving out any file that can't be read. */
+async function fetchFileLines(octokit: Octokit, owner: string, repo: string, ref: string, files: string[]): Promise<Map<string, string[]>> {
   if (files.length === 0) return new Map();
   const contents = await fetchFileContents(octokit, owner, repo, ref, files, MAX_CONTENT_API_BYTES, Infinity);
-  return new Map([...contents].map(([path, text]) => [path, text.split('\n').length - (text.endsWith('\n') ? 1 : 0)]));
+  return new Map([...contents].map(([path, text]) => [path, text.replace(/\r?\n$/, '').split(/\r?\n/)]));
 }
 
 export interface LinkedIssue {
