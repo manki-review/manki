@@ -11,6 +11,7 @@
     "smoke": "tsx scripts/smoke.ts",
     "fix-rate-report": "tsx scripts/fix-rate-report.ts",
     "review-history": "tsx scripts/review-history.ts",
+    "review-stats": "tsx scripts/review-stats.ts",
     "calibration": "tsx scripts/calibration.ts",
     "config-reference": "tsx scripts/config-reference.ts",
     "check-changelog-version": "node scripts/check-changelog-version.js",

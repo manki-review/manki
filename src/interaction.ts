@@ -76,6 +76,13 @@ ${WRITING_RULES}`;
 /** Reply outcomes that close the thread: the finding is fixed, withdrawn, or deferred. "Kept." and "Unverified." keep it open. */
 const RESOLVING_REPLY_RE = /^\**(Fixed|Agreed|Withdrawn)\b/;
 
+type ReplyOutcome = 'Fixed' | 'Agreed' | 'Withdrawn';
+
+/** Returns how a Manki thread reply settles the finding, from the word it opens with, or `undefined` when it settles nothing. */
+function replyOutcome(reply: string): ReplyOutcome | undefined {
+  return RESOLVING_REPLY_RE.exec(reply)?.[1] as ReplyOutcome | undefined;
+}
+
 const KEPT_REPLY_RE = /^(\**)Kept\.(\**)/;
 
 const WITHDRAWN_REPLY_RE = /^\**Withdrawn\b/;
@@ -311,7 +318,7 @@ export async function handleReviewCommentReply(
     const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody);
     const isSecurity = isSecurityThread(findingBody);
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
-    const outcome = RESOLVING_REPLY_RE.exec(reply)?.[1];
+    const outcome = replyOutcome(reply);
     // The live thread also counts a found-again reply that made it block, which the first comment does not show.
     const thread = outcome
       ? await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch((error: unknown) => {
@@ -983,4 +990,4 @@ export async function handleReviewCommentCommand(
   }
 }
 
-export { parseCommand, buildReplyContext, ParsedCommand, BOT_MARKER, BOT_MENTION_PATTERN, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview };
+export { parseCommand, buildReplyContext, ParsedCommand, replyOutcome, BOT_MARKER, BOT_MENTION_PATTERN, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview };
