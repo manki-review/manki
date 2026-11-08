@@ -1112,7 +1112,7 @@ describe('postReview with context', () => {
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('Many findings.');
     const [record] = extractReviewRecords(body).records.map(r => JSON.parse(r) as RoundContext);
-    expect(record.meta.diagnosticsOmitted).toBe(true);
+    expect(record.meta.omitted).toEqual(['reviewers.rawFindings']);
     expect(record.reviewers.rawFindings).toBeUndefined();
     expect(record.findings.entries).toEqual(entries);
     expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without per-file and per-finding diagnostics'));

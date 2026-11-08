@@ -41,16 +41,22 @@ function recordJson(record: object): string {
 
 /**
  * Returns `context` without its per-file and per-finding diagnostics, keeping what later rounds read:
- * the findings, thread evaluations, verdict and counts.
+ * the findings, thread evaluations, verdict and counts. `meta.omitted` names each field it left out.
  */
 export function omitBulkyDiagnostics(context: RoundContext): RoundContext {
   const { perFile: _perFile, excludedFiles: _excludedFiles, binarySkipped: _binarySkipped, ...diff } = context.diff;
   const { rawFindings: _rawFindings, ...reviewers } = context.reviewers;
   const { dropped: _dropped, ...judge } = context.judge;
   const { duplicateMatches: _duplicateMatches, staticSignalMatches: _staticSignalMatches, ...dedup } = context.dedup;
+  const present: Array<[string, unknown]> = [
+    ['diff.perFile', context.diff.perFile], ['diff.excludedFiles', context.diff.excludedFiles], ['diff.binarySkipped', context.diff.binarySkipped],
+    ['reviewers.rawFindings', context.reviewers.rawFindings], ['judge.dropped', context.judge.dropped],
+    ['dedup.duplicateMatches', context.dedup.duplicateMatches], ['dedup.staticSignalMatches', context.dedup.staticSignalMatches],
+    ['recap.reclassifiedPriors', context.recap?.reclassifiedPriors],
+  ];
   return {
     ...context,
-    meta: { ...context.meta, diagnosticsOmitted: true },
+    meta: { ...context.meta, omitted: present.filter(([, value]) => value !== undefined).map(([field]) => field) },
     diff,
     reviewers,
     judge,

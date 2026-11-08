@@ -1084,8 +1084,11 @@ export interface RoundMeta {
   needsHuman?: NeedsHuman;
   /** Set when the round reviewed a draft, which does not count toward the round cap. */
   draft?: boolean;
-  /** Set when the record was too large for the review even compressed, and its per-file and per-finding diagnostics were left out. */
-  diagnosticsOmitted?: boolean;
+  /**
+   * Set when the record was too large for the review even compressed: the fields of per-file and per-finding
+   * diagnostics that were left out, such as `reviewers.rawFindings`.
+   */
+  omitted?: string[];
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */
