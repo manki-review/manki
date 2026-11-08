@@ -52,6 +52,11 @@ describe('highlightCode', () => {
       '<!-- manki:blocker:createReview -->',
     ].join('\n');
     expect(highlightCode(text, tokens)).toBe(text);
+
+    // A run of backticks with no closing run of the same length stays text and protects nothing after it.
+    const unclosed = 'Adds `x += `${`y`} `` here.\n- [`src/github.ts:3`](https://example.com/a) and `createReview`.';
+    expect(highlightCode(unclosed, tokens)).toBe(unclosed);
+    expect(highlightCode('Opens ` here.\n\nThen createReview runs.', tokens)).toBe('Opens ` here.\n\nThen `createReview` runs.');
   });
 
   it('wraps tokens in a summary in code tags, since GitHub does not parse Markdown there', () => {

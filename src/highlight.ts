@@ -3,7 +3,9 @@ import { ParsedDiff } from './types';
 const TOKEN_RE = /[A-Za-z_$][\w$]*(?:[./][A-Za-z_$][\w$-]*)*/g;
 // Text that already renders as code or must not change: fences, inline code, HTML comments and tags, links and URLs.
 // A `<summary>` comes first, since GitHub renders its content as HTML only and it gets `<code>` instead of backticks.
-const PROTECTED_RE = /<summary>[^\n]*?<\/summary>|(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\1[ \t]*(?=\n|$)|(`+)[\s\S]*?\2|<!--[\s\S]*?-->|<\/?[A-Za-z][^>\n]*>|!?\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/[^\s)]+/g;
+// As in Markdown, inline code closes only on a run of as many backticks, within its paragraph. An unclosed run stays
+// text, so it cannot pair with a backtick further on and leave the code after it unprotected.
+const PROTECTED_RE = /<summary>[^\n]*?<\/summary>|(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\1[ \t]*(?=\n|$)|(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\2(?!`)|<!--[\s\S]*?-->|<\/?[A-Za-z][^>\n]*>|!?\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/[^\s)]+/g;
 // Inside a `<summary>`: existing code and the tags, which hold attributes such as link targets.
 const SUMMARY_PROTECTED_RE = /<code>[\s\S]*?<\/code>|<[^>]*>/g;
 
