@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { writeFileSync } from 'fs';
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { promisify } from 'util';
 
@@ -7,8 +7,8 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, carryRelatedReads, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
-import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
+import { buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, readRelatedReads, registerAuthFileSecrets, relatedReadsFile, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { LimitUsage, LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +25,78 @@ export function resolveCodexHome(): string {
     );
   }
   return join(home, '.codex');
+}
+
+/** Names a Codex window by its length: `5-hour`, `weekly`, or its hours or days. */
+function codexWindowName(minutes: number): string {
+  if (minutes === 7 * 24 * 60) return 'weekly';
+  return minutes % (24 * 60) === 0 ? `${minutes / (24 * 60)}-day` : `${Math.round(minutes / 60)}-hour`;
+}
+
+/** Lists the `.jsonl` files under `dir` and its subfolders with their modification times, skipping what cannot be read. */
+function listSessionFiles(dir: string): { path: string; mtimeMs: number }[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) return listSessionFiles(path);
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) return [];
+      try {
+        return [{ path, mtimeMs: statSync(path).mtimeMs }];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Reads the usage limits Codex recorded as `rate_limits` under `codexHome` since `since`, in milliseconds, from the newest
+ * session file that has any. Calls run in parallel, so the newest file can be another call's with none yet. Every file
+ * reads the same account. Returns none when nothing was recorded.
+ */
+export function readCodexLimits(codexHome: string, since: number): LimitUsage[] {
+  const files = listSessionFiles(join(codexHome, 'sessions'))
+    .filter(f => f.mtimeMs >= since)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const file of files) {
+    const limits = readSessionLimits(file.path);
+    if (limits.length > 0) return limits;
+  }
+  return [];
+}
+
+/** Reads the usage limits last recorded in the Codex session file at `path`, or none. */
+function readSessionLimits(path: string): LimitUsage[] {
+  let lines: string[];
+  try {
+    lines = readFileSync(path, 'utf8').split('\n');
+  } catch {
+    return [];
+  }
+  for (const line of lines.reverse()) {
+    if (!line.includes('"rate_limits"')) continue;
+    let rateLimits: unknown;
+    try {
+      rateLimits = (JSON.parse(line) as { payload?: { rate_limits?: unknown } }).payload?.rate_limits;
+    } catch {
+      continue;
+    }
+    if (!rateLimits || typeof rateLimits !== 'object') continue;
+    const { primary, secondary } = rateLimits as { primary?: unknown; secondary?: unknown };
+    return [primary, secondary].flatMap(w => {
+      const { used_percent: used, window_minutes: minutes, resets_at: resets } = (w ?? {}) as Record<string, unknown>;
+      if (typeof used !== 'number' || !Number.isFinite(used) || typeof minutes !== 'number' || minutes <= 0) return [];
+      return [{
+        account: 'ChatGPT subscription',
+        window: codexWindowName(minutes),
+        usedPercent: Math.round(used),
+        ...(typeof resets === 'number' && Number.isFinite(resets) && { resetsAt: resets }),
+      }];
+    });
+  }
+  return [];
 }
 
 const OPENAI_OAUTH_BOOTSTRAP_HINT =
@@ -205,6 +277,11 @@ export class OpenAIClient implements LLMClient {
     }
     const cliPath = await this.ensureCLI();
     const startTime = Date.now();
+    // A failed run keeps the readings too, since a used-up limit is when they matter most.
+    const limitReadings = () => {
+      const limits = readCodexLimits(codexHome, startTime);
+      return limits.length > 0 ? { limits } : {};
+    };
 
     // `codex exec` runs a non-interactive completion, reading the prompt from stdin
     // when invoked with `-` as the prompt argument. `--model` selects the model.
@@ -250,13 +327,14 @@ export class OpenAIClient implements LLMClient {
         signal: options?.signal,
         onStdout: (chunk) => { output += chunk; },
         stderrResetsStale: true,
-      }).catch((error: unknown) => { throw carryRelatedReads(error, reads()); });
+      }).catch((error: unknown) => { throw carryReadings(error, { relatedReads: reads(), ...limitReadings() }); });
       return { ...exit, relatedReads: reads() };
     }).catch((error: unknown) => {
       warnReplyTail('Codex CLI', output);
       throw error;
     }).finally(() => registerAuthFileSecrets(join(codexHome, 'auth.json')));
 
+    const limits = limitReadings();
     if (code !== 0) {
       // Codex echoes the prompt to stderr, so only its `ERROR:` line is read for a limit.
       const errorLine = extractCliErrorSnippet(stderr);
@@ -264,7 +342,7 @@ export class OpenAIClient implements LLMClient {
       if (quota && !quota.overloaded) {
         const message = `ChatGPT subscription limit reached: ${errorLine}`;
         core.warning(message);
-        throw carryRelatedReads(new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token'), relatedReads);
+        throw carryReadings(new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token'), { relatedReads, ...limits });
       }
       const msg = buildExitDiagnostics({
         exitCode: code,
@@ -278,7 +356,7 @@ export class OpenAIClient implements LLMClient {
       });
       core.warning(`Codex CLI failed (${msg})`);
       warnReplyTail('Codex CLI', output);
-      throw carryRelatedReads(new Error(`Codex CLI invocation failed (${msg})`), relatedReads);
+      throw carryReadings(new Error(`Codex CLI invocation failed (${msg})`), { relatedReads, ...limits });
     }
     const content = output.trim();
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
@@ -287,6 +365,7 @@ export class OpenAIClient implements LLMClient {
       latencyMs: Date.now() - startTime,
       model: this.model,
       ...(relatedReads && { relatedReads }),
+      ...limits,
     };
   }
 

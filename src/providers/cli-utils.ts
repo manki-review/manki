@@ -10,7 +10,7 @@ import { isSecretName, registerSecret, safeJsonParse, sanitizeTokens, SYSTEM_ENV
 import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, READS_FILE_FLAG, RELATED_REPOS_FLAG, STEPS_FLAG } from '../mcp-server';
 import { STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
 import { RelatedRepo, RelatedRepoTools } from '../types';
-import { RepoTools, SendMessageOptions } from './types';
+import { LLMResponse, RepoTools, SendMessageOptions } from './types';
 
 export const STALE_TIMEOUT_MS = 90_000;
 const HARD_TIMEOUT_MS = 1_200_000;
@@ -466,15 +466,22 @@ export function relatedReadsFile(dir: string): string {
   return join(dir, 'related-reads.json');
 }
 
-/** Puts the related repo reads of a call that failed on its error and returns it, so the failed call's record keeps them. */
-export function carryRelatedReads(error: unknown, reads: Record<string, number> | undefined): unknown {
-  if (reads && error && typeof error === 'object') (error as { relatedReads?: Record<string, number> }).relatedReads = reads;
+/** What a call measured before it failed. */
+type CallReadings = Pick<LLMResponse, 'relatedReads' | 'limits'>;
+
+/** Puts the set `readings` of a call that failed on its error and returns it, so the failed call's record keeps them. */
+export function carryReadings(error: unknown, readings: CallReadings): unknown {
+  if (error && typeof error === 'object') {
+    for (const [key, value] of Object.entries(readings)) if (value !== undefined) (error as Record<string, unknown>)[key] = value;
+  }
   return error;
 }
 
-/** Returns the related repo reads `carryRelatedReads` put on `error`, if any. */
-export function relatedReadsOf(error: unknown): Record<string, number> | undefined {
-  return error && typeof error === 'object' ? (error as { relatedReads?: Record<string, number> }).relatedReads : undefined;
+/** Returns the readings `carryReadings` put on `error`. */
+export function readingsOf(error: unknown): CallReadings {
+  if (!error || typeof error !== 'object') return {};
+  const { relatedReads, limits } = error as CallReadings;
+  return { ...(relatedReads && { relatedReads }), ...(limits && { limits }) };
 }
 
 /** Returns the related repo read counts a tool server kept in `path`, or `undefined` when it kept none. */

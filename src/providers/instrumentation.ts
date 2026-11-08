@@ -2,8 +2,8 @@ import { createHash } from 'crypto';
 
 import { WRAP_UP_STEPS } from '../tool-steps';
 import { estimateCostUsd } from './model-registry';
-import { addUsage, LLMCall, LLMClient, LLMUsage, RefusalError, UsageSummary, ZERO_USAGE } from './types';
-import { relatedReadsOf, sanitizeLogOutput } from './cli-utils';
+import { addUsage, LimitUsage, LLMCall, LLMClient, LLMUsage, RefusalError, UsageSummary, ZERO_USAGE } from './types';
+import { readingsOf, sanitizeLogOutput } from './cli-utils';
 
 export interface UsageTotals {
   usage: LLMUsage;
@@ -105,6 +105,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
           ...(response.model && { model: response.model }),
           ...(response.toolSteps && { toolSteps: response.toolSteps }),
           ...(response.relatedReads && { relatedReads: response.relatedReads }),
+          ...(response.limits && { limits: response.limits }),
           // Only a client that reports its tool steps shows whether the model was told to wrap up.
           ...(stepBudget !== undefined && response.toolSteps && response.toolSteps.length >= stepBudget - WRAP_UP_STEPS && { wrapUpNoted: true as const }),
           durationMs: response.latencyMs ?? Date.now() - start,
@@ -118,7 +119,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
           ...base,
           failed: true,
           error: sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 300),
-          ...(relatedReadsOf(error) && { relatedReads: relatedReadsOf(error) }),
+          ...readingsOf(error),
           durationMs: Date.now() - start,
           ...ZERO_USAGE,
           costUsd: null,
@@ -144,4 +145,11 @@ export function summarizeCalls(calls: readonly LLMCall[]): UsageSummary {
     estimatedCostUsd: priced.reduce((sum, c) => sum + c.costUsd!, 0),
     unpricedCalls: calls.length - priced.length - calls.filter(c => c.failed).length,
   };
+}
+
+/** The newest reading of each account's usage windows in `calls`, which run in the order they finished. */
+export function latestLimits(calls: readonly LLMCall[]): LimitUsage[] {
+  const latest = new Map<string, LimitUsage>();
+  for (const limit of calls.flatMap(c => c.limits ?? [])) latest.set(JSON.stringify([limit.account, limit.window]), limit);
+  return [...latest.values()];
 }

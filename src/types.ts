@@ -1,4 +1,4 @@
-import type { LLMCall, UsageSummary } from './providers/types';
+import type { LimitUsage, LLMCall, UsageSummary } from './providers/types';
 
 export const MAX_AGENT_RETRIES = 1;
 
@@ -994,6 +994,8 @@ export interface ReviewMetadata {
     memoryRepo: string;
   };
   judgeDecisions: JudgeDecision[];
+  /** The newest usage reading of each subscription window the round's calls used. */
+  limits?: LimitUsage[];
   timing: {
     parseMs: number;
     reviewMs: number;
@@ -1728,6 +1730,8 @@ export interface RoundUsage extends RoundUsageStage {
   perStage?: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
+  /** The newest reading of each subscription usage window the round's calls reported. */
+  limits?: LimitUsage[];
 }
 
 /** Older records hold only some of the fields. */

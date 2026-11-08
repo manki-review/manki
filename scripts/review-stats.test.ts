@@ -194,6 +194,33 @@ describe('review stats', () => {
     expect(renderStats(computeStats([]))).toContain('## Related repositories\n\nNone recorded.');
   });
 
+  it('lists the highest used share of each subscription limit per week, and the rounds past 70, 80 and 90%', () => {
+    const weekly = (usedPercent: number) => ({ account: 'Claude subscription', window: 'weekly', usedPercent });
+    const at = (timestamp: string, limits: ReturnType<typeof weekly>[]) =>
+      makeRoundContext(1, { meta: { prNumber: 1, commitSha: 'a', round: 1, timestamp, mankiVersion: '7' }, usage: { limits } });
+    const rounds = [
+      // A Sunday ends the week that began on the Monday before it.
+      at('2026-11-08T23:00:00Z', [weekly(72)]),
+      at('2026-11-09T00:00:00Z', [weekly(81), { ...weekly(40), window: '5-hour' }]),
+      at('2026-11-12T10:00:00Z', [weekly(93), { ...weekly(12), account: 'ChatGPT | subscription' }]),
+      at('t', [weekly(50)]),
+    ];
+    const prs = rounds.map((round, i) => prRecords('o/r', i + 1, { reviews: [review(i + 1, round)], threadComments: [] }));
+    const report = renderStats(computeStats(prs));
+    expect(report).toContain([
+      '## Subscription limits',
+      '',
+      '| week of | account | window | highest used | rounds at 70%+ | rounds at 80%+ | rounds at 90%+ |',
+      '| --- | --- | --- | ---: | ---: | ---: | ---: |',
+      '| 2026-11-02 | Claude subscription | weekly | 72% | 1 | 0 | 0 |',
+      '| 2026-11-09 | ChatGPT \\| subscription | weekly | 12% | 0 | 0 | 0 |',
+      '| 2026-11-09 | Claude subscription | 5-hour | 40% | 0 | 0 | 0 |',
+      '| 2026-11-09 | Claude subscription | weekly | 93% | 2 | 2 | 1 |',
+      '| unknown | Claude subscription | weekly | 50% | 0 | 0 | 0 |',
+    ].join('\n'));
+    expect(renderStats(computeStats([]))).toContain('## Subscription limits\n\nNo limit readings recorded.');
+  });
+
   it('prints a report for no PRs without dividing by zero', () => {
     const report = renderStats(computeStats([]));
     expect(report).toContain('- Rounds per PR: -');

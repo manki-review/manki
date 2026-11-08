@@ -19,6 +19,7 @@ import { githubToken, historyLines } from './review-history';
 const DEFAULT_LAST = 40;
 const MANY_ROUNDS = 5;
 const SEVERITIES = ['blocker', 'warning', 'suggestion', 'nitpick'] as const;
+const LIMIT_MARKS = [70, 80, 90] as const;
 
 type Posted = Parameters<typeof historyLines>[2]['reviews'][number];
 
@@ -99,6 +100,8 @@ export interface ReviewStats {
   fixClaims: number[];
   /** Per configured related repo, the rounds that listed it, the reads of each round that read it, and its failures. */
   relatedRepos: Map<string, RelatedRepoStats>;
+  /** Per week, account and window, the highest used share any round read, and the rounds at or past each of `LIMIT_MARKS`. */
+  limits: Map<string, LimitStats>;
 }
 
 interface RelatedRepoStats {
@@ -106,6 +109,14 @@ interface RelatedRepoStats {
   reads: number[];
   failed: number;
   skipped: number;
+}
+
+interface LimitStats {
+  week: string;
+  account: string;
+  window: string;
+  highest: number;
+  roundsPast: number[];
 }
 
 function tally(stats: ReviewStats, decision: Decision, value: string, by = 1): void {
@@ -167,7 +178,7 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
     blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), keptByMany: 0, readerRounds: 0, readerBlockers: 0,
     refutations: new Map(), costPerPr: [], costPerRound: [], followUpRounds: 0, interRoundDiffCutOrUnknown: 0,
     decisions: new Map(), learningsLoaded: [], suppressionsLoaded: [], slicesPerRound: [], changedSinceLastRound: [], fixClaims: [],
-    relatedRepos: new Map(),
+    relatedRepos: new Map(), limits: new Map(),
   };
   for (const pr of prs) {
     if (pr.rounds.length === 0) {
@@ -270,6 +281,23 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
     if (related.status === 'failed') stat.failed++;
     if (related.status === 'skipped') stat.skipped++;
   }
+  const week = weekOf(round.meta.timestamp);
+  for (const limit of round.usage?.limits ?? []) {
+    const key = JSON.stringify([week, limit.account, limit.window]);
+    const found = stats.limits.get(key) ?? { week, account: limit.account, window: limit.window, highest: 0, roundsPast: LIMIT_MARKS.map(() => 0) };
+    found.highest = Math.max(found.highest, limit.usedPercent);
+    LIMIT_MARKS.forEach((mark, i) => { if (limit.usedPercent >= mark) found.roundsPast[i]++; });
+    stats.limits.set(key, found);
+  }
+}
+
+/** The Monday of the UTC week `timestamp` falls in, such as `2026-11-09`, or `unknown` for a timestamp that does not parse. */
+function weekOf(timestamp: string): string {
+  const time = Date.parse(timestamp);
+  if (Number.isNaN(time)) return 'unknown';
+  const day = new Date(time);
+  day.setUTCDate(day.getUTCDate() - ((day.getUTCDay() + 6) % 7));
+  return day.toISOString().slice(0, 10);
 }
 
 function summary(values: number[], digits = 1): string {
@@ -348,6 +376,18 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
       ]
       : ['None recorded.']),
     '',
+    '## Subscription limits',
+    '',
+    ...(stats.limits.size > 0
+      ? [
+        `| week of | account | window | highest used | ${LIMIT_MARKS.map(mark => `rounds at ${mark}%+`).join(' | ')} |`,
+        `| --- | --- | --- | ---: | ${LIMIT_MARKS.map(() => '---:').join(' | ')} |`,
+        ...[...stats.limits.values()]
+          .sort((a, b) => a.week.localeCompare(b.week) || a.account.localeCompare(b.account) || a.window.localeCompare(b.window))
+          .map(l => `| ${l.week} | ${tableCell(l.account)} | ${tableCell(l.window)} | ${l.highest}% | ${l.roundsPast.join(' | ')} |`),
+      ]
+      : ['No limit readings recorded.']),
+    '',
     '## Decisions',
     ...DECISIONS.flatMap(decision => decisionTable(decision, stats.decisions.get(decision))),
   ];
@@ -370,6 +410,7 @@ function decisionTable(decision: Decision, counts: Map<string, number> | undefin
     ...rows.slice(0, MAX_DECISION_ROWS).map(([value, count]) => `| ${tableCell(value)} | ${count} |`), ...more,
   ];
 }
+
 
 function parseArgs(args: string[]): { owner: string; repo: string; last: number } | undefined {
   const value = (flag: string) => {

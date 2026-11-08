@@ -7,8 +7,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { installPinned } from '../tool-install';
-import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryRelatedReads, cliEnv, MankiCommand, matchQuotaText, readRelatedReads, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
-import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, ZERO_USAGE } from './types';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, carryReadings, cliEnv, MankiCommand, matchQuotaText, readRelatedReads, relatedReadsFile, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
+import { AnthropicAuth, LimitUsage, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
 export { sanitizeLogOutput, STALE_TIMEOUT_MS };
@@ -60,6 +60,7 @@ export function buildAnthropicAuth(oauthToken: string, apiKey: string): Anthropi
  */
 function processJsonLine(line: string): {
   text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null; toolUses?: { id: string; tool: string }[]; toolResults?: string[];
+  limits?: LimitUsage[];
 } {
   try {
     const event = JSON.parse(line);
@@ -76,6 +77,9 @@ function processJsonLine(line: string): {
     if (event.type === 'user') {
       return { text: '', replace: false, resultEvent: null, toolResults: blocks.filter(b => b.type === 'tool_result').map(b => String(b.tool_use_id)) };
     }
+    if (event.type === 'rate_limit_event') {
+      return { text: '', replace: false, resultEvent: null, limits: readClaudeLimits(event.rate_limit_info) };
+    }
     if (event.type === 'result') {
       const text = typeof event.result === 'string' ? event.result : '';
       return { text, replace: text.length > 0, resultEvent: event };
@@ -84,6 +88,36 @@ function processJsonLine(line: string): {
     // Non-JSON line (e.g. verbose debug output) — skip silently
   }
   return { text: '', replace: false, resultEvent: null };
+}
+
+const CLAUDE_WINDOWS: Record<string, string> = {
+  five_hour: '5-hour',
+  seven_day: 'weekly',
+  seven_day_opus: 'weekly Opus',
+  seven_day_sonnet: 'weekly Sonnet',
+};
+
+/**
+ * Reads the windows of a `rate_limit_event`'s `rate_limit_info`. `unifiedWindows` holds every window the account has,
+ * each with a `utilization` from 0 to 1. Without it, only the top-level window is read, and only when it has a `utilization`.
+ */
+export function readClaudeLimits(info: unknown): LimitUsage[] {
+  if (!info || typeof info !== 'object') return [];
+  const { unifiedWindows, rateLimitType, utilization, resetsAt } = info as Record<string, unknown>;
+  const windows: [string, unknown][] = unifiedWindows && typeof unifiedWindows === 'object'
+    ? Object.entries(unifiedWindows)
+    : typeof rateLimitType === 'string' ? [[rateLimitType, { utilization, resetsAt }]] : [];
+  return windows.flatMap(([name, w]) => {
+    const used = (w as { utilization?: unknown } | null)?.utilization;
+    if (typeof used !== 'number' || !Number.isFinite(used)) return [];
+    const resets = (w as { resetsAt?: unknown }).resetsAt;
+    return [{
+      account: 'Claude subscription',
+      window: CLAUDE_WINDOWS[name] ?? name.replace(/_/g, ' '),
+      usedPercent: Math.round(used * 100),
+      ...(typeof resets === 'number' && Number.isFinite(resets) && { resetsAt: resets }),
+    }];
+  });
 }
 
 /** Names a refusal by its `stop_details.category`, which is `null` when no named policy area applies. */
@@ -293,7 +327,7 @@ export class AnthropicClient implements LLMClient {
       const args = claudeCliArgs(this.model, systemPromptPath, options, tools);
       const reads = () => (repoTools?.related ? readRelatedReads(relatedReadsFile(promptDir)) : undefined);
       const response = await this.runOAuthCli(cliPath, args, fullPrompt.length + userMessage.length, userMessage, options)
-        .catch((error: unknown) => { throw carryRelatedReads(error, reads()); });
+        .catch((error: unknown) => { throw carryReadings(error, { relatedReads: reads() }); });
       const relatedReads = reads();
       return relatedReads ? { ...response, relatedReads } : response;
     });
@@ -311,9 +345,14 @@ export class AnthropicClient implements LLMClient {
     let refusal: string | undefined;
     const toolSteps: ToolStep[] = [];
     const toolStarts = new Map<string, { tool: string; start: number }>();
+    // The CLI reports the limits after each request, so a later reading of a window replaces an earlier one.
+    const limits = new Map<string, LimitUsage>();
+    // A failed run keeps the readings too, since a used-up limit is when they matter most.
+    const readings = () => (limits.size > 0 ? { limits: [...limits.values()] } : {});
     const consumeLine = (line: string): void => {
       if (!line.trim()) return;
       const delta = processJsonLine(line);
+      for (const limit of delta.limits ?? []) limits.set(limit.window, limit);
       for (const { id, tool } of delta.toolUses ?? []) toolStarts.set(id, { tool, start: Date.now() });
       for (const id of delta.toolResults ?? []) {
         const started = toolStarts.get(id);
@@ -345,7 +384,7 @@ export class AnthropicClient implements LLMClient {
       },
     }).catch((error: unknown) => {
       warnReplyTail('Claude CLI', replyTail);
-      throw error;
+      throw carryReadings(error, readings());
     });
     consumeLine(jsonBuffer);
     const resultEvent = lastResultEvent as { stop_reason?: unknown; api_error?: unknown } | null;
@@ -363,12 +402,12 @@ export class AnthropicClient implements LLMClient {
       const limit = quota.overloaded ? 'Claude is overloaded' : 'Claude subscription limit reached';
       const message = `${limit}: ${sanitizeLogOutput(limitText.slice(-500)).trim()}`;
       core.warning(message);
-      throw new QuotaError(message, limit, quota.resetsAt, quota.overloaded ? undefined : 'token');
+      throw carryReadings(new QuotaError(message, limit, quota.resetsAt, quota.overloaded ? undefined : 'token'), readings());
     }
     if ((lastResultEvent as { subtype?: unknown } | null)?.subtype === 'error_max_turns') {
       const message = 'Claude CLI used all its turns before it answered';
       core.warning(message);
-      throw new Error(message);
+      throw carryReadings(new Error(message), readings());
     }
     if ((code !== 0 && !truncated) || refusal) {
       const msg = buildExitDiagnostics({
@@ -387,7 +426,7 @@ export class AnthropicClient implements LLMClient {
       core.warning(`${lead}Claude CLI failed (${msg})`);
       warnReplyTail('Claude CLI', replyTail);
       const message = `${lead}Claude CLI invocation failed (${msg})`;
-      throw refusal ? new RefusalError(message, refusal) : new Error(message);
+      throw carryReadings(refusal ? new RefusalError(message, refusal) : new Error(message), readings());
     }
     if (truncated) {
       core.warning(`Claude CLI reply reached the ${THINKING_MAX_TOKENS}-token output limit (exit ${code})`);
@@ -402,6 +441,7 @@ export class AnthropicClient implements LLMClient {
       model: this.model,
       truncated,
       ...(toolSteps.length > 0 && { toolSteps }),
+      ...readings(),
     };
   }
 

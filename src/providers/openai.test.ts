@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import OpenAI from 'openai';
@@ -8,6 +8,7 @@ import * as core from '@actions/core';
 import {
   buildOpenAIAuth,
   OpenAIClient,
+  readCodexLimits,
   resetCLIInstallPromise,
   resolveCodexHome,
   resolveReasoningEffort,
@@ -108,6 +109,51 @@ describe('resolveReasoningEffort', () => {
   ])('returns undefined for %s, which rejects reasoning effort', (model) => {
     expect(resolveReasoningEffort(model, 'high')).toBeUndefined();
     expect(resolveReasoningEffort(model, 'max')).toBeUndefined();
+  });
+});
+
+describe('readCodexLimits', () => {
+  const tokenCount = (rateLimits: unknown) => JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limits: rateLimits } });
+  let home: string;
+  const writeSession = (name: string, lines: string[], mtimeSeconds: number) => {
+    const dir = join(home, 'sessions', '2026', '11', '09');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, name);
+    writeFileSync(path, `${lines.join('\n')}\n`);
+    utimesSync(path, mtimeSeconds, mtimeSeconds);
+  };
+
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'manki-codex-limits-')); });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  it('reads the last recorded limits of the newest session written since the call started that has any', () => {
+    writeSession('rollout-old.jsonl', [tokenCount({ primary: { used_percent: 99, window_minutes: 300 } })], 1000);
+    writeSession('rollout-new.jsonl', [
+      tokenCount({ primary: { used_percent: 10, window_minutes: 300 } }),
+      tokenCount({ primary: { used_percent: 72.4, window_minutes: 300, resets_at: 1794000000 }, secondary: { used_percent: 91, window_minutes: 10080 } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message' } }),
+    ], 2000);
+    // A call running in parallel started a newer session that has no readings yet.
+    writeSession('rollout-parallel.jsonl', [JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message' } })], 3000);
+
+    expect(readCodexLimits(home, 1500 * 1000)).toEqual([
+      { account: 'ChatGPT subscription', window: '5-hour', usedPercent: 72, resetsAt: 1794000000 },
+      { account: 'ChatGPT subscription', window: 'weekly', usedPercent: 91 },
+    ]);
+    expect(readCodexLimits(home, 2500 * 1000)).toEqual([]);
+  });
+
+  it('names other window lengths by days or hours, and skips a window without a length or share', () => {
+    writeSession('rollout.jsonl', [tokenCount({ primary: { used_percent: 5, window_minutes: 2880 }, secondary: { used_percent: 6, window_minutes: 60 } })], 2000);
+    expect(readCodexLimits(home, 0).map(l => l.window)).toEqual(['2-day', '1-hour']);
+
+    writeSession('rollout.jsonl', ['{"rate_limits": not json', tokenCount({ primary: { used_percent: 5 }, secondary: null }), tokenCount(null)], 2000);
+    expect(readCodexLimits(home, 0)).toEqual([]);
+  });
+
+  it('returns none when Codex wrote no sessions', () => {
+    expect(readCodexLimits(home, 0)).toEqual([]);
+    expect(readCodexLimits(join(home, 'missing'), 0)).toEqual([]);
   });
 });
 
@@ -729,10 +775,24 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     setupSpawnMock('', { exitCode: 1, stderr });
     jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
+    // The session Codex wrote before it stopped records the limit that ran out.
+    const savedCodexHome = process.env.CODEX_HOME;
+    const home = mkdtempSync(join(tmpdir(), 'manki-codex-quota-'));
+    process.env.CODEX_HOME = home;
+    const session = join(home, 'sessions', 'rollout.jsonl');
+    mkdirSync(join(home, 'sessions'));
+    writeFileSync(session, `${JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limits: { secondary: { used_percent: 100, window_minutes: 10080 } } } })}\n`);
+    const later = Date.now() / 1000 + 60;
+    utimesSync(session, later, later);
 
-    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e).finally(() => {
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodexHome;
+      rmSync(home, { recursive: true, force: true });
+    });
     expect(error).toBeInstanceOf(QuotaError);
     expect(error).toMatchObject({ limit: 'ChatGPT subscription limit reached', resetsAt: 'at 20 Aug 2026, 16:29', credential: 'token' });
+    expect(error).toMatchObject({ limits: [{ account: 'ChatGPT subscription', window: 'weekly', usedPercent: 100 }] });
 
     setupSpawnMock('', { exitCode: 1, stderr: 'user\nreview this: rate limit reached\nERROR: stream disconnected\n' });
     const other = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);

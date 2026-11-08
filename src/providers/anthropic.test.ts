@@ -5,7 +5,7 @@ import { join } from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
+import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, readClaudeLimits, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
 import { installPinned } from '../tool-install';
 import { RelatedRepoTools } from '../types';
 import { QuotaError, RefusalError, SendMessageOptions } from './types';
@@ -332,7 +332,8 @@ describe('sendViaOAuth — error paths', () => {
     ['exits 0 with `is_error`', 0],
   ])('throws a `QuotaError` with the reset time when the subscription limit is used up and the CLI %s', async (_case, exitCode) => {
     const limitText = "You've hit your weekly limit · resets Nov 6, 8pm (UTC)";
-    setupSpawnMock({ exitCode, stderr: '', stdout: `${JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: limitText })}\n`, rawStdout: true });
+    const limitEvent = JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', unifiedWindows: { seven_day: { utilization: 1, resetsAt: 1794600000 } } } });
+    setupSpawnMock({ exitCode, stderr: '', stdout: `${limitEvent}\n${JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: limitText })}\n`, rawStdout: true });
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-sonnet-5-5' });
 
@@ -340,6 +341,8 @@ describe('sendViaOAuth — error paths', () => {
     expect(error).toBeInstanceOf(QuotaError);
     expect(error).toMatchObject({ limit: 'Claude subscription limit reached', resetsAt: 'Nov 6, 8pm (UTC)', credential: 'token' });
     expect(error?.message).toContain(limitText);
+    // The failed call still reports the limit that ran out, so the round can warn about it.
+    expect(error).toMatchObject({ limits: [{ account: 'Claude subscription', window: 'weekly', usedPercent: 100, resetsAt: 1794600000 }] });
     warnSpy.mockRestore();
   });
 
@@ -608,6 +611,24 @@ describe('sendViaOAuth — error paths', () => {
 
     const result = await client.sendMessage('sys', 'user');
     expect(result.content).toBe('final answer');
+  });
+
+  it('reports the newest reading of each limit window the CLI sent', async () => {
+    const limitEvent = (unifiedWindows: object) => JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows } });
+    const streamOutput = [
+      limitEvent({ five_hour: { utilization: 0.3, resetsAt: 1794000000 }, seven_day: { utilization: 0.81, resetsAt: 1794600000 } }),
+      limitEvent({ five_hour: { utilization: 0.37, resetsAt: 1794000000 } }),
+      JSON.stringify({ type: 'result', result: 'final answer' }),
+      '',
+    ].join('\n');
+    setupSpawnMock({ stdout: streamOutput, rawStdout: true });
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.limits).toEqual([
+      { account: 'Claude subscription', window: '5-hour', usedPercent: 37, resetsAt: 1794000000 },
+      { account: 'Claude subscription', window: 'weekly', usedPercent: 81, resetsAt: 1794600000 },
+    ]);
   });
 
   it.each<[string | undefined, boolean]>([
@@ -1631,6 +1652,29 @@ describe('buildAnthropicAuth', () => {
 
   it('oauth wins when both tokens are present', () => {
     expect(buildAnthropicAuth('oauth-tok', 'sk-key')).toEqual({ kind: 'oauth', token: 'oauth-tok' });
+  });
+});
+
+describe('readClaudeLimits', () => {
+  it('names every unified window and reads its utilization as a percentage', () => {
+    expect(readClaudeLimits({
+      rateLimitType: 'seven_day',
+      unifiedWindows: { seven_day_opus: { utilization: 0.046 }, overage_extra: { utilization: 1, resetsAt: 5 } },
+    })).toEqual([
+      { account: 'Claude subscription', window: 'weekly Opus', usedPercent: 5 },
+      { account: 'Claude subscription', window: 'overage extra', usedPercent: 100, resetsAt: 5 },
+    ]);
+  });
+
+  it('reads the top-level window without unified windows, and only with a utilization', () => {
+    expect(readClaudeLimits({ rateLimitType: 'five_hour', utilization: 0.72, resetsAt: 9 })).toEqual([{ account: 'Claude subscription', window: '5-hour', usedPercent: 72, resetsAt: 9 }]);
+    expect(readClaudeLimits({ rateLimitType: 'five_hour', status: 'allowed' })).toEqual([]);
+  });
+
+  it('skips malformed info and windows', () => {
+    expect(readClaudeLimits(null)).toEqual([]);
+    expect(readClaudeLimits('allowed')).toEqual([]);
+    expect(readClaudeLimits({ unifiedWindows: { five_hour: null, seven_day: { utilization: '0.5' }, seven_day_sonnet: { utilization: Number.NaN } } })).toEqual([]);
   });
 });
 

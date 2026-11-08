@@ -1335,6 +1335,33 @@ describe('postReview body lead', () => {
     expect(body).toBe([verdict, threads, `**Memory skipped:** ${memorySkip}`, ...rest].join('\n\n'));
   });
 
+  it.each<[number[], string[]]>([
+    [[69, 12], []],
+    [[70], ['**Claude subscription has used 70% of its weekly limit**, past the 70% mark. It resets 2026-11-12 14:00 UTC.']],
+    [[85, 95], [
+      '**Claude subscription has used 95% of its 5-hour limit**, past the 90% mark. It resets 2026-11-12 14:00 UTC.',
+      '**Claude subscription has used 85% of its weekly limit**, past the 80% mark. It resets 2026-11-12 14:00 UTC.',
+    ]],
+  ])('puts a red box under the verdict and threads for each account window of %j percent at 70% or more', async (used, lines) => {
+    const approved = await postedBody(ready);
+    const llmCalls = [{ stage: 'judge', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
+      limits: used.map((usedPercent, i) => ({ account: 'Claude subscription', window: i === 0 ? 'weekly' : '5-hour', usedPercent, resetsAt: Date.UTC(2026, 10, 12, 14) / 1000 })) }];
+    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, llmCalls }, diff);
+    const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
+    const [verdict, threads, ...rest] = approved.body.split('\n\n');
+    const box = `> [!CAUTION]\n${[...lines, 'Once a limit is used up, reviews on that account stop until it resets.'].map(line => `> ${line}`).join('\n>\n')}`;
+    expect([event, approvalHeld]).toEqual(['APPROVE', false]);
+    expect(body).toBe(lines.length > 0 ? [verdict, threads, box, ...rest].join('\n\n') : approved.body);
+    if (lines.length === 0) return;
+    // A request for changes shows the box after its threads and before what blocks.
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', llmCalls }, diff);
+    const blocked = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n\n');
+    expect(blocked.slice(1, 4)).toEqual([threads, box, '**What blocks:** All clear.']);
+    // A round without a verdict, such as an incomplete one, shows the box under its summary.
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'COMMENT', outcome: undefined, llmCalls }, diff, undefined, undefined, { noVerdict: true });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toMatch(new RegExp(`^All clear\\.\n\n${box.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  });
+
   it('holds the approval of a READY round as a COMMENT for a person when a changed file went unread, and marks it so', async () => {
     const approved = await postedBody(ready);
     mockGet.mockClear();
@@ -2895,6 +2922,24 @@ describe('updateProgressComment', () => {
     expect(body).toContain('Triage: trivial=false, subtle=true, paired=true (planner)');
     expect(body).toContain('Team: Claude Sonnet 4.6 · high, Claude Opus 4.7 · high');
     expect(body).toContain('enabled (owner/review-memory)');
+    expect(body).not.toContain('**Account limits:**');
+  });
+
+  it('lists each account\'s limit windows in metadata', async () => {
+    const resetsAt = Date.UTC(2026, 10, 12, 14) / 1000;
+    const limits = [
+      { account: 'Claude subscription', window: '5-hour', usedPercent: 37, resetsAt },
+      { account: 'ChatGPT subscription', window: 'weekly', usedPercent: 12 },
+      { account: 'Claude subscription', window: 'weekly', usedPercent: 85, resetsAt },
+    ];
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, { ...baseMetadata, limits });
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).toContain([
+      '**Account limits:**',
+      '- Claude subscription: 5-hour 37% (resets 2026-11-12 14:00 UTC), weekly 85% (resets 2026-11-12 14:00 UTC)',
+      '- ChatGPT subscription: weekly 12%',
+      '',
+    ].join('\n'));
   });
 
   it('renders judge decisions as kept or dropped', async () => {
