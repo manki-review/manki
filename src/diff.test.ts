@@ -7,6 +7,7 @@ import {
   isLineInDiff,
   sliceDiff,
   compareChanges,
+  ownChangeSince,
   rebuildRawDiff,
   tagFindingOrigins,
 } from './diff';
@@ -381,6 +382,33 @@ describe('compareChanges', () => {
     const swapped = BINARY_FILE_DIFF.replace('0000000..abcdef1', '0000000..1234567');
     expect(changeDigest(parsePRDiff(swapped))).not.toBe(changeDigest(parsePRDiff(BINARY_FILE_DIFF)));
     expect(changeDigest(parsePRDiff(BINARY_FILE_DIFF))).toBe(changeDigest(parsePRDiff(BINARY_FILE_DIFF)));
+  });
+});
+
+describe('ownChangeSince', () => {
+  const change = (path: string, start: number, lines: string[], oldPath?: string): string =>
+    `diff --git a/${oldPath ?? path} b/${path}\n--- a/${oldPath ?? path}\n+++ b/${path}\n@@ -${start},1 +${start},${lines.length + 1} @@\n ctx\n${lines.map(l => `+${l}`).join('\n')}\n`;
+  // The PR changes `src/a.ts` and `src/b.ts`, and the base branch gains `src/main.ts` and a change above the PR's lines.
+  const before = parsePRDiff(`${change('src/a.ts', 10, ['guard'])}${change('src/b.ts', 1, ['helper'])}`);
+  const fromMain = change('src/main.ts', 1, ['from main']);
+
+  it('is empty for a push that only rebases onto the base branch', () => {
+    const after = parsePRDiff(`${change('src/a.ts', 30, ['guard'])}${change('src/b.ts', 5, ['helper'])}`);
+    expect(ownChangeSince(`${fromMain}${change('src/a.ts', 3, ['main above the PR'])}`, before, after)).toBe('');
+  });
+
+  it('keeps only the file the PR changed when a rebase comes with a one-line fix', () => {
+    const after = parsePRDiff(`${change('src/a.ts', 30, ['guard', 'fixed'])}${change('src/b.ts', 5, ['helper'])}`);
+    const fix = change('src/a.ts', 31, ['fixed']);
+    expect(ownChangeSince(`${fromMain}${fix}${change('src/b.ts', 1, ['main near b'])}`, before, after)).toBe(rebuildRawDiff(parsePRDiff(fix)));
+  });
+
+  it('keeps a file the PR stopped changing and a file it renamed', () => {
+    const after = parsePRDiff(`${change('src/a.ts', 10, ['guard'])}${change('src/c.ts', 1, ['helper'], 'src/b.ts')}`);
+    const renamed = change('src/c.ts', 1, ['moved'], 'src/b.ts');
+    expect(ownChangeSince(`${fromMain}${renamed}`, before, after)).toBe(rebuildRawDiff(parsePRDiff(renamed)));
+    const reverted = change('src/b.ts', 1, ['reverted']);
+    expect(ownChangeSince(`${fromMain}${reverted}`, before, parsePRDiff(change('src/a.ts', 10, ['guard'])))).toBe(rebuildRawDiff(parsePRDiff(reverted)));
   });
 });
 

@@ -12,7 +12,7 @@ import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, 
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
-import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, rebuildRawDiff, tagFindingOrigins } from './diff';
+import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
@@ -1102,7 +1102,7 @@ async function collectRoundSignals(
   target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, configPath: string, prBody?: string,
 ): Promise<{ interRoundDiff?: string; priorChange?: ParsedDiff; linkedIssues?: LinkedIssue[]; staticSignals: StaticSignal[]; staticAnalysis?: RoundStaticAnalysis }> {
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
-  // Fetch inter-round diff (prior round commit -> current head) so the judge
+  // Fetch the PR's own change since the prior round so the judge
   // can ground per-thread resolution in actual changes since last review.
   let interRoundDiff: string | undefined;
   const lastPriorSha = recap.priorRounds.at(-1)?.meta.commitSha;
@@ -1136,7 +1136,8 @@ async function collectRoundSignals(
 
   if (shouldFetchDiff) {
     if (diffResult.status === 'fulfilled') {
-      interRoundDiff = diffResult.value;
+      // The two heads also differ by what a rebase brought in, so only the files whose PR change moved are kept.
+      interRoundDiff = priorChange && diffResult.value !== undefined ? ownChangeSince(diffResult.value, priorChange, diff) : diffResult.value;
     } else {
       core.warning(`Failed to fetch inter-round diff: ${diffResult.reason}`);
     }
