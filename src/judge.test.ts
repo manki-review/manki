@@ -24,7 +24,7 @@ import { LLMClient } from './providers';
 import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { truncateDiff } from './review';
+import { preExistingCheck, truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { WRITING_RULES } from './writing-rules';
 import { Finding, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation } from './types';
@@ -1438,6 +1438,10 @@ describe('runJudgeAgent', () => {
         { id: 6, title: 'Stale cache again', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 5 },
         { id: 7, title: 'Old lock order', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
         { id: 8, title: 'Old lock order again', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 7 },
+        { id: 9, title: 'Old parser leak', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
+        { id: 10, title: 'Old parser leak in generated code', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 9 },
+        { id: 11, title: 'Old buffer reuse', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
+        { id: 12, title: 'Old buffer reuse in the removed module', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 11 },
       ],
     }) });
     // The default diff changes lines 1-20 of src/index.ts.
@@ -1453,8 +1457,14 @@ describe('runJudgeAgent', () => {
         makeFinding({ title: 'Stale cache again', preExisting: old, ...off(12) }),
         makeFinding({ title: 'Old lock order', preExisting: old, ...off(60) }),
         makeFinding({ title: 'Old lock order again', preExisting: old, ...off(70) }),
+        // Each survivor gets one folded copy in a file the checks refuse: excluded, then deleted by the PR.
+        makeFinding({ title: 'Old parser leak', preExisting: old, ...off(80) }),
+        makeFinding({ title: 'Old parser leak in generated code', preExisting: old, file: 'gen/parser.ts', ...off(5) }),
+        makeFinding({ title: 'Old buffer reuse', preExisting: old, ...off(90) }),
+        makeFinding({ title: 'Old buffer reuse in the removed module', preExisting: old, file: 'src/legacy.ts', ...off(5) }),
       ],
-      diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 2,
+      diff: makeDiff([makeDiffFile(), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] })]),
+      excludedPaths: ['gen/parser.ts'], rawDiff: '', repoContext: '', agentCount: 2,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
@@ -1465,6 +1475,8 @@ describe('runJudgeAgent', () => {
       ['Leaked handle', undefined],
       ['Stale cache', undefined],
       ['Old lock order', old],
+      ['Old parser leak', undefined],
+      ['Old buffer reuse', undefined],
     ]);
   });
 
@@ -3741,10 +3753,12 @@ describe('deduplicateFindings', () => {
     // A dropped copy on a changed line, or citing one as proof, ties the finding to this PR, so the mark goes.
     const diff = makeDiff([makeDiffFile({ path: 'src/a.ts', hunks: [{ oldStart: 18, oldLines: 5, newStart: 18, newLines: 5, content: '' }] })]);
     const marked = { ...findings[1], preExisting: 'Old code.' };
-    expect(deduplicateFindings([findings[0], marked], diff)[0].preExisting).toBeUndefined();
+    const stays = (copy: Finding) => preExistingCheck(copy, diff, new Set()) === 'pre_existing';
+    expect(deduplicateFindings([findings[0], marked], stays)[0].preExisting).toBeUndefined();
     const citing = { ...marked, line: 40, evidence: { checks: [], proof: ['src/a.ts:19-20'] } };
-    expect(deduplicateFindings([findings[0], citing], diff)[0].preExisting).toBeUndefined();
-    expect(deduplicateFindings([findings[0], { ...marked, line: 40 }], diff)[0].preExisting).toBe('Old code.');
+    expect(deduplicateFindings([findings[0], citing], stays)[0].preExisting).toBeUndefined();
+    expect(deduplicateFindings([findings[0], { ...marked, line: 0 }], stays)[0].preExisting).toBeUndefined();
+    expect(deduplicateFindings([findings[0], { ...marked, line: 40 }], stays)[0].preExisting).toBe('Old code.');
   });
 
   it('keeps findings with same title but different files', () => {

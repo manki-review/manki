@@ -15,7 +15,7 @@ import { rebuildRawDiff, shortenLongLines } from './diff';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { blockerThreadStaysOpen, determineOutcome, filesChangedByPush, parseProof, stringifyFindingFingerprint, touchesChangedCode, truncateDiff, validateSeverity } from './review';
+import { blockerThreadStaysOpen, determineOutcome, filesChangedByPush, parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
 import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { refuteBlockers } from './refute';
@@ -231,6 +231,8 @@ export function isEmptyInterRoundDiff(interRoundDiff: string | undefined): boole
 export interface JudgeInput {
   findings: Finding[];
   diff: ParsedDiff;
+  /** Files the PR changes that `exclude_paths` left out of `diff`. A finding there is never pre-existing. */
+  excludedPaths?: string[];
   rawDiff: string;
   memory?: RepoMemory;
   repoContext: string;
@@ -1180,7 +1182,10 @@ export async function runJudgeAgent(
 
   const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations };
 
-  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds), diff), diff);
+  const excludedPaths = new Set(input.excludedPaths);
+  // A copy the judge merges or drops must pass every pre-existing check itself, since only the kept finding is checked later.
+  const staysPreExisting = (copy: Finding): boolean => preExistingCheck(copy, diff, excludedPaths) === 'pre_existing';
+  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds), staysPreExisting), staysPreExisting);
   const suppression = applyCrossRoundSuppression(mapped, priorRounds, crossRoundOptions);
   const { findings: suppressed, count: inPrCount } = applyInPrSuppression(suppression.findings, inPrSuppressions);
   const checked = refutation ? await refuteBlockers(refutation.client, suppressed, { workspace: refutation.workspace, priorRounds, effort, diff }) : suppressed;
@@ -1255,7 +1260,7 @@ export function mapJudgedToFindings(
   judged: JudgedFinding[],
   provenanceMap?: ProvenanceEntry[],
   priorBlockers: PriorBlocker[] = [],
-  diff?: ParsedDiff,
+  staysPreExisting?: (copy: Finding) => boolean,
 ): Finding[] {
   const aligned = alignJudgedToFindings(original, judged);
   const graded = original.map((o, i) => {
@@ -1279,7 +1284,7 @@ export function mapJudgedToFindings(
     }
     return finding;
   });
-  return foldDuplicates(graded, aligned, diff).map(capUnprovenBlocker);
+  return foldDuplicates(graded, aligned, staysPreExisting).map(capUnprovenBlocker);
 }
 
 /**
@@ -1369,7 +1374,7 @@ function closestTitle(title: string, candidates: Array<string | undefined>): num
  * `findings[i]` is "Finding i + 1" and `judged[i]` is the judge's entry for it. A self-reference, a forward pointer or an
  * out-of-range pointer is ignored. A duplicate of a finding graded `ignore` is removed while that finding stays `ignore`.
  */
-function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undefined>, diff?: ParsedDiff): Finding[] {
+function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undefined>, staysPreExisting?: (copy: Finding) => boolean): Finding[] {
   const rootOf = (n: number): number => {
     let node = n;
     for (;;) {
@@ -1388,8 +1393,8 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
     const survivor = result[root - 1];
     survivor.reviewers = [...new Set([...survivor.reviewers, ...findings[i].reviewers])];
     survivor.sameAs ??= findings[i].sameAs;
-    // Every merged copy must be marked pre-existing and stay off the diff, or the merged finding is not pre-existing.
-    if (!findings[i].preExisting || (diff && touchesChangedCode(findings[i], diff))) delete survivor.preExisting;
+    // Every merged copy must pass the pre-existing checks on its own, or the merged finding is not pre-existing.
+    if (!findings[i].preExisting || (staysPreExisting && !staysPreExisting(findings[i]))) delete survivor.preExisting;
     const evidence = mergeEvidence(survivor.evidence, findings[i].evidence);
     if (evidence) survivor.evidence = evidence;
     core.info(`Judge folded duplicate "${findings[i].title}" into "${survivor.title}"`);
@@ -1592,16 +1597,16 @@ function hasReversalWord(finding: Finding): boolean {
 
 /**
  * Keeps the first finding per title and file. The kept one stays pre-existing only when every dropped copy was marked
- * so too, sits outside every hunk of `diff` and cites no line inside one, since a dropped copy's line and proof are lost.
+ * so too and `staysPreExisting` accepts it, since a dropped copy's line and proof are lost.
  */
-export function deduplicateFindings(findings: Finding[], diff?: ParsedDiff): Finding[] {
+export function deduplicateFindings(findings: Finding[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
   const kept = new Map<string, Finding>();
   for (const f of findings) {
     const key = `${f.title}::${f.file}`;
     const first = kept.get(key);
     if (!first) {
       kept.set(key, f);
-    } else if (first.preExisting && (!f.preExisting || (diff && touchesChangedCode(f, diff)))) {
+    } else if (first.preExisting && (!f.preExisting || (staysPreExisting && !staysPreExisting(f)))) {
       const { preExisting: _preExisting, ...unmarked } = first;
       kept.set(key, unmarked);
     }
