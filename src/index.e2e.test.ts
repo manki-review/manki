@@ -917,6 +917,7 @@ describe('runFullReview end to end', () => {
       expect(core.setFailed).not.toHaveBeenCalled();
       expect(mockLLM.calls).toEqual([]);
       expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['DISMISSED', HEAD_SHA], ['APPROVED', HEAD_SHA]]);
+      expect(mockGitHub.comments.filter(c => /Auto-approv/.test(c.body))).toEqual([]);
     });
 
     it('never approves a PR that conflicts with its base, and says so once per head', async () => {

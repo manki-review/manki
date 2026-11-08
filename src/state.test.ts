@@ -18,7 +18,7 @@ jest.mock('./github', () => ({
   ...jest.requireActual('./github'),
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
   postAutoApproveProgressComment: jest.fn().mockResolvedValue(12345),
-  markAutoApproveComplete: jest.fn().mockResolvedValue(undefined),
+  deleteAutoApproveProgressComment: jest.fn().mockResolvedValue(undefined),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
 }));
 
@@ -1009,7 +1009,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
   const ghMock = jest.requireMock('./github') as {
     dismissPreviousReviews: jest.Mock;
     postAutoApproveProgressComment: jest.Mock;
-    markAutoApproveComplete: jest.Mock;
+    deleteAutoApproveProgressComment: jest.Mock;
     markProgressCommentFailed: jest.Mock;
   };
 
@@ -1046,7 +1046,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     } as unknown as Octokit;
   }
 
-  it('posts the in-progress marker before calling createReview and transitions to complete on success', async () => {
+  it('posts the in-progress marker before calling createReview and deletes it once the approval is posted', async () => {
     const callOrder: string[] = [];
     ghMock.postAutoApproveProgressComment.mockImplementationOnce(async () => {
       callOrder.push('post');
@@ -1056,16 +1056,16 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
       callOrder.push('createReview');
       return {};
     });
-    ghMock.markAutoApproveComplete.mockImplementationOnce(async () => {
-      callOrder.push('complete');
+    ghMock.deleteAutoApproveProgressComment.mockImplementationOnce(async () => {
+      callOrder.push('delete');
     });
 
     const octokit = makeMockOctokit({ createReviewFn: createReviewMock });
     const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
-    expect(callOrder).toEqual(['post', 'createReview', 'complete']);
-    expect(ghMock.markAutoApproveComplete).toHaveBeenCalledWith(octokit, 'owner', 'repo', 7777);
+    expect(callOrder).toEqual(['post', 'createReview', 'delete']);
+    expect(ghMock.deleteAutoApproveProgressComment).toHaveBeenCalledWith(octokit, 'owner', 'repo', 7777);
     expect(ghMock.markProgressCommentFailed).not.toHaveBeenCalled();
   });
 
@@ -1088,7 +1088,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
 
     expect(result).toBe(false);
     expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
-    expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
+    expect(ghMock.deleteAutoApproveProgressComment).not.toHaveBeenCalled();
     expect(ghMock.markProgressCommentFailed).not.toHaveBeenCalled();
   });
 
@@ -1104,7 +1104,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
 
     expect(result).toBe(true);
     expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
-    expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
+    expect(ghMock.deleteAutoApproveProgressComment).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1120,11 +1120,11 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
       octokit, 'owner', 'repo', 7777, 'Auto-approve', reason,
     );
     expect(createCommentMock).toHaveBeenCalledTimes(refusal === SETTING_REFUSAL ? 1 : 0);
-    expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
+    expect(ghMock.deleteAutoApproveProgressComment).not.toHaveBeenCalled();
     expect(ghMock.dismissPreviousReviews).not.toHaveBeenCalled();
   });
 
-  it('still transitions to complete when APPROVE fails but the issue-comment fallback succeeds', async () => {
+  it('deletes the progress comment and keeps the settings notice when repository settings refuse the approval', async () => {
     const createReviewMock = jest.fn().mockRejectedValueOnce(new Error(SETTING_REFUSAL));
     const createCommentMock = jest.fn().mockResolvedValueOnce({});
     const octokit = makeMockOctokit({ createReviewFn: createReviewMock, createCommentFn: createCommentMock });
@@ -1140,7 +1140,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     // dedupe gate on subsequent force-review ticks, see [#840]).
     expect(createReviewMock).toHaveBeenCalledTimes(1);
     expect(createReviewMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE' }));
-    expect(ghMock.markAutoApproveComplete).toHaveBeenCalledWith(octokit, 'owner', 'repo', 7777);
+    expect(ghMock.deleteAutoApproveProgressComment).toHaveBeenCalledWith(octokit, 'owner', 'repo', 7777);
     expect(ghMock.markProgressCommentFailed).not.toHaveBeenCalled();
   });
 });
@@ -1164,18 +1164,17 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     saveState.mockRestore();
   });
 
-  it('marks the comment complete, so the post step leaves it alone', async () => {
-    let updatedBody = '';
-    const updateComment = jest.fn().mockImplementation(async ({ body }: { body: string }) => {
-      updatedBody = body;
-      return { data: {} };
-    });
-    const octokit = { rest: { issues: { updateComment } } } as unknown as Octokit;
+  it('deletes the comment, and only warns when the deletion fails', async () => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const deleteComment = jest.fn().mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('gone'));
+    const octokit = { rest: { issues: { deleteComment } } } as unknown as Octokit;
 
-    await ghActual.markAutoApproveComplete(octokit, 'o', 'r', 1);
+    await ghActual.deleteAutoApproveProgressComment(octokit, 'o', 'r', 1);
+    await expect(ghActual.deleteAutoApproveProgressComment(octokit, 'o', 'r', 1)).resolves.toBeUndefined();
 
-    expect(updatedBody).toContain(ghActual.REVIEW_COMPLETE_MARKER);
-    expect(updatedBody).toContain('**Auto-approved:** all findings are resolved.');
+    expect(deleteComment).toHaveBeenCalledWith({ owner: 'o', repo: 'r', comment_id: 1 });
+    expect(warning).toHaveBeenCalledWith('Failed to delete the auto-approve progress comment: gone');
+    warning.mockRestore();
   });
 
   it('marks the comment failed with tokens redacted, so the post step leaves it alone', async () => {

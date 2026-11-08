@@ -726,21 +726,17 @@ export async function postAutoApproveProgressComment(
   return data.id;
 }
 
-/**
- * Transition the auto-approve progress comment to its terminal "complete"
- * state. Adds `REVIEW_COMPLETE_MARKER` so the post step leaves the comment alone.
- */
-export async function markAutoApproveComplete(
+/** Deletes the auto-approve progress comment once the run posted its result, which is the record. */
+export async function deleteAutoApproveProgressComment(
   octokit: Octokit,
   owner: string,
   repo: string,
   commentId: number,
 ): Promise<void> {
-  const body = withMarkers('✅ **Auto-approved:** all findings are resolved.', ...BOT_MARKERS, REVIEW_COMPLETE_MARKER);
   try {
-    await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
+    await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
   } catch (error) {
-    core.warning(`Failed to mark auto-approve comment as complete: ${error instanceof Error ? error.message : error}`);
+    core.warning(`Failed to delete the auto-approve progress comment: ${error instanceof Error ? error.message : error}`);
   }
 }
 
