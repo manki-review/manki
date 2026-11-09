@@ -1752,9 +1752,9 @@ function formatRoundUsage(usage: RoundUsage): string | undefined {
  */
 function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string, serverUrl: string, context?: RoundContext, reviewTimeMs?: number): string {
   const commit = `[\`${commitSha.slice(0, 7)}\`](${repoUrl(serverUrl, owner, repo)}/commit/${commitSha})`;
-  // The routed group says which models read the PR. Without it, the configured finder models did.
+  // The routed group says which models read the PR. Without it, the configured reviewer model did.
   const routed = context?.routing?.reviewers.map(r => r.model);
-  const finders = [...new Set(routed?.length ? routed : [context?.models.reviewer, context?.models.reviewerPair].filter((m): m is string => !!m))].map(m => inlineCode(m));
+  const finders = [...new Set(routed?.length ? routed : [context?.models.reviewer].filter((m): m is string => !!m))].map(m => inlineCode(m));
   const usage = context && formatRoundUsage(context.usage);
   const lines = [
     `- Reviewed ${commit}${context ? `, round ${context.meta.round}` : ''}`,

@@ -10,7 +10,7 @@ The review stages are listed in this order: **planner, reviewer, judge, dedup**.
 
 At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 
-1. **Planner** triages the change (`trivial`, `subtle`, `paired`) and picks the judge effort. `selectTeam` sorts the PR into a review class (`classifyPr` in `src/routing.ts`) and runs the class's review group: the trivial verifier alone, one finder, or two finders on different models. The second finder of a pair gets the `surroundings` lens of `buildFinderAgent`: the same checks, led by readers, sibling state, tests, reuse and repository rules. Security-sensitive, CI or dependency, and data contract paths are floor classes that force two finders.
+1. **Planner** triages the change (`trivial`, `subtle`, `paired`) and picks the judge effort. `selectTeam` sorts the PR into a review class (`classifyPr` in `src/routing.ts`) and runs the class's review group: the trivial verifier alone, one finder, or two finders on different models. Every finder gets the same `buildFinderAgent` checklist, so a pair differs only in its models. Security-sensitive, CI or dependency, and data contract paths are floor classes that force two finders.
 2. **Finders** run in parallel and produce findings. A finder that fails after its retry makes the round incomplete.
 3. **Dedup** drops findings matching resolved findings from earlier rounds, first statically, then with the `dedup` model.
 4. **Judge** evaluates the rest, merges same-round duplicates and classifies them by severity. Memory suppressions then hide matching findings, never a blocker, a security finding or a tool alert. `determineOutcome` then decides whether any finding blocks.

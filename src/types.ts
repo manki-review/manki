@@ -517,8 +517,6 @@ export interface ReviewResult {
   trivialOverridden?: boolean;
   /** Model each agent ran on. Keyed by agent name. */
   agentModels?: Map<string, string>;
-  /** Name of the second finder, when one ran. */
-  pairAgentName?: string;
   /** How the round's review group was picked. */
   routing?: TeamRouting;
   /** Per-agent multi-pass intersection stats. Keyed by agent name. */
@@ -549,8 +547,6 @@ export interface Finder {
   /** Display name, unique in its round, such as "Claude Sonnet 5.5 · high". Labels its findings, metrics and progress line. */
   name: string;
   prompt: ReviewerAgent;
-  /** Position in its review group. The second reader, index 1, is the pair finder. */
-  index: number;
   model: string;
   effort: EffortLevel;
   /** How many tool calls the finder may make when its client has repository tools. */
@@ -1316,8 +1312,6 @@ export interface RoundDiff {
 export interface RoundModels {
   planner?: string;
   reviewer: string;
-  /** Model of the second finder, on rounds where one ran. */
-  reviewerPair?: string;
   judge: string;
   /** Model of the second refuter, on rounds where it checked a finding. */
   refuterPair?: string;
@@ -1394,16 +1388,6 @@ export interface RoundReviewers {
   agentMetrics?: RoundAgentMetric[];
   /** Every finding the finders reported, before suppressions, dedup and the judge. */
   rawFindings?: RoundRawFinding[];
-  /** Kept findings raised only by agents on `models.reviewer`. */
-  keptPrimaryOnly?: number;
-  /** Kept findings raised only by the second finder. */
-  keptPairOnly?: number;
-  /** Kept findings raised by the second finder and an agent on `models.reviewer`. */
-  keptBoth?: number;
-  /** Kept findings raised by one finder alone, keyed by finder name. Finders with none are left out. */
-  keptOnlyBy?: Record<string, number>;
-  /** Kept findings raised by two or more finders. */
-  keptByMany?: number;
 }
 
 /** A finding as the finders reported it. */
@@ -1449,11 +1433,12 @@ export interface RoundAgentMetric {
   retryCount?: number;
   /** Last-failure reason recorded by the reviewer loop. Present only when retries exhausted. */
   failureReason?: string;
-  /**
-   * Model the agent ran on: `RoundModels.reviewer`, or `RoundModels.reviewerPair`
-   * for the second finder. Present whenever the agent ran.
-   */
+  /** Model the agent ran on. Present whenever the agent ran. */
   model?: string;
+  /** Kept findings this finder raised and no other finder did. */
+  keptOnly?: number;
+  /** Kept findings this finder raised together with another finder. */
+  keptShared?: number;
   /** Effort level the agent ran with. */
   effort?: EffortLevel;
   /**
