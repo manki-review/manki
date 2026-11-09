@@ -2043,6 +2043,12 @@ describe('llmDeduplicateFindings', () => {
     expect(result.duplicates[0].matchedTitle).toBe('Null safety issue');
     expect(result.duplicates[0].matchType).toBe('llm');
 
+    // A lockfile alert never reaches the model, so a match it would name can't drop it.
+    const alert = makeFinding({ title: 'lockfile-change: updated hey 0.4.3 -> 0.4.2: downgrade.', file: 'Cargo.lock', line: 44 });
+    jest.mocked(mockClient.sendMessage).mockClear();
+    const withAlert = await llmDeduplicateFindings([alert, ...findings], previous, mockClient);
+    expect([withAlert.unique.map(f => f.title), jest.mocked(mockClient.sendMessage).mock.calls[0][1]]).toEqual([[alert.title, 'Unused import'], expect.not.stringContaining('lockfile-change')]);
+
     const fixed = makePrevious({ ...previous[0], fixed: true });
     const kept = await llmDeduplicateFindings(findings, [fixed], mockClient);
     expect(kept.duplicates).toHaveLength(0);

@@ -1061,6 +1061,12 @@ async function llmDeduplicateFindings(
   previousFindings: PreviousFinding[],
   client: LLMClient,
 ): Promise<{ unique: Finding[]; duplicates: DuplicateMatch[] }> {
+  // A lockfile alert names its package and change, so only the exact static match may drop it.
+  const alerts = findings.filter(f => f.title.startsWith(`${LOCKFILE_RULE}:`));
+  if (alerts.length > 0) {
+    const rest = await llmDeduplicateFindings(findings.filter(f => !alerts.includes(f)), previousFindings, client);
+    return { unique: [...alerts, ...rest.unique], duplicates: rest.duplicates };
+  }
   const resolved = withPostedLine(previousFindings).filter(f => f.status === 'resolved');
   if (findings.length === 0 || resolved.length === 0) {
     return { unique: findings, duplicates: [] };

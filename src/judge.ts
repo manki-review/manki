@@ -799,8 +799,8 @@ export function buildJudgeUserMessage(
   if (changedFiles && changedFiles.length > 0) {
     parts.push(`## Changed Files in This PR\n`);
     for (const file of changedFiles) {
-      const additions = file.hunks.reduce((a, h) => a + h.newLines, 0);
-      const deletions = file.hunks.reduce((a, h) => a + h.oldLines, 0);
+      const additions = file.additions ?? file.hunks.reduce((a, h) => a + h.newLines, 0);
+      const deletions = file.deletions ?? file.hunks.reduce((a, h) => a + h.oldLines, 0);
       const stats = `+${additions}/-${deletions}`;
       const hunkContexts = file.hunks.map(h => {
         const firstLine = h.content.split('\n')[0]?.trim() || '';

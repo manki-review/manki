@@ -1274,7 +1274,7 @@ describe('runJudgeAgent', () => {
 
   it('shows the judge the package list of a parsed lockfile in place of its hunks', async () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', severity: 'warning', reasoning: 'r', confidence: 'high' }] }) });
-    const lockfile = makeDiffFile({ path: 'Cargo.lock', hunks: [makeHunk({ content: ' name = "hex"\n-version = "0.4.2"\n+version = "0.4.3"' })] });
+    const lockfile = makeDiffFile({ path: 'Cargo.lock', additions: 1, deletions: 1, hunks: [makeHunk({ content: ' name = "hex"\n-version = "0.4.2"\n+version = "0.4.3"' })] });
     const changes = [{ kind: 'updated' as const, name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', fields: [], flags: ['downgrade' as const], line: 5 }];
 
     await runJudgeAgent(mockClient, makeConfig(), {
@@ -1285,7 +1285,7 @@ describe('runJudgeAgent', () => {
     const [, userMessage] = mockSendMessage.mock.calls[0];
     expect(userMessage).toContain('## Lockfile Changes\n');
     expect(userMessage).toContain('```\nCargo.lock\n  updated hex 0.4.2 -> 0.4.3 (line 5) [downgrade]\n```');
-    expect(userMessage).toContain('### Cargo.lock');
+    expect(userMessage).toContain('### Cargo.lock (+1/-1)');
     expect(userMessage).not.toMatch(/version = "0\.4\.3"|name = "hex"/);
 
     // With no finding on the lockfile, the judge gets neither its list nor its hunks.

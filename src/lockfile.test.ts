@@ -161,6 +161,9 @@ describe('readLockfileChanges', () => {
       [42, 'changed zeroize 1.8.1,'], [25, 'changed hex 0.4.3, che'], [16, '2 more lockfile change'],
     ]);
     expect(lockfileSignals(lockfiles, 3)[2].message).toBe('2 more lockfile changes need a reason: bls, untrusted. See the Lockfile Changes list.');
+    const many = `version = 4\n${Array.from({ length: 30 }, (_, i) => `\n[[package]]\nname = "c${i}"\nversion = "1.0.0"\nsource = "git+https://github.com/example/c${i}#a"\n`).join('')}`;
+    const summary = lockfileSignals(read('Cargo.lock', null, many), 5)[4].message;
+    expect([summary.split(', ').length, summary.endsWith(' and others. See the Lockfile Changes list.')]).toEqual([20, true]);
     // A patch is read against the content before it, which gives the same list.
     expect(readLockfileChanges(diffOf('Cargo.lock', CARGO_BASE, CARGO_HEAD), new Map([['Cargo.lock', CARGO_BASE]]), 'base')).toEqual(lockfiles);
   });

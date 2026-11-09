@@ -5,6 +5,9 @@ import { isMap, isScalar, LineCounter, parseDocument } from 'yaml';
 import { addedLines, parsePRDiff, rebuildRawDiff } from './diff';
 import { DiffFile, ParsedDiff, StaticSignal } from './types';
 
+/** How many packages the alert past the alert cap names. */
+const MAX_NAMED = 20;
+
 /** The most characters the package lists of one PR take. A lockfile past it stays unread, so a person reviews it. */
 const MAX_LIST_CHARS = 100_000;
 
@@ -119,7 +122,7 @@ export function lockfileSignals(lockfiles: LockfileDiff[], max: number): StaticS
   return [
     ...kept.map(({ path, c }) => alert(path, c.line ?? 1, `${describeChange(c)}: ${c.flags.join(', ')}. A lockfile change like this needs a reason the PR gives.`)),
     // Past the cap, one alert names the rest, so no flagged package goes unmentioned.
-    ...(rest.length > 0 ? [alert(rest[0].path, rest[0].c.line ?? 1, `${rest.length} more lockfile changes need a reason: ${rest.map(({ c }) => clean(c.name)).join(', ')}. See the Lockfile Changes list.`)] : []),
+    ...(rest.length > 0 ? [alert(rest[0].path, rest[0].c.line ?? 1, `${rest.length} more lockfile changes need a reason: ${rest.slice(0, MAX_NAMED).map(({ c }) => clean(c.name)).join(', ')}${rest.length > MAX_NAMED ? ' and others' : ''}. See the Lockfile Changes list.`)] : []),
   ];
 }
 
