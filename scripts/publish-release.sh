@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tags and publishes a release that the `Release` workflow built on `release/vX.Y.Z`.
 # The `Publish release` workflow runs it with a token from the release App. Run by hand, it
-# needs an org admin, because the tag ruleset blocks everyone else from writing `v*` tags.
+# needs a repository admin, because the tag ruleset blocks everyone else from writing `v*` tags.
 # Safe to rerun: it skips every step that is already done.
 #
 # Usage: scripts/publish-release.sh [--dry-run] [--verified=SHA] vX.Y.Z
