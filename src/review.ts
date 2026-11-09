@@ -359,8 +359,6 @@ export interface ReviewProgress {
   retryCount?: number;
   /** Names of the agents that read the diff. Emitted with the `planning` event that follows team selection. */
   teamAgentNames?: string[];
-  /** Effort those agents run at. Emitted with `teamAgentNames`. */
-  reviewerEffort?: EffortLevel;
   /** Review class and group those agents came from. Emitted with `teamAgentNames`. */
   routing?: TeamRouting;
   /** True when the planner failed or timed out, so the fail-safe triage was used. */
@@ -645,7 +643,6 @@ export async function runReview(
   }
   const team = selectTeam(diff, config, plannerResult ?? undefined, options.deeper);
   const judgeEffort = plannerResult?.judgeEffort ?? 'high';
-  const reviewerEffort = team.finders[0].effort;
   const { trivial, subtle, paired } = team.triage;
   core.info(`Triage (${plannerSource}): trivial=${trivial}, subtle=${subtle}, paired=${paired}${team.sensitivePaths ? ', security-sensitive paths' : ''}${team.ciOrDependencyPaths ? ', CI or dependency paths' : ''}${team.trivialOverridden ? ', planner trivial answer overridden by the changed files' : ''}`);
   const { routing } = team;
@@ -654,7 +651,7 @@ export async function runReview(
   if (routing.weakerAllowed) {
     core.warning(`\`review.allow_weaker\` lets this ${routing.weakerAllowed.join(', ')} change run on the ${routing.group} group, below the floor of two finders on two models`);
   }
-  core.info(`Review team: ${team.finders.map(f => f.name).join(', ')} at ${reviewerEffort} effort, judge: ${judgeEffort}${plannerResult ? ` (${plannerResult.prType})` : ''}`);
+  core.info(`Review team: ${team.finders.map(f => f.name).join(', ')}, judge: ${judgeEffort}${plannerResult ? ` (${plannerResult.prType})` : ''}`);
   if (trivial) {
     core.info(`trivial decision: prType=${plannerResult?.prType}, lines=${diff.totalAdditions + diff.totalDeletions}, files=${diff.files.length}`);
   }
@@ -662,7 +659,6 @@ export async function runReview(
     onProgress({
       phase: 'planning',
       teamAgentNames: team.finders.map(f => f.name),
-      reviewerEffort,
       routing,
       ...(plannerResult && { plannerResult }),
       ...(plannerSource === 'heuristic_fallback' && { heuristicFallback: true }),

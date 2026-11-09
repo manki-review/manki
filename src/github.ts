@@ -669,7 +669,7 @@ export function buildDashboard(data: DashboardData): string {
       `${data.plannerInfo.agentCount} agents`,
     ];
     plannerLines.push(`${INDENT}${summaryParts.join(' · ')}`);
-    plannerLines.push(`${INDENT}review effort: ${sanitizeEffort(data.plannerInfo.reviewerEffort)} · judge effort: ${sanitizeEffort(data.plannerInfo.judgeEffort)}`);
+    plannerLines.push(`${INDENT}judge effort: ${sanitizeEffort(data.plannerInfo.judgeEffort)}`);
   } else {
     const plannerDur = data.plannerDurationMs != null ? ` (${formatDuration(data.plannerDurationMs)})` : '';
     plannerLines.push(`**Planner**${plannerDur}`);

@@ -1138,10 +1138,9 @@ async function reviewRound(
       if (event.phase === 'planning') {
         core.info('Planner analyzing PR content...');
         if (event.teamAgentNames) {
-          if (event.plannerResult && event.reviewerEffort) {
+          if (event.plannerResult) {
             dashboard.plannerInfo = {
               agentCount: event.teamAgentNames.length,
-              reviewerEffort: event.reviewerEffort,
               judgeEffort: event.plannerResult.judgeEffort,
               prType: event.plannerResult.prType,
             };
@@ -1387,11 +1386,9 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   // agentProgress accurate.
   reconcileDashboardAgents(dashboard, result.agentNames);
 
-  const reviewerEffort = result.agentEffortMap?.values().next().value;
-  if (result.plannerResult && reviewerEffort) {
+  if (result.plannerResult) {
     dashboard.plannerInfo = {
       agentCount: result.agentNames.length,
-      reviewerEffort,
       judgeEffort: result.plannerResult.judgeEffort,
       prType: result.plannerResult.prType,
     };

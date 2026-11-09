@@ -69,7 +69,6 @@ function fullyPopulatedContext(): RoundContext {
       source: 'planner',
       used: true,
       teamSize: 3,
-      reviewerEffort: 'medium',
       judgeEffort: 'high',
       prType: 'feat',
       durationMs: 1200,

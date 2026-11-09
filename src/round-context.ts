@@ -109,7 +109,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
   const allJudged = result.allJudgedFindings ?? [];
   const rawFindings = result.rawFindings ?? allJudged;
   const agentModels = result.agentModels ?? new Map<string, string>();
-  const reviewerEffort = result.agentEffortMap?.values().next().value;
   const llmCalls = result.llmCalls ?? [];
   const keptFinders = result.findings.map(f => new Set(f.reviewers.filter(r => agentNames.includes(r))));
   const agentMetrics = agentNames.length > 0
@@ -316,7 +315,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
         ...(result.ciOrDependencyPaths != null && { ciOrDependencyPaths: result.ciOrDependencyPaths }),
         ...(result.trivialOverridden && { trivialOverridden: true }),
         teamSize: result.agentNames.length,
-        ...(reviewerEffort && { reviewerEffort }),
       };
       if (!result.plannerResult) return base;
       return {
