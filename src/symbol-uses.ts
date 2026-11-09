@@ -65,6 +65,8 @@ const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
 const MAX_ITEM_CHARS = 60;
 const MAX_BASES = 8;
+/** The types followed to tell whether a type derives from another. A longer line of bases may, so its uses are kept. */
+const MAX_LINEAGE = 16;
 /** The longest item source read before its whitespace is collapsed to at most `MAX_ITEM_CHARS`. */
 const MAX_ITEM_SOURCE_CHARS = 4 * MAX_ITEM_CHARS;
 /** A field pattern reads only this much of a line, which holds any declaration, so a crafted line cannot slow it. */
@@ -206,9 +208,12 @@ const RULES: Record<Family, FamilyRules> = {
     index: 'subscript_expression',
     owners: { class_declaration: { type: 'name' }, abstract_class_declaration: { type: 'name' } },
     selfName: () => 'this',
-    // A class names its bases in `extends` and `implements` clauses, an interface in one `extends` clause.
-    bases: scope => scope.children().flatMap(c => c.kind() === 'class_heritage' ? c.children() : c.kind() === 'extends_type_clause' ? [c] : [])
-      .flatMap(clause => clause.children().filter(c => c.isNamed())),
+    // A class names its bases in `extends` and `implements` clauses, an interface in one `extends` clause, and a type
+    // alias anywhere in its value, such as `Base & { extra: number }`.
+    bases: scope => scope.kind() === 'type_alias_declaration'
+      ? scope.field('value')?.findAll({ rule: { kind: 'type_identifier' } }) ?? []
+      : scope.children().flatMap(c => c.kind() === 'class_heritage' ? c.children() : c.kind() === 'extends_type_clause' ? [c] : [])
+        .flatMap(clause => clause.children().filter(c => c.isNamed())),
   },
   python: {
     declarations: { class_definition: 'type', function_definition: 'function', assignment: 'field' },
@@ -890,6 +895,8 @@ class ParsedFile {
   private readonly fieldsByLine = new Map<number, Declaration[]>();
   /** Each field as `Type.field`, by the name of the type that declares it. */
   private readonly ownFields = new Set<string>();
+  /** The types and enum variants this file declares, the first of each name. */
+  private readonly typesByName = new Map<string, Declaration>();
   /** The methods that name their receiver, by first line, and their first lines. */
   private readonly selfMethods: Method[];
   private readonly selfStarts: number[];
@@ -916,7 +923,10 @@ class ParsedFile {
       if (decl.container) appendTo(this.members, decl.container, decl);
       if (decl.kind === 'field') appendTo(this.fieldsByLine, lineOf(decl.node), decl);
     }
-    for (const decl of this.declarations) if (decl.kind === 'field' && decl.container) this.ownFields.add(`${this.byKey.get(decl.container)?.name}.${decl.name}`);
+    for (const decl of this.declarations) {
+      if (decl.kind === 'field' && decl.container) this.ownFields.add(`${this.byKey.get(decl.container)?.name}.${decl.name}`);
+      if ((decl.kind === 'type' || decl.kind === 'variant') && !this.typesByName.has(decl.name)) this.typesByName.set(decl.name, decl);
+    }
     this.methods = this.findMethods();
     this.selfMethods = this.methods.filter(m => m.self).sort((a, b) => a.decl.start - b.decl.start);
     this.selfStarts = this.selfMethods.map(m => m.decl.start);
@@ -1114,8 +1124,8 @@ class ParsedFile {
 
   /**
    * Whether every `name` on `line` is a field of one type other than `owner`: the line declares that type's field, or
-   * reads it as `self.name` in a method of a type that declares its own `name`. A subclass of `owner` counts as `owner`,
-   * and a read the parser cannot place, such as `x.name` on a local, counts as a use of `owner`.
+   * reads it as `self.name` in a method of a type that declares its own `name`. A type that may derive from `owner`
+   * counts as `owner`, and a read the parser cannot place, such as `x.name` on a local, counts as a use of `owner`.
    */
   readsOtherType(name: string, line: number, owner: string): boolean {
     const text = this.lines[line - 1] ?? '';
@@ -1124,15 +1134,32 @@ class ParsedFile {
     const word = wordPattern([name]);
     const total = code.match(new RegExp(word.source, 'g'))?.length ?? 0;
     const type = this.byKey.get(this.fieldContainer(name, line) ?? '');
-    let other: { name: string; bases: string[] } | undefined;
+    let other: string | undefined;
     if (type) {
-      if (total === 1) other = { name: type.name, bases: this.basesOf(type.node) };
+      if (total === 1) other = type.name;
     } else {
       const method = this.methodAt(line);
       const reads = method ? code.match(new RegExp(`(?<![\\w$])${escapeRegExp(method.self!)}\\s*\\??\\.\\s*${word.source}`, 'g'))?.length ?? 0 : 0;
-      if (method && reads > 0 && reads === total && this.ownFields.has(`${method.owner}.${name}`)) other = { name: method.owner, bases: method.bases };
+      if (method && reads > 0 && reads === total && this.ownFields.has(`${method.owner}.${name}`)) other = method.owner;
     }
-    return !!other && other.name !== owner && !other.bases.some(base => base.split(/\.|::/).at(-1) === owner);
+    return other !== undefined && !this.mayDeriveFrom(other, owner);
+  }
+
+  /**
+   * Whether type `name` is `owner` or may derive from it. It follows the bases of the types this file declares, at most
+   * `MAX_LINEAGE` of them, and a base declared in another file may derive from `owner`.
+   */
+  private mayDeriveFrom(name: string, owner: string): boolean {
+    const lineage = [name];
+    for (let i = 0; i < lineage.length; i++) {
+      const type = this.typesByName.get(lineage[i]);
+      if (lineage[i] === owner || !type || i >= MAX_LINEAGE) return true;
+      for (const base of this.basesOf(type.node)) {
+        const last = base.split(/\.|::/).at(-1)!;
+        if (!lineage.includes(last)) lineage.push(last);
+      }
+    }
+    return false;
   }
 
   /** Returns the method of `selfMethods` that holds `line`, the last one starting at or before it. */

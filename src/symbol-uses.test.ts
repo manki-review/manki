@@ -105,20 +105,21 @@ describe('listUsesOutsideDiff', () => {
       {
         changed: 'app/account.py', before: 'class Account:\n    balance: int = 0\n', after: 'class Account:\n    balance: float = 0.0\n',
         ledger: 'app/ledger.py', report: 'app/report.py',
-        ledgerText: `from .account import Account\n\n${reads(i => `def read_${i}(a: Account):\n    return a.balance\n`)}\nclass AccountView:\n    def __init__(self):\n        self.balance = 0\n\n    def shown(self):\n        return self.balance\n\n\nclass Savings(Account):\n    def __init__(self):\n        self.balance = 1\n`,
+        ledgerText: `from .account import Account\n\n${reads(i => `def read_${i}(a: Account):\n    return a.balance\n`)}\nclass ViewBase:\n    pass\n\n\nclass AccountView(ViewBase):\n    def __init__(self):\n        self.balance = 0\n\n    def shown(self):\n        return self.balance\n\n\n`
+          + ['Savings(Account)', 'Premium(Savings)', 'Imported(Remote)'].map((c, i) => `class ${c}:\n    def __init__(self):\n        self.balance = ${i}\n`).join('\n\n'),
         reportText: 'def opened(event):\n    return event.holder.balance\n',
         shown: (n: number) => `app/ledger.py:${3 * n + 4}: return a.balance`, reportLine: 'app/report.py:2: return event.holder.balance',
-        // A subclass's own field is the changed field, overridden.
-        last: 'app/ledger.py:28: self.balance = 1',
+        // A subclass's own field is the changed field, overridden, and so is one whose base may derive from the changed type.
+        extra: ['app/ledger.py:32: self.balance = 0', 'app/ledger.py:37: self.balance = 1', 'app/ledger.py:42: self.balance = 2'],
       },
       {
         changed: 'src/account.ts', before: 'export interface Account {\n  balance: number;\n}\n', after: 'export interface Account {\n  balance: bigint;\n}\n',
         ledger: 'src/ledger.ts', report: 'src/report.ts',
-        ledgerText: `import { Account } from './account';\n\n${reads(i => `export const read${i} = (a: Account) => a.balance;`)}\n\nexport class AccountView {\n  balance = 0;\n\n  shown() {\n    return this.balance;\n  }\n}\n\nexport interface Joint extends Account {\n  balance: bigint;\n}\n`,
+        ledgerText: `import { Account } from './account';\n\n${reads(i => `export const read${i} = (a: Account) => a.balance;`)}\n\nexport class AccountView {\n  balance = 0;\n\n  shown() {\n    return this.balance;\n  }\n}\n\nexport interface Joint extends Account {\n  balance: bigint;\n}\n\nexport type Shared = Account & {\n  balance: bigint;\n};\n`,
         reportText: 'export const opened = (e: Event) => e.holder.balance;\n',
         shown: (n: number) => `src/ledger.ts:${n + 3}: export const read${n} = (a: Account) => a.balance;`, reportLine: 'src/report.ts:1: export const opened = (e: Event) => e.holder.balance;',
-        // An interface that extends the changed one declares the same field.
-        last: 'src/ledger.ts:18: balance: bigint;',
+        // An interface that extends the changed one, and a type that names it, declare the same field.
+        extra: ['src/ledger.ts:18: balance: bigint;', 'src/ledger.ts:22: balance: bigint;'],
       },
       {
         changed: 'bank/account.go', before: 'package bank\n\ntype Account struct {\n\tBalance int64\n}\n', after: 'package bank\n\ntype Account struct {\n\tBalance uint64\n}\n',
@@ -128,12 +129,12 @@ describe('listUsesOutsideDiff', () => {
         shown: (n: number) => `bank/ledger.go:${n + 3}: func Read${n}(a Account) uint64 { return a.Balance }`, reportLine: 'bank/report.go:3: func Opened(e Event) uint64 { return e.Holder.Balance }',
       },
     ];
-    for (const { changed, before, after, ledger, report, ledgerText, reportText, shown, reportLine, last } of cases) {
+    for (const { changed, before, after, ledger, report, ledgerText, reportText, shown, reportLine, extra = [] } of cases) {
       const { section } = await usesFor({ [changed]: before, [ledger]: ledgerText, [report]: reportText }, { [changed]: after });
       const block = section.match(/### `[Bb]alance` \(field of `Account`\)\n\n```\n[^`]*```/)?.[0];
       // The report never names `Account`, yet its one use comes before the ledger's fourth.
       expect(block).toBe(`### \`${changed.endsWith('.go') ? 'Balance' : 'balance'}\` (field of \`Account\`)\n\n\`\`\`\ndeclared at ${changed}:${changed.endsWith('.go') ? 4 : 2}\n${[
-        shown(0), shown(1), shown(2), reportLine, shown(3), shown(4), ...(last ? [last] : []),
+        shown(0), shown(1), shown(2), reportLine, shown(3), shown(4), ...extra,
       ].join('\n')}\n\`\`\``);
       expect(section).not.toMatch(/AccountView|this\.balance|self\.balance$|v\.Balance/m);
     }
