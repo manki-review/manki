@@ -2355,14 +2355,14 @@ describe('runReview', () => {
         { severity: 'warning', title: 'Timeout is never applied', file: 'src/a.ts', line: 44, description: 'Hangs.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:44'] } },
         { severity: 'warning', title: 'Buffer is never flushed', file: 'src/a.ts', line: 41, description: 'Loses data.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:41'] } },
         { severity: 'warning', title: 'Retry count ignored', file: 'src/a.ts', line: 90, description: 'Retries forever.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:43'] } },
-        { severity: 'warning', title: 'Header is parsed twice', file: 'src/a.ts', line: 38, description: 'Slow.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/util.ts:10'] } },
+        { severity: 'warning', title: 'Header is parsed twice', file: 'src/a.ts', line: 38, description: 'Slow.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/util.ts:39'] } },
         { severity: 'warning', title: 'Lock order differs', file: 'src/a.ts', line: 39, description: 'Deadlocks.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:80'] } },
       ],
     });
     jest.mocked(reworded.judge.sendMessage).mockResolvedValue({
       content: JSON.stringify({
         verdict: 'ADDRESS_FIRST',
-        blockers: [{ file: 'src/a.ts', line: 40, title: 'Close is skipped after an early return', description: 'The handle stays open.', proof: ['src/a.ts:40', 'src/a.ts:43', 'src/util.ts:10', 'src/a.ts:80'] }],
+        blockers: [{ file: 'src/a.ts', line: 40, title: 'Close is skipped after an early return', description: 'The handle stays open.', proof: ['src/a.ts:40', 'src/a.ts:43', 'src/util.ts:39', 'src/a.ts:80'] }],
         summary: 'Leak.', whatThisDoes: '', whatToTest: '',
       }),
     });
