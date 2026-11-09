@@ -35,8 +35,16 @@ const PARSERS: Readonly<Record<string, Parser>> = {
   'pnpm-lock.yaml': parsePnpmLock,
 };
 
-type PackageFlag = 'source changed' | 'source no other package uses' | 'git source' | 'path source'
-  | 'source does not name this package and version' | 'checksum changed without a version change' | 'downgrade';
+/** The flags, most telling first, the order the alerts keep when there are too many. */
+const FLAG_ORDER = [
+  'source changed', 'source does not name this package and version', 'checksum changed without a version change',
+  'git source', 'path source', 'unfamiliar registry', 'downgrade',
+] as const;
+
+type PackageFlag = typeof FLAG_ORDER[number];
+
+/** The rule id of a lockfile alert. Its title names the package and the change. */
+export const LOCKFILE_RULE = 'lockfile-change';
 
 export interface PackageChange {
   kind: 'added' | 'removed' | 'updated' | 'changed';
@@ -101,12 +109,18 @@ export function formatLockfileChanges(lockfiles: LockfileDiff[]): string {
 }
 
 /** Returns one Manki alert per package change that needs a reason, on the lockfile line the change sits at. */
-export function lockfileSignals(lockfiles: LockfileDiff[]): StaticSignal[] {
-  return lockfiles.flatMap(({ path, changes }) => changes.filter(c => c.flags.length > 0).map((c): StaticSignal => ({
-    tool: 'Manki', ruleId: 'lockfile-change', severity: 'warning', file: path, line: c.line ?? 1,
-    message: `${describeChange(c)}: ${c.flags.join(', ')}. A lockfile change like this needs a reason the PR gives.`,
-    source: 'lockfile',
-  })));
+export function lockfileSignals(lockfiles: LockfileDiff[], max: number): StaticSignal[] {
+  const rank = (c: PackageChange) => Math.min(...c.flags.map(f => FLAG_ORDER.indexOf(f)));
+  const flagged = lockfiles.flatMap(({ path, changes }) => changes.filter(c => c.flags.length > 0).map(c => ({ path, c })))
+    .sort((a, b) => rank(a.c) - rank(b.c));
+  const alert = (file: string, line: number, message: string): StaticSignal => ({ tool: 'Manki', ruleId: LOCKFILE_RULE, severity: 'warning', file, line, message, source: 'lockfile' });
+  const kept = flagged.length > max ? flagged.slice(0, max - 1) : flagged;
+  const rest = flagged.slice(kept.length);
+  return [
+    ...kept.map(({ path, c }) => alert(path, c.line ?? 1, `${describeChange(c)}: ${c.flags.join(', ')}. A lockfile change like this needs a reason the PR gives.`)),
+    // Past the cap, one alert names the rest, so no flagged package goes unmentioned.
+    ...(rest.length > 0 ? [alert(rest[0].path, rest[0].c.line ?? 1, `${rest.length} more lockfile changes need a reason: ${rest.map(({ c }) => clean(c.name)).join(', ')}. See the Lockfile Changes list.`)] : []),
+  ];
 }
 
 /** Returns `diff` with the files of `lockfiles` it leaves out, so a parsed lockfile counts as changed. */
@@ -211,8 +225,8 @@ function diffEntries(before: LockEntry[], after: LockEntry[], file: DiffFile): P
     }
   }
   // An added package from a registry or repository no package used before needs a reason, even when its URL looks standard.
-  const known = new Set(before.filter(e => e.isPackage).map(e => sourceOrigin(e.source)));
-  const newOrigin = (a: LockEntry): PackageFlag[] => known.size > 0 && !known.has(sourceOrigin(a.source)) && sourceKind(a.source) === 'registry' ? ['source no other package uses'] : [];
+  const known = knownOrigins(before, after);
+  const newOrigin = (a: LockEntry): PackageFlag[] => known.size > 0 && !known.has(sourceOrigin(a.source)) && sourceKind(a.source) === 'registry' ? ['unfamiliar registry'] : [];
   const lineIn = entryLines(after, file);
   const changes: PackageChange[] = [
     ...pairs.map(([b, a]) => changeOf(b, a, lineIn(a))),
@@ -222,6 +236,19 @@ function diffEntries(before: LockEntry[], after: LockEntry[], file: DiffFile): P
     ...unpaired.removed.map((b): PackageChange => ({ kind: 'removed', name: b.name, oldVersion: b.version, oldSource: b.source, fields: [], flags: [] })),
   ];
   return changes.sort((x, y) => x.name.localeCompare(y.name) || (x.line ?? 0) - (y.line ?? 0));
+}
+
+/**
+ * Returns the registries an added package may come from without an alert: those the lockfile used before, or, for a new
+ * lockfile, the one most of its packages use.
+ */
+function knownOrigins(before: LockEntry[], after: LockEntry[]): Set<string | undefined> {
+  const used = before.filter(e => e.isPackage).map(e => sourceOrigin(e.source));
+  if (used.length > 0) return new Set(used);
+  const counts = new Map<string | undefined, number>();
+  for (const e of after.filter(e => e.isPackage && sourceKind(e.source) === 'registry')) counts.set(sourceOrigin(e.source), (counts.get(sourceOrigin(e.source)) ?? 0) + 1);
+  const top = [...counts].sort((a, b) => b[1] - a[1])[0];
+  return new Set(top ? [top[0]] : []);
 }
 
 function byName(entries: LockEntry[]): Map<string, LockEntry[]> {

@@ -150,12 +150,17 @@ describe('readLockfileChanges', () => {
       '  updated untrusted 0.9.0 -> 0.7.1 (line 35) [downgrade]',
       `  changed zeroize 1.8.1, source ${CRATES_IO} -> sparse+https://crates.example.com/index/ (line 42) [source changed]`,
     ].join('\n'));
-    expect(lockfileSignals(lockfiles)).toEqual([
-      expect.objectContaining({ tool: 'Manki', ruleId: 'lockfile-change', severity: 'warning', file: 'Cargo.lock', line: 16, source: 'lockfile', message: expect.stringContaining(': git source. ') }),
+    // The most telling flags go first, so a cap keeps them, and one alert names the packages past it.
+    expect(lockfileSignals(lockfiles, 50)).toEqual([
+      expect.objectContaining({ tool: 'Manki', ruleId: 'lockfile-change', severity: 'warning', file: 'Cargo.lock', line: 42, source: 'lockfile', message: expect.stringContaining(': source changed. ') }),
       expect.objectContaining({ line: 25, message: expect.stringMatching(/^changed hex 0\.4\.3, checksum changed: checksum changed without a version change\. /) }),
+      expect.objectContaining({ line: 16, message: expect.stringContaining(': git source. ') }),
       expect.objectContaining({ line: 35, message: expect.stringMatching(/^updated untrusted 0\.9\.0 -> 0\.7\.1: downgrade\. /) }),
-      expect.objectContaining({ line: 42, message: expect.stringContaining(': source changed. ') }),
     ]);
+    expect(lockfileSignals(lockfiles, 3).map(s => [s.line, s.message.slice(0, 22)])).toEqual([
+      [42, 'changed zeroize 1.8.1,'], [25, 'changed hex 0.4.3, che'], [16, '2 more lockfile change'],
+    ]);
+    expect(lockfileSignals(lockfiles, 3)[2].message).toBe('2 more lockfile changes need a reason: bls, untrusted. See the Lockfile Changes list.');
     // A patch is read against the content before it, which gives the same list.
     expect(readLockfileChanges(diffOf('Cargo.lock', CARGO_BASE, CARGO_HEAD), new Map([['Cargo.lock', CARGO_BASE]]), 'base')).toEqual(lockfiles);
   });
@@ -169,7 +174,7 @@ describe('readLockfileChanges', () => {
       `  added syn 1.0.109 from ${CRATES_IO} (line 5)`,
       `  added syn 2.0.10 from ${CRATES_IO} (line 8) [downgrade]`,
     ].join('\n'));
-    expect(lockfileSignals(read('Cargo.lock', lock(['2.0.60']), lock(['1.0.109', '2.0.61'])))).toEqual([]);
+    expect(lockfileSignals(read('Cargo.lock', lock(['2.0.60']), lock(['1.0.109', '2.0.61'])), 50)).toEqual([]);
   });
 
   it('flags a new commit of a git dependency, but not a git dependency whose source stays', () => {
@@ -179,7 +184,7 @@ describe('readLockfileChanges', () => {
       'Cargo.lock',
       '  changed bls 0.2.0, source git+https://github.com/example/bls?branch=main#aaaa -> git+https://github.com/example/bls?branch=main#bbbb (line 6) [git source]',
     ].join('\n'));
-    expect(lockfileSignals(read('Cargo.lock', git('aaaa', ' "hex",\n'), git('aaaa', ' "hex",\n "serde",\n')))).toEqual([]);
+    expect(lockfileSignals(read('Cargo.lock', git('aaaa', ' "hex",\n'), git('aaaa', ' "hex",\n "serde",\n')), 50)).toEqual([]);
   });
 
   it('lists a package-lock.json with the source of each added package, and flags a tarball from another host whose checksum changed', () => {
@@ -233,13 +238,22 @@ ${packages}
       '  changed app 1.0.0 (line 11)',
       '    added dependencies.is-odd = ^3.0.1',
       '    changed dependencies.lodash: ^4.17.20 -> ^4.17.21',
-      '  added is-odd 3.0.1 from https://npm.example.net/is-odd/-/is-odd-3.0.1.tgz (line 16) [source no other package uses]',
+      '  added is-odd 3.0.1 from https://npm.example.net/is-odd/-/is-odd-3.0.1.tgz (line 16) [unfamiliar registry]',
       '    added license = MIT',
       '  changed left-pad 1.3.0, source https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz -> https://evil.example.com/left-pad-1.3.0.tgz, checksum changed (line 24)'
         + ' [source changed, source does not name this package and version, checksum changed without a version change]',
       '  updated lodash 4.17.20 -> 4.17.21 (line 28)',
     ].join('\n'));
-    expect(lockfileSignals(lockfiles).map(s => [s.file, s.line])).toEqual([['package-lock.json', 16], ['package-lock.json', 24]]);
+    expect(lockfileSignals(lockfiles, 50).map(s => [s.file, s.line])).toEqual([['package-lock.json', 24], ['package-lock.json', 16]]);
+  });
+
+  it('flags a package of a new lockfile that comes from another registry than most of its packages', () => {
+    const entry = (name: string, host: string) => ({ version: '1.0.0', resolved: `https://${host}/${name}/-/${name}-1.0.0.tgz`, integrity: `sha512-${name}` });
+    const lock = JSON.stringify({ lockfileVersion: 3, packages: {
+      'node_modules/a': entry('a', 'registry.npmjs.org'), 'node_modules/b': entry('b', 'registry.npmjs.org'), 'node_modules/c': entry('c', 'npm.evil.example'),
+    } }, null, 2);
+
+    expect(lockfileSignals(read('package-lock.json', null, lock), 50).map(s => s.message.split(' from ')[0])).toEqual(['added c 1.0.0']);
   });
 
   it('lists a bump in an npm lockfile version 2 once, without its legacy `dependencies` map', () => {
@@ -442,7 +456,7 @@ ${scheduler ? '\n  scheduler@0.23.2:\n    dependencies:\n      loose-envify: 1.4
 
     const lockfiles = read('package-lock.json', lock('https://registry.npmjs.org/$/-/$-1.0.0.tgz'), lock('https://evil.example.com/$-1.0.0.tgz'));
 
-    expect(toolAlertFindings(lockfileSignals(lockfiles)).map(f => [f.line, f.title.slice(0, 26)])).toEqual([[1, 'lockfile-change: changed a'], [1, 'lockfile-change: changed b']]);
+    expect(toolAlertFindings(lockfileSignals(lockfiles, 50)).map(f => [f.line, f.title.slice(0, 26)])).toEqual([[1, 'lockfile-change: changed a'], [1, 'lockfile-change: changed b']]);
     const many = `version = 4\n${Array.from({ length: 40_000 }, (_, i) => `\n[[package]]\nname = "c${i}"\nversion = "1.0.0"\n`).join('')}`;
     expect(formatLockfileChanges(read('Cargo.lock', many, many.replace('name = "c39999"\nversion = "1.0.0"', 'name = "c39999"\nversion = "1.0.1"')))).toBe('Cargo.lock\n  updated c39999 1.0.0 -> 1.0.1 (line 160001)');
   });

@@ -48,6 +48,12 @@ describe('deduplicateFindings', () => {
     expect(kept.duplicates).toHaveLength(0);
     expect(kept.unique).toEqual([{ ...findings[0], resemblesFixed: { title: 'Missing null check', file: 'src/foo.ts', line: 40 } }]);
     expect(deduplicateFindings(findings, [fixed, ...previous]).duplicates).toHaveLength(1);
+
+    // A lockfile alert on a nearby package shares most words with a waived one, but names another package.
+    const waivedAlert = makePrevious({ title: 'lockfile-change: updated hex 0.4.3 -> 0.4.2: downgrade.', file: 'Cargo.lock', line: 40, status: 'resolved' });
+    const alerts = [makeFinding({ title: 'lockfile-change: updated hey 0.4.3 -> 0.4.2: downgrade.', file: 'Cargo.lock', line: 44 })];
+    expect(deduplicateFindings(alerts, [waivedAlert]).unique).toEqual(alerts);
+    expect(deduplicateFindings([{ ...alerts[0], title: waivedAlert.title }], [waivedAlert]).duplicates).toHaveLength(1);
   });
 
   it('drops a repeat of an answered thread on a file unchanged since the last round, and sends any other to the judge with the answer', () => {
