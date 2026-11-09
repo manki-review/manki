@@ -897,15 +897,18 @@ function formatLimitWindow(limit: LimitUsage): string {
 }
 
 const LIMIT_WARNING_THRESHOLDS = [90, 80, 70];
+const LIMIT_WARNING_BAND = 2;
 
 /**
- * A red box naming every account window at or past 70% used, with the highest of the 70, 80 and 90% marks it reached.
- * Unset when no window has reached 70%.
+ * A red box naming each account window at 90% used or more, or at most `LIMIT_WARNING_BAND` points past the 70 or 80% mark, with the highest mark it reached.
+ * The band keeps the box to the first reviews after a lower mark is crossed, instead of every review until the window resets.
+ * Unset when no window qualifies.
  */
 function formatLimitWarning(limits: readonly LimitUsage[]): string | undefined {
   const lines = [...limits].sort((a, b) => b.usedPercent - a.usedPercent).flatMap(limit => {
     const mark = LIMIT_WARNING_THRESHOLDS.find(t => limit.usedPercent >= t);
     if (mark === undefined) return [];
+    if (mark !== LIMIT_WARNING_THRESHOLDS[0] && limit.usedPercent > mark + LIMIT_WARNING_BAND) return [];
     const resets = limit.resetsAt != null ? ` It resets ${formatResetTime(limit.resetsAt)}.` : '';
     return [`**${limit.account} has used ${limit.usedPercent}% of its ${limit.window} limit**, past the ${mark}% mark.${resets}`];
   });
