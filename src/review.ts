@@ -1668,7 +1668,8 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
     "title": "The defect in one plain line",
     "file": "path/to/file.ext",
     "line": <line number in the NEW file>,
-    "description": "At most three sentences: what goes wrong in practice, the decisive evidence, and the change that fixes it.",
+    "description": "At most three sentences: what goes wrong in practice and the decisive evidence.",
+    "howToFix": "The change that fixes it, in one or two sentences",
     "suggestedFix": "Optional: the replacement code for the flagged line",
     "evidence": ["file:line, then what you read or searched there and what it showed, quoting the key code in backticks"],
     "proof": ["file:line of each line that shows the failure"]
@@ -1684,14 +1685,15 @@ Example of one finding:
   "title": "The last partial page of results is never returned",
   "file": "api/list.go",
   "line": 42,
-  "description": "\`total / pageSize\` rounds down, so when \`total\` is not a multiple of \`pageSize\` the items on the last page are never sent. Round up instead.",
+  "description": "\`total / pageSize\` rounds down, so when \`total\` is not a multiple of \`pageSize\` the items on the last page are never sent.",
+  "howToFix": "Round the page count up.",
   "suggestedFix": "pages := (total + pageSize - 1) / pageSize",
   "evidence": ["api/list.go:42 computes \`pages := total / pageSize\`, which is 2 for 120 items and a page size of 50", "api/list.go:51 loops \`for p := 0; p < pages; p++\`, so items 101 to 120 are never sent"],
   "proof": ["api/list.go:42"]
 }
 \`\`\`
 
-\`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`description\`. List any known caveats of the fix in the \`description\`, such as a missing bounds check or an untested edge case.
+\`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`howToFix\`. List any known caveats of the fix in \`howToFix\`, such as a missing bounds check or an untested edge case.
 
 ## Evidence
 
@@ -1893,6 +1895,7 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
       line: Number(f.line) || 0,
       description: String(f.description || leadDescription || ''),
       suggestedFix: f.suggestedFix ? String(f.suggestedFix) : undefined,
+      ...howToFixOf(f),
       reviewers: [reviewerName],
       ...(evidence && { evidence }),
       ...((lead || f.notChecked === true) && { notChecked: true }),
@@ -1900,6 +1903,12 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
       ...preExistingOf(f),
     };
   });
+}
+
+/** Reads the fix a finding describes in words, which a reply without one leaves inside its `description`. */
+export function howToFixOf(f: Record<string, unknown>): Pick<Finding, 'howToFix'> {
+  const fix = typeof f.howToFix === 'string' ? f.howToFix.trim() : '';
+  return fix ? { howToFix: fix } : {};
 }
 
 /** Reads `preExisting: true` with its one-line `preExistingReason`. A mark without a reason is dropped. */
@@ -2270,9 +2279,10 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
 
 /**
  * Folds each kept finding that names the problem of a verdict reader blocker into that blocker, so one problem gets one
- * thread. The blocker keeps its grade and takes the finding's reviewers and evidence. It takes the finding's fix only
- * when it has none and both sit on one line, since a one-line fix replaces the line its comment sits on. A title the
- * blocker's does not contain is added to its description, so a second defect folded in by mistake still shows.
+ * thread. The blocker keeps its grade and takes the finding's reviewers and evidence. It takes the finding's code fix only
+ * when it has none and both sit on one line, since a one-line fix replaces the line its comment sits on, and its
+ * `howToFix` whenever it has none. A title the blocker's does not contain is added to its description, so a second
+ * defect folded in by mistake still shows.
  */
 function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { findings: Finding[]; blockers: Finding[] } {
   const merged = blockers.map(b => ({ ...b }));
@@ -2285,6 +2295,7 @@ function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { fin
     if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}`;
     foldInto(blocker, f);
     if (!blocker.suggestedFix && f.suggestedFix && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
+    blocker.howToFix ??= f.howToFix;
     if (f.tags?.includes(SECURITY_TAG) && !blocker.tags?.includes(SECURITY_TAG)) blocker.tags = [...(blocker.tags ?? []), SECURITY_TAG];
     core.info(`Folded ${f.severity} "${f.title}" into the verdict reader's blocker "${blocker.title}"`);
     return false;

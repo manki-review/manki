@@ -1006,10 +1006,12 @@ describe('fetchRecapState', () => {
 
     // The labels, a prose fix and the line saying nothing was checked are not read back as description.
     const unchecked = formatFindingComment({ severity: 'warning', title: 'Unchecked', file: 'src/a.ts', line: 4, description: 'It goes wrong.', suggestedFix: 'Handle the `None` case separately.', reviewers: ['SecurityReviewer'] }, TEST_LINKS);
-    expect(unchecked).toContain('**What goes wrong:** It goes wrong.\n\n**Fix:** Handle the `None` case separately.');
-    expect(unchecked).toContain('Not checked against the code');
-    const [read] = (await fetchRecapState(mockOctokit([makeThread({ id: 't2', isResolved: false, comments: { nodes: [{ body: unchecked, author: { login: 'manki-review[bot]' } }] } })]), TEST_BOT, 'owner', 'repo', 1)).previousFindings;
-    expect(read.description).toBe('It goes wrong.');
+    expect(unchecked).toContain('**What goes wrong:** It goes wrong.\n\n<!-- manki-checks -->\n<details>\n<summary>How to fix it · not checked against the code</summary>');
+    const readBack = async (comment: string) => (await fetchRecapState(mockOctokit([makeThread({ id: 't2', isResolved: false, comments: { nodes: [{ body: comment, author: { login: 'manki-review[bot]' } }] } })]), TEST_BOT, 'owner', 'repo', 1)).previousFindings[0];
+    expect((await readBack(unchecked)).description).toBe('It goes wrong.');
+    // A fix given only in words is read back as the fix the thread asked for.
+    const advised = await readBack(formatFindingComment({ severity: 'warning', title: 'Advised', file: 'src/a.ts', line: 4, description: 'It goes wrong.', howToFix: 'Return early when it is missing.', reviewers: ['SecurityReviewer'] }, TEST_LINKS));
+    expect(advised).toMatchObject({ description: 'It goes wrong.', suggestedFix: 'Return early when it is missing.' });
   });
 
   it('skips `suggestedFix` when AI context JSON is malformed, still recovers `description`', async () => {

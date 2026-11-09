@@ -872,6 +872,10 @@ export function buildJudgeUserMessage(
 
     parts.push(...findingNotes(f));
 
+    if (f.howToFix) {
+      parts.push(`- **How to fix it**: ${sanitizeForPromptEmbed(f.howToFix)}`);
+    }
+
     if (f.suggestedFix) {
       parts.push(`- **Suggested fix**: ${sanitizeForPromptEmbed(f.suggestedFix)}`);
     }
@@ -1762,7 +1766,7 @@ export function applyCrossRoundSuppression(
 }
 
 function hasReversalWord(finding: Finding): boolean {
-  const haystack = `${finding.description} ${finding.suggestedFix ?? ''}`.toLowerCase();
+  const haystack = `${finding.description} ${finding.howToFix ?? ''} ${finding.suggestedFix ?? ''}`.toLowerCase();
   return REVERSAL_WORDS.some(word => new RegExp(`\\b${word}\\b`).test(haystack));
 }
 

@@ -18,7 +18,8 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
     "title": "The defect in one plain line",
     "file": "path/to/file.ext",
     "line": <line number in the NEW file>,
-    "description": "At most three sentences: what goes wrong in practice, the decisive evidence, and the change that fixes it.",
+    "description": "At most three sentences: what goes wrong in practice and the decisive evidence.",
+    "howToFix": "The change that fixes it, in one or two sentences",
     "suggestedFix": "Optional: the replacement code for the flagged line",
     "evidence": ["file:line, then what you read or searched there and what it showed, quoting the key code in backticks"],
     "proof": ["file:line of each line that shows the failure"]
@@ -34,14 +35,15 @@ Example of one finding:
   "title": "The last partial page of results is never returned",
   "file": "api/list.go",
   "line": 42,
-  "description": "\`total / pageSize\` rounds down, so when \`total\` is not a multiple of \`pageSize\` the items on the last page are never sent. Round up instead.",
+  "description": "\`total / pageSize\` rounds down, so when \`total\` is not a multiple of \`pageSize\` the items on the last page are never sent.",
+  "howToFix": "Round the page count up.",
   "suggestedFix": "pages := (total + pageSize - 1) / pageSize",
   "evidence": ["api/list.go:42 computes \`pages := total / pageSize\`, which is 2 for 120 items and a page size of 50", "api/list.go:51 loops \`for p := 0; p < pages; p++\`, so items 101 to 120 are never sent"],
   "proof": ["api/list.go:42"]
 }
 \`\`\`
 
-\`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`description\`. List any known caveats of the fix in the \`description\`, such as a missing bounds check or an untested edge case.
+\`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`howToFix\`. List any known caveats of the fix in \`howToFix\`, such as a missing bounds check or an untested edge case.
 
 ## Evidence
 

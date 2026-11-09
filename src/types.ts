@@ -167,6 +167,8 @@ export interface Finding {
   line: number;
   description: string;
   suggestedFix?: string;
+  /** The change that fixes the finding, in words. `suggestedFix` holds only code that replaces the flagged line. */
+  howToFix?: string;
   reviewers: string[];
   codeContext?: string;
   judgeNotes?: string;

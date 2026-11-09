@@ -135,7 +135,7 @@ const FOLD_TAG_RE = /<\/?details>/g;
 
 /**
  * Returns where the fold that ends right before `at` opens, or -1 when what comes before `at` is no fold. A fold can
- * hold folds of its own, such as "How this was checked", so the tags are balanced from its end backwards.
+ * hold folds of its own, so the tags are balanced from its end backwards.
  */
 function foldOpenBefore(body: string, at: number): number {
   const before = body.slice(0, at).trimEnd();
@@ -171,7 +171,7 @@ function bodyFinding(body: string, id: string): { title: string; text: string } 
     // The title is the bold text before the line break, and it can hold bold text of its own.
     const title = fold.slice(0, end).match(/<summary>[^<]*<b>(.*)<\/b><br>/)?.[1];
     if (title) return { title: decodeHtml(title), text: fold.slice(end + '</summary>'.length) };
-    // A blocker block can end with its own "How this was checked" fold, which is no finding.
+    // A blocker block can end with its own fold of fix and checks, which is no finding.
   }
   const start = [...plain.slice(0, anchor).matchAll(BLOCK_HEADER_RE)].pop()?.index;
   if (start === undefined) return undefined;

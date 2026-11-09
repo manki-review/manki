@@ -20,7 +20,7 @@ function systemPrompt(tools: boolean): string {
 
 Respond with ONLY a JSON array (no markdown fences, no explanation), one entry per defect:
 
-[{"severity": "blocker" | "warning" | "suggestion", "title": "The defect in one plain line", "file": "path/to/file.ext", "line": <line number in the NEW file>, "description": "At most three sentences: what goes wrong in practice, the decisive evidence, and the change that fixes it.", "evidence": ["file:line, then what you read there and what it showed, quoting the key code in backticks"], "proof": ["file:line of each line that shows the failure"]}]
+[{"severity": "blocker" | "warning" | "suggestion", "title": "The defect in one plain line", "file": "path/to/file.ext", "line": <line number in the NEW file>, "description": "At most three sentences: what goes wrong in practice and the decisive evidence.", "howToFix": "The change that fixes it, in one or two sentences", "evidence": ["file:line, then what you read there and what it showed, quoting the key code in backticks"], "proof": ["file:line of each line that shows the failure"]}]
 
 - **blocker**: wrong results, lost data, a crash or a security hole. List in \`proof\` the \`file:line\` of each line that shows the failure.
 - **warning**: a real case that fails, but not catastrophically.

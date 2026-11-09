@@ -96,11 +96,48 @@ describe('formatFindingComment', () => {
     expect(comment).not.toContain('<summary>Suggested fix</summary>');
   });
 
-  it('shows a long code fix as a collapsed plain code block', () => {
+  it('shows what goes wrong, then folds the fix, why it matters and the checks, with the double-check last', () => {
     const longFix = 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\nconst e = 5;';
-    const comment = render({ ...baseFinding, suggestedFix: longFix });
-    expect(comment).toContain(`<details>\n<summary>Suggested fix</summary>\n\n\`\`\`ts\n${longFix}\n\`\`\`\n</details>`);
+    const sentence = (n: number) => `Sentence ${n} explains one more part of why the cache key collides when two tenants share a name.`;
+    const description = [1, 2, 3, 4, 5].map(sentence).join(' ');
+    const evidence = { checks: ['src/util.ts:10 returns the bare name'], proof: [] };
+    const refutation = { outcome: 'confirmed' as const, reason: 'No caller adds the tenant.', files: ['src/util.ts'], codeDigest: 'abc' };
+    const comment = render({ ...baseFinding, description, howToFix: 'Key the cache by tenant.', suggestedFix: longFix, evidence, refutation });
+    expect(comment).toContain([
+      `**What goes wrong:** ${sentence(1)} ${sentence(2)} ${sentence(3)}`,
+      '',
+      '<!-- manki-checks -->',
+      '<details>',
+      '<summary>How to fix it, why, and 1 place read · double-checked</summary>',
+      '',
+      '**How to fix it**',
+      'Key the cache by tenant.',
+      '',
+      `\`\`\`ts\n${longFix}\n\`\`\``,
+      '',
+      '**Why it matters**',
+      `${sentence(4)} ${sentence(5)}`,
+      '',
+      '**Checked in the code**',
+      'Returns the bare name',
+      links.linkTo('src/util.ts', 9, 13),
+      '',
+      '**Double-checked**',
+      'Manki tried to disprove this by reading the code and could not. No caller adds the tenant.',
+      '',
+      '</details>',
+    ].join('\n'));
     expect(suggestionBlocks(comment)).toEqual([]);
+
+    // A committable suggestion stays open, so GitHub offers to commit it, and the fix in words goes in the fold.
+    const suggested = render({ ...baseFinding, howToFix: 'Check for `null` first.', suggestedFix: 'if (value != null) { use(value); }', evidence });
+    expect(suggested).toContain(`${baseFinding.description}\n\n\`\`\`suggestion\nif (value != null) { use(value); }\n\`\`\`\n\n<!-- manki-checks -->\n<details>\n<summary>How to fix it and 1 place read</summary>\n\n**How to fix it**\nCheck for \`null\` first.\n\n**Checked in the code**\n`);
+    // A finding with no separate fix keeps the rest of its description as why it matters.
+    expect(render({ ...baseFinding, description, evidence })).toContain(`<summary>Why it matters and 1 place read</summary>\n\n**Why it matters**\n${sentence(4)} ${sentence(5)}\n\n**Checked in the code**\n`);
+    // A fold never holds a single line, so a one-line fix alone shows open, and a fix with nothing cited says so in the summary.
+    expect(render({ ...baseFinding, howToFix: 'Check for `null` first.', reviewers: [] })).toContain('\n<!-- manki-checks -->\n**Fix:** Check for `null` first.\n');
+    expect(render({ ...baseFinding, howToFix: 'Check for `null` first.' }))
+      .toContain('<summary>How to fix it · not checked against the code</summary>\n\n**How to fix it**\nCheck for `null` first.\n\n**Not checked against the code**\nNothing was cited to back it.\n');
   });
 
   it.each([
@@ -111,9 +148,8 @@ describe('formatFindingComment', () => {
   ])('never puts prose or a fence in a suggestion block: %s', (_label, suggestedFix, prose, code) => {
     const comment = render({ ...baseFinding, suggestedFix });
     expect(suggestionBlocks(comment)).toEqual([]);
-    // Prose in a fix gets the label, and a fix that is only code does not.
-    if (prose) expect(comment).toContain(`\n\n**Fix:** ${prose}`);
-    if (!prose) expect(comment).not.toContain('**Fix:**');
+    // A fix that is not a suggestion opens the fold, under its label.
+    expect(comment).toContain(`<summary>How to fix it · not checked against the code</summary>\n\n**How to fix it**\n${prose ?? code}`);
     if (code) expect(comment).toContain(code);
   });
 
@@ -156,12 +192,12 @@ describe('formatFindingComment', () => {
     expect(suggestionBlocks(comment)).toEqual(['Run the setup script first.']);
   });
 
-  it('shows the title, at most three sentences and the fix under 700 visible characters, and collapses the rest', () => {
+  it('shows the title, at most three sentences and a suggestion under 700 visible characters, and collapses the rest', () => {
     const visible = (text: string) => text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
     const sentence = (n: number) => `Sentence ${n} explains one more part of why the cache key collides when two tenants share a name.`;
     const long = render({ ...baseFinding, description: [1, 2, 3, 4, 5].map(sentence).join(' '), suggestedFix: 'const key = `${tenant}:${name}`;' });
     expect(long).toContain(`${sentence(1)} ${sentence(2)} ${sentence(3)}\n\n\`\`\`suggestion`);
-    expect(long).toContain(`<details>\n<summary>Details</summary>\n\n${sentence(4)} ${sentence(5)}\n\n</details>`);
+    expect(long).toContain(`<details>\n<summary>Why it matters · not checked against the code</summary>\n\n**Why it matters**\n${sentence(4)} ${sentence(5)}\n\n`);
     expect(visible(long)).toBeLessThan(700);
 
     const wordy = render({ ...baseFinding, description: `${'A very long first sentence '.repeat(40)}ends here. Then more.` });
@@ -169,21 +205,21 @@ describe('formatFindingComment', () => {
     // A fold never holds a single sentence, so one sentence past the lead shows with it.
     const four = render({ ...baseFinding, description: [1, 2, 3, 4].map(sentence).join(' ') });
     expect(four).toContain(`${sentence(3)} ${sentence(4)}`);
-    expect(four).not.toContain('<summary>Details</summary>');
+    expect(four).not.toContain('Why it matters');
     const oneLong = render({ ...baseFinding, description: `${'A very long only sentence '.repeat(40)}ends here.` });
     expect(visible(oneLong)).toBeLessThan(700);
-    expect(oneLong).toContain('<summary>Details</summary>\n\nA very long only sentence');
+    expect(oneLong).toContain('**Why it matters**\nA very long only sentence');
     // A description with no text before its code shows no empty label.
     expect(render({ ...baseFinding, description: '' })).not.toContain('What goes wrong');
     expect(render({ ...baseFinding, description: '```ts\nuse(value);\n```\nThen more.' })).not.toContain('What goes wrong');
     // A description that opens with a list gets the label on its own line, so the list marker stays a marker.
     expect(render({ ...baseFinding, description: '- It throws.\n- It logs.' })).toContain('**What goes wrong:**\n\n- It throws.\n- It logs.');
-    expect(wordy).toContain('<summary>Details</summary>\n\nA very long first sentence');
+    expect(wordy).toContain('**Why it matters**\nA very long first sentence');
 
     expect(render(baseFinding)).not.toContain('<details>');
   });
 
-  it('collapses "How this was checked" with the refutation, the own line, up to three code previews and the rest as links', () => {
+  it('collapses "How this was checked" with the own line, up to three code previews, the rest as links and the refutation last', () => {
     const link = (file: string, start: number, end = start) => links.linkTo(file, start, end);
     const comment = render({
       ...baseFinding,
@@ -208,8 +244,7 @@ describe('formatFindingComment', () => {
       '<details>',
       '<summary>How this was checked: 7 places read, 2 other checks, double-checked</summary>',
       '',
-      '**Double-checked:** Manki tried to disprove this by reading the code and could not. No caller checks `value` first.',
-      '',
+      '**Checked in the code**',
       'On the commented line: Reads `value` from the request',
       '',
       // Checks close together in one file share a preview, which starts one line above the first.
@@ -230,6 +265,9 @@ describe('formatFindingComment', () => {
       `- [\`src/util.ts:30\`](${link('src/util.ts', 30)}): \`line 30\``,
       '- Grep `value ==` under src: src/x.ts:1: no',
       '- Searched with no match: grep `value == null` under src: no match',
+      '',
+      '**Double-checked**',
+      'Manki tried to disprove this by reading the code and could not. No caller checks `value` first.',
       '',
       '</details>',
     ].join('\n'));
@@ -359,7 +397,7 @@ describe('formatFindingComment', () => {
       pairRefutation: { outcome: 'disproved', reason: 'The parser rejects it.', proof: ['src/util.ts:3'], files: ['src/main.ts', 'src/util.ts'], codeDigest: 'def' },
     });
     expect(split).toContain('<summary>How this was checked: double-checked, second check: doubt found</summary>');
-    expect(split).toContain(`**Double-checked:** Manki tried to disprove this by reading the code and could not. No caller checks \`value\` first.\n\n**Second check, on another model:** doubt found. The parser rejects it. See [\`src/util.ts:3\`](${link('src/util.ts', 3)}).`);
+    expect(split).toContain(`**Double-checked**\nManki tried to disprove this by reading the code and could not. No caller checks \`value\` first.\n\n**Second check, on another model**\nDoubt found. The parser rejects it. See [\`src/util.ts:3\`](${link('src/util.ts', 3)}).`);
   });
 
   it('keeps the code spans of every check line balanced, so no line breaks the Markdown after it', () => {
@@ -551,7 +589,7 @@ describe('postReview generalFindings', () => {
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const call = mockCreateReview.mock.calls[0][0];
     expect(call.event).toBe('APPROVE');
-    expect(call.body).toContain('**Fix:**\n\n```\ntry { op(); } catch (e) { handle(e); }\n```');
+    expect(call.body).toContain('<summary>How to fix it · not checked against the code</summary>\n\n**How to fix it**\n```\ntry { op(); } catch (e) { handle(e); }\n```');
   });
 
   it('omits the suggested fix when finding has no suggestedFix', async () => {
@@ -629,7 +667,7 @@ describe('postReview generalFindings', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('**Fix:**\n\n```\nuse `foo` instead of `bar`\n```');
+    expect(body).toContain('<summary>How to fix it</summary>\n\n```\nuse `foo` instead of `bar`\n```');
   });
 
   it('uses longer fence when suggestedFix contains triple backticks', async () => {
@@ -4097,20 +4135,20 @@ describe('postReview non-blocking findings', () => {
     const fold = (title: string) => body.match(new RegExp(`<details>\n<summary>\\u{1F4DD} <b>${title}</b>[\\s\\S]*?\n</details>`, 'u'))![0];
 
     // The flagged line comes from the file at the reviewed commit, and the diff replaces the preview of it.
-    expect(fold('One line')).toContain('**Fix:**\n\n```diff\n-  return retry(fn);\n+  return retry(fn, 3);\n```');
+    expect(fold('One line')).toContain('**How to fix it**\n```diff\n-  return retry(fn);\n+  return retry(fn, 3);\n```');
     expect(fold('One line')).not.toContain('src/a.ts#L39-L43');
-    expect(fold('Two lines')).toContain('**Fix:**\n\n```diff\n-  const out = `a` + b;\n+  const head = `a`;\n+  const out = head + b;\n```');
+    expect(fold('Two lines')).toContain('**How to fix it**\n```diff\n-  const out = `a` + b;\n+  const head = `a`;\n+  const out = head + b;\n```');
     // A fix over ten changed lines, or one whose flagged line was not read, keeps its code block and the preview.
-    expect(fold('Too long')).toContain(`**Fix:**\n\n\`\`\`ts\n${longFix}\n\`\`\``);
+    expect(fold('Too long')).toContain(`**How to fix it**\n\`\`\`ts\n${longFix}\n\`\`\``);
     expect(fold('Too long')).toContain('https://github.com/owner/repo/blob/abc1234/src/a.ts#L42-L46');
-    expect(fold('Past the end')).toContain('**Fix:**\n\n```ts\nx();\n```');
+    expect(fold('Past the end')).toContain('**How to fix it**\n```ts\nx();\n```');
     // So does one whose flagged line is too long for the body, such as a line of a minified file.
-    expect(fold('Minified')).toContain('**Fix:**\n\n```ts\nconst data = load();\n```');
+    expect(fold('Minified')).toContain('**How to fix it**\n```ts\nconst data = load();\n```');
     expect(fold('Minified')).not.toContain('x'.repeat(700));
-    expect(fold('In prose')).toContain('**Fix:** Handle the `None` case separately.');
+    expect(fold('In prose')).toContain('**How to fix it**\nHandle the `None` case separately.');
     expect(fold('In prose')).toContain('https://github.com/owner/repo/blob/abc1234/src/a.ts#L43-L47');
     // A fence run in the code gets a longer fence around the diff.
-    expect(fold('Fence in code')).toContain('**Fix:**\n\n````diff\n-const fence = "```";\n+const fence = "~~~";\n````');
+    expect(fold('Fence in code')).toContain('**How to fix it**\n````diff\n-const fence = "```";\n+const fence = "~~~";\n````');
     expect(body).not.toContain('\r');
   });
 
@@ -4139,7 +4177,7 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('suggestion', 'Extract helper', 5, { suggestedFix: 'const x = helper();' }),
       nonBlocking('nitpick', 'Typo in name', 7, { judgeConfidence: 'high' }),
       nonBlocking('suggestion', 'Missing file context', 0, { file: '', suggestedFix: 'Use the shared helper.', judgeConfidence: 'low' }),
-      nonBlocking('suggestion', 'Off the diff', 40, { suggestedFix: 'if (a) {\n  b();\n}', evidence: { checks: ['read src/a.ts:40'], proof: [] } }),
+      nonBlocking('suggestion', 'Off the diff', 40, { howToFix: 'Run `b` only when `a` holds.', suggestedFix: 'if (a) {\n  b();\n}', evidence: { checks: ['read src/a.ts:40'], proof: [] } }),
     ]), diff);
 
     const review = createReview.mock.calls[0][0];
@@ -4147,7 +4185,7 @@ describe('postReview non-blocking findings', () => {
     expect(review.comments.map((c: { line: number }) => c.line)).toEqual([5]);
     expect(review.comments[0].body).toMatch(/^\u2728 \*\*Suggestion, not blocking\*\*\n\n\*\*Extract helper\*\*\n\n\*\*Why:\*\* It goes wrong\./u);
     expect(review.comments[0].body).toContain('<!-- manki:suggestion:Extract-helper -->');
-    // A fold shows the whole description, since a fix the reviewer gave as text comes at its end.
+    // A fold shows the whole description and a preview of the flagged lines, then the fix and the checks under their labels.
     expect(review.body).toContain([
       '### Findings · 2 suggestions and 1 nitpick',
       '',
@@ -4158,7 +4196,8 @@ describe('postReview non-blocking findings', () => {
       '',
       '**Why:** It goes wrong. Second sentence. Third sentence.',
       '',
-      '**Fix:** Use the shared helper.',
+      '**How to fix it**',
+      'Use the shared helper.',
       '',
       '</details>',
       '',
@@ -4170,7 +4209,10 @@ describe('postReview non-blocking findings', () => {
       '',
       '**Why:** It goes wrong. Second sentence. Third sentence.',
       '',
-      '**Fix:**',
+      'https://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L40',
+      '',
+      '**How to fix it**',
+      'Run `b` only when `a` holds.',
       '',
       '```ts',
       'if (a) {',
@@ -4178,10 +4220,8 @@ describe('postReview non-blocking findings', () => {
       '}',
       '```',
       '',
-      'https://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L40',
-      '',
-      '<!-- manki-checks -->',
-      '**Checked:** Read `src/a.ts`:40',
+      '**Checked in the code**',
+      '- Read `src/a.ts`:40',
       '',
       '</details>',
       '',
