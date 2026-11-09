@@ -15,7 +15,7 @@ import {
   RepoMemory,
 } from './memory';
 import { addedLines, isLineInDiff, newLineNumbers, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
-import { formatLockfileChanges, LockfileDiff } from './lockfile';
+import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
@@ -1740,6 +1740,8 @@ export function applyCrossRoundSuppression(
       // LLM-derived signals must never suppress blocker or warning findings:
       // only GitHub thread resolution carries enough trust for that.
       if (source === 'judge-addressed' && (current.severity === 'blocker' || current.severity === 'warning')) return false;
+      // A lockfile alert names its package and change, so it repeats only an alert with the same title.
+      if (isLockfileAlert(current.title) || isLockfileAlert(prior.title ?? '')) return prior.title === current.title;
       if (prior.fingerprint.slug === slug) return true;
       // Resolved-thread and judge-addressed priors fall back to fuzzy line
       // proximity when the slug differs, since refactors can shift line
