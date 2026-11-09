@@ -163,6 +163,11 @@ describe('reviewLocal', () => {
       expect([options.diff.files, options.excludedPaths, formatLockfileChanges(options.lockfiles ?? [])]).toEqual([[], ['Cargo.lock'], 'Cargo.lock\n  updated hex 0.4.2 -> 0.4.3 (line 5)']);
     }
     expect(runReview).toHaveBeenCalledTimes(2);
+
+    // A lockfile past the 10 MB a pull request round reads stays unread here too, so nothing is left to review.
+    git(repo, 'checkout', '-q', '-b', 'huge', 'locked');
+    commit(repo, 'Bump hex in a huge lockfile', { 'Cargo.lock': `# ${'x'.repeat(10 * 1024 * 1024)}\n${lock('0.4.3')}` });
+    await expect(reviewLocal({ repoRoot: repo, base: 'locked', head: 'huge', providerInputs: inputs })).rejects.toThrow('Nothing to review');
   });
 
   it('refuses a patch that does not apply to the head', async () => {

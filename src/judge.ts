@@ -1193,7 +1193,8 @@ export async function runJudgeAgent(
     ? filterMemoryForFindings(findings, memory)
     : '';
 
-  const changedFiles = diff.files;
+  // A lockfile is listed by name, without a line per hunk, since its package list says what changed.
+  const changedFiles = diff.files.map(f => listed.has(f.path) ? { ...f, hunks: [] } : f);
 
   const openBlockerCount = openThreads ? earlierBlockerThreadIds(openThreads, priorRounds).size : 0;
   const judgePrompt = (steps: number) => buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos, openBlockerCount, !!refutation, steps);
@@ -1216,7 +1217,7 @@ export async function runJudgeAgent(
   const proofFiles = (f: Finding) => (f.evidence?.proof ?? []).map(location => location.replace(/:\d+(?:-\d+)?$/, ''));
   const judgedFiles = new Set([...findings.flatMap(f => [f.file, ...proofFiles(f)]), ...(openThreads ?? []).map(t => t.file)]);
   const judgedDiff = rebuildRawDiff({ ...diff, files: diff.files.filter(f => judgedFiles.has(f.path) && !listed.has(f.path)).map(shortenLongLines) });
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles));
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))));
 
   const effort = input.effort ?? 'high';
   const judgeCall = (steps: number): { systemPrompt: string; options: SendMessageOptions } => ({

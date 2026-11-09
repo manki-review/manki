@@ -8,6 +8,7 @@ import { changedKeys, loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, reviewableDiff, tagFindingOrigins } from './diff';
 import { ApprovalHeld, buildRepoContext, configFailed, loadBaseConfig, RepoFiles } from './github';
 import { isParsedLockfile, LockfileDiff, readLockfileChanges, withLockfiles } from './lockfile';
+import { MAX_LOCKFILE_BYTES } from './static-signals';
 import type { ProviderInputs } from './providers';
 import { ReviewProgress, runReview } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
@@ -144,13 +145,13 @@ async function applyPatch(dir: string, patch: string, head: string): Promise<voi
   });
 }
 
-/** Reads the changed lockfiles Manki parses from `rev`, which holds their `side` of `fullDiff`. One git cannot show stays unread. */
+/** Reads the changed lockfiles Manki parses from `rev`, which holds their `side` of `fullDiff`. One git cannot show, or past `MAX_LOCKFILE_BYTES`, stays unread. */
 async function readLocalLockfiles(repoRoot: string, rev: string, fullDiff: ParsedDiff, side: 'head' | 'base'): Promise<LockfileDiff[]> {
   const contents = new Map<string, string>();
   for (const file of fullDiff.files.filter(f => isParsedLockfile(f.path))) {
     const path = side === 'head' ? file.path : file.oldPath ?? file.path;
     const content = await runGit(repoRoot, ['show', `${rev}:${path}`]).catch(() => undefined);
-    if (content !== undefined) contents.set(path, content);
+    if (content !== undefined && content.length <= MAX_LOCKFILE_BYTES) contents.set(path, content);
   }
   return readLockfileChanges(fullDiff, contents, side);
 }

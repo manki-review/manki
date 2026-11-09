@@ -1286,7 +1286,14 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('## Lockfile Changes\n');
     expect(userMessage).toContain('```\nCargo.lock\n  updated hex 0.4.2 -> 0.4.3 (line 5) [downgrade]\n```');
     expect(userMessage).toContain('### Cargo.lock');
-    expect(userMessage).not.toContain('version = "0.4.3"');
+    expect(userMessage).not.toMatch(/version = "0\.4\.3"|name = "hex"/);
+
+    // With no finding on the lockfile, the judge gets neither its list nor its hunks.
+    await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [makeFinding()], diff: makeDiff([makeDiffFile(), lockfile]), rawDiff: '', repoContext: '', agentCount: 1,
+      lockfiles: [{ path: 'Cargo.lock', file: lockfile, changes }],
+    });
+    expect(mockSendMessage.mock.calls[1][1]).not.toMatch(/## Lockfile Changes|name = "hex"/);
   });
 
   it('names one prompt template for its digest whatever the round holds', async () => {
