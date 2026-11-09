@@ -1305,12 +1305,11 @@ async function postFileLevelComments(
   prNumber: number,
   commitSha: string,
   comments: Array<{ path: string; body: string; finding: Finding }>,
-): Promise<{ refused: Finding[]; urls: Map<Finding, string> }> {
+): Promise<Finding[]> {
   const refused: Finding[] = [];
-  const urls = new Map<Finding, string>();
   for (const c of comments) {
     try {
-      const response = await octokit.rest.pulls.createReviewComment({
+      await octokit.rest.pulls.createReviewComment({
         owner,
         repo,
         pull_number: prNumber,
@@ -1319,33 +1318,12 @@ async function postFileLevelComments(
         body: c.body,
         subject_type: 'file',
       });
-      if (response?.data?.html_url) urls.set(c.finding, response.data.html_url);
     } catch (error) {
       core.warning(`Could not post file-level comment on ${c.path}: ${error instanceof Error ? error.message : error}`);
       refused.push(c.finding);
     }
   }
-  return { refused, urls };
-}
-
-/**
- * Returns the URL of the thread each of `findings` opened in review `reviewId`, matched by the marker its comment
- * carries. A finding whose comment can't be found, or a failed lookup, gets none, and the body keeps its line link.
- */
-async function fetchThreadUrls(octokit: Octokit, owner: string, repo: string, prNumber: number, reviewId: number, findings: Finding[]): Promise<Map<Finding, string>> {
-  const urls = new Map<Finding, string>();
-  if (findings.length === 0) return urls;
-  try {
-    const comments = await octokit.paginate(octokit.rest.pulls.listCommentsForReview, { owner, repo, pull_number: prNumber, review_id: reviewId, per_page: 100 });
-    for (const finding of findings) {
-      const marker = `<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;
-      const comment = comments.find(c => c.path === finding.file && c.body.includes(marker));
-      if (comment) urls.set(finding, comment.html_url);
-    }
-  } catch (error) {
-    core.info(`Could not look up the new threads, so the review body links their lines: ${error instanceof Error ? error.message : error}`);
-  }
-  return urls;
+  return refused;
 }
 
 const AGREED_ANSWER_RE = /^\**Agreed\./;
@@ -1417,13 +1395,9 @@ export async function postReview(
   const invalidComments: string[] = [];
   const generalFindings: string[] = [];
   const stillOpen: string[] = [];
-  /**
-   * The findings posted as threads this round, listed under the verdict, those among them posted as line comments,
-   * and the file-level comments GitHub refused, which are listed as blockers in the body instead.
-   */
+  /** The findings posted as threads this round, counted in the verdict line, and those among them posted as line comments. */
   const threadFindings: Finding[] = [];
   const lineThreads = new Set<Finding>();
-  const refusedThreads = new Set<Finding>();
   /** The findings listed as folds in the review body, under one section per severity. */
   const bodyFindings: Finding[] = [];
   let carriedBlockers = 0;
@@ -1500,7 +1474,6 @@ export async function postReview(
   }
 
   const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl, context, reviewTimeMs);
-  threadFindings.sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
   const earlier = carriedThreadIds.size + (result.verdictTrace?.unresolvedPriors.length ?? 0);
@@ -1515,13 +1488,12 @@ export async function postReview(
   const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
 
   /**
-   * Renders the body. `threadUrls` links each listed thread once GitHub has posted it, and the flagged line until then.
+   * Renders the body. A finding posted as a thread is only counted in it, since its thread sits right below.
    * `withoutLineThreads` leaves out the line comments, for a review GitHub only takes without them.
    */
-  const renderBody = (threadUrls: ReadonlyMap<Finding, string> = new Map(), withoutLineThreads = false): string => {
-    const threads = threadFindings.filter(f => !refusedThreads.has(f) && !(withoutLineThreads && lineThreads.has(f)));
-    const threadList = threads.map(f => `- ${SEVERITY_EMOJI[f.severity]} [${linkText(f.title)}](${threadUrls.get(f) ?? linkTo(f.file, f.line)}) · ${inlineCode(findingLocation(f))}`).join('\n');
-    const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: bodyFindings, hold }, threadList, limitWarning);
+  const renderBody = (withoutLineThreads = false): string => {
+    const threads = threadFindings.filter(f => !(withoutLineThreads && lineThreads.has(f)));
+    const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: bodyFindings, hold }, limitWarning);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
@@ -1573,40 +1545,27 @@ export async function postReview(
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
-  const withoutLineThreads = (): string => highlightCode(renderBody(new Map(), true), codeTokens);
+  const withoutLineThreads = (): string => highlightCode(renderBody(true), codeTokens);
   const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads);
-  const { refused, urls: fileThreadUrls } = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
-  for (const f of refused) refusedThreads.add(f);
-  // GitHub gives a thread its URL only once it is posted, so the body links each listed thread in an update, which
-  // also drops a refused file-level comment from the list. A review posted without its line comments keeps its body.
-  const postedAsRendered = review.body === truncateBody(body, REVIEW_BODY_BUDGET - record.length);
-  const threadUrls = postedAsRendered
-    ? new Map([...await fetchThreadUrls(octokit, owner, repo, prNumber, review.id, threadFindings), ...fileThreadUrls])
-    : new Map<Finding, string>();
-  if (refused.length > 0 || threadUrls.size > 0) {
+  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
+  if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
-    const section = refused.length > 0
-      ? highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links, true)).join('\n\n')}`, codeTokens)
-      : '';
+    const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links, true)).join('\n\n')}`, codeTokens);
     // Truncate the existing body, never the blocking findings appended to it or the round record.
     const room = REVIEW_BODY_BUDGET - section.length - record.length;
     if (room <= 0) {
       throw new Error(`Could not post blocking findings as threads or fit them in review #${review.id}: ${titles}`);
     }
-    const linked = postedAsRendered ? highlightCode(renderBody(threadUrls), codeTokens) : review.body;
     try {
       await octokit.rest.pulls.updateReview({
         owner,
         repo,
         pull_number: prNumber,
         review_id: review.id,
-        body: appendReviewFooter(`${truncateBody(linked, room)}${section}${record}`, reviewedCommitFooter),
+        body: appendReviewFooter(`${truncateBody(review.body, room)}${section}${record}`, reviewedCommitFooter),
       });
     } catch (error) {
-      if (refused.length > 0) {
-        throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
-      }
-      core.warning(`Could not link the new threads in review #${review.id}: ${error instanceof Error ? error.message : error}`);
+      throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
     }
   }
   return { id: review.id, approvalHeld };
@@ -1861,22 +1820,12 @@ function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string 
   return top ? sanitizeMarkdown(top.description.trim()).split(/(?<=[.!?])\s+/).slice(0, 2).join(' ') : '';
 }
 
-/**
- * Returns what opens the review body: the verdict line, the threads posted this round as `threadList`, the `limitWarning`
- * box and the summary.
- */
-function formatLead(
-  result: ReviewResult, blocking: Finding[], blockers: BlockerCounts, posted: PostedFindings, threadList: string, limitWarning?: string,
-): string {
+/** Returns what opens the review body: the verdict line, the `limitWarning` box and the summary. */
+function formatLead(result: ReviewResult, blocking: Finding[], blockers: BlockerCounts, posted: PostedFindings, limitWarning?: string): string {
   if (!result.outcome) return [sanitizeMarkdown(result.summary.trim()), limitWarning].filter(Boolean).join('\n\n');
   const detail = formatVerdictDetail(result, blocking);
   const label = result.outcome === 'ADDRESS_FIRST' ? 'What blocks' : 'Summary';
-  return [VERDICT_LINES[result.outcome](result, blockers, posted), threadList, limitWarning, detail && `**${label}:** ${detail}`].filter(Boolean).join('\n\n');
-}
-
-/** Returns `text` for a link label on one line, with the brackets that would end the label escaped. */
-function linkText(text: string): string {
-  return sanitizeMarkdown(text).replace(/\s+/g, ' ').trim().replace(/[[\]]/g, '\\$&');
+  return [VERDICT_LINES[result.outcome](result, blockers, posted), limitWarning, detail && `**${label}:** ${detail}`].filter(Boolean).join('\n\n');
 }
 
 /**

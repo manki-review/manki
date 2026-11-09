@@ -746,8 +746,8 @@ describe('postReview reviewed-commit footer', () => {
     const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
     expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
     expect(fallbackBody).toContain('**Inline comments could not be posted:**\n- \u{1F6AB} **Blocker** **Issue**');
-    // The first try listed the comment as a thread. The review GitHub took lists it only as not posted.
-    expect(createReviewMock.mock.calls[0][0].body).toContain('- \u{1F6AB} [Issue]');
+    // A thread is only counted in the body, so the comment GitHub refused is listed only as not posted.
+    expect(createReviewMock.mock.calls[0][0].body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*What blocks:\*\*/u);
     expect(fallbackBody).not.toContain('[Issue]');
   });
 
@@ -784,8 +784,8 @@ describe('postReview reviewed-commit footer', () => {
 
     await postReview(octokit, 'acme', 'widgets', 1, fullSha, result, diff);
     const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
-    // The review GitHub took as a comment has no line comments, so it lists none as a thread.
-    expect(createReviewMock.mock.calls[0][0].body).toContain('- \u2728 [Minor]');
+    // The review GitHub took as a comment has no line comments, so it lists the finding as not posted inline.
+    expect(createReviewMock.mock.calls[0][0].body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 suggestion, which doesn't block\.\n\n\*\*Summary:\*\*/u);
     expect(fallbackBody).not.toContain('[Minor]');
     expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
     expect(fallbackBody).toContain('**Findings (could not post inline):**\n- \u2728 **Suggestion, not blocking** **Minor** (`src/a.ts:10`)');
@@ -1279,11 +1279,9 @@ describe('postReview body lead', () => {
     const { body, event, approvalHeld } = await postedBody(ready);
     expect(event).toBe('APPROVE');
     expect(approvalHeld).toBe(false);
-    // The verdict counts what this round posted, and each thread is listed by name, linked to its line until it is posted.
+    // The verdict counts what this round posted as threads. Each thread sits under the review, so the body does not list them.
     expect(lead(body)).toBe([
       '\u2705 **Approved.** 1 suggestion, which doesn\'t block.',
-      '',
-      '- \u2728 [Extract helper](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L7) · `src/a.ts:7`',
       '',
       '**What this does:** Adds a cache in front of the API. x',
       '',
@@ -1389,9 +1387,9 @@ describe('postReview body lead', () => {
     const memorySkip = 'this repo is private, and the central memory repository keeps only public repos\' memory. Set `memory.repo` to a private memory repo of the same owner, and pass `memory_repo_token`.';
     const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { memorySkip });
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
-    const [verdict, threads, ...rest] = approved.body.split('\n\n');
+    const [verdict, ...rest] = approved.body.split('\n\n');
     expect([event, approvalHeld]).toEqual(['APPROVE', false]);
-    expect(body).toBe([verdict, threads, `**Memory skipped:** ${memorySkip}`, ...rest].join('\n\n'));
+    expect(body).toBe([verdict, `**Memory skipped:** ${memorySkip}`, ...rest].join('\n\n'));
   });
 
   it.each<[number[], string[]]>([
@@ -1401,21 +1399,21 @@ describe('postReview body lead', () => {
       '**Claude subscription has used 95% of its 5-hour limit**, past the 90% mark. It resets 2026-11-12 14:00 UTC.',
       '**Claude subscription has used 85% of its weekly limit**, past the 80% mark. It resets 2026-11-12 14:00 UTC.',
     ]],
-  ])('puts a red box under the verdict and threads for each account window of %j percent at 70% or more', async (used, lines) => {
+  ])('puts a red box under the verdict for each account window of %j percent at 70% or more', async (used, lines) => {
     const approved = await postedBody(ready);
     const llmCalls = [{ stage: 'judge', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
       limits: used.map((usedPercent, i) => ({ account: 'Claude subscription', window: i === 0 ? 'weekly' : '5-hour', usedPercent, resetsAt: Date.UTC(2026, 10, 12, 14) / 1000 })) }];
     const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, llmCalls }, diff);
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
-    const [verdict, threads, ...rest] = approved.body.split('\n\n');
+    const [verdict, ...rest] = approved.body.split('\n\n');
     const box = `> [!CAUTION]\n${[...lines, 'Once a limit is used up, reviews on that account stop until it resets.'].map(line => `> ${line}`).join('\n>\n')}`;
     expect([event, approvalHeld]).toEqual(['APPROVE', false]);
-    expect(body).toBe(lines.length > 0 ? [verdict, threads, box, ...rest].join('\n\n') : approved.body);
+    expect(body).toBe(lines.length > 0 ? [verdict, box, ...rest].join('\n\n') : approved.body);
     if (lines.length === 0) return;
-    // A request for changes shows the box after its threads and before what blocks.
+    // A request for changes shows the box after its verdict and before what blocks.
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', llmCalls }, diff);
     const blocked = (mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body.split('\n\n');
-    expect(blocked.slice(1, 4)).toEqual([threads, box, '**What blocks:** All clear.']);
+    expect(blocked.slice(1, 3)).toEqual([box, '**What blocks:** All clear.']);
     // A round without a verdict, such as an incomplete one, shows the box under its summary.
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'COMMENT', outcome: undefined, llmCalls }, diff, undefined, undefined, { noVerdict: true });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toMatch(new RegExp(`^All clear\\.\n\n${box.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
@@ -1429,7 +1427,7 @@ describe('postReview body lead', () => {
     const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([event, approvalHeld]).toEqual(['COMMENT', 'unread']);
     // The verdict line says the approval is held, and the unread files get their own section.
-    expect(body).toMatch(/^\u2705 \*\*Approved, but a person must approve:\*\* no model read 3 of the changed files\.\n\n- \u2728 \[Extract helper\]/u);
+    expect(body).toMatch(/^\u2705 \*\*Approved, but a person must approve:\*\* no model read 3 of the changed files\.\n\n\*\*What this does:\*\*/u);
     expect(body).toContain('---\n\n### Not read by any model · 3 files\n\nA person needs to look at these before the PR merges.\n\n- `dist/index.js`: matches `dist/**` in `exclude_paths`\n- `app.jar`: no lines to read, such as a binary, a rename, a mode change or an empty file\n- `vendor/lib`: a submodule bump');
     expect(body).toContain(approved.body.split('\n\n').find(p => p.startsWith('**What this does:**'))!);
     expect(body).not.toContain('**Approval held:**');
@@ -1486,12 +1484,12 @@ describe('postReview body lead', () => {
       findings: [{ ...blocker, severity: 'warning', title: 'Retry drops the error' }, blocker],
     });
     expect(event).toBe('REQUEST_CHANGES');
-    // Each thread is named under the verdict, most severe first, and what blocks follows.
-    expect(lead(body).split('\n\n').slice(0, 3)).toEqual([
+    // What blocks follows the verdict right away, since each finding has its thread under the review.
+    expect(lead(body).split('\n\n').slice(0, 2)).toEqual([
       '\u{1F534} **Changes requested:** 2 blockers.',
-      `- \u{1F6AB} [${blocker.title}](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L5) · \`src/a.ts:5\`\n- \u26A0\uFE0F [Retry drops the error](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L5) · \`src/a.ts:5\``,
       '**What blocks:** A client synced from a checkpoint can no longer start.',
     ]);
+    expect(body).not.toContain(`[${blocker.title}]`);
     expect(body).not.toContain('What this does');
   });
 
@@ -3891,13 +3889,6 @@ describe('postReview fallback paths', () => {
       expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\n<details>\n<summary>About this review')))).toBe(true);
       expect(update.body).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)');
       expect(update.body).toMatch(/- Reviewed \[`sha`\]\([^)]+\)\n[^\n]*\n\n<\/details>\n\n<!-- manki-bot -->/);
-
-      // A refused file-level comment leaves the threads named under the verdict, and the verdict stops counting it.
-      updateReview.mockClear();
-      createReview.mockClear();
-      await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([offLineBlocker]), outcome: 'ADDRESS_FIRST' }, diff);
-      expect(createReview.mock.calls[0][0].body).toContain('- \u{1F6AB} [Refused thread]');
-      expect(updateReview.mock.calls[0][0].body).not.toContain('[Refused thread]');
     });
 
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
@@ -3963,35 +3954,24 @@ describe('postReview non-blocking findings', () => {
     severity, title, file: 'src/a.ts', line, description: 'It goes wrong. Second sentence. Third sentence.', reviewers: [], ...extra,
   });
 
-  it('links each thread listed under the verdict to its thread once GitHub has posted it', async () => {
+  it('counts the findings posted as threads in the verdict line without listing them, and leaves the posted body as it is', async () => {
     const blocking = nonBlocking('blocker', 'Cache never expires', 5);
     const fileLevel = nonBlocking('blocker', 'Lock order flips', 40);
+    const inline = nonBlocking('suggestion', 'Retry drops the error', 2);
     const createReview = jest.fn().mockResolvedValue({ data: { id: 7 } });
     const updateReview = jest.fn().mockResolvedValue({});
-    const createReviewComment = jest.fn().mockResolvedValue({ data: { html_url: 'https://github.com/owner/repo/pull/1#discussion_r2' } });
-    const paginate = jest.fn().mockResolvedValue([
-      { path: 'src/a.ts', body: `x\n<!-- manki:blocker:${titleToSlug(blocking.title)} -->`, html_url: 'https://github.com/owner/repo/pull/1#discussion_r1' },
-    ]);
-    const octokit = { paginate, rest: { pulls: { createReview, createReviewComment, updateReview, listCommentsForReview: jest.fn() }, repos: { getContent: jest.fn().mockRejectedValue(new Error('Not Found')) } } } as unknown as Parameters<typeof postReview>[0];
-    const result: ReviewResult = { ...buildResult([blocking, fileLevel]), verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: 'It breaks.' };
+    const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 2 } });
+    const octokit = { rest: { pulls: { createReview, createReviewComment, updateReview }, repos: { getContent: jest.fn().mockRejectedValue(new Error('Not Found')) } } } as unknown as Parameters<typeof postReview>[0];
+    const result: ReviewResult = { ...buildResult([blocking, fileLevel, inline]), verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: 'It breaks.' };
 
     await postReview(octokit, 'owner', 'repo', 1, 'abc1234', result, diff);
-    // Posted first with each title linked to its line, then updated once the threads exist.
-    expect(createReview.mock.calls[0][0].body).toContain('- \u{1F6AB} [Cache never expires](https://github.com/owner/repo/blob/abc1234/src/a.ts#L5) · `src/a.ts:5`');
-    expect(paginate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ review_id: 7 }));
-    const updated = updateReview.mock.calls[0][0].body as string;
-    expect(updated).toContain('- \u{1F6AB} [Cache never expires](https://github.com/owner/repo/pull/1#discussion_r1) · `src/a.ts:5`\n- \u{1F6AB} [Lock order flips](https://github.com/owner/repo/pull/1#discussion_r2) · `src/a.ts:40`');
-    expect(updated).toContain('**What blocks:** It breaks.');
-
-    // When the threads can't be looked up, the body keeps its line links and is not rewritten.
-    updateReview.mockClear();
-    paginate.mockRejectedValueOnce(new Error('boom'));
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...result, findings: [blocking] }, diff);
+    const { body, comments } = createReview.mock.calls[0][0];
+    expect(comments).toHaveLength(2);
+    expect(createReviewComment).toHaveBeenCalledTimes(1);
+    // Each finding has its thread under the review, so the body only counts them, and needs no update to link them.
+    expect(body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 2 blockers, plus 1 suggestion in threads\.\n\n\*\*What blocks:\*\* It breaks\./u);
+    for (const f of [blocking, fileLevel, inline]) expect(body).not.toContain(f.title);
     expect(updateReview).not.toHaveBeenCalled();
-    // A title over several lines stays one list item.
-    createReview.mockClear();
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...result, findings: [{ ...blocking, title: 'Cache\n\nnever [expires]' }] }, diff);
-    expect(createReview.mock.calls[0][0].body).toContain('- \u{1F6AB} [Cache never \\[expires\\]](https://github.com/owner/repo/blob/abc1234/src/a.ts#L5)');
   });
 
   it('shows a small code fix in the body as a diff against the flagged line, and anything else as before', async () => {
