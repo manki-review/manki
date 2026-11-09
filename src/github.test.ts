@@ -226,7 +226,8 @@ describe('formatFindingComment', () => {
       link('src/main.ts', 29, 33),
       '',
       `- [\`src/other.ts:5\`](${link('src/other.ts', 5)}): Calls it again`,
-      `- [\`src/util.ts:30\`](${link('src/util.ts', 30)}): Shows the failure.`,
+      // A bare proving line shows its code, when the file was read.
+      `- [\`src/util.ts:30\`](${link('src/util.ts', 30)}): \`line 30\``,
       '- Grep `value ==` under src: src/x.ts:1: no',
       '- Searched with no match: grep `value == null` under src: no match',
       '',
@@ -239,7 +240,11 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, evidence: { checks: [`${'very long check '.repeat(20)}end`], proof: [] } }))
       .toMatch(/\n<!-- manki-checks -->\n\*\*Checked:\*\* Very long check (very long check ){8}very long check…\n/);
     // A fold never holds a single line, so a lone check shows open.
-    expect(render({ ...baseFinding, evidence: { checks: [], proof: ['src/main.ts:42'] } })).toContain('\n<!-- manki-checks -->\nOn the commented line: Shows the failure.\n');
+    expect(render({ ...baseFinding, evidence: { checks: [], proof: ['src/main.ts:42'] } })).toContain(`\n<!-- manki-checks -->\n**Checked:** [\`src/main.ts:42\`](${link('src/main.ts', 42)}): \`line 42\`\n`);
+    // A preview shows the code, so a bare location in it adds no sentence, and one in an unread file is a bare link.
+    const bare = render({ ...baseFinding, evidence: { checks: ['src/util.ts:3 reads it'], proof: ['src/util.ts:5', 'src/other.ts:9'] } });
+    expect(bare).toContain(`\n\nReads it\n${link('src/util.ts', 2, 8)}\n\n${link('src/other.ts', 8, 9)}\n\n</details>`);
+    expect(render({ ...baseFinding, evidence: { checks: ['src/util.ts:3'], proof: ['src/main.ts:42', 'src/main.ts:2'] } })).not.toContain('Shows the failure.');
 
     // A cited path is model output, so one that could end the link or leave the repository stays plain text.
     const steered = render({ ...baseFinding, evidence: { checks: ['a)www.evil.com/b.ts:3 is safe', '../../other/repo/blob/main/x.ts:1 is fine'], proof: ['../x.ts:2'] } });
@@ -302,6 +307,21 @@ describe('formatFindingComment', () => {
     const odd = render({ ...baseFinding, evidence: { checks: ['Reads ``foo` and bar` here', 'Reads ```x and `y z`'], proof: [] } });
     expect(odd).toContain('- Reads \\`\\`foo\\` and bar\\` here\n- Reads \\`\\`\\`x and `y z`');
     expect(odd.split('\n').filter(line => !pairs(line))).toEqual([]);
+
+    // A cut inside a code span closes it after the ellipsis, so the rest of the line keeps its spans and gets no backticks inside them.
+    const reason = 'The overrides of `Vec<T>::consensus_decode` and `Vec<u8>::consensus_decode` now call the finite-reader decode on the caller\'s reader. They drop the `take(MAX_VEC_SIZE)` the default wrapped them in.';
+    const longCheck = 'src/util.ts:20 The new test `streaming_read_has_no_budget_below_the_core_range` shows 8 MB being read through `Vec::<Vec<u8>>::consensus_decode`, where the old `limit_read_test` failed';
+    const cut = highlightCode(render({
+      ...baseFinding,
+      evidence: { checks: [longCheck, `${'a'.repeat(156)} \`xyz_long\` is past the cut`], proof: [] },
+      refutation: { outcome: 'confirmed', reason, files: [], codeDigest: 'abc' },
+    }), new Set(['consensus_decode', 'streaming_read_has_no_budget_below_the_core_range']));
+    expect(cut).toContain('could not. The overrides of `Vec<T>::consensus_decode` and `Vec<u8>::consensus_decode` now call the finite-reader decode on the caller\'s reader. They drop the `take(MAX_…`\n');
+    expect(cut).toContain('The new test `streaming_read_has_no_budget_below_the_core_range` shows 8 MB being read through `Vec::<Vec<u8>>::consensus_decode`, where the old `limit_read_t…`\n');
+    // A span with none of its code before the cut is left out.
+    expect(cut).toContain(`- A${'a'.repeat(155)}…\n`);
+    expect(cut).not.toContain('\\`');
+    expect(cut.split('\n').filter(line => !pairs(line))).toEqual([]);
   });
 
   it('omits the fix when there is none', () => {
@@ -3694,7 +3714,7 @@ describe('postReview fallback paths', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff);
     const body = createReviewMock.mock.calls[0][0].body as string;
-    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Warning**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\n**What goes wrong:** Desc.\n<!-- manki-checks -->\nOn the flagged line: Shows the failure.');
+    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Warning**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\n**What goes wrong:** Desc.\n<!-- manki-checks -->\n**Checked:** [`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)');
     expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
   });
 

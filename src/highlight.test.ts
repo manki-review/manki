@@ -6,24 +6,25 @@ const diff: ParsedDiff = {
     path: 'src/github.ts',
     changeType: 'modified',
     hunks: [{
-      oldStart: 1, oldLines: 2, newStart: 1, newLines: 3,
+      oldStart: 1, oldLines: 2, newStart: 1, newLines: 4,
       content: [
         '-const oldName = 1;',
         '+const { data } = await octokit.rest.pulls.get({ owner, repo });',
         '+if (excludePaths.length) return createReview(review_body);',
+        '+const MAX_COMPACT_SIZE = 32; // MiB, not KiB, GiB or MB, on macOS and iOS, read by readBytes',
         ' const ReviewResult = unchanged_context;',
       ].join('\n'),
     }],
   }],
-  totalAdditions: 2,
+  totalAdditions: 3,
   totalDeletions: 1,
 };
 
 describe('codeTokensFromDiff', () => {
-  it('collects code-like identifiers from added lines and the changed file paths', () => {
+  it('collects code-like identifiers from added lines and the changed file paths, but not units or mixed-case names', () => {
     const tokens = codeTokensFromDiff(diff);
     expect([...tokens].sort()).toEqual([
-      'createReview', 'excludePaths', 'excludePaths.length', 'github.ts', 'octokit.rest.pulls.get', 'review_body', 'src/github.ts',
+      'MAX_COMPACT_SIZE', 'createReview', 'excludePaths', 'excludePaths.length', 'github.ts', 'octokit.rest.pulls.get', 'readBytes', 'review_body', 'src/github.ts',
     ]);
   });
 });
@@ -40,6 +41,8 @@ describe('highlightCode', () => {
   it('leaves plain words, partial matches and unknown identifiers alone', () => {
     const text = 'The data owner reviews createReviewLater and pulls.get in otherFile.ts.';
     expect(highlightCode(text, tokens)).toBe(text);
+    const units = 'Each length is capped at `MAX_COMPACT_SIZE` (32 MiB), but nothing bounds the sum.';
+    expect(highlightCode(units, tokens)).toBe(units);
   });
 
   it('never touches inline code, code blocks, links or HTML comments', () => {
@@ -59,6 +62,10 @@ describe('highlightCode', () => {
     expect(highlightCode('Opens ` here.\n\nThen createReview runs.', tokens)).toBe('Opens ` here.\n\nThen `createReview` runs.');
     // An escaped backtick is text, so it opens no span that would swallow the code after it.
     expect(highlightCode('Calls \\`run( then `src/github.ts` and createReview.', tokens)).toBe('Calls \\`run( then `src/github.ts` and `createReview`.');
+    // Text between escaped backticks is code shown as text, so no token in it gets backticks of its own.
+    const escaped = 'The overrides of \\`Vec<T>::consensus_decode\\` and \\`Vec<u8>::consensus_decode\\` now call the finite-reader decode.';
+    expect(highlightCode(escaped, new Set(['consensus_decode']))).toBe(escaped);
+    expect(highlightCode('Escaped \\`run createReview\\` stays, then createReview.', tokens)).toBe('Escaped \\`run createReview\\` stays, then `createReview`.');
   });
 
   it('wraps tokens in a summary in code tags, since GitHub does not parse Markdown there', () => {
