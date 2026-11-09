@@ -1003,7 +1003,7 @@ describe('handleDismiss (via handlePRComment)', () => {
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
   });
 
-  const usage = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR by part of its title, leaving out any code in backticks, and stores a suppression, so later reviews do not raise findings with that title.';
+  const usage = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR by part of its title and stores a suppression, so later reviews do not raise findings with that title.';
 
   it.each([
     ['names no finding', '@manki dismiss', `Nothing was dismissed, since no finding was named.\n\n${usage}`],

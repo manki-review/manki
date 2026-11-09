@@ -116,7 +116,7 @@ function staysOpenNote(isSecurity: boolean, fixed: boolean): string {
 
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
 
-const DISMISS_USAGE = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR by part of its title, leaving out any code in backticks, and stores a suppression, so later reviews do not raise findings with that title.';
+const DISMISS_USAGE = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR by part of its title and stores a suppression, so later reviews do not raise findings with that title.';
 
 const DISMISS_NO_FINDING = `Nothing was dismissed, since no finding was named.\n\n${DISMISS_USAGE}`;
 
