@@ -394,11 +394,12 @@ ${body}	return true
     }, {
       'server/limits.rs': 'pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;\npub const MAX_PEERS: usize = 16;\n',
       'server/grpc.go': grpc('4 << 20'),
-      'app/models.py': 'class Order(models.Model):\n    note = models.CharField(max_length=255)\n    code = models.CharField(min_length=3)\n',
+      'app/models.py': 'class Order(models.Model):\n    note = models.CharField(max_length=255)\n    code = models.CharField(min_length=3)\n\n    def __init__(self):\n        self.batch_size = 50\n',
       '.github/workflows/ci.yml': 'jobs:\n  test:\n    timeout-minutes: 10 # a full run takes 12\n',
       'include/config.h': '#define MAX_CLIENTS 0x20 // per worker\n',
       'web/src/old.ts': 'export const other = 1;\n',
-      'web/src/limits.ts': 'export const other = 2;\nexport const RATE_LIMIT_PER_MINUTE = 60;\nexport const UPLOAD_LIMIT_BYTES = 5_000_000;\nexport const retries = 3;\n',
+      // A line too long to scan is skipped, so its spaces cannot make the limit pattern backtrack.
+      'web/src/limits.ts': `export const other = 2;\nexport const RATE_LIMIT_PER_MINUTE = 60;\nexport const UPLOAD_LIMIT_BYTES = 5_000_000;\nexport const retries = 3;\nexport const MAX_SPACED = 1${' '.repeat(20_000)}x;\n`,
       'web/src/limits.test.ts': 'export const other = 3;\nconst MAX_ITEMS = 1;\n',
       'docs/limits.md': 'Default:\nmax_items: 10\n',
     });
@@ -406,6 +407,7 @@ ${body}	return true
     expect(siblings.limits.map(q => `${q.file}:${q.line} ${q.name}: ${q.previous ?? 'new'} -> ${q.value}`)).toEqual([
       '.github/workflows/ci.yml:3 timeout-minutes: 30 -> 10',
       'app/models.py:2 max_length: 1000 -> 255',
+      'app/models.py:6 batch_size: new -> 50',
       'include/config.h:1 MAX_CLIENTS: 64 -> 0x20',
       'server/grpc.go:5 MaxRecvMsgSize: 16 << 20 -> 4 << 20',
       'server/limits.rs:1 MAX_FRAME_BYTES: 16 * 1024 * 1024 -> 4 * 1024 * 1024',

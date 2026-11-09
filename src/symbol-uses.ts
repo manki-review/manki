@@ -235,8 +235,8 @@ const LIMIT_WORDS = new Set(['max', 'maximum', 'limit', 'cap', 'capacity', 'time
 // Words that make a name of two words or more a limit, such as `BATCH_SIZE` or `page_size`.
 const BOUND_WORDS = new Set(['size', 'length', 'len', 'count', 'bytes']);
 // A name set to what may be a number: `NAME = 4`, `NAME: u32 = 4`, `self.name = 4`, `name: 4`, `name := 4`, `name=4` in a call, or `Name(4 << 20)`.
-const LIMIT_ASSIGNMENT = /(?<![\w$-])([A-Za-z_][\w-]*)\s*(?::\s*[\w:<>&[\] ]+?\s*(?==))?(?::=|=(?!=)|:|\()\s*([\d(][\w\s+\-*/<>().]*?)\s*(?=[;,)}\]]|\/\/|\/\*|#|$)/g;
-const DEFINE_LINE = /^\s*#\s*define\s+([A-Za-z_]\w*)\s+([\d(][\w\s+\-*/<>().]*?)\s*(?:\/\/|\/\*|$)/;
+const LIMIT_ASSIGNMENT = /(?<![\w$-])([A-Za-z_][\w-]*)[ \t]*(?::[\w:<>&[\] \t]+(?==))?(?::=|=(?!=)|:|\()[ \t]*([\d(][\w \t+\-*/<>().]*?)(?=[;,)}\]]|\/\/|\/\*|#|$)/g;
+const DEFINE_LINE = /^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)[ \t]+([\d(][^/]*?)(?:\/\/|\/\*|$)/;
 // A type suffix on a number literal, such as `30u64`, `100usize` or `5L`.
 const NUMBER_SUFFIX = /(?<=\d)(?:[ui](?:8|16|32|64|128|size)|ul?|l)\b/gi;
 const CONFIG_FILE = /\.(?:ya?ml|toml|json)$/i;
@@ -744,6 +744,7 @@ function isLimitName(name: string): boolean {
 
 /** Returns each limit `text` sets to a number, with the number as written and its value. */
 function limitsOn(text: string): Array<{ name: string; value: string; number: number }> {
+  if (text.length > MAX_SCANNED_LINE_CHARS) return [];
   const define = DEFINE_LINE.exec(text);
   const matches = define ? [define] : [...text.replace(COMMENT, '').matchAll(LIMIT_ASSIGNMENT)];
   return matches.flatMap(([, name, value]) => {
