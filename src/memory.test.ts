@@ -275,6 +275,9 @@ describe('buildMemoryContext', () => {
     expect(context).toContain('Review Memory — Learnings');
     expect(context).toContain('Always use strict mode');
     expect(context).toContain('Review Memory — Suppressions');
+    // `applySuppressions` never hides a blocker or a security finding, so a finder still reports those.
+    expect(context).toContain('Leave out a warning, suggestion or nitpick that matches one, but report a blocker or a security issue even when it matches');
+    expect(context).not.toContain('should NOT be flagged');
     expect(context).toContain('"todo comment"');
     expect(context).toContain('TODOs are tracked in issues');
   });
@@ -918,6 +921,9 @@ describe('buildMemoryContext — suppressions only', () => {
     const context = buildMemoryContext(memory);
     expect(context).not.toContain('Review Memory — Learnings');
     expect(context).toContain('Review Memory — Suppressions');
+    // `applySuppressions` never hides a blocker or a security finding, so a finder still reports those.
+    expect(context).toContain('Leave out a warning, suggestion or nitpick that matches one, but report a blocker or a security issue even when it matches');
+    expect(context).not.toContain('should NOT be flagged');
     expect(context).toContain('"todo comment"');
   });
 

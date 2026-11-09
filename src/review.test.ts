@@ -858,10 +858,10 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).not.toContain('Additional Instructions');
   });
 
-  it('mentions review memory in the rules', () => {
+  it('mentions review memory in the rules, and lets no suppression hold back a blocker or a security issue', () => {
     const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
-    expect(prompt).toContain('review memory');
-    expect(prompt).toContain('suppressed');
+    expect(prompt).toContain('When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one.');
+    expect(prompt).not.toContain('intentionally suppressed');
   });
 
   it('includes severity examples for each level', () => {
@@ -931,7 +931,10 @@ describe('buildReviewerSystemPrompt', () => {
       expect(prompt).toContain('Import ordering');
       expect(prompt).toContain('Trailing commas, semicolons');
       expect(prompt).toContain('Comment formatting');
-      expect(prompt).toContain('Naming conventions already covered by the project');
+      expect(prompt).not.toContain('Naming conventions');
+      expect(prompt).not.toContain('regardless of severity');
+      expect(prompt).toContain('Do not flag any of the following as a style point:');
+      expect(prompt).toContain('Two cases are exempt from this list. One that changes behavior, such as indentation in Python or YAML, is a defect. One that breaks a rule of the repository\'s own instruction files, such as `AGENTS.md` or `CLAUDE.md`, is reported with the rule quoted.');
       expect(prompt).toContain('formatter');
       expect(prompt).toContain('default-config linter');
       expect(prompt).toContain('omit it from your response entirely');
@@ -1008,7 +1011,6 @@ describe('buildReviewerSystemPrompt', () => {
         'semicolons',
         'quote style',
         'Comment formatting',
-        'Naming conventions',
         'formatter',
         'default-config linter',
       ];
@@ -1258,8 +1260,8 @@ describe('selectTeam', () => {
     ])('routes %s as before', (...row) => {
       const team = run(row);
       expect([team.routing.class, readers(team)]).toEqual([row[4], row[5]]);
-      // Tool steps by risk: 8 for the quick check, 30 for two finders, 15 for one.
-      const steps = row[5][0] === verifier ? 8 : row[5].length === 2 ? 30 : 15;
+      // Tool steps by risk: 8 for the quick check, 40 for two finders, 30 for one.
+      const steps = row[5][0] === verifier ? 8 : row[5].length === 2 ? 40 : 30;
       expect(team.finders.map(f => f.steps)).toEqual(row[5].map(() => steps));
     });
 
@@ -1280,7 +1282,7 @@ describe('selectTeam', () => {
       const solo = deeper(code, t(false, false, false));
       expect(readers(solo)).toEqual([`${S} · high`, `${O} · high`]);
       expect(solo.routing).toMatchObject({ class: 'internal', group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'solo', deeper: true });
-      expect(solo.finders.map(f => f.steps)).toEqual([30, 30]);
+      expect(solo.finders.map(f => f.steps)).toEqual([40, 40]);
 
       expect(readers(deeper(docs, t(true, false, true)))).toEqual([`${S} · high`, `${O} · high`]);
 
@@ -1343,11 +1345,11 @@ describe('selectTeam', () => {
     }
   });
 
-  it('adds a second finder on the other Claude tier with the same prompt when paired', () => {
+  it('adds a second finder on the other Claude tier with the surroundings lens when paired', () => {
     const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle: false, paired: true });
     expect(names(team)).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
     expect(team.finders[1]).toEqual(expect.objectContaining({ index: 1, model: 'claude-opus-5-5', effort: 'medium' }));
-    expect(team.finders[1].prompt).toBe(team.finders[0].prompt);
+    expect(team.finders.map(f => f.prompt)).toEqual([buildFinderAgent([]), buildFinderAgent([], 'surroundings')]);
 
     const configured = selectTeam(plainDiff, makeConfig({ models: { reviewer: 'claude-opus-5-5', reviewer_pair: 'gpt-5.5' } }), { trivial: false, subtle: true, paired: true });
     expect(names(configured)).toEqual(['Claude Opus 5.5 · high', 'GPT 5.5 · high']);
@@ -1376,14 +1378,39 @@ describe('selectTeam', () => {
     expect(always.sensitivePaths).toBe(false);
   });
 
-  it('folds custom reviewers into the finder prompt as focus lines', () => {
+  it('folds custom reviewers into both finder prompts, and gives the second finder of a pair the surroundings lens', () => {
     const reviewers: ReviewerAgent[] = [{ name: 'Protocol Compliance', focus: 'DIP compliance' }];
-    const team = selectTeam(plainDiff, makeConfig({ reviewers }), { trivial: false, subtle: true, paired: true });
+    const config = makeConfig({ reviewers });
+    const team = selectTeam(plainDiff, config, { trivial: false, subtle: true, paired: true });
     expect(team.finders).toHaveLength(2);
-    expect(team.finders[0].prompt.focus).toMatch(/^defects in the change\. Check, in this order:\n1\. Correctness/);
-    expect(team.finders[0].prompt.focus).toContain('This repository also asks you to check:\n- Protocol Compliance: DIP compliance');
-    expect(buildReviewerSystemPrompt(team.finders[0].prompt, makeConfig({ reviewers })))
-      .toBe(buildReviewerSystemPrompt(team.finders[1].prompt, makeConfig({ reviewers })));
+    const [first, second] = team.finders.map(f => f.prompt.focus);
+    expect(first).toMatch(/^defects in the change\. Check, in this order:\n1\. Correctness/);
+    expect(second).toMatch(/^defects in the change, searched from the code around it\. Check, in this order:\n1\. Readers: search the whole repository/);
+    const solo = selectTeam(plainDiff, makeConfig({ reviewers, planner: { enabled: true, paired: 'never' } }), { trivial: false, subtle: true, paired: true });
+    expect(solo.finders.map(f => f.prompt.focus)).toEqual([first]);
+    for (const focus of [first, second]) expect(focus).toContain('This repository also asks you to check:\n- Protocol Compliance: DIP compliance');
+    // Both lenses run the checks for defects in the change and in the code around it.
+    for (const check of [
+      'resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or recursion sized by the input, or a size limit removed or raised.',
+      'For a library, outside input is anything a caller of its public API can pass, readers and byte streams included.',
+      'Dropped cases: for each pattern match, `select!` arm, `catch`, ignored result such as `let _ =`',
+      'Tests: for each test the change adds or edits, name the changed line whose revert makes it fail.',
+      'one that sets private fields or internal state instead of calling the public API',
+      'Contract breaks: changed behavior of an API, config key, file or wire format, or stored data that existing code relies on.',
+      'Readers: search the whole repository, other packages included, for each changed type, field, variant and function',
+      'Sibling state: when the change checks, adds or removes an item in one collection, read the type that holds it',
+      'Sibling symmetry: compare each changed function with its counterpart, such as encode and decode',
+    ]) expect([first, second].map(focus => focus.includes(check))).toEqual([true, true]);
+    // Only the second finder looks for reuse and broken repository rules, and only with a citation or a quote.
+    for (const check of [
+      'Reuse: for each constant, helper, type or loop the change adds, search for an existing one that does the same, and cite its `file:line`.',
+      'Repository rules: check each added line against the rules in the repository context, such as `AGENTS.md` or `CLAUDE.md`, and quote the rule it breaks.',
+      'Report every blocker and every security issue you find, whichever check finds it.',
+      'Report a reuse finding only with the existing code\'s `file:line`, and a rule finding only with the rule quoted.',
+    ]) expect([first, second].map(focus => focus.includes(check))).toEqual([false, true]);
+    // The lens changes the focus and nothing else.
+    expect(buildReviewerSystemPrompt(team.finders[0].prompt, config).replace(first, ''))
+      .toBe(buildReviewerSystemPrompt(team.finders[1].prompt, config).replace(second, ''));    expect({ first, second }).toMatchSnapshot();
   });
 
   describe('configured routing', () => {
@@ -1407,7 +1434,8 @@ describe('selectTeam', () => {
       expect([team.routing.class, team.routing.group, team.routing.groupSource]).toEqual(['hot_path', 'deep', 'routing']);
       expect(readers(team)).toEqual(['Claude Opus 5.5 · high · authz, injection, secret handling', 'Gemini 3 Pro · high', 'Claude Sonnet 5.5 · medium']);
       expect(team.finders[0].prompt.focus).toContain('- This review group: authz, injection, secret handling');
-      expect(team.finders[1].prompt).toEqual(buildFinderAgent([]));
+      expect(team.finders[1].prompt).toEqual(buildFinderAgent([], 'surroundings'));
+      expect(team.finders[2].prompt).toEqual(buildFinderAgent([]));
       expect(readers(selectTeam(plainDiff, config, quiet))).toEqual(['Claude Sonnet 5.5 · medium']);
       expect(teamModels(config)).toEqual(expect.arrayContaining(['claude-sonnet-5-5', 'claude-opus-5-5', 'gemini-3-pro']));
     });
@@ -1459,7 +1487,7 @@ describe('selectTeam', () => {
       const weak = selectTeam(authDiff, config, quiet);
       expect([weak.routing.group, weak.routing.groupSource, weak.routing.weakerAllowed, readers(weak)]).toEqual(['solo', 'routing', ['security'], ['Claude Sonnet 5.5 · medium']]);
       // The one finder still gets the tool steps of a floor class.
-      expect(weak.finders[0].steps).toBe(30);
+      expect(weak.finders[0].steps).toBe(40);
       const withCi = selectTeam(diffOf('src/auth/login.ts', '.github/workflows/ci.yml'), config, quiet);
       expect([withCi.routing.group, withCi.routing.groupSource, withCi.routing.weakerAllowed]).toEqual(['pair', 'floor_escalation', undefined]);
     });
@@ -1881,10 +1909,10 @@ describe('runReview', () => {
       // Two finders per round, and both of a round share its state directory.
       const [first, second, ...rest] = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools);
       expect(first).toEqual({
-        root: '/work/pr-head', steps: 30, related: { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') },
+        root: '/work/pr-head', steps: 40, related: { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') },
       });
       expect(second).toEqual(first);
-      expect(rest).toEqual([undefined, undefined, { root: '/work/pr-head', steps: 30 }, { root: '/work/pr-head', steps: 30 }]);
+      expect(rest).toEqual([undefined, undefined, { root: '/work/pr-head', steps: 40 }, { root: '/work/pr-head', steps: 40 }]);
       expect(jest.mocked(withoutTools.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools)).toEqual([undefined, undefined]);
       // The judge gets the related repo rules only for a round whose finders could read them.
       expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].relatedRepos)).toEqual([related_repos, undefined, undefined, undefined]);
@@ -2635,9 +2663,8 @@ describe('runReview', () => {
     const reviewerMock = clients.reviewer.sendMessage as jest.Mock;
     expect(reviewerMock).toHaveBeenCalled();
 
-    for (const call of reviewerMock.mock.calls) {
-      expect(call[0]).toBe(buildReviewerSystemPrompt(buildFinderAgent([]), config, undefined, undefined, 'medium'));
-    }
+    expect(reviewerMock.mock.calls.map(call => call[0])).toEqual((['defects', 'surroundings'] as const)
+      .map(lens => buildReviewerSystemPrompt(buildFinderAgent([], lens), config, undefined, undefined, 'medium')));
   });
 
   it('defaults reviewer noise_level to "low" when config omits it', async () => {
@@ -4933,14 +4960,15 @@ describe('recordCalls', () => {
     for (const steps of [4, 5]) await recordCalls(fallback, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps } });
     await recordCalls(refusing, finder, budgeted).sendMessage('other', 'user', { repoTools: { root: '/work', steps: 4 } }).catch(() => undefined);
     // A client that reports no tool steps, such as Codex, leaves it unknown whether the model was told to wrap up.
-    const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5', relatedReads: { 'o/r': 2 } }), repoTools: true } as unknown as LLMClient;
+    const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5', relatedReads: { 'o/r': 2 }, filesRead: ['src/a.ts'] }), repoTools: true } as unknown as LLMClient;
     await recordCalls(silent, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } });
-    // A call that failed keeps the related repo reads its error carries.
-    const timedOut = Object.assign(new Error('Codex CLI timed out'), { relatedReads: { 'o/r': 1 } });
+    // A call that failed keeps the related repo reads and files read its error carries.
+    const timedOut = Object.assign(new Error('Codex CLI timed out'), { relatedReads: { 'o/r': 1 }, filesRead: ['src/b.ts'] });
     const failing = { sendMessage: jest.fn().mockRejectedValue(timedOut), repoTools: true } as unknown as LLMClient;
     await recordCalls(failing, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } }).catch(() => undefined);
-    expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest, c.relatedReads])).toEqual([
-      [4, true, true, undefined], [5, undefined, true, undefined], [undefined, undefined, false, undefined], [3, undefined, true, { 'o/r': 2 }], [3, undefined, true, { 'o/r': 1 }],
+    expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest, c.relatedReads, c.filesRead])).toEqual([
+      [4, true, true, undefined, undefined], [5, undefined, true, undefined, undefined], [undefined, undefined, false, undefined, undefined],
+      [3, undefined, true, { 'o/r': 2 }, ['src/a.ts']], [3, undefined, true, { 'o/r': 1 }, ['src/b.ts']],
     ]);
     expect(budgeted.at(-1)).toMatchObject({ failed: true, error: 'Codex CLI timed out' });
     expect([recordCalls(fallback, finder, []).repoTools, judge.repoTools]).toEqual([true, undefined]);
@@ -5180,7 +5208,7 @@ describe('runReview triage', () => {
     expect(sensitive.agentNames).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
   });
 
-  it('sends the pair finder the same prompt on the pair client', async () => {
+  it('sends the pair finder its own lens on the pair client', async () => {
     const clients = makeClients();
     const pair = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
     clients.reviewerByModel = new Map([['claude-opus-5-5', pair]]);
@@ -5189,7 +5217,9 @@ describe('runReview triage', () => {
     const pairCall = jest.mocked(pair.sendMessage).mock.calls;
     expect(primaryCall).toHaveLength(1);
     expect(pairCall).toHaveLength(1);
-    expect(pairCall[0]).toEqual(primaryCall[0]);
+    expect(pairCall[0][1]).toEqual(primaryCall[0][1]);
+    expect(primaryCall[0][0]).toContain('defects in the change. Check, in this order:');
+    expect(pairCall[0][0]).toContain('defects in the change, searched from the code around it. Check, in this order:');
     expect(pairCall[0][0]).toContain('- Protocol: wire format');
   });
 

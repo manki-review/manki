@@ -519,7 +519,7 @@ describe('runFullReview end to end', () => {
 
     expect(fetchWorkspace).toHaveBeenCalledWith(`https://github.com/${OWNER}/${REPO}.git`, HEAD_SHA, 'ghs_app');
     // One finder on a PR in no floor class gets the normal budget.
-    expect(mockLLM.tools).toEqual([['reviewer', { root: '/work/pr-head', steps: 15 }]]);
+    expect(mockLLM.tools).toEqual([['reviewer', { root: '/work/pr-head', steps: 30 }]]);
 
     mockLLM.tools = [];
     jest.mocked(fetchWorkspace).mockRejectedValueOnce(new Error('fetch failed'));

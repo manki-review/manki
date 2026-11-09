@@ -481,10 +481,16 @@ describe('sendViaOAuth — error paths', () => {
     expect(readdirSync(cwd)).toEqual([]);
   });
 
-  it('gives the CLI read-only tools on the repository and Manki\'s tool server when asked for them, and reports the tool steps', async () => {
-    const toolUse = (id: string, name: string) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: {} }] } });
+  it('gives the CLI read-only tools on the repository and Manki\'s tool server when asked for them, and reports the tool steps and files read', async () => {
+    const toolUse = (id: string, name: string, input: object = {}) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
     const toolResult = (id: string) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] } });
-    const events = [toolUse('t1', 'Read'), toolResult('t1'), toolUse('t2', 'mcp__manki__git_history'), toolResult('t2'), { type: 'result', result: '[]' }];
+    const events = [
+      toolUse('t1', 'Read', { file_path: '/work/repo/src/a.rs' }), toolResult('t1'),
+      toolUse('t2', 'mcp__manki__git_history', { path: 'src/b.rs' }), toolResult('t2'),
+      toolUse('t3', 'Read', { file_path: '/work/repo/src/a.rs', offset: 400 }), toolResult('t3'),
+      toolUse('t4', 'mcp__manki__read_file', { repo: 'dashpay/dash', path: 'src/net.cpp' }), toolResult('t4'),
+      { type: 'result', result: '[]' },
+    ];
     setupSpawnMock({ stdout: `${events.map(e => JSON.stringify(e)).join('\n')}\n`, rawStdout: true });
     const spawnProc = mockSpawn.getMockImplementation()!;
     let systemPromptFile = '';
@@ -540,7 +546,8 @@ describe('sendViaOAuth — error paths', () => {
       '- `dashpay/platform`, consumer: a codebase that depends on this one.',
     ].join('\n'));
     expect(systemPromptFile).toContain('A change that breaks a consumer is a `warning` that lists the consumer\'s call sites');
-    expect(response.toolSteps).toEqual([{ tool: 'Read', durationMs: expect.any(Number) }, { tool: 'mcp__manki__git_history', durationMs: expect.any(Number) }]);
+    expect(response.toolSteps?.map(step => step.tool)).toEqual(['Read', 'mcp__manki__git_history', 'Read', 'mcp__manki__read_file']);
+    expect(response.filesRead).toEqual(['src/a.rs', 'dashpay/dash:src/net.cpp']);
     expect(response.relatedReads).toEqual({ 'dashpay/dash': 3 });
 
     // A call that fails still reports the reads it made, on its error.

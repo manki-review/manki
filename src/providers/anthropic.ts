@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 import { mkdirSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { isAbsolute, join, relative } from 'path';
 import { promisify } from 'util';
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -59,7 +59,7 @@ export function buildAnthropicAuth(oauthToken: string, apiKey: string): Anthropi
  * `assistantRefusal` is set on every assistant message: the refusal reason, or null when it did not end on `stop_reason: "refusal"`.
  */
 function processJsonLine(line: string): {
-  text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null; toolUses?: { id: string; tool: string }[]; toolResults?: string[];
+  text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null; toolUses?: { id: string; tool: string; file?: string }[]; toolResults?: string[];
   limits?: LimitUsage[];
 } {
   try {
@@ -68,10 +68,13 @@ function processJsonLine(line: string): {
     if (streamed?.type === 'content_block_delta' && streamed.delta?.type === 'text_delta' && streamed.delta.text) {
       return { text: streamed.delta.text, replace: false, resultEvent: null };
     }
-    const blocks: { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown }[] = Array.isArray(event.message?.content) ? event.message.content : [];
+    const blocks: { type?: unknown; id?: unknown; name?: unknown; input?: unknown; tool_use_id?: unknown }[] = Array.isArray(event.message?.content) ? event.message.content : [];
     if (event.type === 'assistant') {
       const refused = event.message?.stop_reason === 'refusal';
-      const toolUses = blocks.filter(b => b.type === 'tool_use').map(b => ({ id: String(b.id), tool: String(b.name) }));
+      const toolUses = blocks.filter(b => b.type === 'tool_use').map(b => {
+        const file = fileReadBy(String(b.name), b.input);
+        return { id: String(b.id), tool: String(b.name), ...(file && { file }) };
+      });
       return { text: '', replace: false, resultEvent: null, assistantRefusal: refused ? refusalReason(event.message.stop_details) : null, toolUses };
     }
     if (event.type === 'user') {
@@ -88,6 +91,15 @@ function processJsonLine(line: string): {
     // Non-JSON line (e.g. verbose debug output) — skip silently
   }
   return { text: '', replace: false, resultEvent: null };
+}
+
+/** Returns the file a `Read` or `read_file` call reads, as the call names it. A file in a related repo gets `owner/name:` in front. */
+function fileReadBy(tool: string, input: unknown): string | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const { file_path: filePath, path, repo } = input as Record<string, unknown>;
+  if (tool === 'Read' && typeof filePath === 'string') return filePath;
+  if (tool === 'mcp__manki__read_file' && typeof path === 'string') return typeof repo === 'string' && repo ? `${repo}:${path}` : path;
+  return undefined;
 }
 
 const CLAUDE_WINDOWS: Record<string, string> = {
@@ -345,15 +357,20 @@ export class AnthropicClient implements LLMClient {
     let refusal: string | undefined;
     const toolSteps: ToolStep[] = [];
     const toolStarts = new Map<string, { tool: string; start: number }>();
+    const filesRead = new Set<string>();
+    const root = options?.repoTools?.root;
     // The CLI reports the limits after each request, so a later reading of a window replaces an earlier one.
     const limits = new Map<string, LimitUsage>();
     // A failed run keeps the readings too, since a used-up limit is when they matter most.
-    const readings = () => (limits.size > 0 ? { limits: [...limits.values()] } : {});
+    const readings = () => ({ ...(limits.size > 0 && { limits: [...limits.values()] }), ...(filesRead.size > 0 && { filesRead: [...filesRead] }) });
     const consumeLine = (line: string): void => {
       if (!line.trim()) return;
       const delta = processJsonLine(line);
       for (const limit of delta.limits ?? []) limits.set(limit.window, limit);
-      for (const { id, tool } of delta.toolUses ?? []) toolStarts.set(id, { tool, start: Date.now() });
+      for (const { id, tool, file } of delta.toolUses ?? []) {
+        toolStarts.set(id, { tool, start: Date.now() });
+        if (file) filesRead.add(root && isAbsolute(file) ? relative(root, file) : file);
+      }
       for (const id of delta.toolResults ?? []) {
         const started = toolStarts.get(id);
         if (started) toolSteps.push({ tool: started.tool, durationMs: Date.now() - started.start });

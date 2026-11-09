@@ -355,7 +355,7 @@ export function buildMemoryContext(memory: RepoMemory, paths?: ReadonlySet<strin
 
   if (memory.suppressions.length > 0) {
     parts.push('\n## Review Memory — Suppressions\n');
-    parts.push('The following patterns are intentional and should NOT be flagged:\n');
+    parts.push('The repository marked these patterns as intended. Leave out a warning, suggestion or nitpick that matches one, but report a blocker or a security issue even when it matches:\n');
     for (const s of memory.suppressions) {
       const scope = s.file_glob ? ` (files matching ${s.file_glob})` : '';
       parts.push(`- "${sanitizeMemoryField(s.pattern)}"${scope}: ${sanitizeMemoryField(s.reason)}`);
