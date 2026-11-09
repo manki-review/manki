@@ -974,16 +974,18 @@ function extractHunkContext(diffFile: DiffFile, line: number): string {
   if (!hunk) return '';
 
   const lines = hunk.content.split('\n');
-  const offset = line - hunk.newStart;
-  if (offset < 0 || offset >= lines.length) return '';
+  // A removed line, or a "\ No newline" note, has no number in the new file.
+  let next = hunk.newStart;
+  const numbers = lines.map(l => (l.startsWith('-') || l.startsWith('\\') ? undefined : next++));
+  const offset = numbers.indexOf(line);
+  if (offset < 0) return '';
   const start = Math.max(0, offset - CONTEXT_LINES);
   const end = Math.min(lines.length, offset + CONTEXT_LINES + 1);
 
   const contextLines: string[] = [];
   for (let i = start; i < end; i++) {
-    const lineNum = hunk.newStart + i;
     const marker = i === offset ? '>>>' : '   ';
-    contextLines.push(`${marker} ${lineNum}: ${lines[i]}`);
+    contextLines.push(`${marker} ${numbers[i] ?? '-'}: ${lines[i]}`);
   }
 
   return contextLines.join('\n');

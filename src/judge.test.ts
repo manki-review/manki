@@ -949,6 +949,10 @@ describe('extractCodeContext', () => {
     const ctx = extractCodeContext(finding, diff);
     expect(ctx).toContain('>>> 10:');
     expect(ctx).toContain('+line 10');
+
+    // A removed line has no number in the new file, so the lines after it keep theirs.
+    const replaced = makeDiff([makeDiffFile({ hunks: [makeHunk({ newStart: 5, oldLines: 4, newLines: 4, content: ' keep\n-old\n+new\n flagged\n tail' })] })]);
+    expect(extractCodeContext(makeFinding({ line: 7 }), replaced)).toBe('    5:  keep\n    -: -old\n    6: +new\n>>> 7:  flagged\n    8:  tail');
   });
 
   it('returns empty string when file not in diff', () => {
