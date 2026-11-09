@@ -2341,11 +2341,12 @@ describe('runReview', () => {
 
     // Two stages can word one defect differently. A kept finding a few lines from a reader blocker that cites a proof line
     // the blocker cites too folds into it whatever the titles say, and the blocker's description keeps the other title.
-    // A finding as near without a common proof line stays, also one that shares a line only with the finding folded in,
-    // and so does one with a common proof line that sits far away.
+    // A finding as near without a common proof line stays, also one that shares a line only with the finding folded in.
+    // A common proof line counts only in the findings' file near both, so neither a shared helper line in another file
+    // nor a far line folds, and a finding far from the blocker stays too.
     const reworded = makeClients(JSON.stringify([{ severity: 'warning', title: 'Leak', file: 'src/a.ts', line: 40, description: 'Leaks.' }]));
     mockedRunJudgeAgent.mockResolvedValueOnce({
-      summary: 'Four warnings.',
+      summary: 'Six warnings.',
       findings: [
         {
           severity: 'warning', title: 'Connection leaked on the error path', file: 'src/a.ts', line: 42, description: 'Leaks a socket.', reviewers: ['Finder A'],
@@ -2354,12 +2355,14 @@ describe('runReview', () => {
         { severity: 'warning', title: 'Timeout is never applied', file: 'src/a.ts', line: 44, description: 'Hangs.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:44'] } },
         { severity: 'warning', title: 'Buffer is never flushed', file: 'src/a.ts', line: 41, description: 'Loses data.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:41'] } },
         { severity: 'warning', title: 'Retry count ignored', file: 'src/a.ts', line: 90, description: 'Retries forever.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:43'] } },
+        { severity: 'warning', title: 'Header is parsed twice', file: 'src/a.ts', line: 38, description: 'Slow.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/util.ts:39'] } },
+        { severity: 'warning', title: 'Lock order differs', file: 'src/a.ts', line: 39, description: 'Deadlocks.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:80'] } },
       ],
     });
     jest.mocked(reworded.judge.sendMessage).mockResolvedValue({
       content: JSON.stringify({
         verdict: 'ADDRESS_FIRST',
-        blockers: [{ file: 'src/a.ts', line: 40, title: 'Close is skipped after an early return', description: 'The handle stays open.', proof: ['src/a.ts:40', 'src/a.ts:43'] }],
+        blockers: [{ file: 'src/a.ts', line: 40, title: 'Close is skipped after an early return', description: 'The handle stays open.', proof: ['src/a.ts:40', 'src/a.ts:43', 'src/util.ts:39', 'src/a.ts:80'] }],
         summary: 'Leak.', whatThisDoes: '', whatToTest: '',
       }),
     });
@@ -2368,6 +2371,8 @@ describe('runReview', () => {
       expect.objectContaining({ title: 'Timeout is never applied' }),
       expect.objectContaining({ title: 'Buffer is never flushed' }),
       expect.objectContaining({ title: 'Retry count ignored' }),
+      expect.objectContaining({ title: 'Header is parsed twice' }),
+      expect.objectContaining({ title: 'Lock order differs' }),
       expect.objectContaining({
         severity: 'blocker', line: 40, title: 'Close is skipped after an early return', reviewers: ['Verdict reader', 'Finder A'],
         description: 'The handle stays open.\n\nAlso reported as: Connection leaked on the error path',
