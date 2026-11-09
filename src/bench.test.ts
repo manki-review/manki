@@ -11,6 +11,7 @@ import type { Finding, RoundContext, RoundOutcome } from './types';
 jest.mock('@actions/core');
 
 const CASES_DIR = join(__dirname, '..', 'bench', 'cases');
+const HOLDOUT_DIR = join(__dirname, '..', 'bench', 'holdout');
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
 
@@ -66,7 +67,7 @@ function makeReview(outcome: RoundOutcome, findings: Finding[], complete = true)
 describe('parseCase', () => {
   it('reads a case with its answer key', () => {
     expect(parseCase(CASE_YAML, 'demo.yml')).toEqual({
-      id: 'demo-1', repo: 'owner/demo', source: 'demo upstream PR 7', base: SHA_A, head: SHA_B, title: 'fix: bound the reader', body: 'Reads lengths with a bound.\n', keyVersion: 2,
+      id: 'demo-1', set: 'tuning', repo: 'owner/demo', source: 'demo upstream PR 7', base: SHA_A, head: SHA_B, title: 'fix: bound the reader', body: 'Reads lengths with a bound.\n', keyVersion: 2,
       mustCatch: [
         { id: 'K1', severity: 'blocker', mechanism: 'The reader allocates from a peer length.', locations: ['src/read.rs', 'read_len'], fix: 'abc1234', source: 'owner review' },
         { id: 'K2', severity: 'warning', mechanism: 'The error path drops the lock.', locations: ['unlock'] },
@@ -94,13 +95,13 @@ describe('parseCase', () => {
     expect(() => parseCase(CASE_YAML.replace(from, to), 'bad.yml')).toThrow(message);
   });
 
-  it('parses every seed case, with unique ids and no linked reference to a repository outside the forks', () => {
-    const files = readdirSync(CASES_DIR).filter(f => f.endsWith('.yml'));
-    expect(files.length).toBeGreaterThan(0);
-    const cases = loadCases(CASES_DIR);
-    expect(new Set(cases.map(c => c.id)).size).toBe(cases.length);
+  it('parses every tuning and hold-out case, with unique ids and no linked reference to a repository outside the forks', () => {
+    const files = [CASES_DIR, HOLDOUT_DIR].flatMap(dir => readdirSync(dir).filter(f => f.endsWith('.yml')).map(f => join(dir, f)));
+    const cases = loadCases({ tuning: CASES_DIR, holdout: HOLDOUT_DIR });
+    expect(cases).toHaveLength(files.length);
+    expect(cases.filter(c => c.set === 'holdout' && c.repo !== 'xdustinface/rust-dashcore').length).toBeGreaterThanOrEqual(8);
     for (const file of files) {
-      const text = readFileSync(join(CASES_DIR, file), 'utf-8');
+      const text = readFileSync(file, 'utf-8');
       expect(text).not.toMatch(/dashpay\//i);
       const references = [...text.matchAll(/([\w.-]+)\/[\w.-]+#\d+/g)].map(m => m[1]);
       expect(references.filter(owner => owner !== 'xdustinface' && owner !== 'manki-review')).toEqual([]);
@@ -109,17 +110,23 @@ describe('parseCase', () => {
 });
 
 describe('loadCases', () => {
-  it('keeps only the asked cases and refuses an unknown id', () => {
+  it('keeps only the asked cases of the sets given, and refuses an unknown id or an id used in two sets', () => {
     const dir = mkdtempSync(join(tmpdir(), 'manki-cases-'));
+    const holdout = mkdtempSync(join(tmpdir(), 'manki-holdout-'));
     try {
       writeFileSync(join(dir, 'a.yml'), CASE_YAML);
       writeFileSync(join(dir, 'b.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-2'));
       writeFileSync(join(dir, 'notes.md'), 'not a case');
-      expect(loadCases(dir).map(c => c.id)).toEqual(['demo-1', 'demo-2']);
-      expect(loadCases(dir, ['demo-2']).map(c => c.id)).toEqual(['demo-2']);
-      expect(() => loadCases(dir, ['demo-3'])).toThrow('No case with id demo-3');
+      writeFileSync(join(holdout, 'c.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-3'));
+      expect(loadCases({ tuning: dir }).map(c => c.id)).toEqual(['demo-1', 'demo-2']);
+      expect(loadCases({ tuning: dir }, ['demo-2']).map(c => c.id)).toEqual(['demo-2']);
+      expect(() => loadCases({ tuning: dir }, ['demo-3'])).toThrow('No case with id demo-3');
+      expect(loadCases({ tuning: dir, holdout }, ['demo-1', 'demo-3']).map(c => [c.id, c.set])).toEqual([['demo-1', 'tuning'], ['demo-3', 'holdout']]);
+      writeFileSync(join(holdout, 'd.yml'), CASE_YAML);
+      expect(() => loadCases({ tuning: dir, holdout })).toThrow('Case id demo-1 is used twice');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+      rmSync(holdout, { recursive: true, force: true });
     }
   });
 });
@@ -332,6 +339,18 @@ describe('runBench and buildReport', () => {
       '| demo-1 N1 (nice suggestion) | 0/3 | 0/3 |',
       '',
     ].join('\n'));
+    expect(report.variants[0].sets).toEqual({ tuning: report.variants[0].summary });
+
+    const held = { benchCase: { ...benchCase, id: 'demo-2', set: 'holdout' as const }, runs: results[0].runs.slice(0, 1) };
+    const split = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 5, matcherModel: 'model-a' }, [{ variant, results: [...results, held] }]);
+    expect(split.variants[0].summary.runs).toBe(6);
+    expect(split.variants[0].sets).toEqual({ tuning: report.variants[0].summary, holdout: expect.objectContaining({ runs: 1, mustCatchRecall: 0.5, verdictAccuracy: 1 }) });
+    const splitSummary = formatBenchSummary(split);
+    expect(splitSummary).toContain('\ntuning: 5 runs (2 incomplete). Must-catch recall 33%');
+    expect(splitSummary).toContain('\nholdout: 1 runs (0 incomplete). Must-catch recall 50%');
+    expect(splitSummary).toContain('| Metric | opus tuning | opus holdout |\n| --- | --- | --- |\n| Must-catch recall | 33% | 50% |\n');
+    expect(splitSummary).toContain('| demo-1 K1 (must blocker) | 2/3, 1 partial |  |\n');
+    expect(splitSummary).toContain('| demo-2 K1 (must blocker) |  | 1/1 |\n');
   });
 
   it('tries the matcher again before giving up a finished review, and keeps its findings and cost when it gives up', async () => {
@@ -383,13 +402,13 @@ describe('runBench and buildReport', () => {
 
 describe('parseBenchArgs', () => {
   it('reads the options and defaults', () => {
-    expect(parseBenchArgs([])).toMatchObject({ cases: 'bench/cases', only: [], runs: 3, matcherModel: 'claude-sonnet-5-5', cache: 'bench/.matcher-cache.json', help: false });
+    expect(parseBenchArgs([])).toMatchObject({ cases: 'bench/cases', holdout: false, only: [], runs: 3, matcherModel: 'claude-sonnet-5-5', cache: 'bench/.matcher-cache.json', help: false });
     const args = parseBenchArgs([
       '--checkout', 'owner/demo=/src/a=b', '--case', 'x', '--case', 'y', '--runs', '1', '--out', 'r.json', '--matcher-model', 'm', '--cache', 'c.json',
-      '--variant', 'base', '--variant', 'opus=bench/opus.yml', '--set', 'models.reviewer=claude-opus-5-5', '--set', 'review_passes=2', '--set', 'exclude_paths=[a, b]',
+      '--holdout', '--variant', 'base', '--variant', 'opus=bench/opus.yml', '--set', 'models.reviewer=claude-opus-5-5', '--set', 'review_passes=2', '--set', 'exclude_paths=[a, b]',
     ]);
     expect(args).toMatchObject({
-      only: ['x', 'y'], runs: 1, out: 'r.json', matcherModel: 'm', cache: 'c.json',
+      holdout: true, only: ['x', 'y'], runs: 1, out: 'r.json', matcherModel: 'm', cache: 'c.json',
       variants: [{ name: 'base' }, { name: 'opus', file: 'bench/opus.yml' }],
       sets: [{ models: { reviewer: 'claude-opus-5-5' } }, { review_passes: 2 }, { exclude_paths: ['a', 'b'] }],
     });

@@ -69,7 +69,7 @@ describe('draftCase', () => {
     expect(text).toMatch(/^# Draft from Manki's round records: round 2, 3 found these blockers on code round 1 reviewed at b{40}\./);
     expect(text).not.toMatch(/dashpay\//);
     expect(parseCase(text, `${id}.yml`)).toEqual({
-      id, repo: 'xdustinface/rust-dashcore', source: 'xdustinface/rust-dashcore#184: round 2, 3 raised blockers on code round 1 had reviewed',
+      id, set: 'tuning', repo: 'xdustinface/rust-dashcore', source: 'xdustinface/rust-dashcore#184: round 2, 3 raised blockers on code round 1 had reviewed',
       base: 'a'.repeat(40), head: 'b'.repeat(40), title: 'fix: stop someone', body: 'Closes rust-dashcore upstream PR 1171', keyVersion: 0,
       mustCatch: [{ id: 'K1', severity: 'blocker', mechanism: 'Deadlock in stop. Both take the lock, see dash upstream PR 9.', locations: ['src/a.rs'] }],
       niceToHave: [],
