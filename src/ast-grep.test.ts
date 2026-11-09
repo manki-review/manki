@@ -3,6 +3,7 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
+import go from '@ast-grep/lang-go';
 import python from '@ast-grep/lang-python';
 import rust from '@ast-grep/lang-rust';
 
@@ -17,7 +18,7 @@ jest.mock('@actions/core', () => ({
 const FIXTURES = join(__dirname, '..', 'rules', 'ast-grep', 'fixtures');
 
 // The grammars are registered once per process, so every test file registers the same ones.
-napi.registerDynamicLanguage({ python, rust });
+napi.registerDynamicLanguage({ go, python, rust });
 
 /** Returns `line rule-id` for every `expect:` marker in a fixture, one entry per rule id the marker names. */
 function expectedResults(content: string): string[] {
@@ -46,7 +47,7 @@ describe('runAstGrep', () => {
     const files = new Map([
       ['a.ts', 'if (x === NaN) {}\nlist.forEach(async (a) => a);\n'],
       ['b.py', 'if x == None:\n    pass\n'],
-      ['c.go', 'eval(x)\n'],
+      ['c.rb', 'eval(x)\n'],
       ['src/d.rs', decode],
       ['tests/e.rs', decode],
       ['src/net/f_tests.rs', decode],

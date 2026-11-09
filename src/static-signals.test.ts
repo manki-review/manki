@@ -4,6 +4,7 @@ import { basename, join } from 'path';
 
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import go from '@ast-grep/lang-go';
 import python from '@ast-grep/lang-python';
 import rust from '@ast-grep/lang-rust';
 import * as napi from '@ast-grep/napi';
@@ -30,7 +31,7 @@ jest.mock('@actions/github', () => ({
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 // The grammars are registered once per process, so every test file registers the same ones.
-napi.registerDynamicLanguage({ python, rust });
+napi.registerDynamicLanguage({ go, python, rust });
 
 const RAW_DIFF = [
   'diff --git a/src/app.ts b/src/app.ts',

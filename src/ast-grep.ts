@@ -9,14 +9,14 @@ import { parseAllDocuments } from 'yaml';
 import { installPinned, PinnedDownload } from './tool-install';
 import { StaticSignal } from './types';
 
-/** The part of `@ast-grep/napi` the analyzer uses, with the Python and Rust grammars registered as `python` and `rust`. */
+/** The part of `@ast-grep/napi` the analyzer uses, with the Go, Python and Rust grammars registered as `go`, `python` and `rust`. */
 export interface AstGrepApi {
   parse: typeof parse;
   registerDynamicLanguage: typeof registerDynamicLanguage;
 }
 
 /** The language families Manki's ast-grep can parse. */
-export const AST_GREP_FAMILIES = ['typescript', 'python', 'rust'] as const;
+export const AST_GREP_FAMILIES = ['typescript', 'python', 'rust', 'go'] as const;
 
 type Family = typeof AST_GREP_FAMILIES[number];
 
@@ -40,6 +40,11 @@ const NAPI_BUILDS: Record<string, { target: string; integrity: string }> = {
   'darwin-x64': { target: 'darwin-x64', integrity: 'sha512-dB8Dm+B/aNPAxt6YUQEL3RWF/De9kbW/gdkG780lOpPOMD72injLbupiH/D1k6M76z6mTvqPQlTzTlXGmuxu3Q==' },
   'darwin-arm64': { target: 'darwin-arm64', integrity: 'sha512-kc9phT4a0wpM2GAjqn+RySI/pS7hET78TOvsjTdFeEnZ7tdh887wyqjp6+J1ZxVw+/N66m7TauoSLIzkqdeR1Q==' },
   'win32-x64': { target: 'win32-x64-msvc', integrity: 'sha512-MVgY2fgh/VHFLa+gpIPZLgwoXWeBIwz7gfJh79l71b9pJJm1F3c5fKzZNClnP362gV1e+svtJ0XiJXTUnCf52w==' },
+};
+
+const GO_GRAMMAR: PinnedDownload = {
+  url: 'https://registry.npmjs.org/@ast-grep/lang-go/-/lang-go-0.0.6.tgz',
+  integrity: 'sha512-PZap9Rp6t+YKbLjRnFRF5aGBX3/HV9s5Rp7ZPsCM+o3tlTZDo1IqDYnFu+Oeh5Razs2U8K8ccPSJ+GBxalVhWg==',
 };
 
 const PYTHON_GRAMMAR: PinnedDownload = {
@@ -72,15 +77,16 @@ const LANGUAGES: Record<string, { family: Family; lang: string }> = {
   cjs: { family: 'typescript', lang: 'Tsx' },
   py: { family: 'python', lang: 'python' },
   rs: { family: 'rust', lang: 'rust' },
+  go: { family: 'go', lang: 'go' },
 };
 
-const FAMILIES: Record<string, Family> = { typescript: 'typescript', tsx: 'typescript', javascript: 'typescript', python: 'python', rust: 'rust' };
+const FAMILIES: Record<string, Family> = { typescript: 'typescript', tsx: 'typescript', javascript: 'typescript', python: 'python', rust: 'rust', go: 'go' };
 
 const SEVERITIES: Record<string, StaticSignal['severity']> = { error: 'error', warning: 'warning', info: 'note', hint: 'note' };
 
 let loaded: Promise<AstGrepApi> | undefined;
 
-/** Downloads the pinned `@ast-grep/napi` binding and the Python and Rust grammars for this platform once per run and loads them. */
+/** Downloads the pinned `@ast-grep/napi` binding and the Go, Python and Rust grammars for this platform once per run and loads them. */
 export function loadAstGrep(): Promise<AstGrepApi> {
   loaded ??= loadPinnedAstGrep();
   return loaded;
@@ -90,8 +96,9 @@ async function loadPinnedAstGrep(): Promise<AstGrepApi> {
   const platform = `${process.platform}-${process.arch}`;
   const build = NAPI_BUILDS[platform];
   if (!build) throw new Error(`no pinned ast-grep build for ${platform}`);
-  const [bindingDir, pythonDir, rustDir] = await Promise.all([
+  const [bindingDir, goDir, pythonDir, rustDir] = await Promise.all([
     installPinned({ url: `https://registry.npmjs.org/@ast-grep/napi-${build.target}/-/napi-${build.target}-${NAPI_VERSION}.tgz`, integrity: build.integrity }),
+    installPinned(GO_GRAMMAR),
     installPinned(PYTHON_GRAMMAR),
     installPinned(RUST_GRAMMAR),
   ]);
@@ -100,6 +107,7 @@ async function loadPinnedAstGrep(): Promise<AstGrepApi> {
   process.dlopen(binding, join(bindingDir, 'package', `ast-grep-napi.${build.target}.node`));
   const api = binding.exports as AstGrepApi;
   api.registerDynamicLanguage({
+    go: { libraryPath: parser(goDir), extensions: ['go'], languageSymbol: 'tree_sitter_go', expandoChar: 'µ' },
     python: { libraryPath: parser(pythonDir), extensions: ['py'], languageSymbol: 'tree_sitter_python', expandoChar: 'µ' },
     rust: { libraryPath: parser(rustDir), extensions: ['rs'], languageSymbol: 'tree_sitter_rust', expandoChar: 'µ' },
   });
@@ -108,7 +116,8 @@ async function loadPinnedAstGrep(): Promise<AstGrepApi> {
 
 /** Whether ast-grep has a grammar and rules for the file. */
 export function isAstGrepFile(path: string): boolean {
-  return languageOf(path) !== undefined;
+  const family = languageOf(path)?.family;
+  return family !== undefined && loadRules().some(rule => rule.family === family);
 }
 
 /** Returns the results of Manki's rules in `rules/ast-grep` on each file, keyed by path. */
