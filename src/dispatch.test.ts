@@ -22,6 +22,13 @@ const ISSUE_COMMENT = { id: 11, node_id: 'IC_11', body: '@manki explain', user: 
 const REVIEW = { id: 12, commit_id: HEAD, user: BOB, pull_request_url: `${API}/pulls/7` };
 const REVIEW_COMMENT = { id: 13, body: 'Agreed', user: BOB, in_reply_to_id: 10, pull_request_url: `${API}/pulls/7` };
 const REPOSITORY = { name: 'widgets', owner: { login: 'acme' } };
+const MANKI_EDIT = { editor: { login: 'manki-review', __typename: 'Bot' } };
+const CAROL_EDIT = { editor: { login: 'carol', __typename: 'User' } };
+
+/** A GraphQL edit history, newest edit first. */
+function editHistory(...edits: (typeof MANKI_EDIT)[]) {
+  return { node: { editor: edits[0].editor, userContentEdits: { nodes: edits } } };
+}
 
 function mockOctokit() {
   return {
@@ -36,7 +43,8 @@ function mockOctokit() {
         getComment: jest.fn().mockResolvedValue({ data: ISSUE_COMMENT }),
       },
     },
-    graphql: jest.fn().mockResolvedValue({ node: { editor: { login: 'carol', __typename: 'User' } } }),
+    // Manki rewrites its comment right after a tick, so the person is not the last editor.
+    graphql: jest.fn().mockResolvedValue(editHistory(MANKI_EDIT, CAROL_EDIT, MANKI_EDIT)),
   };
 }
 
@@ -60,17 +68,17 @@ describe('restoreDispatchedEvent', () => {
       { pull_request: PR }, BOB],
     ['a new PR comment, as its author', { event: 'issue_comment', action: 'created', pr: '7', comment_id: '11', delivery_id: 'f1e2d3c4-0000-4000-8000-000000000001' },
       { comment: ISSUE_COMMENT, issue: ISSUE }, BOB],
-    ['an edited comment, as its last editor', { event: 'issue_comment', action: 'edited', pr: '7', comment_id: '11' },
+    ['an edited comment, as the person who edited it', { event: 'issue_comment', action: 'edited', pr: '7', comment_id: '11' },
       { comment: ISSUE_COMMENT, issue: ISSUE }, { login: 'carol', type: 'User' }],
     ['a review, as its author', { event: 'pull_request_review', action: 'submitted', pr: '7', review_id: '12', head_sha: HEAD },
       { review: REVIEW, pull_request: PR }, BOB],
     // A tick of a box in Manki's review is an edit by someone else, so the editor is the sender.
-    ['an edited review, as its last editor', { event: 'pull_request_review', action: 'edited', pr: '7', review_id: '12', head_sha: HEAD },
+    ['an edited review, as the person who edited it', { event: 'pull_request_review', action: 'edited', pr: '7', review_id: '12', head_sha: HEAD },
       { review: REVIEW, pull_request: PR }, { login: 'carol', type: 'User' }],
     ['a thread reply, as its author', { event: 'pull_request_review_comment', action: 'created', pr: '7', comment_id: '13' },
       { comment: REVIEW_COMMENT, pull_request: PR }, BOB],
     // A tick of a box in Manki's review comment is an edit by someone else, so the editor is the sender.
-    ['an edited review comment, as its last editor', { event: 'pull_request_review_comment', action: 'edited', pr: '7', comment_id: '13' },
+    ['an edited review comment, as the person who edited it', { event: 'pull_request_review_comment', action: 'edited', pr: '7', comment_id: '13' },
       { comment: REVIEW_COMMENT, pull_request: PR }, { login: 'carol', type: 'User' }],
     ['a resolved thread, as the PR author', { event: 'pull_request_review_thread', action: 'resolved', pr: '7', delivery_id: 'f1e2d3c4-0000-4000-8000-000000000002' },
       { pull_request: PR }, ALICE],
@@ -83,12 +91,16 @@ describe('restoreDispatchedEvent', () => {
     expect(core.info).toHaveBeenCalledWith(expect.stringContaining('by manki-review[bot]'));
   });
 
-  it('reports a bot that last edited a comment the way a webhook names it', async () => {
-    octokit.graphql.mockResolvedValue({ node: { editor: { login: 'manki-review', __typename: 'Bot' } } });
+  it.each([
+    ['the person, when Manki edited after them', editHistory(MANKI_EDIT, CAROL_EDIT, MANKI_EDIT), { login: 'carol', type: 'User' }],
+    ['the person, when only they edited', editHistory(CAROL_EDIT), { login: 'carol', type: 'User' }],
+    ['Manki, named the way a webhook names a bot, when only Manki edited', editHistory(MANKI_EDIT, MANKI_EDIT), { login: 'manki-review[bot]', type: 'Bot' }],
+  ])('names as the sender of an edit %s', async (_label, history, sender) => {
+    octokit.graphql.mockResolvedValue(history);
 
     await dispatch({ event: 'issue_comment', action: 'edited', pr: '7', comment_id: '11' });
 
-    expect(github.context.payload.sender).toEqual({ login: 'manki-review[bot]', type: 'Bot' });
+    expect(github.context.payload.sender).toEqual(sender);
     expect(octokit.graphql).toHaveBeenCalledWith(expect.any(String), { id: 'IC_11' });
   });
 

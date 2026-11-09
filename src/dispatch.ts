@@ -154,7 +154,7 @@ async function fetchEvent(octokit: Octokit, inputs: DispatchInputs): Promise<Fet
       const { data: comment } = await octokit.rest.issues.getComment({ owner, repo, comment_id: objectId });
       assertPartOf(comment.issue_url, issuePath, `Comment ${objectId}`, number);
       const { data: issue } = await octokit.rest.issues.get({ owner, repo, issue_number: number });
-      const sender = inputs.action === 'edited' ? await lastEditor(octokit, comment.node_id) : undefined;
+      const sender = inputs.action === 'edited' ? await editSender(octokit, comment.node_id) : undefined;
       return { objects: { comment, issue }, sender: sender ?? userOf(comment.user) };
     }
     case 'pull_request_review': {
@@ -162,7 +162,7 @@ async function fetchEvent(octokit: Octokit, inputs: DispatchInputs): Promise<Fet
       const { data: review } = await octokit.rest.pulls.getReview({ owner, repo, pull_number: number, review_id: objectId });
       assertPartOf(review.pull_request_url, pullPath, `Review ${objectId}`, number);
       // A tick of a box in Manki's review is an edit by someone else, so the editor is the sender.
-      const sender = inputs.action === 'edited' ? await lastEditor(octokit, review.node_id) : undefined;
+      const sender = inputs.action === 'edited' ? await editSender(octokit, review.node_id) : undefined;
       return { objects: { review, pull_request }, sender: sender ?? userOf(review.user) };
     }
     case 'pull_request_review_comment': {
@@ -170,7 +170,7 @@ async function fetchEvent(octokit: Octokit, inputs: DispatchInputs): Promise<Fet
       assertPartOf(comment.pull_request_url, pullPath, `Review comment ${objectId}`, number);
       const pull_request = await fetchPullRequest(octokit, owner, repo, number);
       // A tick of a box in Manki's comment is an edit by someone else, so the editor is the sender.
-      const sender = inputs.action === 'edited' ? await lastEditor(octokit, comment.node_id) : undefined;
+      const sender = inputs.action === 'edited' ? await editSender(octokit, comment.node_id) : undefined;
       return { objects: { comment, pull_request }, sender: sender ?? userOf(comment.user) };
     }
     case 'pull_request_review_thread': {
@@ -196,13 +196,24 @@ function assertPartOf(url: string | undefined, path: string, what: string, numbe
   }
 }
 
-/** Who last edited a comment, such as the person who ticked a box in Manki's settings block. */
-async function lastEditor(octokit: Octokit, nodeId: string): Promise<Sender | undefined> {
-  const { node } = await octokit.graphql<{ node: { editor: { login: string; __typename: string } | null } | null }>(
-    'query($id: ID!) { node(id: $id) { ... on Comment { editor { login __typename } } } }',
+interface GraphqlEditor {
+  login: string;
+  __typename: string;
+}
+
+/**
+ * Returns who made the newest edit by a person, such as a tick in Manki's settings block. Manki rewrites the comment right
+ * after a tick, so the last editor is often Manki. With no edit by a person it returns the last editor, so a bot stays a bot.
+ */
+async function editSender(octokit: Octokit, nodeId: string): Promise<Sender | undefined> {
+  const { node } = await octokit.graphql<{
+    node: { editor: GraphqlEditor | null; userContentEdits: { nodes: ({ editor: GraphqlEditor | null } | null)[] | null } | null } | null;
+  }>(
+    'query($id: ID!) { node(id: $id) { ... on Comment { editor { login __typename } userContentEdits(first: 100) { nodes { editor { login __typename } } } } } }',
     { id: nodeId },
   );
-  const editor = node?.editor;
+  const person = node?.userContentEdits?.nodes?.find(edit => edit?.editor && edit.editor.__typename !== 'Bot')?.editor;
+  const editor = person ?? node?.editor;
   if (!editor) return undefined;
   // GraphQL names a bot `<slug>`, while webhook payloads and REST use `<slug>[bot]`.
   return editor.__typename === 'Bot' ? { login: `${editor.login}[bot]`, type: 'Bot' } : { login: editor.login, type: 'User' };
