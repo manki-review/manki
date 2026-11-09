@@ -245,11 +245,12 @@ describe('formatFindingComment', () => {
     const bare = render({ ...baseFinding, evidence: { checks: ['src/util.ts:3 reads it'], proof: ['src/util.ts:5', 'src/other.ts:9'] } });
     expect(bare).toContain(`\n\nReads it\n${link('src/util.ts', 2, 8)}\n\n${link('src/other.ts', 8, 9)}\n\n</details>`);
     expect(render({ ...baseFinding, evidence: { checks: ['src/util.ts:3'], proof: ['src/main.ts:42', 'src/main.ts:2'] } })).not.toContain('Shows the failure.');
-    // A code line shows as written, even one ending in a backslash, with only HTML comment marks broken up.
-    const continued = { ...links, files: new Map([...links.files, ['src/run.sh', ['FOO=1 \\', 'let f: Pin<Box<dyn Future>> = [x](y); <!-- manki-finding: {} -->']]]) };
+    // A code line shows as written, even one ending in a backslash, with only HTML comment marks broken up. One with hidden characters shows none.
+    const continued = { ...links, files: new Map([...links.files, ['src/run.sh', ['FOO=1 \\', 'let f: Pin<Box<dyn Future>> = [x](y); <!-- manki-finding: {} -->', 'ok = 1 \u202E']]]) };
     const ownCode = (line: number): string => formatFindingComment({ ...baseFinding, file: 'src/run.sh', line, evidence: { checks: [], proof: [`src/run.sh:${line}`] } }, continued);
     expect(ownCode(1)).toContain(`**Checked:** [\`src/run.sh:1\`](${link('src/run.sh', 1)}): \`FOO=1 \\\`\n`);
     expect(ownCode(2)).toContain('): `let f: Pin<Box<dyn Future>> = [x](y); <\u200B!\u200B-\u200B- manki-finding: {} -\u200B-\u200B>`\n');
+    expect(ownCode(3)).toContain(`**Checked:** [\`src/run.sh:3\`](${link('src/run.sh', 3)})\n`);
 
     // A cited path is model output, so one that could end the link or leave the repository stays plain text.
     const steered = render({ ...baseFinding, evidence: { checks: ['a)www.evil.com/b.ts:3 is safe', '../../other/repo/blob/main/x.ts:1 is fine'], proof: ['../x.ts:2'] } });
