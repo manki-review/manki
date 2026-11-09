@@ -318,6 +318,57 @@ ${body}	return true
     expect(siblings.implementations).toEqual([]);
   });
 
+  it('falls back to declaration lines in a language without a grammar, asking only about a field of the very same collection type in the same class', async () => {
+    const store = (body: string) => `package store;
+
+public class SessionStore {
+    private final Map<String, Session> live = new HashMap<>();
+    private final Map<String, Session> closed = new HashMap<>();
+    private final Map<Integer, String> owners = new HashMap<>();
+    private int count;
+
+    public boolean close(String id) {
+        Map<String, Session> local = new HashMap<>();
+${body}        return true;
+    }
+}
+`;
+    const cache = (body: string) => `namespace Store
+{
+    public sealed class TokenCache
+    {
+        private readonly Dictionary<string, Token> _fresh = new();
+        private readonly Dictionary<string, Token> _stale = new();
+        private readonly List<string> _order = new();
+
+        public Token Find(string key)
+        {
+${body}            return null;
+        }
+    }
+}
+`;
+    const { siblings } = await usesFor(
+      { 'src/SessionStore.java': store(''), 'src/TokenCache.cs': cache(''), 'scripts/run.sh': 'echo start\n' },
+      {
+        'src/SessionStore.java': store('        if (!this.live.containsKey(id)) {\n            return false;\n        }\n        local.remove(id);\n'),
+        'src/TokenCache.cs': cache('            if (_fresh.TryGetValue(key, out var token)) return token;\n            _ = _fresh[key];\n'),
+        'scripts/run.sh': 'echo start\necho "${args[0]}"\n',
+      },
+    );
+
+    // A local variable inside a method is no field, and a map of other types is no sibling without a syntax tree to rank it.
+    expect(siblings.fields.map(q => `${q.struct}.${q.field} -> ${q.sibling} (${q.item})`)).toEqual([
+      'SessionStore.live -> closed (id)',
+      'TokenCache._fresh -> _stale (key)',
+    ]);
+    expect(siblings.fields[0].lookups).toEqual([{ file: 'src/SessionStore.java', line: 11, text: 'if (!this.live.containsKey(id)) {' }]);
+    expect(siblings.fields[0].definition).toMatchObject({ file: 'src/SessionStore.java', line: 3 });
+    expect(siblings.fields[0].definition.code).toMatch(/^3: {2}public class SessionStore \{\n4: {6}private final Map<String, Session> live[\s\S]*\n17: {2}\}$/);
+    expect(siblings.fields[1].lookups.map(l => l.line)).toEqual([11, 12]);
+    expect(siblings.fields[1].definition).toMatchObject({ file: 'src/TokenCache.cs', line: 3 });
+  });
+
   it('compares the functions of one name or trait method on sibling types in the changed files and beside them, in Rust, Python and Go, most touched first, leaving out nested functions, untouched neighbours of removed code, excluded files and types no plain path names', async () => {
     const decode = (type: string, body: string) => `impl FromWire for ${type} {\n    fn from_wire(r: &mut R) -> Result<Self, Error> {\n        let version = u16::from_wire(r)?;\n${body}        Ok(Self { version })\n    }\n}\n`;
     const methods = (type: string, size: string, before = '') => `impl ${type} {\n    fn is_new(&self) -> bool {\n        self.version >= 3\n    }\n\n${before}    pub fn size(&self) -> usize {\n        ${size}\n    }\n}\n`;
