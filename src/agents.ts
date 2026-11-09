@@ -17,6 +17,7 @@ const CHECKS = {
   symmetry: 'Sibling symmetry: compare each changed function with its counterpart, such as encode and decode, the other enum arms or the same function for another type. A check, version guard, lock or event that one has and the other lacks is a defect.',
   reuse: 'Reuse: for each constant, helper, type or loop the change adds, search for an existing one that does the same, and cite its `file:line`.',
   rules: 'Repository rules: check each added line against the rules in the repository context, such as `AGENTS.md`, `CLAUDE.md` or `CONTRIBUTING.md`, and quote the rule it breaks.',
+  reference: 'Reference behaviour: when the change touches protocol, consensus, network or serialization code that a **reference** related repo implements, open its counterpart there and compare the behaviour in both directions: what this code sends against what the reference accepts, and what this code accepts against what the reference sends. For a changed size or count limit, find what the reference actually sends, not only the limit it checks on receive. For a changed decoder or encoder, compare the field order, field types and version bounds with the reference\'s serializer. Cite the reference code.',
   claims: 'Reference claims: when the PR title, description or changed code says the change matches another implementation, a spec or a standard, open the code or text it names and compare it with the change line by line. Read it in a **reference** related repo when one is listed. Report each difference the PR does not call out, citing both sides.',
 };
 
@@ -28,12 +29,12 @@ type FinderLens = 'defects' | 'surroundings';
 const LENSES: Record<FinderLens, { opening: string; checks: Check[]; closing: string }> = {
   defects: {
     opening: 'defects in the change.',
-    checks: ['correctness', 'security', 'claims', 'errorPaths', 'droppedCases', 'tests', 'contracts', 'readers', 'siblingState', 'symmetry'],
+    checks: ['correctness', 'security', 'claims', 'reference', 'errorPaths', 'droppedCases', 'tests', 'contracts', 'readers', 'siblingState', 'symmetry'],
     closing: 'A PR can hold several defects of different kinds. Look for all of them, not only the first or the worst.',
   },
   surroundings: {
     opening: 'defects in the change, searched from the code around it.',
-    checks: ['readers', 'siblingState', 'symmetry', 'claims', 'tests', 'reuse', 'rules', 'correctness', 'security', 'errorPaths', 'droppedCases', 'contracts'],
+    checks: ['readers', 'siblingState', 'symmetry', 'claims', 'reference', 'tests', 'reuse', 'rules', 'correctness', 'security', 'errorPaths', 'droppedCases', 'contracts'],
     closing: 'Report every blocker and every security issue you find, whichever check finds it. Report a reuse finding only with the existing code\'s `file:line`, and a rule finding only with the rule quoted.',
   },
 };

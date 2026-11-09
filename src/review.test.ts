@@ -1417,6 +1417,9 @@ describe('selectTeam', () => {
       'Sibling symmetry: compare each changed function with its counterpart, such as encode and decode',
       'Reference claims: when the PR title, description or changed code says the change matches another implementation, a spec or a standard',
       'Read it in a **reference** related repo when one is listed. Report each difference the PR does not call out, citing both sides.',
+      'what this code sends against what the reference accepts, and what this code accepts against what the reference sends.',
+      'For a changed size or count limit, find what the reference actually sends, not only the limit it checks on receive.',
+      'For a changed decoder or encoder, compare the field order, field types and version bounds with the reference\'s serializer.',
     ]) expect([first, second].map(focus => focus.includes(check))).toEqual([true, true]);
     // Only the second finder looks for reuse and broken repository rules, and only with a citation or a quote.
     for (const check of [
