@@ -86,9 +86,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     permissions: {}
-    # Job level, so a run the `verify` guard skips never joins the group.
+    # One group for every tag, because each run moves `vX` from tags it read earlier. Job
+    # level, so a run the `verify` guard skips never joins it.
     concurrency:
-      group: publish-release-${{ needs.verify.outputs.tag }}
+      group: publish-release
       cancel-in-progress: false
     steps:
       - name: Check the release App secrets
