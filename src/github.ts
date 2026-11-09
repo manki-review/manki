@@ -2188,10 +2188,11 @@ function shortenLine(line: string): string {
 
 /**
  * Returns a line of code as inline code cut to `MAX_CHECK_CHARS`, or nothing for a blank line. Code is not model text,
- * so it skips `balanceCodeSpans`, which would read a backslash at its end as escaping the closing backtick.
+ * so it skips `balanceCodeSpans`, which would read a backslash at its end as escaping the closing backtick. GitHub shows
+ * inline code as written, so only HTML comment marks are broken up, which Manki reads its hidden data from.
  */
 function codeLine(code: string): string {
-  const line = sanitizeMarkdown(code).replace(/\s+/g, ' ').trim();
+  const line = code.replace(/<!--|-->/g, mark => mark.split('').join('\u200B')).replace(/\s+/g, ' ').trim();
   return line ? inlineCode(line.length <= MAX_CHECK_CHARS ? line : `${line.slice(0, MAX_CHECK_CHARS - 1)}…`) : '';
 }
 
