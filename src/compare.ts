@@ -33,24 +33,24 @@ Respond with ONLY a JSON array (no markdown fences, no explanation), one entry p
 ${WRITING_RULES}`;
 }
 
+// A path comes from the PR, so it is only ever written inside a fence.
 function fenceExcerpt({ file, code }: CodeExcerpt): string {
-  return fenceText(code, (file.split('.').pop() || '').replace(/[^\w+#-]/g, ''));
+  return fenceText(`${file}\n${code}`, (file.split('.').pop() || '').replace(/[^\w+#-]/g, ''));
 }
 
-const MARKS_NOTE = 'Each line starts with its line number in the head commit. A `+` after the number marks a line the PR adds.';
+const MARKS_NOTE = 'Each block starts with the path of its file. Each line after it starts with its line number in the head commit, and a `+` after the number marks a line the PR adds.';
 
 function fieldMessage(q: SiblingFieldQuestion, tools: boolean): string {
-  const [first] = q.lookups;
   const read = tools ? ` Read where \`${q.sibling}\` is written before you answer.` : '';
   return `## Question
 
-The change looks up \`${q.item}\` in \`${q.field}\` of \`${q.struct}\`, at ${first.file}:${first.line}. Can \`${q.item}\` be held in \`${q.sibling}\` instead? If so, does the change handle it?${read}
+The change looks up \`${q.item}\` in \`${q.field}\` of \`${q.struct}\`, on the first line below. Can \`${q.item}\` be held in \`${q.sibling}\` instead? If so, does the change handle it?${read}
 
 The changed lines that use \`${q.field}\`:
 
 ${fenceText(q.lookups.map(l => `${l.file}:${l.line}: ${l.text}`).join('\n'))}
 
-## \`${q.struct}\` at ${q.definition.file}:${q.definition.line}
+## \`${q.struct}\`
 
 ${MARKS_NOTE}
 
@@ -63,7 +63,7 @@ ${q.hunks.map(h => fenceText(h, 'diff')).join('\n\n')}`;
 
 function implementationMessage(q: SiblingImplementationQuestion): string {
   const what = q.trait ? `These functions implement \`${q.trait}::${q.name}\` on sibling types.` : `Each of these sibling types has its own \`${q.name}\` function.`;
-  const members = q.members.map(m => `### \`${m.owner}\` at ${m.file}:${m.line}${m.changed ? ' (changed by the PR)' : ''}\n\n${fenceExcerpt(m)}`);
+  const members = q.members.map(m => `### \`${m.owner}\`${m.changed ? ' (changed by the PR)' : ''}\n\n${fenceExcerpt(m)}`);
   return `## Question
 
 ${what} List every check, guard, version test, bound, error or event one has and another lacks. Report each gap that is a defect, on the function that lacks it. A difference the types themselves explain, such as a field only one type has, is no defect.

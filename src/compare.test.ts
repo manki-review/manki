@@ -55,14 +55,18 @@ describe('runComparisons', () => {
     const [field, implementation] = client.calls;
     expect(field.options).toEqual({ effort: 'high', repoTools: { root: '/repo', steps: 12 }, timeoutMs: 600_000 });
     expect(field.system).toContain('You can read the repository with read-only tools.');
-    expect(field.user).toContain('The change looks up `outpoint` in `utxos` of `Account`, at src/settle.rs:2. Can `outpoint` be held in `spent_before_funded` instead? If so, does the change handle it? Read where `spent_before_funded` is written before you answer.');
+    expect(field.user).toContain('The change looks up `outpoint` in `utxos` of `Account`, on the first line below. Can `outpoint` be held in `spent_before_funded` instead? If so, does the change handle it? Read where `spent_before_funded` is written before you answer.');
     expect(field.user).toContain('The changed lines that use `utxos`:\n\n```\nsrc/settle.rs:2: if account.utxos.contains_key(&outpoint) {\nsrc/settle.rs:5: let held = account.utxos.remove(&outpoint);\n```');
-    expect(field.user).toContain('## `Account` at src/account.rs:3\n\n');
-    expect(field.user).toContain('```rs\n3:  pub struct Account {');
+    expect(field.user).toContain('## `Account`\n\n');
+    expect(field.user).toContain('```rs\nsrc/account.rs\n3:  pub struct Account {');
     expect(field.user).toContain('## Changed Hunks\n\n```diff\ndiff --git a/src/settle.rs b/src/settle.rs');
     expect(implementation.user).toContain('These functions implement `Decodable::consensus_decode` on sibling types. List every check, guard, version test, bound, error or event one has and another lacks.');
-    expect(implementation.user).toContain('### `ServicePayload` at src/service.rs:2 (changed by the PR)\n\n```rs\n2:  fn consensus_decode() {');
-    expect(implementation.user).toContain('### `RegistrarPayload` at src/registrar.rs:8\n\n```rs\n');
+    expect(implementation.user).toContain('### `ServicePayload` (changed by the PR)\n\n```rs\nsrc/service.rs\n2:  fn consensus_decode() {');
+    expect(implementation.user).toContain('### `RegistrarPayload`\n\n```rs\nsrc/registrar.rs\n8:');
+    // Every path the PR controls sits inside a fence: outside the fences only Manki's own text and checked names remain.
+    for (const user of [field.user, implementation.user]) {
+      expect(user.replace(/^(`{3,})[^\n]*\n[\s\S]*?^\1$/gm, '')).not.toMatch(/src\//);
+    }
 
     expect(result.findings).toEqual([expect.objectContaining({
       severity: 'blocker', file: 'src/settle.rs', line: 2, reviewers: ['Sibling field: utxos vs spent_before_funded'],

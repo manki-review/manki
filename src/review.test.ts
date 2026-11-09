@@ -2009,7 +2009,7 @@ describe('runReview', () => {
     const reviewer = 'Sibling field: pending vs done';
     const compared = jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => call[0].startsWith('You compare code'));
     expect(compared).toHaveLength(1);
-    expect(compared[0][1]).toContain('The change looks up `id` in `pending` of `Queue`, at src/queue.ts:6. Can `id` be held in `done` instead?');
+    expect(compared[0][1]).toContain('The change looks up `id` in `pending` of `Queue`, on the first line below. Can `id` be held in `done` instead?');
     expect(compared[0][1]).toContain('```\nsrc/queue.ts:6: if (this.pending.has(id)) return;\n```');
     expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({ title: finding.title, reviewers: [reviewer] })]);
     expect(result.comparisons).toEqual([{ kind: 'field', reviewer, at: ['src/queue.ts:6'], status: 'answered', findings: 1 }]);
