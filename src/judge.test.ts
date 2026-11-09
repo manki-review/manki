@@ -4631,6 +4631,19 @@ describe('applyCrossRoundSuppression', () => {
       });
       expect(result.suppressedCount).toBe(1);
       expect(result.findings[0].severity).toBe('ignore');
+
+      // A lockfile alert on a nearby package names another package, so only the same title repeats it.
+      const resolvedAlert = (title: string) => [makePriorRound([{
+        fingerprint: { file: 'yarn.lock', lineStart: 40, lineEnd: 40, slug: titleToSlug(title) },
+        severity: 'suggestion', title, authorReply: 'none', threadId: 'TH1',
+      }])];
+      const alert = 'lockfile-change: updated left-pad 1.3.0 -> 1.2.0: downgrade.';
+      const nearby = [makeFinding({ title: 'lockfile-change: updated left-pat 1.3.0 -> 1.2.0: downgrade.', file: 'yarn.lock', line: 44, severity: 'suggestion' })];
+      const options = { resolvedThreadIds: new Set(['TH1']), suppressResolvedThreads: true };
+      expect(applyCrossRoundSuppression(nearby, resolvedAlert(alert), options).findings[0].severity).toBe('suggestion');
+      expect(applyCrossRoundSuppression(nearby, resolvedAlert('Reworded concern'), options).findings[0].severity).toBe('suggestion');
+      const same = [makeFinding({ title: alert, file: 'yarn.lock', line: 44, severity: 'suggestion' })];
+      expect(applyCrossRoundSuppression(same, resolvedAlert(alert), options).findings[0].severity).toBe('ignore');
     });
 
     it('does not match when neither slug nor line proximity match the resolved prior', () => {

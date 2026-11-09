@@ -43,6 +43,7 @@ import {
   fetchRepoContext,
   formatUnreviewedNotice,
   fetchFileContents,
+  MAX_CONTENT_API_BYTES,
   fetchInterRoundDiff,
   formatFoundAgainReply,
   fetchHeadSha,
@@ -1033,20 +1034,26 @@ async function collectOpenThreads(
     .filter(f => f.changeType !== 'deleted')
     .map(f => f.path);
   const threadFilePaths = baseOpenThreads.map(t => t.file).filter(p => !changedFilePaths.includes(p));
-  const filePaths = [...changedFilePaths, ...threadFilePaths];
+  // The prompts read a parsed lockfile's package list, never the file, so it stays out of the shared budget.
+  // Only a thread on it reads the file, for its window.
+  const parsed = new Set(lockfiles.map(l => l.path));
+  const filePaths = [...changedFilePaths, ...threadFilePaths].filter(p => !parsed.has(p));
+  const lockfileThreadPaths = [...new Set(baseOpenThreads.map(t => t.file).filter(p => parsed.has(p)))];
   let fileContents: Map<string, string> | undefined;
+  let lockfileContents: Map<string, string> | undefined;
   try {
-    fileContents = await fetchFileContents(octokit, owner, repo, commitSha, filePaths);
+    [fileContents, lockfileContents] = await Promise.all([
+      fetchFileContents(octokit, owner, repo, commitSha, filePaths),
+      lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity) : new Map<string, string>(),
+    ]);
   } catch (error) {
     core.warning(`Failed to fetch file contents: ${error}`);
   }
 
   const openThreads = baseOpenThreads.map(t => ({
     ...t,
-    currentCode: extractCurrentCodeWindow(fileContents, t.file, t.line),
+    currentCode: extractCurrentCodeWindow(parsed.has(t.file) ? lockfileContents : fileContents, t.file, t.line),
   }));
-  // A thread on a lockfile reads its window above. The prompts read the package list, never the whole lockfile.
-  for (const { path } of lockfiles) fileContents?.delete(path);
   return { openThreads, fileContents };
 }
 

@@ -47,7 +47,12 @@ const FLAG_ORDER = [
 type PackageFlag = typeof FLAG_ORDER[number];
 
 /** The rule id of a lockfile alert. Its title names the package and the change. */
-export const LOCKFILE_RULE = 'lockfile-change';
+const LOCKFILE_RULE = 'lockfile-change';
+
+/** Whether `title` belongs to a lockfile alert. */
+export function isLockfileAlert(title: string): boolean {
+  return title.startsWith(`${LOCKFILE_RULE}:`);
+}
 
 export interface PackageChange {
   kind: 'added' | 'removed' | 'updated' | 'changed';

@@ -4,7 +4,7 @@ import { LLMClient } from './providers';
 import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
 import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { findPriorThreadId } from './finding-fingerprint';
-import { LOCKFILE_RULE } from './lockfile';
+import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
 import { isSecurityFinding } from './review';
 import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
@@ -1041,7 +1041,7 @@ function matchPreviousType(finding: Finding, previous: PreviousFinding): Duplica
   if (!finding.title || finding.title.length < 3) return null;
 
   // A lockfile alert names its package and change, so it repeats only an alert with the same title.
-  if (finding.title.startsWith(`${LOCKFILE_RULE}:`) || previous.title.startsWith(`${LOCKFILE_RULE}:`)) {
+  if (isLockfileAlert(finding.title) || isLockfileAlert(previous.title)) {
     return finding.title === previous.title && finding.file === previous.file ? 'exact' : null;
   }
   const matchType = titleOverlapType(finding.title, previous.title);
@@ -1066,7 +1066,7 @@ async function llmDeduplicateFindings(
   client: LLMClient,
 ): Promise<{ unique: Finding[]; duplicates: DuplicateMatch[] }> {
   // A lockfile alert names its package and change, so only the exact static match may drop it.
-  const alerts = findings.filter(f => f.title.startsWith(`${LOCKFILE_RULE}:`));
+  const alerts = findings.filter(f => isLockfileAlert(f.title));
   if (alerts.length > 0) {
     const rest = await llmDeduplicateFindings(findings.filter(f => !alerts.includes(f)), previousFindings, client);
     return { unique: [...alerts, ...rest.unique], duplicates: rest.duplicates };
