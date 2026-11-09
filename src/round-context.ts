@@ -415,6 +415,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
         ...(result.relatedWork.skipped && { skipped: result.relatedWork.skipped }),
       },
     }),
+    ...(result.comparisons?.length && { comparisons: result.comparisons }),
   };
 }
 

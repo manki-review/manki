@@ -1838,6 +1838,9 @@ jest.mock('./judge', () => ({
   capUnconfirmedBuildClaim: jest.requireActual('./judge').capUnconfirmedBuildClaim,
 }));
 
+// The pinned ast-grep build is downloaded at run time, so tests parse with the installed one.
+jest.mock('./ast-grep', () => ({ ...jest.requireActual('./ast-grep'), loadAstGrep: async () => jest.requireActual('@ast-grep/napi') }));
+
 jest.mock('./memory', () => ({
   ...jest.requireActual('./memory'),
   buildMemoryContext: jest.fn().mockReturnValue('memory context'),
@@ -1987,6 +1990,31 @@ describe('runReview', () => {
       symbols: [{ name: 'ComputeFee', declared: 'cmd/fee.go:5', uses: ['cmd/use.go:3'] }],
       reference: [{ name: 'ComputeFee', lines: ['o/ref:fee.cpp:1'] }],
     });
+  });
+
+  it('asks the sibling comparisons alongside the finders and hands the judge their findings under their own reviewer name', async () => {
+    const queue = (body: string) => `export class Queue {\n  pending: Set<string> = new Set();\n  done: Set<string> = new Set();\n\n  start(id: string) {\n${body}  }\n}\n`;
+    const { root, diff } = gitWorkspace({ 'src/queue.ts': queue('') }, { 'src/queue.ts': queue('    if (this.pending.has(id)) return;\n') });
+    const finding = { severity: 'warning', title: 'A finished id starts again', file: 'src/queue.ts', line: 6, description: 'Only `pending` is checked.' };
+    const clients = makeClients();
+    jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({ content: system.startsWith('You compare code') ? JSON.stringify([finding]) : '[]' }));
+    mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+    let result;
+    try {
+      result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    const reviewer = 'Sibling field: pending vs done';
+    const compared = jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => call[0].startsWith('You compare code'));
+    expect(compared).toHaveLength(1);
+    expect(compared[0][1]).toContain('The change looks up `id` in `pending` of `Queue`, on the first line below. Can `id` be held in `done` instead?');
+    expect(compared[0][1]).toContain('```\nsrc/queue.ts:6: if (this.pending.has(id)) return;\n```');
+    expect(mockedRunJudgeAgent.mock.calls[0][2].findings).toEqual([expect.objectContaining({ title: finding.title, reviewers: [reviewer] })]);
+    expect(result.comparisons).toEqual([{ kind: 'field', reviewer, at: ['src/queue.ts:6'], status: 'answered', findings: 1 }]);
+    expect(result.llmCalls?.filter(c => c.stage === 'compare').map(c => c.agent)).toEqual([reviewer]);
+    expect(result.agentNames).not.toContain(reviewer);
   });
 
   it('runs a single-pass review and returns approved result with no findings', async () => {

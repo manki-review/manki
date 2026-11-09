@@ -188,12 +188,109 @@ describe('listUsesOutsideDiff', () => {
     expect(referenceNames).toEqual(['MAX_PROTOCOL_MESSAGE_LENGTH', 'QRINFO', 'MAX_MSG_SIZE', 'checked_len', 'script_payout']);
   });
 
+  const ACCOUNT = `use std::collections::{BTreeMap, HashSet};
+
+/// A funds account.
+pub struct Account {
+    pub utxos: BTreeMap<OutPoint, Utxo>,
+    /// Ours, but spent before the funding arrived, so never in \`utxos\`.
+    pub(crate) spent_before_funded: BTreeMap<OutPoint, Utxo>,
+    spent: HashSet<OutPoint>,
+    unsettled: BTreeMap<Txid, Vec<Utxo>>,
+    /// ${'x'.repeat(400)}
+    balance: u64,
+    labels: Vec<String>,
+    cache: Option<Utxo>,
+}
+`;
+  const SETTLE = (body: string) => `pub fn settle(account: &mut Account, outpoint: OutPoint) {
+${body}}
+
+#[cfg(test)]
+mod tests {
+    fn fills(account: &mut Account) {
+        account.labels.push(String::new());
+    }
+}
+`;
+
+  it('asks whether a sibling collection field of the same item type can hold what a changed line looks up, the same type first, and cuts long lines', async () => {
+    const { siblings } = await usesFor(
+      { 'src/account.rs': ACCOUNT, 'src/settle.rs': SETTLE('') },
+      {
+        'src/settle.rs': SETTLE(`    if account.utxos.contains_key(&outpoint) {
+        account.balance = account.balance.max(1);
+    }
+    let held = account.utxos.remove(&outpoint);
+    account.cache.take();
+    account.spent.contains(&key_of("\`"));
+`),
+        'src/queue.ts': `export class Queue {\n  pending: Set<string>;\n  done: Set<string>;\n  count: number;\n\n  start(id: string) {\n${'    this.count++;\n'.repeat(150)}    if (this.pending.has(id)) return;\n${'    this.count--;\n'.repeat(100)}  }\n}\n`,
+      },
+    );
+
+    expect(siblings.fields.map(q => `${q.struct}.${q.field} -> ${q.sibling} (${q.item})`)).toEqual([
+      'Queue.pending -> done (id)',
+      'Account.utxos -> spent_before_funded (outpoint)',
+      'Account.utxos -> spent (outpoint)',
+      'Account.utxos -> unsettled (outpoint)',
+    ]);
+    const first = siblings.fields[1];
+    expect(first.lookups).toEqual([
+      { file: 'src/settle.rs', line: 2, text: 'if account.utxos.contains_key(&outpoint) {' },
+      { file: 'src/settle.rs', line: 5, text: 'let held = account.utxos.remove(&outpoint);' },
+    ]);
+    expect(first.definition).toMatchObject({ file: 'src/account.rs', line: 3 });
+    expect(first.definition.code).toContain('6:      /// Ours, but spent before the funding arrived, so never in `utxos`.\n7:      pub(crate) spent_before_funded: BTreeMap<OutPoint, Utxo>,');
+    expect(first.definition.code).toContain(`10:      /// ${'x'.repeat(292)} ...\n11:      balance: u64,`);
+    expect(first.hunks).toHaveLength(1);
+    expect(first.hunks[0]).toMatch(/^diff --git a\/src\/settle\.rs b\/src\/settle\.rs\n[\s\S]*\n@@ -1,4 \+1,10 @@\n[\s\S]*\n\+ {4}let held = account\.utxos\.remove\(&outpoint\);/);
+    const queueHunk = siblings.fields[0].hunks[0].split('\n');
+    expect(queueHunk[3]).toBe('@@ -0,0 +97,120 @@');
+    expect(queueHunk.slice(4)).toHaveLength(120);
+    expect(queueHunk[64]).toBe('+    if (this.pending.has(id)) return;');
+    expect(siblings.implementations).toEqual([]);
+  });
+
+  it('compares the functions of one name or trait method on sibling types in the changed files and beside them, most touched first, leaving out nested functions, untouched neighbours of removed code, excluded files and types no plain path names', async () => {
+    const decode = (type: string, body: string) => `impl Decodable for ${type} {\n    fn consensus_decode(r: &mut R) -> Result<Self, Error> {\n        let version = u16::consensus_decode(r)?;\n${body}        Ok(Self { version })\n    }\n}\n`;
+    const methods = (type: string, size: string, before = '') => `impl ${type} {\n    fn is_new(&self) -> bool {\n        self.version >= 3\n    }\n\n${before}    pub fn size(&self) -> usize {\n        ${size}\n    }\n}\n`;
+    const base = {
+      'src/payload/service.rs': decode('ServicePayload', '') + methods('ServicePayload', '2', '    fn legacy(&self) {}\n\n'),
+      'src/payload/registrar.rs': decode('RegistrarPayload', '        let _legacy = 0;\n') + methods('RegistrarPayload', '2') + `\n#[cfg(test)]\nmod tests {\n${decode('FakePayload', '')}}\n`,
+      'src/payload/revocation.rs': decode('RevocationPayload', '        if version == 0 {\n            return Err(Error::Version);\n        }\n')
+        + 'impl RevocationPayload {\n    fn helper(&self) -> usize {\n        fn size() -> usize { 1 }\n        size()\n    }\n}\n',
+      'src/other/remote.rs': decode('RemotePayload', ''),
+      'src/payload/a_wire.generated.rs': decode('WirePayload', '        let _wire = 1;\n'),
+      'src/payload/macro.rs': decode('payload_type!(Macro)', '        let _macro = 1;\n'),
+    };
+    const { siblings } = await usesFor(base, {
+      'src/payload/service.rs': (decode('ServicePayload', '        if version > 3 {\n            return Err(Error::Version);\n        }\n') + methods('ServicePayload', '2'))
+        .replace('>= 3', '>= 3 && self.version < 9'),
+      'src/payload/registrar.rs': base['src/payload/registrar.rs'].replace('let version = u16::consensus_decode(r)?;', 'let version = u16::consensus_decode(r)?; // v3')
+        .replace('        let _legacy = 0;\n', '').replace('        2\n', '        4\n').replace('>= 3', '>= 3 && self.version < 9'),
+    }, ['*.generated.*']);
+
+    expect(siblings.implementations.map(q => [q.trait, q.name, q.members.map(m => `${m.owner}${m.changed ? '*' : ''}`)])).toEqual([
+      ['Decodable', 'consensus_decode', ['RegistrarPayload*', 'ServicePayload*', 'RevocationPayload']],
+      [undefined, 'size', ['RegistrarPayload*', 'ServicePayload']],
+    ]);
+    const service = siblings.implementations[0].members[1];
+    expect(service).toMatchObject({ file: 'src/payload/service.rs', line: 2 });
+    expect(service.code).toContain('4:+         if version > 3 {');
+    expect(service.code).toContain('3:          let version = u16::consensus_decode(r)?;');
+    // Only added lines are marked, not the line after a removed one.
+    expect(siblings.implementations[0].members[0].code).toContain('3:+         let version = u16::consensus_decode(r)?; // v3\n4:          Ok(Self { version })');
+  });
+
+  const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };
+
   it('returns nothing and logs why without a git checkout, when ast-grep fails to load, or when nothing changed has a use', async () => {
     const plain = mkdtempSync(join(tmpdir(), 'manki-uses-plain-'));
     const failingLoad = jest.fn(async () => { throw new Error('no pinned ast-grep build for plan9-x64'); });
     try {
-      expect(await listUsesOutsideDiff(undefined, { files: [], totalAdditions: 0, totalDeletions: 0 })).toEqual({ section: '' });
-      expect(await listUsesOutsideDiff(plain, { files: [], totalAdditions: 0, totalDeletions: 0 }, { loadApi: failingLoad })).toEqual({ section: '' });
+      expect(await listUsesOutsideDiff(undefined, { files: [], totalAdditions: 0, totalDeletions: 0 })).toEqual(NOTHING);
+      expect(await listUsesOutsideDiff(plain, { files: [], totalAdditions: 0, totalDeletions: 0 }, { loadApi: failingLoad })).toEqual(NOTHING);
       expect(failingLoad).not.toHaveBeenCalled();
       expect(core.info).toHaveBeenCalledWith('No git checkout of the PR head, so the review runs without the list of uses outside the diff');
     } finally {
@@ -202,10 +299,10 @@ describe('listUsesOutsideDiff', () => {
 
     const { root, diff } = gitWorkspace({ 'src/a.rs': 'pub fn compute_total() {}\n' }, { 'src/a.rs': 'pub fn compute_total() { todo!() }\n' });
     try {
-      expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual({ section: '' });
+      expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual(NOTHING);
       expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
-      expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({ section: '', referenceNames: ['compute_total'] });
-      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found$/));
+      expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({ ...NOTHING, referenceNames: ['compute_total'] });
+      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons$/));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

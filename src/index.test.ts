@@ -3705,13 +3705,17 @@ describe('runFullReview orchestration', () => {
       expect(metadata?.config.memoryRepo).toBe(`skipped: ${reason}`);
     });
 
-    it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and work, and the token service calls', async () => {
+    it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and work, the sibling comparisons and the token service calls', async () => {
       const blocker = { file: 'src/app.ts', line: 5, title: 'Bug', fingerprint: 'k' };
       const call = (stage: string, promptDigest: string, extra: Partial<LLMCall> = {}): LLMCall => ({
         stage, attempt: 1, promptDigest, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0, ...extra,
       });
       const hidden = { severity: 'suggestion' as const, title: 'Rename the helper', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['general'], suppressedBy: 'sup-1' };
       const limit = { account: 'Claude subscription', window: 'weekly', usedPercent: 81 };
+      const comparisons = [
+        { kind: 'field' as const, reviewer: 'Sibling field: utxos vs spent', at: ['src/app.ts:5'], status: 'answered' as const, findings: 0 },
+        { kind: 'implementations' as const, reviewer: 'Sibling code: decode', at: ['src/a.rs:3', 'src/b.rs:9'], status: 'cut' as const },
+      ];
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING' as const, summary: 'Paused',
         findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
@@ -3720,7 +3724,9 @@ describe('runFullReview orchestration', () => {
           call('reviewer', 'bbbbbbbbbbbb', { agent: 'general', stepBudget: 15, wrapUpNoted: true, relatedReads: { 'o/r': 3 } }),
           call('reviewer', 'aaaaaaaaaaaa', { agent: 'security', relatedReads: { 'o/r': 1 } }),
           call('reviewer', 'aaaaaaaaaaaa', { agent: 'general', attempt: 2, failed: true, relatedReads: { 'o/r': 2 } }), call('judge', 'cccccccccccc', { limits: [limit] }),
+          call('compare', 'dddddddddddd', { agent: 'Sibling field: utxos vs spent' }),
         ],
+        comparisons,
         relatedRepos: [{ repo: 'o/r', status: 'fetched', durationMs: 900 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }],
         usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] },
         relatedWork: {
@@ -3752,7 +3758,9 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
       const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7]!;
       expect(rc.meta.needsHuman).toEqual({ cause: 'repeated', blockers: [blocker] });
-      expect(rc.meta.promptVersions).toEqual({ reviewer: ['aaaaaaaaaaaa', 'bbbbbbbbbbbb'], judge: ['cccccccccccc'] });
+      expect(rc.meta.promptVersions).toEqual({ reviewer: ['aaaaaaaaaaaa', 'bbbbbbbbbbbb'], judge: ['cccccccccccc'], compare: ['dddddddddddd'] });
+      expect(rc.comparisons).toEqual(comparisons);
+      expect(rc.usage.perStage?.compare).toMatchObject({ calls: 1 });
       expect(rc.usage.llmCalls?.[0]).toMatchObject({ stepBudget: 15, wrapUpNoted: true });
       expect(rc.usage.llmCalls?.[3]).not.toHaveProperty('limits');
       expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![5]?.limits).toEqual([limit]);

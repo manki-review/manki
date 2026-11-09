@@ -11,7 +11,7 @@ The review stages are listed in this order: **planner, reviewer, judge, dedup**.
 At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 
 1. **Planner** triages the change (`trivial`, `subtle`, `paired`) and picks the judge effort. `selectTeam` sorts the PR into a review class (`classifyPr` in `src/routing.ts`) and runs the class's review group: the trivial verifier alone, one finder, or two finders on different models. Every finder gets the same `buildFinderAgent` checklist, so a pair differs only in its models. Security-sensitive, CI or dependency, and data contract paths are floor classes that force two finders.
-2. **Finders** run in parallel and produce findings. A finder that fails after its retry makes the round incomplete.
+2. **Finders** run in parallel and produce findings. A finder that fails after its retry makes the round incomplete. Alongside them, the sibling comparisons (`runComparisons` in `src/compare.ts`) ask one small call per sibling field or sibling implementation that `listUsesOutsideDiff` found, and add their findings to the finders'.
 3. **Dedup** drops findings matching resolved findings from earlier rounds, first statically, then with the `dedup` model.
 4. **Judge** evaluates the rest, merges same-round duplicates and classifies them by severity. Memory suppressions then hide matching findings, never a blocker, a security finding or a tool alert. `determineOutcome` then decides whether any finding blocks.
 5. **Verdict reader** runs only when nothing blocks. It reads the whole diff cold on the judge's client and returns `READY` or `ADDRESS_FIRST` (`src/verdict.ts`).
@@ -46,6 +46,7 @@ At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 - `src/agents.ts`: the finder prompt (`buildFinderAgent`) and the trivial verifier.
 - `src/judge.ts`: judge agent (`runJudgeAgent`).
 - `src/verdict.ts`: verdict reader (`runVerdictReader`).
+- `src/compare.ts`: sibling comparisons (`runComparisons`) on the questions `listUsesOutsideDiff` (`src/symbol-uses.ts`) finds.
 - `src/recap.ts`: prior-round state from review threads, and dedup (static and LLM) against earlier findings.
 - `src/github.ts`: GitHub API helpers (diffs, progress comments, posting reviews).
 - `src/index.ts`: top-level orchestration per GitHub event.

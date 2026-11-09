@@ -22,6 +22,7 @@ import { combineVerdictReports, runVerdictReader } from './verdict';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listReferenceUses, listUsesOutsideDiff } from './symbol-uses';
+import { runComparisons } from './compare';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
@@ -338,9 +339,9 @@ interface StageClient {
   fallback?: FallbackClient;
 }
 
-function pickReviewerClient(clients: ReviewClients, finder: Finder): StageClient {
-  const client = clients.reviewerByModel?.get(finder.model);
-  return client ? { client, fallback: clients.fallbacks?.reviewerByModel?.get(finder.model) } : { client: clients.reviewer };
+function pickReviewerClient(clients: ReviewClients, model: string): StageClient {
+  const client = clients.reviewerByModel?.get(model);
+  return client ? { client, fallback: clients.fallbacks?.reviewerByModel?.get(model) } : { client: clients.reviewer };
 }
 
 export interface ReviewProgress {
@@ -674,13 +675,17 @@ export async function runReview(
   }
 
   const memoryContext = memory ? buildMemoryContext(memory, new Set(diff.files.map(f => f.path))) : '';
-  const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f), 'reviewer', f.name)]));
+  const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f.model), 'reviewer', f.name)]));
   const related: RelatedRepoTools | undefined = workspace && config.related_repos?.length && [...finderClients.values()].some(c => c.repoTools)
     ? { repos: config.related_repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related') }
     : undefined;
   const changedSinceLastRound = filesChangedSinceLastRound(diff, priorRounds, interRoundDiff);
   const earlierBlockers = blockersToRecheck(previousFindings ?? [], changedSinceLastRound);
   const uses = await usesPromise;
+  // Asked alongside the finders on the reviewer model, at the effort of its finder. An unanswered question leaves the round complete, since the finders read the whole change.
+  const comparisonModel = resolveReviewerModel(config, undefined);
+  const comparisonEffort = (team.finders.find(f => f.model === comparisonModel) ?? team.finders[0]).effort;
+  const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, { effort: comparisonEffort, workspace });
   const references = await listReferenceUses(related && uses.referenceNames ? await fetchReferenceRepos(related) : [], uses.referenceNames ?? []);
   const usesOutsideDiff = uses.section + references.section;
   const usesRecord = uses.record || references.record ? { ...uses.record, ...references.record } : undefined;
@@ -1037,6 +1042,8 @@ export async function runReview(
     }
   }
 
+  const { findings: comparisonFindings, comparisons } = await comparisonsPromise;
+  allFindings.push(...comparisonFindings);
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
   // Every configured related repo is recorded: fetched, failed, unused, or skipped when no finder could read it.
   const relatedRepos: RoundRelatedRepo[] | undefined = related
@@ -1045,7 +1052,7 @@ export async function runReview(
       repo, ...(ref && { ref }), status: 'skipped' as const,
       reason: workspace ? 'no finder has repository tools' : 'the PR head was not checked out for the tools',
     }));
-  const finderContext = { ...(relatedRepos?.length && { relatedRepos }), ...(usesRecord && { usesOutsideDiff: usesRecord }) };
+  const finderContext = { ...(relatedRepos?.length && { relatedRepos }), ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }) };
 
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {

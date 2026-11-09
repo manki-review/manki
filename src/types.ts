@@ -322,6 +322,19 @@ export interface RoundUsesSymbol {
   notShown?: number;
 }
 
+/** A targeted call comparing changed code with the code beside it, asked alongside the finders. */
+export interface RoundComparison {
+  /** `field` asks whether a sibling field can hold the item a change looks up, `implementations` compares sibling functions. */
+  kind: 'field' | 'implementations';
+  /** The reviewer name its findings carry. */
+  reviewer: string;
+  /** The changed lookup, or each function compared, as `file:line`. */
+  at: string[];
+  /** `failed` when the call failed or its reply did not parse twice, `cut` when the round's cap left it out. */
+  status: 'answered' | 'failed' | 'cut';
+  findings?: number;
+}
+
 export interface RoundSlicing {
   /** The changed files in each slice. A file split across slices counts in each. */
   files: number[];
@@ -537,6 +550,8 @@ export interface ReviewResult {
   usesOutsideDiff?: RoundUses;
   /** The open PRs and issues that may relate to this PR, classified. Unset when the round looked at none. */
   relatedWork?: RelatedWork;
+  /** Each sibling comparison the round found, asked or cut. */
+  comparisons?: RoundComparison[];
   /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
   changedSinceLastRoundCount?: number;
   /** The open or earlier threads where someone claimed a fix: resolved, answered by a person, or confirmed by a round. */
@@ -1151,6 +1166,8 @@ export interface RoundContext {
   usesOutsideDiff?: RoundUses;
   /** The open PRs and issues that may relate to this PR, with their classification. */
   relatedWork?: RoundRelatedWork;
+  /** Each sibling comparison the round found, asked or cut. */
+  comparisons?: RoundComparison[];
   /** How each open lead ended, so the next round carries over the ones still unsettled. */
   leads?: RoundLead[];
   /**
@@ -1821,7 +1838,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict' | 'related', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'judge' | 'dedup' | 'verdict' | 'related', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */

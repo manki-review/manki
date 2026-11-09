@@ -163,14 +163,15 @@ export function parseRetryNote(error: unknown, shape: 'object' | 'array' = 'obje
 
 /**
  * Sends `message` and parses the reply. When parsing throws, it sends `message` once more with a note that names
- * the parse error, and parses that reply, so a single malformed model reply does not fail the stage. A second failure
- * is thrown.
+ * the parse error and the JSON `shape` it wants, and parses that reply, so a single malformed model reply does not fail
+ * the stage. A second failure is thrown.
  */
 export async function sendWithParseRetry<R, T>(
   message: string,
   send: (message: string) => Promise<R>,
   parse: (reply: R) => T,
   onRetry: (error: unknown) => void,
+  shape: 'object' | 'array' = 'object',
 ): Promise<T> {
   const first = await send(message);
   let note: string;
@@ -178,7 +179,7 @@ export async function sendWithParseRetry<R, T>(
     return parse(first);
   } catch (error) {
     onRetry(error);
-    note = parseRetryNote(error);
+    note = parseRetryNote(error, shape);
   }
   return parse(await send(`${message}\n\n${note}`));
 }
