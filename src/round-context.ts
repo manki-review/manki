@@ -111,6 +111,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
   const agentModels = result.agentModels ?? new Map<string, string>();
   const reviewerEffort = result.agentEffortMap?.values().next().value;
   const llmCalls = result.llmCalls ?? [];
+  const keptFinders = result.findings.map(f => new Set(f.reviewers.filter(r => agentNames.includes(r))));
   const agentMetrics = agentNames.length > 0
     ? agentNames.map(name => {
         const usage = summarizeCalls(llmCalls.filter(c => c.stage === 'reviewer' && c.agent === name));
@@ -124,6 +125,8 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
           name,
           findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
           findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
+          keptOnly: keptFinders.filter(finders => finders.size === 1 && finders.has(name)).length,
+          keptShared: keptFinders.filter(finders => finders.size > 1 && finders.has(name)).length,
           ...(durationMs != null && { durationMs }),
           status: failureReason ? 'failed' as const : 'success' as const,
           responseLength: result.agentResponseLengths?.get(name),
@@ -137,25 +140,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
         };
       })
     : undefined;
-  const keptOnlyBy: Record<string, number> = {};
-  let keptByMany = 0;
-  for (const f of result.findings) {
-    const finders = [...new Set(f.reviewers.filter(r => agentModels.has(r)))];
-    if (finders.length === 1) keptOnlyBy[finders[0]] = (keptOnlyBy[finders[0]] ?? 0) + 1;
-    else if (finders.length > 1) keptByMany++;
-  }
-  const pairName = result.pairAgentName;
-  const keptPairOnly = pairName ? keptOnlyBy[pairName] ?? 0 : 0;
-  // The two-finder fields stay for rounds with exactly two finders, so earlier rounds compare.
-  const corroboration = {
-    keptOnlyBy,
-    keptByMany,
-    ...(agentModels.size === 2 && pairName && {
-      keptPrimaryOnly: Object.values(keptOnlyBy).reduce((sum, n) => sum + n, 0) - keptPairOnly,
-      keptPairOnly,
-      keptBoth: keptByMany,
-    }),
-  };
 
   // Judge calibration metrics
   const confidenceDistribution = { high: 0, medium: 0, low: 0 };
@@ -313,7 +297,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     models: {
       ...(plannerEnabled && { planner: models.planner }),
       reviewer: models.reviewer,
-      ...(result.pairAgentName && { reviewerPair: models.reviewerPair }),
       judge: models.judge,
       dedup: models.dedup,
       ...(result.modelFallbacks && { fallbacks: result.modelFallbacks }),
@@ -346,7 +329,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       agents: result.agentNames,
       ...(agentMetrics && { agentMetrics }),
       ...(rawFindingRecords.length > 0 && { rawFindings: rawFindingRecords }),
-      ...corroboration,
     },
     ...(result.routing && {
       routing: {

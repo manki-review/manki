@@ -234,28 +234,27 @@ function shortFocus(focus: string): string {
 }
 
 /**
- * Builds one finder per reader of `group`. A group with two finders, or a PR in a floor class, gets the most tool steps.
- * The group's second finder searches from the code around the change, so the pair does not share one set of blind spots.
- * A `deeper` review runs each finder one effort level higher.
+ * Builds one finder per reader of `group`, all on the same checklist. A group with two finders, or a PR in a floor class,
+ * gets the most tool steps. A `deeper` review runs each finder one effort level higher.
  */
 function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean): Finder[] {
   const names = new Set<string>();
   const finders = group.reviewers.filter(r => r.role !== 'verifier');
   const risky = floor || finders.length >= 2;
-  return group.reviewers.map((reviewer, index) => {
+  return group.reviewers.map(reviewer => {
     const model = resolveReviewerModel(config, reviewer.model);
     const base: EffortLevel = !reviewer.effort || reviewer.effort === 'auto' ? (triage.subtle ? 'high' : 'medium') : reviewer.effort;
     const effort = deeper ? DEEPER_EFFORT[base] : base;
     const verifier = reviewer.role === 'verifier';
     const custom = reviewer.focus ? [...config.reviewers, { name: 'This review group', focus: reviewer.focus }] : config.reviewers;
-    const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom, finders.indexOf(reviewer) === 1 ? 'surroundings' : 'defects');
+    const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom);
     const label = verifier ? `Quick check · ${modelDisplayName(model)}`
       : [modelDisplayName(model), effort, ...(reviewer.focus ? [shortFocus(reviewer.focus)] : [])].join(' · ');
     let name = label;
     for (let n = 2; names.has(name); n++) name = `${label} #${n}`;
     names.add(name);
     const steps = verifier ? QUICK_CHECK_STEPS : risky ? RISKY_FINDER_STEPS : FINDER_STEPS;
-    return { name, prompt, index, model, effort, steps };
+    return { name, prompt, model, effort, steps };
   });
 }
 
@@ -549,8 +548,7 @@ export function buildProvenanceFields(
   plannerFallbackReason: string | undefined,
   team: TeamRoster,
   agentMultiPassConsistency: Map<string, { consistent: number; totalRaw: number }>,
-): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'triage' | 'sensitivePaths' | 'ciOrDependencyPaths' | 'trivialOverridden' | 'agentMultiPassConsistency' | 'agentEffortMap' | 'agentModels' | 'pairAgentName' | 'routing'> {
-  const pairAgentName = team.finders.find(f => f.index === 1)?.name;
+): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'triage' | 'sensitivePaths' | 'ciOrDependencyPaths' | 'trivialOverridden' | 'agentMultiPassConsistency' | 'agentEffortMap' | 'agentModels' | 'routing'> {
   return {
     plannerSource,
     ...(plannerFallbackReason && { plannerFallbackReason }),
@@ -561,7 +559,6 @@ export function buildProvenanceFields(
     ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
     agentEffortMap: new Map(team.finders.map(f => [f.name, f.effort])),
     agentModels: new Map(team.finders.map(f => [f.name, f.model])),
-    ...(pairAgentName && { pairAgentName }),
     routing: team.routing,
   };
 }

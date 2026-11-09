@@ -1229,7 +1229,7 @@ describe('selectTeam', () => {
     ]) {
       const team = selectTeam(makeDiff({ files }), makeConfig(), trivial);
       expect(team.finders).toEqual([
-        { name: 'Quick check · Claude Sonnet 5.5', prompt: TRIVIAL_VERIFIER_AGENT, index: 0, model: 'claude-sonnet-5-5', effort: 'medium', steps: 8 },
+        { name: 'Quick check · Claude Sonnet 5.5', prompt: TRIVIAL_VERIFIER_AGENT, model: 'claude-sonnet-5-5', effort: 'medium', steps: 8 },
       ]);
       expect([team.routing.class, team.routing.group]).toEqual(['docs', 'trivial']);
       expect(team.trivialOverridden).toBe(false);
@@ -1356,15 +1356,15 @@ describe('selectTeam', () => {
   it('runs one finder whose effort follows `subtle` when the change is not paired', () => {
     for (const [subtle, effort] of [[true, 'high'], [false, 'medium']] as const) {
       const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle, paired: false });
-      expect(team.finders).toEqual([expect.objectContaining({ name: `Claude Sonnet 5.5 · ${effort}`, index: 0, effort })]);
+      expect(team.finders).toEqual([expect.objectContaining({ name: `Claude Sonnet 5.5 · ${effort}`, effort })]);
     }
   });
 
-  it('adds a second finder on the other Claude tier with the surroundings lens when paired', () => {
+  it('adds a second finder on the other Claude tier with the same prompt when paired', () => {
     const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle: false, paired: true });
     expect(names(team)).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
-    expect(team.finders[1]).toEqual(expect.objectContaining({ index: 1, model: 'claude-opus-5-5', effort: 'medium' }));
-    expect(team.finders.map(f => f.prompt)).toEqual([buildFinderAgent([]), buildFinderAgent([], 'surroundings')]);
+    expect(team.finders[1]).toEqual(expect.objectContaining({ model: 'claude-opus-5-5', effort: 'medium' }));
+    expect(team.finders.map(f => f.prompt)).toEqual([buildFinderAgent([]), buildFinderAgent([])]);
 
     const configured = selectTeam(plainDiff, makeConfig({ models: { reviewer: 'claude-opus-5-5', reviewer_pair: 'gpt-5.5' } }), { trivial: false, subtle: true, paired: true });
     expect(names(configured)).toEqual(['Claude Opus 5.5 · high', 'GPT 5.5 · high']);
@@ -1393,18 +1393,17 @@ describe('selectTeam', () => {
     expect(always.sensitivePaths).toBe(false);
   });
 
-  it('folds custom reviewers into both finder prompts, and gives the second finder of a pair the surroundings lens', () => {
+  it('folds custom reviewers into the one checklist every finder runs', () => {
     const reviewers: ReviewerAgent[] = [{ name: 'Protocol Compliance', focus: 'DIP compliance' }];
     const config = makeConfig({ reviewers });
     const team = selectTeam(plainDiff, config, { trivial: false, subtle: true, paired: true });
     expect(team.finders).toHaveLength(2);
-    const [first, second] = team.finders.map(f => f.prompt.focus);
-    expect(first).toMatch(/^defects in the change\. Check, in this order:\n1\. Correctness/);
-    expect(second).toMatch(/^defects in the change, searched from the code around it\. Check, in this order:\n1\. Readers: search the whole repository/);
+    const [focus, second] = team.finders.map(f => f.prompt.focus);
+    expect(second).toBe(focus);
+    expect(focus).toMatch(/^defects in the change\. Check, in this order:\n1\. Correctness/);
     const solo = selectTeam(plainDiff, makeConfig({ reviewers, planner: { enabled: true, paired: 'never' } }), { trivial: false, subtle: true, paired: true });
-    expect(solo.finders.map(f => f.prompt.focus)).toEqual([first]);
-    for (const focus of [first, second]) expect(focus).toContain('This repository also asks you to check:\n- Protocol Compliance: DIP compliance');
-    // Both lenses run the checks for defects in the change and in the code around it.
+    expect(solo.finders.map(f => f.prompt.focus)).toEqual([focus]);
+    expect(focus).toContain('This repository also asks you to check:\n- Protocol Compliance: DIP compliance');
     for (const check of [
       'resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or recursion sized by the input, or a size limit removed or raised.',
       'For a library, outside input is anything a caller of its public API can pass, readers and byte streams included.',
@@ -1417,17 +1416,13 @@ describe('selectTeam', () => {
       'Sibling symmetry: compare each changed function with its counterpart, such as encode and decode',
       'Reference claims: when the PR title, description or changed code says the change matches another implementation, a spec or a standard',
       'Read it in a **reference** related repo when one is listed. Report each difference the PR does not call out, citing both sides.',
-    ]) expect([first, second].map(focus => focus.includes(check))).toEqual([true, true]);
-    // Only the second finder looks for reuse and broken repository rules, and only with a citation or a quote.
-    for (const check of [
       'Reuse: for each constant, helper, type or loop the change adds, search for an existing one that does the same, and cite its `file:line`.',
       'Repository rules: check each added line against the rules in the repository context, such as `AGENTS.md`, `CLAUDE.md` or `CONTRIBUTING.md`, and quote the rule it breaks.',
-      'Report every blocker and every security issue you find, whichever check finds it.',
       'Report a reuse finding only with the existing code\'s `file:line`, and a rule finding only with the rule quoted.',
-    ]) expect([first, second].map(focus => focus.includes(check))).toEqual([false, true]);
-    // The lens changes the focus and nothing else.
-    expect(buildReviewerSystemPrompt(team.finders[0].prompt, config).replace(first, ''))
-      .toBe(buildReviewerSystemPrompt(team.finders[1].prompt, config).replace(second, ''));    expect({ first, second }).toMatchSnapshot();
+    ]) expect(focus).toContain(check);
+    // Reuse and repository rules come right after tests.
+    expect(focus).toMatch(/\n6\. Tests: [^\n]*\n7\. Reuse: [^\n]*\n8\. Repository rules: [^\n]*\n9\. Contract breaks: /);
+    expect({ focus }).toMatchSnapshot();
   });
 
   describe('configured routing', () => {
@@ -1451,8 +1446,7 @@ describe('selectTeam', () => {
       expect([team.routing.class, team.routing.group, team.routing.groupSource]).toEqual(['hot_path', 'deep', 'routing']);
       expect(readers(team)).toEqual(['Claude Opus 5.5 · high · authz, injection, secret handling', 'Gemini 3 Pro · high', 'Claude Sonnet 5.5 · medium']);
       expect(team.finders[0].prompt.focus).toContain('- This review group: authz, injection, secret handling');
-      expect(team.finders[1].prompt).toEqual(buildFinderAgent([], 'surroundings'));
-      expect(team.finders[2].prompt).toEqual(buildFinderAgent([]));
+      expect(team.finders.slice(1).map(f => f.prompt)).toEqual([buildFinderAgent([]), buildFinderAgent([])]);
       expect(readers(selectTeam(plainDiff, config, quiet))).toEqual(['Claude Sonnet 5.5 · medium']);
       expect(teamModels(config)).toEqual(expect.arrayContaining(['claude-sonnet-5-5', 'claude-opus-5-5', 'gemini-3-pro']));
     });
@@ -1468,6 +1462,9 @@ describe('selectTeam', () => {
       const team = selectTeam(plainDiff, makeConfig({ review: { groups: { twins }, default_group: 'twins' } }), quiet);
       const label = 'Claude Opus 5.5 · high · consensus rules, quorum signing and the…';
       expect(readers(team)).toEqual([label, `${label} #2`, 'GPT 5.5 · medium', 'GPT 5.5 · medium #2']);
+      // Every finder runs the same checklist wherever it stands. A focus only adds its own line.
+      const withFocus = buildFinderAgent([{ name: 'This review group', focus }]);
+      expect(team.finders.map(f => f.prompt)).toEqual([withFocus, withFocus, buildFinderAgent([]), buildFinderAgent([])]);
     });
 
     it('sends every class to the default group when groups are set without routing', () => {
@@ -2739,8 +2736,8 @@ describe('runReview', () => {
     const reviewerMock = clients.reviewer.sendMessage as jest.Mock;
     expect(reviewerMock).toHaveBeenCalled();
 
-    expect(reviewerMock.mock.calls.map(call => call[0])).toEqual((['defects', 'surroundings'] as const)
-      .map(lens => buildReviewerSystemPrompt(buildFinderAgent([], lens), config, undefined, 'medium')));
+    const prompt = buildReviewerSystemPrompt(buildFinderAgent([]), config, undefined, 'medium');
+    expect(reviewerMock.mock.calls.map(call => call[0])).toEqual([prompt, prompt]);
   });
 
   it('defaults reviewer noise_level to "low" when config omits it', async () => {
@@ -5214,7 +5211,6 @@ describe('runReview triage', () => {
     expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · medium']);
     expect(result.agentEffortMap).toEqual(new Map([['Claude Sonnet 5.5 · medium', 'medium']]));
     expect(result.agentModels).toEqual(new Map([['Claude Sonnet 5.5 · medium', 'claude-sonnet-5-5']]));
-    expect(result.pairAgentName).toBeUndefined();
     expect(result.routing).toEqual({ class: 'internal', rank: 30, matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' });
     expect(progress).toContainEqual(expect.objectContaining({ phase: 'planning', teamAgentNames: ['Claude Sonnet 5.5 · medium'], reviewerEffort: 'medium', routing: expect.objectContaining({ class: 'internal', group: 'solo' }) }));
   });
@@ -5229,7 +5225,6 @@ describe('runReview triage', () => {
     expect(result.triage).toEqual({ trivial: false, subtle: true, paired: true });
     expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high']);
     expect([...result.agentEffortMap!.values()]).toEqual(['high', 'high']);
-    expect(result.pairAgentName).toBe('Claude Opus 5.5 · high');
   });
 
   it('runs the trivial verifier alone, except on a security-sensitive path', async () => {
@@ -5246,7 +5241,7 @@ describe('runReview triage', () => {
     expect(sensitive.agentNames).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
   });
 
-  it('sends the pair finder its own lens on the pair client', async () => {
+  it('sends the pair finder the same prompt on the pair client', async () => {
     const clients = makeClients();
     const pair = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
     clients.reviewerByModel = new Map([['claude-opus-5-5', pair]]);
@@ -5255,9 +5250,7 @@ describe('runReview triage', () => {
     const pairCall = jest.mocked(pair.sendMessage).mock.calls;
     expect(primaryCall).toHaveLength(1);
     expect(pairCall).toHaveLength(1);
-    expect(pairCall[0][1]).toEqual(primaryCall[0][1]);
-    expect(primaryCall[0][0]).toContain('defects in the change. Check, in this order:');
-    expect(pairCall[0][0]).toContain('defects in the change, searched from the code around it. Check, in this order:');
+    expect(pairCall[0]).toEqual(primaryCall[0]);
     expect(pairCall[0][0]).toContain('- Protocol: wire format');
   });
 

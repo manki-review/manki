@@ -28,9 +28,7 @@ describe('review stats', () => {
       },
       reviewers: {
         agents: ['Sonnet', 'Opus'],
-        agentMetrics: [{ name: 'Sonnet', model: 'claude-sonnet', findingsRaw: 3 }, { name: 'Opus', model: 'claude-opus', findingsRaw: 1 }],
-        keptOnlyBy: { Sonnet: 1 },
-        keptByMany: 1,
+        agentMetrics: [{ name: 'Sonnet', model: 'claude-sonnet', findingsRaw: 3, keptOnly: 1, keptShared: 1 }, { name: 'Opus', model: 'claude-opus', findingsRaw: 1, keptOnly: 0, keptShared: 1 }],
       },
       usage: {
         estimatedCostUsd: 0.5,
@@ -81,15 +79,15 @@ describe('review stats', () => {
       prs: 2, unreviewed: 1, roundsPerPr: [2, 5], passedFirstRound: 0, manyRounds: 1, rounds: 7,
       severityCounts: { blocker: 1, warning: 1 }, findings: 2, onReviewedCode: 1,
       blockerOutcomes: { fixed: 1, withdrawn: 1, other: 1 },
-      keptByMany: 1, readerRounds: 1, readerBlockers: 2,
+      readerRounds: 1, readerBlockers: 2,
       costPerPr: [0.75, 1], costPerRound: [0.5, 0.25, 1, 0, 0, 0, 0],
       // Rounds 2 of the first PR and 4 and 5 of the second had a whole diff. Round 2 of the second was cut, round 3 unknown.
       followUpRounds: 5, interRoundDiffCutOrUnknown: 2,
     });
     expect(Object.fromEntries(stats.refutations)).toEqual({ 'blocker disproved': 1 });
     expect(Object.fromEntries(stats.finders)).toEqual({
-      'claude-sonnet': { rounds: 1, rawFindings: 3, keptOnlyBy: 1, toolSteps: [4, 2], budgetedCalls: 1, wrapUps: 0 },
-      'claude-opus': { rounds: 1, rawFindings: 1, keptOnlyBy: 0, toolSteps: [10], budgetedCalls: 1, wrapUps: 1 },
+      'claude-sonnet': { rounds: 1, rawFindings: 3, keptOnly: 1, keptShared: 1, toolSteps: [4, 2], budgetedCalls: 1, wrapUps: 0 },
+      'claude-opus': { rounds: 1, rawFindings: 1, keptOnly: 0, keptShared: 1, toolSteps: [10], budgetedCalls: 1, wrapUps: 1 },
     });
 
     const report = renderStats(stats);
@@ -98,8 +96,8 @@ describe('review stats', () => {
     expect(report).toContain('- Needed 5 or more rounds: 50% (1 of 2)');
     expect(report).toContain('| blocker | 1 | 0.14 |');
     expect(report).toContain('- Blocker threads: 3, fixed 1, withdrawn 1, other 1');
-    expect(report).toContain('| claude-sonnet | 1 | 3 | 3.00 | 1 | mean 3.0, median 3.0, max 4.0 | 0% (0 of 1) |');
-    expect(report).toContain('| claude-opus | 1 | 1 | 1.00 | 0 | mean 10.0, median 10.0, max 10.0 | 100% (1 of 1) |');
+    expect(report).toContain('| claude-sonnet | 1 | 3 | 3.00 | 1 | 1 | mean 3.0, median 3.0, max 4.0 | 0% (0 of 1) |');
+    expect(report).toContain('| claude-opus | 1 | 1 | 1.00 | 0 | 1 | mean 10.0, median 10.0, max 10.0 | 100% (1 of 1) |');
     expect(report).toContain('| blocker disproved | 1 |');
     expect(report).toContain('- Follow-up rounds whose inter-round diff was cut or unknown: 40% (2 of 5)');
   });

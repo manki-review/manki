@@ -41,7 +41,9 @@ export interface PrRecords {
 interface FinderStats {
   rounds: number;
   rawFindings: number;
-  keptOnlyBy: number;
+  /** Kept findings this finder raised alone, and those it raised with another finder. */
+  keptOnly: number;
+  keptShared: number;
   toolSteps: number[];
   /** Calls with a step budget, and those told to wrap up. */
   budgetedCalls: number;
@@ -79,7 +81,6 @@ export interface ReviewStats {
   onReviewedCode: number;
   blockerOutcomes: { fixed: number; withdrawn: number; other: number };
   finders: Map<string, FinderStats>;
-  keptByMany: number;
   readerRounds: number;
   readerBlockers: number;
   refutations: Map<string, number>;
@@ -166,7 +167,7 @@ function blockerOutcomes(comments: ThreadComment[]): ReviewStats['blockerOutcome
 }
 
 function finder(stats: ReviewStats, model: string): FinderStats {
-  const found = stats.finders.get(model) ?? { rounds: 0, rawFindings: 0, keptOnlyBy: 0, toolSteps: [], budgetedCalls: 0, wrapUps: 0 };
+  const found = stats.finders.get(model) ?? { rounds: 0, rawFindings: 0, keptOnly: 0, keptShared: 0, toolSteps: [], budgetedCalls: 0, wrapUps: 0 };
   stats.finders.set(model, found);
   return found;
 }
@@ -175,7 +176,7 @@ function finder(stats: ReviewStats, model: string): FinderStats {
 export function computeStats(prs: PrRecords[]): ReviewStats {
   const stats: ReviewStats = {
     prs: 0, unreviewed: 0, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, severityCounts: {}, findings: 0, onReviewedCode: 0,
-    blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), keptByMany: 0, readerRounds: 0, readerBlockers: 0,
+    blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), readerRounds: 0, readerBlockers: 0,
     refutations: new Map(), costPerPr: [], costPerRound: [], followUpRounds: 0, interRoundDiffCutOrUnknown: 0,
     decisions: new Map(), learningsLoaded: [], suppressionsLoaded: [], slicesPerRound: [], changedSinceLastRound: [], fixClaims: [],
     relatedRepos: new Map(), limits: new Map(),
@@ -209,9 +210,9 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
         const stat = finder(stats, agent.model ?? agent.name);
         stat.rounds++;
         stat.rawFindings += agent.findingsRaw ?? 0;
+        stat.keptOnly += agent.keptOnly ?? 0;
+        stat.keptShared += agent.keptShared ?? 0;
       }
-      for (const [name, count] of Object.entries(round.reviewers?.keptOnlyBy ?? {})) finder(stats, models.get(name) ?? name).keptOnlyBy += count;
-      stats.keptByMany += round.reviewers?.keptByMany ?? 0;
       for (const call of round.usage?.llmCalls ?? []) {
         if (call.stage !== 'reviewer') continue;
         // A fallback answers on another model, and a failed call names none, so the finder's own model keys the call.
@@ -343,11 +344,9 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     '',
     '## Finders',
     '',
-    '| model | rounds | raw findings | per round | kept only by it | tool steps per call | told to wrap up |',
-    '| --- | ---: | ---: | ---: | ---: | --- | ---: |',
-    ...finders.map(([model, f]) => `| ${model} | ${f.rounds} | ${f.rawFindings} | ${f.rounds > 0 ? (f.rawFindings / f.rounds).toFixed(2) : '-'} | ${f.keptOnlyBy} | ${summary(f.toolSteps)} | ${share(f.wrapUps, f.budgetedCalls)} |`),
-    '',
-    `- Kept findings raised by two or more finders: ${stats.keptByMany}`,
+    '| model | rounds | raw findings | per round | kept only by it | kept with another | tool steps per call | told to wrap up |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |',
+    ...finders.map(([model, f]) => `| ${model} | ${f.rounds} | ${f.rawFindings} | ${f.rounds > 0 ? (f.rawFindings / f.rounds).toFixed(2) : '-'} | ${f.keptOnly} | ${f.keptShared} | ${summary(f.toolSteps)} | ${share(f.wrapUps, f.budgetedCalls)} |`),
     '',
     '## Refutations',
     '',

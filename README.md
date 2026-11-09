@@ -20,7 +20,7 @@ Manki sizes each review to the nature of the change: one reader for a change whe
 ## Why Manki
 
 - **Multi-stage pipeline** — a planner triages the change, finders review in parallel, dedup catches repeats from prior reviews, a judge filters noise and classifies findings by severity
-- **Two models where it matters** — changes that could reach a user get a second finder on another model that searches from the code around the change, so the two readers miss different things
+- **Two models where it matters** — changes that could reach a user get a second finder on another model with the same checklist, so the two models miss different things
 - **Smart verdicts** — blocks PRs on real issues, approves over style nitpicks; auto-approves when all blocking threads resolve
 - **Multi-provider** — Anthropic, OpenAI, and Gemini, mix-and-match per stage via `.manki.yml`
 - **Self-learning memory** — `/manki remember` teaches conventions, `/manki dismiss` suppresses false positives, patterns stick across PRs
