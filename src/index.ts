@@ -1006,7 +1006,7 @@ async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: st
 
 /** Collects the open review threads with the code now at each, and the contents of the files the review reads. */
 async function collectOpenThreads(
-  target: RunTarget, recap: RecapState, diff: ParsedDiff,
+  target: RunTarget, recap: RecapState, diff: ParsedDiff, lockfiles: LockfileDiff[],
 ): Promise<{ openThreads: OpenThread[]; fileContents?: Map<string, string> }> {
   const { octokit, owner, repo, commitSha } = target;
   const baseOpenThreads = recap.previousFindings
@@ -1044,6 +1044,8 @@ async function collectOpenThreads(
     ...t,
     currentCode: extractCurrentCodeWindow(fileContents, t.file, t.line),
   }));
+  // A thread on a lockfile reads its window above. The prompts read the package list, never the whole lockfile.
+  for (const { path } of lockfiles) fileContents?.delete(path);
   return { openThreads, fileContents };
 }
 
@@ -1659,7 +1661,7 @@ async function runFullReview(
     const digest = changeDigest(fullDiff);
     const countsTowardCap = !options.draft && isNewChange({ commitSha, changeDigest: digest }, recap.priorRounds.at(-1));
 
-    const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
+    const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff, lockfiles);
     const [{ interRoundDiff, priorChange, linkedIssues, relatedWork, staticSignals, staticAnalysis }, workspace] = await Promise.all([
       collectRoundSignals(target, config, recap, diff, fullDiff, lockfiles, configPath, prContext),
       fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])]),
