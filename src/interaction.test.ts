@@ -491,9 +491,9 @@ describe('handlePRComment', () => {
   });
 
   it('dispatches dismiss command', async () => {
-    setContext({ comment: { id: 42, body: '@manki dismiss null-check', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+    setContext({ comment: { id: 42, body: '@manki dismiss null-check', user: { type: 'User' }, author_association: 'COLLABORATOR' }, sender: { login: 'writer' } });
     const octokit = createMockOctokit();
-    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1);
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, MEMORY);
     expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, '+1');
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('Dismissed') }),
@@ -966,6 +966,7 @@ describe('handleDismiss (via handlePRComment)', () => {
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
       body: 'Dismissed: `null-check`. Only collaborators can store a dismissal in review memory, so later reviews can raise it again.\n\n<!-- manki -->',
     }));
+    expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -979,6 +980,7 @@ describe('handleDismiss (via handlePRComment)', () => {
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('Stored as a suppression') }),
     );
+    expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, '+1');
   });
 
   it('says a dismissal was not stored when the suppression write fails', async () => {
@@ -989,6 +991,7 @@ describe('handleDismiss (via handlePRComment)', () => {
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
       body: 'Dismissed: `null-check-warning`. Could not store it in review memory, so later reviews can raise it again. The run log has the reason.\n\n<!-- manki -->',
     }));
+    expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
   });
 
   const usage = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` stores a suppression, so later reviews do not raise findings with that title.';
@@ -1234,16 +1237,19 @@ describe('handlePRComment error propagation', () => {
 });
 
 describe('handleReviewCommentCommand', () => {
-  it('answers a dismiss in its own thread and reacts with +1', async () => {
-    setContext({ comment: { id: 55, body: '/manki dismiss null-check', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+  it.each([
+    ['stores it and reacts with +1', MEMORY, 'Stored as a suppression in review memory.', true],
+    ['reacts with nothing when memory is off', undefined, 'Review memory is off', false],
+  ])('answers a named dismiss in its own thread, %s', async (_case, store, note, reacts) => {
+    setContext({ comment: { id: 55, body: '/manki dismiss null-check', user: { type: 'User' }, author_association: 'COLLABORATOR' }, sender: { login: 'writer' } });
     const octokit = createMockOctokit();
     const command = parseCommand('/manki dismiss null-check');
-    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 55, command);
-    expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 55, '+1');
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 55, command, store);
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({
-      pull_number: 1, comment_id: 55, body: expect.stringContaining('Dismissed: `null-check`.'),
+      pull_number: 1, comment_id: 55, body: expect.stringContaining(`Dismissed: \`null-check\`. ${note}`),
     }));
     expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.reactToReviewComment).mock.calls).toEqual(reacts ? [[octokit, 'test-owner', 'test-repo', 55, '+1']] : []);
   });
 
   it('answers a dismiss that names no finding outside a Manki thread with its usage', async () => {

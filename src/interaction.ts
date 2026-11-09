@@ -458,7 +458,7 @@ export async function handlePRComment(
       await octokit.rest.issues.createComment({
         owner, repo, issue_number: issueNumber, body: withMarkers(dismissal?.note ?? DISMISS_NO_FINDING, BOT_MARKER),
       });
-      if (dismissal?.dismissed) await reactToIssueComment(octokit, owner, repo, commentId, '+1');
+      if (dismissal?.stored) await reactToIssueComment(octokit, owner, repo, commentId, '+1');
       break;
     }
     case 'remember':
@@ -543,8 +543,8 @@ async function handleExplain(
 }
 
 /**
- * Stores a suppression for the finding `findingRef` names. Returns the note to post, and whether a finding was
- * dismissed, or `undefined` when `findingRef` names none.
+ * Stores a suppression for the finding `findingRef` names. Returns the note to post, and whether the suppression was
+ * stored, or `undefined` when `findingRef` names none.
  */
 async function handleDismiss(
   octokit: Octokit,
@@ -553,14 +553,14 @@ async function handleDismiss(
   prNumber: number,
   findingRef: string,
   memory?: MemoryStore,
-): Promise<{ note: string; dismissed: boolean } | undefined> {
+): Promise<{ note: string; stored: boolean } | undefined> {
   if (!findingRef.trim()) return undefined;
   const sanitizedPattern = findingRef
     .replace(/</g, '').replace(/>/g, '')
     .slice(0, 200)
     .trim();
 
-  if (sanitizedPattern.length < 3) return { note: DISMISS_TOO_SHORT, dismissed: false };
+  if (sanitizedPattern.length < 3) return { note: DISMISS_TOO_SHORT, stored: false };
 
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
@@ -593,7 +593,7 @@ async function handleDismiss(
       : stored
         ? 'Stored as a suppression in review memory.'
         : 'Could not store it in review memory, so later reviews can raise it again. The run log has the reason.';
-  return { note: `Dismissed: \`${sanitizedPattern}\`. ${memoryNote}`, dismissed: true };
+  return { note: `Dismissed: \`${sanitizedPattern}\`. ${memoryNote}`, stored };
 }
 
 /**
@@ -995,7 +995,7 @@ export async function handleReviewCommentCommand(
           owner, repo, pull_number: prNumber, comment_id: commentId, body: withMarkers(notes.join('\n\n'), BOT_MARKER),
         });
       }
-      if (dismissal?.dismissed || thread?.resolved) await reactToReviewComment(octokit, owner, repo, commentId, '+1');
+      if (dismissal?.stored || thread?.resolved) await reactToReviewComment(octokit, owner, repo, commentId, '+1');
       break;
     }
     case 'remember':
