@@ -311,7 +311,7 @@ describe('createAuthenticatedOctokit', () => {
     expect(mockGetOctokit).not.toHaveBeenCalled();
   });
 
-  it('retries a rate-limited request at most twice', async () => {
+  it('retries a rate-limited request at most twice, and a search never', async () => {
     jest.spyOn(core, 'getIDToken').mockResolvedValue('oidc-token');
     mockFetch(async () => Response.json({ token: 'resolved-app-token' }));
     mockGetOctokit.mockReturnValue({} as ReturnType<typeof github.getOctokit>);
@@ -328,6 +328,10 @@ describe('createAuthenticatedOctokit', () => {
       expect(handler(5, request, {}, 2)).toBe(false);
     }
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('giving up after 2 retries'));
+    const search = { method: 'GET', url: '/search/issues' };
+    for (const handler of [throttle.onRateLimit, throttle.onSecondaryRateLimit]) {
+      expect(handler(5, search, {}, 0)).toBe(false);
+    }
   });
 
   it('posts as the manki-review App with the token service\'s token', async () => {

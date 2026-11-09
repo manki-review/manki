@@ -20,6 +20,7 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
+import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { disproof } from './refute';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
@@ -31,7 +32,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases } from './types';
+import { ConfigSource, DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -1033,13 +1034,17 @@ async function collectOpenThreads(
 }
 
 /**
- * Fetches the diff since the last reviewed commit, the PR's change at that commit, the issues the PR body links,
- * and the static analysis results.
+ * Fetches the diff since the last reviewed commit, the PR's change at that commit, the issues the PR body links, the
+ * open PRs and issues that may relate to the PR, and the static analysis results.
  */
 async function collectRoundSignals(
-  target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, configPath: string, prBody?: string,
-): Promise<{ interRoundDiff?: string; priorChange?: ParsedDiff; linkedIssues?: LinkedIssue[]; staticSignals: StaticSignal[]; staticAnalysis?: RoundStaticAnalysis }> {
+  target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, configPath: string, prContext?: PrContext,
+): Promise<{ interRoundDiff?: string; priorChange?: ParsedDiff; linkedIssues?: LinkedIssue[]; relatedWork?: RelatedWork; staticSignals: StaticSignal[]; staticAnalysis?: RoundStaticAnalysis }> {
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
+  const prBody = prContext?.body;
+  const relatedWorkPromise = prContext
+    ? findRelatedWork(octokit, { owner, repo, prNumber, title: prContext.title, body: prContext.body, diff })
+    : Promise.resolve(undefined);
   // Fetch the PR's own change since the prior round so the judge
   // can ground per-thread resolution in actual changes since last review.
   let interRoundDiff: string | undefined;
@@ -1098,7 +1103,7 @@ async function collectRoundSignals(
   }
 
   const { signals: staticSignals, record: staticAnalysis } = await staticSignalsPromise;
-  return { interRoundDiff, priorChange, linkedIssues, staticSignals, staticAnalysis };
+  return { interRoundDiff, priorChange, linkedIssues, relatedWork: await relatedWorkPromise, staticSignals, staticAnalysis };
 }
 
 /**
@@ -1635,8 +1640,8 @@ async function runFullReview(
     const countsTowardCap = !options.draft && isNewChange({ commitSha, changeDigest: digest }, recap.priorRounds.at(-1));
 
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
-    const [{ interRoundDiff, priorChange, linkedIssues, staticSignals, staticAnalysis }, workspace] = await Promise.all([
-      collectRoundSignals(target, config, recap, diff, fullDiff, configPath, prContext?.body),
+    const [{ interRoundDiff, priorChange, linkedIssues, relatedWork, staticSignals, staticAnalysis }, workspace] = await Promise.all([
+      collectRoundSignals(target, config, recap, diff, fullDiff, configPath, prContext),
       fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])]),
     ]);
 
@@ -1661,6 +1666,7 @@ async function runFullReview(
       fileContents,
       prContext: prContext && staticSignals.length > 0 ? { ...prContext, staticSignals } : prContext,
       linkedIssues,
+      relatedWork,
       isFollowUp: recap.previousFindings.length > 0,
       // `null` tells `determineOutcome` the open threads are unknown, so no prior can retire.
       openThreads: recap.openThreadsState === 'fetch_failed' ? null : openThreads,

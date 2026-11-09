@@ -12,6 +12,11 @@ type Octokit = ReturnType<typeof github.getOctokit>;
 const RATE_LIMIT_RETRIES = 2;
 
 function onRateLimit(retryAfter: number, options: { method: string; url: string }, _octokit: unknown, retryCount: number): boolean {
+  // A search only feeds optional context, so a rate-limited one is skipped rather than holding up the review.
+  if (options.url.startsWith('/search/')) {
+    core.warning(`GitHub rate limit on ${options.method} ${options.url}, not retrying a search`);
+    return false;
+  }
   if (retryCount >= RATE_LIMIT_RETRIES) {
     core.warning(`GitHub rate limit on ${options.method} ${options.url}, giving up after ${RATE_LIMIT_RETRIES} retries`);
     return false;

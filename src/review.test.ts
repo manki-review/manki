@@ -3388,14 +3388,14 @@ describe('runReview', () => {
     ]);
   });
 
-  it('leaves dedup counts at zero when no previous findings are supplied', async () => {
+  it('leaves dedup counts at zero when no previous findings are supplied, and classifies the related work on the dedup model', async () => {
     const findingJson = JSON.stringify([
       { severity: 'blocker', title: 'A bug', file: 'src/a.ts', line: 10, description: 'Bug.' },
     ]);
     const clients: ReviewClients = {
       ...makeClients(findingJson),
       dedup: {
-        sendMessage: jest.fn(),
+        sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify([{ index: 1, relation: 'duplicate', reason: 'Same fix.' }]) }),
       } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
@@ -3406,6 +3406,16 @@ describe('runReview', () => {
     expect(clients.dedup!.sendMessage).not.toHaveBeenCalled();
     expect(result.staticDedupCount).toBe(0);
     expect(result.llmDedupCount).toBe(0);
+    expect(result.relatedWork).toBeUndefined();
+
+    const relatedWork = { items: [{ kind: 'pr' as const, number: 20, title: 'Same fix', excerpt: '', files: ['src/a.ts'], sharedFiles: 1 }] };
+    const prContext = { title: 'Fix the bug', body: '', baseBranch: 'main' };
+    const related = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', prContext, relatedWork });
+
+    expect(clients.dedup!.sendMessage).toHaveBeenCalledTimes(1);
+    expect(related.llmDedupCount).toBe(0);
+    expect(related.relatedWork).toEqual({ items: [{ ...relatedWork.items[0], relation: 'duplicate', reason: 'Same fix.' }] });
+    expect(related.llmCalls?.filter(c => c.stage === 'related')).toHaveLength(1);
   });
 
   it('returns reviewComplete false when judge fails', async () => {

@@ -6,7 +6,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { loadConfig } from './config';
-import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -1513,6 +1513,7 @@ export async function postReview(
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
+      formatRelatedWork(result.relatedWork, owner, repo),
       overrides,
       readyReport?.whatToTest,
     ].filter((section): section is string => !!section);
@@ -1868,6 +1869,36 @@ function formatTraceEntry(p: Pick<VerdictTraceEntry, 'file' | 'title' | 'line' |
 function formatNeedsHuman(result: ReviewResult): string | null {
   if (result.outcome !== 'NOT_CONVERGING' || !result.needsHuman) return null;
   return `Automatic review is paused until someone comments \`@manki review\`.\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
+}
+
+/** Returns `text` for a link label on one line, with the backslashes and brackets that would end the label escaped. */
+function linkText(text: string): string {
+  return sanitizeMarkdown(text).replace(/\s+/g, ' ').trim().replace(/[\\[\]]/g, '\\$&');
+}
+
+// Most telling first, which is also the order the note lists them in.
+const RELATION_LABEL: Record<Exclude<RelatedRelation, 'unrelated'>, string> = {
+  duplicate: 'Duplicate',
+  fixes_issue: 'Fixed here, not linked',
+  overlapping: 'Overlaps',
+};
+
+/**
+ * Returns the note listing the open PRs and issues the dedup model tied to this PR, or null when it tied none. The
+ * model's reason stays out, since the other PRs' and issues' text can steer it, and only the round record keeps it.
+ */
+function formatRelatedWork(work: RelatedWork | undefined, owner: string, repo: string): string | null {
+  const labels = Object.keys(RELATION_LABEL);
+  const related = (work?.items ?? [])
+    .flatMap(item => item.relation && item.relation !== 'unrelated' ? [{ ...item, relation: item.relation }] : [])
+    .sort((a, b) => labels.indexOf(a.relation) - labels.indexOf(b.relation));
+  if (related.length === 0) return null;
+  const lines = related.map(item => {
+    const url = `${repoUrl(github.context.serverUrl, owner, repo)}/${item.kind === 'pr' ? 'pull' : 'issues'}/${item.number}`;
+    const draft = item.draft ? ' (draft)' : '';
+    return `- ${RELATION_LABEL[item.relation]} · [#${item.number} ${linkText(item.title)}](${url})${draft}`;
+  });
+  return `**Related work:** open PRs and issues that may cover the same change. None of them blocks.\n\n${lines.join('\n')}`;
 }
 
 /** Returns one line naming the security findings a repo admin dismissed on their own PR, or null when there are none. */
@@ -2570,6 +2601,11 @@ export interface LinkedIssue {
 const MAX_ISSUE_BODY_LENGTH = 2000;
 const MAX_LINKED_ISSUES = 5;
 
+/** Returns the issue numbers the PR body links with a closing keyword or "part of". */
+export function linkedIssueNumbers(prBody: string): Set<number> {
+  return new Set([...prBody.matchAll(/(?:closes?|fixes?|resolves?|part\s+of)\s+#(\d+)/gi)].map(match => parseInt(match[1], 10)));
+}
+
 /**
  * Parse PR body for issue references and fetch their details.
  */
@@ -2581,12 +2617,7 @@ export async function fetchLinkedIssues(
 ): Promise<LinkedIssue[]> {
   if (!prBody) return [];
 
-  const regex = /(?:closes?|fixes?|resolves?|part\s+of)\s+#(\d+)/gi;
-  const issueNumbers = new Set<number>();
-  for (const match of prBody.matchAll(regex)) {
-    issueNumbers.add(parseInt(match[1], 10));
-  }
-
+  const issueNumbers = linkedIssueNumbers(prBody);
   if (issueNumbers.size === 0) return [];
 
   const results: LinkedIssue[] = [];

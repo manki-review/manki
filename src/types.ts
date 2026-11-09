@@ -236,6 +236,40 @@ export interface ReferenceCheckout {
   dir: string;
 }
 
+/** How an open PR or issue relates to the PR under review. Only a PR is a `duplicate`, and only an issue is `fixes_issue`. */
+export type RelatedRelation = 'duplicate' | 'overlapping' | 'fixes_issue' | 'unrelated';
+
+/** An open PR or issue of the repository that may relate to the PR under review, with the dedup model's classification. */
+export interface RelatedItem {
+  kind: 'pr' | 'issue';
+  number: number;
+  /** Untrusted text from the PR or issue. */
+  title: string;
+  /** The start of its body, untrusted text. */
+  excerpt: string;
+  /** For a PR, the files it changes, the shared ones first. */
+  files?: string[];
+  /** For a PR, how many of its files the PR under review changes too. */
+  sharedFiles?: number;
+  draft?: boolean;
+  /** Unset until the dedup model classified it, and when the classification failed. */
+  relation?: RelatedRelation;
+  /** The dedup model's one line of reasoning. */
+  reason?: string;
+}
+
+/** The open PRs and issues a round looked at, and why any source was left out, such as a rate-limited search. */
+export interface RelatedWork {
+  items: RelatedItem[];
+  skipped?: string[];
+}
+
+/** What the round record keeps of `RelatedWork`, without the untrusted text of the PRs and issues. */
+export interface RoundRelatedWork {
+  candidates: Array<Pick<RelatedItem, 'kind' | 'number' | 'sharedFiles' | 'relation' | 'reason'>>;
+  skipped?: string[];
+}
+
 /** How one configured related repo fared in a round, and how often the round's finders read it. */
 export interface RoundRelatedRepo {
   repo: string;
@@ -501,6 +535,8 @@ export interface ReviewResult {
   relatedRepos?: RoundRelatedRepo[];
   /** What the finders were shown as uses outside the diff. */
   usesOutsideDiff?: RoundUses;
+  /** The open PRs and issues that may relate to this PR, classified. Unset when the round looked at none. */
+  relatedWork?: RelatedWork;
   /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
   changedSinceLastRoundCount?: number;
   /** The open or earlier threads where someone claimed a fix: resolved, answered by a person, or confirmed by a round. */
@@ -1113,6 +1149,8 @@ export interface RoundContext {
   relatedRepos?: RoundRelatedRepo[];
   /** What the finders were shown as uses outside the diff. */
   usesOutsideDiff?: RoundUses;
+  /** The open PRs and issues that may relate to this PR, with their classification. */
+  relatedWork?: RoundRelatedWork;
   /** How each open lead ended, so the next round carries over the ones still unsettled. */
   leads?: RoundLead[];
   /**
@@ -1783,7 +1821,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict' | 'related', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */

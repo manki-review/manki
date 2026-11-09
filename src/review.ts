@@ -9,9 +9,10 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorBlocker, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
+import { classifyRelatedWork } from './related-work';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
@@ -593,6 +594,8 @@ export interface ReviewOptions {
   deeper?: boolean;
   /** Files the PR changes that `exclude_paths` left out of `diff`. A finding there is never pre-existing. */
   excludedPaths?: string[];
+  /** Open PRs and issues that may relate to the PR. The dedup model classifies them for a note in the review body. */
+  relatedWork?: RelatedWork;
 }
 
 export async function runReview(
@@ -621,6 +624,10 @@ export async function runReview(
       modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: error.reason });
     }), signal);
   };
+  // Classified while the review runs, since only the posted note reads it.
+  const relatedWorkPromise = options.relatedWork && clients.dedup && prContext
+    ? classifyRelatedWork(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'related'), prContext, diff, options.relatedWork)
+    : Promise.resolve(options.relatedWork);
   let plannerResult: PlannerResult | null = null;
   let plannerUsage: LLMUsage | undefined;
   let plannerDurationMs: number | undefined;
@@ -1384,6 +1391,7 @@ export async function runReview(
   core.endGroup();
 
   const leads = recordLeads([...current, ...carried].filter(f => f.lead), listedLeads, allJudgedFindings ?? [], finalFindings, round);
+  const relatedWork = await relatedWorkPromise;
 
   return {
     verdict,
@@ -1432,6 +1440,7 @@ export async function runReview(
     ...(modelFallbacks.length > 0 && { modelFallbacks }),
     llmCalls,
     ...finderContext,
+    ...(relatedWork && { relatedWork }),
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
   };
 }

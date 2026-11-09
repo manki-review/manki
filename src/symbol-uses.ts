@@ -495,6 +495,11 @@ function keywordDeclarations(file: DiffFile): ChangedSymbol[] {
   });
 }
 
+/** Returns the names the diff's added lines declare, without the generic ones, in diff order. */
+export function declaredNames(diff: ParsedDiff): string[] {
+  return [...new Set(diff.files.flatMap(file => keywordDeclarations(file)).map(s => s.name).filter(name => !isGeneric(name)))];
+}
+
 /** Reads and parses head files once each. */
 class Parser {
   private readonly cache = new Map<string, ParsedFile | undefined>();

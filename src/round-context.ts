@@ -409,6 +409,12 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(result.leads && result.leads.length > 0 && { leads: result.leads }),
     ...(result.relatedRepos && { relatedRepos: result.relatedRepos.map(r => withReads(r, llmCalls)) }),
     ...(result.usesOutsideDiff && { usesOutsideDiff: result.usesOutsideDiff }),
+    ...(result.relatedWork && {
+      relatedWork: {
+        candidates: result.relatedWork.items.map(({ kind, number, sharedFiles, relation, reason }) => ({ kind, number, sharedFiles, relation, reason })),
+        ...(result.relatedWork.skipped && { skipped: result.relatedWork.skipped }),
+      },
+    }),
   };
 }
 

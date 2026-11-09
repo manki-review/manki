@@ -39,7 +39,7 @@ The app requires these permissions:
 |------------|--------|---------|
 | Contents | Read and write | Read repository files and diffs. GitHub needs write to resolve a review thread, and the token Manki gets covers only the reviewed repo |
 | Pull requests | Read and write | Post review comments and approvals |
-| Issues | Read and write | Post progress comments; read linked issues for review context; file a finding as an issue when someone ticks its box |
+| Issues | Read and write | Post progress comments; read linked issues for review context and search open ones for related work; file a finding as an issue when someone ticks its box |
 | Actions | Read and write | Start the Manki workflow and follow its runs (see [What the Manki App needs](#what-the-manki-app-needs)). Set on the App by its maintainers, so you only approve it |
 | Checks | Read and write | Show a `Manki` check on the PR. Set on the App by its maintainers, so you only approve it |
 
