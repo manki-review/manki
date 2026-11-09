@@ -544,10 +544,18 @@ function figure(value: number): string {
  * Applies the release gate to each variant both sides scored, on the hold-out cases both scored with the same key
  * version. A side with an incomplete review decides nothing. More false blockers fail. Found must-catch items may fall
  * by at most `GATE_MARGIN`, and a fall within it on a single candidate run asks for a rerun, decided on the mean.
+ * Throws when the candidate reports reviewed different commits, the baseline reviewed the candidate's commit, or the
+ * reports were matched by different models.
  */
 export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): GateResult[] {
   if (baseline.length === 0 || candidate.length === 0) throw new Error('The gate needs a baseline and a candidate report');
   const all = [...baseline, ...candidate];
+  const commits = new Set(candidate.map(r => r.commit).filter(Boolean));
+  if (commits.size > 1) throw new Error(`The candidate reports reviewed different commits: ${[...commits].join(', ')}`);
+  const own = baseline.find(r => r.commit && commits.has(r.commit));
+  if (own) throw new Error(`The baseline reviewed the candidate's own commit ${own.commit}`);
+  const matchers = new Set(all.map(r => r.matcherModel));
+  if (matchers.size > 1) throw new Error(`The reports were matched by different models: ${[...matchers].join(', ')}`);
   const names = candidate[0].variants.map(v => v.name).filter(name => all.every(r => r.variants.some(v => v.name === name)));
   if (names.length === 0) throw new Error('The baseline and candidate reports share no variant');
   return names.map((name): GateResult => {

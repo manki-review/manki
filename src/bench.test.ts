@@ -467,6 +467,11 @@ describe('mergeReports and gateReports', () => {
     expect(gateReports([baseline], [rekeyed])[0]).toMatchObject({ verdict: 'PASS', shared: ['demo-1'] });
     expect(gateReports([baseline], [report([[tuning, [await run(tuning)]]])])[0]).toMatchObject({ verdict: 'NO DECISION', shared: [] });
     expect(() => gateReports([], [baseline])).toThrow('The gate needs a baseline and a candidate report');
+    const at = (commit: string) => ({ ...baseline, commit });
+    expect(gateReports([at('a')], [at('b'), at('b')])[0].verdict).toBe('PASS');
+    expect(() => gateReports([at('a')], [at('b'), at('c')])).toThrow('The candidate reports reviewed different commits: b, c');
+    expect(() => gateReports([at('a')], [at('a')])).toThrow("The baseline reviewed the candidate's own commit a");
+    expect(() => gateReports([baseline], [{ ...baseline, matcherModel: 'model-b' }])).toThrow('The reports were matched by different models: model-a, model-b');
 
     const text = formatGate(gateReports([baseline], [baseline]));
     expect(text).toContain("### Release gate, base: PASS\n\nFalse blockers did not rise, and must-catch items found at the key's grade did not fall.\n");

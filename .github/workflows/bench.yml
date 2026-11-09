@@ -83,8 +83,11 @@ jobs:
             [[ "$v" != *=* ]] || [ -f "${v#*=}" ] || fail "variant file ${v#*=} is not in this workflow's commit"
           done
           for id in $BASELINE $RERUN_OF; do [[ "$id" =~ ^[0-9]+$ ]] || fail "run id $id must be a number"; done
-          echo "commit=$(git -C manki-ref rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "matrix=$(npm run -s bench-report -- matrix --set "$SET" --cases "$CASES")" >> "$GITHUB_OUTPUT"
+          [ -z "${RERUN_OF// }" ] || [ -n "${BASELINE// }" ] || fail "rerun_of only counts with a baseline, so give the same baseline again"
+          commit=$(git -C manki-ref rev-parse HEAD)
+          matrix=$(npm run -s bench-report -- matrix --set "$SET" --cases "$CASES")
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   case:
     needs: plan
