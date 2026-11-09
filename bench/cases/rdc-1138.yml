@@ -33,7 +33,7 @@ body: |
   - Unit: v3 round trips for both payloads (byte positions of `netInfo` and the payout count, exact bytes consumed, `size()`), Evo v3 without platform ports, version 4 rejected, v3 ProUpRegTx without payouts fails to encode, bincode v3 round trips. Existing v1/v2 vectors still pass.
   - `cargo test -p dashcore -p key-wallet -p key-wallet-ffi -p key-wallet-manager`, `cargo test -p dash-spv` with dashd integration tests, clippy `-D warnings`.
   - No real v3 transaction vectors yet: our regtest dashd doesn't run v24.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: blocker
@@ -45,9 +45,34 @@ must_catch:
     mechanism: "`ProviderUpdateRegistrarPayload::consensus_decode` has no version check: version 0 is accepted and version 4 and above is read with the version 3 layout. ProUpServTx and Dash Core reject both."
     locations: ["dash/src/blockdata/transaction/special_transaction/provider_update_registrar.rs", "ProviderUpdateRegistrarPayload", "consensus_decode"]
     fix: "6cd43fc07"
+  - id: K3
+    severity: blocker
+    mechanism: "The wallet payout matchers in `account_checker.rs` (around lines 636 and 1225) read only `script_payout`, which is empty from version 3, where a ProUpRegTx carries its payees in `payouts`. A wallet that is one of the new payees never matches the transaction, so it never sees the payment."
+    locations: ["key-wallet/src/transaction_checking/account_checker.rs", "script_payout", "payouts"]
+    source: "owner /check review"
 nice_to_have:
   - id: N1
     severity: suggestion
     mechanism: "Design: model the ProUpServTx service as the existing `MasternodeNetInfo` now, since the PR is breaking anyway, instead of a second break later."
     locations: ["dash/src/blockdata/transaction/special_transaction/provider_update_service.rs", "MasternodeNetInfo", "net_info"]
     fix: "1efd8e6b8"
+  - id: N2
+    severity: warning
+    mechanism: "A version 3 payload makes `txid()` and `base_payload_hash()` panic."
+    locations: ["dash/src/blockdata/transaction/mod.rs", "txid", "base_payload_hash"]
+    source: "Manki v7.2.0 review"
+  - id: N3
+    severity: suggestion
+    mechanism: "`size()` and the encoder disagree on a version 3 payload that lacks its new field, so the size estimate and the bytes written differ."
+    locations: ["dash/src/blockdata/transaction/special_transaction/provider_update_service.rs", "dash/src/blockdata/transaction/special_transaction/provider_update_registrar.rs", "size"]
+    source: "owner /check review"
+  - id: N4
+    severity: suggestion
+    mechanism: "ProRegTx still decodes version 3 with the version 2 layout and has no version check. Outside the PR's scope, but the same defect as K2."
+    locations: ["dash/src/blockdata/transaction/special_transaction/provider_registration.rs"]
+    source: "owner /check review"
+  - id: N5
+    severity: nitpick
+    mechanism: "The version 3 check `is_ext_addr` is spelled out five times instead of shared."
+    locations: ["dash/src/blockdata/transaction/special_transaction/provider_update_service.rs", "dash/src/blockdata/transaction/special_transaction/provider_update_registrar.rs", "is_ext_addr"]
+    source: "owner /check review"

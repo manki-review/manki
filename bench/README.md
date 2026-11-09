@@ -12,7 +12,9 @@ npm run bench -- --checkout xdustinface/rust-dashcore=/path/to/rust-dashcore --c
 
 The bench reads credentials only from environment variables, the same names the Action's secrets have. A `claude` login on its own is not enough. With `CLAUDE_CODE_OAUTH_TOKEN`, every Claude stage and the matcher run through the `claude` CLI on `PATH` (the pinned version is installed when none is found), and the finders get the read-only repository tools as in a pull request round. `ANTHROPIC_API_KEY` also works, but the API path has no repository tools, so its scores do not match production.
 
-The seed set holds the five rust-dashcore replays. The misses #1163 is to collect are not cases yet, since that issue lists none so far.
+The seed set holds the five rust-dashcore replays.
+
+`npm run missed-blockers -- --repo <owner/name> [--last <n>]` drafts more cases from Manki's own misses. It reads the round records of the last merged pull requests and finds each round whose blockers sit on code the round before it had already reviewed (`origin: reviewed`), which no earlier round raised as a blocker. Each such earlier round becomes a draft in `bench/drafts/`: its commit is the head, the merge base with the base branch is the base, and each missed blocker is a `must_catch` item. A draft has `key_version: 0`. Check its items, severities and locations, then set `key_version` to 1 and move it to `bench/cases`. The body is the pull request body as it is now, and references to repositories outside manki-review and the forks are written as plain text.
 
 Each case repo needs a local clone holding the case's `base` and `head` commits. For the rust-dashcore cases, fetch the fork's `test-base/<n>` and `test/<n>` branches. The review reads `.manki.yml` from `base`, and the tools read a fresh copy holding only `head`, so no later fix commit is visible to them.
 
@@ -48,6 +50,7 @@ must_catch:                              # defects a review must report
     mechanism: What goes wrong and why.
     locations: [path/to/file.rs, symbol_name]
     fix: 095f7f208                       # optional: the commit that fixed it
+    source: owner /check review          # optional: who found it, when not the upstream review
 nice_to_have: []                         # design, test, reuse and convention points
 ```
 

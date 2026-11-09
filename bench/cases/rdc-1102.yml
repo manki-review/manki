@@ -12,7 +12,7 @@ body: |
   The wallet is not rewound: its synced height only moves forward, so the blocks of the new branch below its old height are not rescanned, and transactions of the dropped blocks stay as they were.
 
   `test_sync_follows_reorg` makes dashd replace its last 3 blocks with a branch of 5 and requires the client to end on the new tip. Without this change it times out with the client still on the old branch.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: warning
@@ -31,4 +31,29 @@ must_catch:
     severity: blocker
     mechanism: "Security (DoS): `ForkDetected` fires from an unmatched `Headers` message before `BlockHeaderValidator` runs. A peer sending one header whose parent is a stored block below the tip makes `handle_fork` truncate stored headers and filter data. A validated higher-work branch should be required before truncating. Acknowledged and deferred upstream."
     locations: ["dash-spv/src/sync/block_headers/manager.rs", "ForkDetected", "BlockHeaderValidator", "handle_fork"]
-nice_to_have: []
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "Fork recovery fails when the fork height is below the first stored block or filter."
+    locations: ["dash-spv/src/storage/segments.rs", "handle_fork"]
+    source: "owner /check review"
+  - id: N2
+    severity: warning
+    mechanism: "An honest sibling block at the same height triggers truncation, because `fork_height` returns any stored parent below the tip."
+    locations: ["dash-spv/src/sync/block_headers/manager.rs", "fork_height"]
+    source: "owner /check review"
+  - id: N3
+    severity: suggestion
+    mechanism: "`CheckpointManager::should_reject_fork` is used only in tests, so recovery never checks a fork against the checkpoints."
+    locations: ["dash-spv/src/chain/checkpoints.rs", "should_reject_fork"]
+    source: "owner /check review"
+  - id: N4
+    severity: warning
+    mechanism: "The FFI drops `SyncEvent::ForkDetected` with `=> {}`, so an FFI host never learns of a fork."
+    locations: ["dash-spv-ffi/src/callbacks.rs", "ForkDetected"]
+    source: "owner /check review"
+  - id: N5
+    severity: warning
+    mechanism: "A concurrent `run()` races `handle_fork` and drops the fork recovery. Upstream found it only at a later head."
+    locations: ["dash-spv/src/client/lifecycle.rs", "handle_fork", "run_locked"]
+    source: "Manki v7.1.1 review and owner /check review"
