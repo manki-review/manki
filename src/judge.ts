@@ -3,7 +3,7 @@ import { readFileSync, statSync } from 'fs';
 
 import { extractCurrentCodeWindow } from './code-window';
 import { resolveInRoot } from './mcp-server';
-import { LLMClient, QuotaError, SendMessageOptions } from './providers';
+import { LLMClient, QuotaError, RefusalError, SendMessageOptions } from './providers';
 import { extractJSON } from './json';
 import {
   filterLearningsForFinding,
@@ -18,7 +18,7 @@ import { isLineInDiff, rebuildRawDiff, shortenLongLines } from './diff';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { blockerThreadStaysOpen, determineOutcome, filesChangedByPush, parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
+import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, filesChangedByPush, parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
 import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { refuteBlockers } from './refute';
@@ -221,8 +221,6 @@ const IN_PR_SUPPRESSION_LINE_TOLERANCE = 5;
 export const MAX_INTER_ROUND_DIFF_CHARS = 20000;
 
 const JUDGE_TIMEOUT_MS = 300_000;
-// A judge that reads the code with tools runs as long as a finder.
-const JUDGE_TOOLS_TIMEOUT_MS = 900_000;
 
 /** How many lines cited outside the diff the judge sees the code around, per finding and per round. */
 const MAX_CITED_WINDOWS_PER_FINDING = 5;
@@ -1211,7 +1209,7 @@ export async function runJudgeAgent(
   const judgeCall = (steps: number): { systemPrompt: string; options: SendMessageOptions } => ({
     systemPrompt: judgePrompt(steps),
     options: steps > 0
-      ? { effort, timeoutMs: JUDGE_TOOLS_TIMEOUT_MS, promptTemplate: judgeTemplate(steps), repoTools: { root: refutation!.workspace, steps } }
+      ? { effort, timeoutMs: FINDER_TOOLS_TIMEOUT_MS, promptTemplate: judgeTemplate(steps), repoTools: { root: refutation!.workspace, steps } }
       : { effort, timeoutMs: JUDGE_TIMEOUT_MS, promptTemplate: judgeTemplate(0) },
   });
   const judge = ({ systemPrompt, options }: ReturnType<typeof judgeCall>) => sendWithParseRetry(
@@ -1234,8 +1232,9 @@ export async function runJudgeAgent(
   try {
     judgeResult = await judge(call);
   } catch (error) {
-    // A judge with tools can run out of turns or time, so it grades once more the way it does without them.
-    if (toolSteps === 0 || error instanceof QuotaError) throw error;
+    // A judge with tools can run out of turns or time, so it grades once more the way it does without them. A used-up
+    // quota or a refusal, which already moved to the fallback, would fail again.
+    if (toolSteps === 0 || error instanceof QuotaError || error instanceof RefusalError) throw error;
     core.warning(`The judge with tools failed (${error}), grading once more without tools`);
     call = judgeCall(0);
     judgeResult = await judge(call);

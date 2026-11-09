@@ -21,7 +21,7 @@ import {
   JudgedFinding,
   MAX_INTER_ROUND_DIFF_CHARS,
 } from './judge';
-import { LLMClient, QuotaError, SendMessageOptions } from './providers';
+import { LLMClient, QuotaError, RefusalError, SendMessageOptions } from './providers';
 import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
@@ -1300,7 +1300,7 @@ describe('runJudgeAgent', () => {
     }
   });
 
-  it('grades once more without tools when the judge with tools fails, but never on a used-up quota', async () => {
+  it('grades once more without tools when the judge with tools fails, but never on a used-up quota or a refusal', async () => {
     const reply = { content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', severity: 'warning', reasoning: 'r', confidence: 'high' }] }) };
     const refuter = { repoTools: true, sendMessage: jest.fn() } as unknown as LLMClient;
     const input: JudgeInput = {
@@ -1314,10 +1314,13 @@ describe('runJudgeAgent', () => {
     expect(again[0]).not.toContain('## Your Tools');
     expect(again[2]).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.not.stringContaining('## Your Tools') });
 
-    mockSendMessage.mockReset();
-    mockSendMessage.mockRejectedValueOnce(new QuotaError('rate limited', 'requests'));
-    await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toThrow('rate limited');
-    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    // A used-up quota fails again, and a refusal already moved to the fallback model.
+    for (const error of [new QuotaError('rate limited', 'requests'), new RefusalError('refused twice', 'cyber')]) {
+      mockSendMessage.mockReset();
+      mockSendMessage.mockRejectedValueOnce(error);
+      await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toThrow(error.message);
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('passes effort option to sendMessage', async () => {
