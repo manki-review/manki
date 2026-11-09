@@ -421,6 +421,35 @@ function parseArgs(args: string[]): { owner: string; repo: string; last: number 
   return owner && repo && rest.length === 0 && Number.isInteger(last) && last > 0 ? { owner, repo, last } : undefined;
 }
 
+type Octokit = ReturnType<typeof github.getOctokit>;
+
+/** A merged pull request as `pulls.list` returns it. */
+export type MergedPr = Awaited<ReturnType<Octokit['rest']['pulls']['list']>>['data'][number] & { merged_at: string };
+
+/** Returns the `last` most recently merged pull requests of the repository, newest first. */
+export async function listMergedPrs(octokit: Octokit, owner: string, repo: string, last: number): Promise<MergedPr[]> {
+  const merged: MergedPr[] = [];
+  // A merged PR is updated no earlier than it merged, so once a page reaches PRs updated before the last of the newest
+  // `last` merges, no later page holds a newer merge.
+  for await (const { data } of octokit.paginate.iterator(octokit.rest.pulls.list, { owner, repo, state: 'closed', sort: 'updated', direction: 'desc', per_page: 100 })) {
+    merged.push(...data.filter((p): p is MergedPr => !!p.merged_at));
+    merged.sort((a, b) => b.merged_at.localeCompare(a.merged_at));
+    const oldestUpdate = data.at(-1)?.updated_at;
+    if (merged.length >= last && oldestUpdate && oldestUpdate < merged[last - 1].merged_at) break;
+  }
+  return merged.slice(0, last);
+}
+
+/** Reads the round records, reply records, approvals and thread comments of one pull request. */
+export async function fetchPrRecords(octokit: Octokit, owner: string, repo: string, number: number): Promise<PrRecords> {
+  const [reviews, threadComments, issueComments] = await Promise.all([
+    octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: number, per_page: 100 }),
+    octokit.paginate(octokit.rest.pulls.listReviewComments, { owner, repo, pull_number: number, per_page: 100 }),
+    octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 }),
+  ]);
+  return prRecords(`${owner}/${repo}`, number, { reviews, threadComments, issueComments });
+}
+
 async function main(args: string[]): Promise<number> {
   const parsed = parseArgs(args);
   if (!parsed) {
@@ -429,25 +458,8 @@ async function main(args: string[]): Promise<number> {
   }
   const { owner, repo, last } = parsed;
   const octokit = github.getOctokit(githubToken());
-  const merged: Array<{ number: number; merged_at: string }> = [];
-  // A merged PR is updated no earlier than it merged, so once a page reaches PRs updated before the last of the newest
-  // `last` merges, no later page holds a newer merge.
-  for await (const { data } of octokit.paginate.iterator(octokit.rest.pulls.list, { owner, repo, state: 'closed', sort: 'updated', direction: 'desc', per_page: 100 })) {
-    merged.push(...data.flatMap(p => (p.merged_at ? [{ number: p.number, merged_at: p.merged_at }] : [])));
-    merged.sort((a, b) => b.merged_at.localeCompare(a.merged_at));
-    const oldestUpdate = data.at(-1)?.updated_at;
-    if (merged.length >= last && oldestUpdate && oldestUpdate < merged[last - 1].merged_at) break;
-  }
-  const numbers = merged.slice(0, last).map(p => p.number);
   const prs: PrRecords[] = [];
-  for (const number of numbers) {
-    const [reviews, threadComments, issueComments] = await Promise.all([
-      octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: number, per_page: 100 }),
-      octokit.paginate(octokit.rest.pulls.listReviewComments, { owner, repo, pull_number: number, per_page: 100 }),
-      octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 }),
-    ]);
-    prs.push(prRecords(`${owner}/${repo}`, number, { reviews, threadComments, issueComments }));
-  }
+  for (const { number } of await listMergedPrs(octokit, owner, repo, last)) prs.push(await fetchPrRecords(octokit, owner, repo, number));
   process.stdout.write(renderStats(computeStats(prs), `${owner}/${repo}`));
   return 0;
 }

@@ -11,7 +11,7 @@ body: |
   - `stop()` joins them after releasing the `sync_loop` lock, which they take themselves. With the loop already taken, they return without acting.
 
   Closes upstream issue 1171
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: blocker
@@ -28,3 +28,13 @@ nice_to_have:
     severity: nitpick
     mechanism: "Style: the `Arc::clone` and the new `use std::sync::Arc` in `sync_coordinator.rs` are unneeded, the new `detached_tasks` field has no doc comment, and the test uses inline paths (`std::time::Duration`, `tokio::time::sleep`)."
     locations: ["dash-spv/src/client/sync_coordinator.rs", "dash-spv/src/client/mod.rs"]
+  - id: N3
+    severity: suggestion
+    mechanism: "The `JoinSet` of detached tasks is drained only by `stop`."
+    locations: ["dash-spv/src/client/core.rs", "detached_tasks"]
+    source: "owner /check review"
+  - id: N4
+    severity: nitpick
+    mechanism: "The test duplicates its client setup."
+    locations: ["dash-spv/src/client/mod.rs", "stop_waits_for_detached_tasks"]
+    source: "owner /check review"

@@ -39,7 +39,7 @@ body: |
   Both cases fail on `dev`: BIP44 still holds X, and the balance is 1,300,000 instead of 800,000.
 
   `a_payment_the_reverse_external_chain_also_matches_stays_ours`: a wallet holding both identities of a friendship derives the same addresses for its DashPay receiving chain and for the reverse external chain. A payment to one of them stays in the receiving account and counts in the balance.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: blocker
@@ -60,3 +60,23 @@ nice_to_have:
     mechanism: "The `is_instantlocked`, `is_trusted` and `is_locked` flag merge in the settle pass duplicates the merge in `ManagedCoreFundsAccount::update_utxos`."
     locations: ["key-wallet/src/managed_account/managed_account_collection.rs", "update_utxos", "is_instantlocked"]
     fix: "f233dcc96"
+  - id: N3
+    severity: suggestion
+    mechanism: "The carry-over of the `is_instantlocked`, `is_trusted` and `is_locked` flags to the owner's copy is untested."
+    locations: ["key-wallet/src/managed_account/managed_account_collection.rs", "is_instantlocked"]
+    source: "owner /check review"
+  - id: N4
+    severity: suggestion
+    mechanism: "The same settle loop is pasted into two branches of `check_core_transaction` instead of shared."
+    locations: ["key-wallet/src/transaction_checking/wallet_checker.rs", "settle_outputs_held_elsewhere"]
+    source: "owner /check review"
+  - id: N5
+    severity: nitpick
+    mechanism: "The new test `an_output_held_by_another_funds_account_moves_to_its_owner` uses inline `crate::` paths instead of imports."
+    locations: ["key-wallet/src/transaction_checking/wallet_checker.rs", "an_output_held_by_another_funds_account_moves_to_its_owner"]
+    source: "owner /check review"
+  - id: N6
+    severity: warning
+    mechanism: "A copy held only by an account that does not own its address is never moved to the owning account."
+    locations: ["key-wallet/src/managed_account/managed_account_collection.rs", "settle_outputs_held_elsewhere"]
+    source: "owner /check review"

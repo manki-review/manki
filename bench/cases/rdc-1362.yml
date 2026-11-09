@@ -74,13 +74,18 @@ body: |
   - **Changed:** `dashcore` decodes vector and string lengths, and the `headers` and `headers2` counts, with Dash Core's `ReadCompactSize` range: above `MAX_COMPACT_SIZE` (32 MiB, new constant) is an error. Below it, `Vec<T>`, `Vec<u8>`, `Box<[u8]>`, `String` and `Cow<str>` decode through `consensus_decode` as well as `deserialize`.
   - **Changed:** `MAX_MSG_SIZE` is Dash Core's `MAX_PROTOCOL_MESSAGE_LENGTH`, 3 MiB (was 5,000,000 bytes). A message whose header announces a longer payload is refused on the length field.
   - **Fixed:** a CbTx with `bestCLHeightDiff` above `MAX_SIZE` fails to decode, as in Dash Core.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: blocker
     mechanism: "Removing the `MAX_VEC_SIZE` `Take` from the streaming `Vec<T>` decode unbinds memory from bytes read for types larger in memory than on the wire: a `Vec<Vec<u8>>` of empty vectors costs 1 byte on the wire and 24 in memory, about 768 MB from an unbounded reader. Upstream restored a bytes-read budget."
     locations: ["dash/src/consensus/encode.rs", "MAX_VEC_SIZE", "consensus_decode"]
     fix: "3d9b037b7"
+  - id: K2
+    severity: blocker
+    mechanism: "The PR lowers `MAX_MSG_SIZE` to 3 MiB, but Dash Core applies that limit only to messages it receives and sends QRINFO with no size check. Core sends the legacy reply, with each list built from genesis, when the peers' common protocol version is below `EFFICIENT_QRINFO_VERSION` (70236), and dash-spv admits peers by their services only, never their version. The mainnet fixture `dash/tests/data/test_DML_diffs/QR_INFO_0_2224359.hex` holds 5 full lists in 2,631,577 bytes, so a 6-list reply (`extra_share`) from a pre-70236 peer is about 3.16 MB, over the new cap, and dash-spv refuses it."
+    locations: ["dash/src/network/message.rs", "MAX_MSG_SIZE", "dash-spv/src/network/peer.rs", "QRInfo"]
+    source: "owner /check review"
 nice_to_have:
   - id: N1
     severity: suggestion
@@ -96,3 +101,23 @@ nice_to_have:
     severity: nitpick
     mechanism: "Repository conventions in `AGENTS.md`: Core `file:line` and commit references in comments, fully qualified paths instead of imports, a `use` inside a function, and numeric literal type suffixes."
     locations: ["dash/src/consensus/encode.rs", "dash/src/network/message.rs", "dash/src/network/message_headers2.rs", "dash/src/blockdata/transaction/special_transaction/coinbase.rs"]
+  - id: N4
+    severity: suggestion
+    mechanism: "The CbTx decoder re-implements the `MAX_COMPACT_SIZE` range check for `bestCLHeightDiff`."
+    locations: ["dash/src/blockdata/transaction/special_transaction/coinbase.rs", "MAX_COMPACT_SIZE"]
+    source: "owner /check review"
+  - id: N5
+    severity: suggestion
+    mechanism: "The new `headers` and `headers2` count tests sit beside near-identical existing tests instead of extending them."
+    locations: ["dash/src/network/message.rs", "dash/src/network/message_headers2.rs"]
+    source: "owner /check review"
+  - id: N6
+    severity: warning
+    mechanism: "Without the `MAX_VEC_SIZE` budget, the dash-spv storage migrator can read up to 32 MiB for one corrupt length in stored data."
+    locations: ["dash-spv/src/storage/migrator"]
+    source: "owner /check review"
+  - id: N7
+    severity: nitpick
+    mechanism: "The `Decodable` trait doc no longer matches how `Vec<T>` decodes."
+    locations: ["dash/src/consensus/encode.rs", "consensus_decode"]
+    source: "owner /check review"

@@ -32,6 +32,8 @@ export interface KeyItem {
   locations: string[];
   /** The commit that fixed it upstream, for whoever checks the key. */
   fix?: string;
+  /** Who found it, when not the upstream review, such as another review run. */
+  source?: string;
 }
 
 export interface BenchCase {
@@ -73,12 +75,14 @@ function parseItems(raw: unknown, field: string, file: string): KeyItem[] {
     const locations = item.locations ?? [];
     if (!Array.isArray(locations) || locations.some(l => typeof l !== 'string' || !l.trim())) throw caseError(file, `${where}.locations must be a list of strings`);
     if (item.fix !== undefined && typeof item.fix !== 'string') throw caseError(file, `${where}.fix must be a string`);
+    if (item.source !== undefined && typeof item.source !== 'string') throw caseError(file, `${where}.source must be a string`);
     return {
       id: requireString(item, 'id', `${file} ${where}`),
       severity: severity as KeySeverity,
       mechanism: requireString(item, 'mechanism', `${file} ${where}`),
       locations: locations as string[],
       ...(typeof item.fix === 'string' && { fix: item.fix }),
+      ...(typeof item.source === 'string' && { source: item.source }),
     };
   });
 }
