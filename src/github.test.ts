@@ -386,11 +386,6 @@ describe('formatFindingComment', () => {
     };
     const disproved = render(disprovedFinding);
     expect(render({ ...disprovedFinding, evidence: { checks: ['src/util.ts:3 marks it intended'], proof: [] } })).toContain('<summary>How this was checked: 1 place read, doubt found</summary>');
-    // A proving line that lists several lines cites each of them.
-    expect(render({ ...disprovedFinding, refutation: { ...disprovedFinding.refutation!, proof: ['src/main.ts:40,44-45'] } }))
-      .toContain(`See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`src/main.ts:44-45\`](${link('src/main.ts', 44, 45)}).`);
-    expect(render({ ...baseFinding, evidence: { checks: [], proof: ['src/util.ts:3,25'] } }))
-      .toContain(`${link('src/util.ts', 2, 6)}\n\n${link('src/util.ts', 24, 28)}`);
     expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}).`);
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');

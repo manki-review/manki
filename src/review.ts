@@ -1919,8 +1919,8 @@ function preExistingOf(f: Record<string, unknown>): Pick<Finding, 'preExisting'>
 
 const EVIDENCE_LINE_CHARS = 300;
 const MAX_EVIDENCE_LINES = 10;
-// A location as `path:line` or `path:start-end`, at the start of a proof entry.
-const PROOF_LOCATION = /^[^\s:]+:\d+(?:-\d+)?(?!\w)/;
+// A location as `path:line` or `path:start-end`, at the start of a proof entry, with any further lines or ranges after commas.
+const PROOF_LOCATION = /^([^\s:]+):(\d+(?:-\d+)?(?:, ?\d+(?:-\d+)?)*)(?!\w)/;
 
 function textOf(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, EVIDENCE_LINE_CHARS) : '';
@@ -1930,9 +1930,15 @@ function textLines(value: unknown): string[] {
   return Array.isArray(value) ? value.map(textOf).filter(line => line.length > 0).slice(0, MAX_EVIDENCE_LINES) : [];
 }
 
-/** Returns the `file:line` locations at the start of each entry of a `proof` list, and drops entries without one. */
+/**
+ * Returns the `file:line` locations at the start of each entry of a `proof` list, one for each line or range the entry
+ * lists, and drops entries without one.
+ */
 export function parseProof(value: unknown): string[] {
-  return textLines(value).flatMap(entry => entry.replace(/`/g, '').match(PROOF_LOCATION)?.[0] ?? []);
+  return textLines(value).flatMap(entry => {
+    const [, file, lines] = entry.replace(/`/g, '').match(PROOF_LOCATION) ?? [];
+    return file ? lines.split(/, ?/).map(range => `${file}:${range}`) : [];
+  });
 }
 
 /** Reads a reviewer entry's `evidence`, `proof` and `claimsMissing` with `emptySearch`, or returns `undefined` when it cites none. */
