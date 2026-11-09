@@ -609,7 +609,13 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   // Placing a use on its type parses the files that hold it. That runs last, so a file it leaves unparsed hides no type,
   // field or lookup and is not counted.
   const unparsed = parser.skipped;
-  const otherType = (symbol: ChangedSymbol, hit: Hit) => symbol.kind === 'field' && !!symbol.owner && !!parser.parse(hit.file)?.readsOtherType(symbol.name, hit.line, symbol.owner);
+  // A use is another type's only when neither that type nor the field's own may derive from the other, as far as the file
+  // declaring each tells, since a base class's own reads of a field its subclass overrides read the subclass's value.
+  const otherType = (symbol: ChangedSymbol, hit: Hit) => {
+    if (symbol.kind !== 'field' || !symbol.owner) return false;
+    const other = parser.parse(hit.file)?.otherTypeAt(symbol.name, hit.line, symbol.owner);
+    return other !== undefined && parser.parse(symbol.file)?.mayDeriveFrom(symbol.owner, other) === false;
+  };
   const { blocks: sections, symbols: listed, common, capped } = formatSymbolUses(
     searched, hits.filter(hit => !touched.get(hit.file)?.has(hit.line)), packages, new Set(redefined.keys()), typeFiles, otherType,
   );
@@ -1137,13 +1143,13 @@ class ParsedFile {
   }
 
   /**
-   * Whether every `name` on `line` is a field of one type other than `owner`: the line declares that type's field, or
-   * reads it as `self.name` in a method of a type that declares its own `name`. A type that may derive from `owner`
+   * Returns the type other than `owner` whose field `name` is every `name` on `line`: the line declares that type's field,
+   * or reads it as `self.name` in a method of a type that declares its own `name`. A type that may derive from `owner`
    * counts as `owner`, and a read the parser cannot place, such as `x.name` on a local, counts as a use of `owner`.
    */
-  readsOtherType(name: string, line: number, owner: string): boolean {
+  otherTypeAt(name: string, line: number, owner: string): string | undefined {
     const text = this.lines[line - 1] ?? '';
-    if (text.length > MAX_REFERENCE_LINE_CHARS) return false;
+    if (text.length > MAX_REFERENCE_LINE_CHARS) return undefined;
     const code = text.replace(COMMENT, '');
     const word = wordPattern([name]);
     const total = code.match(new RegExp(word.source, 'g'))?.length ?? 0;
@@ -1157,7 +1163,7 @@ class ParsedFile {
       const reads = method ? code.match(new RegExp(`(?<![\\w$])${escapeRegExp(method.self!)}\\s*\\??\\.\\s*${word.source}`, 'g'))?.length ?? 0 : 0;
       if (method && reads > 0 && reads === total && this.ownFields.has(`${method.owner}.${name}`)) other = method.owner;
     }
-    return other !== undefined && !this.mayDeriveFrom(other, owner);
+    return other !== undefined && !this.mayDeriveFrom(other, owner) ? other : undefined;
   }
 
   /**
@@ -1165,7 +1171,7 @@ class ParsedFile {
    * `MAX_LINEAGE` of them. A base declared in another file may derive from `owner`, and so may a type whose bases
    * `allBases` cannot read. A standard base such as `Exception` is followed no further.
    */
-  private mayDeriveFrom(name: string, owner: string): boolean {
+  mayDeriveFrom(name: string, owner: string): boolean {
     const lineage = [name];
     for (let i = 0; i < lineage.length; i++) {
       const type = this.typesByName.get(lineage[i]);

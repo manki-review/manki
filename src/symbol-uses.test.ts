@@ -143,6 +143,15 @@ describe('listUsesOutsideDiff', () => {
       expect(section).not.toMatch(/AccountView|this\.balance|self\.balance$|v\.Balance/m);
     }
 
+    // A base class's own reads of a field its changed subclass overrides read the subclass's value, while an unrelated
+    // class's own field is still left out.
+    const models = (value: string) => `class Account:\n    def __init__(self):\n        self.balance = 0\n\n    def total(self):\n        return self.balance\n\n\nclass Savings(Account):\n    def __init__(self):\n        self.balance = ${value}\n`;
+    const overridden = await usesFor(
+      { 'app/models.py': models('1'), 'app/report.py': 'class Report:\n    def __init__(self):\n        self.balance = 0\n' },
+      { 'app/models.py': models('1.5') },
+    );
+    expect(overridden.record?.symbols?.find(s => s.name === 'balance')).toEqual({ name: 'balance', declared: 'app/models.py:11', uses: ['app/models.py:3', 'app/models.py:6'] });
+
     // With no other file to show, one file fills the list.
     const alone = await usesFor(
       { 'src/account.rs': 'pub struct Account {\n    pub balance: u64,\n}\n', 'src/ledger.rs': reads(i => `pub fn read_${i}(a: &Account) -> u64 {\n    a.balance\n}\n`) },
