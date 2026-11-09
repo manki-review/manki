@@ -105,7 +105,7 @@ describe('listUsesOutsideDiff', () => {
       {
         changed: 'app/account.py', before: 'class Account:\n    balance: int = 0\n', after: 'class Account:\n    balance: float = 0.0\n',
         ledger: 'app/ledger.py', report: 'app/report.py',
-        ledgerText: `from .account import Account\n\n${reads(i => `def read_${i}(a: Account):\n    return a.balance\n`)}\nclass ViewBase:\n    pass\n\n\nclass AccountView(ViewBase):\n    def __init__(self):\n        self.balance = 0\n\n    def shown(self):\n        return self.balance\n\n\n`
+        ledgerText: `from .account import Account\n\n${reads(i => `def read_${i}(a: Account):\n    return a.balance\n`)}\nclass ViewBase:\n    pass\n\n\nclass AccountView(ViewBase):\n    def __init__(self):\n        self.balance = 0\n\n    def shown(self):\n        class Row:\n            def cell(self):\n                return 0\n        return self.balance\n\n\n`
           + ['Savings(Account)', 'Premium(Savings)', 'Imported(Remote)', `Wide(${Array.from({ length: 8 }, (_, i) => `Part${i}`).join(', ')}, Account)`, 'Made(mixin(Account))']
             .map((c, i) => `class ${c}:\n    def __init__(self):\n        self.balance = ${i}\n`).join('\n\n')
           + Array.from({ length: 8 }, (_, i) => `\n\nclass Part${i}:\n    pass\n`).join(''),
@@ -113,7 +113,7 @@ describe('listUsesOutsideDiff', () => {
         shown: (n: number) => `app/ledger.py:${3 * n + 4}: return a.balance`, reportLine: 'app/report.py:2: return event.holder.balance',
         // A subclass's own field is the changed field, overridden, and so is one whose bases may derive from the changed
         // type: a base declared elsewhere, more bases than are read, or one that is no plain name.
-        extra: [32, 37, 42, 47, 52].map((line, i) => `app/ledger.py:${line}: self.balance = ${i}`),
+        extra: [35, 40, 45, 50, 55].map((line, i) => `app/ledger.py:${line}: self.balance = ${i}`),
       },
       {
         changed: 'src/account.ts', before: 'export interface Account {\n  balance: number;\n}\n', after: 'export interface Account {\n  balance: bigint;\n}\n',
@@ -600,15 +600,22 @@ ${body}	return true
     expect(section).toContain('The limit of 200 parsed files or 16 MB per round left 10 more files unparsed, so types, fields and lookups in them are not listed.');
     expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the parse limit left 10 files unparsed');
 
-    // A field too common to list never spends the budget that placing the redefined field's uses on their types needs.
-    const account = (balance: string) => `pub struct Account {\n    pub balance: ${balance},\n    pub total_paid: u64,\n}\n`;
-    const readers = Object.fromEntries(Array.from({ length: 210 }, (_, i) => [`src/r${String(i).padStart(3, '0')}.rs`, 'pub fn paid(a: &Account) -> u64 {\n    a.total_paid\n}\n']));
+    // Placing uses on their types parses files within the same budget. The redefined `balance` is checked first, although
+    // three new fields declared before it are read in 210 files. A field too common to list is not checked, so `spent`,
+    // declared after it, still is. A namesake of either in a file left unparsed would be listed.
+    const fields = ['total_paid', 'spent', 'owed', 'held', 'kept'].map(f => `    pub ${f}: u64,\n`).join('');
+    const account = (head: boolean) => `pub struct Account {\n${head ? fields : ''}    pub balance: ${head ? 'i64' : 'u64'},\n}\n`;
+    const readers = Object.fromEntries(Array.from({ length: 210 }, (_, i) => [
+      `src/r${String(i).padStart(3, '0')}.rs`, `pub fn paid(a: &Account) -> u64 {\n    a.total_paid + a.${['owed', 'held', 'kept'][Math.floor(i / 70)]}\n}\n`,
+    ]));
     const budget = await usesFor({
-      ...readers, 'src/account.rs': account('u64'), 'src/use.rs': 'pub fn left(a: &Account) -> u64 {\n    a.balance\n}\n', 'src/view.rs': 'pub struct AccountView {\n    pub balance: u64,\n}\n',
-    }, { 'src/account.rs': account('i64') });
+      ...readers, 'src/account.rs': account(false), 'src/use.rs': 'pub fn left(a: &Account) -> u64 {\n    a.balance + a.spent\n}\n',
+      'src/view.rs': 'pub struct AccountView {\n    pub balance: u64,\n}\n', 'src/z_other.rs': 'pub struct Other {\n    pub spent: u64,\n}\n',
+    }, { 'src/account.rs': account(true) });
     expect(budget.section).toContain('`total_paid` (210 uses)');
-    expect(budget.section).toContain('src/use.rs:2: a.balance');
-    expect(budget.section).not.toContain('src/view.rs');
+    expect(budget.section).toContain('### `balance` (field of `Account`)\n\n```\ndeclared at src/account.rs:7\nsrc/use.rs:2: a.balance + a.spent\n```');
+    expect(budget.section).toContain('### `spent` (field of `Account`)\n\n```\ndeclared at src/account.rs:3\nsrc/use.rs:2: a.balance + a.spent\n```');
+    expect(budget.section).not.toMatch(/src\/view\.rs|src\/z_other\.rs/);
   }, 30_000);
 
   const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };

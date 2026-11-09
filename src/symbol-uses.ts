@@ -897,9 +897,10 @@ class ParsedFile {
   private readonly ownFields = new Set<string>();
   /** The types and enum variants this file declares, the first of each name. */
   private readonly typesByName = new Map<string, Declaration>();
-  /** The methods that name their receiver, by first line, and their first lines. */
+  /** The methods that name their receiver, by first line, their first lines, and the index of the one around each. */
   private readonly selfMethods: Method[];
   private readonly selfStarts: number[];
+  private readonly enclosing: number[] = [];
   private readonly listings = new Map<string, Omit<StructListing, 'file'> | undefined>();
   private readonly groups = new Map<string, number>();
   private readonly marked = new Map<number, boolean>();
@@ -930,6 +931,12 @@ class ParsedFile {
     this.methods = this.findMethods();
     this.selfMethods = this.methods.filter(m => m.self).sort((a, b) => a.decl.start - b.decl.start);
     this.selfStarts = this.selfMethods.map(m => m.decl.start);
+    const open: number[] = [];
+    this.selfMethods.forEach((method, i) => {
+      while (open.length > 0 && this.selfMethods[open.at(-1)!].decl.end < method.decl.start) open.pop();
+      this.enclosing.push(open.at(-1) ?? -1);
+      open.push(i);
+    });
     const accesses = touched.size > 0 && rules.access ? root.root().findAll({ rule: { kind: rules.access.kind } }) : [];
     this.reads = this.fieldReads(accesses, touched);
     this.lookups = this.collectionLookups(accesses, touched);
@@ -1176,10 +1183,11 @@ class ParsedFile {
     return this.lineageBases.get(scope.id());
   }
 
-  /** Returns the method of `selfMethods` that holds `line`, the last one starting at or before it. */
+  /** Returns the innermost method of `selfMethods` that holds `line`, such as the one around a nested class's method. */
   private methodAt(line: number): Method | undefined {
-    const method = this.selfMethods[firstAtOrAfter(this.selfStarts, line + 1) - 1];
-    return method && method.decl.end >= line ? method : undefined;
+    let i = firstAtOrAfter(this.selfStarts, line + 1) - 1;
+    while (i >= 0 && this.selfMethods[i].decl.end < line) i = this.enclosing[i];
+    return i >= 0 ? this.selfMethods[i] : undefined;
   }
 }
 
