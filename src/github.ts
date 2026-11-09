@@ -1077,7 +1077,8 @@ const MAX_RECORD_CHARS = REVIEW_BODY_BUDGET - 10000;
 /**
  * Returns the hidden stats line and round record that end a review. The record is plain JSON when
  * it fits in `room` characters, and compressed otherwise. A record over `MAX_RECORD_CHARS` even
- * compressed is posted without its bulky diagnostics, and the full record goes to the log.
+ * compressed is posted without its bulky diagnostics, and the full record goes to the log. The raw
+ * findings and the uses outside the diff are kept in short form while that fits.
  */
 function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: number): string {
   const stats = `\n\n${formatStatsOneLiner(context, reviewTimeMs)}\n`;
@@ -1086,11 +1087,12 @@ function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: 
 
   core.warning(`The round record takes ${record.length} characters even compressed, so the review carries it without per-file and per-finding diagnostics. The full record follows in the log.`);
   core.info(formatReviewRecord(context));
-  const slim = formatReviewRecord(omitBulkyDiagnostics(context), room - stats.length);
-  if (stats.length + slim.length > MAX_RECORD_CHARS) {
-    throw new Error(`The round record takes ${slim.length} characters even without its diagnostics, too many for a review body`);
+  let slim = '';
+  for (const keepTraces of [true, false]) {
+    slim = formatReviewRecord(omitBulkyDiagnostics(context, keepTraces), room - stats.length);
+    if (stats.length + slim.length <= MAX_RECORD_CHARS) return `${stats}${slim}`;
   }
-  return `${stats}${slim}`;
+  throw new Error(`The round record takes ${slim.length} characters even without its diagnostics, too many for a review body`);
 }
 
 /** The icon that opens a finding comment or a finding listed in the review body. */

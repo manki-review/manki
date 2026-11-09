@@ -488,7 +488,7 @@ export interface NeedsHuman {
   blockers: VerdictTraceEntry[];
 }
 
-export type VerdictReason = 'required_present' | 'prior_unaddressed' | 'only_nit_or_suggestion' | 'verdict_reader';
+export type VerdictReason = 'required_present' | 'prior_unaddressed' | 'warnings_present' | 'only_nit_or_suggestion' | 'verdict_reader';
 
 /** The verdict reader's answer on a round where no finding blocked. */
 export interface VerdictReport {
@@ -1262,9 +1262,14 @@ export interface RoundMeta {
   draft?: boolean;
   /**
    * Set when the record was too large for the review even compressed: the fields of per-file and per-finding
-   * diagnostics that were left out, such as `reviewers.rawFindings`.
+   * diagnostics that were left out, such as `judge.dropped`.
    */
   omitted?: string[];
+  /**
+   * Set when such a record kept `reviewers.rawFindings` with only titles, locations, severities and reviewers, and
+   * `usesOutsideDiff` with `types` cut to their locations: the fields it shortened.
+   */
+  compacted?: string[];
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */
@@ -1479,7 +1484,8 @@ export interface RoundRawFinding {
   line: number;
   severity: FindingSeverity;
   reviewers: string[];
-  description: string;
+  /** Left out, as are `suggestedFix`, `evidence`, `notChecked` and `lead`, when the record was compacted to fit the review. */
+  description?: string;
   suggestedFix?: string;
   evidence?: FindingEvidence;
   notChecked?: boolean;

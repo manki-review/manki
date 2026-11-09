@@ -1379,6 +1379,8 @@ export async function runReview(
         outcome = 'ADDRESS_FIRST';
         verdictReason = 'verdict_reader';
         verdictTrace = { survivingBlockers: readerFindings.filter(f => f.severity === 'blocker').map(findingToTraceEntry), unresolvedPriors: [] };
+      } else {
+        verdictReason = readyReason(finalFindings);
       }
     }
   }
@@ -2070,7 +2072,8 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  * Decision order:
  *   1. any surviving `blocker` finding → ADDRESS_FIRST / required_present
  *   2. any prior-round `blocker` still unresolved → ADDRESS_FIRST / prior_unaddressed
- *   3. otherwise (only warnings, suggestions and nitpicks, or empty) → READY / only_nit_or_suggestion
+ *   3. otherwise, with a `warning` among the findings → READY / warnings_present
+ *   4. otherwise (only suggestions and nitpicks, or empty) → READY / only_nit_or_suggestion
  *
  * `verdictTrace.unresolvedPriors` lists the unresolved priors under either reason. A prior that
  * a surviving blocker names again (`sameAs`) or sits on, by thread, is left out: that blocker carries it.
@@ -2165,7 +2168,12 @@ export function determineOutcome(
 
   if (blockers.length > 0) return { outcome: 'ADDRESS_FIRST', verdictReason: 'required_present', verdictTrace };
   if (unresolvedPriors.length > 0) return { outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed', verdictTrace };
-  return { outcome: 'READY', verdictReason: 'only_nit_or_suggestion', verdictTrace };
+  return { outcome: 'READY', verdictReason: readyReason(findings), verdictTrace };
+}
+
+/** Returns why a round where nothing blocks is `READY`: warnings among its findings, or only smaller ones. */
+function readyReason(findings: Finding[]): VerdictReason {
+  return findings.some(f => f.severity === 'warning') ? 'warnings_present' : 'only_nit_or_suggestion';
 }
 
 /**
@@ -2262,13 +2270,18 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
 /**
  * Folds each kept finding that names the problem of a verdict reader blocker into that blocker, so one problem gets one
  * thread. The blocker keeps its grade and takes the finding's reviewers and evidence. It takes the finding's fix only
- * when it has none and both sit on one line, since a one-line fix replaces the line its comment sits on.
+ * when it has none and both sit on one line, since a one-line fix replaces the line its comment sits on. A title the
+ * blocker's does not contain is added to its description, so a second defect folded in by mistake still shows.
  */
 function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { findings: Finding[]; blockers: Finding[] } {
   const merged = blockers.map(b => ({ ...b }));
+  // Match against the reader's own blocker, so a finding never folds in through what an earlier fold added.
   const kept = findings.filter(f => {
-    const blocker = merged.find(b => sameProblem(b, f));
-    if (!blocker) return true;
+    const index = blockers.findIndex(b => sameProblem(b, f));
+    if (index === -1) return true;
+    const blocker = merged[index];
+    const overlap = titleOverlapType(blocker.title, f.title);
+    if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}`;
     foldInto(blocker, f);
     if (!blocker.suggestedFix && f.suggestedFix && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
     if (f.tags?.includes(SECURITY_TAG) && !blocker.tags?.includes(SECURITY_TAG)) blocker.tags = [...(blocker.tags ?? []), SECURITY_TAG];
@@ -2279,23 +2292,37 @@ function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { fin
 }
 
 /**
- * Whether the findings `a` and `b` in one file name one problem. When one title contains the other, a few lines apart or
- * one citing the other's line is enough. Titles that only share words, which short titles do by chance, must both cite
- * the other's line.
+ * Whether the findings `a` and `b` in one file name one problem. A few lines apart with a proof line in common is enough,
+ * whatever the titles say. When one title contains the other, a few lines apart or one citing the other's line is
+ * enough. Titles that only share words, which short titles do by chance, must both cite the other's line.
  */
 function sameProblem(a: Finding, b: Finding): boolean {
-  const overlap = a.file === b.file ? titleOverlapType(a.title, b.title) : null;
+  if (a.file !== b.file) return false;
+  const near = Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
+  if (near && sharesProofLine(a, b)) return true;
+  const overlap = titleOverlapType(a.title, b.title);
   if (overlap === null) return false;
   if (overlap === 'word_overlap') return citesLineOf(a, b) && citesLineOf(b, a);
-  return citesLineOf(a, b) || citesLineOf(b, a) || Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
+  return citesLineOf(a, b) || citesLineOf(b, a) || near;
 }
 
-/** Whether `a` cites the line of `b` as proof, in a span no wider than `DISMISSED_LINE_TOLERANCE`. */
-function citesLineOf(a: Finding, b: Finding): boolean {
-  return (a.evidence?.proof ?? []).some(at => {
+/** Returns the locations `f` cites as proof in spans no wider than `DISMISSED_LINE_TOLERANCE`. A wider span proves no one line. */
+function narrowProof(f: Finding): Array<{ file: string; start: number; end: number }> {
+  return (f.evidence?.proof ?? []).flatMap(at => {
     const location = parseLocation(at);
-    return location?.file === b.file && location.start <= b.line && b.line <= location.end && location.end - location.start <= DISMISSED_LINE_TOLERANCE;
+    return location && location.end - location.start <= DISMISSED_LINE_TOLERANCE ? [location] : [];
   });
+}
+
+/** Whether `a` cites the line of `b` as proof. */
+function citesLineOf(a: Finding, b: Finding): boolean {
+  return narrowProof(a).some(at => at.file === b.file && at.start <= b.line && b.line <= at.end);
+}
+
+/** Whether `a` and `b` cite at least one common line as proof. */
+function sharesProofLine(a: Finding, b: Finding): boolean {
+  const cited = narrowProof(b);
+  return narrowProof(a).some(x => cited.some(y => x.file === y.file && x.start <= y.end && y.start <= x.end));
 }
 
 /**

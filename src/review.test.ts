@@ -249,7 +249,7 @@ describe('determineOutcome', () => {
 
   it('returns READY on warnings, security ones included', () => {
     const findings: Finding[] = [makeFinding({ severity: 'warning' }), makeFinding({ severity: 'warning', tags: ['security'], line: 20 })];
-    expect(determineOutcome(findings)).toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'only_nit_or_suggestion' }));
+    expect(determineOutcome(findings)).toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'warnings_present' }));
   });
 
   it('returns READY when there are only nitpicks', () => {
@@ -347,7 +347,7 @@ describe('determineOutcome', () => {
       for (const prior of priorWarnings) {
         for (const open of [[makeOpenThread({ severity: 'warning' })], null]) {
           expect(determineOutcome([warning, securityWarning, nitpick], prior, open))
-            .toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'only_nit_or_suggestion' }));
+            .toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'warnings_present' }));
         }
       }
 
@@ -2339,6 +2339,41 @@ describe('runReview', () => {
     expect(folded.findings[3]).not.toHaveProperty('suggestedFix');
     expect(folded.verdictTrace?.survivingBlockers.map(e => e.title)).toEqual(['`join` holds the `tasks` lock while it waits on them']);
 
+    // Two stages can word one defect differently. A kept finding a few lines from a reader blocker that cites a proof line
+    // the blocker cites too folds into it whatever the titles say, and the blocker's description keeps the other title.
+    // A finding as near without a common proof line stays, also one that shares a line only with the finding folded in,
+    // and so does one with a common proof line that sits far away.
+    const reworded = makeClients(JSON.stringify([{ severity: 'warning', title: 'Leak', file: 'src/a.ts', line: 40, description: 'Leaks.' }]));
+    mockedRunJudgeAgent.mockResolvedValueOnce({
+      summary: 'Four warnings.',
+      findings: [
+        {
+          severity: 'warning', title: 'Connection leaked on the error path', file: 'src/a.ts', line: 42, description: 'Leaks a socket.', reviewers: ['Finder A'],
+          evidence: { checks: [], proof: ['src/a.ts:41-43'] },
+        },
+        { severity: 'warning', title: 'Timeout is never applied', file: 'src/a.ts', line: 44, description: 'Hangs.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:44'] } },
+        { severity: 'warning', title: 'Buffer is never flushed', file: 'src/a.ts', line: 41, description: 'Loses data.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:41'] } },
+        { severity: 'warning', title: 'Retry count ignored', file: 'src/a.ts', line: 90, description: 'Retries forever.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:43'] } },
+      ],
+    });
+    jest.mocked(reworded.judge.sendMessage).mockResolvedValue({
+      content: JSON.stringify({
+        verdict: 'ADDRESS_FIRST',
+        blockers: [{ file: 'src/a.ts', line: 40, title: 'Close is skipped after an early return', description: 'The handle stays open.', proof: ['src/a.ts:40', 'src/a.ts:43'] }],
+        summary: 'Leak.', whatThisDoes: '', whatToTest: '',
+      }),
+    });
+    const relocated = await runReview(reworded, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    expect(relocated.findings).toEqual([
+      expect.objectContaining({ title: 'Timeout is never applied' }),
+      expect.objectContaining({ title: 'Buffer is never flushed' }),
+      expect.objectContaining({ title: 'Retry count ignored' }),
+      expect.objectContaining({
+        severity: 'blocker', line: 40, title: 'Close is skipped after an early return', reviewers: ['Verdict reader', 'Finder A'],
+        description: 'The handle stays open.\n\nAlso reported as: Connection leaked on the error path',
+      }),
+    ]);
+
     // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof keeps it a
     // blocker, and its reason shows under "How this was checked".
     const workspace = mkdtempSync(join(tmpdir(), 'manki-reader-refute-'));
@@ -2399,7 +2434,7 @@ describe('runReview', () => {
     const clients = makeClients();
     jest.mocked(clients.judge.sendMessage).mockResolvedValue({ content: reader([compileClaim]) });
     const alone = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '' });
-    expect([alone.outcome, alone.verdictReason]).toEqual(['READY', 'only_nit_or_suggestion']);
+    expect([alone.outcome, alone.verdictReason]).toEqual(['READY', 'warnings_present']);
     expect(alone.findings).toEqual([expect.objectContaining({
       severity: 'warning', title: 'Trait Encode not in scope', tags: ['unconfirmed-build-claim', 'follow-up'], toolEvidence: expect.objectContaining({ status: 'none' }),
     })]);
