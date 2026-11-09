@@ -262,6 +262,10 @@ jest.mock('./static-signals', () => ({
   collectStaticSignals: jest.fn().mockResolvedValue({ signals: [] }),
 }));
 
+jest.mock('./related-work', () => ({
+  findRelatedWork: jest.fn().mockResolvedValue({ items: [] }),
+}));
+
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
 import { buildRoundRecap } from './round-context';
 import type { ParsedDiff, PrState, ReviewConfig, RunMode } from './types';
@@ -286,6 +290,7 @@ import * as dispatchModule from './dispatch';
 import { RunCancelledError, stopWritesOn } from './abort';
 import * as fixRateModule from './fix-rate';
 import * as staticSignalsModule from './static-signals';
+import * as relatedWorkModule from './related-work';
 import { LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_BOT } from './test-utils';
 
 /**
@@ -3700,7 +3705,7 @@ describe('runFullReview orchestration', () => {
       expect(metadata?.config.memoryRepo).toBe(`skipped: ${reason}`);
     });
 
-    it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and the token service calls', async () => {
+    it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and work, and the token service calls', async () => {
       const blocker = { file: 'src/app.ts', line: 5, title: 'Bug', fingerprint: 'k' };
       const call = (stage: string, promptDigest: string, extra: Partial<LLMCall> = {}): LLMCall => ({
         stage, attempt: 1, promptDigest, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0, ...extra,
@@ -3718,6 +3723,13 @@ describe('runFullReview orchestration', () => {
         ],
         relatedRepos: [{ repo: 'o/r', status: 'fetched', durationMs: 900 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }],
         usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] },
+        relatedWork: {
+          items: [
+            { kind: 'pr', number: 20, title: 'Untrusted title', excerpt: 'Untrusted body', files: ['src/app.ts'], sharedFiles: 1, relation: 'duplicate', reason: 'Same change.' },
+            { kind: 'issue', number: 21, title: 'Other', excerpt: '' },
+          ],
+          skipped: ['issue search: rate limited or not permitted'],
+        },
         memoryLoaded: { learnings: 4, suppressions: 2 },
         memorySuppressed: [hidden],
         allJudgedFindings: [{
@@ -3760,6 +3772,11 @@ describe('runFullReview orchestration', () => {
       expect(rc.relatedRepos).toEqual([{ repo: 'o/r', status: 'fetched', durationMs: 900, reads: 6 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }]);
       expect(rc.usage.llmCalls?.[1]).toMatchObject({ relatedReads: { 'o/r': 1 } });
       expect(rc.usesOutsideDiff).toEqual({ symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] });
+      // The record keeps the classification but none of the other PRs' and issues' text.
+      expect(rc.relatedWork).toEqual({
+        candidates: [{ kind: 'pr', number: 20, sharedFiles: 1, relation: 'duplicate', reason: 'Same change.' }, { kind: 'issue', number: 21 }],
+        skipped: ['issue search: rate limited or not permitted'],
+      });
       expect(rc.diff.changedSinceLastRound).toBe(2);
       expect(rc.judge.fixClaimedThreads).toEqual(['T1']);
       expect(rc.findings.unposted?.[0].preExisting).toEqual({ reason: 'The helper was long before this PR.', check: 'pre_existing' });
@@ -5078,7 +5095,7 @@ describe('runFullReview orchestration', () => {
     });
   }
 
-  it('handles inter-round diff fetch rejection while linked issues fetch fulfills', async () => {
+  it('handles inter-round diff fetch rejection while linked issues and related work fetches fulfill', async () => {
     // Promise.allSettled isolates failures: a rejected diffPromise must not
     // cancel the linked-issues fetch, and `interRoundDiff` must remain
     // undefined so the judge's known-empty override does not engage.
@@ -5087,6 +5104,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.fetchLinkedIssues).mockResolvedValue([
       { number: 7, title: 'Linked issue', body: 'Issue body' },
     ]);
+    const relatedWork = { items: [{ kind: 'issue' as const, number: 9, title: 'Open issue', excerpt: '' }], skipped: ['open PRs: GraphQL down'] };
+    jest.mocked(relatedWorkModule.findRelatedWork).mockResolvedValueOnce(relatedWork);
 
     await callRunFullReview();
 
@@ -5101,6 +5120,10 @@ describe('runFullReview orchestration', () => {
     expect(runReviewArgs.linkedIssues).toEqual([
       { number: 7, title: 'Linked issue', body: 'Issue body' },
     ]);
+    expect(runReviewArgs.relatedWork).toBe(relatedWork);
+    expect(relatedWorkModule.findRelatedWork).toHaveBeenCalledWith(expect.anything(), {
+      owner: 'test-owner', repo: 'test-repo', prNumber: 42, title: 'Test PR', body: 'Test body', diff: expect.objectContaining({ files: [expect.objectContaining({ path: 'src/app.ts' })] }),
+    });
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('so every finding counts as new'));
   });
 
