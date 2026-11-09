@@ -337,15 +337,30 @@ export async function readConfigFile(
 
 const MAX_RESOLVE_DEPTH = 3;
 
+/** Reads a repository's files at one commit. */
+export interface RepoFiles {
+  /** Returns a file's content, or null when no file is at `path`. Throws when it cannot be read. */
+  read(path: string): Promise<string | null>;
+  /** Returns the path of every file in the tree. */
+  list(): Promise<string[]>;
+}
+
+function githubRepoFiles(octokit: Octokit, owner: string, repo: string, ref: string): RepoFiles {
+  return {
+    read: (path) => readConfigFile(octokit, owner, repo, ref, path),
+    list: async () => {
+      const { data } = await octokit.rest.git.getTree({ owner, repo, tree_sha: ref, recursive: 'true' });
+      return data.tree.filter(e => e.type === 'blob' && e.path).map(e => e.path!);
+    },
+  };
+}
+
 /**
- * Resolve `@path/to/file.md` references in instruction file content by fetching
+ * Resolve `@path/to/file.md` references in instruction file content by reading
  * the referenced files from the repo and inlining their content.
  */
 async function resolveReferences(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  ref: string,
+  files: RepoFiles,
   content: string,
   basePath: string,
   depth: number = 0,
@@ -371,21 +386,14 @@ async function resolveReferences(
     }
 
     const resolvedPath = basePath ? `${basePath}/${filePath}` : filePath;
-    try {
-      const { data } = await octokit.rest.repos.getContent({ owner, repo, path: resolvedPath, ref });
-      if ('content' in data && data.encoding === 'base64') {
-        let fileContent = Buffer.from(data.content, 'base64').toString('utf-8');
-        const fileDir = resolvedPath.includes('/') ? resolvedPath.substring(0, resolvedPath.lastIndexOf('/')) : '';
-        fileContent = await resolveReferences(octokit, owner, repo, ref, fileContent, fileDir, depth + 1);
-        resolvedLines.push(fileContent.trimEnd());
-      } else {
-        // Not a file (e.g., directory listing) — keep original reference
-        resolvedLines.push(line);
-      }
-    } catch {
+    const fileContent = await files.read(resolvedPath).catch(() => null);
+    if (fileContent === null) {
       resolvedLines.push(line);
       resolvedLines.push(`<!-- Could not resolve reference: ${filePath} -->`);
+      continue;
     }
+    const fileDir = resolvedPath.includes('/') ? resolvedPath.substring(0, resolvedPath.lastIndexOf('/')) : '';
+    resolvedLines.push((await resolveReferences(files, fileContent, fileDir, depth + 1)).trimEnd());
   }
 
   return resolvedLines.join('\n');
@@ -397,8 +405,7 @@ const MAX_INSTRUCTIONS_CHARS = 30_000;
 
 /**
  * Returns the repo description and the `AGENTS.md` and `CLAUDE.md` files at the root and nearest
- * above each changed file, nearest first. Files with the same content after `@file` resolution
- * appear once. The file that crosses `MAX_INSTRUCTIONS_CHARS` is cut, and farther files are left out.
+ * above each changed file, nearest first, as `buildRepoContext` reads them at `ref`.
  */
 export async function fetchRepoContext(
   octokit: Octokit,
@@ -407,13 +414,31 @@ export async function fetchRepoContext(
   ref: string,
   changedPaths: string[],
 ): Promise<string> {
-  const paths = [...await findNearestInstructionFiles(octokit, owner, repo, ref, changedPaths), ...ROOT_INSTRUCTION_FILES];
+  const parts = [await buildRepoContext(githubRepoFiles(octokit, owner, repo, ref), changedPaths)].filter(Boolean);
+  try {
+    const { data: repoData } = await octokit.rest.repos.get({ owner, repo });
+    if (repoData.description) {
+      parts.unshift(`Repository: ${repoData.full_name}\nDescription: ${repoData.description}`);
+    }
+  } catch {
+    // Skip
+  }
+  return parts.join('\n\n---\n\n');
+}
+
+/**
+ * Returns the `AGENTS.md` and `CLAUDE.md` files at the root and nearest above each changed file, nearest first.
+ * Files with the same content after `@file` resolution appear once. The file that crosses `MAX_INSTRUCTIONS_CHARS`
+ * is cut, and farther files are left out.
+ */
+export async function buildRepoContext(files: RepoFiles, changedPaths: string[]): Promise<string> {
+  const paths = [...await findNearestInstructionFiles(files, changedPaths), ...ROOT_INSTRUCTION_FILES];
 
   const parts: string[] = [];
   const seen = new Set<string>();
   let total = 0;
   for (const path of paths) {
-    const content = await fetchInstructionFile(octokit, owner, repo, ref, path);
+    const content = await readInstructionFile(files, path);
     if (content === null || !content.trim() || seen.has(content.trim())) continue;
     seen.add(content.trim());
     const part = `## ${path}\n\n${content}`;
@@ -425,42 +450,24 @@ export async function fetchRepoContext(
     parts.push(part);
     total += part.length;
   }
-
-  try {
-    const { data: repoData } = await octokit.rest.repos.get({ owner, repo });
-    if (repoData.description) {
-      parts.unshift(`Repository: ${repoData.full_name}\nDescription: ${repoData.description}`);
-    }
-  } catch {
-    // Skip
-  }
-
   return parts.join('\n\n---\n\n');
 }
 
 /** Returns each name's nearest subdirectory file above any changed file, deepest first. */
-async function findNearestInstructionFiles(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  ref: string,
-  changedPaths: string[],
-): Promise<string[]> {
+async function findNearestInstructionFiles(files: RepoFiles, changedPaths: string[]): Promise<string[]> {
   if (changedPaths.length === 0) return [];
 
-  let treeEntries: Array<{ path?: string; type?: string }>;
+  let treePaths: string[];
   try {
-    const { data } = await octokit.rest.git.getTree({ owner, repo, tree_sha: ref, recursive: 'true' });
-    treeEntries = data.tree;
+    treePaths = await files.list();
   } catch {
     core.debug('Could not fetch repo tree for subdirectory instruction files');
     return [];
   }
 
   const existing = new Set(
-    treeEntries
-      .filter(e => e.type === 'blob' && e.path && INSTRUCTION_FILE_NAMES.some(name => e.path!.endsWith(`/${name}`)))
-      .map(e => e.path!)
+    treePaths
+      .filter(p => INSTRUCTION_FILE_NAMES.some(name => p.endsWith(`/${name}`)))
       .filter(p => !ROOT_INSTRUCTION_FILES.includes(p)),
   );
   if (existing.size === 0) return [];
@@ -485,23 +492,14 @@ async function findNearestInstructionFiles(
 }
 
 /** Returns the file's content with `@file` references inlined, or null when it can't be read. */
-async function fetchInstructionFile(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  ref: string,
-  path: string,
-): Promise<string | null> {
+async function readInstructionFile(files: RepoFiles, path: string): Promise<string | null> {
   try {
-    const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
-    if (!('content' in data) || data.encoding !== 'base64') return null;
-    const content = Buffer.from(data.content, 'base64').toString('utf-8');
+    const content = await files.read(path);
+    if (content === null) return null;
     const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
-    return await resolveReferences(octokit, owner, repo, ref, content, dir);
+    return await resolveReferences(files, content, dir);
   } catch (error) {
-    if ((error as { status?: number }).status !== 404) {
-      core.warning(`Could not read instruction file ${path}: ${error}`);
-    }
+    core.warning(`Could not read instruction file ${path}: ${error}`);
     return null;
   }
 }
