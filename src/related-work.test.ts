@@ -56,18 +56,19 @@ describe('findRelatedWork', () => {
 
     const work = await findRelatedWork(octokit, target(diff));
 
-    expect(graphql).toHaveBeenCalledWith(expect.stringContaining('pullRequests(states: OPEN'), { owner: 'o', repo: 'r' });
+    const request = { signal: expect.any(AbortSignal), retries: 0 };
+    expect(graphql).toHaveBeenCalledWith(expect.stringContaining('pullRequests(states: OPEN'), { owner: 'o', repo: 'r', request });
     // The PR itself and a PR sharing no file are left out, and the rest go by shared files, capped at five.
     expect(work.items.filter(i => i.kind === 'pr').map(i => [i.number, i.sharedFiles])).toEqual([[22, 3], [20, 1], [30, 1], [31, 1], [32, 1]]);
     expect(work.items[0]).toMatchObject({ draft: true, files: ['src/a.ts', 'src/b.ts', 'src/old.ts'], excerpt: 'x'.repeat(400) });
     expect(work.items[1].files).toEqual(['src/a.ts', 'docs/x.md']);
     // The declared names come first, the generic `value` is left out, and the conventional prefix is not searched.
-    expect(search).toHaveBeenCalledWith({ q: 'repo:o/r is:issue is:open (fetchLinkedIssues OR overlapping OR requests)', per_page: 6 });
+    expect(search).toHaveBeenCalledWith({ q: 'repo:o/r is:issue is:open (fetchLinkedIssues OR overlapping OR requests)', per_page: 6, request });
     expect(work.items.filter(i => i.kind === 'issue')).toEqual([{ kind: 'issue', number: 42, title: 'Duplicate PRs go unnoticed', excerpt: '' }]);
     expect(work.skipped).toBeUndefined();
   });
 
-  it('skips a list that fails and names why, and searches nothing without a term', async () => {
+  it('skips a list that fails or hangs past the deadline and names why, and searches nothing without a term', async () => {
     const { octokit, search } = makeOctokit([]);
     jest.mocked(octokit.graphql).mockRejectedValueOnce(new Error('GraphQL down'));
     search.mockRejectedValueOnce(Object.assign(new Error('API rate limit exceeded'), { status: 403 }));
@@ -79,6 +80,23 @@ describe('findRelatedWork', () => {
     search.mockClear();
     expect(await findRelatedWork(octokit, target(diffOf(file('src/a.ts')), { title: 'fix: a bug' }))).toEqual({ items: [] });
     expect(search).not.toHaveBeenCalled();
+
+    // A GraphQL list held up by a rate limit wait gives up at the deadline, and the search that finished is kept.
+    jest.useFakeTimers();
+    try {
+      jest.mocked(octokit.graphql).mockReturnValueOnce(new Promise(() => {}) as never);
+      search.mockResolvedValueOnce({ data: { total_count: 1, items: [{ number: 42, title: 'Open issue', body: '' }] } });
+      const pending = findRelatedWork(octokit, target(diffOf(file('src/a.ts'))));
+      await jest.advanceTimersByTimeAsync(15_000);
+      expect(await pending).toEqual({
+        items: [{ kind: 'issue', number: 42, title: 'Open issue', excerpt: '' }], skipped: ['open PRs: timed out after 15s'],
+      });
+      expect(jest.getTimerCount()).toBe(0);
+      // The deadline aborts the requests too, so the one still waiting does not keep the run open.
+      expect((jest.mocked(octokit.graphql).mock.calls.at(-1)![1] as { request: { signal: AbortSignal } }).request.signal.aborted).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

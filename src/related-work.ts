@@ -23,6 +23,7 @@ const MAX_OWN_FILES = 50;
 const MAX_REASON = 200;
 const MAX_SKIP_REASON = 200;
 const CLASSIFY_TIMEOUT_MS = 120_000;
+const LOOKUP_TIMEOUT_MS = 15_000;
 const CONVENTIONAL_PREFIX = /^\w+(?:\([^)]*\))?!?:\s*/;
 const RELATIONS: Record<RelatedItem['kind'], ReadonlySet<RelatedRelation>> = {
   pr: new Set(['duplicate', 'overlapping', 'unrelated']),
@@ -46,7 +47,7 @@ interface OpenPrNode {
 }
 
 /** The PR `findRelatedWork` looks for related work of. */
-export interface RelatedWorkTarget {
+interface RelatedWorkTarget {
   owner: string;
   repo: string;
   prNumber: number;
@@ -57,11 +58,24 @@ export interface RelatedWorkTarget {
 
 /**
  * Lists the open PRs that change a file this PR changes, most shared files first, and the open issues a search for
- * the declared names and the title's words finds, without the issues the body links. A list that fails is left out
- * and named in `skipped`.
+ * the declared names and the title's words finds, without the issues the body links. A list that fails, or that is
+ * not done within `LOOKUP_TIMEOUT_MS`, is left out and named in `skipped`.
  */
 export async function findRelatedWork(octokit: Octokit, target: RelatedWorkTarget): Promise<RelatedWork> {
-  const [prs, issues] = await Promise.allSettled([findOverlappingPrs(octokit, target), searchIssues(octokit, target)]);
+  // The review waits for the lookup. Each request also stops at the deadline and is never retried or held for a rate
+  // limit, so none outlives the lookup and keeps the run open.
+  const controller = new AbortController();
+  const request = { signal: controller.signal, retries: 0 };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`timed out after ${LOOKUP_TIMEOUT_MS / 1000}s`));
+      controller.abort();
+    }, LOOKUP_TIMEOUT_MS);
+  });
+  const lists = [findOverlappingPrs(octokit, target, request), searchIssues(octokit, target, request)];
+  const [prs, issues] = await Promise.allSettled(lists.map(list => Promise.race([list, deadline])));
+  clearTimeout(timer);
   const skipped = [
     ...(prs.status === 'rejected' ? [`open PRs: ${skipReason(prs.reason)}`] : []),
     ...(issues.status === 'rejected' ? [`issue search: ${skipReason(issues.reason)}`] : []),
@@ -73,9 +87,15 @@ export async function findRelatedWork(octokit: Octokit, target: RelatedWorkTarge
   };
 }
 
-async function findOverlappingPrs(octokit: Octokit, { owner, repo, prNumber, diff }: RelatedWorkTarget): Promise<RelatedItem[]> {
+/** Per-request options: the abort signal of the lookup's deadline, and no retries. */
+interface LookupRequest {
+  signal: AbortSignal;
+  retries: number;
+}
+
+async function findOverlappingPrs(octokit: Octokit, { owner, repo, prNumber, diff }: RelatedWorkTarget, request: LookupRequest): Promise<RelatedItem[]> {
   const changed = new Set(diff.files.flatMap(f => f.oldPath ? [f.path, f.oldPath] : [f.path]));
-  const { repository } = await octokit.graphql<{ repository: { pullRequests: { nodes: OpenPrNode[] } } }>(OPEN_PRS_QUERY, { owner, repo });
+  const { repository } = await octokit.graphql<{ repository: { pullRequests: { nodes: OpenPrNode[] } } }>(OPEN_PRS_QUERY, { owner, repo, request });
   return repository.pullRequests.nodes
     .filter(pr => pr.number !== prNumber)
     .map((pr): RelatedItem & { sharedFiles: number } => {
@@ -93,13 +113,14 @@ async function findOverlappingPrs(octokit: Octokit, { owner, repo, prNumber, dif
     .slice(0, MAX_RELATED_PRS);
 }
 
-async function searchIssues(octokit: Octokit, { owner, repo, title, body, diff }: RelatedWorkTarget): Promise<RelatedItem[]> {
+async function searchIssues(octokit: Octokit, { owner, repo, title, body, diff }: RelatedWorkTarget, request: LookupRequest): Promise<RelatedItem[]> {
   const terms = searchTerms(title, diff);
   if (terms.length === 0) return [];
   const linked = linkedIssueNumbers(body);
   const { data } = await octokit.rest.search.issuesAndPullRequests({
     q: `repo:${owner}/${repo} is:issue is:open (${terms.join(' OR ')})`,
     per_page: MAX_RELATED_ISSUES + linked.size,
+    request,
   });
   return data.items
     .filter(issue => !issue.pull_request && !linked.has(issue.number))
