@@ -1973,8 +1973,8 @@ function isPriorLikelyUnresolved(
   // Judge-addressed retires a prior whose GitHub thread is still open: the
   // author landed the fix without resolving the thread, and Manki resolves it
   // in the same round. The judge's `addressed` verdict is accepted because
-  // `buildJudgeUserMessage` sanitizes untrusted PR/issue prose before it
-  // reaches the judge, and the adversarial fixture corpus
+  // `buildJudgeUserMessage` sanitizes or fences untrusted PR/issue prose before
+  // it reaches the judge, and the adversarial fixture corpus
   // (05_injection_attempt_unfixed) gates regressions in the judge's resistance
   // to injected text. `runReview` keeps `addressed` on a blocker thread only
   // when the push changed its file.
@@ -2034,8 +2034,8 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  * default outcome stays conservative when the judge could not produce a
  * confident verdict. Defense-in-depth against prompt injection lives at three
  * other layers: (a) `buildJudgeUserMessage` routes untrusted PR/issue prose
- * through `sanitizeForPromptEmbed` and tags each section as evidence-not-
- * directive; (b) the adversarial `05_injection_attempt_unfixed` fixture in
+ * through `sanitizeForPromptEmbed` or fences it whole, as the PR description,
+ * and tags each section as evidence-not-directive; (b) the adversarial `05_injection_attempt_unfixed` fixture in
  * the corpus gates regressions in the judge's resistance to injected text;
  * (c) `runReview` drops `addressed` on a blocker thread whose file the push
  * did not change, before it calls this function.
