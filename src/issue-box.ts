@@ -64,11 +64,11 @@ export function issueBoxOffset(body: string, id: string): number {
   return box ? lines.slice(0, box.line).reduce((offset, text) => offset + text.length + 1, 0) : -1;
 }
 
-/** Returns `body` with the box line of `id` replaced by `text`, and every other line as it was. */
+/** Returns `body` with the ticked box line of `id` replaced by `text`, and every other line as it was. */
 export function replaceIssueBox(body: string, id: string, text: string): string {
   const lines = body.split('\n');
   // A body someone saved in the web editor ends its lines with CRLF, which the replaced line keeps.
-  for (const box of issueBoxes(lines)) if (box.id === id) lines[box.line] = `${text}${lines[box.line].endsWith('\r') ? '\r' : ''}`;
+  for (const box of issueBoxes(lines)) if (box.id === id && box.ticked) lines[box.line] = `${text}${lines[box.line].endsWith('\r') ? '\r' : ''}`;
   return lines.join('\n');
 }
 

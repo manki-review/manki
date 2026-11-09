@@ -1,4 +1,4 @@
-import { formatFindingComment } from './github';
+import { formatFindingBlock, formatFindingComment } from './github';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import * as state from './state';
 import { Finding } from './types';
@@ -80,7 +80,7 @@ describe('handleIssueBoxTick', () => {
     // The issue holds the finding as posted, without the box or Manki's hidden markers.
     expect(octokit.rest.issues.create).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r', title: 'Retry has no limit' }));
     const issue: string = jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body;
-    expect(issue).toMatch(/^⚠️ \*\*Warning\*\*[\s\S]*\*\*What goes wrong:\*\* It retries forever\.[\s\S]*\n\nFound by Manki in #5 at \[`src\/net\.ts:7`\]\(https:\/\/github\.com\/o\/r\/blob\/abc123\/src\/net\.ts#L7\)\. See the \[review thread\]\(https:\/\/github\.com\/o\/r\/pull\/5#discussion_r501\)\.\n\n<!-- manki-issue:src\/net\.ts:7:Retry-has-no-limit -->$/);
+    expect(issue).toMatch(/^⚠️ \*\*Warning\*\*[\s\S]*\*\*What goes wrong:\*\* It retries forever\.[\s\S]*\n\nFound by Manki in #5 at \[`src\/net\.ts:7`\]\(https:\/\/github\.com\/o\/r\/blob\/abc123\/src\/net\.ts#L7\)\. See the \[review thread\]\(https:\/\/github\.com\/o\/r\/pull\/5#discussion_r501\)\.\n\n<!-- manki-issue:src\/net\.ts:7:[0-9a-f]{12} -->$/);
     expect(issue).not.toMatch(/manki-checks|manki-box|manki-finding|Create an issue/);
     // Only the box line changes. The finding and its hidden data stay as they were.
     const expected = body.replace(/- \[x\] Create an issue for this <!-- manki-box:issue:[^\n]* -->/, 'Issue #12 created by @bob');
@@ -135,9 +135,10 @@ describe('handleIssueBoxTick', () => {
   });
 
   it('links the issue Manki already filed for the finding instead of filing another', async () => {
+    const id = ticked(finding()).match(/manki-box:issue:(\S+) -->/)?.[1];
     const octokit = makeOctokit([
-      { number: 4, body: 'A pull request <!-- manki-issue:src/net.ts:7:Retry-has-no-limit -->', pull_request: {} },
-      { number: 9, body: 'Old.\n\n<!-- manki-issue:src/net.ts:7:Retry-has-no-limit -->' },
+      { number: 4, body: `A pull request <!-- manki-issue:${id} -->`, pull_request: {} },
+      { number: 9, body: `Old.\n\n<!-- manki-issue:${id} -->` },
     ]);
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, isBlocking: false, findingTitle: 'x' }]);
 
@@ -214,6 +215,26 @@ describe('handleReviewBoxTick', () => {
       .replace('- [x] Create an issue for this <!-- manki-box:issue:src/net.ts:7:Retry-has-no-limit -->', 'Issue #23 created by @bob')
       .replace('- [x] Create an issue for this <!-- manki-box:issue:src/log.ts:9:Token-in-the-log -->', 'Issue #24 created by @bob'));
     expect(jest.mocked(octokit.rest.pulls.updateReview).mock.calls[0][0]).toMatchObject({ owner: 'o', repo: 'r', pull_number: 5, review_id: 900 });
+  });
+
+  it('files one issue per tick for two findings on one line whose titles differ only in punctuation', async () => {
+    const body = [finding({ title: 'Retry has no limit.' }), finding({ title: 'Retry has no limit!' })].map(f => formatFindingBlock(f, TEST_LINKS, true)).join('\n\n');
+    const tickedBox = /- \[x\] Create an issue for this <!-- manki-box:issue:\S+ -->/;
+    const octokit = makeOctokit();
+    octokit.rest.issues.create.mockResolvedValueOnce({ data: { number: 21 } }).mockResolvedValueOnce({ data: { number: 22 } });
+
+    const first = body.replace('- [ ]', '- [x]');
+    await tickReview(octokit, { ...review, body: first });
+    const afterFirst = jest.mocked(octokit.rest.pulls.updateReview).mock.calls.at(-1)?.[0].body as string;
+    expect(afterFirst).toBe(first.replace(tickedBox, 'Issue #21 created by @bob'));
+
+    const second = afterFirst.replace('- [ ]', '- [x]');
+    await tickReview(octokit, { ...review, body: second });
+    const created = jest.mocked(octokit.rest.issues.create).mock.calls.map(([args]) => [args.title, args.body.match(/<!-- manki-issue:\S+ -->/)?.[0]]);
+    expect(created.map(([title]) => title)).toEqual(['Retry has no limit.', 'Retry has no limit!']);
+    // Each issue carries its own marker, so a later tick of one never links the other's issue.
+    expect(new Set(created.map(([, marker]) => marker)).size).toBe(2);
+    expect(jest.mocked(octokit.rest.pulls.updateReview).mock.calls.at(-1)?.[0].body).toBe(second.replace(tickedBox, 'Issue #22 created by @bob'));
   });
 
   it('reads a fold whose fenced fix holds fold tags, keeps CRLF endings, keeps a tick made meanwhile, and reports a failure on the PR', async () => {

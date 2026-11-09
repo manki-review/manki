@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { createRequire } from 'module';
 
 import * as core from '@actions/core';
@@ -2313,11 +2314,15 @@ function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: 
   return [`${CHECKS_MARKER}\n<details>\n<summary>How this was checked: ${counts.join(', ')}</summary>\n\n${parts.join('\n\n')}\n\n</details>`];
 }
 
-/** Returns the box that files `finding` as an issue, with its file, line and title slug as the id. */
+/**
+ * Returns the box that files `finding` as an issue. Its id is the file, the line and a hash of the exact title and
+ * description, so two findings on one line whose titles differ only in punctuation get boxes of their own.
+ */
 function issueBoxFor(finding: Finding): string {
   // A file name with `-->` or a line break would end the hidden comment that carries the id, so those are encoded.
   const file = finding.file.replace(/[%<>\r\n]/g, encodeURIComponent);
-  return issueBox(`${file}:${finding.line}:${titleToSlug(finding.title)}`);
+  const hash = createHash('sha256').update(`${finding.title}\n${finding.description}`).digest('hex').slice(0, 12);
+  return issueBox(`${file}:${finding.line}:${hash}`);
 }
 
 function formatFindingComment(finding: Finding, links: CodeLinks): string {
