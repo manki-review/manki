@@ -1531,14 +1531,19 @@ describe('postReview body lead', () => {
     expect(body).toBe([verdict, `**Memory skipped:** ${memorySkip}`, ...rest].join('\n\n'));
   });
 
+  const limitLine = (used: number, window: string, mark: number) =>
+    `**Claude subscription has used ${used}% of its ${window} limit**, past the ${mark}% mark. It resets 2026-11-12 14:00 UTC.`;
+
   it.each<[number[], string[]]>([
     [[69, 12], []],
-    [[70], ['**Claude subscription has used 70% of its weekly limit**, past the 70% mark. It resets 2026-11-12 14:00 UTC.']],
-    [[85, 95], [
-      '**Claude subscription has used 95% of its 5-hour limit**, past the 90% mark. It resets 2026-11-12 14:00 UTC.',
-      '**Claude subscription has used 85% of its weekly limit**, past the 80% mark. It resets 2026-11-12 14:00 UTC.',
-    ]],
-  ])('puts a red box under the verdict for each account window of %j percent at 70% or more', async (used, lines) => {
+    [[70, 82], [limitLine(82, '5-hour', 80), limitLine(70, 'weekly', 70)]],
+    [[71, 81], [limitLine(81, '5-hour', 80), limitLine(71, 'weekly', 70)]],
+    [[72, 73], [limitLine(72, 'weekly', 70)]],
+    [[75, 85], []],
+    [[83], []],
+    [[85, 95], [limitLine(95, '5-hour', 90)]],
+    [[90, 97], [limitLine(97, '5-hour', 90), limitLine(90, 'weekly', 90)]],
+  ])('puts a red box under the verdict for each account window of %j percent just past 70 or 80%, or at 90% or more', async (used, lines) => {
     const approved = await postedBody(ready);
     const llmCalls = [{ stage: 'judge', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
       limits: used.map((usedPercent, i) => ({ account: 'Claude subscription', window: i === 0 ? 'weekly' : '5-hour', usedPercent, resetsAt: Date.UTC(2026, 10, 12, 14) / 1000 })) }];
