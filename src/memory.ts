@@ -285,15 +285,14 @@ export function applySuppressions(
   return { kept, suppressed };
 }
 
+/** Whether a suppression `pattern` hides a finding titled `title`, regardless of its file. */
+export function patternMatchesTitle(pattern: string, title: string): boolean {
+  const patternLower = pattern.toLowerCase();
+  return patternLower.length >= 3 && title.toLowerCase().includes(patternLower);
+}
+
 export function matchesSuppression(finding: Finding, suppression: Suppression): boolean {
-  const titleLower = finding.title.toLowerCase();
-  const patternLower = suppression.pattern.toLowerCase();
-
-  if (!patternLower || patternLower.length < 3) {
-    return false;
-  }
-
-  if (!titleLower.includes(patternLower)) {
+  if (!patternMatchesTitle(suppression.pattern, finding.title)) {
     return false;
   }
 
