@@ -58,6 +58,7 @@ function makeReview(outcome: RoundOutcome, findings: Finding[], complete = true)
     } as unknown as RoundContext,
     base: SHA_A,
     head: SHA_B,
+    approvalHeld: false,
   };
 }
 
