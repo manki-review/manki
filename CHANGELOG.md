@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.2.0] - 2026-11-09
+
+Manki 7.2 makes each round find more. Finders work through a wider list of checks with more steps and more of the changed code in front of them, the second finder of a pair looks from its own angle, and every finder, the judge and the refuter get a list of where the changed symbols are used outside the diff. The judge no longer lowers a finding because it rests on code it cannot see, and sends it to the refuter instead. `manki review` runs the same review on a local branch.
+
+### Upgrading
+
+1. Reviews read more, so a round costs more. A single finder gets 30 tool steps instead of 15, and a finder of a pair or a floor class 40 instead of 30. A finder call may run 15 minutes instead of 10, so keep the job's `timeout-minutes` at 30 or more. Changed files are inlined in the prompt up to 200 KB each and 400 KB in all, instead of 50 KB and 100 KB. The judge sees up to 40 windows of the code findings cite outside the diff. The estimate for a paired round is about $0.6 to $1.0 more at API prices, and the review footer now shows each round's tokens and cost ([#1229](https://github.com/manki-review/manki/pull/1229), [#1231](https://github.com/manki-review/manki/pull/1231), [#1234](https://github.com/manki-review/manki/pull/1234)).
+2. The planner no longer guesses the project label the finders read, which differed from round to round. Set it with the new optional `project` key in `.manki.yml`, such as `project: blockchain consensus library`. Without the key the label is left out, and the finders go by the repository description and the `AGENTS.md` and `CLAUDE.md` files. The round record no longer holds `planner.context` ([#1235](https://github.com/manki-review/manki/pull/1235)).
+3. `manki review` runs a review on your own machine before you push, with the credentials the Action takes as environment variables. See "Local review" below ([#1230](https://github.com/manki-review/manki/pull/1230)).
+
+### Local review
+
+- `npx github:manki-review/manki#v7 review [<base>[..<head>]]` runs the planner, the finders, dedup, the judge and the verdict reader on the change from the merge base to `HEAD`, reads `.manki.yml` and the instruction files from the base, and writes nothing to GitHub. Findings print as Markdown in the review body's layout, or as JSON with `--json`, and `--record` writes the round record. `--patch` reviews a patch on a scratch copy of the tracked files, so untracked files such as `.env` stay out. The exit code is 0 when a pull request round would approve, 1 when something blocks or the base config did not load, and 2 when the review is incomplete or failed. Memory, earlier rounds, linked issues and CI results stay out, since they live on GitHub ([#1230](https://github.com/manki-review/manki/pull/1230)).
+
+### How finders search
+
+- The finder focus is a list of concrete checks: every reader of a changed type, field, variant or function anywhere in the repository, sibling state such as other collections, caches, size estimates and serializers, sibling symmetry such as encode and decode, dropped cases in matches, `catch` blocks and ignored results, and tests that pass whether or not the code they name works ([#1229](https://github.com/manki-review/manki/pull/1229)).
+- The second finder of a pair gets its own lens. It runs the same checks led by readers, sibling state, symmetry and tests, and adds reuse of existing code and the repository's own rules, each reported only with the existing code's `file:line` or the rule quoted. It still reports every blocker and security issue ([#1229](https://github.com/manki-review/manki/pull/1229)).
+- Finders leave out only a warning, suggestion or nitpick that matches a memory suppression, never a blocker or a security issue. A break of a rule in the repository's `AGENTS.md` or `CLAUDE.md` is reported with the rule quoted at any `noise_level` ([#1229](https://github.com/manki-review/manki/pull/1229)).
+- Before the finders run, Manki lists where the symbols the PR changes are used outside the diff, and the fields of each type the changed lines read or change. The finders, the judge and the refuter get the same "Uses Outside the Diff" section. The list comes from the PR head checkout with no model call, so it appears when a client has repository tools, and needs no setting ([#1232](https://github.com/manki-review/manki/pull/1232)).
+
+### Review loop and verdicts
+
+- The judge no longer caps a finding at suggestion because it rests on code outside the diff. With a workspace it sees the cited code under each finding, up to 5 windows per finding and 40 per round. When the grade it would give if that code is as the finding says is higher than its own, the refuter checks the finding with tools: a confirmation gives the finding that grade and a disproof drops it ([#1231](https://github.com/manki-review/manki/pull/1231)).
+- A finding that claims a compile, type or test failure is posted as a warning, "Check that this builds", unless a compiler or type checker annotation on the commit confirms it or it is a security finding. This applies to the verdict reader's blockers too, and when all of them are such claims the change stays ready ([#1231](https://github.com/manki-review/manki/pull/1231)).
+- The refuter names the general rule a finding relies on and searches unchanged code that already relies on the same rule. One such counterexample disproves the finding ([#1231](https://github.com/manki-review/manki/pull/1231)).
+- The judge grades a few cases higher. A defect behind a declared placeholder or tracked TODO is a suggestion instead of ignored, a test that cannot fail when the code it names breaks is a warning, and a doc or comment that states behaviour the code does not have is a suggestion. "Intended but surprising" never lowers a security defect, resource exhaustion or a removed guard, check or limit ([#1231](https://github.com/manki-review/manki/pull/1231)).
+- A kept finding that names the same problem as a verdict reader blocker is folded into that blocker, so one bug gets one thread. The blocker keeps its grade and line and takes the finding's reviewers and evidence ([#1223](https://github.com/manki-review/manki/pull/1223)).
+
+### Review format
+
+- The folded "About this review" footer shows the round's token usage and estimated cost, such as "Tokens: 1.2M in (980k from cache) · 23k out · about $1.58 at API prices". On a subscription account the figure still shows how heavy the round was ([#1234](https://github.com/manki-review/manki/pull/1234)).
+- Each "Create an issue for this" box has its own id. Before, two findings on one line whose titles differed only in punctuation shared a box id, so one tick filed one issue for both. Boxes posted earlier keep working ([#1236](https://github.com/manki-review/manki/pull/1236)).
+
+### Security
+
+- Resource exhaustion or denial of service from outside input (CWE-400, CWE-770) is a security defect: an allocation, loop or recursion sized by the input, or a size limit removed or raised. For a library, outside input is anything a caller of its public API can pass, readers and byte streams included ([#1229](https://github.com/manki-review/manki/pull/1229), [#1231](https://github.com/manki-review/manki/pull/1231)).
+
+### Review records and statistics
+
+- The round record keeps the files each Claude finder call read, as `filesRead` next to its tool steps ([#1229](https://github.com/manki-review/manki/pull/1229)).
+
+### Reliability
+
+- After a Codex call, Manki reads usage limits only from the session folders of the dates the call can have written to, not from every session on the runner. On a self-hosted runner that keeps `~/.codex`, this scan no longer slows down with every run ([#1222](https://github.com/manki-review/manki/pull/1222)).
+
+### Internal
+
+- `npm run bench` scores reviews against a recall benchmark: it reviews each case several times with the local review core, matches the findings to the case's answer key and reports recall per item and severity, verdict accuracy, false blockers and cost. It counts the distinct files each finder read and gives the reason for an incomplete run. It is seeded with five cases ([#1233](https://github.com/manki-review/manki/pull/1233), [#1238](https://github.com/manki-review/manki/pull/1238)).
+
 ## [7.1.1] - 2026-11-09
 
 Manki 7.1.1 warns before a Claude or Codex subscription usage limit runs out, so a used-up limit no longer ends a round as a surprise.
