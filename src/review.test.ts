@@ -1151,11 +1151,15 @@ describe('buildReviewerUserMessage', () => {
     expect(message).not.toContain('Implements');
   });
 
-  it('keeps a long PR body whole, so a claim at its end still reaches the finders', () => {
+  it('keeps a long PR body whole, so a claim at its end still reaches the finders, and cuts one past 20000 chars', () => {
     const longBody = `${'x'.repeat(8000)}\nMatches the reference's bounds.`;
-    const prContext = { title: 'Big PR', body: longBody, baseBranch: 'main' };
-    const message = buildReviewerUserMessage('diff', '', { prContext });
+    const message = buildReviewerUserMessage('diff', '', { prContext: { title: 'Big PR', body: longBody, baseBranch: 'main' } });
     expect(message).toContain(longBody);
+    expect(message).not.toContain('... (truncated)');
+
+    const huge = buildReviewerUserMessage('diff', '', { prContext: { title: 'Huge PR', body: 'y'.repeat(30000), baseBranch: 'main' } });
+    expect(huge).toContain(`${'y'.repeat(20000)}\n... (truncated)`);
+    expect(huge).not.toContain('y'.repeat(20001));
   });
 
   it('places PR context before repo context and diff', () => {
