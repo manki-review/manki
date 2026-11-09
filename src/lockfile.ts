@@ -191,6 +191,7 @@ function diffEntries(before: LockEntry[], after: LockEntry[], file: DiffFile): P
   const removed = [...old].filter(([key]) => !now.has(key)).map(([, entry]) => entry);
   // A version change moves an entry to a new key. Same-name entries are paired when both sides hold as many.
   const unpaired = { added: [] as LockEntry[], removed: [] as LockEntry[] };
+  const lowered = new Set<LockEntry>();
   const gone = byName(removed);
   const come = byName(added);
   for (const name of new Set([...gone.keys(), ...come.keys()])) {
@@ -200,6 +201,8 @@ function diffEntries(before: LockEntry[], after: LockEntry[], file: DiffFile): P
     else {
       for (const e of was) unpaired.removed.push(e);
       for (const e of is) unpaired.added.push(e);
+      // The versions can't be paired, but a newest version below the newest one removed is still a downgrade.
+      if (was.length > 0 && is.length > 0 && (compareVersions(is.at(-1)!.version, was.at(-1)!.version) ?? 0) < 0) lowered.add(is.at(-1)!);
     }
   }
   // An added package from a registry or repository no package used before needs a reason, even when its URL looks standard.
@@ -209,7 +212,7 @@ function diffEntries(before: LockEntry[], after: LockEntry[], file: DiffFile): P
   const changes: PackageChange[] = [
     ...pairs.map(([b, a]) => changeOf(b, a, lineIn(a))),
     ...unpaired.added.map((a): PackageChange => ({
-      kind: 'added', name: a.name, newVersion: a.version, newSource: a.source, fields: fieldChanges(new Map(), a.fields), flags: a.isPackage ? [...newOrigin(a), ...sourceFlags(a)] : [], line: lineIn(a),
+      kind: 'added', name: a.name, newVersion: a.version, newSource: a.source, fields: fieldChanges(new Map(), a.fields), flags: a.isPackage ? [...newOrigin(a), ...sourceFlags(a), ...(lowered.has(a) ? ['downgrade' as const] : [])] : [], line: lineIn(a),
     })),
     ...unpaired.removed.map((b): PackageChange => ({ kind: 'removed', name: b.name, oldVersion: b.version, oldSource: b.source, fields: [], flags: [] })),
   ];

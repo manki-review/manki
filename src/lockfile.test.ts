@@ -158,6 +158,18 @@ describe('readLockfileChanges', () => {
     ]);
   });
 
+  it('flags a downgrade when a package keeps fewer or more versions than before', () => {
+    const lock = (versions: string[]) => `version = 4\n${versions.map(v => `\n[[package]]\nname = "syn"\nversion = "${v}"\nsource = "${CRATES_IO}"\n`).join('')}`;
+
+    expect(formatLockfileChanges(read('Cargo.lock', lock(['2.0.60']), lock(['1.0.109', '2.0.10'])))).toBe([
+      'Cargo.lock',
+      '  removed syn 2.0.60',
+      `  added syn 1.0.109 from ${CRATES_IO} (line 5)`,
+      `  added syn 2.0.10 from ${CRATES_IO} (line 8) [downgrade]`,
+    ].join('\n'));
+    expect(lockfileSignals(read('Cargo.lock', lock(['2.0.60']), lock(['1.0.109', '2.0.61'])))).toEqual([]);
+  });
+
   it('flags a new commit of a git dependency, but not a git dependency whose source stays', () => {
     const git = (rev: string, deps: string) => `version = 4\n\n[[package]]\nname = "bls"\nversion = "0.2.0"\nsource = "git+https://github.com/example/bls?branch=main#${rev}"\ndependencies = [\n${deps}]\n`;
 

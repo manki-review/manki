@@ -1325,7 +1325,7 @@ export async function runReview(
     try {
       const reports = await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
         runVerdictReader(verdictWrap.client, buildReviewerUserMessage(raw, repoContext, {
-          fileContents: readerFiles && filesIn(readerFiles, paths), changedSinceLastRound: pathsIn(changedSinceLastRound, paths), sliceNote: sliceNote(index, slices), lockfileChanges,
+          fileContents: readerFiles && filesIn(readerFiles, paths), changedSinceLastRound: pathsIn(changedSinceLastRound, paths, slices), sliceNote: sliceNote(index, slices), lockfileChanges,
         })));
       if (slicing) slicing.reader = reports.map(report => ({ verdict: report.verdict, blockers: report.blockers.length }));
       verdictReport = combineVerdictReports(reports);
@@ -1531,9 +1531,14 @@ function sliceNote(index: number, slices: Array<{ paths?: Set<string> }>): strin
   return `## Slice\n\nThis is slice ${index + 1} of ${count} of the PR's diff. The other slices are read in calls of their own. A file in this slice can also continue in another slice, and code missing from this slice, such as a caller, a test or the rest of a split hunk, is no defect. These changed files are not in this slice:\n\n${fenceText(`${listed}${more}` || '(none)')}\n\n`;
 }
 
-/** Returns the entries of `list` in `paths`, or all of them when the diff is read in one slice. */
-function pathsIn(list: string[] | undefined, paths?: Set<string>): string[] | undefined {
-  return paths ? list?.filter(path => paths.has(path)) : list;
+/**
+ * Returns the entries of `list` in `paths`, or all of them when the diff is read in one slice. A path no slice holds,
+ * such as a lockfile read as a package list, goes to every slice.
+ */
+function pathsIn(list: string[] | undefined, paths: Set<string> | undefined, slices: Array<{ paths?: Set<string> }>): string[] | undefined {
+  if (!paths) return list;
+  const sliced = new Set(slices.flatMap(s => [...(s.paths ?? [])]));
+  return list?.filter(path => paths.has(path) || !sliced.has(path));
 }
 
 /** Returns the file contents of `paths`, or all of them when the diff is read in one slice. */
@@ -1563,7 +1568,7 @@ async function runReviewerAgent(
   const startedAt = Date.now();
   const results = await mapWithConcurrency(slices.map((slice, index) => ({ ...slice, index })), MAX_PARALLEL_SLICES, ({ raw, paths, index }) =>
     runReviewerOnSlice(client, config, finder, raw, repoContext, fileContents && filesIn(fileContents, paths), prContext, memoryContext, linkedIssues,
-      { ...options, changedSinceLastRound: pathsIn(options.changedSinceLastRound, paths) }, sliceNote(index, slices)));
+      { ...options, changedSinceLastRound: pathsIn(options.changedSinceLastRound, paths, slices) }, sliceNote(index, slices)));
   return {
     findings: results.flatMap(r => r.findings),
     responseLength: results.reduce((sum, r) => sum + r.responseLength, 0),

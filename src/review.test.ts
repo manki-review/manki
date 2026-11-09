@@ -27,7 +27,7 @@ import {
 } from './review';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG } from './config';
-import { filterRawDiff, MAX_SLICE_CHARS, parsePRDiff } from './diff';
+import { filterRawDiff, MAX_SLICE_CHARS, parsePRDiff, rebuildRawDiff } from './diff';
 import * as relatedRepos from './related-repos';
 import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
@@ -4097,6 +4097,23 @@ describe('runReview', () => {
     expect(bSlice).toMatch(/This is slice \d of 2 of the PR's diff\. [\s\S]*These changed files are not in this slice:\n\n```\nsrc\/a\.ts\nsrc\/a\.test\.ts\n```/);
     // The round records the files in each slice and the reader's answer on each.
     expect(result.slicing).toEqual({ files: [2, 1], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'READY', blockers: 0 }] });
+  });
+
+  it('lists a lockfile the push changed in every slice, since no slice holds a lockfile read as a package list', async () => {
+    const fileDiff = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,5 @@\n ctx\n${Array.from({ length: 4 }, (_, i) => `+line ${i}`).join('\n')}`;
+    const rawDiff = [fileDiff('src/a.ts'), fileDiff('src/b.ts')].join('\n');
+    const lockfile = parsePRDiff('diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -5,1 +5,1 @@\n-version = "0.4.2"\n+version = "0.4.3"').files[0];
+    const clients = makeClients();
+
+    await runReview(clients, {
+      config: makeConfig({ slice_lines: 5 }), diff: parsePRDiff(rawDiff), rawDiff, repoContext: '',
+      lockfiles: [{ path: 'Cargo.lock', file: lockfile, changes: [{ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', fields: [], flags: [], line: 5 }] }],
+      priorRounds: [buildPriorRound(1, [])], interRoundDiff: rebuildRawDiff({ files: [lockfile], totalAdditions: 1, totalDeletions: 1 }),
+    });
+
+    const messages = [...jest.mocked(clients.reviewer.sendMessage).mock.calls, ...jest.mocked(clients.judge.sendMessage).mock.calls].map(([, user]) => user as string);
+    expect(messages.length).toBeGreaterThanOrEqual(4);
+    for (const message of messages) expect(message).toMatch(/## Changed Since the Last Review\n[\s\S]*```\nCargo\.lock\n```/);
   });
 
   it('shows the verdict reader every changed line of a diff over the character budget, and needs every slice READY', async () => {
