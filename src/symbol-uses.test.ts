@@ -145,19 +145,19 @@ describe('listUsesOutsideDiff', () => {
     for (let file = 0; file < 6; file++) {
       callers[`src/caller_${file}.rs`] = `fn caller() {\n    new(); len(); id();\n    compute_total();\n    ${fns.map(f => `${f}();`).join(' ')}\n}\n`;
     }
-    for (let file = 0; file < 90; file++) callers[`src/common_${file}.rs`] = 'fn common(s: &Shares) -> u8 {\n    shared_helper(); s.shared_total; s.shared_kept;\n    s.shared_count\n}\n';
+    for (let file = 0; file < 90; file++) callers[`src/common_${file}.rs`] = 'fn common(s: &Shares) -> u8 {\n    shared_helper(); s.shared_total; s.shared_kept; s.shared_wide;\n    s.shared_count\n}\n';
     callers['src/a_method.rs'] = 'fn count(t: &Other) -> u8 {\n    t.shared_count()\n}\n';
-    const lib = (body: string, doc: string, added = '', fresh = '', gone = '') => [
+    const lib = (body: string, doc: string, added = '', fresh = '', gone = '', wide = 'u8') => [
       ...['new', 'len', 'id', 'compute_total', 'shared_helper', ...fns].map(name => `pub fn ${name}() {\n    ${body}\n}\n`),
       fresh,
-      `pub struct Shares {\n    ${doc}\n    pub shared_count: u8,${added}\n    pub shared_mid: u8,${gone}\n    pub shared_kept: u8,\n}\n`,
+      `pub struct Shares {\n    ${doc}\n    pub shared_count: u8,${added}\n    pub shared_mid: u8,${gone}\n    pub shared_kept: u8,\n    pub shared_wide:\n        ${wide},\n}\n`,
     ].join('\n');
 
     const { section, record } = await usesFor(
       // A removed line elsewhere in the file that names the new field does not make it an edited one.
       { ...callers, 'src/lib.rs': lib('todo!("shared_total")', '/// Shares held.', '', '', '\n    pub shared_gone: u8,') },
       // A new type declaring the same field name comes first, and must not hide the redefined field.
-      { 'src/lib.rs': lib('unimplemented!()', '/// Shares held, zero once settled.', '\n    pub shared_total: u8,', 'pub struct Fresh {\n    pub shared_count: u8,\n}\n') },
+      { 'src/lib.rs': lib('unimplemented!()', '/// Shares held, zero once settled.', '\n    pub shared_total: u8,', 'pub struct Fresh {\n    pub shared_count: u8,\n}\n', '', 'u16') },
     );
 
     expect(section).not.toMatch(/### `(?:new|len|id)`/);
@@ -170,7 +170,10 @@ describe('listUsesOutsideDiff', () => {
     // Nor is a field whose only change is a deleted neighbour.
     expect(section).toContain('Too common to list, so search for them yourself if they matter: `shared_total` (90 uses), `shared_kept` (90 uses), `shared_helper` (90 uses), `Shares` (90 uses).');
     // The field's doc changed, so its readers are listed however many there are, and a namesake method call comes last.
-    expect(section).toMatch(/### `shared_count` \(field\)\n\n```\ndeclared at src\/lib\.rs:\d+\n(?:src\/common_\d+\.rs:3: s\.shared_count\n){4}```\n\n88 more uses not shown\./);
+    // It is declared where the diff edited it, not at the new `Fresh` field of the same name on line 94.
+    expect(section).toMatch(/### `shared_count` \(field\)\n\n```\ndeclared at src\/lib\.rs:99\n(?:src\/common_\d+\.rs:3: s\.shared_count\n){4}```\n\n87 more uses not shown\./);
+    // A type changed on the line after the field's name redefines it too.
+    expect(section).toMatch(/### `shared_wide` \(field\)\n\n```\ndeclared at src\/lib\.rs:\d+\n(?:src\/common_\d+\.rs:2: [^\n]*\n){4}```\n\n86 more uses not shown\./);
     expect(record?.common).toEqual(['shared_total', 'shared_kept', 'shared_helper', 'Shares']);
     expect(record?.capped).toEqual(expect.arrayContaining([expect.stringMatching(/^compute_part_\d+$/)]));
     expect(record?.symbols?.flatMap(s => s.uses)).toHaveLength(60);
@@ -266,6 +269,13 @@ describe('listReferenceUses', () => {
         referenceMissing: ['MAX_COMPACT_SIZE'],
       });
       expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Skipped the search of the reference repo o\/gone: /));
+      // A name past the cap on reference lines is named in the section and kept in the record.
+      const many = Array.from({ length: 11 }, (_, i) => `CAPPED_NAME_${i}`);
+      writeFileSync(join(dir, 'src/caps.h'), many.map(name => `${name}(1);\n`.repeat(4)).join(''));
+      const capped = await listReferenceUses([{ repo: 'dashpay/dash', dir }], many);
+      expect(capped.section).toContain('The cap of 40 lines left out: `CAPPED_NAME_10` (4 lines).');
+      expect(capped.record?.referenceCapped).toEqual(['CAPPED_NAME_10']);
+      expect(capped.record?.reference).toHaveLength(10);
       expect(await listReferenceUses([], ['MAX_SIZE'])).toEqual({ section: '' });
       expect(await listReferenceUses([{ repo: 'dashpay/dash', dir }], ['NOT_THERE'])).toEqual({ section: '', record: { referenceMissing: ['NOT_THERE'] } });
     } finally {
