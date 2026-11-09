@@ -296,6 +296,9 @@ describe('formatFindingComment', () => {
     ] } });
     expect(chained).toContain('- Compares `count < max`\n- Never resets `total += n`');
     expect(chained).not.toContain('if (count < max)');
+    // Checks that quote no code are one check only when they say the same words.
+    expect(render({ ...baseFinding, evidence: { proof: [], checks: ['src/util.ts:12 is safe', 'src/util.ts:12 is safe only for admins', 'src/util.ts:12: is safe.'] } }))
+      .toContain(`- Is safe\n- Is safe only for admins\n\n${link('src/util.ts', 11, 15)}`);
     // An unlinked check is compared by what it says after its place, so a bare place hides nothing.
     expect(render({ ...baseFinding, evidence: { proof: [], checks: ['src/legacy/parser.py', 'src/legacy/parser.py swallows ValueError'] } }))
       .toContain('- src/legacy/parser.py\n- src/legacy/parser.py swallows ValueError');

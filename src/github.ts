@@ -2325,23 +2325,25 @@ function parseCheck(entry: string, known: readonly string[]): Check | undefined 
 
 const overlaps = (a: CodeRange, b: CodeRange): boolean => a.file === b.file && a.start <= b.end && b.start <= a.end;
 
-/** Returns the words of the code `text` quotes, or of all of it when it quotes none, in lower case. */
-function checkWords(text: string): string {
-  const code = [...text.matchAll(/(?<!\\)(`+)(.+?)(?<!\\)\1/g)].map(span => span[2]).join(' ');
-  return ` ${(code || text).toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean).join(' ')} `;
+/** Returns the words of `text` in lower case, with a space on each side. */
+function wordsOf(text: string): string {
+  return ` ${text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean).join(' ')} `;
 }
 
 /**
  * Whether `a` and `b` are one check worded twice, as when two reviewers flag the same problem. They cite the same
- * place, and the code one quotes, at least two words of it, is part of the code the other quotes.
+ * place, and the code one quotes, at least two words of it, is part of the code the other quotes. Checks that quote
+ * no code must say the same words.
  */
 function sameCheck(a: Check, b: Check): boolean {
   const lead = (text: string): string | undefined => text.match(/^[^\s`]*(?:\/|:\d)[^\s`]*/)?.[0];
   const place = !a.at && !b.at ? lead(a.text) : undefined;
   if (a.at && b.at ? !overlaps(a.at, b.at) : place === undefined || place !== lead(b.text)) return false;
   // An unlinked check names its place in its text, which is no part of what it says.
-  const said = (check: Check): string => checkWords(place ? check.text.slice(place.length) : check.text);
-  const [shorter, longer] = [said(a), said(b)].sort((x, y) => x.length - y.length);
+  const [saidA, saidB] = [a, b].map(check => (place ? check.text.slice(place.length) : check.text));
+  const [codeA, codeB] = [saidA, saidB].map(said => [...said.matchAll(/(?<!\\)(`+)(.+?)(?<!\\)\1/g)].map(span => span[2]).join(' '));
+  if (!codeA || !codeB) return wordsOf(saidA) === wordsOf(saidB);
+  const [shorter, longer] = [wordsOf(codeA), wordsOf(codeB)].sort((x, y) => x.length - y.length);
   return shorter.trim().includes(' ') && longer.includes(shorter);
 }
 
