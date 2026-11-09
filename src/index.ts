@@ -1022,6 +1022,7 @@ async function collectOpenThreads(
       severity: f.severity,
       description: f.description,
       suggestedFix: f.suggestedFix,
+      howToFix: f.howToFix,
     }));
 
   // Fetch full file contents for changed files so reviewers have surrounding context.

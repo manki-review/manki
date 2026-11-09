@@ -19,18 +19,19 @@ const FINDING_TITLE_RE = /\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(
 /** The hidden finding data in a thread comment. Comments without it use the older `**Severity**: title` layout. */
 const FINDING_DATA_RE = /<!-- manki-finding: (.+?) -->/;
 
-export function parseFindingData(body: string): { title?: string; fix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number } | undefined {
+export function parseFindingData(body: string): { title?: string; fix?: string; howToFix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number } | undefined {
   const match = body.match(FINDING_DATA_RE);
   if (!match) return undefined;
   try {
     const parsed: unknown = JSON.parse(match[1]);
     if (!parsed || typeof parsed !== 'object') return undefined;
-    const { title, fix, tags, flaggedBy, file, line } = parsed as { title?: unknown; fix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown };
+    const { title, fix, howToFix, tags, flaggedBy, file, line } = parsed as { title?: unknown; fix?: unknown; howToFix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown };
     return {
       ...(typeof title === 'string' && { title }),
       ...(typeof file === 'string' && file && { file }),
       ...(typeof line === 'number' && Number.isSafeInteger(line) && line > 0 && { line }),
       ...(typeof fix === 'string' && fix.length > 0 && { fix }),
+      ...(typeof howToFix === 'string' && howToFix.length > 0 && { howToFix }),
       ...(isStringArray(tags) && { tags }),
       ...(isStringArray(flaggedBy) && { flaggedBy }),
     };
@@ -514,6 +515,7 @@ async function fetchRecapState(
       ...(t.answer && { answer: t.answer }),
       description: t.description,
       suggestedFix: t.suggestedFix,
+      howToFix: t.howToFix,
     };
   });
 
@@ -747,7 +749,8 @@ function parseFindingFromComment(body: string): FindingMetadata {
   else if (truncatingStop && descSlice.length > 0) descSlice += '…(truncated)';
   const description: string | undefined = descSlice.length > 0 ? descSlice : undefined;
 
-  let suggestedFix = parseFindingData(body)?.fix;
+  const data = parseFindingData(body);
+  let suggestedFix = data?.fix;
   const aiContextMatch = body.match(/<summary>AI context<\/summary>[\s\S]*?```json\s*([\s\S]*?)```/);
   if (aiContextMatch) {
     try {
@@ -762,7 +765,7 @@ function parseFindingFromComment(body: string): FindingMetadata {
   }
   if (suggestedFix && suggestedFix.length > 300) suggestedFix = suggestedFix.slice(0, 300) + '...';
 
-  return { description, suggestedFix };
+  return { description, suggestedFix, ...(data?.howToFix && { howToFix: data.howToFix }) };
 }
 
 interface FetchReviewThreadsResult {
@@ -867,7 +870,7 @@ async function fetchReviewThreads(
       const findingTitle = data?.title?.trim() || matchTitleLine(body)?.[1]?.trim() || '';
       const findingLine = data?.file === thread.path ? data.line : undefined;
 
-      const { description, suggestedFix } = isBotThread && firstComment?.body
+      const { description, suggestedFix, howToFix } = isBotThread && firstComment?.body
         ? parseFindingFromComment(firstComment.body)
         : {};
 
@@ -890,6 +893,7 @@ async function fetchReviewThreads(
         findingTitle,
         description,
         suggestedFix,
+        howToFix,
         file: thread.path ?? '',
         line,
         lineStart,

@@ -146,6 +146,7 @@ export interface ThreadResolutionOverrides {
 export interface FindingMetadata {
   description?: string;
   suggestedFix?: string;
+  howToFix?: string;
 }
 
 /**

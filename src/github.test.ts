@@ -4301,7 +4301,7 @@ describe('postReview non-blocking findings', () => {
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([]), diff, undefined, undefined, { existingThreads: [
       thread('Retry has no limit', { suggestedFix: 'Cap the retries.' }),
-      thread('Human closed', { status: 'resolved', answer: '**Agreed.** Later.' }),
+      thread('Human closed', { status: 'resolved', answer: '**Agreed.** Later.', howToFix: 'Add a retry limit' }),
       thread('Still open', { status: 'open' }),
       thread('Fixed since', { status: 'resolved', fixed: true }),
       thread('Withdrawn one', { answer: 'Withdrawn. Fine.' }),
@@ -4315,6 +4315,9 @@ describe('postReview non-blocking findings', () => {
     expect(body).toContain('Retries forever.');
     expect(body).toContain('https://github.com/owner/repo/blob/sha/src/b.ts#L7-L11');
     expect(body).toContain('<b>Human closed</b>');
+    // A fix given in words stays words, never a diff against the flagged line.
+    expect(body).toContain('**How to fix it**\nAdd a retry limit\n');
+    expect(body).not.toContain('+Add a retry limit');
     for (const title of ['Still open', 'Fixed since', 'Withdrawn one', 'Agreed then kept', 'No marker']) expect(body).not.toContain(title);
   });
 

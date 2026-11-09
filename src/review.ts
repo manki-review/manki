@@ -2279,10 +2279,9 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
 
 /**
  * Folds each kept finding that names the problem of a verdict reader blocker into that blocker, so one problem gets one
- * thread. The blocker keeps its grade and takes the finding's reviewers and evidence. It takes the finding's code fix only
- * when it has none and both sit on one line, since a one-line fix replaces the line its comment sits on, and its
- * `howToFix` whenever it has none. A title the blocker's does not contain is added to its description, so a second
- * defect folded in by mistake still shows.
+ * thread. The blocker keeps its grade and takes what `foldInto` merges. It takes the finding's code fix only when it
+ * has none and both sit on one line, since a one-line fix replaces the line its comment sits on. A title the blocker's
+ * does not contain is added to its description, so a second defect folded in by mistake still shows.
  */
 function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { findings: Finding[]; blockers: Finding[] } {
   const merged = blockers.map(b => ({ ...b }));
@@ -2295,7 +2294,6 @@ function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { fin
     if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}`;
     foldInto(blocker, f);
     if (!blocker.suggestedFix && f.suggestedFix && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
-    blocker.howToFix ??= f.howToFix;
     if (f.tags?.includes(SECURITY_TAG) && !blocker.tags?.includes(SECURITY_TAG)) blocker.tags = [...(blocker.tags ?? []), SECURITY_TAG];
     core.info(`Folded ${f.severity} "${f.title}" into the verdict reader's blocker "${blocker.title}"`);
     return false;

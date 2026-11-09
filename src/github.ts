@@ -1351,7 +1351,7 @@ const AGREED_ANSWER_RE = /^\**Agreed\./;
 function agreedFollowUps(threads: PreviousFinding[]): Finding[] {
   return threads.flatMap(t => (t.answer && AGREED_ANSWER_RE.test(t.answer) && t.severity !== 'unknown' && !t.fixed
     && (t.status === 'resolved' || t.status === 'auto-resolved')
-    ? [{ severity: t.severity, title: t.title, file: t.file, line: t.line, description: t.description ?? '', ...(t.suggestedFix && { suggestedFix: t.suggestedFix }), reviewers: [] }]
+    ? [{ severity: t.severity, title: t.title, file: t.file, line: t.line, description: t.description ?? '', ...(t.suggestedFix && { suggestedFix: t.suggestedFix }), ...(t.howToFix && { howToFix: t.howToFix }), reviewers: [] }]
     : []));
 }
 
@@ -2554,7 +2554,6 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
   if (fold) comment += `\n\n${fold}`;
   comment += `\n\n${issueBoxFor(finding)}`;
 
-  const savedFix = finding.suggestedFix || finding.howToFix;
   const data: Record<string, unknown> = {
     file: finding.file,
     line: finding.line,
@@ -2562,8 +2561,8 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
     ...(finding.judgeConfidence && { confidence: finding.judgeConfidence }),
     flaggedBy: finding.reviewers,
     title: finding.title,
-    // A later round reads this back as the fix the thread asked for.
-    ...(savedFix && { fix: savedFix.slice(0, 200) }),
+    ...(finding.suggestedFix && { fix: finding.suggestedFix.slice(0, 200) }),
+    ...(finding.howToFix && { howToFix: finding.howToFix.slice(0, 300) }),
     ...(finding.tags && finding.tags.length > 0 && { tags: finding.tags }),
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
   };
