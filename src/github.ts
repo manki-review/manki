@@ -2371,8 +2371,9 @@ export async function reactToReviewComment(
   }
 }
 
-const DEFAULT_MAX_FILE_SIZE = 50 * 1024; // 50KB per file
-const DEFAULT_MAX_TOTAL_SIZE = 100 * 1024; // 100KB total
+// Room for a non-trivial PR's changed files in full: 400KB is about 110k tokens, a ninth of the finders' context window.
+const DEFAULT_MAX_FILE_SIZE = 200 * 1024;
+const DEFAULT_MAX_TOTAL_SIZE = 400 * 1024;
 
 /**
  * Fetch file contents for changed files via the GitHub API.

@@ -1260,8 +1260,8 @@ describe('selectTeam', () => {
     ])('routes %s as before', (...row) => {
       const team = run(row);
       expect([team.routing.class, readers(team)]).toEqual([row[4], row[5]]);
-      // Tool steps by risk: 8 for the quick check, 30 for two finders, 15 for one.
-      const steps = row[5][0] === verifier ? 8 : row[5].length === 2 ? 30 : 15;
+      // Tool steps by risk: 8 for the quick check, 40 for two finders, 30 for one.
+      const steps = row[5][0] === verifier ? 8 : row[5].length === 2 ? 40 : 30;
       expect(team.finders.map(f => f.steps)).toEqual(row[5].map(() => steps));
     });
 
@@ -1282,7 +1282,7 @@ describe('selectTeam', () => {
       const solo = deeper(code, t(false, false, false));
       expect(readers(solo)).toEqual([`${S} · high`, `${O} · high`]);
       expect(solo.routing).toMatchObject({ class: 'internal', group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'solo', deeper: true });
-      expect(solo.finders.map(f => f.steps)).toEqual([30, 30]);
+      expect(solo.finders.map(f => f.steps)).toEqual([40, 40]);
 
       expect(readers(deeper(docs, t(true, false, true)))).toEqual([`${S} · high`, `${O} · high`]);
 
@@ -1485,7 +1485,7 @@ describe('selectTeam', () => {
       const weak = selectTeam(authDiff, config, quiet);
       expect([weak.routing.group, weak.routing.groupSource, weak.routing.weakerAllowed, readers(weak)]).toEqual(['solo', 'routing', ['security'], ['Claude Sonnet 5.5 · medium']]);
       // The one finder still gets the tool steps of a floor class.
-      expect(weak.finders[0].steps).toBe(30);
+      expect(weak.finders[0].steps).toBe(40);
       const withCi = selectTeam(diffOf('src/auth/login.ts', '.github/workflows/ci.yml'), config, quiet);
       expect([withCi.routing.group, withCi.routing.groupSource, withCi.routing.weakerAllowed]).toEqual(['pair', 'floor_escalation', undefined]);
     });
@@ -1907,10 +1907,10 @@ describe('runReview', () => {
       // Two finders per round, and both of a round share its state directory.
       const [first, second, ...rest] = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools);
       expect(first).toEqual({
-        root: '/work/pr-head', steps: 30, related: { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') },
+        root: '/work/pr-head', steps: 40, related: { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') },
       });
       expect(second).toEqual(first);
-      expect(rest).toEqual([undefined, undefined, { root: '/work/pr-head', steps: 30 }, { root: '/work/pr-head', steps: 30 }]);
+      expect(rest).toEqual([undefined, undefined, { root: '/work/pr-head', steps: 40 }, { root: '/work/pr-head', steps: 40 }]);
       expect(jest.mocked(withoutTools.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools)).toEqual([undefined, undefined]);
       // The judge gets the related repo rules only for a round whose finders could read them.
       expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].relatedRepos)).toEqual([related_repos, undefined, undefined, undefined]);

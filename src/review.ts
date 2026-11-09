@@ -124,10 +124,10 @@ function overlongSummary(lines: OverlongLine[]): string {
 export const PLANNER_TIMEOUT_MS = 60_000;
 // Tool steps a finder may take, by the risk its review group stands for.
 const QUICK_CHECK_STEPS = 8;
-const FINDER_STEPS = 15;
-const RISKY_FINDER_STEPS = 30;
+const FINDER_STEPS = 30;
+const RISKY_FINDER_STEPS = 40;
 // A safety net for a finder with tools. The step budget is what normally ends its call.
-const FINDER_TOOLS_TIMEOUT_MS = 600_000;
+const FINDER_TOOLS_TIMEOUT_MS = 900_000;
 
 /** A finder reply that is not the JSON array of findings, which a retry with `parseRetryNote` can correct. */
 class FinderReplyError extends Error {}

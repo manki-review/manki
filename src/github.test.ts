@@ -1823,6 +1823,13 @@ describe('fetchFileContents', () => {
     expect(result.size).toBe(2);
     expect(result.get('src/a.ts')).toBe('const a = 1;');
     expect(result.get('src/b.ts')).toBe('const b = 2;');
+
+    // The default caps inline a 172KB and a 55KB changed file together, and stop above 200KB a file and 400KB in all.
+    const sized = (kb: number) => ({ content: 'x'.repeat(kb * 1024), size: kb * 1024 });
+    const large = mockOctokit({ 'checker.rs': sized(172), 'collection.rs': sized(55), 'huge.rs': sized(201) });
+    expect([...(await fetchFileContents(large, 'owner', 'repo', 'abc123', ['checker.rs', 'collection.rs', 'huge.rs'])).keys()]).toEqual(['checker.rs', 'collection.rs']);
+    const many = mockOctokit({ 'a.rs': sized(190), 'b.rs': sized(190), 'c.rs': sized(30) });
+    expect([...(await fetchFileContents(many, 'owner', 'repo', 'abc123', ['a.rs', 'b.rs', 'c.rs'])).keys()]).toEqual(['a.rs', 'b.rs']);
   });
 
   it('skips files exceeding maxFileSize', async () => {
