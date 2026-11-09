@@ -1,0 +1,204 @@
+name: Benchmark
+
+# Runs the recall benchmark (bench/README.md) on Manki at `ref`, one job per case, and applies the release gate in
+# RELEASE.md against earlier runs. Every review spends the Claude subscription behind CLAUDE_CODE_OAUTH_TOKEN, so it
+# only runs when started by hand. The defaults are the release gate: the hold-out set, the base setup, one run.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Manki tag, branch or commit to benchmark
+        required: true
+        default: main
+        type: string
+      set:
+        description: Cases to run
+        required: true
+        default: holdout
+        type: choice
+        options: [holdout, tuning, both]
+      variants:
+        description: Setups to score, space-separated, each a name or name=file (a file of this workflow's commit)
+        required: true
+        default: base
+        type: string
+      runs:
+        description: Reviews per case, 1 to 5
+        required: true
+        default: 1
+        type: number
+      cases:
+        description: Only these case ids, space-separated. Empty runs the whole set.
+        required: false
+        type: string
+      baseline:
+        description: Run ids of the last release's benchmark, space-separated. Applies the release gate.
+        required: false
+        type: string
+      rerun_of:
+        description: Run ids of earlier runs of the same ref, space-separated. The gate decides on the mean.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      commit: ${{ steps.matrix.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Resolved once, so every case job reviews the same commit even when the branch moves during the run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          path: manki-ref
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
+      - name: Check the inputs and list the cases
+        id: matrix
+        env:
+          SET: ${{ inputs.set }}
+          CASES: ${{ inputs.cases }}
+          VARIANTS: ${{ inputs.variants }}
+          RUNS: ${{ inputs.runs }}
+          BASELINE: ${{ inputs.baseline }}
+          RERUN_OF: ${{ inputs.rerun_of }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [[ "$RUNS" =~ ^[1-5]$ ]] || fail "runs must be a whole number from 1 to 5"
+          [ -n "${VARIANTS// }" ] || fail "variants must name at least one setup, such as base"
+          for v in $VARIANTS; do
+            [[ "$v" =~ ^[A-Za-z0-9._-]+(=[A-Za-z0-9._/-]+)?$ ]] || fail "variant $v must be a name or name=file"
+            [[ "$v" != *=* ]] || [ -f "${v#*=}" ] || fail "variant file ${v#*=} is not in this workflow's commit"
+          done
+          for id in $BASELINE $RERUN_OF; do [[ "$id" =~ ^[0-9]+$ ]] || fail "run id $id must be a number"; done
+          echo "commit=$(git -C manki-ref rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(npm run -s bench-report -- matrix --set "$SET" --cases "$CASES")" >> "$GITHUB_OUTPUT"
+
+  case:
+    needs: plan
+    name: ${{ matrix.case.set }} ${{ matrix.case.id }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        case: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          path: manki-ref
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Build Manki at the ref
+        working-directory: manki-ref
+        run: npm ci && npm run build
+      - name: Fetch the case's commits
+        env:
+          CASE_REPO: ${{ matrix.case.repo }}
+          CASE_BASE: ${{ matrix.case.base }}
+          CASE_HEAD: ${{ matrix.case.head }}
+        # A full fetch of both commits and their history. The review fetches its workspace from this repository, which a
+        # blobless or shallow clone cannot serve. The refs keep both commits fetchable from it by name.
+        run: |
+          git init -q case-repo
+          git -C case-repo fetch -q --no-tags "https://github.com/$CASE_REPO.git" "$CASE_BASE" "$CASE_HEAD"
+          git -C case-repo update-ref refs/bench/base "$CASE_BASE"
+          git -C case-repo update-ref refs/bench/head "$CASE_HEAD"
+      - name: Review and score the case
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CASE_ID: ${{ matrix.case.id }}
+          CASE_REPO: ${{ matrix.case.repo }}
+          CASE_FILE: ${{ matrix.case.file }}
+          RUNS: ${{ inputs.runs }}
+          VARIANTS: ${{ inputs.variants }}
+        # The case file alone, so a ref with an older case parser reads no other case.
+        run: |
+          mkdir -p case-dir out
+          cp "$CASE_FILE" case-dir/
+          args=(bench --cases case-dir --case "$CASE_ID" --runs "$RUNS" --checkout "$CASE_REPO=$PWD/case-repo"
+            --out "out/$CASE_ID.json" --cache "$RUNNER_TEMP/matcher-cache.json")
+          for v in $VARIANTS; do args+=(--variant "$v"); done
+          node manki-ref/dist/index.js "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: bench-case-${{ matrix.case.id }}
+          path: out/${{ matrix.case.id }}.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  report:
+    needs: [plan, case]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read # reads this run's case reports and the reports of the runs in baseline and rerun_of
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bench-case-*
+          merge-multiple: true
+          path: case-reports
+      - name: Merge the case reports
+        env:
+          SET: ${{ inputs.set }}
+          CASES: ${{ inputs.cases }}
+          REF: ${{ inputs.ref }}
+          COMMIT: ${{ needs.plan.outputs.commit }}
+        # A case without a report counts as incomplete in the merged report.
+        run: |
+          mkdir -p case-reports
+          npm run -s bench-report -- merge --set "$SET" --cases "$CASES" --dir case-reports --out report.json --ref "$REF" --commit "$COMMIT" \
+            >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-report
+          path: report.json
+          retention-days: 90
+      - name: Apply the release gate
+        if: inputs.baseline != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE: ${{ inputs.baseline }}
+          RERUN_OF: ${{ inputs.rerun_of }}
+        run: |
+          args=(--candidate report.json)
+          for id in $BASELINE; do
+            gh run download "$id" --repo "$GITHUB_REPOSITORY" --name bench-report --dir "baseline/$id"
+            args+=(--baseline "baseline/$id/report.json")
+          done
+          for id in $RERUN_OF; do
+            gh run download "$id" --repo "$GITHUB_REPOSITORY" --name bench-report --dir "rerun/$id"
+            args+=(--candidate "rerun/$id/report.json")
+          done
+          npm run -s bench-report -- gate "${args[@]}" >> "$GITHUB_STEP_SUMMARY"
