@@ -17,9 +17,12 @@ import { gitEnv } from './workspace';
 const execFileAsync = promisify(execFile);
 
 const MAX_USES_PER_SYMBOL = 4;
-const MAX_USES = 40;
+const MAX_USES = 60;
 const MAX_SYMBOLS = 80;
-/** A symbol with more uses than this is listed by name only, since its uses would flood the list. */
+/**
+ * A symbol with more uses than this is listed by name only, since its uses would flood the list. A field or variant the
+ * diff redefines is listed whatever its count, since its readers are what the change can break.
+ */
 const COMMON_USES = 80;
 const MAX_REFERENCED_FIELDS = 20;
 const MAX_STRUCTS = 6;
@@ -239,7 +242,9 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
 
   const hits = (await grepWords(workspace, names)).filter(hit => !findExcludePattern(hit.file, excludePaths));
   const packages = new Packages(workspace);
-  const { blocks: sections, symbols: listed, common, capped } = formatSymbolUses(searched, hits.filter(hit => !touched.get(hit.file)?.has(hit.line)), packages);
+  // A field or variant whose own lines change, its type or its doc, is redefined.
+  const redefined = new Set(searched.filter(s => (s.kind === 'field' || s.kind === 'variant') && s.tier === 0).map(s => s.name));
+  const { blocks: sections, symbols: listed, common, capped } = formatSymbolUses(searched, hits.filter(hit => !touched.get(hit.file)?.has(hit.line)), packages, redefined);
 
   const perField = referenced.map(([name, { files: readers }]) => structsDeclaringField(parser, name, hits, readers, packages));
   // Each field's likeliest type first, then the second likeliest, so the most read field cannot fill the list alone.
@@ -502,10 +507,10 @@ function proseRank(word: RegExp, { file, text }: Hit): number {
   return word.test(text.replace(COMMENT, '')) ? 0 : 1;
 }
 
-/** Ranks a code line: 0 code that reads a field as `.name`, or names any other symbol, 1 other code, 2 test code. */
+/** Ranks a code line: 0 code that reads a field as `.name` but not as a `.name(` call, or names any other symbol, 1 other code, 2 test code. */
 function codeRank(symbol: ChangedSymbol, word: RegExp, { file, text }: Hit): number {
   if (TEST_PATH.test(file)) return 2;
-  return symbol.kind !== 'field' || new RegExp(`\\.${word.source}`).test(text) ? 0 : 1;
+  return symbol.kind !== 'field' || new RegExp(`\\.${word.source}(?!\\s*\\()`).test(text) ? 0 : 1;
 }
 
 function wordPattern(names: string[], flags = ''): RegExp {
@@ -522,8 +527,11 @@ interface SymbolUses {
   capped: string[];
 }
 
-/** Returns one block per symbol with its best ranked uses, plus a note on the symbols left out. */
-function formatSymbolUses(symbols: ChangedSymbol[], hits: Hit[], packages: Packages): SymbolUses {
+/**
+ * Returns one block per symbol with its best ranked uses, plus a note on the symbols left out. A symbol in `redefined` is
+ * never left out as too common.
+ */
+function formatSymbolUses(symbols: ChangedSymbol[], hits: Hit[], packages: Packages, redefined: Set<string>): SymbolUses {
   if (symbols.length === 0) return { blocks: [], symbols: [], common: [], capped: [] };
   const byName = new Map(symbols.map((s, index) => [s.name, { symbol: s, index, uses: [] as Hit[] }]));
   const pattern = wordPattern(symbols.map(s => s.name), 'g');
@@ -534,9 +542,10 @@ function formatSymbolUses(symbols: ChangedSymbol[], hits: Hit[], packages: Packa
     }
   }
   const entries = [...byName.values()].filter(e => e.uses.length > 0);
-  const common = entries.filter(e => e.uses.length > COMMON_USES);
+  const isCommon = (e: typeof entries[number]) => e.uses.length > COMMON_USES && !redefined.has(e.symbol.name);
+  const common = entries.filter(isCommon);
   // Within a rank, the first use in each file comes before a second use in any file, so one file cannot fill a symbol's share.
-  const ranked = entries.filter(e => e.uses.length <= COMMON_USES).flatMap(e => {
+  const ranked = entries.filter(e => !isCommon(e)).flatMap(e => {
     const word = wordPattern([e.symbol.name]);
     const seen = new Map<string, number>();
     return e.uses.map(use => {
@@ -567,7 +576,7 @@ function formatSymbolUses(symbols: ChangedSymbol[], hits: Hit[], packages: Packa
       record: { name: symbol.name, declared: `${symbol.file}:${symbol.line}`, uses: list.map(u => `${u.file}:${u.line}`), ...(cut > 0 && { notShown: cut }) },
     };
   });
-  const hidden = entries.filter(e => !shown.has(e.symbol.name) && e.uses.length <= COMMON_USES);
+  const hidden = entries.filter(e => !shown.has(e.symbol.name) && !isCommon(e));
   const notes = [
     ...(common.length > 0 ? [`Too common to list, so search for them yourself if they matter: ${namesWithCounts(common)}.`] : []),
     ...(hidden.length > 0 ? [`The cap of ${MAX_USES} lines left out every use of: ${namesWithCounts(hidden)}.`] : []),
