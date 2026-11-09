@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.3.2] - 2026-11-10
+
+Manki 7.3.2 fixes a judge regression from 7.3.1 and tightens how findings are merged and what the finders see. The judge now reads the repository's instruction files, so findings that cite a repository rule are graded again instead of dropped.
+
+### Review loop and verdicts
+
+- The judge sees the repository's instruction files, such as `AGENTS.md` and `CLAUDE.md`, as the finders do. A finding that says the change breaks one of their rules is checked against the rule's text. A convention such as naming or import placement is graded a nitpick or a suggestion. The judge grades a finding on its main claim and corrects a wrong side detail, such as an off line number, in its reasoning instead of dropping the finding ([#1330](https://github.com/manki-review/manki/pull/1330)).
+- A kept finding that sits within a few lines of a verdict reader blocker in the same file, and does not already match it, goes to the dedup model with the blocker. All such pairs of a round go in one call, and a pair folds into one thread only when the model answers that both describe the same defect. A failed or unclear answer keeps both threads ([#1332](https://github.com/manki-review/manki/pull/1332)).
+- The judge treats a lockfile alert as a repeat of a resolved one only when the title matches exactly, as dedup does ([#1331](https://github.com/manki-review/manki/pull/1331)).
+
+### How finders search
+
+- The uses list shows at most 3 uses of a symbol from one file while another file still has a code use to show, so one file can no longer fill the list ([#1334](https://github.com/manki-review/manki/pull/1334)).
+- A sibling implementation group is dropped only when one earlier group already compared all its members. Groups without a sibling are dropped before ranking, and the per-file cap of 50 groups is gone. At most 2 MB of function body text is read per round to spot identical bodies ([#1335](https://github.com/manki-review/manki/pull/1335)).
+- Parsed lockfiles no longer count against the file contents budget, so a code file keeps its place. A thread on a lockfile reads its code window from a separate fetch of up to 1 MB ([#1331](https://github.com/manki-review/manki/pull/1331)).
+
+### Review format
+
+- A saved fix in words or code that is cut short ends in `...`. Proof entries without a `file:line` are dropped before the list is cut to ten, so a real location is not pushed out. A bare file name links only when a file is actually there, and otherwise stays plain text ([#1333](https://github.com/manki-review/manki/pull/1333)).
+
 ## [7.3.1] - 2026-11-10
 
 Manki 7.3.1 grades findings more honestly. Every stage checks what it is told against the code before that changes a grade, a gap the PR admits keeps the grade its damage earns, and every doubt the judge cannot settle goes to the refuter. A finding comment opens with what goes wrong and keeps the rest in one fold that leads with the fix. Automatic review pauses later and resumes after a review started by hand.
