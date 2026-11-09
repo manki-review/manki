@@ -197,6 +197,7 @@ pub struct Account {
     pub(crate) spent_before_funded: BTreeMap<OutPoint, Utxo>,
     spent: HashSet<OutPoint>,
     unsettled: BTreeMap<Txid, Vec<Utxo>>,
+    /// ${'x'.repeat(400)}
     balance: u64,
     labels: Vec<String>,
     cache: Option<Utxo>,
@@ -213,7 +214,7 @@ mod tests {
 }
 `;
 
-  it('asks whether a sibling collection field of the same item type can hold what a changed line looks up, the same type first', async () => {
+  it('asks whether a sibling collection field of the same item type can hold what a changed line looks up, the same type first, and cuts long lines', async () => {
     const { siblings } = await usesFor(
       { 'src/account.rs': ACCOUNT, 'src/settle.rs': SETTLE('') },
       {
@@ -222,6 +223,7 @@ mod tests {
     }
     let held = account.utxos.remove(&outpoint);
     account.cache.take();
+    account.spent.contains(&key_of("\`"));
 `),
         'src/queue.ts': `export class Queue {\n  pending: Set<string>;\n  done: Set<string>;\n  count: number;\n\n  start(id: string) {\n${'    this.count++;\n'.repeat(150)}    if (this.pending.has(id)) return;\n${'    this.count--;\n'.repeat(100)}  }\n}\n`,
       },
@@ -240,8 +242,9 @@ mod tests {
     ]);
     expect(first.definition).toMatchObject({ file: 'src/account.rs', line: 3 });
     expect(first.definition.code).toContain('6:      /// Ours, but spent before the funding arrived, so never in `utxos`.\n7:      pub(crate) spent_before_funded: BTreeMap<OutPoint, Utxo>,');
+    expect(first.definition.code).toContain(`10:      /// ${'x'.repeat(292)} ...\n11:      balance: u64,`);
     expect(first.hunks).toHaveLength(1);
-    expect(first.hunks[0]).toMatch(/^diff --git a\/src\/settle\.rs b\/src\/settle\.rs\n[\s\S]*\n@@ -1,4 \+1,9 @@\n[\s\S]*\n\+    let held = account\.utxos\.remove\(&outpoint\);/);
+    expect(first.hunks[0]).toMatch(/^diff --git a\/src\/settle\.rs b\/src\/settle\.rs\n[\s\S]*\n@@ -1,4 \+1,10 @@\n[\s\S]*\n\+ {4}let held = account\.utxos\.remove\(&outpoint\);/);
     const queueHunk = siblings.fields[0].hunks[0].split('\n');
     expect(queueHunk[3]).toBe('@@ -0,0 +97,120 @@');
     expect(queueHunk.slice(4)).toHaveLength(120);
@@ -249,20 +252,21 @@ mod tests {
     expect(siblings.implementations).toEqual([]);
   });
 
-  it('compares the functions of one name or trait method on sibling types in the changed files and beside them, most touched first', async () => {
+  it('compares the functions of one name or trait method on sibling types in the changed files and beside them, most touched first, leaving out nested functions', async () => {
     const decode = (type: string, body: string) => `impl Decodable for ${type} {\n    fn consensus_decode(r: &mut R) -> Result<Self, Error> {\n        let version = u16::consensus_decode(r)?;\n${body}        Ok(Self { version })\n    }\n}\n`;
     const methods = (type: string, size: string) => `impl ${type} {\n    fn is_new(&self) -> bool {\n        self.version >= 3\n    }\n\n    pub fn size(&self) -> usize {\n        ${size}\n    }\n}\n`;
     const base = {
       'src/payload/service.rs': decode('ServicePayload', '') + methods('ServicePayload', '2'),
-      'src/payload/registrar.rs': decode('RegistrarPayload', '') + methods('RegistrarPayload', '2') + `\n#[cfg(test)]\nmod tests {\n${decode('FakePayload', '')}}\n`,
-      'src/payload/revocation.rs': decode('RevocationPayload', '        if version == 0 {\n            return Err(Error::Version);\n        }\n'),
+      'src/payload/registrar.rs': decode('RegistrarPayload', '        let _legacy = 0;\n') + methods('RegistrarPayload', '2') + `\n#[cfg(test)]\nmod tests {\n${decode('FakePayload', '')}}\n`,
+      'src/payload/revocation.rs': decode('RevocationPayload', '        if version == 0 {\n            return Err(Error::Version);\n        }\n')
+        + 'impl RevocationPayload {\n    fn helper(&self) -> usize {\n        fn size() -> usize { 1 }\n        size()\n    }\n}\n',
       'src/other/remote.rs': decode('RemotePayload', ''),
     };
     const { siblings } = await usesFor(base, {
       'src/payload/service.rs': (decode('ServicePayload', '        if version > 3 {\n            return Err(Error::Version);\n        }\n') + methods('ServicePayload', '2'))
         .replace('>= 3', '>= 3 && self.version < 9'),
       'src/payload/registrar.rs': base['src/payload/registrar.rs'].replace('let version = u16::consensus_decode(r)?;', 'let version = u16::consensus_decode(r)?; // v3')
-        .replace('        2\n', '        4\n').replace('>= 3', '>= 3 && self.version < 9'),
+        .replace('        let _legacy = 0;\n', '').replace('        2\n', '        4\n').replace('>= 3', '>= 3 && self.version < 9'),
     });
 
     expect(siblings.implementations.map(q => [q.trait, q.name, q.members.map(m => `${m.owner}${m.changed ? '*' : ''}`)])).toEqual([
@@ -273,6 +277,8 @@ mod tests {
     expect(service).toMatchObject({ file: 'src/payload/service.rs', line: 2 });
     expect(service.code).toContain('4:+         if version > 3 {');
     expect(service.code).toContain('3:          let version = u16::consensus_decode(r)?;');
+    // Only added lines are marked, not the line after a removed one.
+    expect(siblings.implementations[0].members[0].code).toContain('3:+         let version = u16::consensus_decode(r)?; // v3\n4:          Ok(Self { version })');
   });
 
   const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };

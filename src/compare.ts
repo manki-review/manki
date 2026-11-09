@@ -40,12 +40,15 @@ function fenceExcerpt({ file, code }: CodeExcerpt): string {
 const MARKS_NOTE = 'Each line starts with its line number in the head commit. A `+` after the number marks a line the PR adds.';
 
 function fieldMessage(q: SiblingFieldQuestion, tools: boolean): string {
-  const [first, ...more] = q.lookups;
-  const others = more.length > 0 ? `\n\nThe change also uses \`${q.field}\` at:\n${more.map(l => `- ${l.file}:${l.line}: \`${l.text}\``).join('\n')}` : '';
+  const [first] = q.lookups;
   const read = tools ? ` Read where \`${q.sibling}\` is written before you answer.` : '';
   return `## Question
 
-The change looks up \`${q.item}\` in \`${q.field}\` of \`${q.struct}\`, at ${first.file}:${first.line}: \`${first.text}\`. Can \`${q.item}\` be held in \`${q.sibling}\` instead? If so, does the change handle it?${read}${others}
+The change looks up \`${q.item}\` in \`${q.field}\` of \`${q.struct}\`, at ${first.file}:${first.line}. Can \`${q.item}\` be held in \`${q.sibling}\` instead? If so, does the change handle it?${read}
+
+The changed lines that use \`${q.field}\`:
+
+${fenceText(q.lookups.map(l => `${l.file}:${l.line}: ${l.text}`).join('\n'))}
 
 ## \`${q.struct}\` at ${q.definition.file}:${q.definition.line}
 

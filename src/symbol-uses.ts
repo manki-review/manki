@@ -46,6 +46,7 @@ const MAX_GROUP_MEMBERS = 4;
 const MAX_SIBLING_FILES = 40;
 const MAX_EXCERPT_LINES = 120;
 const MAX_HUNK_LINES = 120;
+const MAX_EXCERPT_LINE_CHARS = 300;
 const MAX_ITEM_CHARS = 60;
 
 // Names so common across codebases that their uses say nothing about the change.
@@ -377,6 +378,7 @@ function formatReferenceUses(names: string[], found: Map<string, Array<Hit & { r
 async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePaths: string[], loadApi: () => Promise<AstGrepApi>): Promise<UsesOutsideDiff> {
   const files = diff.files.filter(f => f.changeType !== 'deleted');
   const touched = new Map(files.map(f => [f.path, touchedLines(f)]));
+  const added = new Map(files.map(f => [f.path, new Set(addedLines(f).keys())]));
   const needsApi = files.some(f => languageOf(f.path));
   const parser = new Parser(workspace, needsApi ? await loadApi() : undefined);
 
@@ -421,7 +423,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   }
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
-  const implementations = siblingImplementations(workspace, parser, files, touched);
+  const implementations = siblingImplementations(workspace, parser, files, touched, added);
 
   const searched = [...symbols.values()]
     .filter(s => !isGeneric(s.name))
@@ -442,7 +444,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
 
   const hits = (await grepWords(workspace, [...new Set([...names, ...lookupFields])])).filter(hit => !findExcludePattern(hit.file, excludePaths));
   const packages = new Packages(workspace);
-  const fields = siblingFields(parser, lookups, lookupFields, hits, packages, diff, touched);
+  const fields = siblingFields(parser, lookups, lookupFields, hits, packages, diff, added);
   const siblings = { fields, implementations };
   const { blocks: sections, symbols: listed, common, capped } = formatSymbolUses(searched, hits.filter(hit => !touched.get(hit.file)?.has(hit.line)), packages, new Set(redefined.keys()));
 
@@ -718,7 +720,8 @@ class ParsedFile {
         return [];
       }
       const text = (item?.text() ?? '').replace(/^&\s*(?:mut\s+)?/, '').replace(/\s+/g, ' ');
-      if (!text || text.length > MAX_ITEM_CHARS) return [];
+      // A prompt quotes the item in a code span, which a backtick would close.
+      if (!text || text.length > MAX_ITEM_CHARS || text.includes('`')) return [];
       return [{ field: field.text(), item: text, line: lineOf(field), text: this.lines[lineOf(field) - 1]?.trim().slice(0, MAX_LINE_CHARS) ?? '' }];
     });
   }
@@ -726,8 +729,8 @@ class ParsedFile {
   /** Returns each function declared on a type, such as a method in a Rust `impl` block or a class, outside tests. */
   methods(): Method[] {
     return this.declarations.filter(d => d.kind === 'function').flatMap(decl => {
-      const scope = decl.node.ancestors().find(a => this.rules.owners[a.kind()]);
-      if (!scope || this.inTests(decl.node)) return [];
+      const scope = decl.node.ancestors().find(a => this.rules.owners[a.kind()] || this.rules.declarations[a.kind()] === 'function');
+      if (!scope || !this.rules.owners[scope.kind()] || this.inTests(decl.node)) return [];
       const fields = this.rules.owners[scope.kind()];
       const owner = scope.field(fields.type)?.text().replace(/<[\s\S]*>/, '').trim();
       const trait = fields.trait ? scope.field(fields.trait)?.text().replace(/<[\s\S]*>/, '').trim() : undefined;
@@ -735,10 +738,10 @@ class ParsedFile {
     });
   }
 
-  /** Returns the lines of `decl` with their numbers, marking the lines in `touched`, and cut after `MAX_EXCERPT_LINES`. */
-  excerpt(decl: Declaration, file: string, touched: Set<number>): CodeExcerpt {
+  /** Returns the lines of `decl` with their numbers, marking the lines in `added`, each cut after `MAX_EXCERPT_LINE_CHARS` and all after `MAX_EXCERPT_LINES`. */
+  excerpt(decl: Declaration, file: string, added: Set<number>): CodeExcerpt {
     const end = Math.min(decl.end, decl.start + MAX_EXCERPT_LINES - 1);
-    const lines = this.lines.slice(decl.start - 1, end).map((text, i) => `${decl.start + i}:${touched.has(decl.start + i) ? '+' : ' '} ${text}`);
+    const lines = this.lines.slice(decl.start - 1, end).map((text, i) => `${decl.start + i}:${added.has(decl.start + i) ? '+' : ' '} ${shortLine(text)}`);
     if (end < decl.end) lines.push(`... ${decl.end - end} more lines`);
     return { file, line: decl.start, code: lines.join('\n') };
   }
@@ -967,6 +970,7 @@ function structsDeclaringField(parser: Parser, name: string, hits: Hit[], reader
     .slice(0, MAX_STRUCTS_PER_FIELD).map(({ listing }) => listing);
 }
 
+const shortLine = (text: string): string => text.length > MAX_EXCERPT_LINE_CHARS ? `${text.slice(0, MAX_EXCERPT_LINE_CHARS)} ...` : text;
 const typeNames = (type: string): string[] => type.match(/[A-Za-z_]\w*/g) ?? [];
 const isCollection = (type: string): boolean => type.includes('[') || typeNames(type).some(name => CONTAINERS.has(name));
 const elementTypes = (type: string): string[] => typeNames(type).filter(name => !CONTAINERS.has(name) && !TYPE_WRAPPERS.has(name));
@@ -1002,7 +1006,7 @@ function hunkAround(file: DiffFile, line: number): string | undefined {
     }
   }
   const from = Math.max(0, Math.min(focus - MAX_HUNK_LINES / 2, rows.length - MAX_HUNK_LINES));
-  const window = rows.slice(from, from + MAX_HUNK_LINES);
+  const window = rows.slice(from, from + MAX_HUNK_LINES).map(shortLine);
   const count = (skip: string) => window.filter(row => !row.startsWith(skip) && !row.startsWith('\\')).length;
   const cut: DiffHunk = { oldStart: at[from].old, oldLines: count('+'), newStart: at[from].new, newLines: count('-'), content: window.join('\n') };
   return rebuildRawDiff({ files: [{ ...file, hunks: [cut] }], totalAdditions: 0, totalDeletions: 0 });
@@ -1014,7 +1018,7 @@ function hunkAround(file: DiffFile, line: number): string | undefined {
  * `structsDeclaringField` ranks first.
  */
 function siblingFields(
-  parser: Parser, lookups: Array<Lookup & { file: string }>, fields: string[], hits: Hit[], packages: Packages, diff: ParsedDiff, touched: Map<string, Set<number>>,
+  parser: Parser, lookups: Array<Lookup & { file: string }>, fields: string[], hits: Hit[], packages: Packages, diff: ParsedDiff, added: Map<string, Set<number>>,
 ): SiblingFieldQuestion[] {
   const ranked = fields.flatMap((field, order) => {
     const uses = lookups.filter(l => l.field === field);
@@ -1025,7 +1029,7 @@ function siblingFields(
     const declared = parsed.structFields(struct.key);
     const own = declared.find(f => f.name === field);
     if (!own) return [];
-    const definition = parsed.excerpt(decl, struct.file, touched.get(struct.file) ?? new Set());
+    const definition = parsed.excerpt(decl, struct.file, added.get(struct.file) ?? new Set());
     const hunks = [...new Set(uses.flatMap(u => {
       const file = diff.files.find(f => f.path === u.file);
       return (file && hunkAround(file, u.line)) ?? [];
@@ -1048,7 +1052,7 @@ function filesBeside(workspace: string, dir: string, path: string): string[] {
   const family = languageOf(path)?.family;
   try {
     return readdirSync(join(workspace, dir)).sort().map(name => dir === '.' ? name : `${dir}/${name}`)
-      .filter(file => languageOf(file)?.family === family && !TEST_PATH.test(file)).slice(0, MAX_SIBLING_FILES);
+      .filter(file => languageOf(file)?.family === family && !TEST_PATH.test(file));
   } catch {
     return [];
   }
@@ -1059,7 +1063,9 @@ function filesBeside(workspace: string, dir: string, path: string): string[] {
  * declare too, in the changed files or in the other files of their directories. A group whose members read the same is
  * left out. Groups where the change touches more members come first, then trait methods, then more changed lines.
  */
-function siblingImplementations(workspace: string, parser: Parser, files: DiffFile[], touched: Map<string, Set<number>>): SiblingImplementationQuestion[] {
+function siblingImplementations(
+  workspace: string, parser: Parser, files: DiffFile[], touched: Map<string, Set<number>>, added: Map<string, Set<number>>,
+): SiblingImplementationQuestion[] {
   const keyOf = (m: Method) => `${m.trait ?? ''}::${m.name}`;
   const changedLines = (m: Method, file: string) => [...touched.get(file) ?? []].filter(l => l >= m.decl.start && l <= m.decl.end).length;
   const code = files.filter(f => !TEST_PATH.test(f.path)).map(f => f.path);
@@ -1067,7 +1073,7 @@ function siblingImplementations(workspace: string, parser: Parser, files: DiffFi
   if (changed.length === 0) return [];
   const wanted = new Set(changed.flatMap(c => c.methods.map(keyOf)));
   const dirs = new Map(changed.map(({ file }) => [dirname(file), file]));
-  const beside = [...dirs].flatMap(([dir, file]) => filesBeside(workspace, dir, file));
+  const beside = [...dirs].flatMap(([dir, file]) => filesBeside(workspace, dir, file)).filter(file => !code.includes(file)).slice(0, MAX_SIBLING_FILES);
   const groups = new Map<string, Array<Method & { file: string; parsed: ParsedFile; changed: number }>>();
   for (const file of [...new Set([...code, ...beside])]) {
     const parsed = parser.parse(file);
@@ -1084,7 +1090,7 @@ function siblingImplementations(workspace: string, parser: Parser, files: DiffFi
     if (members.length < 2 || bodies.size < 2) return [];
     const question: SiblingImplementationQuestion = {
       name: members[0].name, ...(members[0].trait && { trait: members[0].trait }),
-      members: members.map(m => ({ ...m.parsed.excerpt(m.decl, m.file, touched.get(m.file) ?? new Set()), owner: m.owner, changed: m.changed > 0 })),
+      members: members.map(m => ({ ...m.parsed.excerpt(m.decl, m.file, added.get(m.file) ?? new Set()), owner: m.owner, changed: m.changed > 0 })),
     };
     const touchedMembers = members.filter(m => m.changed > 0);
     return [{ question, touchedCount: touchedMembers.length, lines: touchedMembers.reduce((sum, m) => sum + m.changed, 0), order }];

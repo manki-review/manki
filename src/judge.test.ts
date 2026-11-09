@@ -324,6 +324,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Drop it only when you can say concretely why both are wrong.');
     expect(prompt).toContain("The other finder's silence is not evidence against it.");
     expect(prompt).toContain("Agreement never raises or protects a finding's severity.");
+    expect(prompt).toContain('A finding named `Sibling field: ...` or `Sibling code: ...` comes from a call asked about that spot, not from a finder, so it never counts as one of the two.');
     expect(prompt).not.toContain('specialist');
 
     expect(buildJudgeSystemPrompt(makeConfig(), 1)).not.toContain('## Finder Agreement');
