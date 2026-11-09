@@ -60,6 +60,7 @@ const MAX_EXCERPT_LINES = 120;
 const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
 const MAX_ITEM_CHARS = 60;
+const MAX_BASES = 8;
 /** The longest item source read before its whitespace is collapsed to at most `MAX_ITEM_CHARS`. */
 const MAX_ITEM_SOURCE_CHARS = 4 * MAX_ITEM_CHARS;
 /** A field pattern reads only this much of a line, which holds any declaration, so a crafted line cannot slow it. */
@@ -1037,11 +1038,13 @@ class ParsedFile {
 
   private readonly bases = new Map<number, string[]>();
 
-  /** Returns the bases `scope` names, read once per class however many methods it holds. */
+  /** Returns the first `MAX_BASES` bases `scope` names, read once per class however many methods it holds. */
   private basesOf(scope: SgNode): string[] {
     if (!this.bases.has(scope.id())) {
       const named = (this.rules.bases?.(scope) ?? []).filter(base => base.range().end.index - base.range().start.index <= MAX_ITEM_CHARS);
-      this.bases.set(scope.id(), named.map(base => typeName(base.text())).filter(base => BASE_PATH.test(base) && !STANDARD_BASES.has(base.split(/\.|::/).at(-1)!)));
+      const bases = named.map(base => typeName(base.text())).filter(base => BASE_PATH.test(base) && !STANDARD_BASES.has(base.split(/\.|::/).at(-1)!));
+      // Each protocol method gets a group key per base, so a crafted class with thousands of bases keeps only the first few.
+      this.bases.set(scope.id(), bases.slice(0, MAX_BASES));
     }
     return this.bases.get(scope.id())!;
   }

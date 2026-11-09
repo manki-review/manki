@@ -456,11 +456,12 @@ ${body}	return true
     // Four files of 20,000 methods each take longer to parse, so this bound is wider. Copying the group per member took over 30 seconds.
     expect(Date.now() - started).toBeLessThan(20_000);
 
-    // One class with many bases and many methods: its bases are read once, not once per method.
-    const based = (body: string) => `class Wide(${Array.from({ length: 20_000 }, (_, i) => `B${i}`).join(', ')}):\n${Array.from({ length: 2_000 }, (_, i) => `    def m${i}(self):\n        return ${i === 0 ? body : '1'}\n`).join('')}`;
+    // One class with many bases and many dunder methods: its bases are read once, and only the first few key its groups.
+    const based = (body: string) => `class Wide(${Array.from({ length: 20_000 }, (_, i) => `B${i}`).join(', ')}):\n${Array.from({ length: 2_000 }, (_, i) => `    def __m${i}__(self):\n        return ${i === 0 ? body : '1'}\n`).join('')}`;
     started = Date.now();
     await usesFor({ 'src/wide.py': based('1') }, { 'src/wide.py': based('2') });
-    expect(Date.now() - started).toBeLessThan(10_000);
+    // About half a second with the cap and five without it.
+    expect(Date.now() - started).toBeLessThan(3_000);
 
     // A flat file of many top-level functions, one changed: each declaration has thousands of siblings.
     const flat = (body: string) => `package gen\n\n${Array.from({ length: 55_000 }, (_, i) => `func F${i}(){${i === 54_999 ? body : '1'}}`).join('\n')}\n`;
