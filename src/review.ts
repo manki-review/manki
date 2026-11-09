@@ -2319,10 +2319,18 @@ function citesLineOf(a: Finding, b: Finding): boolean {
   return narrowProof(a).some(at => at.file === b.file && at.start <= b.line && b.line <= at.end);
 }
 
-/** Whether `a` and `b` cite at least one common line as proof. */
+/**
+ * Whether `a` and `b` cite a common proof line in their own file, within `DISMISSED_LINE_TOLERANCE` of both. A line
+ * elsewhere, such as a helper both call, can back two different defects.
+ */
 function sharesProofLine(a: Finding, b: Finding): boolean {
-  const cited = narrowProof(b);
-  return narrowProof(a).some(x => cited.some(y => x.file === y.file && x.start <= y.end && y.start <= x.end));
+  const near = (f: Finding) => ({ start: f.line - DISMISSED_LINE_TOLERANCE, end: f.line + DISMISSED_LINE_TOLERANCE });
+  const spans = (f: Finding) => narrowProof(f).filter(at => at.file === a.file);
+  const cited = spans(b);
+  return spans(a).some(x => cited.some(y => {
+    const ranges = [x, y, near(a), near(b)];
+    return Math.max(...ranges.map(r => r.start)) <= Math.min(...ranges.map(r => r.end));
+  }));
 }
 
 /**
