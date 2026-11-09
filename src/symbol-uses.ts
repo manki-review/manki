@@ -228,7 +228,7 @@ export interface SiblingFieldQuestion {
   struct: string;
   field: string;
   sibling: string;
-  /** The item the first lookup passes, such as `outpoint` in `utxos.contains_key(outpoint)`. */
+  /** The item the first lookup passes, such as `key` in `sessions.contains_key(key)`. */
   item: string;
   /** Every changed line that looks `item` up in `field`, the first one asked about. */
   lookups: Array<{ file: string; line: number; text: string }>;
@@ -702,7 +702,7 @@ class ParsedFile {
     });
   }
 
-  /** Returns each lookup of an item in a collection field on a touched line, such as `a.utxos.contains_key(outpoint)`, outside tests. */
+  /** Returns each lookup of an item in a collection field on a touched line, such as `a.sessions.contains_key(key)`, outside tests. */
   collectionLookups(touched: Set<number>): Lookup[] {
     const { access, object, index } = this.rules;
     if (!access || !object) return [];

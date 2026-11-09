@@ -1679,13 +1679,13 @@ Example of one finding:
 \`\`\`
 {
   "severity": "blocker",
-  "title": "Startup aborts for a client synced from a checkpoint",
-  "file": "src/sync.ts",
+  "title": "The last partial page of results is never returned",
+  "file": "api/list.go",
   "line": 42,
-  "description": "With no filter headers, \`unwrap_or(0)\` makes \`fh_bound\` 0, and \`truncate_above(0)\` fails when storage starts above 0. Handle \`None\` separately.",
-  "suggestedFix": "let fh_bound = match filter_height { Some(h) => h, None => return Ok(()) };",
-  "evidence": ["src/sync.ts:40 reads \`filter_height\`, which is \`None\` after a checkpoint sync", "src/sync.ts:42 passes \`fh_bound\` to \`truncate_above\`"],
-  "proof": ["src/sync.ts:42"]
+  "description": "\`total / pageSize\` rounds down, so when \`total\` is not a multiple of \`pageSize\` the items on the last page are never sent. Round up instead.",
+  "suggestedFix": "pages := (total + pageSize - 1) / pageSize",
+  "evidence": ["api/list.go:42 computes \`pages := total / pageSize\`, which is 2 for 120 items and a page size of 50", "api/list.go:51 loops \`for p := 0; p < pages; p++\`, so items 101 to 120 are never sent"],
+  "proof": ["api/list.go:42"]
 }
 \`\`\`
 
@@ -1693,7 +1693,7 @@ Example of one finding:
 
 ## Evidence
 
-- In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each. Start each line with its \`file:line\` and quote the key code it refers to in backticks, such as "src/sync.ts:42 passes \`fh_bound\` to \`truncate_above\`". When the quoted code holds a backtick itself, wrap it in double backticks with a space inside, as in \`\` a \`b\` \`\`.
+- In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each. Start each line with its \`file:line\` and quote the key code it refers to in backticks, such as "api/list.go:42 computes \`pages := total / pageSize\`". When the quoted code holds a backtick itself, wrap it in double backticks with a space inside, as in \`\` a \`b\` \`\`.
 - A \`blocker\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most.
 - ${CLAIMS_MISSING_RULE}
 - ${PRE_EXISTING_RULE}${tools ? `

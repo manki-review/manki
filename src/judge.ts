@@ -376,7 +376,7 @@ Bad examples (do NOT write like this):
 - "Solid follow-up with a few remaining suggestions."
 - "No findings submitted for evaluation this round."${openBlockerInstruction}`
     : `Write one or two sentences on the most important problem: what goes wrong in practice when this code runs, and who notices. The review already shows each finding's title, so do not repeat a title word for word. When nothing blocks, say so in one short sentence. Do not praise the change or describe what the PR does. Never start with "The author", "This PR" or "The refactor". If you can swap the project name and the summary still works, it is too generic. Good examples:
-- "A client synced from a checkpoint can no longer start, because the filter header bound falls back to 0."
+- "A list request whose total is not a multiple of the page size drops its last page, so a user with 120 items sees only 100."
 - "Every failed request leaves a listener behind, so a long-running worker slowly runs out of memory."
 - "The retry loop drops the error reason, so operators see '3 attempts failed' with no cause."
 - "Nothing blocks merge."

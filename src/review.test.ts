@@ -1412,7 +1412,7 @@ describe('selectTeam', () => {
   });
 
   it('folds custom reviewers into the one checklist every finder runs', () => {
-    const reviewers: ReviewerAgent[] = [{ name: 'Protocol Compliance', focus: 'DIP compliance' }];
+    const reviewers: ReviewerAgent[] = [{ name: 'API Compatibility', focus: 'public API changes keep old clients working' }];
     const config = makeConfig({ reviewers });
     const team = selectTeam(plainDiff, config, { trivial: false, subtle: true, paired: true });
     expect(team.finders).toHaveLength(2);
@@ -1421,22 +1421,24 @@ describe('selectTeam', () => {
     expect(focus).toMatch(/^defects in the change\. Check, in this order:\n1\. Correctness/);
     const solo = selectTeam(plainDiff, makeConfig({ reviewers, planner: { enabled: true, paired: 'never' } }), { trivial: false, subtle: true, paired: true });
     expect(solo.finders.map(f => f.prompt.focus)).toEqual([focus]);
-    expect(focus).toContain('This repository also asks you to check:\n- Protocol Compliance: DIP compliance');
+    expect(focus).toContain('This repository also asks you to check:\n- API Compatibility: public API changes keep old clients working');
     for (const check of [
       'resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or recursion sized by the input, or a size limit removed or raised.',
       'For a library, outside input is anything a caller of its public API can pass, readers and byte streams included.',
-      'Dropped cases: for each pattern match, `select!` arm, `catch`, ignored result such as `let _ =`',
+      'Dropped cases: for each pattern match, `switch`, error handler, ignored result or fallback the change adds',
+      'Rust `let _ =`, `.ok()` or `unwrap_or_default()`, TypeScript `catch {}`, `?.` with a default or an unawaited promise, Python `except: pass` or a `dict.get` default, Go `_ =` on an error or an ignored `ok`.',
       'Tests: for each test the change adds or edits, name the changed line whose revert makes it fail.',
       'one that sets private fields or internal state instead of calling the public API',
       'Contract breaks: changed behavior of an API, config key, file or wire format, or stored data that existing code relies on.',
       'Readers: search the whole repository, other packages included, for each changed type, field, variant and function',
       'Sibling state: when the change checks, adds or removes an item in one collection, read the type that holds it',
+      'caches, indexes, derived values such as totals or counts, serializers and change notifications such as events or webhooks.',
       'Sibling symmetry: compare each changed function with its counterpart, such as encode and decode',
       'Reference claims: when the PR title, description or changed code says the change matches another implementation, a spec or a standard',
       'Read it in a **reference** related repo when one is listed. Report each difference the PR does not call out, citing both sides.',
-      'what this code sends against what the reference accepts, and what this code accepts against what the reference sends.',
-      'For a changed size or count limit, find what the reference actually sends, not only the limit it checks on receive.',
-      'For a changed decoder or encoder, compare the field order, field types and version bounds with the reference\'s serializer.',
+      'Reference behaviour: when the code implements or mirrors a reference, such as a spec, another implementation or an API it talks to',
+      'what this code produces against what the reference accepts, and what the reference produces against what this code accepts.',
+      'Compare limits, field order, field types and versions.',
       'Reuse: for each constant, helper, type or loop the change adds, search for an existing one that does the same, and cite its `file:line`.',
       'Repository rules: check each added line against the rules in the repository context, such as `AGENTS.md`, `CLAUDE.md` or `CONTRIBUTING.md`, and quote the rule it breaks.',
       'Report a reuse finding only with the existing code\'s `file:line`, and a rule finding only with the rule quoted.',

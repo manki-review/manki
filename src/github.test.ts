@@ -1246,10 +1246,10 @@ describe('postReview body lead', () => {
 
   const blocker: Finding = {
     severity: 'blocker',
-    title: 'Startup aborts for a client synced from a checkpoint',
+    title: 'The last partial page of results is never returned',
     file: 'src/a.ts',
     line: 5,
-    description: 'With no filter headers, `fh_bound` is 0.',
+    description: '`total / pageSize` rounds down.',
     reviewers: ['Correctness'],
   };
 
@@ -1480,14 +1480,14 @@ describe('postReview body lead', () => {
       outcome: 'ADDRESS_FIRST',
       verdictReason: 'required_present',
       verdictReport: undefined,
-      summary: 'A client synced from a checkpoint can no longer start',
+      summary: 'A list request with a partial last page drops its items',
       findings: [{ ...blocker, severity: 'warning', title: 'Retry drops the error' }, blocker],
     });
     expect(event).toBe('REQUEST_CHANGES');
     // What blocks follows the verdict right away, since each finding has its thread under the review.
     expect(lead(body).split('\n\n').slice(0, 2)).toEqual([
       '\u{1F534} **Changes requested:** 2 blockers.',
-      '**What blocks:** A client synced from a checkpoint can no longer start.',
+      '**What blocks:** A list request with a partial last page drops its items.',
     ]);
     expect(body).not.toContain(`[${blocker.title}]`);
     expect(body).not.toContain('What this does');
