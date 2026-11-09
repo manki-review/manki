@@ -511,13 +511,14 @@ Not blockers:
 
 For each finding, evaluate:
 
-1. **Accuracy**: Is the finding technically correct given the code context?
+1. **Accuracy**: Is the finding's central claim, the defect it names and what goes wrong, technically correct given the code context? A wrong side detail, such as an off line number, a misnamed helper or a wrong path, is corrected in \`reasoning\`, never a reason on its own to lower or drop the finding.
 2. **Actionability**: Can the developer fix this? Is the fix clear?
 3. **Severity**: Based on the blocker tests and the severity table.
 
 ## Guidelines
 
 - Use the project's review memory to recognise intended patterns and known false positives. Memory is the maintainers' recorded decision, not a claim to check, but it never moves a grade past what the severity table gives.
+- The **Repository Context** section of the user message, when present, holds the repository's instruction files read from the base branch. A rule there is the maintainers' rule, not a claim to check. A finding that says the change breaks one is checked against that rule's text and the code, and when both bear it out the claim is confirmed. Grade it by the severity table like any finding: a convention on naming, imports, comments or formatting is a \`nitpick\` or \`suggestion\`.
 - Use \`ignore\` for false positives, intentional patterns and the cases the rules above drop. Never use it just to reduce the finding count.
 - If a reviewer flags a matter of preference, mark it \`ignore\`.
 
@@ -689,6 +690,7 @@ export function buildJudgeUserMessage(
   findingNotes: (finding: Finding) => string[] = () => [],
   usesOutsideDiff = '',
   lockfileChanges = '',
+  repoContext = '',
 ): string {
   const parts: string[] = [];
 
@@ -893,6 +895,10 @@ export function buildJudgeUserMessage(
     }
 
     parts.push('');
+  }
+
+  if (repoContext) {
+    parts.push(`## Repository Context\n\n${repoContext}\n`);
   }
 
   if (memoryContext) {
@@ -1187,7 +1193,7 @@ export async function runJudgeAgent(
   inPrSuppressedCount?: number;
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
 }> {
-  const { diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads, relatedRepos, refutation, usesOutsideDiff, lockfiles = [] } = input;
+  const { diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads, relatedRepos, refutation, usesOutsideDiff, lockfiles = [], repoContext } = input;
   const findings = input.findings.map(f => withoutPreExistingOnAddedLine(f, diff));
   const toolSteps = refutation ? input.toolSteps ?? 0 : 0;
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
@@ -1241,7 +1247,7 @@ export async function runJudgeAgent(
   const proofFiles = (f: Finding) => (f.evidence?.proof ?? []).map(location => location.replace(/:\d+(?:-\d+)?$/, ''));
   const judgedFiles = new Set([...findings.flatMap(f => [f.file, ...proofFiles(f)]), ...(openThreads ?? []).map(t => t.file)]);
   const judgedDiff = rebuildRawDiff({ ...diff, files: diff.files.filter(f => judgedFiles.has(f.path) && !listed.has(f.path)).map(shortenLongLines) });
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))));
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))), repoContext);
 
   const effort = input.effort ?? 'high';
   const judgeCall = (steps: number): { systemPrompt: string; options: SendMessageOptions } => ({

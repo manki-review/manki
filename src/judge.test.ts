@@ -499,19 +499,21 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('Code context');
   });
 
-  it('includes memory context when provided', () => {
+  it('includes memory and repository context when provided', () => {
     const findings = [makeFinding()];
-    const msg = buildJudgeUserMessage(findings, new Map(), 'Some memory context');
+    const msg = buildJudgeUserMessage(findings, new Map(), 'Some memory context', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, '', '', '## AGENTS.md\n\nImports go at the top of the module.');
 
     expect(msg).toContain('Project Memory');
     expect(msg).toContain('Some memory context');
+    expect(msg).toContain('## Repository Context\n\n## AGENTS.md\n\nImports go at the top of the module.\n');
   });
 
-  it('omits memory section when empty', () => {
+  it('omits memory and repository context sections when empty', () => {
     const findings = [makeFinding()];
     const msg = buildJudgeUserMessage(findings, new Map(), '');
 
     expect(msg).not.toContain('Project Memory');
+    expect(msg).not.toContain('Repository Context');
   });
 
   it('includes suggested fix when present', () => {
@@ -1310,10 +1312,11 @@ describe('runJudgeAgent', () => {
     expect(mockSendMessage.mock.calls[1][1]).not.toMatch(/## Lockfile Changes|name = "hex"/);
   });
 
-  it('names one prompt template for its digest whatever the round holds', async () => {
+  it('shows the repository context and names one prompt template for its digest whatever the round holds', async () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', severity: 'suggestion', reasoning: 'r', confidence: 'high' }] }) });
-    const base: JudgeInput = { findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1 };
+    const base: JudgeInput = { findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '## AGENTS.md\n\nKeep imports at the top.', agentCount: 1 };
     await runJudgeAgent(mockClient, makeConfig(), base);
+    expect(mockSendMessage.mock.calls[0][1]).toContain('## Repository Context\n\n## AGENTS.md\n\nKeep imports at the top.');
     await runJudgeAgent(mockClient, makeConfig(), {
       ...base, agentCount: 2, isFollowUp: true, openThreads: [{ threadId: 'T1', title: 'Old', file: 'src/a.ts', line: 1, severity: 'blocker' } as OpenThread],
     });
