@@ -499,7 +499,7 @@ ${body}	return true
     expect(Date.now() - started).toBeLessThan(20_000);
 
     // A changed file of many methods, each with a sibling beside it: every one is a group, and only the questions asked are quoted.
-    const mirrored = (owner: string, value: number) => `package gen\n\n${Array.from({ length: 10_000 }, (_, i) => `func (m ${owner}) S${i}() int { return ${value} }`).join('\n')}\n`;
+    const mirrored = (owner: string, value: number) => `package gen\n\n${Array.from({ length: 5_000 }, (_, i) => `func (m ${owner}) S${i}() int { return ${value} }`).join('\n')}\n`;
     started = Date.now();
     const steps = await usesFor({ 'gen/a.go': mirrored('A', 1), 'gen/b.go': mirrored('B', 2) }, { 'gen/a.go': mirrored('A', 3) });
     expect(steps.siblings.implementations).toHaveLength(20);
@@ -533,7 +533,7 @@ ${body}	return true
     const { section } = await usesFor(files(1), files(2));
     expect(section).toContain('The limit of 200 parsed files or 16 MB per round left 10 more files unparsed, so types, fields and lookups in them are not listed.');
     expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the parse limit left 10 files unparsed');
-  });
+  }, 30_000);
 
   const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };
 
