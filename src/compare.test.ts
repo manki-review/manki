@@ -6,21 +6,21 @@ import { SiblingFieldQuestion, SiblingImplementationQuestion } from './symbol-us
 
 jest.mock('@actions/core');
 
-const fieldQuestion = (sibling: string, field = 'utxos'): SiblingFieldQuestion => ({
-  struct: 'Account', field, sibling, item: 'outpoint',
+const fieldQuestion = (sibling: string, field = 'idle'): SiblingFieldQuestion => ({
+  struct: 'WorkerPool', field, sibling, item: 'worker_id',
   lookups: [
-    { file: 'src/settle.rs', line: 2, text: 'if account.utxos.contains_key(&outpoint) {' },
-    { file: 'src/settle.rs', line: 5, text: 'let held = account.utxos.remove(&outpoint);' },
+    { file: 'src/claim.py', line: 2, text: 'if worker_id in pool.idle:' },
+    { file: 'src/claim.py', line: 5, text: 'pool.idle.discard(worker_id)' },
   ],
-  definition: { file: 'src/account.rs', line: 3, code: '3:  pub struct Account {\n4:      pub utxos: BTreeMap<OutPoint, Utxo>,\n5:      spent_before_funded: BTreeMap<OutPoint, Utxo>,\n6:  }' },
-  hunks: ['diff --git a/src/settle.rs b/src/settle.rs\n@@ -1,4 +1,9 @@\n+    if account.utxos.contains_key(&outpoint) {'],
+  definition: { file: 'src/pool.py', line: 3, code: '3:  class WorkerPool:\n4:      idle: set[str] = set()\n5:      retired: set[str] = set()' },
+  hunks: ['diff --git a/src/claim.py b/src/claim.py\n@@ -1,4 +1,9 @@\n+    if worker_id in pool.idle:'],
 });
 
 const implementationQuestion = (name: string, trait?: string): SiblingImplementationQuestion => ({
   name, ...(trait && { trait }),
   members: [
-    { owner: 'ServicePayload', file: 'src/service.rs', line: 2, changed: true, code: '2:  fn consensus_decode() {\n3:+     if version > 3 { return Err(e) }\n4:  }' },
-    { owner: 'RegistrarPayload', file: 'src/registrar.rs', line: 8, changed: false, code: '8:  fn consensus_decode() {\n9:      Ok(p)\n10:  }' },
+    { owner: 'TextPart', file: 'src/text.rs', line: 2, changed: true, code: '2:  fn from_wire() {\n3:+     if version > 3 { return Err(e) }\n4:  }' },
+    { owner: 'ImagePart', file: 'src/image.rs', line: 8, changed: false, code: '8:  fn from_wire() {\n9:      Ok(p)\n10:  }' },
   ],
 });
 
@@ -43,58 +43,58 @@ function fakeClient(reply: (user: string) => string | Error, repoTools = true): 
 }
 
 const FINDING = JSON.stringify([{
-  severity: 'blocker', title: 'An output held in `spent_before_funded` is counted twice', file: 'src/settle.rs', line: 2,
-  description: 'The lookup only checks `utxos`.', evidence: ['src/account.rs:5 declares `spent_before_funded`'], proof: ['src/settle.rs:2'],
+  severity: 'blocker', title: 'A worker held in `retired` is claimed again', file: 'src/claim.py', line: 2,
+  description: 'The lookup only checks `idle`.', evidence: ['src/pool.py:5 declares `retired`'], proof: ['src/claim.py:2'],
 }]);
 
 const GAP = JSON.stringify([{
-  severity: 'warning', title: 'The registrar decoder accepts any version', file: 'src/registrar.rs', line: 9, description: 'Only the service decoder checks it.',
-  evidence: ['src/service.rs:3 rejects versions above 3'], claimsMissing: true, emptySearch: 'grep `version >` in src/registrar.rs: no match',
-  preExisting: true, preExistingReason: 'The registrar decoder never checked the version.',
+  severity: 'warning', title: 'The image decoder accepts any version', file: 'src/image.rs', line: 9, description: 'Only the text decoder checks it.',
+  evidence: ['src/text.rs:3 rejects versions above 3'], claimsMissing: true, emptySearch: 'grep `version >` in src/image.rs: no match',
+  preExisting: true, preExistingReason: 'The image decoder never checked the version.',
 }]);
 
 describe('runComparisons', () => {
   it('asks one small call per question with the code it compares, and names its findings after the question', async () => {
-    const client = fakeClient(user => user.includes('spent_before_funded') ? FINDING : GAP);
+    const client = fakeClient(user => user.includes('retired') ? FINDING : GAP);
     const names: string[] = [];
     const result = await runComparisons(name => {
       names.push(name);
       return client;
-    }, { fields: [fieldQuestion('spent_before_funded')], implementations: [implementationQuestion('consensus_decode', 'Decodable')] }, { effort: 'high', workspace: '/repo' });
+    }, { fields: [fieldQuestion('retired')], implementations: [implementationQuestion('from_wire', 'FromWire')] }, { effort: 'high', workspace: '/repo' });
 
-    expect(names).toEqual(['Sibling field: utxos vs spent_before_funded', 'Sibling code: Decodable::consensus_decode']);
+    expect(names).toEqual(['Sibling field: idle vs retired', 'Sibling code: FromWire::from_wire']);
     const [field, implementation] = client.calls;
     expect(field.options).toEqual({ effort: 'high', repoTools: { root: '/repo', steps: 12 }, timeoutMs: 600_000 });
     expect(field.system).toContain('You can read the repository with read-only tools.');
     expect(field.system).toContain(`- ${CLAIMS_MISSING_RULE}\n- ${PRE_EXISTING_RULE}`);
     expect(field.system).toContain(`- ${UNTRUSTED_CONTENT_RULE}\n- ${VERIFY_CLAIMS_RULE}`);
-    expect(field.user).toContain('The change looks up `outpoint` in `utxos` of `Account`, on the first line below. Can `outpoint` be held in `spent_before_funded` instead? If so, does the change handle it? Read where `spent_before_funded` is written before you answer.');
-    expect(field.user).toContain('The changed lines that use `utxos`:\n\n```\nsrc/settle.rs:2: if account.utxos.contains_key(&outpoint) {\nsrc/settle.rs:5: let held = account.utxos.remove(&outpoint);\n```');
-    expect(field.user).toContain('## `Account`\n\n');
-    expect(field.user).toContain('```rs\nsrc/account.rs\n3:  pub struct Account {');
-    expect(field.user).toContain('## Changed Hunks\n\n```diff\ndiff --git a/src/settle.rs b/src/settle.rs');
-    expect(implementation.user).toContain('These functions implement `Decodable::consensus_decode` on sibling types. List every check, guard, version test, bound, error or event one has and another lacks.');
-    expect(implementation.user).toContain('### `ServicePayload` (changed by the PR)\n\n```rs\nsrc/service.rs\n2:  fn consensus_decode() {');
-    expect(implementation.user).toContain('### `RegistrarPayload`\n\n```rs\nsrc/registrar.rs\n8:');
+    expect(field.user).toContain('The change looks up `worker_id` in `idle` of `WorkerPool`, on the first line below. Can `worker_id` be held in `retired` instead? If so, does the change handle it? Read where `retired` is written before you answer.');
+    expect(field.user).toContain('The changed lines that use `idle`:\n\n```\nsrc/claim.py:2: if worker_id in pool.idle:\nsrc/claim.py:5: pool.idle.discard(worker_id)\n```');
+    expect(field.user).toContain('## `WorkerPool`\n\n');
+    expect(field.user).toContain('```py\nsrc/pool.py\n3:  class WorkerPool:');
+    expect(field.user).toContain('## Changed Hunks\n\n```diff\ndiff --git a/src/claim.py b/src/claim.py');
+    expect(implementation.user).toContain('These functions implement `FromWire::from_wire` on sibling types. List every check, guard, version test, bound, error or event one has and another lacks.');
+    expect(implementation.user).toContain('### `TextPart` (changed by the PR)\n\n```rs\nsrc/text.rs\n2:  fn from_wire() {');
+    expect(implementation.user).toContain('### `ImagePart`\n\n```rs\nsrc/image.rs\n8:');
     // Every path the PR controls sits inside a fence: outside the fences only Manki's own text and checked names remain.
     for (const user of [field.user, implementation.user]) {
       expect(user.replace(/^(`{3,})[^\n]*\n[\s\S]*?^\1$/gm, '')).not.toMatch(/src\//);
     }
 
     expect(result.findings).toEqual([expect.objectContaining({
-      severity: 'blocker', file: 'src/settle.rs', line: 2, reviewers: ['Sibling field: utxos vs spent_before_funded'],
-      evidence: { checks: ['src/account.rs:5 declares `spent_before_funded`'], proof: ['src/settle.rs:2'] },
+      severity: 'blocker', file: 'src/claim.py', line: 2, reviewers: ['Sibling field: idle vs retired'],
+      evidence: { checks: ['src/pool.py:5 declares `retired`'], proof: ['src/claim.py:2'] },
     }), expect.objectContaining({
-      file: 'src/registrar.rs', reviewers: ['Sibling code: Decodable::consensus_decode'], preExisting: 'The registrar decoder never checked the version.',
-      evidence: { checks: ['src/service.rs:3 rejects versions above 3'], proof: [], emptySearch: 'grep `version >` in src/registrar.rs: no match' },
+      file: 'src/image.rs', reviewers: ['Sibling code: FromWire::from_wire'], preExisting: 'The image decoder never checked the version.',
+      evidence: { checks: ['src/text.rs:3 rejects versions above 3'], proof: [], emptySearch: 'grep `version >` in src/image.rs: no match' },
     })]);
     expect(result.comparisons).toEqual([
-      { kind: 'field', reviewer: 'Sibling field: utxos vs spent_before_funded', at: ['src/settle.rs:2'], status: 'answered', findings: 1 },
-      { kind: 'implementations', reviewer: 'Sibling code: Decodable::consensus_decode', at: ['src/service.rs:2', 'src/registrar.rs:8'], status: 'answered', findings: 1 },
+      { kind: 'field', reviewer: 'Sibling field: idle vs retired', at: ['src/claim.py:2'], status: 'answered', findings: 1 },
+      { kind: 'implementations', reviewer: 'Sibling code: FromWire::from_wire', at: ['src/text.rs:2', 'src/image.rs:8'], status: 'answered', findings: 1 },
     ]);
 
     const plain = fakeClient(() => '[]', false);
-    await runComparisons(() => plain, { fields: [fieldQuestion('spent_before_funded')], implementations: [implementationQuestion('size')] });
+    await runComparisons(() => plain, { fields: [fieldQuestion('retired')], implementations: [implementationQuestion('size')] });
     expect(plain.calls[0].options).toEqual({});
     expect(plain.calls[0].system).not.toContain('read-only tools');
     expect(plain.calls[0].user).not.toContain('Read where');
@@ -114,10 +114,10 @@ describe('runComparisons', () => {
     expect(client.calls).toHaveLength(13);
     expect(client.calls.filter(c => c.user.includes('`c` instead')).map(c => c.user.includes('Reply with only the JSON array'))).toEqual([false, true]);
     expect(result.comparisons.map(c => `${c.reviewer}: ${c.status}`)).toEqual([
-      ...['a', 'b', 'c', 'd', 'e', 'f'].map(s => `Sibling field: utxos vs ${s}: ${s === 'b' ? 'failed' : 'answered'}`),
+      ...['a', 'b', 'c', 'd', 'e', 'f'].map(s => `Sibling field: idle vs ${s}: ${s === 'b' ? 'failed' : 'answered'}`),
       ...Array.from({ length: 6 }, (_, i) => `Sibling code: check_${i}: answered`),
-      'Sibling field: utxos vs g: cut',
-      'Sibling field: utxos vs h: cut',
+      'Sibling field: idle vs g: cut',
+      'Sibling field: idle vs h: cut',
       'Sibling code: check_0 #2: cut',
     ]);
   });
@@ -133,12 +133,12 @@ describe('runComparisons', () => {
     });
     const result = await runComparisons(() => client, { fields: [fieldQuestion('quick'), fieldQuestion('slow')], implementations: [] }, { signal: deadline.signal });
 
-    expect(result.comparisons.map(c => `${c.reviewer}: ${c.status}`)).toEqual(['Sibling field: utxos vs quick: answered', 'Sibling field: utxos vs slow: timed_out']);
+    expect(result.comparisons.map(c => `${c.reviewer}: ${c.status}`)).toEqual(['Sibling field: idle vs quick: answered', 'Sibling field: idle vs slow: timed_out']);
     expect(client.calls.every(c => c.options?.signal === deadline.signal)).toBe(true);
 
     const late = fakeClient(() => '[]');
     const skipped = await runComparisons(() => late, { fields: [fieldQuestion('quick')], implementations: [] }, { signal: deadline.signal });
     expect(late.calls).toEqual([]);
-    expect(skipped.comparisons).toEqual([{ kind: 'field', reviewer: 'Sibling field: utxos vs quick', at: ['src/settle.rs:2'], status: 'timed_out' }]);
+    expect(skipped.comparisons).toEqual([{ kind: 'field', reviewer: 'Sibling field: idle vs quick', at: ['src/claim.py:2'], status: 'timed_out' }]);
   });
 });

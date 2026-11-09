@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import * as napi from '@ast-grep/napi';
+import go from '@ast-grep/lang-go';
 import python from '@ast-grep/lang-python';
 import rust from '@ast-grep/lang-rust';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -14,7 +15,7 @@ import { git } from './test-utils';
 import { RelatedRepoTools } from './types';
 
 // The grammars are registered once per process, so every test file registers the same ones.
-napi.registerDynamicLanguage({ python, rust });
+napi.registerDynamicLanguage({ go, python, rust });
 
 /** Connects a client to Manki's tool server for `root`, through the MCP protocol. */
 async function connect(root: string, options: McpServerOptions = {}): Promise<Client> {
