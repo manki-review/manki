@@ -221,15 +221,16 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
         ...(round.leads ?? []).filter(l => l.outcome === 'unsettled' && !l.posted),
       ];
       // A reused answer is the stored one, so it is counted only in the round that gave it.
-      const fresh = (title: string | undefined, refuter: string, refutation: Refutation | undefined): refutation is Refutation => {
-        const answer = refutation && JSON.stringify([title, refuter, refutation]);
+      // The answer holds its reason, files and code digest, so two findings never share one.
+      const fresh = (refuter: string, refutation: Refutation | undefined): refutation is Refutation => {
+        const answer = refutation && JSON.stringify([refuter, refutation]);
         if (!answer || answers.has(answer)) return false;
         answers.add(answer);
         return true;
       };
-      for (const { title, severity, refutation, pairRefutation } of refuted) {
-        if (fresh(title, 'first', refutation)) increment(stats.refutations, `${severity} ${refutation.outcome}`);
-        if (fresh(title, 'second', pairRefutation)) increment(stats.pairRefutations, `${refutation?.outcome ?? 'none'} / ${pairRefutation.outcome}`);
+      for (const { severity, refutation, pairRefutation } of refuted) {
+        if (fresh('first', refutation)) increment(stats.refutations, `${severity} ${refutation.outcome}`);
+        if (fresh('second', pairRefutation)) increment(stats.pairRefutations, `${refutation?.outcome ?? 'none'} / ${pairRefutation.outcome}`);
       }
       stats.pairRefutationCalls.push(...(round.usage?.llmCalls ?? []).filter(c => c.agent === 'refute_pair'));
       const models = new Map((round.reviewers?.agentMetrics ?? []).map(a => [a.name, a.model ?? a.name]));
@@ -348,7 +349,7 @@ function share(part: number, whole: number): string {
 function pairRefutationLines({ pairRefutations, pairRefutationCalls }: ReviewStats): string[] {
   const pairs = [...pairRefutations.entries()].map(([key, n]) => ({ key, n, first: key.split(' / ')[0], second: key.split(' / ')[1] }));
   const checked = pairs.reduce((sum, p) => sum + p.n, 0);
-  if (checked === 0) return ['No second refuter.'];
+  if (checked === 0 && pairRefutationCalls.length === 0) return ['No second refuter.'];
   const count = (test: (p: { first: string; second: string }) => boolean) => pairs.filter(test).reduce((sum, p) => sum + p.n, 0);
   const split = (p: { first: string; second: string }) => [p.first, p.second].sort().join() === 'confirmed,disproved';
   const { estimatedCostUsd, unpricedCalls } = summarizeCalls(pairRefutationCalls);

@@ -254,5 +254,9 @@ describe('review stats', () => {
     expect(report).toContain('- Passed after one round: -');
     expect(report).toContain('No refutations.');
     expect(report).toContain('No second refuter.');
+    // Calls that gave no answer still show what they cost.
+    const failed = makeRoundContext(1, { usage: { llmCalls: [{ ...call('gpt-5', 2), stage: 'judge', agent: 'refute_pair', costUsd: 0.05, failed: true }] } });
+    const silent = computeStats([prRecords('o/r', 4, { reviews: [review(300, failed)], threadComments: [] })]);
+    expect(renderStats(silent)).toContain('- Findings checked: 0, for 0.05 USD\n- Agreed with the first refuter: -');
   });
 });
