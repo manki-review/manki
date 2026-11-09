@@ -1430,6 +1430,8 @@ describe('selectTeam', () => {
       'Tests: for each test the change adds or edits, name the changed line whose revert makes it fail.',
       'one that sets private fields or internal state instead of calling the public API',
       'Contract breaks: changed behavior of an API, config key, file or wire format, or stored data that existing code relies on.',
+      'Narrowed input: when the change narrows what it accepts, such as a lower or new limit, stricter validation, a narrower type, a new required field or a stricter format, find every producer of that input',
+      'Rust `MAX_FRAME_BYTES` lowered below a frame a peer sends, TypeScript `email` made required in a schema older clients post to, Python `max_length=255` on a field an upstream API fills with longer text, Go `MaxRecvMsgSize` lowered below a reply an older client sends.',
       'Readers: search the whole repository, other packages included, for each changed type, field, variant and function',
       'Sibling state: when the change checks, adds or removes an item in one collection, read the type that holds it',
       'caches, indexes, derived values such as totals or counts, serializers and change notifications such as events or webhooks.',
@@ -1444,7 +1446,7 @@ describe('selectTeam', () => {
       'Report a reuse finding only with the existing code\'s `file:line`, and a rule finding only with the rule quoted.',
     ]) expect(focus).toContain(check);
     // Reuse and repository rules come right after tests.
-    expect(focus).toMatch(/\n7\. Tests: [^\n]*\n8\. Reuse: [^\n]*\n9\. Repository rules: [^\n]*\n10\. Contract breaks: /);
+    expect(focus).toMatch(/\n7\. Tests: [^\n]*\n8\. Reuse: [^\n]*\n9\. Repository rules: [^\n]*\n10\. Contract breaks: [^\n]*\n11\. Narrowed input: /);
     expect({ focus }).toMatchSnapshot();
   });
 
