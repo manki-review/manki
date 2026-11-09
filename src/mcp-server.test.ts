@@ -10,14 +10,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createMcpServer, McpServerOptions, runMcpServer } from './mcp-server';
+import { git } from './test-utils';
 import { RelatedRepoTools } from './types';
 
 // The grammars are registered once per process, so every test file registers the same ones.
 napi.registerDynamicLanguage({ python, rust });
-
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
-}
 
 /** Connects a client to Manki's tool server for `root`, through the MCP protocol. */
 async function connect(root: string, options: McpServerOptions = {}): Promise<Client> {

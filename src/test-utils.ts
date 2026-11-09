@@ -1,5 +1,12 @@
+import { execFileSync } from 'child_process';
+
 import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, RoundContext } from './types';
 import { BotIdentity, CodeLinks, titleToSlug } from './github';
+
+/** Runs git in `cwd` with a fixed author and returns its trimmed output. */
+export function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
+}
 
 /** `pageInfo` of the last page of a GraphQL connection. */
 export const LAST_PAGE = { hasNextPage: false, endCursor: null };

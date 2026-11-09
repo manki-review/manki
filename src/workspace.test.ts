@@ -5,15 +5,12 @@ import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, sy
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+import { git } from './test-utils';
 import { fetchWorkspace } from './workspace';
 
 const TOKEN = 'ghs_workspaceFetchToken';
 // Several git processes per test can pass Jest's default 5 seconds on a slow runner.
 const GIT_TEST_TIMEOUT_MS = 30_000;
-
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
-}
 
 /** Every file under `dir`, `.git` included. */
 function filesUnder(dir: string): string[] {
