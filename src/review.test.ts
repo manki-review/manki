@@ -4,6 +4,7 @@ import { join } from 'path';
 
 import {
   parseFindings,
+  parseProof,
   validateSeverity,
   determineOutcome,
   stringifyFindingFingerprint,
@@ -145,6 +146,7 @@ describe('parseFindings', () => {
       proof: ['src/api.ts:42', 'src/api.ts:40-42', 'Makefile:3', 'app/views.py:12', 'app/views.py:40-42'],
       emptySearch: 'grep `page === 0` under src: no match',
     });
+    expect(parseProof([`src/a.ts:${Array.from({ length: 50 }, (_, i) => i + 1).join(',')}`])).toHaveLength(10);
     expect(checked.notChecked).toBeUndefined();
     expect([checked.preExisting, unchecked.preExisting]).toEqual(['The division predates this PR.', undefined]);
     expect([unchecked.evidence, unchecked.notChecked]).toEqual([{ checks: [], proof: [], emptySearch: '' }, true]);
