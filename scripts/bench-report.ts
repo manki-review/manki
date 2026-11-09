@@ -51,7 +51,7 @@ export function formatReportSummary(report: BenchReport): string {
   const cases = report.variants[0]?.cases ?? [];
   const count = (set: CaseSet) => cases.filter(c => c.set === set).length;
   return [
-    `## Benchmark of \`${report.ref ?? 'unknown ref'}\`${report.commit ? ` at \`${report.commit.slice(0, 12)}\`` : ''}`,
+    `## Benchmark of \`${report.ref ?? 'unknown ref'}\`${report.commit ? ` at \`${report.commit}\`` : ''}`,
     '',
     `Manki ${report.mankiVersion}, ${report.runsPerCase} ${report.runsPerCase === 1 ? 'run' : 'runs'} per case, matcher ${report.matcherModel}. Cases: ${count('tuning')} tuning, ${count('holdout')} hold-out.`,
     '',

@@ -28,7 +28,7 @@ describe('formatReportSummary', () => {
     const part = { ...buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [] }]), mankiVersion: '7.3.0' };
     const report = mergeReports([part], cases, { ref: 'main', commit: 'a'.repeat(40) });
     const summary = formatReportSummary(report);
-    expect(summary).toMatch(/^## Benchmark of `main` at `aaaaaaaaaaaa`\n\nManki 7\.3\.0, 1 run per case, matcher model-a\. Cases: 1 tuning, 0 hold-out\.\n\n\| Metric \| base \|\n/);
+    expect(summary).toMatch(/^## Benchmark of `main` at `a{40}`\n\nManki 7\.3\.0, 1 run per case, matcher model-a\. Cases: 1 tuning, 0 hold-out\.\n\n\| Metric \| base \|\n/);
     expect(summary).toContain('<details><summary>Every case and run</summary>\n\n```text\n== base\nrdc-1295');
   });
 });
