@@ -2114,18 +2114,19 @@ describe('llmDeduplicateFindings', () => {
     expect(prompt).toContain('(src/memory.ts:84): "Before this change, an empty memory.repo meant');
     expect(prompt).toContain('(src/memory.ts:79): "Before this change, an empty memory.repo resolved to');
 
-    // An open thread Manki answered is matched too, and its repeat goes to the judge with the answer, even as a blocker.
+    // An open thread Manki answered is matched too, and its repeat goes to the judge with the answer.
     const answered = makePrevious({ ...memory, status: 'replied', threadId: 'T2', line: 79, title: second.title, description: second.description, answer: 'Unverified. The move is not in this PR.' });
     const withAnswer = { answeredIn: { threadId: 'T2', answer: 'Unverified. The move is not in this PR.' } };
     expect(await llmDeduplicateFindings([third], [answered], match)).toEqual({ unique: [{ ...third, ...withAnswer }], duplicates: [] });
-    const blocker = { ...third, severity: 'blocker' as const };
-    expect(await llmDeduplicateFindings([blocker], [answered], match)).toEqual({ unique: [{ ...blocker, ...withAnswer }], duplicates: [] });
 
-    // The same problem in another file is another place, so a match there changes nothing.
-    const elsewhere = { ...blocker, file: 'src/index.ts' };
-    for (const prior of [answered, waived]) {
-      expect(await llmDeduplicateFindings([elsewhere], [prior], match)).toEqual({ unique: [elsewhere], duplicates: [] });
+    // A model match changes nothing for a blocker, which the judge would ignore in an answered thread, or for a finding
+    // far from the earlier line or in another file, which is another place.
+    const blocker = { ...third, severity: 'blocker' as const };
+    const elsewhere = [blocker, { ...third, line: 100 }, { ...third, file: 'src/index.ts' }];
+    for (const finding of elsewhere) {
+      expect(await llmDeduplicateFindings([finding], [answered], match)).toEqual({ unique: [finding], duplicates: [] });
     }
+    expect(await llmDeduplicateFindings([elsewhere[2]], [waived], match)).toEqual({ unique: [elsewhere[2]], duplicates: [] });
   });
 
   it('does not treat replied findings as dismissed', async () => {

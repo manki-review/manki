@@ -148,6 +148,9 @@ function securityOverrideOf(t: OverrideCandidate, prAuthorLogin: string | undefi
 
 const LLM_DEDUP_TIMEOUT_MS = 120_000;
 
+/** How far a repeat may sit from the earlier finding's line, at most. */
+const MAX_REPEAT_LINE_DELTA = 20;
+
 /** How much of each finding's description the dedup model reads, enough to tell two problems in the same code apart. */
 const LLM_DEDUP_DESCRIPTION_CHARS = 400;
 
@@ -1045,7 +1048,7 @@ function matchPreviousType(finding: Finding, previous: PreviousFinding): Duplica
   if (finding.file !== previous.file) return null;
 
   // Relax line proximity when word overlap is strong (>= 70%)
-  const maxLineDelta = wordOverlapRatio(finding.title, previous.title) >= 0.7 ? 20 : 5;
+  const maxLineDelta = wordOverlapRatio(finding.title, previous.title) >= 0.7 ? MAX_REPEAT_LINE_DELTA : 5;
   if (Math.abs(finding.line - currentFindingLine(previous)) > maxLineDelta) return null;
 
   return matchType;
@@ -1053,7 +1056,8 @@ function matchPreviousType(finding: Finding, previous: PreviousFinding): Duplica
 
 /**
  * Asks `client` which findings repeat an earlier resolved or answered one in the same file, in any wording. A repeat of a
- * waived finding is dropped, and any other repeat goes to the judge with a note. A model match never drops a repeat of an answered thread.
+ * waived finding is dropped, and any other repeat goes to the judge with a note. A model match never drops a repeat of an answered thread,
+ * and never sends a blocker there.
  */
 async function llmDeduplicateFindings(
   findings: Finding[],
@@ -1089,7 +1093,9 @@ async function llmDeduplicateFindings(
       const priors = matches.filter(m => m.index - 1 === i).map(m => earlier[m.matchedEarlier - 1]).filter(p => p?.file === findings[i].file);
       const waived = priors.find(p => p.status === 'resolved' && mayWaive(p, findings[i]));
       const fixed = priors.find(p => p.fixed);
-      const answered = priors.find(isAnswered);
+      // A model guess never sends a blocker or a far-off finding to an answered thread, where the judge ignores it unless the code got worse.
+      const answered = findings[i].severity === 'blocker' ? undefined
+        : priors.filter(isAnswered).find(p => Math.abs(findings[i].line - currentFindingLine(p)) <= MAX_REPEAT_LINE_DELTA);
       if (waived) {
         core.info(`LLM dedup: "${findings[i].title}" matches earlier resolved "${waived.title}"`);
         duplicates.push({ finding: findings[i], matchedTitle: waived.title ?? 'unknown', matchType: 'llm' });
