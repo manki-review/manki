@@ -1067,7 +1067,9 @@ function siblingImplementations(
   workspace: string, parser: Parser, files: DiffFile[], touched: Map<string, Set<number>>, added: Map<string, Set<number>>,
 ): SiblingImplementationQuestion[] {
   const keyOf = (m: Method) => `${m.trait ?? ''}::${m.name}`;
-  const changedLines = (m: Method, file: string) => [...touched.get(file) ?? []].filter(l => l >= m.decl.start && l <= m.decl.end).length;
+  // A removal marks the head line after it, which is the first line of the next function when a whole function before it went.
+  const changedLines = (m: Method, file: string) => [...touched.get(file) ?? []]
+    .filter(l => l <= m.decl.end && (l > m.decl.start || (l === m.decl.start && !!added.get(file)?.has(l)))).length;
   const code = files.filter(f => !TEST_PATH.test(f.path)).map(f => f.path);
   const changed = code.map(file => ({ file, methods: (parser.parse(file)?.methods() ?? []).filter(m => changedLines(m, file) > 0) })).filter(c => c.methods.length > 0);
   if (changed.length === 0) return [];

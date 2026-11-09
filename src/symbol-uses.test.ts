@@ -252,11 +252,11 @@ mod tests {
     expect(siblings.implementations).toEqual([]);
   });
 
-  it('compares the functions of one name or trait method on sibling types in the changed files and beside them, most touched first, leaving out nested functions', async () => {
+  it('compares the functions of one name or trait method on sibling types in the changed files and beside them, most touched first, leaving out nested functions and untouched neighbours of removed code', async () => {
     const decode = (type: string, body: string) => `impl Decodable for ${type} {\n    fn consensus_decode(r: &mut R) -> Result<Self, Error> {\n        let version = u16::consensus_decode(r)?;\n${body}        Ok(Self { version })\n    }\n}\n`;
-    const methods = (type: string, size: string) => `impl ${type} {\n    fn is_new(&self) -> bool {\n        self.version >= 3\n    }\n\n    pub fn size(&self) -> usize {\n        ${size}\n    }\n}\n`;
+    const methods = (type: string, size: string, before = '') => `impl ${type} {\n    fn is_new(&self) -> bool {\n        self.version >= 3\n    }\n\n${before}    pub fn size(&self) -> usize {\n        ${size}\n    }\n}\n`;
     const base = {
-      'src/payload/service.rs': decode('ServicePayload', '') + methods('ServicePayload', '2'),
+      'src/payload/service.rs': decode('ServicePayload', '') + methods('ServicePayload', '2', '    fn legacy(&self) {}\n\n'),
       'src/payload/registrar.rs': decode('RegistrarPayload', '        let _legacy = 0;\n') + methods('RegistrarPayload', '2') + `\n#[cfg(test)]\nmod tests {\n${decode('FakePayload', '')}}\n`,
       'src/payload/revocation.rs': decode('RevocationPayload', '        if version == 0 {\n            return Err(Error::Version);\n        }\n')
         + 'impl RevocationPayload {\n    fn helper(&self) -> usize {\n        fn size() -> usize { 1 }\n        size()\n    }\n}\n',
