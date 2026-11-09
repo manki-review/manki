@@ -4,7 +4,8 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { loadConfig } from './config';
+import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -332,6 +333,33 @@ export async function readConfigFile(
   } catch (error) {
     if ((error as { status?: number }).status === 404) return null;
     throw error;
+  }
+}
+
+/**
+ * Loads the base branch's config, which `read` returns. One that cannot be read or does not load gives the defaults,
+ * with the source saying why, so the change that fixes it is still reviewed. `describe` words the error in the warning.
+ */
+export async function loadBaseConfig(
+  read: () => Promise<string | null>,
+  configPath: string,
+  describe: (error: unknown) => string,
+): Promise<{ config: ReviewConfig; source: ConfigSource }> {
+  const fallBack = (source: ConfigSource, problem: string, error: unknown) => {
+    core.warning(`${problem} ${configPath} on the base branch, reviewing with the defaults and no approval: ${describe(error)}`);
+    return { config: loadConfig(undefined), source };
+  };
+  let content: string | null;
+  try {
+    content = await read();
+  } catch (error) {
+    return fallBack('base_unreadable', 'Could not read', error);
+  }
+  try {
+    const config = loadConfig(content ?? undefined, configPath);
+    return { config, source: config.review ? 'base' : 'builtin' };
+  } catch (error) {
+    return fallBack('base_invalid', 'Could not load', error);
   }
 }
 

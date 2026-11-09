@@ -33,6 +33,7 @@ import { ConfigSource, DashboardData, FullReviewOptions, MemoryLoadStatus, OpenT
 import {
   fetchPRDiff,
   fetchConfigFile,
+  loadBaseConfig,
   readConfigFile,
   fetchRepoContext,
   formatUnreviewedNotice,
@@ -720,7 +721,7 @@ async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ c
   const repoConfigPath = outside ? '.manki.yml' : repoRelative.split(path.sep).join('/');
   try {
     const headConfig = loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath);
-    const { config, source } = await loadBaseConfig(octokit, owner, repo, baseRef, repoConfigPath);
+    const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, repoConfigPath), repoConfigPath, failureReason);
     const changed = changedKeys(headConfig, config);
     if (changed.length > 0) {
       core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${repoConfigPath}. The change applies after merge: this round uses the base branch's settings.`);
@@ -740,25 +741,6 @@ async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ c
  */
 function configFailed(source: ConfigSource): boolean {
   return source === 'base_unreadable' || source === 'base_invalid';
-}
-
-async function loadBaseConfig(octokit: Octokit, owner: string, repo: string, baseRef: string, configPath: string): Promise<{ config: ReviewConfig; source: ConfigSource }> {
-  const fallBack = (source: ConfigSource, problem: string, error: unknown) => {
-    core.warning(`${problem} ${configPath} on the base branch, reviewing with the defaults and no approval: ${failureReason(error)}`);
-    return { config: loadConfig(undefined), source };
-  };
-  let content: string | null;
-  try {
-    content = await readConfigFile(octokit, owner, repo, baseRef, configPath);
-  } catch (error) {
-    return fallBack('base_unreadable', 'Could not read', error);
-  }
-  try {
-    const config = loadConfig(content ?? undefined, configPath);
-    return { config, source: config.review ? 'base' : 'builtin' };
-  } catch (error) {
-    return fallBack('base_invalid', 'Could not load', error);
-  }
 }
 
 /** Whether the run stops before posting a progress comment: the commit is reviewed or stale, or nothing changed. */
