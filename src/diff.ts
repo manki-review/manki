@@ -64,15 +64,17 @@ export function findExcludePattern(path: string, excludePaths: string[]): string
 /**
  * Splits diff files by the exclude glob patterns. A file is included unless it
  * matches any pattern. Each excluded file records the first pattern it matched.
+ * A file in `keep`, such as a lockfile Manki reads as a package list, is always included.
  */
 export function filterFilesWithAttribution(
   files: DiffFile[],
   excludePaths: string[],
+  keep: ReadonlySet<string> = new Set(),
 ): { included: DiffFile[]; excluded: RoundDiffExcludedFile[] } {
   const included: DiffFile[] = [];
   const excluded: RoundDiffExcludedFile[] = [];
   for (const file of files) {
-    const matchedPattern = findExcludePattern(file.path, excludePaths);
+    const matchedPattern = keep.has(file.path) ? undefined : findExcludePattern(file.path, excludePaths);
     if (matchedPattern) {
       excluded.push({ path: file.path, matchedPattern });
     } else {
@@ -102,8 +104,9 @@ export function rebuildRawDiff(diff: ParsedDiff): string {
 export function filterDiff(
   diff: ParsedDiff,
   excludePaths: string[],
+  keep?: ReadonlySet<string>,
 ): { diff: ParsedDiff; excluded: RoundDiffExcludedFile[] } {
-  const { included, excluded } = filterFilesWithAttribution(diff.files, excludePaths);
+  const { included, excluded } = filterFilesWithAttribution(diff.files, excludePaths, keep);
   let totalAdditions = 0;
   let totalDeletions = 0;
   for (const file of included) {
@@ -116,8 +119,8 @@ export function filterDiff(
 /**
  * Removes files matching `excludePaths` from a raw unified diff.
  */
-export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
-  return rebuildRawDiff(filterDiff(parsePRDiff(rawDiff), excludePaths).diff);
+export function filterRawDiff(rawDiff: string, excludePaths: string[], keep?: ReadonlySet<string>): string {
+  return rebuildRawDiff(filterDiff(parsePRDiff(rawDiff), excludePaths, keep).diff);
 }
 
 /** Parses a PR's raw diff and splits it into the files the review reads and the files `excludePaths` leaves out. */

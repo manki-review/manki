@@ -934,7 +934,7 @@ export interface StaticAnalysisConfig {
   analyzers: 'all' | AnalyzerSettings;
 }
 
-export type StaticSignalSource = 'checks' | 'code_scanning' | 'dependency_review' | 'hidden_characters' | AnalyzerName;
+export type StaticSignalSource = 'checks' | 'code_scanning' | 'dependency_review' | 'hidden_characters' | 'lockfile' | AnalyzerName;
 
 /** A vulnerable package a dependency scanner reports for a manifest or lockfile. */
 export interface PackageVulnerability {
@@ -1211,7 +1211,7 @@ export interface RoundAnalyzerRun {
 }
 
 export interface RoundSignalSourceRun {
-  source: Exclude<StaticSignalSource, AnalyzerName | 'hidden_characters'>;
+  source: Exclude<StaticSignalSource, AnalyzerName | 'hidden_characters' | 'lockfile'>;
   status: 'ran' | 'skipped';
   /** Results on lines in the diff. */
   results?: number;

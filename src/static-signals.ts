@@ -7,6 +7,7 @@ import { installTool, isLockfile, runActionlint, runGitleaks, runOpengrep, runOs
 import { loadStaticAnalysisConfig } from './config';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
+import { LockfileDiff, lockfileSignals } from './lockfile';
 import { resolveInRoot } from './mcp-server';
 import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, SECURITY_TAG, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { escapeRegExp, hiddenCharacters, safeTruncate } from './utils';
@@ -66,6 +67,8 @@ export interface StaticSignalRequest {
   diff: ParsedDiff;
   /** Every file the PR changes, before `exclude_paths`. `dependencies` reads it, so a lockfile the review skips is still scanned. */
   fullDiff: ParsedDiff;
+  /** The package changes of the lockfiles Manki parsed. A change that needs a reason gets an alert. */
+  lockfiles?: LockfileDiff[];
 }
 
 /** What `collectStaticSignals` needs from outside the GitHub API, so tests can stand in for it. */
@@ -188,10 +191,11 @@ export async function collectStaticSignals(
       return [];
     }
   }));
-  // A PR can change its own `exclude_paths`, so hidden characters are looked for in every changed file. Their alerts go
-  // first and each kind has its own cap, so neither can push the other out.
+  // A PR can change its own `exclude_paths`, so hidden characters are looked for in every changed file. Their alerts and
+  // the lockfile alerts go first and each kind has its own cap, so none can push another out.
   const hidden = hiddenCharacterSignals(fullDiff).slice(0, MAX_SIGNALS);
-  const onDiff = [...hidden, ...collected.flat().sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])];
+  const lockfile = lockfileSignals(request.lockfiles ?? []).slice(0, MAX_SIGNALS);
+  const onDiff = [...hidden, ...lockfile, ...collected.flat().sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])];
   if (onDiff.length > 0) core.info(`Static analysis: ${onDiff.length} result(s) on lines in the diff`);
   const record: RoundStaticAnalysis = {
     ...(runs.length > 0 && { analyzers: runs.sort((a, b) => ANALYZERS.indexOf(a.analyzer) - ANALYZERS.indexOf(b.analyzer)) }),
@@ -199,12 +203,12 @@ export async function collectStaticSignals(
     ...(hidden.length > 0 && { hiddenCharacters: hidden.length }),
     ...(checksStillPending.length > 0 && { checksStillPending }),
   };
-  return { signals: onDiff.slice(0, hidden.length + MAX_SIGNALS), ...(Object.keys(record).length > 0 && { record }) };
+  return { signals: onDiff.slice(0, hidden.length + lockfile.length + MAX_SIGNALS), ...(Object.keys(record).length > 0 && { record }) };
 }
 
 /** Whether Manki itself reported the result. Nobody sees those results unless the review posts them. */
 export function isAnalyzerSignal(signal: StaticSignal): boolean {
-  return signal.source === 'hidden_characters' || (ANALYZERS as readonly string[]).includes(signal.source);
+  return signal.source === 'hidden_characters' || signal.source === 'lockfile' || (ANALYZERS as readonly string[]).includes(signal.source);
 }
 
 /**
@@ -343,17 +347,19 @@ async function waitForChecks(
 }
 
 /**
- * Returns the changed lockfiles at the PR head, within `MAX_LOCKFILE_BYTES` each and `MAX_LOCKFILES_TOTAL_BYTES` in all.
- * They are fetched raw, since the contents API sends no content above 1 MB.
+ * Returns the changed lockfiles `keep` accepts at the PR head, within `MAX_LOCKFILE_BYTES` each and
+ * `MAX_LOCKFILES_TOTAL_BYTES` in all. They are fetched raw, since the contents API sends no content above 1 MB.
  */
-async function fetchLockfiles(octokit: Octokit, { owner, repo, headSha, fullDiff }: StaticSignalRequest): Promise<Map<string, string>> {
+export async function fetchLockfiles(
+  octokit: Octokit, { owner, repo, headSha, fullDiff }: Pick<StaticSignalRequest, 'owner' | 'repo' | 'headSha' | 'fullDiff'>, keep = isLockfile,
+): Promise<Map<string, string>> {
   const lockfiles = new Map<string, string>();
   let total = 0;
-  for (const { path } of fullDiff.files.filter(f => f.changeType !== 'deleted' && isLockfile(f.path))) {
+  for (const { path } of fullDiff.files.filter(f => f.changeType !== 'deleted' && keep(f.path))) {
     const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref: headSha, mediaType: { format: 'raw' } });
     const content = data as unknown as string;
     if (content.length > MAX_LOCKFILE_BYTES || total + content.length > MAX_LOCKFILES_TOTAL_BYTES) {
-      core.info(`Static analysis: dependencies skips ${path}, ${content.length} bytes is over the lockfile budget`);
+      core.info(`Skipping ${path}: ${content.length} bytes is over the lockfile budget`);
       continue;
     }
     lockfiles.set(path, content);
@@ -393,7 +399,7 @@ export function formatStaticSignals(signals: StaticSignal[]): string {
 export function toolAlertFindings(signals: StaticSignal[]): Finding[] {
   const seen = new Set<string>();
   return signals.filter(s => {
-    const key = `${s.file}:${s.line}:${s.ruleId || s.message}`;
+    const key = `${s.file}:${s.line}:${s.ruleId}:${s.message}`;
     if (seen.has(key) || !isTriagedSignal(s)) return false;
     seen.add(key);
     return true;

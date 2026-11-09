@@ -18,6 +18,7 @@ import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedE
 import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
+import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
@@ -26,7 +27,7 @@ import { disproof } from './refute';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
-import { collectStaticSignals } from './static-signals';
+import { collectStaticSignals, fetchLockfiles } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
@@ -690,6 +691,8 @@ const MAX_REVIEW_CHARS = 4_000_000;
 
 /** What a review round works on. Built once its inputs are collected, then passed to the stages that review, post and record. */
 interface ReviewRun extends RunTarget, RoundRecordInput {
+  /** The lockfiles a model reads as a package list, so they hold no approval. */
+  lockfiles: LockfileDiff[];
   commentId: number;
   dashboard: DashboardData;
   progress: RunProgress;
@@ -817,6 +820,17 @@ async function loadRecap(
 async function collectDiff(target: RunTarget, config: ReviewConfig) {
   const { octokit, owner, repo, prNumber } = target;
   return reviewableDiff(await fetchPRDiff(octokit, owner, repo, prNumber), config.exclude_paths);
+}
+
+/** Reads the package changes of the changed lockfiles Manki parses. A lockfile that can't be read stays unread. */
+async function collectLockfiles(target: RunTarget, fullDiff: ParsedDiff): Promise<LockfileDiff[]> {
+  const { octokit, owner, repo, commitSha } = target;
+  if (!fullDiff.files.some(f => isParsedLockfile(f.path))) return [];
+  const heads = await fetchLockfiles(octokit, { owner, repo, headSha: commitSha, fullDiff }, isParsedLockfile).catch((error: unknown) => {
+    core.warning(`Could not read the changed lockfiles, so no model reads them: ${error instanceof Error ? error.message : error}`);
+    return new Map<string, string>();
+  });
+  return readLockfileChanges(fullDiff, heads);
 }
 
 function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled: boolean, deeper?: boolean): DashboardData {
@@ -1038,13 +1052,16 @@ async function collectOpenThreads(
  * open PRs and issues that may relate to the PR, and the static analysis results.
  */
 async function collectRoundSignals(
-  target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, configPath: string, prContext?: PrContext,
+  target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, lockfiles: LockfileDiff[], configPath: string, prContext?: PrContext,
 ): Promise<{ interRoundDiff?: string; priorChange?: ParsedDiff; linkedIssues?: LinkedIssue[]; relatedWork?: RelatedWork; staticSignals: StaticSignal[]; staticAnalysis?: RoundStaticAnalysis }> {
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
   const prBody = prContext?.body;
   const relatedWorkPromise = prContext
     ? findRelatedWork(octokit, { owner, repo, prNumber, title: prContext.title, body: prContext.body, diff })
     : Promise.resolve(undefined);
+  // A parsed lockfile stays in the diffs between rounds, so a push that changes it counts as a change.
+  const parsedLockfiles = new Set(lockfiles.map(l => l.path));
+  const reviewed = withLockfiles(diff, lockfiles);
   // Fetch the PR's own change since the prior round so the judge
   // can ground per-thread resolution in actual changes since last review.
   let interRoundDiff: string | undefined;
@@ -1053,19 +1070,19 @@ async function collectRoundSignals(
 
   // Read with the workflow token, which carries the `checks` and `security-events` permissions the workflow grants.
   const staticSignalsPromise = collectStaticSignals(await workflowOctokit(), {
-    owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff, fullDiff,
+    owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff, fullDiff, lockfiles,
   });
 
   let linkedIssues;
   const diffPromise: Promise<string | undefined> = shouldFetchDiff && lastPriorSha
     ? fetchInterRoundDiff(octokit, owner, repo, lastPriorSha, commitSha)
-      .then(raw => filterRawDiff(raw, config.exclude_paths))
+      .then(raw => filterRawDiff(raw, config.exclude_paths, parsedLockfiles))
     : Promise.resolve(undefined);
   // The base branch diffed against the prior commit gives the PR's own change then, without what a rebase brought in.
   const priorChangePromise: Promise<ParsedDiff | undefined> = !lastPriorSha || lastPriorSha === commitSha
-    ? Promise.resolve(lastPriorSha ? diff : undefined)
+    ? Promise.resolve(lastPriorSha ? reviewed : undefined)
     : fetchInterRoundDiff(octokit, owner, repo, baseRef, lastPriorSha)
-      .then(raw => filterDiff(parsePRDiff(raw), config.exclude_paths).diff);
+      .then(raw => filterDiff(parsePRDiff(raw), config.exclude_paths, parsedLockfiles).diff);
   const linkedIssuesPromise = prBody
     ? fetchLinkedIssues(octokit, owner, repo, prBody)
     : Promise.resolve(undefined);
@@ -1080,7 +1097,8 @@ async function collectRoundSignals(
   if (shouldFetchDiff) {
     if (diffResult.status === 'fulfilled' && priorChange && diffResult.value !== undefined) {
       // The two heads also differ by what a rebase brought in, so only the files whose PR change moved are kept.
-      interRoundDiff = ownChangeSince(diffResult.value, priorChange, diff);
+      // The judge reads only the start of this diff, so the lockfile hunks go after the code.
+      interRoundDiff = lockfilesLast(ownChangeSince(diffResult.value, priorChange, reviewed), lockfiles);
     } else if (diffResult.status === 'fulfilled') {
       core.warning('Without the PR\'s change at the last reviewed commit, the inter-round diff cannot leave out a rebase, so it is not used');
     } else {
@@ -1357,12 +1375,13 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
 /** Posts the round's review and dismisses the previous one. Returns the new review's id, and whether its approval was held. */
 async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const { octokit, owner, repo, prNumber, commitSha, diff, recap } = run;
-  const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, {
+  // A finding on a parsed lockfile gets a thread on its line like any other.
+  const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, withLockfiles(diff, run.lockfiles), context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
     draft: run.options.draft,
     configFailed: configFailed(run.reviewSource),
     memorySkip: run.memorySkip?.message,
-    skipped: { excluded: run.excludedFiles, binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
+    skipped: { excluded: run.excludedFiles.filter(f => !run.lockfiles.some(l => l.path === f.path)), binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
   // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed.
@@ -1576,6 +1595,7 @@ async function runFullReview(
     const { clients, models } = built;
 
     const { fullDiff, diff, excludedFiles, rawDiff } = await collectDiff(target, config);
+    const lockfiles = await collectLockfiles(target, fullDiff);
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
     const dashboard = initialDashboard(diff, config, !!clients.planner, options.deeper);
@@ -1613,7 +1633,7 @@ async function runFullReview(
 
     core.info(`Reviewing ${diff.files.length} files (${fullDiff.files.length} total, ${excludedFiles.length} filtered out)`);
 
-    if (diff.files.length === 0) {
+    if (diff.files.length === 0 && lockfiles.length === 0) {
       core.info('No reviewable files in diff');
       // Every source reads the skipped files as the diff, so CI, dependency review and the analyzers still check them.
       const { signals } = await collectStaticSignals(await workflowOctokit(), { owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff: fullDiff, fullDiff });
@@ -1641,14 +1661,14 @@ async function runFullReview(
 
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
     const [{ interRoundDiff, priorChange, linkedIssues, relatedWork, staticSignals, staticAnalysis }, workspace] = await Promise.all([
-      collectRoundSignals(target, config, recap, diff, fullDiff, configPath, prContext),
+      collectRoundSignals(target, config, recap, diff, fullDiff, lockfiles, configPath, prContext),
       fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])]),
     ]);
 
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
-      diff, changeDigest: digest, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
+      diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
       commentId, dashboard, progress, startTime, parseEndTime,
     };
 
@@ -1679,6 +1699,7 @@ async function runFullReview(
       workspace,
       deeper: options.deeper,
       excludedPaths: excludedFiles.map(f => f.path),
+      lockfiles,
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.
     stop.signal.throwIfAborted();
@@ -1689,8 +1710,8 @@ async function runFullReview(
       return;
     }
 
-    addCodeContext(result.findings, diff);
-    tagFindingOrigins(result.findings, diff, options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
+    addCodeContext(result.findings, withLockfiles(diff, lockfiles));
+    tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
     const reviewTimeMs = Date.now() - startTime;
     const buildContext = () => buildRoundContext({ ...run, tokenServiceCalls: tokenServiceCalls() }, result, {
       plannerDurationMs: dashboard.plannerDurationMs,

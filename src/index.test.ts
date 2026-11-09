@@ -129,6 +129,7 @@ jest.mock('./diff', () => {
     filterRawDiff: jest.fn((rawDiff: string) => rawDiff),
     ownChangeSince: jest.fn((sinceLastRound: string) => sinceLastRound),
     addCodeContext: jest.requireActual('./diff').addCodeContext,
+    addedLines: jest.requireActual('./diff').addedLines,
     tagFindingOrigins: jest.requireActual('./diff').tagFindingOrigins,
     compareChanges: jest.requireActual('./diff').compareChanges,
     changeDigest: jest.requireActual('./diff').changeDigest,
@@ -260,6 +261,7 @@ jest.mock('./fix-rate', () => ({
 
 jest.mock('./static-signals', () => ({
   collectStaticSignals: jest.fn().mockResolvedValue({ signals: [] }),
+  fetchLockfiles: jest.fn().mockResolvedValue(new Map()),
 }));
 
 jest.mock('./related-work', () => ({
@@ -2382,6 +2384,23 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
     // Warmup must be skipped on paths that never invoke an LLM.
     expect(warmupCLI).not.toHaveBeenCalled();
+  });
+
+  it('reviews a PR that changes only a lockfile Manki parses, and holds no approval for it', async () => {
+    const head = `version = 4\n\n[[package]]\nname = "hex"\nversion = "0.4.3"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n`;
+    const file = { path: 'Cargo.lock', changeType: 'modified' as const, hunks: [{ oldStart: 4, oldLines: 3, newStart: 4, newLines: 3, content: ' name = "hex"\n-version = "0.4.2"\n+version = "0.4.3"\n source = "registry+https://github.com/rust-lang/crates.io-index"' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: 1, totalDeletions: 1, binarySkipped: [] });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: [{ path: 'Cargo.lock', matchedPattern: '*.lock' }] });
+    jest.mocked(staticSignalsModule.fetchLockfiles).mockResolvedValueOnce(new Map([['Cargo.lock', head]]));
+
+    await callRunFullReview();
+
+    const lockfiles = [{ path: 'Cargo.lock', file, changes: [expect.objectContaining({ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', line: 5 })] }];
+    expect(reviewModule.runReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockfiles, excludedPaths: ['Cargo.lock'] }));
+    expect(jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0][1].lockfiles).toEqual([expect.objectContaining({ path: 'Cargo.lock' })]);
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.skipped).toEqual({ excluded: [], binary: [] });
+    // The posted review places findings against the lockfile's own hunks, so one on it gets a thread.
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][6]?.files.map(f => f.path)).toEqual(['Cargo.lock']);
   });
 
   it('skips auto_review disabled PR events and deletes progress comment', async () => {
@@ -5368,10 +5387,11 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledTimes(outcome === 'superseded' ? 1 : 0);
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(2);
-    expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**']);
+    expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**'], new Set());
     expect(jest.mocked(diffModule.filterRawDiff)).toHaveBeenCalledWith(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
       ['dist/**'],
+      new Set(),
     );
     const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     expect(runReviewArgs.rawDiff).toBe(diffModule.rebuildRawDiff({ files: [testFile], totalAdditions: 10, totalDeletions: 5 }));
