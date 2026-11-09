@@ -92,6 +92,54 @@ describe('listUsesOutsideDiff', () => {
     expect(JSON.stringify(record)).not.toContain('is_some');
   });
 
+  it('shows a redefined field\'s uses from other files before a fourth from one file, in Rust, Python, TypeScript and Go', async () => {
+    const reads = (line: (i: number) => string) => Array.from({ length: 5 }, (_, i) => line(i)).join('\n');
+    const cases = [
+      {
+        changed: 'src/account.rs', before: 'pub struct Account {\n    pub balance: u64,\n}\n', after: 'pub struct Account {\n    pub balance: i64,\n}\n',
+        ledger: 'src/ledger.rs', report: 'src/report.rs', field: 'balance', declared: 2,
+        ledgerText: reads(i => `pub fn read_${i}(a: &Account) -> i64 {\n    a.balance\n}\n`),
+        reportText: 'pub fn opened(e: &Event) -> i64 {\n    e.holder.balance\n}\n',
+        shown: (n: number) => `src/ledger.rs:${4 * n + 2}: a.balance`, reportLine: 'src/report.rs:2: e.holder.balance',
+      },
+      {
+        changed: 'app/account.py', before: 'class Account:\n    balance: int = 0\n', after: 'class Account:\n    balance: float = 0.0\n',
+        ledger: 'app/ledger.py', report: 'app/report.py', field: 'balance', declared: 2,
+        ledgerText: `from .account import Account\n\n${reads(i => `def read_${i}(a: Account):\n    return a.balance\n`)}`,
+        reportText: 'def opened(event):\n    return event.holder.balance\n',
+        shown: (n: number) => `app/ledger.py:${3 * n + 4}: return a.balance`, reportLine: 'app/report.py:2: return event.holder.balance',
+      },
+      {
+        changed: 'src/account.ts', before: 'export interface Account {\n  balance: number;\n}\n', after: 'export interface Account {\n  balance: bigint;\n}\n',
+        ledger: 'src/ledger.ts', report: 'src/report.ts', field: 'balance', declared: 2,
+        ledgerText: `import { Account } from './account';\n\n${reads(i => `export const read${i} = (a: Account) => a.balance;`)}\n`,
+        reportText: 'export const opened = (e: Event) => e.holder.balance;\n',
+        shown: (n: number) => `src/ledger.ts:${n + 3}: export const read${n} = (a: Account) => a.balance;`, reportLine: 'src/report.ts:1: export const opened = (e: Event) => e.holder.balance;',
+      },
+      {
+        changed: 'bank/account.go', before: 'package bank\n\ntype Account struct {\n\tBalance int64\n}\n', after: 'package bank\n\ntype Account struct {\n\tBalance uint64\n}\n',
+        ledger: 'bank/ledger.go', report: 'bank/report.go', field: 'Balance', declared: 4,
+        ledgerText: `package bank\n\n${reads(i => `func Read${i}(a Account) uint64 { return a.Balance }`)}\n`,
+        reportText: 'package bank\n\nfunc Opened(e Event) uint64 { return e.Holder.Balance }\n',
+        shown: (n: number) => `bank/ledger.go:${n + 3}: func Read${n}(a Account) uint64 { return a.Balance }`, reportLine: 'bank/report.go:3: func Opened(e Event) uint64 { return e.Holder.Balance }',
+      },
+    ];
+    for (const { changed, before, after, ledger, report, field, declared, ledgerText, reportText, shown, reportLine } of cases) {
+      const { section } = await usesFor({ [changed]: before, [ledger]: ledgerText, [report]: reportText }, { [changed]: after });
+      // The report never names `Account`, yet its one use comes before the ledger's fourth.
+      expect(section).toContain(`### \`${field}\` (field of \`Account\`)\n\n\`\`\`\ndeclared at ${changed}:${declared}\n${[
+        shown(0), shown(1), shown(2), reportLine, shown(3), shown(4),
+      ].join('\n')}\n\`\`\``);
+    }
+
+    // With no other file to show, one file fills the list.
+    const alone = await usesFor(
+      { 'src/account.rs': 'pub struct Account {\n    pub balance: u64,\n}\n', 'src/ledger.rs': reads(i => `pub fn read_${i}(a: &Account) -> u64 {\n    a.balance\n}\n`) },
+      { 'src/account.rs': 'pub struct Account {\n    pub balance: i64,\n}\n' },
+    );
+    expect(alone.record?.symbols?.find(s => s.name === 'balance')?.uses).toEqual([2, 6, 10, 14, 18].map(line => `src/ledger.rs:${line}`));
+  });
+
   it('lists the type behind a field the changed lines read with all its fields, skipping method calls and unreachable namesakes', async () => {
     const { section } = await usesFor({
       'core/Cargo.toml': '[package]\nname = "shop_core"\n',

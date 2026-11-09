@@ -19,6 +19,8 @@ const execFileAsync = promisify(execFile);
 const MAX_USES_PER_SYMBOL = 4;
 /** Uses shown for a field or variant the diff redefines, since its readers are what the change can break. */
 const MAX_REDEFINED_USES = 12;
+/** Uses of a symbol shown from one file while other files still have uses to show. */
+const MAX_USES_PER_FILE = 3;
 const MAX_USES = 60;
 const MAX_SYMBOLS = 80;
 /**
@@ -1222,20 +1224,24 @@ function formatSymbolUses(symbols: ChangedSymbol[], hits: Hit[], packages: Packa
   const common = entries.filter(isCommon);
   const byRank = (a: { use: Hit; rank: number[] }, b: { use: Hit; rank: number[] }) =>
     compareRanks(a.rank, b.rank) || a.use.file.localeCompare(b.use.file) || a.use.line - b.use.line;
-  // Within a rank, the first use in each file comes before a second use in any file, so one file cannot fill a symbol's share.
-  // Only a symbol's best uses can be shown, so each keeps just its share before the merge, which bounds the sort over all
-  // symbols however many uses a redefined field has.
+  // Within a rank, the first use in each file comes before a second use in any file, and a file's uses past its best
+  // `MAX_USES_PER_FILE` come after every other file's, so one file cannot fill a symbol's share. Only a symbol's best uses
+  // can be shown, so each keeps just its share before the merge, which bounds the sort over all symbols however many uses
+  // a redefined field has.
   const ranked = entries.filter(e => !isCommon(e)).flatMap(e => {
     const word = wordPattern([e.symbol.name]);
     const fieldRead = e.symbol.kind === 'field' ? new RegExp(`\\.${word.source}(?!\\s*\\()`) : undefined;
     const typed = typeFilesOf(e.symbol);
+    const placed = e.uses.map(use => {
+      const location = locationRank(e.symbol, use.file, packages);
+      const [prose, code, untyped] = [proseRank(word, use), codeRank(fieldRead, use), Number(!!typed && !typed.has(use.file))];
+      return { use, rank: [prose, Number(e.symbol.tier === 2), Number(location === 3), untyped, location, code] };
+    }).sort(byRank);
     const seen = new Map<string, number>();
-    return e.uses.map(use => {
+    return placed.map(({ use, rank: [prose, member, unreachable, untyped, location, code] }) => {
       const nth = seen.get(use.file) ?? 0;
       seen.set(use.file, nth + 1);
-      const location = locationRank(e.symbol, use.file, packages);
-      const namesake = Number(location === 3 || (!!typed && !typed.has(use.file)));
-      const rank = [proseRank(word, use), Number(e.symbol.tier === 2), namesake, location, codeRank(fieldRead, use), e.symbol.tier, nth, e.uses.length, e.index];
+      const rank = [prose, member, unreachable, Number(nth >= MAX_USES_PER_FILE), untyped, location, code, e.symbol.tier, nth, e.uses.length, e.index];
       return { entry: e, use, rank };
     }).sort(byRank).slice(0, capOf(e.symbol));
   }).sort(byRank);
