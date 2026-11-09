@@ -2039,6 +2039,18 @@ describe('runReview', () => {
     expect(result.verdictReport).toBeUndefined();
   });
 
+  it('gives the judge the configured tool budget only when it can read the checked-out head', async () => {
+    const diff = diffChanging('src/a.ts');
+    const config = makeConfig({ judge: { tool_steps: 30 } });
+    const clients = makeClients();
+    await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
+    expect(mockedRunJudgeAgent.mock.calls[0][2].toolSteps).toBeUndefined();
+
+    Object.assign(clients.judge, { repoTools: true });
+    await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
+    expect(mockedRunJudgeAgent.mock.calls[1][2]).toEqual(expect.objectContaining({ toolSteps: 30, refutation: expect.objectContaining({ workspace: '/work/pr-head' }) }));
+  });
+
   describe('open leads', () => {
     const leadOf = (severity: string, title: string, file: string, line: number) => ({ lead: true, severity, title, file, line, description: `${title}.`, checked: 'read the file', left: 'check the caller' });
     const refuted = (outcome: 'confirmed' | 'disproved' | 'unsettled') => ({ outcome, reason: `It is ${outcome}.`, files: ['src/a.ts'], codeDigest: 'abc' });

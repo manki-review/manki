@@ -1280,6 +1280,26 @@ describe('runJudgeAgent', () => {
     expect(first[1]).toBe(second[1]);
   });
 
+  it('gives the judge read-only tools on the workspace only when it has a tool budget and a refutation client', async () => {
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', severity: 'suggestion', reasoning: 'r', confidence: 'high' }] }) });
+    const refuter = { repoTools: true, sendMessage: jest.fn() } as unknown as LLMClient;
+    const base: JudgeInput = { findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1 };
+
+    await runJudgeAgent(mockClient, makeConfig(), { ...base, refutation: { client: refuter, workspace: '/work/pr-head' }, toolSteps: 30 });
+    await runJudgeAgent(mockClient, makeConfig(), { ...base, refutation: { client: refuter, workspace: '/work/pr-head' } });
+    // Without the checked-out head there is nothing to read, so the budget gives no tools.
+    await runJudgeAgent(mockClient, makeConfig(), { ...base, toolSteps: 30 });
+
+    const [withTools, noBudget, noWorkspace] = mockSendMessage.mock.calls;
+    expect(withTools[2]).toEqual({ effort: 'high', timeoutMs: 900_000, promptTemplate: expect.stringContaining('## Your Tools'), repoTools: { root: '/work/pr-head', steps: 30 } });
+    expect(withTools[0]).toContain('You can read the PR\'s head commit with read-only tools, up to 30 calls in all.');
+    expect(withTools[0]).toContain('Set `gradeIfConfirmed` only for a doubt your calls did not settle.');
+    for (const [system, , options] of [noBudget, noWorkspace]) {
+      expect(system).not.toContain('## Your Tools');
+      expect(options).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.any(String) });
+    }
+  });
+
   it('passes effort option to sendMessage', async () => {
     const judgedResponse = JSON.stringify({
       summary: 'Real issue found.',

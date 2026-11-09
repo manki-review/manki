@@ -776,6 +776,19 @@ models:
     });
   });
 
+  describe('judge config', () => {
+    it('gives the judge no tool steps by default, and takes an integer from 0 to 100', () => {
+      expect(loadConfig(undefined).judge).toEqual({ tool_steps: 0 });
+      expect(loadConfig('judge:\n  tool_steps: 30\n').judge).toEqual({ tool_steps: 30 });
+      for (const bad of ['-1', '1.5', '101', '"30"']) {
+        expect(() => loadConfig(`judge:\n  tool_steps: ${bad}\n`)).toThrow('Invalid config');
+      }
+      expect(core.error).toHaveBeenCalledWith('`judge.tool_steps` must be an integer from 0 to 100');
+      expect(() => loadConfig('judge: 30\n')).toThrow('Invalid config');
+      expect(core.error).toHaveBeenCalledWith('`judge` must be an object');
+    });
+  });
+
   describe('exclude_paths element type validation', () => {
     it('throws when exclude_paths contains a non-string element', () => {
       expect(() => loadConfigFromContent('exclude_paths:\n  - "*.lock"\n  - 42\n'))

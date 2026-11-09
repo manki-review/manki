@@ -50,6 +50,8 @@ export const SETTINGS: Setting[] = [
   { key: 'planner', type: 'map', description: 'The planner stage.' },
   { key: 'planner.enabled', type: 'boolean', description: 'Run the planner. Without it, every round takes the side that adds review: two finders at high effort.' },
   { key: 'planner.paired', type: '`auto`, `always` or `never`', deprecated: true, description: 'Pins the planner\'s `paired` answer. Route classes with `review.routing` instead.' },
+  { key: 'judge', type: 'map', description: 'The judge stage.' },
+  { key: 'judge.tool_steps', type: 'integer from 0 to 100', description: 'Read-only repository tool calls the judge may make while it grades, on a judge that runs on the Claude or Codex CLI. With them the judge reads the code a finding rests on itself, at the cost of a longer judge call. `0` gives it none.' },
   { key: 'review', type: 'map', default: 'the built-in groups', description: 'Review groups and how PR classes route to them. Read from the base branch, so a PR cannot weaken its own review. See [Review groups](' + REVIEWS + '#review-groups).' },
   { key: 'review.groups', type: 'map of groups', default: '`trivial`, `solo` and `pair`', description: 'Each group lists its `reviewers`. A group with a built-in name replaces it.' },
   { key: 'review.groups.<name>.reviewers[].model', type: 'model id', default: '`@reviewer`', description: 'A model id, `provider/model`, or `@reviewer` or `@reviewer_pair`, which resolve through `models`.' },

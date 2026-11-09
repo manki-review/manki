@@ -1185,7 +1185,7 @@ export async function runReview(
       resolvedThreadIds,
       suppressResolvedThreads,
       ...(related && { relatedRepos: related.repos }),
-      ...(refutation && { refutation }),
+      ...(refutation && { refutation, toolSteps: config.judge?.tool_steps ?? 0 }),
       usesOutsideDiff,
     };
     const judgeStart = Date.now();
