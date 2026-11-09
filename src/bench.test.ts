@@ -143,13 +143,13 @@ describe('llmMatcher', () => {
   const findings = [makeFinding({ title: 'First' }), makeFinding({ title: 'Second', suggestedFix: 'Bound it.' })];
   const clientAnswering = (content: string) => ({ sendMessage: jest.fn().mockResolvedValue({ content }) }) as unknown as LLMClient & { sendMessage: jest.Mock };
 
-  it('maps the numbered finding to its index, shows the key item and findings, and answers a repeat from the cache', async () => {
-    const client = clientAnswering('```json\n{"verdict": "MATCH", "finding": 2, "reason": "Same allocation."}\n```');
+  it('maps the numbered findings to their indexes, shows the key item and findings, and answers a repeat from the cache', async () => {
+    const client = clientAnswering('```json\n{"verdict": "MATCH", "findings": [2, 1, 2], "reason": "Same allocation."}\n```');
     const cache = new Map<string, MatchDecision>();
     const matcher = llmMatcher(client, 'model-a', cache);
 
-    expect(await matcher(item, findings)).toEqual({ verdict: 'MATCH', finding: 1, reason: 'Same allocation.' });
-    expect(await matcher(item, findings)).toEqual({ verdict: 'MATCH', finding: 1, reason: 'Same allocation.' });
+    expect(await matcher(item, findings)).toEqual({ verdict: 'MATCH', findings: [1, 0], reason: 'Same allocation.' });
+    expect(await matcher(item, findings)).toEqual({ verdict: 'MATCH', findings: [1, 0], reason: 'Same allocation.' });
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
     const [, message, options] = client.sendMessage.mock.calls[0];
     expect(message).toContain('Key item (blocker): The reader allocates from a peer length.');
@@ -160,8 +160,8 @@ describe('llmMatcher', () => {
   });
 
   it.each([
-    ['{"verdict": "NONE", "finding": null, "reason": "Not there."}', { verdict: 'NONE', reason: 'Not there.' }],
-    ['{"verdict": "PARTIAL", "finding": 9, "reason": "Close."}', { verdict: 'NONE', reason: 'Named no listed finding: Close.' }],
+    ['{"verdict": "NONE", "findings": [], "reason": "Not there."}', { verdict: 'NONE', findings: [], reason: 'Not there.' }],
+    ['{"verdict": "PARTIAL", "findings": [9, 0], "reason": "Close."}', { verdict: 'NONE', findings: [], reason: 'Named no listed finding: Close.' }],
   ])('reads %s as no match', async (content, expected) => {
     expect(await llmMatcher(clientAnswering(content), 'model-a', new Map())(item, findings)).toEqual(expected);
   });
@@ -173,50 +173,50 @@ describe('llmMatcher', () => {
 
 describe('scoreRun', () => {
   const benchCase = parseCase(CASE_YAML, 'demo.yml');
-  const stub = (decisions: Record<string, MatchDecision>): Matcher & jest.Mock => jest.fn(async (item: KeyItem) => decisions[item.id] ?? { verdict: 'NONE', reason: 'none' });
+  const stub = (decisions: Record<string, MatchDecision>): Matcher & jest.Mock => jest.fn(async (item: KeyItem) => decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' });
 
-  it('scores recall, severity credit, extra findings and false blockers, and counts finder reads and cost', async () => {
+  it('scores recall, severity credit, extra findings, false blockers and duplicates, and counts finder reads and cost', async () => {
     const findings = [
       makeFinding({ severity: 'warning', file: 'src/read.rs', title: 'Peer length allocation' }),
       makeFinding({ severity: 'blocker', file: 'src/lock.rs', title: 'Lock dropped', description: 'Calls `unlock` early.' }),
       makeFinding({ severity: 'blocker', file: 'src/other.rs', title: 'Invented' }),
+      makeFinding({ severity: 'blocker', file: 'src/read.rs', title: 'Same allocation, second place' }),
     ];
-    const matcher = stub({ K1: { verdict: 'MATCH', finding: 0, reason: 'same' }, K2: { verdict: 'PARTIAL', finding: 0, reason: 'vague' } });
+    const matcher = stub({ K1: { verdict: 'MATCH', findings: [1, 0], reason: 'same' }, K2: { verdict: 'PARTIAL', findings: [0], reason: 'vague' } });
 
     const score = await scoreRun(benchCase, makeReview('ADDRESS_FIRST', findings), matcher);
 
     expect(matcher).toHaveBeenCalledTimes(3);
+    expect(matcher.mock.calls[0][1]).toEqual([findings[0], findings[3]]);
     expect(matcher.mock.calls[1][1]).toEqual([findings[1]]);
     expect(matcher.mock.calls[2][1]).toEqual(findings);
     expect(score.matches).toEqual([
-      { item: 'K1', verdict: 'MATCH', finding: 0, severity: 'warning', reason: 'same' },
-      { item: 'K2', verdict: 'PARTIAL', finding: 1, severity: 'blocker', reason: 'vague' },
-      { item: 'N1', verdict: 'NONE', reason: 'none' },
+      { item: 'K1', verdict: 'MATCH', findings: [3, 0], severity: 'blocker', reason: 'same' },
+      { item: 'K2', verdict: 'PARTIAL', findings: [1], severity: 'blocker', reason: 'vague' },
+      { item: 'N1', verdict: 'NONE', findings: [], reason: 'none' },
     ]);
     expect(score).toMatchObject({
-      outcome: 'ADDRESS_FIRST', complete: true, mustCatchRecall: 0.5, weightedRecall: 1.5 / 5, verdictCorrect: true, falseBlockers: 1, extraFindings: 1,
+      outcome: 'ADDRESS_FIRST', complete: true, mustCatchRecall: 0.5, weightedRecall: 3 / 5, verdictCorrect: true, falseBlockers: 1, extraFindings: 1, duplicates: 1,
       finders: [{ name: 'finder-a', model: 'claude-sonnet-5-5', toolSteps: 4, readSteps: 3 }],
       costUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 90,
     });
     expect(score.findings[2]).toEqual({ severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1 });
   });
 
-  it('gives no credit two tiers low, skips the matcher without candidates, and calls an approval of a blocker case wrong', async () => {
-    const findings = [makeFinding({ severity: 'nitpick', file: 'src/read.rs' })];
-    const matcher = stub({ K1: { verdict: 'MATCH', finding: 0, reason: 'same' } });
+  it('gives half credit one tier low and none two tiers low, skips the matcher without candidates, and calls an approval of a blocker case wrong', async () => {
+    const run = (severity: Finding['severity']) => scoreRun(benchCase, makeReview('READY', [makeFinding({ severity, file: 'src/read.rs' })]), stub({ K1: { verdict: 'MATCH', findings: [0], reason: 'same' } }));
 
-    const score = await scoreRun(benchCase, makeReview('READY', findings), matcher);
-
-    expect(matcher).toHaveBeenCalledTimes(2);
-    expect(score.matches[1]).toEqual({ item: 'K2', verdict: 'NONE', reason: 'No finding names its files or symbols.' });
-    expect(score).toMatchObject({ mustCatchRecall: 0.5, weightedRecall: 0, verdictCorrect: false, extraFindings: 0 });
+    expect(await run('warning')).toMatchObject({ mustCatchRecall: 0.5, weightedRecall: 1.5 / 5 });
+    const score = await run('nitpick');
+    expect(score.matches[1]).toEqual({ item: 'K2', verdict: 'NONE', findings: [], reason: 'No finding names its files or symbols.' });
+    expect(score).toMatchObject({ mustCatchRecall: 0.5, weightedRecall: 0, verdictCorrect: false, extraFindings: 0, duplicates: 0 });
   });
 
-  it('expects a clean case to approve, and leaves the verdict of an incomplete run unscored', async () => {
+  it('expects a clean case to approve, and leaves the recall and verdict of an incomplete run unscored', async () => {
     const clean: BenchCase = { ...benchCase, mustCatch: [], niceToHave: [] };
     expect(await scoreRun(clean, makeReview('READY', []), stub({}))).toMatchObject({ mustCatchRecall: null, weightedRecall: null, verdictCorrect: true });
     expect(await scoreRun(clean, makeReview('ADDRESS_FIRST', [makeFinding({ severity: 'blocker' })]), stub({}))).toMatchObject({ verdictCorrect: false, falseBlockers: 1 });
-    expect(await scoreRun(benchCase, makeReview('INCOMPLETE', [], false), stub({}))).toMatchObject({ complete: false, verdictCorrect: null });
+    expect(await scoreRun(benchCase, makeReview('INCOMPLETE', [], false), stub({}))).toMatchObject({ complete: false, mustCatchRecall: null, weightedRecall: null, verdictCorrect: null });
   });
 });
 
@@ -239,41 +239,58 @@ describe('runBench and buildReport', () => {
   });
 
   const inputs = { anthropicOauthToken: 'token', anthropicApiKey: '', openaiOauthToken: '', openaiApiKey: '', geminiOauthToken: '', geminiApiKey: '' };
+  const blocker = makeFinding({ severity: 'blocker', file: 'src/read.rs' });
 
-  it('reviews each case the asked number of times and reports catch rates per item and severity', async () => {
-    const outcomes: RoundOutcome[] = ['ADDRESS_FIRST', 'READY', 'ADDRESS_FIRST'];
+  it('reviews each case the asked number of times, records a failed or incomplete run apart, and reports catch rates per item and severity', async () => {
+    const runs: Array<RoundOutcome | Error> = ['ADDRESS_FIRST', new Error('provider down'), 'READY', 'INCOMPLETE', 'ADDRESS_FIRST'];
     let call = 0;
-    const review = jest.fn(async (_input: LocalReviewInput) => makeReview(outcomes[call++], [makeFinding({ severity: 'blocker', file: 'src/read.rs' })]));
+    const review = jest.fn(async (_input: LocalReviewInput) => {
+      const next = runs[call++];
+      if (next instanceof Error) throw next;
+      return makeReview(next, next === 'INCOMPLETE' ? [] : [blocker], next !== 'INCOMPLETE');
+    });
     const verdicts: MatchDecision[] = [
-      { verdict: 'MATCH', finding: 0, reason: 'same' }, { verdict: 'PARTIAL', finding: 0, reason: 'close' }, { verdict: 'MATCH', finding: 0, reason: 'same' },
+      { verdict: 'MATCH', findings: [0], reason: 'same' }, { verdict: 'PARTIAL', findings: [0], reason: 'close' }, { verdict: 'MATCH', findings: [0], reason: 'same' },
     ];
     let k1 = 0;
-    const matcher: Matcher = async item => (item.id === 'K1' ? verdicts[k1++] : { verdict: 'NONE', reason: 'none' });
+    const matcher: Matcher = async item => (item.id === 'K1' ? verdicts[k1++] : { verdict: 'NONE', findings: [], reason: 'none' });
     const onCase = jest.fn();
 
-    const results = await runBench([benchCase], { runs: 3, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review, onCase });
+    const results = await runBench([benchCase], { runs: 5, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review, onCase });
 
-    expect(review).toHaveBeenCalledTimes(3);
+    expect(review).toHaveBeenCalledTimes(5);
     expect(review.mock.calls[0]).toEqual([expect.objectContaining({ repoRoot: checkout, base: benchCase.base, head: benchCase.head, title: 'fix: bound the reader', body: 'Reads lengths with a bound.\n' })]);
-    expect(onCase).toHaveBeenCalledWith(benchCase, results[0].runs);
+    expect(onCase).toHaveBeenCalledWith(results);
+    expect(results[0].runs[1]).toMatchObject({ outcome: 'FAILED', complete: false, error: 'provider down', mustCatchRecall: null, verdictCorrect: null });
 
-    const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a' }, results);
+    const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 5, matcherModel: 'model-a' }, results);
     expect(report.cases[0].items).toEqual([
       { id: 'K1', tier: 'must_catch', severity: 'blocker', caught: 2, partial: 1, runs: 3 },
       { id: 'K2', tier: 'must_catch', severity: 'warning', caught: 0, partial: 0, runs: 3 },
       { id: 'N1', tier: 'nice_to_have', severity: 'suggestion', caught: 0, partial: 0, runs: 3 },
     ]);
     expect(report.summary).toEqual({
-      runs: 3, incompleteRuns: 0, mustCatchRecall: 1 / 3, weightedRecall: expect.closeTo(0.4), verdictAccuracy: 2 / 3,
+      runs: 5, incompleteRuns: 2, mustCatchRecall: 1 / 3, weightedRecall: expect.closeTo(0.4), verdictAccuracy: 2 / 3,
       bySeverity: { blocker: { caught: 2, partial: 1, total: 3 }, warning: { caught: 0, partial: 0, total: 3 } },
-      falseBlockers: 0, extraFindings: 0, costUsd: 3.75,
+      falseBlockers: 0, extraFindings: 0, duplicates: 0, costUsd: 5,
     });
     expect(JSON.parse(JSON.stringify(report))).toStrictEqual(report);
     const summary = formatBenchSummary(report);
     expect(summary).toContain('  K1 must blocker: 2/3, 1 partial\n');
-    expect(summary).toContain('  run 2: READY, recall 0%, 0 false blockers, 0 extra, reads finder-a 3, $1.25\n');
-    expect(summary).toContain('3 runs (0 incomplete). Must-catch recall 33%, weighted 40%, verdicts 67%.');
-    expect(summary).toContain('By severity: blocker 2/3, warning 0/3.');
+    expect(summary).toContain('  run 2: failed: provider down\n');
+    expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 extra, 0 duplicates, reads finder-a 3, $1.25\n');
+    expect(summary).toContain('5 runs (2 incomplete). Must-catch recall 33%, weighted 40%, verdicts 67%.');
+    expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, extra findings 0, duplicates 0, cost $5.00.');
+  });
+
+  it('stops on an abort instead of recording the run as failed', async () => {
+    const cancel = new AbortController();
+    const review = jest.fn(async () => {
+      cancel.abort(new Error('Interrupted'));
+      throw new Error('aborted call');
+    });
+    await expect(runBench([benchCase], { runs: 2, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher: jest.fn(), review, signal: cancel.signal })).rejects.toThrow('Interrupted');
+    expect(review).toHaveBeenCalledTimes(1);
   });
 
   it('checks every checkout before the first review', async () => {
