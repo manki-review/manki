@@ -1408,9 +1408,10 @@ export async function postReview(
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
   const followUps = agreedFollowUps(existingThreads);
   const listedFiles = [...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file);
-  const cited = [...new Set(result.findings.flatMap(citedFiles))].slice(0, MAX_CITED_FILES);
+  const changed = diff?.files.map(f => f.path) ?? [];
+  const cited = [...new Set(result.findings.flatMap(f => citedFiles(f, changed)))].slice(0, MAX_CITED_FILES);
   const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
-  const links: CodeLinks = { linkTo, files };
+  const links: CodeLinks = { linkTo, files, changed };
 
   for (const f of result.findings) {
     if (!isBlockingFinding(f)) {
@@ -2150,7 +2151,8 @@ const CHECK_PREVIEW_LINES = 5;
 /** Lines a preview shows for checks close together in one file, which share it. */
 const SHARED_PREVIEW_LINES = 8;
 // A `path:line` or `path:start-end` at the start of a check: bare, all in backticks, or with only the path in them.
-const CHECK_LOCATION_RE = /^(?:`([^\s`:]+):(\d+)(?:-(\d+))?`|`([^\s`:]+)`:(\d+)(?:-(\d+))?|([^\s`:]+):(\d+)(?:-(\d+))?)(?![\w`-])[\s:,;.]*/;
+// Further lines or ranges can follow after commas, as in `path:12,40-42`.
+const CHECK_LOCATION_RE = /^(?:`([^\s`:]+):(\d+)(?:-(\d+))?((?:, ?\d+(?:-\d+)?)*)`|`([^\s`:]+)`:(\d+)(?:-(\d+))?((?:, ?\d+(?:-\d+)?)*)|([^\s`:]+):(\d+)(?:-(\d+))?((?:, ?\d+(?:-\d+)?)*))(?![\w`-])[\s:,;.]*/;
 // A backtick run that can open inline code: at the start or after a space or an opening mark, and before text.
 const OPENS_CODE_RE = /^$|[\s([{"'=]$/;
 // A backtick run that can close inline code: at the end or before a space or a closing mark.
@@ -2278,33 +2280,79 @@ function balanceCodeSpans(line: string): string {
 /** Lines `start` to `end` of `file`. */
 interface CodeRange { file: string; start: number; end: number }
 
-/** One check behind a finding: what it showed, empty for a bare location, and the lines it cites when it starts with one. */
-interface Check { text: string; at?: CodeRange }
+/**
+ * One check behind a finding: what it showed, empty for a bare location, and the lines it cites when it starts with one.
+ * `also` holds any further lines the location lists.
+ */
+interface Check { text: string; at?: CodeRange; also?: CodeRange[] }
 
-/** Links a finding's code to the reviewed commit. `files` holds the lines of the files read there, which keep a preview inside its file. */
-interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]> }
+/**
+ * Links a finding's code to the reviewed commit. `files` holds the lines of the files read there, which keep a preview
+ * inside its file. With `changed`, the PR's changed files, they give a cited file name its directories.
+ */
+interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[] }
 
-function parseCheck(entry: string): Check | undefined {
+/**
+ * Returns `path` as the repository path it names. A path no known file ends in is kept as written, and one that the
+ * ends of several known files match is ambiguous, so it returns nothing.
+ */
+function knownPath(path: string, known: readonly string[]): string | undefined {
+  if (known.includes(path)) return path;
+  const matches = [...new Set(known.filter(file => file.endsWith(`/${path}`)))];
+  return matches.length <= 1 ? matches[0] ?? path : undefined;
+}
+
+/** Returns the range `line` or `start-end` names in `file`, if it is a valid one. */
+function lineRange(file: string, lines: string): CodeRange | undefined {
+  const [start, end = start] = lines.split('-').map(Number);
+  return start > 0 && end >= start ? { file, start, end } : undefined;
+}
+
+function parseCheck(entry: string, known: readonly string[]): Check | undefined {
   // The path is model output that PR content can steer, so only a plain repository path becomes a link.
   const match = entry.match(CHECK_LOCATION_RE);
-  const [path, line, last] = match ? [1, 4, 7].map(i => match.slice(i, i + 3)).find(group => group[0] !== undefined)! : [];
-  const located = match && LINKABLE_PATH_RE.test(path) && !path.split('/').some(segment => segment === '.' || segment === '..') ? match : null;
-  const start = located ? Number(line) : 0;
-  const end = located && last ? Number(last) : start;
-  const rest = oneLine(located && start > 0 && end >= start ? entry.slice(located[0].length) : entry);
-  const text = rest ? `${rest[0].toUpperCase()}${rest.slice(1)}` : '';
-  if (!located || start <= 0 || end < start) return text ? { text } : undefined;
-  return { text, at: { file: sanitizeFilePath(path), start, end } };
+  const [cited, line, last, more] = match ? [1, 5, 9].map(i => match.slice(i, i + 4)).find(group => group[0] !== undefined)! : [];
+  const path = match && LINKABLE_PATH_RE.test(cited) && !cited.split('/').some(segment => segment === '.' || segment === '..')
+    ? knownPath(sanitizeFilePath(cited), known) : undefined;
+  const at = path ? lineRange(path, last ? `${line}-${last}` : line) : undefined;
+  const rest = oneLine(at ? entry.slice(match![0].length) : entry);
+  // A sentence starts with a capital, but a text that opens with a path or a name stays as written.
+  const text = /^[a-z]+(?![\w./:@-])/.test(rest) ? `${rest[0].toUpperCase()}${rest.slice(1)}` : rest;
+  if (!at) return text ? { text } : undefined;
+  const also = (more ?? '').split(',').flatMap(lines => lineRange(at.file, lines.trim()) ?? []);
+  return { text, at, ...(also.length && { also }) };
 }
 
 const overlaps = (a: CodeRange, b: CodeRange): boolean => a.file === b.file && a.start <= b.end && b.start <= a.end;
 
-/** Returns the reviewer's checks, then each proving line no check cites, then the search that came back empty. */
-function findingChecks({ evidence }: Finding): Check[] {
-  const checks = (evidence?.checks ?? []).flatMap(entry => parseCheck(entry) ?? []);
-  for (const proof of evidence?.proof ?? []) {
-    const check = parseCheck(proof);
-    if (check?.at && !checks.some(c => c.at && overlaps(c.at, check.at!))) checks.push({ text: '', at: check.at });
+/** Returns the words of the code `text` quotes, or of all of it when it quotes none, in lower case. */
+function checkWords(text: string): string {
+  const code = [...text.matchAll(/(?<!\\)(`+)(.+?)(?<!\\)\1/g)].map(span => span[2]).join(' ');
+  return ` ${(code || text).toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean).join(' ')} `;
+}
+
+/**
+ * Whether `a` and `b` are one check worded twice, as when two reviewers flag the same problem. They cite the same
+ * place, and the code one quotes, at least two words of it, is part of the code the other quotes.
+ */
+function sameCheck(a: Check, b: Check): boolean {
+  const lead = (text: string): string | undefined => text.match(/^[^\s`]*(?:\/|:\d)[^\s`]*/)?.[0];
+  const samePlace = a.at && b.at ? overlaps(a.at, b.at) : !a.at && !b.at && lead(a.text) !== undefined && lead(a.text) === lead(b.text);
+  if (!samePlace) return false;
+  const [shorter, longer] = [checkWords(a.text), checkWords(b.text)].sort((x, y) => x.length - y.length);
+  return shorter.trim().includes(' ') && longer.includes(shorter);
+}
+
+/**
+ * Returns the reviewer's checks, each once, then each further line they list and each proving line that no check cites,
+ * then the search that came back empty. `known` holds the repository paths a cited file name is resolved against.
+ */
+function findingChecks({ evidence }: Finding, known: readonly string[]): Check[] {
+  const parsed = (evidence?.checks ?? []).flatMap(entry => parseCheck(entry, known) ?? []);
+  const checks = parsed.filter((check, i) => !parsed.slice(0, i).some(earlier => sameCheck(earlier, check)));
+  const proven = (evidence?.proof ?? []).flatMap(proof => parseCheck(proof, known)?.at ?? []);
+  for (const at of [...parsed.flatMap(c => c.also ?? []), ...proven]) {
+    if (!checks.some(c => c.at && overlaps(c.at, at))) checks.push({ text: '', at });
   }
   if (evidence?.emptySearch) checks.push({ text: `Searched with no match: ${oneLine(evidence.emptySearch)}` });
   return checks;
@@ -2313,9 +2361,9 @@ function findingChecks({ evidence }: Finding): Check[] {
 /** Cited files whose lines are fetched. A preview in any other file covers only its cited lines. */
 const MAX_CITED_FILES = 20;
 
-/** Returns the files a finding's checks cite, whose lines keep its previews inside them. */
-function citedFiles(finding: Finding): string[] {
-  return findingChecks(finding).flatMap(c => c.at?.file ?? []);
+/** Returns the files a finding's checks cite, whose lines keep its previews inside them, with names resolved against `changed`. */
+function citedFiles(finding: Finding, changed: readonly string[]): string[] {
+  return findingChecks(finding, changed).flatMap(c => c.at?.file ?? []);
 }
 
 /** The lines a preview of `at` shows: from the line above it, at most `CHECK_PREVIEW_LINES`, inside the file. */
@@ -2352,17 +2400,17 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
   return `[${inlineCode(rangeLabel(range))}](${linkTo(range.file, range.start, range.end)})`;
 }
 
-function refutationLine(label: string, { outcome, reason, proof }: Refutation, linkTo: LineLink): string {
-  const cited = outcome === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p)?.at ?? []);
+function refutationLine(label: string, { outcome, reason, proof }: Refutation, linkTo: LineLink, known: readonly string[]): string {
+  const cited = outcome === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p, known)?.at ?? []);
   return [label, reason ? oneLine(reason) : '', cited.length ? `See ${cited.map(r => linkedRange(r, linkTo)).join(', ')}.` : '']
     .filter(Boolean).join(' ');
 }
 
 /** Returns a line for each refuter that checked `finding`. */
-function refutationLines({ refutation, pairRefutation }: Finding, linkTo: LineLink): string[] {
+function refutationLines({ refutation, pairRefutation }: Finding, linkTo: LineLink, known: readonly string[]): string[] {
   return [
-    ...(refutation ? [refutationLine(REFUTATION_LINE[refutation.outcome], refutation, linkTo)] : []),
-    ...(pairRefutation ? [refutationLine(`${PAIR_REFUTATION_LABEL} ${REFUTATION_SUMMARY[pairRefutation.outcome]}.`, pairRefutation, linkTo)] : []),
+    ...(refutation ? [refutationLine(REFUTATION_LINE[refutation.outcome], refutation, linkTo, known)] : []),
+    ...(pairRefutation ? [refutationLine(`${PAIR_REFUTATION_LABEL} ${REFUTATION_SUMMARY[pairRefutation.outcome]}.`, pairRefutation, linkTo, known)] : []),
   ];
 }
 
@@ -2374,9 +2422,10 @@ const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' 
  * for up to `MAX_CHECK_PREVIEWS` other places, and the rest as links. A finding that cites nothing gets an open line
  * that says so, unless a tool reported it or it is an earlier round's finding.
  */
-function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: string): string[] {
-  const checks = findingChecks(finding);
-  const refutations = refutationLines(finding, linkTo);
+function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLinks, ownLine: string): string[] {
+  const known = [...changed, ...files.keys()];
+  const checks = findingChecks(finding, known);
+  const refutations = refutationLines(finding, linkTo, known);
   if (checks.length === 0 && refutations.length === 0) {
     return finding.toolSource || finding.reviewers.length === 0 ? [] : [`${CHECKS_MARKER}\n**Not checked against the code.** Nothing was cited to back it.`];
   }

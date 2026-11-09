@@ -261,6 +261,58 @@ describe('formatFindingComment', () => {
     expect(steered).not.toContain('https://www.evil.com');
     expect(steered).toContain('<summary>How this was checked: 2 other checks</summary>');
 
+    // Reviewers who flag one problem cite one place in their own words, and each such check shows once.
+    const merged = render({ ...baseFinding, evidence: { proof: [], checks: [
+      'src/main.ts:42 reads `req.body.items` with no length check',
+      'src/main.ts:40-42: `req.body.items` is read and passed on with no check',
+      'src/util.ts:12 rejects `count < 0 || count > MAX_ITEMS`',
+      'src/util.ts:12 `if (count < 0 || count > MAX_ITEMS) { throw new RangeError() }`',
+      'src/util.ts:12: `if (count < 0 || count > MAX_ITEMS) { throw new RangeError() }`.',
+      'golang/go:src/net/http/request.go:900 returns early for `r.URL == nil`',
+      'golang/go:src/net/http/request.go:900 `if r.URL == nil { return }` in `ReadRequest`',
+    ] } });
+    expect(merged).toContain([
+      '<summary>How this was checked: 2 places read, 1 other check</summary>',
+      '',
+      'On the commented line: Reads `req.body.items` with no length check',
+      '',
+      'Rejects `count < 0 || count > MAX_ITEMS`',
+      link('src/util.ts', 11, 15),
+      '',
+      '- golang/go:src/net/http/request.go:900 returns early for `r.URL == nil`',
+      '',
+      '</details>',
+    ].join('\n'));
+    // Two checks of one line that quote different code both show.
+    expect(render({ ...baseFinding, evidence: { proof: [], checks: ['src/util.ts:12 reads `count`', 'src/util.ts:12 never resets `total`'] } }))
+      .toContain(`- Reads \`count\`\n- Never resets \`total\`\n\n${link('src/util.ts', 11, 15)}`);
+
+    // A file cited by name alone gets the directories of the one changed or read file it names, and stays text when it names several.
+    // A path that opens a check keeps its case, and every line a location lists is cited, with none left in the text.
+    const named = formatFindingComment({ ...baseFinding, evidence: { proof: [], checks: [
+      'cache.go:17-20 holds the lock while it calls `load`',
+      'util.ts:3 drops the error',
+      'config.py:5 reads the environment',
+      'src/legacy/parser.py `parse()` swallows `ValueError`',
+      'src/util.ts:3,25: `retries` and `timeout` are public fields',
+    ] } }, { ...links, changed: ['pkg/store/cache.go', 'lib/a/config.py', 'lib/b/config.py'] });
+    expect(named).toContain([
+      '<summary>How this was checked: 4 places read, 2 other checks</summary>',
+      '',
+      'Holds the lock while it calls `load`',
+      link('pkg/store/cache.go', 16, 20),
+      '',
+      '- Drops the error',
+      '- `retries` and `timeout` are public fields',
+      '',
+      link('src/util.ts', 2, 6),
+      '',
+      link('src/util.ts', 24, 28),
+      '',
+      '- config.py:5 reads the environment',
+      '- src/legacy/parser.py `parse()` swallows `ValueError`',
+    ].join('\n'));
+
     // A finding that cites nothing says so, unless a tool reported it or it is an earlier round's.
     const unchecked = '**Not checked against the code.** Nothing was cited to back it.';
     expect(render({ ...baseFinding, evidence: { checks: [], proof: [] } })).toContain(unchecked);
