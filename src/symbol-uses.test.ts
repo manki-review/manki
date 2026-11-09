@@ -400,19 +400,21 @@ ${body}	return true
       '.github/workflows/ci.yml': 'jobs:\n  test:\n    timeout-minutes: 10 # a full run takes 12\n',
       'include/config.h': '#define MAX_CLIENTS 0x20 // per worker\n',
       'web/src/old.ts': 'export const other = 1;\n',
-      // A line too long to scan is skipped, so no crafted line can make the limit pattern backtrack. A one-word call computes a value.
-      'web/src/limits.ts': `export const other = 2;\nexport const RATE_LIMIT_PER_MINUTE = 60;\nexport const UPLOAD_LIMIT_BYTES = 5_000_000;\nexport const retries = 3;\nexport const MAX_LONG_LINE = 1; // ${'x'.repeat(600)}\nexport const width = Math.max(1, other) + max(2, other);\n`,
+      // A line too long to scan is skipped, so no crafted line can make the limit pattern backtrack. A call that computes,
+      // allocates or converts sets no limit.
+      'web/src/limits.ts': `export const other = 2;\nexport const RATE_LIMIT_PER_MINUTE = 60;\nexport const UPLOAD_LIMIT_BYTES = 5_000_000;\nexport const retries = 3;\nexport const MAX_LONG_LINE = 1; // ${'x'.repeat(600)}\nexport const width = Math.max(1, other) + max(2, other);\nconst buffer = Vec.with_capacity(16) + n.to_bytes(4);\n`,
       'web/src/limits.test.ts': 'export const other = 3;\nconst MAX_ITEMS = 1;\n',
       'docs/limits.md': 'Default:\nmax_items: 10\n',
     });
 
+    // Lowered limits come first, so the cap on questions keeps them over new ones.
     expect(siblings.limits.map(q => `${q.file}:${q.line} ${q.name}: ${q.previous ?? 'new'} -> ${q.value}`)).toEqual([
       '.github/workflows/ci.yml:3 timeout-minutes: 30 -> 10',
       'app/models.py:2 max_length: 1000 -> 255',
-      'app/models.py:6 batch_size: new -> 50',
       'include/config.h:1 MAX_CLIENTS: 64 -> 0x20',
       'server/grpc.go:5 MaxRecvMsgSize: 16 << 20 -> 4 << 20',
       'server/limits.rs:1 MAX_FRAME_BYTES: 16 * 1024 * 1024 -> 4 * 1024 * 1024',
+      'app/models.py:6 batch_size: new -> 50',
       'web/src/limits.ts:3 UPLOAD_LIMIT_BYTES: new -> 5_000_000',
     ]);
     expect(siblings.limits[0].text).toBe('timeout-minutes: 10 # a full run takes 12');

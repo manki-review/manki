@@ -737,8 +737,9 @@ function numericValue(text: string): number | undefined {
 function isLimitName(name: string, call: boolean): boolean {
   const words = name.split(/[_-]+|(?<=[a-z\d])(?=[A-Z])/).filter(Boolean).map(word => word.toLowerCase());
   if (words.includes('min') || words.includes('minimum')) return false;
-  // A call named by one word, such as `Math.max(1, x)` or Go's `cap(s)`, computes a value rather than setting a limit.
-  if (call && words.length < 2) return false;
+  // A call computes, allocates or converts unless its name of two words or more says it sets a bound: `Math.max(1, x)`,
+  // Go's `cap(s)`, `with_capacity(16)` and `to_bytes(4)` set none, while `MaxRecvMsgSize(4 << 20)` does.
+  if (call) return words.length > 1 && words.some(word => LIMIT_WORDS.has(word) && word !== 'cap' && word !== 'capacity');
   return words.some(word => LIMIT_WORDS.has(word)) || (words.length > 1 && words.some(word => BOUND_WORDS.has(word)));
 }
 
@@ -755,7 +756,7 @@ function limitsOn(text: string): Array<{ name: string; value: string; number: nu
 }
 
 /**
- * Returns each limit an added line lowers or adds, outside tests and documents, each name once. A limit is lowered when
+ * Returns each limit an added line lowers or adds, outside tests and documents, each name once, the lowered ones first. A limit is lowered when
  * the line it replaces held a larger value, and added when no removed line in the diff sets it. A limit the diff only
  * moves or raises is left out.
  */
@@ -778,11 +779,16 @@ function changedLimits(files: DiffFile[], diff: ParsedDiff): LimitQuestion[] {
         if (!hunk) continue;
         asked.add(limit.name);
         questions.push({ name: limit.name, value: limit.value, ...(before && { previous: before.value }), file: file.path, line, text: text.trim().slice(0, MAX_LINE_CHARS), hunk });
-        if (questions.length >= MAX_QUESTIONS) return questions;
+        if (questions.length >= MAX_QUESTIONS) return lowered(questions);
       }
     }
   }
-  return questions;
+  return lowered(questions);
+}
+
+/** Returns `questions` with the lowered limits first, since a tightened limit is likelier to break a producer than a new one. */
+function lowered(questions: LimitQuestion[]): LimitQuestion[] {
+  return [...questions].sort((a, b) => Number(!a.previous) - Number(!b.previous));
 }
 
 /** Returns the names the diff's added lines declare, without the generic ones, in diff order. */
