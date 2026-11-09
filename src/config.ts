@@ -110,6 +110,7 @@ const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
 const PLANNER_KEYS: ReadonlySet<string> = new Set(['enabled', 'paired']);
+const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps']);
 const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'wait_timeout_seconds', 'analyzers']);
 const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'test_path_patterns', 'suppress_resolved_threads']);
 const METRICS_KEYS: ReadonlySet<string> = new Set(['fix_rate']);
@@ -267,9 +268,7 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
     if (!judge || typeof judge !== 'object' || Array.isArray(judge)) {
       errors.push('`judge` must be an object');
     } else {
-      for (const key of Object.keys(judge)) {
-        if (key !== 'tool_steps') warnings.push(`Unknown config key: "judge.${key}"`);
-      }
+      warnUnknownKeys(judge, JUDGE_KEYS, 'judge', warnings);
       if ('tool_steps' in judge && (!Number.isInteger(judge.tool_steps) || (judge.tool_steps as number) < 0 || (judge.tool_steps as number) > MAX_JUDGE_TOOL_STEPS)) {
         errors.push(`\`judge.tool_steps\` must be an integer from 0 to ${MAX_JUDGE_TOOL_STEPS}`);
       }
