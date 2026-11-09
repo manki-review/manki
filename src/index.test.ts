@@ -195,6 +195,7 @@ jest.mock('./github', () => ({
   fetchConfigFile: jest.fn().mockResolvedValue(null),
   readConfigFile: jest.fn().mockResolvedValue(null),
   loadBaseConfig: jest.requireActual('./github').loadBaseConfig,
+  configFailed: jest.requireActual('./github').configFailed,
   fetchRepoContext: jest.fn().mockResolvedValue(''),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),

@@ -336,6 +336,11 @@ export async function readConfigFile(
   }
 }
 
+/** Whether the base branch config could not be read or loaded, which holds the round's approval. */
+export function configFailed(source: ConfigSource): boolean {
+  return source === 'base_unreadable' || source === 'base_invalid';
+}
+
 /**
  * Loads the base branch's config, which `read` returns. One that cannot be read or does not load gives the defaults,
  * with the source saying why, so the change that fixes it is still reviewed. `describe` words the error in the warning.

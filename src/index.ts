@@ -33,6 +33,7 @@ import { ConfigSource, DashboardData, FullReviewOptions, MemoryLoadStatus, OpenT
 import {
   fetchPRDiff,
   fetchConfigFile,
+  configFailed,
   loadBaseConfig,
   readConfigFile,
   fetchRepoContext,
@@ -733,14 +734,6 @@ async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ c
     await postConfigErrorComment(octokit, owner, repo, prNumber, reason);
     return undefined;
   }
-}
-
-/**
- * Reads the config from the base branch. A base config that cannot be read or does not load gives the defaults, and
- * `configFailed` holds the round's approval, so the PR that fixes it is still reviewed but never approved.
- */
-function configFailed(source: ConfigSource): boolean {
-  return source === 'base_unreadable' || source === 'base_invalid';
 }
 
 /** Whether the run stops before posting a progress comment: the commit is reviewed or stale, or nothing changed. */
