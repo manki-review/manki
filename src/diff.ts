@@ -56,7 +56,8 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
   return { files, totalAdditions, totalDeletions, binarySkipped };
 }
 
-function findExcludePattern(path: string, excludePaths: string[]): string | undefined {
+/** Returns the first of `excludePaths` that matches `path`, or `undefined` when none does. */
+export function findExcludePattern(path: string, excludePaths: string[]): string | undefined {
   return excludePaths.find((pattern) => minimatch(path, pattern, { matchBase: true, dot: true }));
 }
 
