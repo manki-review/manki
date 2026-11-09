@@ -4102,7 +4102,7 @@ describe('runFullReview orchestration', () => {
         severity: 'warning' as const, title: 'Hypothetical race', file: 'src/app.ts', line: 5,
         description: 'Race condition that needs a strict ordering.', reviewers: ['Concurrency'], suggestedFix: 'Take the lock first.', codeContext: 'code',
       }, {
-        severity: 'suggestion' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', reviewers: ['Concurrency'],
+        severity: 'suggestion' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', howToFix: 'Rename it to what it returns.', reviewers: ['Concurrency'],
       }],
       allJudgedFindings: [{
         severity: 'ignore' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', reviewers: ['Concurrency'],
@@ -4118,7 +4118,7 @@ describe('runFullReview orchestration', () => {
       severity: 'warning', title: 'Hypothetical race', file: 'src/app.ts', line: 5,
       description: 'Race condition that needs a strict ordering.', reviewers: ['Concurrency'], suggestedFix: 'Take the lock first.',
     }, {
-      severity: 'suggestion', title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', reviewers: ['Concurrency'],
+      severity: 'suggestion', title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', howToFix: 'Rename it to what it returns.', reviewers: ['Concurrency'],
     }]);
     expect(rc!.judge.dropped).toEqual([{
       title: 'Rename helper', file: 'src/app.ts', line: 7, reviewers: ['Concurrency'],

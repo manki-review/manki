@@ -1487,9 +1487,10 @@ export interface RoundRawFinding {
   line: number;
   severity: FindingSeverity;
   reviewers: string[];
-  /** Left out, as are `suggestedFix`, `evidence`, `notChecked` and `lead`, when the record was compacted to fit the review. */
+  /** Left out, as are `suggestedFix`, `howToFix`, `evidence`, `notChecked` and `lead`, when the record was compacted to fit the review. */
   description?: string;
   suggestedFix?: string;
+  howToFix?: string;
   evidence?: FindingEvidence;
   notChecked?: boolean;
   lead?: OpenLead;
