@@ -421,6 +421,17 @@ ${body}	return true
     started = Date.now();
     await usesFor({ 'conf/app.yml': 'name: app\n' }, { 'conf/app.yml': `name: app\n${`k${'_a'.repeat(20_000)} x\n`.repeat(20)}` });
     expect(Date.now() - started).toBeLessThan(10_000);
+
+    // Many sibling types across files with a method of the same name, one of them changed: each joins the same group.
+    const areas = (from: number, first = '0') => `package gen\n\n${Array.from({ length: 20_000 }, (_, i) => `func (s S${from + i}) Area() int { return ${i === 0 ? first : i} }`).join('\n')}\n`;
+    started = Date.now();
+    const grouped = await usesFor(
+      { 'gen/a.go': areas(0), 'gen/b.go': areas(20_000), 'gen/c.go': areas(40_000), 'gen/d.go': areas(60_000) },
+      { 'gen/a.go': areas(0, '7') },
+    );
+    expect(grouped.siblings.implementations.map(q => [q.name, q.members.length])).toEqual([['Area', 4]]);
+    // Four files of 20,000 methods each take longer to parse, so this bound is wider. Copying the group per member took over 30 seconds.
+    expect(Date.now() - started).toBeLessThan(20_000);
   }, 120_000);
 
   const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };

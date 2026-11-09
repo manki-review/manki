@@ -512,7 +512,8 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
         entry.files.add(file.path);
         references.set(name, entry);
       }
-      if (!TEST_PATH.test(file.path)) lookups.push(...parsed.collectionLookups(lines).map(l => ({ ...l, file: file.path })));
+      // Appended one by one, since spreading a very long list into `push` overflows the call stack.
+      if (!TEST_PATH.test(file.path)) for (const lookup of parsed.collectionLookups(lines)) lookups.push({ ...lookup, file: file.path });
     } else {
       for (const symbol of keywordDeclarations(file)) addSymbol(symbols, symbol);
     }
@@ -1338,7 +1339,7 @@ function siblingImplementations(
     const parsed = parser.parse(file);
     for (const m of parsed?.methods() ?? []) {
       if (!wanted.has(keyOf(m))) continue;
-      groups.set(keyOf(m), [...groups.get(keyOf(m)) ?? [], { ...m, file, parsed: parsed!, changed: changedLines(m, file) }]);
+      appendTo(groups, keyOf(m), { ...m, file, parsed: parsed!, changed: changedLines(m, file) });
     }
   }
   const ranked = [...groups.values()].flatMap((all, order) => {
