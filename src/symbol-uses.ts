@@ -1435,7 +1435,9 @@ function siblingImplementations(
 ): SiblingImplementationQuestion[] {
   const keysOf = (m: Method): string[] => {
     if (m.trait) return STANDARD_TRAITS.has(m.trait.split('::').at(-1)!) ? [] : [`${m.trait}::${m.name}`];
-    return /^__\w+__$/.test(m.name) || PROTOCOL_METHODS.has(m.name) ? m.bases.map(base => `${base}::${m.name}`) : [`::${m.name}`];
+    if (!/^__\w+__$/.test(m.name) && !PROTOCOL_METHODS.has(m.name)) return [`::${m.name}`];
+    // Keyed by the class itself too, so a base class's own implementation joins its subclasses' group.
+    return [...new Set([m.owner, ...m.bases].map(base => `${base.split(/\.|::/).at(-1)}::${m.name}`))];
   };
   const sorted = new Map([...touched].map(([file, lines]) => [file, [...lines].sort((a, b) => a - b)]));
   // A removal marks the head line after it, which is the first line of the next function when a whole function before it went.
@@ -1458,15 +1460,18 @@ function siblingImplementations(
       for (const key of keysOf(m).filter(k => wanted.has(k))) appendTo(groups, key, { ...m, file, parsed: parsed!, changed: changedLines(m, file) });
     }
   }
-  // Classes that share two bases put a protocol method in two groups with the same members, which is asked about once.
-  const asked = new Set<string>();
-  const ranked = [...groups.values()].flatMap((all, order) => {
+  const candidates = [...groups.values()].flatMap((all, order) => {
     const owners = new Set<string>();
     const members = [...all].sort((a, b) => Number(b.changed > 0) - Number(a.changed > 0))
       .filter(m => !owners.has(m.owner) && !!owners.add(m.owner)).slice(0, MAX_GROUP_MEMBERS);
     const bodies = new Set(members.map(m => (m.decl.node.field('body') ?? m.decl.node).text().replace(/\s+/g, ' ')));
-    const same = `${members[0]?.trait ?? ''}::${members[0]?.name}:${members.map(m => `${m.file}:${m.decl.start}`).sort().join(',')}`;
-    if (members.length < 2 || bodies.size < 2 || asked.has(same) || !asked.add(same)) return [];
+    return members.length < 2 || bodies.size < 2 ? [] : [{ members, order, ids: new Set(members.map(m => `${m.file}:${m.decl.start}`)) }];
+  });
+  // Classes that share a base or two put a protocol method in nested groups, so a group within one already asked is dropped.
+  const asked: Array<Set<string>> = [];
+  const ranked = [...candidates].sort((a, b) => b.ids.size - a.ids.size || a.order - b.order).flatMap(({ members, order, ids }) => {
+    if (asked.some(group => [...ids].every(id => group.has(id)))) return [];
+    asked.push(ids);
     const question: SiblingImplementationQuestion = {
       name: members[0].name, ...(members[0].trait && { trait: members[0].trait }),
       members: members.map(m => ({ ...m.parsed.excerpt(m.decl, m.file, added.get(m.file) ?? new Set()), owner: m.owner, changed: m.changed > 0 })),

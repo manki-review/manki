@@ -344,7 +344,7 @@ ${body}	return true
     const refund = (type: string, check: string) => `class ${type}:\n    def refund(self, amount):\n${check}        return self.gateway.send(-amount)\n`;
     const area = (receiver: string, body: string) => `package shapes\n\nfunc (${receiver}) Area() float64 {\n${body}}\n`;
     // Methods every type has, on types that share no base or only a standard one such as `Generic`, and standard trait
-    // impls: none of them makes two types siblings. Two shared bases ask about a method once.
+    // impls: none of them makes two types siblings. Two shared bases ask about a method once, with the base class's own one.
     const display = (type: string, text: string) => `\nimpl fmt::Display for ${type} {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        write!(f, "${text}")\n    }\n}\n\nimpl ${type} {\n    fn new() -> Self {\n        Self { name: "${text}" }\n    }\n}\n`;
     const dunders = (value: string) => `\n    def __init__(self):\n        self.limit = ${value}\n\n    def __repr__(self):\n        return "${value}"\n`;
     const stringer = (receiver: string, text: string) => `\nfunc (${receiver}) String() string {\n\treturn "${text}"\n}\n`;
@@ -365,6 +365,7 @@ ${body}	return true
       'src/payments/bank.py': refund('BankPayment', '        if amount <= 0:\n            raise ValueError(amount)\n') + dunders('2'),
       'src/payments/wallet.py': equal('Wallet', 'id'),
       'src/payments/voucher.py': equal('Voucher', 'code'),
+      'src/payments/account.py': 'class Account:\n    def __eq__(self, other):\n        return self is other\n',
       'src/payments/repo.py': typed('Repo', '1'),
       'src/payments/cache.py': typed('Cache', '2'),
       'src/payments/left.py': ninth('Left', 'l'),
@@ -394,7 +395,7 @@ ${body}	return true
       ['FromWire', 'from_wire', ['ImagePart*', 'TextPart*', 'AudioPart']],
       [undefined, 'size', ['ImagePart*', 'TextPart']],
       [undefined, 'refund', ['CardPayment*', 'BankPayment']],
-      [undefined, '__eq__', ['Wallet*', 'Voucher']],
+      [undefined, '__eq__', ['Wallet*', 'Account', 'Voucher']],
       [undefined, 'Area', ['Circle*', 'Square']],
       [undefined, 'constructor', ['Alpha*', 'Beta']],
       [undefined, 'toString', ['Alpha*', 'Beta']],
@@ -462,7 +463,7 @@ ${body}	return true
     expect(Date.now() - started).toBeLessThan(20_000);
 
     // One class with many bases and many dunder methods: its bases are read once, and only the first few key its groups.
-    const based = (body: string) => `class Wide(${Array.from({ length: 20_000 }, (_, i) => `B${i}`).join(', ')}):\n${Array.from({ length: 2_000 }, (_, i) => `    def __m${i}__(self):\n        return ${i === 0 ? body : '1'}\n`).join('')}`;
+    const based = (body: string) => `class Wide(${Array.from({ length: 40_000 }, (_, i) => `B${i}`).join(', ')}):\n${Array.from({ length: 5_000 }, (_, i) => `    def __m${i}__(self):\n        return ${i === 0 ? body : '1'}\n`).join('')}`;
     started = Date.now();
     await usesFor({ 'src/wide.py': based('1') }, { 'src/wide.py': based('2') });
     expect(Date.now() - started).toBeLessThan(10_000);
