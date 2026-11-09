@@ -1,0 +1,132 @@
+name: Publish release
+
+# Tags and publishes a build commit from `release/vX.Y.Z` with `scripts/publish-release.sh`.
+# `verify` runs the script's dry run, which rebuilds dist/ without any secret. `publish` waits
+# for approval in the `release` environment, then reruns the script with a token from the
+# release App, which the tag ruleset lets through. Owner setup is in RELEASE.md.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (vX.Y.Z)
+        required: true
+        type: string
+  # Runs from main and never checks out the Release run's code: the script checks the branch.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: [Release]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: publish-${{ inputs.tag && format('release/{0}', inputs.tag) || github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      build: ${{ steps.dry-run.outputs.build }}
+    steps:
+      - name: Resolve the tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if [ "$GITHUB_REF" != refs/heads/main ]; then
+              echo "::error::Run this workflow from main, not $GITHUB_REF"
+              exit 1
+            fi
+            tag="$INPUT_TAG"
+          else
+            tag="${HEAD_BRANCH#release/}"
+          fi
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$tag is not vX.Y.Z"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # No npm cache, so the rebuild doesn't share one with the Release workflow's build.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - name: Dry run
+        id: dry-run
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/publish-release.sh --dry-run "$TAG" | tee "$RUNNER_TEMP/dry-run.log"
+          build=$(sed -n 's/^verified build commit \([0-9a-f]\{40\}\)$/\1/p' "$RUNNER_TEMP/dry-run.log")
+          if [ -z "$build" ]; then
+            echo "::error::The dry run did not report a verified build commit"
+            exit 1
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    permissions: {}
+    steps:
+      - name: Check the release App secrets
+        env:
+          HAS_CLIENT_ID: ${{ secrets.RELEASE_APP_CLIENT_ID != '' }}
+          HAS_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_CLIENT_ID" != true ] || [ "$HAS_PRIVATE_KEY" != true ]; then
+            echo "::error::The release environment needs the RELEASE_APP_CLIENT_ID and RELEASE_APP_PRIVATE_KEY secrets, see RELEASE.md. Nothing was published."
+            exit 1
+          fi
+
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          # Moving a tag across commits that change `.github/workflows/` needs it.
+          permission-workflows: write
+
+      # No package install runs in this job, so the token can stay in the git config.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+          persist-credentials: true
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - name: Set the tagger to the release App
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SLUG: ${{ steps.app.outputs.app-slug }}
+        run: |
+          id=$(gh api "/users/${SLUG}%5Bbot%5D" --jq .id)
+          git config user.name "${SLUG}[bot]"
+          git config user.email "${id}+${SLUG}[bot]@users.noreply.github.com"
+
+      - name: Publish
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+          BUILD: ${{ needs.verify.outputs.build }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          WAIT_SECONDS: '0'
+        run: scripts/publish-release.sh --verified="$BUILD" "$TAG"
