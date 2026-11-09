@@ -36,8 +36,8 @@ body: |
 key_version: 1
 must_catch:
   - id: K1
-    severity: warning
-    mechanism: "`TransactionBuilder::estimated_payload_size` in key-wallet still sizes ProUpServTx with a fixed ip and port plus platform ports, and ProUpRegTx with `script_payout` only, so a version 3 transaction is underpriced (about 56 bytes short for two P2PKH payouts), and the finalizer's estimate guard cannot catch it."
+    severity: blocker
+    mechanism: "`TransactionBuilder::estimated_payload_size` in key-wallet still sizes ProUpServTx with a fixed ip and port plus platform ports, and ProUpRegTx with `script_payout` only, so a version 3 transaction is underpriced (about 56 bytes short for two P2PKH payouts), and the finalizer's estimate guard cannot catch it. The fee can then fall below the minimum relay fee, and the network rejects the transaction."
     locations: ["key-wallet/src/wallet/managed_wallet_info/transaction_builder.rs", "estimated_payload_size", "TransactionBuilder"]
     fix: "31215cb1c"
   - id: K2
