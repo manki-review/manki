@@ -87,6 +87,14 @@ const LOOKUP_METHODS = new Set([
   'pop', 'setdefault', 'discard', 'append', 'index',
   'Load', 'Store', 'LoadOrStore', 'LoadAndDelete', 'Delete',
 ]);
+// Methods every type has, such as TypeScript's `constructor`, Go's `String` and `Error` or a Rust `new`, which like Python's
+// `__init__` and other dunder methods say nothing about two types being siblings unless the types share a base.
+const PROTOCOL_METHODS = new Set(['constructor', 'toString', 'toJSON', 'valueOf', 'String', 'GoString', 'Error', 'new']);
+// Standard Rust traits each type implements on its own, so sharing one does not make two types siblings.
+const STANDARD_TRAITS = new Set([
+  'Display', 'Debug', 'Clone', 'Copy', 'Default', 'From', 'Into', 'TryFrom', 'TryInto', 'FromStr', 'PartialEq', 'Eq', 'PartialOrd',
+  'Ord', 'Hash', 'Drop', 'Deref', 'DerefMut', 'AsRef', 'AsMut', 'Borrow', 'Iterator', 'IntoIterator', 'Serialize', 'Deserialize',
+]);
 // Functions that take a collection first and an item second, such as Go's `delete(m, k)`.
 const LOOKUP_FUNCTIONS = new Set(['delete', 'append', 'slices.Contains', 'slices.Index']);
 const MAX_LOOKUP_FUNCTION_CHARS = Math.max(...[...LOOKUP_FUNCTIONS].map(name => name.length));
@@ -134,6 +142,8 @@ interface FamilyRules {
   index?: string;
   /** Nodes whose functions are methods of one type, with the fields naming the type and the trait it implements. */
   owners: Record<string, { type: string; trait?: string }>;
+  /** The classes or interfaces a class extends or implements, such as `Base` in Python's `class A(Base)`. */
+  bases?: (scope: SgNode) => SgNode[];
   /** The type a method's receiver names, for a language that declares methods outside their type, such as Go. */
   receiver?: (node: SgNode) => string | undefined;
   /** The name of the field a declaration node declares, when the node has no `name` field, such as a Python assignment. */
@@ -179,6 +189,7 @@ const RULES: Record<Family, FamilyRules> = {
     object: 'object',
     index: 'subscript_expression',
     owners: { class_declaration: { type: 'name' }, abstract_class_declaration: { type: 'name' } },
+    bases: scope => scope.children().find(c => c.kind() === 'class_heritage')?.children().flatMap(clause => clause.children().filter(c => c.isNamed())) ?? [],
   },
   python: {
     declarations: { class_definition: 'type', function_definition: 'function', assignment: 'field' },
@@ -192,6 +203,7 @@ const RULES: Record<Family, FamilyRules> = {
     object: 'object',
     index: 'subscript',
     owners: { class_definition: { type: 'name' } },
+    bases: scope => scope.field('superclasses')?.children().filter(c => c.isNamed() && c.kind() !== 'keyword_argument') ?? [],
     fieldName: pythonFieldName,
     valueType: node => {
       const value = node.field('right');
@@ -354,6 +366,8 @@ interface Method {
   name: string;
   owner: string;
   trait?: string;
+  /** The classes or interfaces the owner extends or implements. */
+  bases: string[];
   decl: Declaration;
 }
 
@@ -993,20 +1007,25 @@ class ParsedFile {
   private findMethods(): Method[] {
     return this.declarations.filter(d => d.kind === 'function').flatMap(decl => {
       if (this.inTests(decl.node)) return [];
-      const { owner = '', trait } = this.rules.receiver ? { owner: this.rules.receiver(decl.node) } : this.scopeOf(decl.node);
+      const { owner = '', trait, bases = [] } = this.rules.receiver ? { owner: this.rules.receiver(decl.node) } : this.scopeOf(decl.node);
       if (!TYPE_PATH.test(owner) || (trait !== undefined && !TYPE_PATH.test(trait))) return [];
-      return [{ name: decl.name, owner, ...(trait && { trait }), decl }];
+      return [{ name: decl.name, owner, ...(trait && { trait }), bases, decl }];
     });
   }
 
-  /** Returns the type and trait of the block or class that declares a function, and nothing for a function nested in another. */
-  private scopeOf(node: SgNode): { owner?: string; trait?: string } {
+  /**
+   * Returns the type, trait and bases of the block or class that declares a function, and nothing for a function nested
+   * in another. A base written as a long expression is left out, since only a plain name can match another class's.
+   */
+  private scopeOf(node: SgNode): { owner?: string; trait?: string; bases?: string[] } {
     const scope = this.tree.ancestors(node).find(a => this.rules.owners[a.kind()] || this.rules.declarations[a.kind()] === 'function');
     const fields = scope && this.rules.owners[scope.kind()];
     if (!scope || !fields) return {};
     const owner = typeName(scope.field(fields.type)?.text() ?? '');
     const traitText = fields.trait && scope.field(fields.trait)?.text();
-    return { owner, trait: traitText ? typeName(traitText) : undefined };
+    const bases = (this.rules.bases?.(scope) ?? []).filter(base => base.range().end.index - base.range().start.index <= MAX_ITEM_CHARS)
+      .map(base => typeName(base.text())).filter(base => TYPE_PATH.test(base) && base !== 'object');
+    return { owner, trait: traitText ? typeName(traitText) : undefined, bases };
   }
 
   /** Returns the lines of `decl` with their numbers, marking the lines in `added`, each cut after `MAX_EXCERPT_LINE_CHARS` and all after `MAX_EXCERPT_LINES`. */
@@ -1393,7 +1412,10 @@ function filesBeside(workspace: string, dir: string, path: string, excludePaths:
 function siblingImplementations(
   workspace: string, parser: Parser, files: DiffFile[], touched: Map<string, Set<number>>, added: Map<string, Set<number>>, excludePaths: string[],
 ): SiblingImplementationQuestion[] {
-  const keyOf = (m: Method) => `${m.trait ?? ''}::${m.name}`;
+  const keysOf = (m: Method): string[] => {
+    if (m.trait) return STANDARD_TRAITS.has(m.trait.split('::').at(-1)!) ? [] : [`${m.trait}::${m.name}`];
+    return /^__\w+__$/.test(m.name) || PROTOCOL_METHODS.has(m.name) ? m.bases.map(base => `${base}::${m.name}`) : [`::${m.name}`];
+  };
   const sorted = new Map([...touched].map(([file, lines]) => [file, [...lines].sort((a, b) => a - b)]));
   // A removal marks the head line after it, which is the first line of the next function when a whole function before it went.
   const changedLines = (m: Method, file: string) => {
@@ -1405,15 +1427,14 @@ function siblingImplementations(
   const inCode = new Set(code);
   const changed = code.map(file => ({ file, methods: (parser.parse(file)?.methods ?? []).filter(m => changedLines(m, file) > 0) })).filter(c => c.methods.length > 0);
   if (changed.length === 0) return [];
-  const wanted = new Set(changed.flatMap(c => c.methods.map(keyOf)));
+  const wanted = new Set(changed.flatMap(c => c.methods.flatMap(keysOf)));
   const dirs = new Map(changed.map(({ file }) => [dirname(file), file]));
   const beside = [...dirs].flatMap(([dir, file]) => filesBeside(workspace, dir, file, excludePaths)).filter(file => !inCode.has(file)).slice(0, MAX_SIBLING_FILES);
   const groups = new Map<string, Array<Method & { file: string; parsed: ParsedFile; changed: number }>>();
   for (const file of [...new Set([...code, ...beside])]) {
     const parsed = parser.parse(file);
     for (const m of parsed?.methods ?? []) {
-      if (!wanted.has(keyOf(m))) continue;
-      appendTo(groups, keyOf(m), { ...m, file, parsed: parsed!, changed: changedLines(m, file) });
+      for (const key of keysOf(m).filter(k => wanted.has(k))) appendTo(groups, key, { ...m, file, parsed: parsed!, changed: changedLines(m, file) });
     }
   }
   const ranked = [...groups.values()].flatMap((all, order) => {

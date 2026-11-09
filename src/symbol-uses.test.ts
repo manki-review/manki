@@ -338,38 +338,56 @@ ${body}	return true
     expect(siblings.implementations).toEqual([]);
   });
 
-  it('compares the functions of one name or trait method on sibling types in the changed files and beside them, in Rust, Python and Go, most touched first, leaving out nested functions, untouched neighbours of removed code, excluded files and types no plain path names', async () => {
+  it('compares the functions of one name or trait method on sibling types in the changed files and beside them, in Rust, Python, Go and TypeScript, most touched first, leaving out nested functions, untouched neighbours of removed code, excluded files, types no plain path names, standard traits and protocol methods of types that share no base', async () => {
     const decode = (type: string, body: string) => `impl FromWire for ${type} {\n    fn from_wire(r: &mut R) -> Result<Self, Error> {\n        let version = u16::from_wire(r)?;\n${body}        Ok(Self { version })\n    }\n}\n`;
     const methods = (type: string, size: string, before = '') => `impl ${type} {\n    fn is_new(&self) -> bool {\n        self.version >= 3\n    }\n\n${before}    pub fn size(&self) -> usize {\n        ${size}\n    }\n}\n`;
     const refund = (type: string, check: string) => `class ${type}:\n    def refund(self, amount):\n${check}        return self.gateway.send(-amount)\n`;
     const area = (receiver: string, body: string) => `package shapes\n\nfunc (${receiver}) Area() float64 {\n${body}}\n`;
+    // Methods every type has, on types that share no base, and standard trait impls: none of them makes two types siblings.
+    const display = (type: string, text: string) => `\nimpl fmt::Display for ${type} {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        write!(f, "${text}")\n    }\n}\n\nimpl ${type} {\n    fn new() -> Self {\n        Self { version: ${text.length} }\n    }\n}\n`;
+    const dunders = (value: string) => `\n    def __init__(self):\n        self.limit = ${value}\n\n    def __repr__(self):\n        return "${value}"\n`;
+    const stringer = (receiver: string, text: string) => `\nfunc (${receiver}) String() string {\n\treturn "${text}"\n}\n`;
+    const view = (name: string, heritage: string, value: string) => `export class ${name}${heritage} {\n  constructor() {\n    super(${value});\n  }\n\n  toString() {\n    return '${value}';\n  }\n}\n`;
+    const equal = (name: string, key: string) => `class ${name}(Account):\n    def __eq__(self, other):\n        return self.${key} == other.${key}\n`;
     const base = {
-      'src/parts/text.rs': decode('TextPart', '') + methods('TextPart', '2', '    fn legacy(&self) {}\n\n'),
-      'src/parts/image.rs': decode('ImagePart', '        let _legacy = 0;\n') + methods('ImagePart', '2') + `\n#[cfg(test)]\nmod tests {\n${decode('FakePart', '')}}\n`,
+      'src/parts/text.rs': decode('TextPart', '') + methods('TextPart', '2', '    fn legacy(&self) {}\n\n') + display('TextPart', 'text'),
+      'src/parts/image.rs': decode('ImagePart', '        let _legacy = 0;\n') + methods('ImagePart', '2') + `\n#[cfg(test)]\nmod tests {\n${decode('FakePart', '')}}\n` + display('ImagePart', 'image'),
       'src/parts/audio.rs': decode('AudioPart', '        if version == 0 {\n            return Err(Error::Version);\n        }\n')
         + 'impl AudioPart {\n    fn helper(&self) -> usize {\n        fn size() -> usize { 1 }\n        size()\n    }\n}\n',
       'src/other/remote.rs': decode('RemotePart', ''),
       'src/parts/a_wire.generated.rs': decode('WirePart', '        let _wire = 1;\n'),
       'src/parts/macro.rs': decode('part_type!(Macro)', '        let _macro = 1;\n'),
-      'src/payments/card.py': refund('CardPayment', ''),
-      'src/payments/bank.py': refund('BankPayment', '        if amount <= 0:\n            raise ValueError(amount)\n'),
-      'src/shapes/circle.go': area('c *Circle[T]', '\treturn 3 * c.r * c.r\n'),
-      'src/shapes/square.go': area('s Square', '\tif s.side < 0 {\n\t\treturn 0\n\t}\n\treturn s.side * s.side\n'),
+      'src/payments/card.py': refund('CardPayment', '') + dunders('1'),
+      'src/payments/bank.py': refund('BankPayment', '        if amount <= 0:\n            raise ValueError(amount)\n') + dunders('2'),
+      'src/payments/wallet.py': equal('Wallet', 'id'),
+      'src/payments/voucher.py': equal('Voucher', 'code'),
+      'src/shapes/circle.go': area('c *Circle[T]', '\treturn 3 * c.r * c.r\n') + stringer('c *Circle[T]', 'circle'),
+      'src/shapes/square.go': area('s Square', '\tif s.side < 0 {\n\t\treturn 0\n\t}\n\treturn s.side * s.side\n') + stringer('s Square', 'square'),
+      'src/views/alpha.ts': view('Alpha', ' extends View', '1'),
+      'src/views/beta.ts': view('Beta', ' extends View', '2'),
+      'src/views/gamma.ts': view('Gamma', '', '3'),
+      'src/views/delta.ts': view('Delta', '', '4'),
     };
     const { siblings } = await usesFor(base, {
-      'src/parts/text.rs': (decode('TextPart', '        if version > 3 {\n            return Err(Error::Version);\n        }\n') + methods('TextPart', '2'))
+      'src/parts/text.rs': (decode('TextPart', '        if version > 3 {\n            return Err(Error::Version);\n        }\n') + methods('TextPart', '2') + display('TextPart', 'TEXT'))
         .replace('>= 3', '>= 3 && self.version < 9'),
       'src/parts/image.rs': base['src/parts/image.rs'].replace('let version = u16::from_wire(r)?;', 'let version = u16::from_wire(r)?; // v3')
         .replace('        let _legacy = 0;\n', '').replace('        2\n', '        4\n').replace('>= 3', '>= 3 && self.version < 9'),
-      'src/payments/card.py': base['src/payments/card.py'].replace('send(-amount)', 'send(-abs(amount))'),
-      'src/shapes/circle.go': base['src/shapes/circle.go'].replace('3 * c.r', '3.14 * c.r'),
+      'src/payments/card.py': (refund('CardPayment', '') + dunders('10')).replace('send(-amount)', 'send(-abs(amount))'),
+      'src/payments/wallet.py': equal('Wallet', 'uid'),
+      'src/shapes/circle.go': (area('c *Circle[T]', '\treturn 3 * c.r * c.r\n') + stringer('c *Circle[T]', 'disc')).replace('3 * c.r', '3.14 * c.r'),
+      'src/views/alpha.ts': view('Alpha', ' extends View', '10'),
+      'src/views/gamma.ts': view('Gamma', '', '30'),
     }, ['*.generated.*']);
 
     expect(siblings.implementations.map(q => [q.trait, q.name, q.members.map(m => `${m.owner}${m.changed ? '*' : ''}`)])).toEqual([
       ['FromWire', 'from_wire', ['ImagePart*', 'TextPart*', 'AudioPart']],
       [undefined, 'size', ['ImagePart*', 'TextPart']],
       [undefined, 'refund', ['CardPayment*', 'BankPayment']],
+      [undefined, '__eq__', ['Wallet*', 'Voucher']],
       [undefined, 'Area', ['Circle*', 'Square']],
+      [undefined, 'constructor', ['Alpha*', 'Beta']],
+      [undefined, 'toString', ['Alpha*', 'Beta']],
     ]);
     const text = siblings.implementations[0].members[1];
     expect(text).toMatchObject({ file: 'src/parts/text.rs', line: 2 });
@@ -377,8 +395,8 @@ ${body}	return true
     expect(text.code).toContain('3:          let version = u16::from_wire(r)?;');
     // Only added lines are marked, not the line after a removed one.
     expect(siblings.implementations[0].members[0].code).toContain('3:+         let version = u16::from_wire(r)?; // v3\n4:          Ok(Self { version })');
-    expect(siblings.implementations[3].members[1]).toMatchObject({ file: 'src/shapes/square.go', line: 3 });
-    expect(siblings.implementations[3].members[1].code).toContain('4:  \tif s.side < 0 {');
+    expect(siblings.implementations[4].members[1]).toMatchObject({ file: 'src/shapes/square.go', line: 3 });
+    expect(siblings.implementations[4].members[1].code).toContain('4:  \tif s.side < 0 {');
   });
 
   it('lists the uses of a large generated file in time that grows linearly with its size', async () => {
