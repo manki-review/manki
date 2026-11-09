@@ -50,8 +50,6 @@ const MAX_EXCERPT_LINES = 120;
 const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
 const MAX_ITEM_CHARS = 60;
-/** A line longer than this is skipped by the scans that read lines without a syntax tree, so a crafted line cannot slow their patterns. */
-const MAX_SCANNED_LINE_CHARS = 500;
 
 // Names so common across codebases that their uses say nothing about the change.
 const GENERIC_NAMES = new Set([
@@ -74,7 +72,6 @@ const LOOKUP_METHODS = new Set([
   'has', 'set', 'delete', 'add', 'includes', 'indexOf', 'find', 'findIndex', 'push',
   'pop', 'setdefault', 'discard', 'append', 'index',
   'Load', 'Store', 'LoadOrStore', 'LoadAndDelete', 'Delete',
-  'containsKey', 'put', 'putIfAbsent', 'computeIfAbsent', 'ContainsKey', 'TryGetValue', 'Contains', 'Add', 'Remove', 'erase', 'count',
 ]);
 // Functions that take a collection first and an item second, such as Go's `delete(m, k)`.
 const LOOKUP_FUNCTIONS = new Set(['delete', 'append', 'slices.Contains', 'slices.Index']);
@@ -84,9 +81,6 @@ const CONTAINERS = new Set([
   'Map', 'Set', 'WeakMap', 'WeakSet', 'Array', 'ReadonlyArray', 'ReadonlyMap', 'ReadonlySet', 'Record',
   'dict', 'list', 'set', 'frozenset', 'defaultdict', 'OrderedDict', 'deque', 'Counter', 'Dict', 'List', 'FrozenSet', 'DefaultDict',
   'Deque', 'Mapping', 'MutableMapping', 'Sequence', 'map',
-  'HashMap', 'TreeMap', 'LinkedHashMap', 'ConcurrentHashMap', 'TreeSet', 'LinkedHashSet', 'ArrayList', 'Collection', 'Queue',
-  'Dictionary', 'ConcurrentDictionary', 'SortedDictionary', 'SortedSet', 'IDictionary', 'ISet', 'IList', 'MutableMap', 'MutableSet',
-  'MutableList', 'unordered_map', 'unordered_set', 'vector',
 ]);
 const TYPE_WRAPPERS = new Set([
   'Option', 'Box', 'Arc', 'Rc', 'RefCell', 'Cell', 'Mutex', 'RwLock', 'Promise', 'Readonly', 'Partial', 'std', 'collections', 'alloc', 'sync',
@@ -227,14 +221,6 @@ const PLAIN_FILE_NAME = /^[\w.+@-]+$/;
 // A declaration a keyword opens, for languages without a grammar here.
 const DECLARATION_LINE = /^\s*(?:(?:export|pub(?:\([^)]*\))?|public|private|protected|internal|static|async|final|abstract|open|data|sealed)\s+)*(def|class|func|function|fn|struct|interface|enum|trait|type|const|record|object)\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/;
 const KEYWORD_KIND: Record<string, SymbolKind> = { def: 'function', func: 'function', function: 'function', fn: 'function', const: 'constant' };
-// The keywords of a declaration line that open a type with fields.
-const CLASS_KEYWORDS = new Set(['class', 'struct', 'record', 'object']);
-// A field declaration line, `Type name;`, `Type name = value;` or `name: Type`, for languages without a grammar here.
-const FIELD_DECLARATION_LINE = /^(\s*)(?:(?:public|private|protected|internal|static|final|readonly|const|volatile|transient|mutable|val|var|lateinit)\s+)*(?:([A-Za-z_][\w.:<>[\], ?*&]*?)\s+([A-Za-z_]\w*)|([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w.:<>[\], ?*&]*?))\s*(?:[=;]|$)/;
-// A lookup on a line without a grammar here, such as `jobs.get(id)`, `this.jobs.containsKey(id)` or `jobs_[id]`.
-const LINE_LOOKUP = /(?<![\w$])([A-Za-z_]\w*)[ \t]*(?:\.[ \t]*([A-Za-z_]\w*)[ \t]*\(([^()`,;]+)[,)]|\[([^[\]`]+)\])/g;
-// The files whose fields the line fallback can read: languages that declare a field with its type.
-const TYPED_FIELD_FILE = /\.(?:java|kt|kts|scala|cs|c|cc|cpp|cxx|h|hh|hpp|hxx|swift|dart)$/i;
 const CONFIG_FILE = /\.(?:ya?ml|toml|json)$/i;
 // Only keys with an underscore, such as `slice_lines`, are distinct enough to search for.
 const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*_[\w-]*)"?\s*[:=]/;
@@ -474,8 +460,6 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   const changedFieldStructs: StructListing[] = [];
   const references = new Map<string, { code: number; count: number; files: Set<string> }>();
   const lookups: Array<Lookup & { file: string }> = [];
-  // Lookups read from lines without a syntax tree are less certain, so they come after the parsed ones.
-  const lineFound: Array<Lookup & { file: string }> = [];
   for (const file of files) {
     const lines = touched.get(file.path)!;
     const parsed = parser.parse(file.path);
@@ -507,10 +491,8 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
       if (!TEST_PATH.test(file.path)) lookups.push(...parsed.collectionLookups(lines).map(l => ({ ...l, file: file.path })));
     } else {
       for (const symbol of keywordDeclarations(file)) addSymbol(symbols, symbol);
-      if (!TEST_PATH.test(file.path) && TYPED_FIELD_FILE.test(file.path)) lineFound.push(...lineLookups(file));
     }
   }
-  lookups.push(...lineFound);
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
   const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
@@ -692,16 +674,6 @@ function keywordDeclarations(file: DiffFile): ChangedSymbol[] {
   });
 }
 
-/** Returns each lookup of an item in a collection on an added line of `file`, for a file without a grammar here. */
-function lineLookups(file: DiffFile): Array<Lookup & { file: string }> {
-  const lines = [...addedLines(file)].filter(([, text]) => text.length <= MAX_SCANNED_LINE_CHARS);
-  return lines.flatMap(([line, text]) => [...text.replace(COMMENT, '').matchAll(LINE_LOOKUP)].flatMap(([, field, method, argument, key]) => {
-    const item = (argument ?? key).trim().replace(/^&\s*/, '').replace(/\s+/g, ' ');
-    if ((method !== undefined && !LOOKUP_METHODS.has(method)) || !item || item.length > MAX_ITEM_CHARS) return [];
-    return [{ field, item, line, text: text.trim().slice(0, MAX_LINE_CHARS), file: file.path }];
-  }));
-}
-
 /** Returns the names the diff's added lines declare, without the generic ones, in diff order. */
 export function declaredNames(diff: ParsedDiff): string[] {
   return [...new Set(diff.files.flatMap(file => keywordDeclarations(file)).map(s => s.name).filter(name => !isGeneric(name)))];
@@ -710,7 +682,6 @@ export function declaredNames(diff: ParsedDiff): string[] {
 /** Reads and parses head files once each. */
 class Parser {
   private readonly cache = new Map<string, ParsedFile | undefined>();
-  private readonly texts = new Map<string, string[] | undefined>();
 
   constructor(private readonly workspace: string, private readonly api?: AstGrepApi) {}
 
@@ -719,28 +690,14 @@ class Parser {
     return this.cache.get(path);
   }
 
-  /** Returns the lines of a head file, or `undefined` when it is too large or cannot be read. */
-  lines(path: string): string[] | undefined {
-    if (!this.texts.has(path)) this.texts.set(path, this.read(path));
-    return this.texts.get(path);
-  }
-
-  private read(path: string): string[] | undefined {
-    try {
-      const { absolute } = resolveInRoot(this.workspace, path);
-      return statSync(absolute).size > MAX_FILE_BYTES ? undefined : readFileSync(absolute, 'utf-8').split('\n');
-    } catch (error) {
-      core.info(`Uses outside the diff: could not read ${path}: ${error instanceof Error ? error.message : String(error)}`);
-      return undefined;
-    }
-  }
-
   private load(path: string): ParsedFile | undefined {
     const language = languageOf(path);
-    const lines = language && this.api ? this.lines(path) : undefined;
-    if (!language || !this.api || !lines) return undefined;
+    if (!language || !this.api) return undefined;
     try {
-      return new ParsedFile(this.api.parse(language.lang, lines.join('\n')), RULES[language.family], lines);
+      const { absolute } = resolveInRoot(this.workspace, path);
+      if (statSync(absolute).size > MAX_FILE_BYTES) return undefined;
+      const source = readFileSync(absolute, 'utf-8');
+      return new ParsedFile(this.api.parse(language.lang, source), RULES[language.family], source.split('\n'));
     } catch (error) {
       core.info(`Uses outside the diff: could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
@@ -887,7 +844,10 @@ class ParsedFile {
 
   /** Returns the lines of `decl` with their numbers, marking the lines in `added`, each cut after `MAX_EXCERPT_LINE_CHARS` and all after `MAX_EXCERPT_LINES`. */
   excerpt(decl: Declaration, file: string, added: Set<number>): CodeExcerpt {
-    return excerptLines(this.lines, decl.start, decl.end, file, added);
+    const end = Math.min(decl.end, decl.start + MAX_EXCERPT_LINES - 1);
+    const lines = this.lines.slice(decl.start - 1, end).map((text, i) => `${decl.start + i}:${added.has(decl.start + i) ? '+' : ' '} ${shortLine(text)}`);
+    if (end < decl.end) lines.push(`... ${decl.end - end} more lines`);
+    return { file, line: decl.start, code: lines.join('\n') };
   }
 
   private inTests(node: SgNode): boolean {
@@ -1124,14 +1084,6 @@ function structsDeclaringField(parser: Parser, name: string, hits: Hit[], reader
 }
 
 const shortLine = (text: string): string => text.length > MAX_EXCERPT_LINE_CHARS ? `${text.slice(0, MAX_EXCERPT_LINE_CHARS)} ...` : text;
-
-/** Returns lines `start` to `end` of `lines` with their numbers, marking the lines in `added`, cut after `MAX_EXCERPT_LINES`. */
-function excerptLines(lines: string[], start: number, end: number, file: string, added: Set<number>): CodeExcerpt {
-  const last = Math.min(end, start + MAX_EXCERPT_LINES - 1);
-  const code = lines.slice(start - 1, last).map((text, i) => `${start + i}:${added.has(start + i) ? '+' : ' '} ${shortLine(text)}`);
-  if (last < end) code.push(`... ${end - last} more lines`);
-  return { file, line: start, code: code.join('\n') };
-}
 const typeNames = (type: string): string[] => type.match(/[A-Za-z_]\w*/g) ?? [];
 // A Go fixed-size array such as `[32]byte`: a size in brackets before the element type, with no type name before it.
 const GO_ARRAY = /(?<![\w\]])\[[^\][]+\](?=[\w*[])/g;
@@ -1200,69 +1152,29 @@ function siblingFields(
 ): SiblingFieldQuestion[] {
   const ranked = fields.flatMap((field, order) => {
     const uses = lookups.filter(l => l.field === field);
-    // A lookup in a file without a grammar never takes the type of a namesake field from a parsed language.
-    const struct = languageOf(uses[0].file) ? structsDeclaringField(parser, field, hits, new Set(uses.map(u => u.file)), packages)[0] : undefined;
+    const struct = structsDeclaringField(parser, field, hits, new Set(uses.map(u => u.file)), packages)[0];
     const parsed = struct && parser.parse(struct.file);
-    const decl = struct && parsed?.declarations.find(d => d.key === struct.key);
-    const found = struct && parsed && decl
-      ? { name: decl.name, declared: parsed.structFields(struct.key), definition: parsed.excerpt(decl, struct.file, added.get(struct.file) ?? new Set()) }
-      : classOnLines(parser, field, uses, hits, added);
-    const own = found?.declared.find(f => f.name === field);
-    if (!found || !own) return [];
+    const decl = parsed?.declarations.find(d => d.key === struct.key);
+    if (!parsed || !decl) return [];
+    const declared = parsed.structFields(struct.key);
+    const own = declared.find(f => f.name === field);
+    if (!own) return [];
+    const definition = parsed.excerpt(decl, struct.file, added.get(struct.file) ?? new Set());
     const hunks = [...new Set(uses.flatMap(u => {
       const file = diff.files.find(f => f.path === u.file);
       return (file && hunkAround(file, u.line)) ?? [];
     }))];
-    return found.declared.flatMap(other => {
+    return declared.flatMap(other => {
       const rank = other.name === field ? undefined : typeAffinity(own.type, other.type);
-      // Without a syntax tree, only a field of the very same type is certain enough to ask about.
-      if (rank === undefined || (!parsed && rank > 0)) return [];
+      if (rank === undefined) return [];
       const question: SiblingFieldQuestion = {
-        struct: found.name, field, sibling: other.name, item: uses[0].item,
-        lookups: uses.map(({ file, line, text }) => ({ file, line, text })), definition: found.definition, hunks,
+        struct: decl.name, field, sibling: other.name, item: uses[0].item,
+        lookups: uses.map(({ file, line, text }) => ({ file, line, text })), definition, hunks,
       };
       return [{ question, rank, order }];
     });
   });
   return ranked.sort((a, b) => a.rank - b.rank || a.order - b.order).slice(0, MAX_QUESTIONS).map(r => r.question);
-}
-
-const indentOf = (line: string): number => /^\s*/.exec(line)![0].length;
-
-/** Returns the field a line declares with its indent and the text of its type, for a language without a grammar here. */
-function fieldOnLine(line: string): { name: string; type: string; indent: number } | undefined {
-  const match = line.length <= MAX_SCANNED_LINE_CHARS ? FIELD_DECLARATION_LINE.exec(line) : null;
-  const name = match && (match[3] ?? match[4]);
-  return match && name ? { name, type: (match[2] ?? match[5]).trim(), indent: match[1].length } : undefined;
-}
-
-/**
- * Returns the class that declares field `field`, its fields and its lines, from the lines of a file without a grammar
- * here, in the language of the first use. A field counts only when the nearest less indented line above it opens the
- * class, so a local variable inside a method never does. The class ends at the next line indented less than its fields.
- */
-function classOnLines(parser: Parser, field: string, uses: Array<{ file: string }>, hits: Hit[], added: Map<string, Set<number>>):
-  { name: string; declared: Array<{ name: string; type: string }>; definition: CodeExcerpt } | undefined {
-  const extension = uses[0].file.split('.').pop();
-  const candidates = hits.filter(h => h.file.split('.').pop() === extension && !languageOf(h.file) && !TEST_PATH.test(h.file) && fieldOnLine(h.text)?.name === field)
-    .sort((a, b) => Number(b.file === uses[0].file) - Number(a.file === uses[0].file));
-  for (const hit of candidates) {
-    const lines = parser.lines(hit.file);
-    const own = lines && fieldOnLine(lines[hit.line - 1] ?? '');
-    if (!lines || own?.name !== field) continue;
-    let start = hit.line - 2;
-    while (start >= 0 && (!lines[start].trim() || lines[start].trim() === '{' || indentOf(lines[start]) >= own.indent)) start--;
-    const opener = start >= 0 ? DECLARATION_LINE.exec(lines[start]) : null;
-    if (!opener || !CLASS_KEYWORDS.has(opener[1])) continue;
-    let end = hit.line;
-    while (end < lines.length && (!lines[end].trim() || indentOf(lines[end]) >= own.indent)) end++;
-    const declared = lines.slice(start + 1, end).flatMap(line => {
-      const member = fieldOnLine(line);
-      return member && member.indent === own.indent ? [{ name: member.name, type: member.type }] : [];
-    });
-    return { name: opener[2], declared, definition: excerptLines(lines, start + 1, Math.min(end + 1, lines.length), hit.file, added.get(hit.file) ?? new Set()) };
-  }
-  return undefined;
 }
 
 /** Returns the head files of `dir` in the language family of `path`, outside tests and `excludePaths`, by name. */
