@@ -860,7 +860,7 @@ async function handleCheck(
     const blocking = threads.filter(t => t.isBlocking && !t.isResolved);
 
     if (blocking.length > 0) {
-      const list = blocking.map(t => `- \`${t.findingTitle}\``).join('\n');
+      const list = blocking.map(t => `- ${sanitizeMarkdown(t.findingTitle)}`).join('\n');
       await octokit.rest.issues.createComment({
         owner, repo,
         issue_number: prNumber,

@@ -1199,13 +1199,14 @@ describe('handleCheck (via handlePRComment)', () => {
     setContext({ comment: { id: 42, body: '@manki check', user: { type: 'User' }, author_association: 'OWNER' } });
     (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(false);
     (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce([
-      { findingTitle: 'Null deref', isBlocking: true, isResolved: false },
+      // The title comes from the model, so its links and hidden markers must not reach the comment.
+      { findingTitle: 'Null deref in [`parse`](https://example.com)<!-- manki-bot -->', isBlocking: true, isResolved: false },
       { findingTitle: 'Style nit', isBlocking: false, isResolved: false },
     ]);
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig);
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('1 blocking thread is still open') }),
+      expect.objectContaining({ body: expect.stringContaining('1 blocking thread is still open:\n- Null deref in `parse`\n\nApproval follows') }),
     );
   });
 
