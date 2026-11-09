@@ -116,7 +116,7 @@ function staysOpenNote(isSecurity: boolean, fixed: boolean): string {
 
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
 
-const DISMISS_USAGE = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR and stores a suppression, so later reviews do not raise findings with that title.';
+const DISMISS_USAGE = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR by part of its title, leaving out any code in backticks, and stores a suppression, so later reviews do not raise findings with that title.';
 
 const DISMISS_NO_FINDING = `Nothing was dismissed, since no finding was named.\n\n${DISMISS_USAGE}`;
 
@@ -547,7 +547,7 @@ async function handleExplain(
 /**
  * Stores a suppression for the finding `findingRef` names. Returns the note to post, and whether the suppression was
  * stored, or `undefined` when `findingRef` names none. A suppression hides findings on every PR, so only text that matches
- * a finding Manki posted on this PR is stored.
+ * a finding Manki posted on this PR is stored. `named` says whether it matched one.
  */
 async function handleDismiss(
   octokit: Octokit,
@@ -557,24 +557,24 @@ async function handleDismiss(
   prNumber: number,
   findingRef: string,
   memory?: MemoryStore,
-): Promise<{ note: string; stored: boolean } | undefined> {
+): Promise<{ note: string; named: boolean; stored: boolean } | undefined> {
   if (!findingRef.trim()) return undefined;
   const sanitizedPattern = findingRef
     .replace(/</g, '').replace(/>/g, '')
     .slice(0, 200)
     .trim();
 
-  if (sanitizedPattern.length < 3) return { note: DISMISS_TOO_SHORT, stored: false };
+  if (sanitizedPattern.length < 3) return { note: DISMISS_TOO_SHORT, named: false, stored: false };
 
   let threads: ReviewThread[];
   try {
     threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
   } catch (error) {
     core.warning(`Failed to read the findings a dismiss names: ${error}`);
-    return { note: DISMISS_LOOKUP_FAILED, stored: false };
+    return { note: DISMISS_LOOKUP_FAILED, named: false, stored: false };
   }
   if (!threads.some(t => patternMatchesTitle(sanitizedPattern, t.findingTitle))) {
-    return { note: `No finding Manki posted on this PR matches \`${sanitizedPattern}\`, so nothing was dismissed.\n\n${DISMISS_USAGE}`, stored: false };
+    return { note: `No finding Manki posted on this PR matches \`${sanitizedPattern}\`, so nothing was dismissed.\n\n${DISMISS_USAGE}`, named: false, stored: false };
   }
 
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
@@ -608,7 +608,7 @@ async function handleDismiss(
       : stored
         ? 'Stored as a suppression in review memory.'
         : 'Could not store it in review memory, so later reviews can raise it again. The run log has the reason.';
-  return { note: `Dismissed: \`${sanitizedPattern}\`. ${memoryNote}`, stored };
+  return { note: `Dismissed: \`${sanitizedPattern}\`. ${memoryNote}`, named: true, stored };
 }
 
 /**
@@ -1003,8 +1003,10 @@ export async function handleReviewCommentCommand(
       const dismissal = await handleDismiss(octokit, bot, owner, repo, prNumber, command.args, memory);
       const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber);
       // A resolved thread needs no note, and outside a Manki finding's thread only a named finding can be dismissed.
+      // Once the thread is resolved, text that named no posted finding was a remark, not a failed dismiss.
       const threadNote = thread ? thread.note : dismissal ? undefined : DISMISS_NO_FINDING;
-      const notes = [dismissal?.note, threadNote].filter((note): note is string => !!note);
+      const dismissalNote = thread?.resolved && !dismissal?.named ? undefined : dismissal?.note;
+      const notes = [dismissalNote, threadNote].filter((note): note is string => !!note);
       if (notes.length > 0) {
         await octokit.rest.pulls.createReplyForReviewComment({
           owner, repo, pull_number: prNumber, comment_id: commentId, body: withMarkers(notes.join('\n\n'), BOT_MARKER),

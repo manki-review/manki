@@ -1003,7 +1003,7 @@ describe('handleDismiss (via handlePRComment)', () => {
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
   });
 
-  const usage = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR and stores a suppression, so later reviews do not raise findings with that title.';
+  const usage = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR by part of its title, leaving out any code in backticks, and stores a suppression, so later reviews do not raise findings with that title.';
 
   it.each([
     ['names no finding', '@manki dismiss', `Nothing was dismissed, since no finding was named.\n\n${usage}`],
@@ -1401,6 +1401,25 @@ describe('handleReviewCommentCommand', () => {
     await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 63, parseCommand('@manki dismiss'));
     expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
     expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_this', 'WONT_FIX');
+  });
+
+  it('posts no note when a thread dismiss with a remark resolves the thread', async () => {
+    const body = '@manki dismiss this is a false positive';
+    setContext({
+      comment: { id: 65, body, user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' },
+      pull_request: { number: 1, user: { login: 'pr-author' } },
+      sender: { login: 'someone' },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment('warning'), path: 'src/file.ts', line: 10 } });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: false, findingTitle: 'Token' }]);
+
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 65, parseCommand(body), MEMORY);
+
+    expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_this', 'WONT_FIX');
+    expect(memory.writeSuppression).not.toHaveBeenCalled();
+    expect(octokit.rest.pulls.createReplyForReviewComment).not.toHaveBeenCalled();
+    expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 65, '+1');
   });
 
   it('does not use reactToIssueComment', async () => {
