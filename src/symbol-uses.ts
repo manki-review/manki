@@ -65,7 +65,7 @@ const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
 const MAX_ITEM_CHARS = 60;
 const MAX_BASES = 8;
-/** The types followed to tell whether a type derives from another. A longer line of bases may, so its uses are kept. */
+/** The types followed to tell whether a type derives from another. A type with a longer line of bases may. */
 const MAX_LINEAGE = 16;
 /** The longest item source read before its whitespace is collapsed to at most `MAX_ITEM_CHARS`. */
 const MAX_ITEM_SOURCE_CHARS = 4 * MAX_ITEM_CHARS;
@@ -1077,6 +1077,7 @@ class ParsedFile {
   }
 
   private readonly bases = new Map<number, string[]>();
+  private readonly lineageBases = new Map<number, string[] | undefined>();
 
   /** Returns the first `MAX_BASES` bases `scope` names, read once per class however many methods it holds. */
   private basesOf(scope: SgNode): string[] {
@@ -1147,19 +1148,32 @@ class ParsedFile {
 
   /**
    * Whether type `name` is `owner` or may derive from it. It follows the bases of the types this file declares, at most
-   * `MAX_LINEAGE` of them, and a base declared in another file may derive from `owner`.
+   * `MAX_LINEAGE` of them. A base declared in another file may derive from `owner`, and so may a type whose bases
+   * `allBases` cannot read. A standard base such as `Exception` is followed no further.
    */
   private mayDeriveFrom(name: string, owner: string): boolean {
     const lineage = [name];
     for (let i = 0; i < lineage.length; i++) {
       const type = this.typesByName.get(lineage[i]);
-      if (lineage[i] === owner || !type || i >= MAX_LINEAGE) return true;
-      for (const base of this.basesOf(type.node)) {
-        const last = base.split(/\.|::/).at(-1)!;
-        if (!lineage.includes(last)) lineage.push(last);
-      }
+      const bases = type && this.allBases(type.node);
+      if (lineage[i] === owner || !bases || i >= MAX_LINEAGE) return true;
+      for (const base of bases) if (base === owner || (!STANDARD_BASES.has(base) && !lineage.includes(base))) lineage.push(base);
     }
     return false;
+  }
+
+  /**
+   * Returns the last name of each base `scope` names, read once per type, or `undefined` when it names more than
+   * `MAX_BASES` or one that is no plain name, such as a call that makes a base.
+   */
+  private allBases(scope: SgNode): string[] | undefined {
+    if (!this.lineageBases.has(scope.id())) {
+      const nodes = this.rules.bases?.(scope) ?? [];
+      const names = nodes.length > MAX_BASES ? [] : nodes.map(n => n.range().end.index - n.range().start.index <= MAX_ITEM_CHARS ? typeName(n.text()) : '');
+      const plain = nodes.length <= MAX_BASES && names.every(n => BASE_PATH.test(n));
+      this.lineageBases.set(scope.id(), plain ? names.map(n => n.split(/\.|::/).at(-1)!) : undefined);
+    }
+    return this.lineageBases.get(scope.id());
   }
 
   /** Returns the method of `selfMethods` that holds `line`, the last one starting at or before it. */
@@ -1298,11 +1312,16 @@ function formatSymbolUses(
   for (const hit of hits) {
     for (const name of new Set(hit.text.match(pattern) ?? [])) {
       const entry = byName.get(name);
-      if (entry && !(hit.file === entry.symbol.file && hit.line === entry.symbol.line) && !otherType(entry.symbol, hit)) entry.uses.push(hit);
+      if (entry && !(hit.file === entry.symbol.file && hit.line === entry.symbol.line)) entry.uses.push(hit);
     }
   }
+  const isCommon = (e: { symbol: ChangedSymbol; uses: Hit[] }) => e.uses.length > COMMON_USES && !redefined.has(e.symbol.name);
+  // Placing a use on its type can parse its file within the round's budget, so only symbols that can be listed are
+  // checked, the redefined ones first.
+  const checked = [...byName.values()].filter(e => !isCommon(e))
+    .sort((a, b) => Number(!redefined.has(a.symbol.name)) - Number(!redefined.has(b.symbol.name)) || a.symbol.tier - b.symbol.tier || a.index - b.index);
+  for (const e of checked) e.uses = e.uses.filter(use => !otherType(e.symbol, use));
   const entries = [...byName.values()].filter(e => e.uses.length > 0);
-  const isCommon = (e: typeof entries[number]) => e.uses.length > COMMON_USES && !redefined.has(e.symbol.name);
   const capOf = (symbol: ChangedSymbol) => redefined.has(symbol.name) ? MAX_REDEFINED_USES : MAX_USES_PER_SYMBOL;
   const typeFilesOf = (symbol: ChangedSymbol) => redefined.has(symbol.name) && symbol.owner ? typeFiles.get(symbol.owner) : undefined;
   const common = entries.filter(isCommon);
