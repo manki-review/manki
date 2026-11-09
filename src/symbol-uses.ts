@@ -230,6 +230,15 @@ const PLAIN_FILE_NAME = /^[\w.+@-]+$/;
 // A declaration a keyword opens, for languages without a grammar here.
 const DECLARATION_LINE = /^\s*(?:(?:export|pub(?:\([^)]*\))?|public|private|protected|internal|static|async|final|abstract|open|data|sealed)\s+)*(def|class|func|function|fn|struct|interface|enum|trait|type|const|record|object)\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/;
 const KEYWORD_KIND: Record<string, SymbolKind> = { def: 'function', func: 'function', function: 'function', fn: 'function', const: 'constant' };
+// Words that make a name an upper limit, such as `max_body_bytes`, `timeout-minutes` or `RateLimit`.
+const LIMIT_WORDS = new Set(['max', 'maximum', 'limit', 'cap', 'capacity', 'timeout', 'deadline', 'ttl', 'quota', 'threshold', 'budget', 'rate', 'burst']);
+// Words that make a name of two words or more a limit, such as `BATCH_SIZE` or `page_size`.
+const BOUND_WORDS = new Set(['size', 'length', 'len', 'count', 'bytes']);
+// A name set to what may be a number: `NAME = 4`, `NAME: u32 = 4`, `self.name = 4`, `name: 4`, `name := 4`, `name=4` in a call, or `Name(4 << 20)`.
+const LIMIT_ASSIGNMENT = /(?<![\w$-])([A-Za-z_][\w-]*)\s*(?::\s*[\w:<>&[\] ]+?\s*(?==))?(?::=|=(?!=)|:|\()\s*([\d(][\w\s+\-*/<>().]*?)\s*(?=[;,)}\]]|\/\/|\/\*|#|$)/g;
+const DEFINE_LINE = /^\s*#\s*define\s+([A-Za-z_]\w*)\s+([\d(][\w\s+\-*/<>().]*?)\s*(?:\/\/|\/\*|$)/;
+// A type suffix on a number literal, such as `30u64`, `100usize` or `5L`.
+const NUMBER_SUFFIX = /(?<=\d)(?:[ui](?:8|16|32|64|128|size)|ul?|l)\b/gi;
 const CONFIG_FILE = /\.(?:ya?ml|toml|json)$/i;
 // Only keys with an underscore, such as `slice_lines`, are distinct enough to search for.
 const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*_[\w-]*)"?\s*[:=]/;
@@ -321,10 +330,25 @@ export interface SiblingImplementationQuestion {
   members: Array<CodeExcerpt & { owner: string; changed: boolean }>;
 }
 
+/** A limit the change lowers or adds, such as a maximum size, count, length, timeout or rate. */
+export interface LimitQuestion {
+  name: string;
+  /** The new value as the line writes it. */
+  value: string;
+  /** The value before the change as written, for a lowered limit. */
+  previous?: string;
+  file: string;
+  line: number;
+  text: string;
+  /** The diff hunk holding the line. */
+  hunk: string;
+}
+
 /** The comparisons worth asking about the change, each kind ranked most promising first. */
 export interface SiblingQuestions {
   fields: SiblingFieldQuestion[];
   implementations: SiblingImplementationQuestion[];
+  limits: LimitQuestion[];
 }
 
 interface Lookup {
@@ -356,7 +380,7 @@ export interface UsesOptions {
   loadApi?: () => Promise<AstGrepApi>;
 }
 
-const NO_SIBLINGS: SiblingQuestions = { fields: [], implementations: [] };
+const NO_SIBLINGS: SiblingQuestions = { fields: [], implementations: [], limits: [] };
 
 /**
  * Returns a prompt section that lists, for each type, field, variant, function, constant and config key the diff changes,
@@ -374,8 +398,8 @@ export async function listUsesOutsideDiff(workspace: string | undefined, diff: P
   try {
     const started = Date.now();
     const uses = await buildUsesSection(workspace, diff, excludePaths, loadApi);
-    const { fields, implementations } = uses.siblings;
-    core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons`);
+    const { fields, implementations, limits } = uses.siblings;
+    core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field, ${implementations.length} sibling implementation and ${limits.length} limit comparisons`);
     return uses;
   } catch (error) {
     core.warning(`Skipped the list of uses outside the diff: ${error instanceof Error ? error.message : String(error)}`);
@@ -521,7 +545,8 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     ...files.flatMap(mentionedNames), ...searched.filter(s => s.tier < 2 && !s.test && !TEST_PATH.test(s.file)).map(s => s.name), ...referenced.map(([name]) => name),
   ])].filter(name => isCodeLike(name) && !isGeneric(name)).slice(0, MAX_SYMBOLS);
   const nothing = { section: '', ...(referenceNames.length > 0 && { referenceNames }) };
-  if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
+  const limits = changedLimits(files, diff);
+  if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations, limits } };
 
   // A file that names the type of a redefined field likely reads that type's field, not a namesake's.
   const owners = [...new Set([...redefined.values()].flatMap(s => s.owner ?? []))];
@@ -531,7 +556,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   for (const hit of ownerPattern ? hits : []) for (const owner of hit.text.match(ownerPattern!) ?? []) typeFiles.get(owner)?.add(hit.file);
   const packages = new Packages(workspace);
   const fields = siblingFields(parser, lookups, lookupFields, hits, packages, diff, added);
-  const siblings = { fields, implementations };
+  const siblings = { fields, implementations, limits };
   const { blocks: sections, symbols: listed, common, capped } = formatSymbolUses(
     searched, hits.filter(hit => !touched.get(hit.file)?.has(hit.line)), packages, new Set(redefined.keys()), typeFiles,
   );
@@ -683,6 +708,72 @@ function keywordDeclarations(file: DiffFile): ChangedSymbol[] {
     const kind: SymbolKind = config ? 'key' : KEYWORD_KIND[match[1]] ?? 'type';
     return [{ name: config ? match[1] : match[2], kind, file: file.path, line, tier: 0 as const }];
   });
+}
+
+/** Returns the value of a numeric expression such as `3 * 1024 * 1024`, `4 << 20`, `5_000_000` or `30u64`, or `undefined` for any other text. */
+function numericValue(text: string): number | undefined {
+  const tokens = text.replace(/(?<=[\da-f])_(?=[\da-f])/gi, '').replace(NUMBER_SUFFIX, '').match(/0x[\da-f]+|\d+(?:\.\d+)?(?:e\d+)?|<<|>>|\S/gi) ?? [];
+  let at = 0;
+  const binary = (next: () => number, ops: Record<string, (a: number, b: number) => number>) => (): number => {
+    let value = next();
+    for (let op = ops[tokens[at] ?? '']; op; op = ops[tokens[at] ?? '']) {
+      at++;
+      value = op(value, next());
+    }
+    return value;
+  };
+  const atom = (): number => {
+    const token = tokens[at++] ?? '';
+    if (token !== '(') return /^(?:0x[\da-f]+|\d)/i.test(token) ? Number(token) : NaN;
+    const value = shift();
+    return tokens[at++] === ')' ? value : NaN;
+  };
+  const product = binary(atom, { '*': (a, b) => a * b, '/': (a, b) => a / b });
+  const sum = binary(product, { '+': (a, b) => a + b, '-': (a, b) => a - b });
+  const shift = binary(sum, { '<<': (a, b) => a * 2 ** b, '>>': (a, b) => Math.floor(a / 2 ** b) });
+  const value = shift();
+  return at === tokens.length && Number.isFinite(value) ? value : undefined;
+}
+
+/** Whether `name` names an upper limit, such as `MAX_BODY_BYTES`, `timeout-minutes`, `maxRecvMsgSize` or `BATCH_SIZE`. */
+function isLimitName(name: string): boolean {
+  const words = name.split(/[_-]+|(?<=[a-z\d])(?=[A-Z])/).filter(Boolean).map(word => word.toLowerCase());
+  if (words.includes('min') || words.includes('minimum')) return false;
+  return words.some(word => LIMIT_WORDS.has(word)) || (words.length > 1 && words.some(word => BOUND_WORDS.has(word)));
+}
+
+/** Returns each limit `text` sets to a number, with the number as written and its value. */
+function limitsOn(text: string): Array<{ name: string; value: string; number: number }> {
+  const define = DEFINE_LINE.exec(text);
+  const matches = define ? [define] : [...text.replace(COMMENT, '').matchAll(LIMIT_ASSIGNMENT)];
+  return matches.flatMap(([, name, value]) => {
+    const number = numericValue(value);
+    return number !== undefined && isLimitName(name) ? [{ name, value: value.trim(), number }] : [];
+  });
+}
+
+/**
+ * Returns each limit an added line lowers or adds, outside tests and documents, each name once. A limit is lowered when
+ * the line it replaces held a larger value, and added when no removed line in the diff sets it. A limit the diff only
+ * moves or raises is left out.
+ */
+function changedLimits(files: DiffFile[], diff: ParsedDiff): LimitQuestion[] {
+  const removed = new Map<string, { value: string; number: number }>();
+  for (const row of diff.files.flatMap(f => f.hunks.flatMap(h => h.content.split('\n')))) {
+    if (!row.startsWith('-')) continue;
+    for (const limit of limitsOn(row.slice(1))) if (!removed.has(limit.name)) removed.set(limit.name, limit);
+  }
+  const asked = new Set<string>();
+  return files.filter(f => !TEST_PATH.test(f.path) && !DOC_FILE.test(f.path)).flatMap(file => {
+    const replaced = replacedLines(file);
+    return [...addedLines(file)].flatMap(([line, text]) => limitsOn(text).flatMap(limit => {
+      const before = (replaced.get(line) ?? []).flatMap(limitsOn).find(l => l.name === limit.name) ?? removed.get(limit.name);
+      const hunk = hunkAround(file, line);
+      if (asked.has(limit.name) || (before && before.number <= limit.number) || !hunk) return [];
+      asked.add(limit.name);
+      return [{ name: limit.name, value: limit.value, ...(before && { previous: before.value }), file: file.path, line, text: text.trim().slice(0, MAX_LINE_CHARS), hunk }];
+    }));
+  }).slice(0, MAX_QUESTIONS);
 }
 
 /** Returns the names the diff's added lines declare, without the generic ones, in diff order. */

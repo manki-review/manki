@@ -697,7 +697,7 @@ export async function runReview(
   const comparisonEffort = (team.finders.find(f => f.model === comparisonModel) ?? team.finders[0]).effort;
   const comparisonDeadline = new AbortController();
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
-    effort: comparisonEffort, workspace, signal: comparisonDeadline.signal,
+    effort: comparisonEffort, workspace, signal: comparisonDeadline.signal, related,
   });
   const references = await listReferenceUses(related && uses.referenceNames ? await fetchReferenceRepos(related) : [], uses.referenceNames ?? []);
   const usesOutsideDiff = uses.section + references.section;
