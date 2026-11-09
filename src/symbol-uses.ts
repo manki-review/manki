@@ -140,6 +140,8 @@ interface ChangedSymbol {
   container?: string;
   /** Whether it is test code, such as a `#[test]` function or one inside `#[cfg(test)]`. */
   test?: boolean;
+  /** First line of a parsed declaration, counting the comments and attributes above it. */
+  start?: number;
 }
 
 interface Declaration {
@@ -298,9 +300,13 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
       const changed = changedDeclarations(parsed.declarations, lines, file.path);
       for (const symbol of changed) addSymbol(symbols, symbol);
       const replaced = replacedLines(file);
-      for (const { name, kind, tier, line } of changed) {
-        const edited = !replaced.has(line) || replaced.get(line)!.some(text => wordPattern([name]).test(text));
-        if ((kind === 'field' || kind === 'variant') && tier === 0 && edited) redefined.add(name);
+      for (const { name, kind, tier, line, start = line } of changed) {
+        if ((kind !== 'field' && kind !== 'variant') || tier !== 0) continue;
+        // An added declaration line edits the field only when it replaces one naming it. Otherwise an added doc or attribute line does.
+        const edited = replaced.has(line)
+          ? replaced.get(line)!.some(text => wordPattern([name]).test(text))
+          : Array.from({ length: line - start }, (_, i) => start + i).some(l => replaced.has(l));
+        if (edited) redefined.add(name);
       }
       for (const field of changed.filter(s => s.kind === 'field' && s.tier === 0)) {
         const listing = parsed.structListing(field.container, file.path);
@@ -447,7 +453,7 @@ function changedDeclarations(declarations: Declaration[], touched: Set<number>, 
     const header = touches(decl.start, decl.headerEnd);
     const body = touches(decl.headerEnd + 1, decl.end);
     if (!header && !body) continue;
-    changed.push({ name: decl.name, kind: decl.kind, file, line: lineOf(decl.node), tier: header ? 0 : 1, container: decl.container, ...(inTestCode(decl.node) && { test: true }) });
+    changed.push({ name: decl.name, kind: decl.kind, file, line: lineOf(decl.node), tier: header ? 0 : 1, container: decl.container, start: decl.start, ...(inTestCode(decl.node) && { test: true }) });
     // A changed attribute such as a derive leaves the members as they were, so only a changed body brings them in.
     if (decl.shape && body) changedTypes.set(decl.key, decl.name);
   }
