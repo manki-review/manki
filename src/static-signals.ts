@@ -28,7 +28,7 @@ const RELATED_CITATION = /(?<![\w./-])([\w.-]+\/[\w.-]+):([^\s:`'"()<>]+):(\d+)(
 const CHECK_POLL_MS = 15_000;
 const MAX_ANALYZED_FILE_BYTES = 1024 * 1024;
 const MAX_ANALYZED_TOTAL_BYTES = 8 * 1024 * 1024;
-const MAX_LOCKFILE_BYTES = 10 * 1024 * 1024;
+export const MAX_LOCKFILE_BYTES = 10 * 1024 * 1024;
 const MAX_LOCKFILES_TOTAL_BYTES = 40 * 1024 * 1024;
 
 const SECURITY_RULE = /\b(?:security|injection|xss|csrf|ssrf|cwe|cve|secrets?|traversal|format-string|vulnerab\w*)\b/i;
@@ -194,7 +194,7 @@ export async function collectStaticSignals(
   // A PR can change its own `exclude_paths`, so hidden characters are looked for in every changed file. Their alerts and
   // the lockfile alerts go first and each kind has its own cap, so none can push another out.
   const hidden = hiddenCharacterSignals(fullDiff).slice(0, MAX_SIGNALS);
-  const lockfile = lockfileSignals(request.lockfiles ?? []).slice(0, MAX_SIGNALS);
+  const lockfile = lockfileSignals(request.lockfiles ?? [], MAX_SIGNALS);
   const onDiff = [...hidden, ...lockfile, ...collected.flat().sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])];
   if (onDiff.length > 0) core.info(`Static analysis: ${onDiff.length} result(s) on lines in the diff`);
   const record: RoundStaticAnalysis = {

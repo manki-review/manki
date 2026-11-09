@@ -1272,6 +1272,30 @@ describe('runJudgeAgent', () => {
     expect(userMessage).not.toContain('diff --git a/src/other.ts');
   });
 
+  it('shows the judge the package list of a parsed lockfile in place of its hunks', async () => {
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', severity: 'warning', reasoning: 'r', confidence: 'high' }] }) });
+    const lockfile = makeDiffFile({ path: 'Cargo.lock', additions: 1, deletions: 1, hunks: [makeHunk({ content: ' name = "hex"\n-version = "0.4.2"\n+version = "0.4.3"' })] });
+    const changes = [{ kind: 'updated' as const, name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', fields: [], flags: ['downgrade' as const], line: 5 }];
+
+    await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [makeFinding({ file: 'Cargo.lock', line: 5 })], diff: makeDiff([makeDiffFile(), lockfile]), rawDiff: '', repoContext: '', agentCount: 1,
+      lockfiles: [{ path: 'Cargo.lock', file: lockfile, changes }],
+    });
+
+    const [, userMessage] = mockSendMessage.mock.calls[0];
+    expect(userMessage).toContain('## Lockfile Changes\n');
+    expect(userMessage).toContain('```\nCargo.lock\n  updated hex 0.4.2 -> 0.4.3 (line 5) [downgrade]\n```');
+    expect(userMessage).toContain('### Cargo.lock (+1/-1)');
+    expect(userMessage).not.toMatch(/version = "0\.4\.3"|name = "hex"/);
+
+    // With no finding on the lockfile, the judge gets neither its list nor its hunks.
+    await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [makeFinding()], diff: makeDiff([makeDiffFile(), lockfile]), rawDiff: '', repoContext: '', agentCount: 1,
+      lockfiles: [{ path: 'Cargo.lock', file: lockfile, changes }],
+    });
+    expect(mockSendMessage.mock.calls[1][1]).not.toMatch(/## Lockfile Changes|name = "hex"/);
+  });
+
   it('names one prompt template for its digest whatever the round holds', async () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', severity: 'suggestion', reasoning: 'r', confidence: 'high' }] }) });
     const base: JudgeInput = { findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1 };

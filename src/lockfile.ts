@@ -5,6 +5,9 @@ import { isMap, isScalar, LineCounter, parseDocument } from 'yaml';
 import { addedLines, parsePRDiff, rebuildRawDiff } from './diff';
 import { DiffFile, ParsedDiff, StaticSignal } from './types';
 
+/** How many packages the alert past the alert cap names. */
+const MAX_NAMED = 20;
+
 /** The most characters the package lists of one PR take. A lockfile past it stays unread, so a person reviews it. */
 const MAX_LIST_CHARS = 100_000;
 
@@ -35,8 +38,16 @@ const PARSERS: Readonly<Record<string, Parser>> = {
   'pnpm-lock.yaml': parsePnpmLock,
 };
 
-type PackageFlag = 'source changed' | 'source no other package uses' | 'git source' | 'path source'
-  | 'source does not name this package and version' | 'checksum changed without a version change' | 'downgrade';
+/** The flags, most telling first, the order the alerts keep when there are too many. */
+const FLAG_ORDER = [
+  'source changed', 'source does not name this package and version', 'checksum changed without a version change',
+  'git source', 'path source', 'unfamiliar registry', 'downgrade',
+] as const;
+
+type PackageFlag = typeof FLAG_ORDER[number];
+
+/** The rule id of a lockfile alert. Its title names the package and the change. */
+export const LOCKFILE_RULE = 'lockfile-change';
 
 export interface PackageChange {
   kind: 'added' | 'removed' | 'updated' | 'changed';
@@ -66,20 +77,23 @@ export function isParsedLockfile(path: string): boolean {
 }
 
 /**
- * Returns the package changes of each changed lockfile Manki parses. `heads` holds each lockfile at the PR head, and
- * the content before the PR is rebuilt from it by undoing the diff. A lockfile that is missing from `heads`, does not
- * match its diff, does not parse, or whose list runs past `MAX_LIST_CHARS` is left out, so it stays unread.
+ * Returns the package changes of each changed lockfile Manki parses. `contents` holds each lockfile on one `side` of the
+ * diff, the PR head by default, and the other side is rebuilt from it by replaying the diff. A lockfile that is missing
+ * from `contents`, does not match its diff, does not parse, or whose list runs past `MAX_LIST_CHARS` is left out, so it
+ * stays unread.
  */
-export function readLockfileChanges(fullDiff: ParsedDiff, heads: ReadonlyMap<string, string>): LockfileDiff[] {
+export function readLockfileChanges(fullDiff: ParsedDiff, contents: ReadonlyMap<string, string>, side: 'head' | 'base' = 'head'): LockfileDiff[] {
   const parsed: LockfileDiff[] = [];
   let chars = 0;
   for (const file of fullDiff.files.filter(f => isParsedLockfile(f.path))) {
     try {
-      const head = file.changeType === 'deleted' ? '' : heads.get(file.path);
-      if (head === undefined) throw new Error('it could not be read at the PR head');
+      const absent = side === 'head' ? file.changeType === 'deleted' : file.changeType === 'added';
+      const known = absent ? '' : contents.get(side === 'head' ? file.path : file.oldPath ?? file.path);
+      if (known === undefined) throw new Error(`it could not be read at the ${side === 'head' ? 'PR head' : 'base'}`);
+      const other = replayDiff(known, file, side === 'head' ? 'undo' : 'apply');
       const parse = PARSERS[posix.basename(file.path)];
-      const before = parseContent(parse, undoDiff(head, file));
-      const after = parseContent(parse, head);
+      const before = parseContent(parse, side === 'head' ? other : known);
+      const after = parseContent(parse, side === 'head' ? known : other);
       const lockfile = { path: file.path, file, changes: diffEntries(before, after, file) };
       const size = formatLockfile(lockfile).length;
       if (chars + size > MAX_LIST_CHARS) throw new Error(`the package lists would pass ${MAX_LIST_CHARS} characters`);
@@ -98,12 +112,18 @@ export function formatLockfileChanges(lockfiles: LockfileDiff[]): string {
 }
 
 /** Returns one Manki alert per package change that needs a reason, on the lockfile line the change sits at. */
-export function lockfileSignals(lockfiles: LockfileDiff[]): StaticSignal[] {
-  return lockfiles.flatMap(({ path, changes }) => changes.filter(c => c.flags.length > 0).map((c): StaticSignal => ({
-    tool: 'Manki', ruleId: 'lockfile-change', severity: 'warning', file: path, line: c.line ?? 1,
-    message: `${describeChange(c)}: ${c.flags.join(', ')}. A lockfile change like this needs a reason the PR gives.`,
-    source: 'lockfile',
-  })));
+export function lockfileSignals(lockfiles: LockfileDiff[], max: number): StaticSignal[] {
+  const rank = (c: PackageChange) => Math.min(...c.flags.map(f => FLAG_ORDER.indexOf(f)));
+  const flagged = lockfiles.flatMap(({ path, changes }) => changes.filter(c => c.flags.length > 0).map(c => ({ path, c })))
+    .sort((a, b) => rank(a.c) - rank(b.c));
+  const alert = (file: string, line: number, message: string): StaticSignal => ({ tool: 'Manki', ruleId: LOCKFILE_RULE, severity: 'warning', file, line, message, source: 'lockfile' });
+  const kept = flagged.length > max ? flagged.slice(0, max - 1) : flagged;
+  const rest = flagged.slice(kept.length);
+  return [
+    ...kept.map(({ path, c }) => alert(path, c.line ?? 1, `${describeChange(c)}: ${c.flags.join(', ')}. A lockfile change like this needs a reason the PR gives.`)),
+    // Past the cap, one alert names the rest, so no flagged package goes unmentioned.
+    ...(rest.length > 0 ? [alert(rest[0].path, rest[0].c.line ?? 1, `${rest.length} more lockfile changes need a reason: ${rest.slice(0, MAX_NAMED).map(({ c }) => clean(c.name)).join(', ')}${rest.length > MAX_NAMED ? ' and others' : ''}. See the Lockfile Changes list.`)] : []),
+  ];
 }
 
 /** Returns `diff` with the files of `lockfiles` it leaves out, so a parsed lockfile counts as changed. */
@@ -151,29 +171,31 @@ function parseContent(parse: Parser, text: string): LockEntry[] {
   return text.trim() ? parse(text) : [];
 }
 
-/** Rebuilds a file before `file`'s change from its content after it. Throws when `head` does not match the diff. */
-function undoDiff(head: string, file: DiffFile): string {
-  const headLines = head.split('\n');
+/** Rebuilds the other side of `file`'s change from `text`: undoing it from the head, or applying it to the base. Throws when `text` does not match the diff. */
+function replayDiff(text: string, file: DiffFile, direction: 'undo' | 'apply'): string {
+  const [dropped, kept] = direction === 'undo' ? ['+', '-'] : ['-', '+'];
+  const lines = text.split('\n');
   const out: string[] = [];
   let cursor = 0;
   for (const hunk of file.hunks) {
-    // A hunk that adds no line starts after line `newStart`, any other one at it.
-    const start = hunk.newLines === 0 ? hunk.newStart : hunk.newStart - 1;
-    if (start < cursor || start > headLines.length) throw new Error('its diff does not match the file at the PR head');
-    for (; cursor < start; cursor++) out.push(headLines[cursor]);
+    const [first, count] = direction === 'undo' ? [hunk.newStart, hunk.newLines] : [hunk.oldStart, hunk.oldLines];
+    // A hunk with no line on this side starts after line `first`, any other one at it.
+    const start = count === 0 ? first : first - 1;
+    if (start < cursor || start > lines.length) throw new Error('its diff does not match the file');
+    for (; cursor < start; cursor++) out.push(lines[cursor]);
     for (const line of hunk.content.split('\n')) {
       if (line.startsWith('\\')) continue;
-      const text = line.slice(1);
-      if (line.startsWith('-')) {
-        out.push(text);
+      const content = line.slice(1);
+      if (line.startsWith(kept)) {
+        out.push(content);
         continue;
       }
-      if (headLines[cursor] !== text) throw new Error('its diff does not match the file at the PR head');
-      if (!line.startsWith('+')) out.push(text);
+      if (lines[cursor] !== content) throw new Error('its diff does not match the file');
+      if (!line.startsWith(dropped)) out.push(content);
       cursor++;
     }
   }
-  for (; cursor < headLines.length; cursor++) out.push(headLines[cursor]);
+  for (; cursor < lines.length; cursor++) out.push(lines[cursor]);
   return out.join('\n');
 }
 
@@ -206,8 +228,8 @@ function diffEntries(before: LockEntry[], after: LockEntry[], file: DiffFile): P
     }
   }
   // An added package from a registry or repository no package used before needs a reason, even when its URL looks standard.
-  const known = new Set(before.filter(e => e.isPackage).map(e => sourceOrigin(e.source)));
-  const newOrigin = (a: LockEntry): PackageFlag[] => known.size > 0 && !known.has(sourceOrigin(a.source)) && sourceKind(a.source) === 'registry' ? ['source no other package uses'] : [];
+  const known = knownOrigins(before, after);
+  const newOrigin = (a: LockEntry): PackageFlag[] => known.size > 0 && !known.has(sourceOrigin(a.source)) && sourceKind(a.source) === 'registry' ? ['unfamiliar registry'] : [];
   const lineIn = entryLines(after, file);
   const changes: PackageChange[] = [
     ...pairs.map(([b, a]) => changeOf(b, a, lineIn(a))),
@@ -217,6 +239,19 @@ function diffEntries(before: LockEntry[], after: LockEntry[], file: DiffFile): P
     ...unpaired.removed.map((b): PackageChange => ({ kind: 'removed', name: b.name, oldVersion: b.version, oldSource: b.source, fields: [], flags: [] })),
   ];
   return changes.sort((x, y) => x.name.localeCompare(y.name) || (x.line ?? 0) - (y.line ?? 0));
+}
+
+/**
+ * Returns the registries an added package may come from without an alert: those the lockfile used before, or, for a new
+ * lockfile, the one most of its packages use.
+ */
+function knownOrigins(before: LockEntry[], after: LockEntry[]): Set<string | undefined> {
+  const used = before.filter(e => e.isPackage).map(e => sourceOrigin(e.source));
+  if (used.length > 0) return new Set(used);
+  const counts = new Map<string | undefined, number>();
+  for (const e of after.filter(e => e.isPackage && sourceKind(e.source) === 'registry')) counts.set(sourceOrigin(e.source), (counts.get(sourceOrigin(e.source)) ?? 0) + 1);
+  const top = [...counts].sort((a, b) => b[1] - a[1])[0];
+  return new Set(top ? [top[0]] : []);
 }
 
 function byName(entries: LockEntry[]): Map<string, LockEntry[]> {

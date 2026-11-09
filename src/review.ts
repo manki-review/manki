@@ -1202,6 +1202,7 @@ export async function runReview(
       findings: findingsForJudge,
       diff: diffWithLockfiles,
       ...(options.excludedPaths && { excludedPaths: options.excludedPaths }),
+      lockfiles,
       rawDiff,
       memory: memory ?? undefined,
       repoContext,

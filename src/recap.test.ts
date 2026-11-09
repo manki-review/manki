@@ -48,6 +48,12 @@ describe('deduplicateFindings', () => {
     expect(kept.duplicates).toHaveLength(0);
     expect(kept.unique).toEqual([{ ...findings[0], resemblesFixed: { title: 'Missing null check', file: 'src/foo.ts', line: 40 } }]);
     expect(deduplicateFindings(findings, [fixed, ...previous]).duplicates).toHaveLength(1);
+
+    // A lockfile alert on a nearby package shares most words with a waived one, but names another package.
+    const waivedAlert = makePrevious({ title: 'lockfile-change: updated hex 0.4.3 -> 0.4.2: downgrade.', file: 'Cargo.lock', line: 40, status: 'resolved' });
+    const alerts = [makeFinding({ title: 'lockfile-change: updated hey 0.4.3 -> 0.4.2: downgrade.', file: 'Cargo.lock', line: 44 })];
+    expect(deduplicateFindings(alerts, [waivedAlert]).unique).toEqual(alerts);
+    expect(deduplicateFindings([{ ...alerts[0], title: waivedAlert.title }], [waivedAlert]).duplicates).toHaveLength(1);
   });
 
   it('drops a repeat of an answered thread on a file unchanged since the last round, and sends any other to the judge with the answer', () => {
@@ -2036,6 +2042,12 @@ describe('llmDeduplicateFindings', () => {
     expect(result.duplicates[0].finding.title).toBe('Missing null check');
     expect(result.duplicates[0].matchedTitle).toBe('Null safety issue');
     expect(result.duplicates[0].matchType).toBe('llm');
+
+    // A lockfile alert never reaches the model, so a match it would name can't drop it.
+    const alert = makeFinding({ title: 'lockfile-change: updated hey 0.4.3 -> 0.4.2: downgrade.', file: 'Cargo.lock', line: 44 });
+    jest.mocked(mockClient.sendMessage).mockClear();
+    const withAlert = await llmDeduplicateFindings([alert, ...findings], previous, mockClient);
+    expect([withAlert.unique.map(f => f.title), jest.mocked(mockClient.sendMessage).mock.calls[0][1]]).toEqual([[alert.title, 'Unused import'], expect.not.stringContaining('lockfile-change')]);
 
     const fixed = makePrevious({ ...previous[0], fixed: true });
     const kept = await llmDeduplicateFindings(findings, [fixed], mockClient);
