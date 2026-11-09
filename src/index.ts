@@ -18,7 +18,7 @@ import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedE
 import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
-import { isParsedLockfile, LockfileDiff, readLockfileChanges } from './lockfile';
+import { isParsedLockfile, LockfileDiff, readLockfileChanges, withLockfiles } from './lockfile';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
@@ -1059,6 +1059,9 @@ async function collectRoundSignals(
   const relatedWorkPromise = prContext
     ? findRelatedWork(octokit, { owner, repo, prNumber, title: prContext.title, body: prContext.body, diff })
     : Promise.resolve(undefined);
+  // A parsed lockfile stays in the PR's change at the last round, so a finding on a later push to it counts as new.
+  const parsedLockfiles = new Set(lockfiles.map(l => l.path));
+  const reviewed = withLockfiles(diff, lockfiles);
   // Fetch the PR's own change since the prior round so the judge
   // can ground per-thread resolution in actual changes since last review.
   let interRoundDiff: string | undefined;
@@ -1077,9 +1080,9 @@ async function collectRoundSignals(
     : Promise.resolve(undefined);
   // The base branch diffed against the prior commit gives the PR's own change then, without what a rebase brought in.
   const priorChangePromise: Promise<ParsedDiff | undefined> = !lastPriorSha || lastPriorSha === commitSha
-    ? Promise.resolve(lastPriorSha ? diff : undefined)
+    ? Promise.resolve(lastPriorSha ? reviewed : undefined)
     : fetchInterRoundDiff(octokit, owner, repo, baseRef, lastPriorSha)
-      .then(raw => filterDiff(parsePRDiff(raw), config.exclude_paths).diff);
+      .then(raw => filterDiff(parsePRDiff(raw), config.exclude_paths, parsedLockfiles).diff);
   const linkedIssuesPromise = prBody
     ? fetchLinkedIssues(octokit, owner, repo, prBody)
     : Promise.resolve(undefined);
@@ -1094,7 +1097,7 @@ async function collectRoundSignals(
   if (shouldFetchDiff) {
     if (diffResult.status === 'fulfilled' && priorChange && diffResult.value !== undefined) {
       // The two heads also differ by what a rebase brought in, so only the files whose PR change moved are kept.
-      interRoundDiff = ownChangeSince(diffResult.value, priorChange, diff);
+      interRoundDiff = ownChangeSince(diffResult.value, priorChange, reviewed);
     } else if (diffResult.status === 'fulfilled') {
       core.warning('Without the PR\'s change at the last reviewed commit, the inter-round diff cannot leave out a rebase, so it is not used');
     } else {
@@ -1706,7 +1709,7 @@ async function runFullReview(
     }
 
     addCodeContext(result.findings, diff);
-    tagFindingOrigins(result.findings, diff, options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
+    tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
     const reviewTimeMs = Date.now() - startTime;
     const buildContext = () => buildRoundContext({ ...run, tokenServiceCalls: tokenServiceCalls() }, result, {
       plannerDurationMs: dashboard.plannerDurationMs,

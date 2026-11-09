@@ -363,6 +363,9 @@ describe('filterDiff', () => {
     expect(excluded).toEqual([{ path: 'dist/index.js.map', matchedPattern: 'dist/**' }]);
     expect(diff.totalAdditions).toBe(2);
     expect(diff.totalDeletions).toBe(0);
+
+    const kept = filterDiff(parsePRDiff(GENERATED_FIRST_DIFF), DEFAULT_CONFIG.exclude_paths, new Set(['dist/index.js.map']));
+    expect([kept.diff.files.map(f => f.path), kept.excluded]).toEqual([['dist/index.js.map', 'src/a.ts', 'src/b.ts'], []]);
   });
 });
 

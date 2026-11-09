@@ -23,7 +23,7 @@ import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listReferenceUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
-import { formatLockfileChanges, LockfileDiff } from './lockfile';
+import { formatLockfileChanges, LockfileDiff, withLockfiles } from './lockfile';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
@@ -618,7 +618,7 @@ export async function runReview(
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
   const lockfileChanges = formatLockfileChanges(lockfiles);
   // The planner, the routing and the claim checks see a parsed lockfile even when `exclude_paths` leaves it out of `diff`.
-  const diffWithLockfiles = { ...diff, files: [...diff.files, ...lockfiles.map(l => l.file).filter(f => !diff.files.some(d => d.path === f.path))] };
+  const diffWithLockfiles = withLockfiles(diff, lockfiles);
   // Searched while the planner runs, since no model call depends on it before the finders.
   const usesPromise = listUsesOutsideDiff(workspace, diff, { excludePaths: config.exclude_paths });
   const modelFallbacks: RoundModelFallback[] = [];

@@ -106,6 +106,11 @@ export function lockfileSignals(lockfiles: LockfileDiff[]): StaticSignal[] {
   })));
 }
 
+/** Returns `diff` with the files of `lockfiles` it leaves out, so a parsed lockfile counts as changed. */
+export function withLockfiles(diff: ParsedDiff, lockfiles: LockfileDiff[]): ParsedDiff {
+  return { ...diff, files: [...diff.files, ...lockfiles.map(l => l.file).filter(f => !diff.files.some(d => d.path === f.path))] };
+}
+
 function formatLockfile({ path, changes }: Pick<LockfileDiff, 'path' | 'changes'>): string {
   if (changes.length === 0) return `${clean(path)}\n  no package changes`;
   const lines = changes.flatMap(c => [
@@ -416,8 +421,8 @@ function tomlValue(key: string, raw: string): Array<[string, string]> {
 function parseNpmLock(text: string): LockEntry[] {
   const lock: unknown = JSON.parse(text);
   if (!isObject(lock) || !isObject(lock.packages)) throw new Error('it has no `packages` map, which npm 7 and later write');
-  // npm 7 and later ignore the legacy `dependencies` map when `packages` is there, and only keep it in step with it.
-  const { packages, dependencies: _legacy, ...rest } = lock;
+  const { packages, dependencies: legacy, ...rest } = lock;
+  checkLegacyMap(legacy, packages);
   const lines = npmPackageLines(text);
   return [settingsEntry(flatten(rest)), ...Object.entries(packages).map(([key, value]): LockEntry => {
     if (!isObject(value)) throw new Error(`${key} is not an object`);
@@ -435,6 +440,24 @@ function parseNpmLock(text: string): LockEntry[] {
       line: lines.get(key),
     };
   })];
+}
+
+/**
+ * Throws unless each entry of the legacy `dependencies` map of a version 2 lockfile names the same artifact as the
+ * `packages` entry at its place. npm 7 and later ignore the legacy map, but npm 6 installs from it, so the package list
+ * covers it only when it matches.
+ */
+function checkLegacyMap(legacy: unknown, packages: Record<string, unknown>, prefix = ''): void {
+  if (legacy === undefined) return;
+  if (!isObject(legacy)) throw new Error('its legacy `dependencies` map is not an object');
+  for (const [name, entry] of Object.entries(legacy)) {
+    const path = `${prefix}node_modules/${name}`;
+    const installed = packages[path];
+    if (!isObject(entry) || !isObject(installed) || ['version', 'resolved', 'integrity'].some(key => entry[key] !== installed[key])) {
+      throw new Error(`its legacy \`dependencies\` map does not match \`packages\` at ${path}`);
+    }
+    checkLegacyMap(entry.dependencies, packages, `${path}/`);
+  }
 }
 
 /** Returns the line of each key of the `packages` map, which npm writes one level deeper than `packages`, at any indent. */
