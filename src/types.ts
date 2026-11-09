@@ -266,6 +266,8 @@ export interface RoundUses {
   reference?: RoundReferenceUse[];
   /** Names searched for that no reference line holds. */
   referenceMissing?: string[];
+  /** Names found in the reference repos that the cap on reference lines left out. */
+  referenceCapped?: string[];
 }
 
 export interface RoundReferenceUse {
