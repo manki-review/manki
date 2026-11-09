@@ -751,10 +751,19 @@ class ParsedFile {
     };
   }
 
+  private readonly groups = new Map<string, number>();
+
+  /** Whether `parent` holds a single child of `kind`, counted once per parent so a large grouped block stays linear. */
+  private holdsOne(parent: SgNode, kind: string): boolean {
+    const key = `${nodeKey(parent)}:${kind}`;
+    if (!this.groups.has(key)) this.groups.set(key, parent.children().filter(c => c.kind() === kind).length);
+    return this.groups.get(key) === 1;
+  }
+
   private leadingStart(node: SgNode): number {
     let anchor = node;
     // A grouped declaration such as Go's `const ( ... )` wraps several, so the comments above it belong to none of them.
-    const wraps = (parent: SgNode) => WRAPPERS.includes(String(parent.kind())) && parent.children().filter(c => c.kind() === anchor.kind()).length === 1;
+    const wraps = (parent: SgNode) => WRAPPERS.includes(String(parent.kind())) && this.holdsOne(parent, String(anchor.kind()));
     for (let parent = node.parent(); parent && wraps(parent); parent = parent.parent()) anchor = parent;
     let start = lineOf(anchor);
     for (let prev = anchor.prev(); prev && this.rules.leading.includes(String(prev.kind())) && prev.range().end.line + 1 >= start - 1; prev = prev.prev()) {
