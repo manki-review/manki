@@ -198,15 +198,16 @@ export interface RefuteOptions {
 /**
  * Tries to refute each blocker, open lead, finding lowered for want of proof and finding with a `gradeIfConfirmed` in
  * `findings` with read-only tools on the workspace, at most `MAX_PARALLEL_REFUTATIONS` at a time, and grades it by the
- * outcome. An earlier round's outcome for the same finding is
- * reused without a new check while the files it rests on are unchanged. A call that fails leaves the judge's grade.
+ * outcome. An earlier round's outcome for the same finding is reused without a new check while the files it rests on are
+ * unchanged, except for a finding with a `gradeIfConfirmed`. A call that fails leaves the judge's grade.
  */
 export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput }: RefuteOptions): Promise<Finding[]> {
   return mapWithConcurrency(findings, MAX_PARALLEL_REFUTATIONS, async finding => {
     // A finding the judge or a suppression dropped stays dropped, even when it was a lead.
     if (finding.severity === 'ignore' || (finding.severity !== 'blocker' && !finding.lead && !finding.gradeIfConfirmed && !finding.tags?.some(tag => CHECKED_TAGS.includes(tag)))) return finding;
     if (!codeDigest(workspace, [finding.file])) return finding;
-    const prior = priorRefutation(finding, workspace, priorRounds, diff);
+    // Unseen code or a caller can change in a file the stored outcome does not cover, so such a finding is checked afresh.
+    const prior = finding.gradeIfConfirmed ? undefined : priorRefutation(finding, workspace, priorRounds, diff);
     if (prior) {
       core.info(`Reusing the ${prior.outcome} refutation of "${finding.title}" from an earlier round, since the files it rests on are unchanged`);
       return applyRefutation(finding, prior);

@@ -265,7 +265,9 @@ describe('refuteBlockers', () => {
     await refuteBlockers(client, [finding('Sum overflows', { evidence: { checks: [], proof: ['src/math.ts:2', 'src/other.ts:1'] } })], { workspace, priorRounds, diff });
     // A stored disproof whose lines are neither in the finding's file nor in the diff is checked again.
     await refuteBlockers(client, [finding('Sum overflows')], { workspace, priorRounds });
+    // A finding the judge could not settle can rest on a caller in any file, which the stored outcome does not cover.
+    await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', gradeIfConfirmed: 'blocker' })], { workspace, priorRounds, diff });
 
-    expect(client.calls).toHaveLength(4);
+    expect(client.calls).toHaveLength(5);
   });
 });
