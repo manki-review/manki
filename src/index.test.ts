@@ -3725,6 +3725,7 @@ describe('runFullReview orchestration', () => {
           call('reviewer', 'aaaaaaaaaaaa', { agent: 'general', attempt: 2, failed: true, relatedReads: { 'o/r': 2 } }), call('judge', 'cccccccccccc', { limits: [limit] }),
         ],
         relatedRepos: [{ repo: 'o/r', status: 'fetched', durationMs: 900 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }],
+        usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] },
         memoryLoaded: { learnings: 4, suppressions: 2 },
         memorySuppressed: [hidden],
         allJudgedFindings: [{ ...hidden, severity: 'ignore', gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }] }],
@@ -3757,6 +3758,7 @@ describe('runFullReview orchestration', () => {
       // Each related repo carries the reads of every call of the round, a failed one too, and each call its own.
       expect(rc.relatedRepos).toEqual([{ repo: 'o/r', status: 'fetched', durationMs: 900, reads: 6 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }]);
       expect(rc.usage.llmCalls?.[1]).toMatchObject({ relatedReads: { 'o/r': 1 } });
+      expect(rc.usesOutsideDiff).toEqual({ symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] });
       expect(rc.diff.changedSinceLastRound).toBe(2);
       expect(rc.judge.fixClaimedThreads).toEqual(['T1']);
       expect(rc.findings.unposted?.[0].preExisting).toEqual({ reason: 'The helper was long before this PR.', check: 'pre_existing' });

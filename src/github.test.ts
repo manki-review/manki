@@ -1147,14 +1147,16 @@ describe('postReview with context', () => {
     const ctx = makeContext({
       findings: { count: 1, severityCounts: { warning: 1 }, entries },
       reviewers: { agents: ['Correctness'], rawFindings: Array.from({ length: 600 }, (_, i) => ({ title: noise(), file: `src/${i}.ts`, line: i, severity: 'nitpick' as const, reviewers: ['Correctness'], description: noise() })) },
+      usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'] }] },
     });
 
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('Many findings.');
     const [record] = extractReviewRecords(body).records.map(r => JSON.parse(r) as RoundContext);
-    expect(record.meta.omitted).toEqual(['reviewers.rawFindings']);
+    expect(record.meta.omitted).toEqual(['reviewers.rawFindings', 'usesOutsideDiff']);
     expect(record.reviewers.rawFindings).toBeUndefined();
+    expect(record.usesOutsideDiff).toBeUndefined();
     expect(record.findings.entries).toEqual(entries);
     expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without per-file and per-finding diagnostics'));
 

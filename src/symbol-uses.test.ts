@@ -7,7 +7,7 @@ import * as napi from '@ast-grep/napi';
 import python from '@ast-grep/lang-python';
 import rust from '@ast-grep/lang-rust';
 
-import { listUsesOutsideDiff } from './symbol-uses';
+import { listUsesOutsideDiff, UsesOutsideDiff } from './symbol-uses';
 import { gitWorkspace } from './test-utils';
 
 jest.mock('@actions/core');
@@ -17,8 +17,8 @@ napi.registerDynamicLanguage({ python, rust });
 
 const loadApi = async () => napi;
 
-/** Returns the uses section for the change from `base` to `head`, removing the workspace afterwards. */
-async function usesFor(base: Record<string, string>, head: Record<string, string>, excludePaths: string[] = []): Promise<string> {
+/** Returns the uses section and its record for the change from `base` to `head`, removing the workspace afterwards. */
+async function usesFor(base: Record<string, string>, head: Record<string, string>, excludePaths: string[] = []): Promise<UsesOutsideDiff> {
   const { root, diff } = gitWorkspace(base, head);
   try {
     return await listUsesOutsideDiff(root, diff, { loadApi, excludePaths });
@@ -53,8 +53,8 @@ const CRATES = {
 describe('listUsesOutsideDiff', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('lists the uses of changed Rust symbols, a dependent crate first and a crate holding only a namesake last', async () => {
-    const section = await usesFor(
+  it('lists the uses of changed Rust symbols, a dependent crate first and a crate holding only a namesake last, and records their locations', async () => {
+    const { section, record } = await usesFor(
       { ...CRATES, 'core/src/payload.rs': PAYLOAD('pub mn_type: Option<u16>,') },
       { 'core/src/payload.rs': PAYLOAD('pub mn_type: Option<u16>, // from version 2', '\n    pub net_info: Option<u8>,') },
     );
@@ -78,10 +78,17 @@ describe('listUsesOutsideDiff', () => {
     expect(section).toContain('core/src/payload.rs:1: struct Payload { version, mn_type, script_payout, net_info }');
     expect(section).not.toContain('`net_info` (');
     expect(section).not.toContain('`version` (');
+    // The record keeps where each listed line is, without the code.
+    expect(record?.symbols?.find(s => s.name === 'mn_type')).toEqual({
+      name: 'mn_type', declared: 'core/src/payload.rs:3', uses: ['wallet/src/fees.rs:2', 'core/src/encode.rs:2', 'core/src/payload.rs:10', 'seeds/src/lib.rs:6'], notShown: 2,
+    });
+    expect(record?.symbols?.find(s => s.name === 'Payload')).toMatchObject({ declared: 'core/src/payload.rs:1', uses: expect.arrayContaining(['wallet/src/fees.rs:1']) });
+    expect(record?.types).toEqual(['core/src/payload.rs:1: struct Payload { version, mn_type, script_payout, net_info }']);
+    expect(JSON.stringify(record)).not.toContain('is_some');
   });
 
   it('lists the type behind a field the changed lines read with all its fields, skipping method calls and unreachable namesakes', async () => {
-    const section = await usesFor({
+    const { section } = await usesFor({
       'core/Cargo.toml': '[package]\nname = "corelib"\n',
       'core/src/account.rs': 'pub struct Account {\n    pub utxos: BTreeMap<u32, u64>,\n    pub(crate) spent_before_funded: BTreeMap<u32, u64>,\n}\n',
       'core/src/ledger.rs': 'pub struct Ledger {\n    pub balance_total: u64,\n}\n',
@@ -100,7 +107,7 @@ describe('listUsesOutsideDiff', () => {
 
   it('lists the uses of changed TypeScript fields, functions and interfaces, test files after code', async () => {
     const config = (field: string, body: string) => `export interface ReviewConfig {\n  ${field}\n  noise_level: string;\n}\n\nexport function sliceSize(config: ReviewConfig): number {\n  return ${body};\n}\n`;
-    const section = await usesFor({
+    const { section } = await usesFor({
       'package.json': '{ "name": "app" }\n',
       'src/config.ts': config('slice_lines: number;', 'config.slice_lines'),
       'src/review.ts': "import { sliceSize, ReviewConfig } from './config';\n\nexport const lines = (c: ReviewConfig) => sliceSize(c) + c.slice_lines;\n",
@@ -117,7 +124,7 @@ describe('listUsesOutsideDiff', () => {
   });
 
   it('finds keyword declarations and config keys in files without a grammar, and skips excluded paths', async () => {
-    const section = await usesFor({
+    const { section } = await usesFor({
       'cmd/main.go': 'package main\n\nfunc main() {}\n',
       'cmd/use.go': 'package main\n\nvar fee = ComputeFee(2)\n',
       'dist/index.js': 'ComputeFee(3)\n',
@@ -141,7 +148,7 @@ describe('listUsesOutsideDiff', () => {
     for (let file = 0; file < 90; file++) callers[`src/common_${file}.rs`] = 'fn common() {\n    shared_helper();\n}\n';
     const lib = (body: string) => ['new', 'len', 'id', 'compute_total', 'shared_helper', ...fns].map(name => `pub fn ${name}() {\n    ${body}\n}\n`).join('\n');
 
-    const section = await usesFor({ ...callers, 'src/lib.rs': lib('todo!()') }, { 'src/lib.rs': lib('unimplemented!()') });
+    const { section, record } = await usesFor({ ...callers, 'src/lib.rs': lib('todo!()') }, { 'src/lib.rs': lib('unimplemented!()') });
 
     expect(section).not.toMatch(/### `(?:new|len|id)`/);
     expect(section).toContain('### `compute_total` (function)');
@@ -150,14 +157,17 @@ describe('listUsesOutsideDiff', () => {
     expect(section.match(/^src\/caller_\d\.rs:\d+: /gm)).toHaveLength(40);
     expect(section).toMatch(/The cap of 40 lines left out every use of: `compute_part_\d+` \(6 uses\)/);
     expect(section).toContain('Too common to list, so search for them yourself if they matter: `shared_helper` (90 uses).');
+    expect(record?.common).toEqual(['shared_helper']);
+    expect(record?.capped).toEqual(expect.arrayContaining([expect.stringMatching(/^compute_part_\d+$/)]));
+    expect(record?.symbols?.flatMap(s => s.uses)).toHaveLength(40);
   });
 
   it('returns nothing and logs why without a git checkout, when ast-grep fails to load, or when nothing changed has a use', async () => {
     const plain = mkdtempSync(join(tmpdir(), 'manki-uses-plain-'));
     const failingLoad = jest.fn(async () => { throw new Error('no pinned ast-grep build for plan9-x64'); });
     try {
-      expect(await listUsesOutsideDiff(undefined, { files: [], totalAdditions: 0, totalDeletions: 0 })).toBe('');
-      expect(await listUsesOutsideDiff(plain, { files: [], totalAdditions: 0, totalDeletions: 0 }, { loadApi: failingLoad })).toBe('');
+      expect(await listUsesOutsideDiff(undefined, { files: [], totalAdditions: 0, totalDeletions: 0 })).toEqual({ section: '' });
+      expect(await listUsesOutsideDiff(plain, { files: [], totalAdditions: 0, totalDeletions: 0 }, { loadApi: failingLoad })).toEqual({ section: '' });
       expect(failingLoad).not.toHaveBeenCalled();
       expect(core.info).toHaveBeenCalledWith('No git checkout of the PR head, so the review runs without the list of uses outside the diff');
     } finally {
@@ -166,9 +176,9 @@ describe('listUsesOutsideDiff', () => {
 
     const { root, diff } = gitWorkspace({ 'src/a.rs': 'pub fn compute_total() {}\n' }, { 'src/a.rs': 'pub fn compute_total() { todo!() }\n' });
     try {
-      expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toBe('');
+      expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual({ section: '' });
       expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
-      expect(await listUsesOutsideDiff(root, diff, { loadApi })).toBe('');
+      expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({ section: '' });
       expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found$/));
     } finally {
       rmSync(root, { recursive: true, force: true });

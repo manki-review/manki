@@ -677,7 +677,7 @@ export async function runReview(
     ? { repos: config.related_repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related') }
     : undefined;
   const changedSinceLastRound = filesChangedSinceLastRound(diff, priorRounds, interRoundDiff);
-  const usesOutsideDiff = await usesPromise;
+  const { section: usesOutsideDiff, record: usesRecord } = await usesPromise;
   // Only a retry passes `retryNote`, the note of the reply it corrects, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
     effort: finder.effort, language: plannerResult?.language, workspace, related, changedSinceLastRound, usesOutsideDiff,
@@ -1039,6 +1039,7 @@ export async function runReview(
       repo, ...(ref && { ref }), status: 'skipped' as const,
       reason: workspace ? 'no finder has repository tools' : 'the PR head was not checked out for the tools',
     }));
+  const finderContext = { ...(relatedRepos?.length && { relatedRepos }), ...(usesRecord && { usesOutsideDiff: usesRecord }) };
 
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
@@ -1058,7 +1059,7 @@ export async function runReview(
       failedAgents,
       ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
       llmCalls,
-      ...(relatedRepos?.length && { relatedRepos }),
+      ...finderContext,
       ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
     };
   }
@@ -1222,7 +1223,7 @@ export async function runReview(
       reviewComplete: false,
       agentNames: team.finders.map(a => a.name),
       llmCalls,
-      ...(relatedRepos?.length && { relatedRepos }),
+      ...finderContext,
       ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
     };
   }
@@ -1318,7 +1319,7 @@ export async function runReview(
         reviewComplete: false,
         agentNames: team.finders.map(a => a.name),
         llmCalls,
-        ...(relatedRepos?.length && { relatedRepos }),
+        ...finderContext,
         ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
       };
     }
@@ -1428,7 +1429,7 @@ export async function runReview(
     ...(staticSignalMatches.length > 0 && { staticSignalMatches }),
     ...(modelFallbacks.length > 0 && { modelFallbacks }),
     llmCalls,
-    ...(relatedRepos?.length && { relatedRepos }),
+    ...finderContext,
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
   };
 }
