@@ -147,7 +147,7 @@ describe('refuteBlockers', () => {
     expect(client.calls.every(([, , user]) => user.endsWith('\n\n## Uses Outside the Diff\n\nsrc/api.ts:9 checks both inputs.'))).toBe(true);
   });
 
-  it('checks a finding lowered for unseen code or an unconfirmed build claim, and a confirmation gives back only what reading can confirm', async () => {
+  it('checks a finding the judge could not settle without tools or an unconfirmed build claim, and a confirmation gives back only what reading can confirm', async () => {
     const byJudge = (to: Finding['severity'], gradeIfConfirmed: Finding['severity'], from: Finding['severity'] = to) => ({
       severity: to, gradeIfConfirmed, ...(from !== to && { gradePath: [{ from, to, by: 'judge' as const }] }),
     });
@@ -159,6 +159,7 @@ describe('refuteBlockers', () => {
       'Unseen unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
       'Unseen build claim': { outcome: 'confirmed', reason: 'No import.', proof: ['src/math.ts:2'] },
       'Unbuilt confirmed': { outcome: 'confirmed', reason: 'No import.', proof: ['src/math.ts:2'] },
+      'Reached through the public API': { outcome: 'confirmed', reason: 'Any caller can pass a v3 payload to the public `set_payload`.', proof: ['src/api.ts:3', 'src/math.ts:2'] },
     });
     const findings = [
       // The finder graded it a warning too, and the judge would grade it a blocker if the code it could not see holds.
@@ -171,9 +172,12 @@ describe('refuteBlockers', () => {
       finding('Unseen unsettled', byJudge('warning', 'blocker', 'blocker')),
       finding('Unseen build claim', { ...byJudge('warning', 'blocker', 'blocker'), buildClaim: true, toolEvidence: none }),
       finding('Unbuilt confirmed', { severity: 'warning', buildClaim: true, toolEvidence: none, tags: ['unconfirmed-build-claim'] }),
+      // The judge doubted the path is reached, as on xdustinface/rust-dashcore#194, so it named the grade if it is.
+      finding('Reached through the public API', { ...byJudge('warning', 'blocker', 'suggestion'), judgeNotes: 'warning. The builder itself only creates v2 payloads through `new()`.' }),
     ];
 
-    const result = await refuteBlockers(client, findings, { workspace, diff });
+    const outsideInput = 'Anything a caller of the public `TransactionBuilder` API passes.';
+    const result = await refuteBlockers(client, findings, { workspace, diff, outsideInput });
 
     expect(result.map(f => [f.title, f.severity, f.gradeIfConfirmed])).toEqual([
       // A confirmation gives the grade the judge would give if the code it could not see holds, above the finder's.
@@ -185,12 +189,18 @@ describe('refuteBlockers', () => {
       // Reading code never confirms a build failure, so such a claim stays a warning at most.
       ['Unseen build claim', 'warning', undefined],
       ['Unbuilt confirmed', 'warning', undefined],
+      ['Reached through the public API', 'blocker', undefined],
     ]);
     expect(result[5].tags).toEqual(['unconfirmed-build-claim']);
     expect(result[0].gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'The lock is held at src/api.ts:4.' }]);
-    expect(client.calls).toHaveLength(6);
+    expect(client.calls).toHaveLength(7);
     const [, unseenMessage] = client.messages.find(([, user]) => user.includes(': Unseen confirmed\n'))!;
-    expect(unseenMessage).toContain('## Finding that rests on code outside the diff: Unseen confirmed');
+    expect(unseenMessage).toContain('## Finding the judge could not settle without tools: Unseen confirmed');
+    const reachMessage = client.messages.find(([, user]) => user.includes(': Reached through the public API\n'))![1];
+    expect(reachMessage).toContain('## Finding the judge could not settle without tools: Reached through the public API');
+    expect(reachMessage).toContain("- **Judge's reasoning**: warning. The builder itself only creates v2 payloads through 'new()'.");
+    // The repository's outside input tells the refuter which APIs count as entry points.
+    expect(reachMessage).toContain("- **Outside input in this repository, as its maintainers define it**: Anything a caller of the public 'TransactionBuilder' API passes.");
     expect(unseenMessage).toContain("- **Judge's reasoning**: warning. The lock path sits outside the diff.");
     expect(client.messages.find(([, user]) => user.includes(': Unbuilt confirmed\n'))![1]).toContain('## Claimed build failure: Unbuilt confirmed');
   });
@@ -216,6 +226,10 @@ describe('refuteBlockers', () => {
     expect(system).toContain('Name the general rule the finding relies on');
     expect(system).toContain('one counterexample disproves the finding');
     expect(system).toContain('whether that reason holds here');
+    expect(system).toContain('A public function, method, constructor or field is an entry point when the repository is a library, as its manifest shows, or when the outside input in the message names that API');
+    expect(system).toContain('In an application, an exported function is no entry point on its own and needs a caller.');
+    expect(client.messages[0][1]).not.toContain('Outside input');
+    expect(system).toContain('disprove only when every path checks the value or cannot carry it');
     expect(system).toContain('Reading code cannot confirm that it fails to compile or that a test fails.');
     expect(system).not.toContain('an intent the code states');
     expect([result.severity, result.refutation?.outcome, result.refutation?.rule]).toEqual(['ignore', 'disproved', rule]);
@@ -251,7 +265,9 @@ describe('refuteBlockers', () => {
     await refuteBlockers(client, [finding('Sum overflows', { evidence: { checks: [], proof: ['src/math.ts:2', 'src/other.ts:1'] } })], { workspace, priorRounds, diff });
     // A stored disproof whose lines are neither in the finding's file nor in the diff is checked again.
     await refuteBlockers(client, [finding('Sum overflows')], { workspace, priorRounds });
+    // A finding the judge could not settle can rest on a caller in any file, which the stored outcome does not cover.
+    await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', gradeIfConfirmed: 'blocker' })], { workspace, priorRounds, diff });
 
-    expect(client.calls).toHaveLength(4);
+    expect(client.calls).toHaveLength(5);
   });
 });

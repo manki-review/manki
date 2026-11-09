@@ -281,15 +281,18 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toMatch(/capped at `suggestion`|fact you cannot check/);
   });
 
-  it('never drops or caps a finding for code the judge cannot see, and says tools check it only when they do', () => {
+  it('never drops or caps a finding for code the judge cannot see or a path it doubts is reached, and says tools check it only when they do', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     const section = prompt.slice(prompt.indexOf('## Code You Cannot See'), prompt.indexOf('## Grade Stability'));
-    expect(section).toContain('Code you cannot see is no evidence against a finding, so on its own it never drops a finding, and never lowers a `blocker` or a `warning` below `warning`.');
+    expect(section).toContain('Code you cannot see and a path you cannot follow are no evidence against a finding, so on their own they never drop a finding, and never lower a `blocker` or a `warning` below `warning`.');
     expect(section).toContain('A finding that cites a line listed under Uses Outside the Diff rests on code shown, so grade it on its merits like any finding.');
-    expect(section).toContain('Set `gradeIfConfirmed` on such a finding to the grade these rules give it if that code is as the finding says, and to "" on all others.');
-    expect(section).not.toContain('Manki then reads that code with tools');
+    expect(section).toContain('A doubt that the failure is reached is the same kind of gap: no caller in the code shown passes the value that triggers it, the path looks latent, or a real input may never take it.');
+    expect(section).toContain("A path through a library's public API is reached, since any caller of that API can pass a value it accepts, with no caller inside the repository.");
+    expect(section).toContain("The rare internal edge case column and the rule on a check of a trusted internal value still apply when the code shown proves that the code's own logic keeps the value valid: that is evidence, not a doubt. Only a doubt the code shown does not settle counts here.");
+    expect(section).toContain('Set `gradeIfConfirmed` on such a finding to the grade these rules give it if that code is as the finding says and the path exists, and to "" on all others.');
+    expect(section).not.toContain('Manki then reads that code');
     expect(prompt).toContain('"gradeIfConfirmed": ""');
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki then reads that code with tools. A confirmation gives the finding that grade, and a disproof drops it.');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki then reads that code and follows that path with tools. A confirmation gives the finding that grade, and a disproof drops it.');
   });
 
   it('blocks on a claimed build, type or test failure only when CI confirms it', () => {
@@ -1492,7 +1495,7 @@ describe('runJudgeAgent', () => {
     };
 
     try {
-      const result = await runJudgeAgent(mockClient, makeConfig(), {
+      const result = await runJudgeAgent(mockClient, makeConfig({ review: { outside_input: 'Callers of the public API.' } }), {
         findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace },
       });
 
@@ -1508,6 +1511,7 @@ describe('runJudgeAgent', () => {
         ['Unknown grade', 'suggestion'],
       ]);
       expect(refuterMessages).toHaveLength(2);
+      expect(refuterMessages.every(m => m.includes('- **Outside input in this repository, as its maintainers define it**: Callers of the public API.'))).toBe(true);
       expect(result.findings[0].gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'Both paths take the lock.' }]);
       expect(result.findings[0].gradeIfConfirmed).toBeUndefined();
       const [, userMessage] = mockSendMessage.mock.calls[0];
@@ -4949,9 +4953,10 @@ const GRADING_CASES = [
   'own-proposal-worse',
   'library-resource-exhaustion',
   'unconfirmed-build-claim',
+  'public-api-reachable',
 ] as const;
 
-const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion'];
+const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable'];
 
 interface GradingFixture {
   name: string;
@@ -4984,7 +4989,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix and build claims, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims and public API reachability, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 

@@ -27,12 +27,13 @@ const CHECKED_TAGS: readonly string[] = [UNPROVEN_TAG, UNBUILT_TAG];
 
 const REFUTE_SYSTEM_PROMPT = `You check one finding a code review raised on a pull request, using read-only tools on the PR's head commit.
 
-The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), or a finding the judge could not settle without tools: one that rests on code outside the diff, or one that claims a build failure no CI result reports. Try to refute it, then follow the failure path from its trigger to the damage.
+The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), or a finding the judge could not settle without tools: one that rests on code outside the diff, one whose failure path the judge doubts is reached, or one that claims a build failure no CI result reports. Try to refute it, then follow the failure path from its trigger to the damage.
 
 To refute it:
 - Look for a concrete reason the failure cannot happen, such as an earlier check, a type or an existing test.
 - Name the general rule the finding relies on: a behaviour of the language, the compiler, a library or a protocol, such as "a trait method can only be called with the trait imported" or "this call blocks while the caller holds the lock". Then search the unchanged code for code that relies on the same rule. Code that already builds or runs and does what the finding says cannot work is a counterexample, and one counterexample disproves the finding.
 - A finding that one piece of code lacks a check, a lock or an error path its sibling has goes through the same search: find why the sibling has it, and whether that reason holds here.
+- For a doubt that the failure is reached, search for a path from an entry point to the failing code. A public function, method, constructor or field is an entry point when the repository is a library, as its manifest shows, or when the outside input in the message names that API: any caller of it can pass a value it accepts, so a path from it counts as reached with no caller in the repository. In an application, an exported function is no entry point on its own and needs a caller. Confirm when such a path carries the triggering value, and disprove only when every path checks the value or cannot carry it.
 - Reading code cannot confirm that it fails to compile or that a test fails. Return such a claim as unsettled unless a counterexample disproves it.
 
 - **disproved**: you found the reason the failure cannot happen. Cite where in \`proof\`, with at least one line of the finding's own file or of the PR's diff, or the answer counts as unsettled. For a counterexample, cite it and the finding's own line.
@@ -114,12 +115,12 @@ function priorRefutation(finding: Finding, workspace: string, priorRounds: Round
 
 function findingKind(finding: Finding): string {
   if (finding.lead) return 'Open lead';
-  if (finding.gradeIfConfirmed) return 'Finding that rests on code outside the diff';
+  if (finding.gradeIfConfirmed) return 'Finding the judge could not settle without tools';
   if (finding.tags?.includes(UNBUILT_TAG)) return 'Claimed build failure';
   return 'Blocker';
 }
 
-function buildRefuteMessage(finding: Finding, usesOutsideDiff = ''): string {
+function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput = ''): string {
   const lines = [
     `## ${findingKind(finding)}: ${sanitizeForPromptEmbed(finding.title)}`,
     '',
@@ -129,6 +130,7 @@ function buildRefuteMessage(finding: Finding, usesOutsideDiff = ''): string {
     ...(finding.evidence?.proof.length ? [`- **Proving lines cited**: ${finding.evidence.proof.map(sanitizeForPromptEmbed).join(', ')}`] : []),
     ...(finding.lead ? [`- **Checked so far**: ${sanitizeForPromptEmbed(finding.lead.checked)}`, `- **Left to check**: ${sanitizeForPromptEmbed(finding.lead.left)}`] : []),
     ...(finding.gradeIfConfirmed && finding.judgeNotes ? [`- **Judge's reasoning**: ${sanitizeForPromptEmbed(finding.judgeNotes.slice(0, MAX_JUDGE_NOTES_CHARS))}`] : []),
+    ...(outsideInput ? [`- **Outside input in this repository, as its maintainers define it**: ${sanitizeForPromptEmbed(outsideInput.trim())}`] : []),
   ];
   return usesOutsideDiff ? `${lines.join('\n')}\n\n${usesOutsideDiff.trimEnd()}` : lines.join('\n');
 }
@@ -189,27 +191,30 @@ export interface RefuteOptions {
   diff?: ParsedDiff;
   /** The section `listUsesOutsideDiff` builds. */
   usesOutsideDiff?: string;
+  /** The repository's `review.outside_input`, which says which APIs count as entry points. */
+  outsideInput?: string;
 }
 
 /**
  * Tries to refute each blocker, open lead, finding lowered for want of proof and finding with a `gradeIfConfirmed` in
  * `findings` with read-only tools on the workspace, at most `MAX_PARALLEL_REFUTATIONS` at a time, and grades it by the
- * outcome. An earlier round's outcome for the same finding is
- * reused without a new check while the files it rests on are unchanged. A call that fails leaves the judge's grade.
+ * outcome. An earlier round's outcome for the same finding is reused without a new check while the files it rests on are
+ * unchanged, except for a finding with a `gradeIfConfirmed`. A call that fails leaves the judge's grade.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput }: RefuteOptions): Promise<Finding[]> {
   return mapWithConcurrency(findings, MAX_PARALLEL_REFUTATIONS, async finding => {
     // A finding the judge or a suppression dropped stays dropped, even when it was a lead.
     if (finding.severity === 'ignore' || (finding.severity !== 'blocker' && !finding.lead && !finding.gradeIfConfirmed && !finding.tags?.some(tag => CHECKED_TAGS.includes(tag)))) return finding;
     if (!codeDigest(workspace, [finding.file])) return finding;
-    const prior = priorRefutation(finding, workspace, priorRounds, diff);
+    // Unseen code or a caller can change in a file the stored outcome does not cover, so such a finding is checked afresh.
+    const prior = finding.gradeIfConfirmed ? undefined : priorRefutation(finding, workspace, priorRounds, diff);
     if (prior) {
       core.info(`Reusing the ${prior.outcome} refutation of "${finding.title}" from an earlier round, since the files it rests on are unchanged`);
       return applyRefutation(finding, prior);
     }
     try {
       const refutation = await sendWithParseRetry(
-        buildRefuteMessage(finding, usesOutsideDiff),
+        buildRefuteMessage(finding, usesOutsideDiff, outsideInput),
         message => client.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
           ...(effort && { effort }), repoTools: { root: workspace, steps: REFUTE_STEPS }, timeoutMs: REFUTE_TIMEOUT_MS,
         }),
