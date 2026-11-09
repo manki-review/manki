@@ -1079,6 +1079,20 @@ describe('postReview with context', () => {
     expect(body.slice(0, -TRAILING_MARKERS.length)).toMatch(/-->\n\n<details>\n<summary>About this review<\/summary>\n\n- Reviewed \[`abc`\]\([^)]+\), round \d+\n- 200 changed lines read in 1m 0s\n- Found by `claude-sonnet-4-20250514`, judged by `[^`]+`\n- \[How Manki reviews\]\([^)]+\)\n\n<\/details>$/);
     expect(body).not.toContain('\u{1F4CA}');
     expect(body).toContain('"reviewer":"claude-sonnet-4-20250514"');
+
+    // A round with calls adds its tokens and cost to the same fold, and leaves the cost out when no call was priced.
+    const usage = { calls: 4, failedCalls: 1, inputTokens: 1_234_567, cacheReadTokens: 980_400, outputTokens: 23_400, estimatedCostUsd: 1.578, unpricedCalls: 0 };
+    const footerFor = async (roundUsage: RoundContext['usage']): Promise<string> => {
+      await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, usage: roundUsage }, 60000);
+      const posted = mockCreateReview.mock.calls.at(-1)![0].body as string;
+      expect(posted.match(/<details>/g)).toHaveLength(1);
+      return posted.slice(posted.lastIndexOf('<details>'));
+    };
+    expect(await footerFor(usage)).toContain('`claude-opus-4-20250514`\n- Tokens: 1.2M in (980k from cache) · 23k out · about $1.58 at API prices\n- [How Manki reviews]');
+    expect(await footerFor({ ...usage, unpricedCalls: 1 })).toContain('- Tokens: 1.2M in (980k from cache) · 23k out · about $1.58 at API prices, partly priced\n');
+    expect(await footerFor({ ...usage, unpricedCalls: 3, estimatedCostUsd: 0 })).toContain('- Tokens: 1.2M in (980k from cache) · 23k out\n');
+    expect(await footerFor({ ...usage, inputTokens: 999_600, cacheReadTokens: 0, outputTokens: 640, estimatedCostUsd: 0.004 })).toContain('- Tokens: 1.0M in · 640 out · under $0.01 at API prices\n');
+    expect(await footerFor({ ...usage, calls: 0, failedCalls: 0 })).not.toContain('Tokens:');
   });
 
   it('omits stats section when context not provided', async () => {
