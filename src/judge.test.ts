@@ -285,6 +285,7 @@ describe('buildJudgeSystemPrompt', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     const section = prompt.slice(prompt.indexOf('## Code You Cannot See'), prompt.indexOf('## Grade Stability'));
     expect(section).toContain('Code you cannot see is no evidence against a finding, so on its own it never drops a finding, and never lowers a `blocker` or a `warning` below `warning`.');
+    expect(section).toContain('A finding that cites a line listed under Uses Outside the Diff rests on code shown, so grade it on its merits like any finding.');
     expect(section).toContain('Set `gradeIfConfirmed` on such a finding to the grade these rules give it if that code is as the finding says, and to "" on all others.');
     expect(section).not.toContain('Manki then reads that code with tools');
     expect(prompt).toContain('"gradeIfConfirmed": ""');
