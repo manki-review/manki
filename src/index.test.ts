@@ -2399,6 +2399,8 @@ describe('runFullReview orchestration', () => {
     expect(reviewModule.runReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockfiles, excludedPaths: ['Cargo.lock'] }));
     expect(jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0][1].lockfiles).toEqual([expect.objectContaining({ path: 'Cargo.lock' })]);
     expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.skipped).toEqual({ excluded: [], binary: [] });
+    // The posted review places findings against the lockfile's own hunks, so one on it gets a thread.
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][6]?.files.map(f => f.path)).toEqual(['Cargo.lock']);
   });
 
   it('skips auto_review disabled PR events and deletes progress comment', async () => {

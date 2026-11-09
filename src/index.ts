@@ -1374,7 +1374,8 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
 /** Posts the round's review and dismisses the previous one. Returns the new review's id, and whether its approval was held. */
 async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const { octokit, owner, repo, prNumber, commitSha, diff, recap } = run;
-  const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, {
+  // A finding on a parsed lockfile gets a thread on its line like any other.
+  const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, withLockfiles(diff, run.lockfiles), context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
     draft: run.options.draft,
     configFailed: configFailed(run.reviewSource),
@@ -1708,7 +1709,7 @@ async function runFullReview(
       return;
     }
 
-    addCodeContext(result.findings, diff);
+    addCodeContext(result.findings, withLockfiles(diff, lockfiles));
     tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
     const reviewTimeMs = Date.now() - startTime;
     const buildContext = () => buildRoundContext({ ...run, tokenServiceCalls: tokenServiceCalls() }, result, {
