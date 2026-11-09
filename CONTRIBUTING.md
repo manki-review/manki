@@ -32,7 +32,7 @@ npm run all
 
 ## `dist/` is built at release time
 
-`main` holds source only. `dist/` is in `.gitignore`, so never commit it. For a release, the `Release` workflow builds `dist/` and commits it on top of the release commit on a `release/vX.Y.Z` branch. An org admin then points the `vX.Y.Z` tag and the floating `vX` tag at that build commit, see [`RELEASE.md`](RELEASE.md). Consumers pinned to `manki-review/manki@v7` or an exact `@v7.x.y` get a tree that contains `dist/`. Pinning to `@main` or a commit SHA on `main` is not supported.
+`main` holds source only. `dist/` is in `.gitignore`, so never commit it. For a release, the `Release` workflow builds `dist/` and commits it on top of the release commit on a `release/vX.Y.Z` branch. After an approval, the `Publish release` workflow points the `vX.Y.Z` tag and the floating `vX` tag at that build commit, see [`RELEASE.md`](RELEASE.md). Consumers pinned to `manki-review/manki@v7` or an exact `@v7.x.y` get a tree that contains `dist/`. Pinning to `@main` or a commit SHA on `main` is not supported.
 
 Locally, `npm run build` writes `dist/` for testing. The repo's own `Manki dispatch` workflow builds it before running the action from the checkout.
 

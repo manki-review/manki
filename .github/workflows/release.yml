@@ -1,7 +1,7 @@
 name: Release
 
 # Builds `dist/` for a release and pushes it to the release branch. It never writes tags:
-# an org admin tags and publishes the build commit with `scripts/publish-release.sh`.
+# the `Publish release` workflow tags and publishes the build commit after an approval.
 on:
   push:
     branches:

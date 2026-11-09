@@ -105,8 +105,9 @@ function publish(
   fx: Fixture,
   tag: string,
   ghRelease: 'absent' | 'draft' | 'published' = 'absent',
+  ...flags: string[]
 ): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync('bash', ['scripts/publish-release.sh', '--dry-run', tag], {
+  const result = spawnSync('bash', ['scripts/publish-release.sh', '--dry-run', ...flags, tag], {
     cwd: fx.work,
     encoding: 'utf8',
     env: {
@@ -143,6 +144,22 @@ describe('publish-release.sh --dry-run', () => {
     ]);
     expect(result.stdout).toContain('- Notes for 1.2.3.');
     expect(result.stdout).not.toContain('Old notes');
+    expect(result.stdout.trimEnd().split('\n').at(-1)).toBe(`verified build commit ${fx.build}`);
+  });
+
+  it('skips the rebuild only for the verified build commit', () => {
+    fx = setup();
+    const verified = publish(fx, 'v1.2.3', 'absent', `--verified=${fx.build}`);
+    expect(verified.stderr).toBe('');
+    expect(verified.status).toBe(0);
+    expect(verified.stdout).toContain(`dry-run: git tag -fa v1.2.3 ${fx.build} -m v1.2.3`);
+    expect(verified.stdout).not.toContain('rebuilding dist/');
+    expect(verified.stdout).not.toContain('verified build commit');
+
+    const moved = publish(fx, 'v1.2.3', 'absent', `--verified=${fx.release}`);
+    expect(moved.status).toBe(1);
+    expect(moved.stderr).toContain(`points at ${fx.build}, not the verified build commit ${fx.release}`);
+    expect(moved.stdout).not.toContain('dry-run:');
   });
 
   it('prints nothing to run once everything is published', () => {
@@ -162,7 +179,10 @@ describe('publish-release.sh --dry-run', () => {
     fx.git('push', '-q', 'origin', 'refs/tags/v1.3.0');
     const result = publish(fx, 'v1.2.3', 'draft');
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('dry-run: gh release edit v1.2.3 -R manki-review/manki --draft=false --latest=false');
+    expect(result.stdout).toMatch(
+      /dry-run: gh release edit v1\.2\.3 -R manki-review\/manki --draft=false --title v1\.2\.3 --notes-file \S+ --latest=false\n/,
+    );
+    expect(result.stdout).toContain('- Notes for 1.2.3.');
     expect(result.stdout).toContain('v1 stays where it is');
     expect(result.stdout).not.toContain('refs/tags/v1\n');
   });

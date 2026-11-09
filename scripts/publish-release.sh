@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Tags and publishes a release that the `Release` workflow built on `release/vX.Y.Z`.
-# Run it as an org admin, because the tag ruleset blocks everyone else from writing `v*` tags.
+# The `Publish release` workflow runs it with a token from the release App. Run by hand, it
+# needs an org admin, because the tag ruleset blocks everyone else from writing `v*` tags.
 # Safe to rerun: it skips every step that is already done.
 #
-# Usage: scripts/publish-release.sh [--dry-run] vX.Y.Z
-#   --dry-run  print the commands that write tags or the release instead of running them
+# Usage: scripts/publish-release.sh [--dry-run] [--verified=SHA] vX.Y.Z
+#   --dry-run       print the commands that write tags or the release instead of running them,
+#                   and end with the line `verified build commit SHA` after the rebuild
+#   --verified=SHA  skip the rebuild of dist/ and refuse unless the build commit is SHA.
+#                   Pass only a SHA that a dry run reported as verified.
 # Environment: REMOTE (default origin), REPO (default manki-review/manki),
 #   WAIT_SECONDS (default 900) to wait for the build commit.
 
@@ -16,15 +20,20 @@ die() {
 }
 
 usage() {
-  echo "usage: $0 [--dry-run] vX.Y.Z" >&2
+  echo "usage: $0 [--dry-run] [--verified=SHA] vX.Y.Z" >&2
   exit 2
 }
 
 DRY_RUN=false
+VERIFIED=""
 TAG=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=true ;;
+    --verified=*)
+      VERIFIED="${arg#--verified=}"
+      [[ "$VERIFIED" =~ ^[0-9a-f]{40}$ ]] || usage
+      ;;
     -*) usage ;;
     *)
       [ -z "$TAG" ] || usage
@@ -100,6 +109,9 @@ while :; do
   echo "waiting for the Release workflow to push the build commit to $BRANCH"
   sleep 15
 done
+if [ -n "$VERIFIED" ] && [ "$BUILD" != "$VERIFIED" ]; then
+  die "$BRANCH points at $BUILD, not the verified build commit $VERIFIED"
+fi
 
 read -r -a parents <<<"$(git rev-list --parents -n 1 "$BUILD")"
 [ "${#parents[@]}" -eq 2 ] || die "build commit $BUILD must have exactly one parent"
@@ -128,6 +140,7 @@ git worktree add --quiet --detach "$WORK" "$RELEASE_COMMIT"
   pkg_version=$(node -p "require('./package.json').version")
   [ "$pkg_version" = "$VERSION" ] || die "package.json version $pkg_version at $RELEASE_COMMIT doesn't match $TAG"
   node scripts/check-changelog-version.js
+  [ -z "$VERIFIED" ] || exit 0
   echo "rebuilding dist/ at $RELEASE_COMMIT to verify the build commit"
   npm ci --silent >/dev/null
   npm run --silent build >/dev/null
@@ -164,15 +177,14 @@ newest_in_major=$(newest_tag "$MAJOR.*")
 major_commit=$(remote_tag_commit "$MAJOR")
 latest=false
 [ "$newest" = "$TAG" ] && latest=true
+if $DRY_RUN && [ "$state" != published ]; then
+  echo "release notes:"
+  cat "$NOTES"
+fi
+# A token without push access sees a draft as absent, so both paths publish the same notes.
 case "$state" in
-  absent)
-    if $DRY_RUN; then
-      echo "release notes:"
-      cat "$NOTES"
-    fi
-    run gh release create "$TAG" -R "$REPO" --verify-tag --title "$TAG" --notes-file "$NOTES" --latest="$latest"
-    ;;
-  draft) run gh release edit "$TAG" -R "$REPO" --draft=false --latest="$latest" ;;
+  absent) run gh release create "$TAG" -R "$REPO" --verify-tag --title "$TAG" --notes-file "$NOTES" --latest="$latest" ;;
+  draft) run gh release edit "$TAG" -R "$REPO" --draft=false --title "$TAG" --notes-file "$NOTES" --latest="$latest" ;;
   published) echo "release $TAG is already published" ;;
 esac
 
@@ -183,4 +195,8 @@ elif [ "$major_commit" = "$BUILD" ]; then
 else
   run git tag -fa "$MAJOR" "$BUILD" -m "Update $MAJOR tag to $TAG"
   run git push --force "$REMOTE" "refs/tags/$MAJOR"
+fi
+
+if $DRY_RUN && [ -z "$VERIFIED" ]; then
+  echo "verified build commit $BUILD"
 fi
