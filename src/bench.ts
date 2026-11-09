@@ -117,7 +117,7 @@ export function loadCases(dir: string, only: string[] = []): BenchCase[] {
   return only.length > 0 ? cases.filter(c => only.includes(c.id)) : cases;
 }
 
-export type MatchVerdict = 'MATCH' | 'PARTIAL' | 'NONE';
+type MatchVerdict = 'MATCH' | 'PARTIAL' | 'NONE';
 
 export interface MatchDecision {
   verdict: MatchVerdict;
@@ -188,7 +188,29 @@ export function llmMatcher(client: LLMClient, model: string, cache: Map<string, 
   };
 }
 
-export interface ItemMatch {
+function isMatchDecision(value: unknown): value is MatchDecision {
+  const decision = value as Partial<MatchDecision> | null;
+  return !!decision && typeof decision === 'object' && ['MATCH', 'PARTIAL', 'NONE'].includes(decision.verdict as string)
+    && Array.isArray(decision.findings) && decision.findings.every(Number.isInteger) && typeof decision.reason === 'string';
+}
+
+/**
+ * Loads the matcher decisions kept at `path`, or none when it does not exist. Entries that are not a decision are left
+ * out, so they are asked again. Throws, naming the file, when it is not a JSON object.
+ */
+export function loadMatcherCache(path: string): Map<string, MatchDecision> {
+  if (!existsSync(path)) return new Map();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf-8'));
+  } catch (error) {
+    throw new Error(`The matcher cache ${path} is not valid JSON. Delete it to start a fresh one: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`The matcher cache ${path} is not a JSON object. Delete it to start a fresh one.`);
+  return new Map(Object.entries(raw).filter((entry): entry is [string, MatchDecision] => isMatchDecision(entry[1])));
+}
+
+interface ItemMatch {
   item: string;
   verdict: MatchVerdict;
   /** Indexes into `RunScore.findings` of every finding that names the defect, closest first. */
@@ -198,7 +220,7 @@ export interface ItemMatch {
   reason: string;
 }
 
-export interface FinderSteps {
+interface FinderSteps {
   name: string;
   model?: string;
   toolSteps: number;
@@ -206,7 +228,7 @@ export interface FinderSteps {
   filesRead: number;
 }
 
-export interface RunScore {
+interface RunScore {
   outcome: string;
   /** False for a review that did not complete, or a run that failed. */
   complete: boolean;
@@ -301,7 +323,7 @@ function reviewFacts(review: LocalReview): Pick<RunScore, 'outcome' | 'findings'
   };
 }
 
-export interface ItemReport {
+interface ItemReport {
   id: string;
   tier: 'must_catch' | 'nice_to_have';
   severity: KeySeverity;
@@ -313,7 +335,7 @@ export interface ItemReport {
   runs: number;
 }
 
-export interface CaseReport {
+interface CaseReport {
   id: string;
   source: string;
   keyVersion: number;
@@ -327,7 +349,7 @@ interface SeverityRecall {
   total: number;
 }
 
-export interface BenchReport {
+interface BenchReport {
   mankiVersion: string;
   startedAt: string;
   runsPerCase: number;
@@ -422,7 +444,7 @@ export function formatBenchSummary(report: BenchReport): string {
   return `${lines.join('\n')}\n`;
 }
 
-export interface BenchOptions {
+interface BenchOptions {
   runs: number;
   /** Local clone of each case repo, by `owner/name`. */
   checkouts: ReadonlyMap<string, string>;
@@ -563,7 +585,7 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     const providerInputs = readProviderInputsFromEnv();
     if (!hasAnyProviderCredentials(providerInputs)) throw new Error(`No credentials set.\n\n${USAGE}`);
     const cases = loadCases(args.cases, args.only);
-    const cache = new Map<string, MatchDecision>(existsSync(args.cache) ? Object.entries(JSON.parse(readFileSync(args.cache, 'utf-8')) as Record<string, MatchDecision>) : []);
+    const cache = loadMatcherCache(args.cache);
     const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
     const startedAt = new Date().toISOString();
     const meta = { startedAt, runsPerCase: args.runs, matcherModel: args.matcherModel };

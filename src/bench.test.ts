@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'f
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { BenchCase, buildReport, candidateFindings, formatBenchSummary, KeyItem, llmMatcher, loadCases, MatchDecision, Matcher, parseBenchArgs, parseCase, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, buildReport, candidateFindings, formatBenchSummary, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, parseBenchArgs, parseCase, runBench, runBenchCommand, scoreRun } from './bench';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
 import type { Finding, RoundContext, RoundOutcome } from './types';
@@ -165,6 +165,23 @@ describe('llmMatcher', () => {
     ['{"verdict": "PARTIAL", "findings": [9, 0], "reason": "Close."}', { verdict: 'NONE', findings: [], reason: 'Named no listed finding: Close.' }],
   ])('reads %s as no match', async (content, expected) => {
     expect(await llmMatcher(clientAnswering(content), 'model-a', new Map())(item, findings)).toEqual(expected);
+  });
+
+  it('loads a kept cache without the entries that are not decisions, and names a cache file that does not load', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'manki-cache-'));
+    try {
+      const path = join(dir, 'cache.json');
+      expect(loadMatcherCache(path).size).toBe(0);
+      const kept: MatchDecision = { verdict: 'MATCH', findings: [0], reason: 'same' };
+      writeFileSync(path, JSON.stringify({ a: kept, b: { verdict: 'MATCH', finding: 0, reason: 'old shape' }, c: { verdict: 'MAYBE', findings: [], reason: '' }, d: null }));
+      expect([...loadMatcherCache(path)]).toEqual([['a', kept]]);
+      writeFileSync(path, '{"a": {"verdict"');
+      expect(() => loadMatcherCache(path)).toThrow(`The matcher cache ${path} is not valid JSON. Delete it to start a fresh one:`);
+      writeFileSync(path, '[]');
+      expect(() => loadMatcherCache(path)).toThrow(`The matcher cache ${path} is not a JSON object.`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('throws on a reply without a verdict', async () => {
