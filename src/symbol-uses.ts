@@ -977,8 +977,21 @@ function structsDeclaringField(parser: Parser, name: string, hits: Hit[], reader
 
 const shortLine = (text: string): string => text.length > MAX_EXCERPT_LINE_CHARS ? `${text.slice(0, MAX_EXCERPT_LINE_CHARS)} ...` : text;
 const typeNames = (type: string): string[] => type.match(/[A-Za-z_]\w*/g) ?? [];
-// A fixed-size array such as `[u8; 32]` is a value, not a store of items, so only `T[]`, `&[T]` and `list[T]` count.
-const isCollection = (type: string): boolean => (type.includes('[') && !/\[[^\]]*;[^\]]*\]/.test(type)) || typeNames(type).some(name => CONTAINERS.has(name));
+/**
+ * Whether a bracket in `type` holds items: `T[]`, `&[T]`, `list[T]` or `&[[u8; 32]]`. A fixed-size array such as `[u8; 32]`,
+ * whose brackets hold a `;` outside any inner bracket, is a value, not a store of items.
+ */
+function hasItemBrackets(type: string): boolean {
+  const open: boolean[] = [];
+  for (const char of type) {
+    if (char === '[') open.push(false);
+    else if (char === ';' && open.length > 0) open[open.length - 1] = true;
+    else if (char === ']' && open.pop() === false) return true;
+  }
+  return false;
+}
+
+const isCollection = (type: string): boolean => hasItemBrackets(type) || typeNames(type).some(name => CONTAINERS.has(name));
 const elementTypes = (type: string): string[] => typeNames(type).filter(name => !CONTAINERS.has(name) && !TYPE_WRAPPERS.has(name));
 
 /**
