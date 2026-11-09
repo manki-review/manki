@@ -1,0 +1,28 @@
+{
+  "name": "public-api-reachable",
+  "case": "public-api-reachable",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "The fee estimate leaves the payout list out of a version 3 payload",
+    "file": "src/builder.rs",
+    "line": 32,
+    "description": "The new v3 arm sizes the payload without `p.payouts`, which version 3 serializes in place of `script`. `fee` prices the transaction from this estimate at the minimum relay rate, so a transaction carrying a v3 payload pays for fewer bytes than it has and relays reject it. The builder's own `new()` only creates v2 payloads, but `set_payload` is public and accepts any version.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "evidence": {
+      "checks": [
+        "src/builder.rs:21 `pub fn set_payload` accepts any `Payload`",
+        "src/builder.rs:26 `fee` multiplies the estimate by `MIN_RELAY_FEE_PER_BYTE`"
+      ],
+      "proof": [
+        "src/builder.rs:32",
+        "src/builder.rs:26"
+      ]
+    }
+  },
+  "prDiff": "diff --git a/src/builder.rs b/src/builder.rs\nindex 1111111..2222222 100644\n--- a/src/builder.rs\n+++ b/src/builder.rs\n@@ -20,14 +20,15 @@\n     /// Replaces the special payload. Any version is accepted.\n     pub fn set_payload(&mut self, payload: Payload) {\n         self.payload = Some(payload);\n     }\n \n     fn fee(&self, p: &Payload) -> u64 {\n         (self.base_size() + self.estimated_payload_size(p)) as u64 * MIN_RELAY_FEE_PER_BYTE\n     }\n \n     fn estimated_payload_size(&self, p: &Payload) -> usize {\n         match p.version {\n             1 | 2 => 2 + 32 + 48 + varint_size(p.script.len()) + p.script.len(),\n+            3 => 2 + 32 + 48,\n             _ => 0,\n         }\n"
+}
