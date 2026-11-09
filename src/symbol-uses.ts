@@ -526,7 +526,9 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   // A file that names the type of a redefined field likely reads that type's field, not a namesake's.
   const owners = [...new Set([...redefined.values()].flatMap(s => s.owner ?? []))];
   const hits = (await grepWords(workspace, [...new Set([...names, ...lookupFields, ...owners])])).filter(hit => !findExcludePattern(hit.file, excludePaths));
-  const typeFiles = new Map(owners.map(owner => [owner, new Set(hits.filter(hit => wordPattern([owner]).test(hit.text)).map(hit => hit.file))]));
+  const typeFiles = new Map(owners.map(owner => [owner, new Set<string>()]));
+  const ownerPattern = owners.length > 0 ? wordPattern(owners, 'g') : undefined;
+  for (const hit of ownerPattern ? hits : []) for (const owner of hit.text.match(ownerPattern!) ?? []) typeFiles.get(owner)?.add(hit.file);
   const packages = new Packages(workspace);
   const fields = siblingFields(parser, lookups, lookupFields, hits, packages, diff, added);
   const siblings = { fields, implementations };
@@ -714,6 +716,12 @@ class Parser {
   }
 }
 
+/** Returns the nearest named node before or after `node` among its siblings. */
+function namedSibling(node: SgNode, side: 'prev' | 'next'): SgNode | undefined {
+  for (let sibling = node[side](); sibling; sibling = sibling[side]()) if (sibling.isNamed()) return sibling;
+  return undefined;
+}
+
 function nodeKey(node: SgNode): string {
   return `${node.kind()}:${node.range().start.index}`;
 }
@@ -813,7 +821,6 @@ class ParsedFile {
   collectionLookups(touched: Set<number>): Lookup[] {
     const { access, object, index, call: callKind, membership } = this.rules;
     if (!access || !object) return [];
-    const named = (n: SgNode) => n.children().filter(c => c.isNamed());
     return this.root.root().findAll({ rule: { kind: access.kind } }).flatMap(node => {
       const field = node.field(access.field);
       if (!field || !IDENTIFIER.test(field.text()) || !touched.has(lineOf(field)) || this.inTests(node)) return [];
@@ -824,20 +831,20 @@ class ParsedFile {
         const method = parent.field(access.field)?.text() ?? '';
         if (call?.kind() !== callKind || !LOOKUP_METHODS.has(method)) return [];
         item = call.field('arguments')?.children().find(c => c.isNamed());
+      // The branches below read only the node's neighbours, so a long call, subscript or comparison stays linear.
       } else if (index && parent?.kind() === index) {
-        const children = named(parent);
-        if (nodeKey(children[0]) !== nodeKey(node)) return [];
-        item = children[1];
+        if (namedSibling(node, 'prev')) return [];
+        item = namedSibling(node, 'next');
       } else if (membership && parent?.kind() === membership.kind) {
-        const operands = named(parent);
-        const tests = parent.children().some(c => !c.isNamed() && membership.operator.test(c.text()));
-        if (!tests || operands.length !== 2 || nodeKey(operands[1]) !== nodeKey(node)) return [];
-        item = operands[0];
+        const operator = node.prev();
+        const left = operator?.prev();
+        if (!operator || operator.isNamed() || !membership.operator.test(operator.text()) || node.next() || !left || left.prev()) return [];
+        item = left;
       } else {
         const call = parent?.parent();
-        const args = parent && call?.kind() === callKind && nodeKey(call.field('arguments') ?? call) === nodeKey(parent) ? named(parent) : [];
-        if (!LOOKUP_FUNCTIONS.has(call?.field('function')?.text() ?? '') || args.length < 2 || nodeKey(args[0]) !== nodeKey(node)) return [];
-        item = args[1];
+        const callee = call?.kind() === callKind ? call.field('function')?.text() ?? '' : '';
+        if (!parent || !call || !LOOKUP_FUNCTIONS.has(callee) || nodeKey(call.field('arguments') ?? call) !== nodeKey(parent) || namedSibling(node, 'prev')) return [];
+        item = namedSibling(node, 'next');
       }
       const text = (item?.text() ?? '').replace(/^&\s*(?:mut\s+)?/, '').replace(/\s+/g, ' ');
       // A prompt quotes the item in a code span, which a backtick would close.
