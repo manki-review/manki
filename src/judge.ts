@@ -396,7 +396,7 @@ Bad examples (do NOT write like this):
 
 Your grade is final: the verdict acts on the severity you return. Grade what actually goes wrong in the code, never how confidently the finding is worded.
 
-${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself.
+${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself. A reviewer's finding is a claim too, but one the code shown cannot settle is graded by Code You Cannot See and When You Are Unsure, never dropped because a model made it.
 
 ## Blocker Tests
 

@@ -240,7 +240,7 @@ describe('buildJudgeSystemPrompt', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('A finding is a `blocker` only when it passes all five tests:');
     expect(prompt).toContain('Memory is the maintainers\' recorded decision, not a claim to check, but it never moves a grade past what the severity table gives.');
-    expect(prompt).toContain(`never how confidently the finding is worded.\n\n${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself.\n`);
+    expect(prompt).toContain(`never how confidently the finding is worded.\n\n${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself. A reviewer's finding is a claim too, but one the code shown cannot settle is graded by Code You Cannot See and When You Are Unsure, never dropped because a model made it.\n`);
     for (const test of ['The PR causes it.', 'The failure can be named.', 'The damage is serious.', 'The code proves it.', 'The author would fix it.']) {
       expect(prompt).toContain(`**${test}**`);
     }

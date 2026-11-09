@@ -7,24 +7,25 @@
   "finding": {
     "title": "Days are converted to seconds, not milliseconds",
     "file": "src/duration.ts",
-    "line": 22,
-    "description": "The new `d` branch returns `value * 86_400`, the number of seconds in a day, while every other unit returns milliseconds. `parseDuration('1d')` gives 86.4 seconds, so a cache TTL or timeout set in days expires about a thousand times too early. The package's own callers only pass `s` and `m`, but `parseDuration` is exported from the entry point and accepts any of the units its regular expression allows.",
+    "line": 19,
+    "description": "The new `d` branch returns `value * 86_400`, the number of seconds in a day, while every other unit returns milliseconds. `parseDuration('1d')` gives 86.4 seconds, so a cache TTL or timeout set in days expires about a thousand times too early. The package's own callers only pass `s` and `m`, but `src/index.ts` exports `parseDuration` from the package entry point, so any caller can pass a day.",
     "severity": "blocker",
     "reviewers": [
       "Correctness"
     ],
     "evidence": {
       "checks": [
-        "src/duration.ts:22 returns `value * 86_400` for `d`",
-        "src/duration.ts:21 returns `value * 3_600_000` for `h`, in milliseconds",
-        "src/duration.ts:12 says the function is exported from the package entry point"
+        "src/duration.ts:19 returns `value * 86_400` for `d`",
+        "src/duration.ts:18 returns `value * 3_600_000` for `h`, in milliseconds",
+        "src/index.ts:4 exports `parseDuration` from the package entry point"
       ],
       "proof": [
-        "src/duration.ts:22",
-        "src/duration.ts:21"
+        "src/duration.ts:19",
+        "src/duration.ts:18",
+        "src/index.ts:4"
       ]
     },
     "suggestedFix": "    case 'd': return value * 86_400_000;"
   },
-  "prDiff": "diff --git a/src/duration.ts b/src/duration.ts\nindex 1111111..2222222 100644\n--- a/src/duration.ts\n+++ b/src/duration.ts\n@@ -10,15 +10,16 @@\n /**\n  * Parses a duration such as `90s`, `15m` or `2h` into milliseconds.\n  * Exported from the package entry point.\n  */\n export function parseDuration(input: string): number {\n-  const match = /^(\\d+)([smh])$/.exec(input.trim());\n+  const match = /^(\\d+)([smhd])$/.exec(input.trim());\n   if (!match) throw new RangeError(`Invalid duration: ${input}`);\n   const value = Number(match[1]);\n   switch (match[2]) {\n     case 's': return value * 1000;\n     case 'm': return value * 60_000;\n     case 'h': return value * 3_600_000;\n+    case 'd': return value * 86_400;\n   }\n   throw new RangeError(`Invalid duration unit: ${input}`);\n }\n"
+  "prDiff": "diff --git a/src/duration.ts b/src/duration.ts\nindex 1111111..2222222 100644\n--- a/src/duration.ts\n+++ b/src/duration.ts\n@@ -10,12 +10,13 @@\n /** Parses a duration such as `90s`, `15m` or `2h` into milliseconds. */\n export function parseDuration(input: string): number {\n-  const match = /^(\\d+)([smh])$/.exec(input.trim());\n+  const match = /^(\\d+)([smhd])$/.exec(input.trim());\n   if (!match) throw new RangeError(`Invalid duration: ${input}`);\n   const value = Number(match[1]);\n   switch (match[2]) {\n     case 's': return value * 1000;\n     case 'm': return value * 60_000;\n     case 'h': return value * 3_600_000;\n+    case 'd': return value * 86_400;\n   }\n   throw new RangeError(`Invalid duration unit: ${input}`);\n }\ndiff --git a/src/index.ts b/src/index.ts\nindex 3333333..4444444 100644\n--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1,3 +1,4 @@\n export { Cache } from './cache';\n export { retry } from './retry';\n export type { RetryOptions } from './retry';\n+export { parseDuration } from './duration';\n"
 }
