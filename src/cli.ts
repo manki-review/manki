@@ -96,17 +96,34 @@ async function defaultBase(root: string): Promise<string> {
   return (await runGit(root, ['rev-parse', '--abbrev-ref', 'origin/HEAD']).catch(() => 'main')).trim();
 }
 
-/** Runs `manki review` and returns its exit code. The review goes to stdout, every log line to stderr. */
-export async function runReviewCommand(argv: string[]): Promise<number> {
+/**
+ * Runs a subcommand's `body` and returns its exit code, 2 when it throws. `out` writes the result to stdout, and every
+ * log line goes to stderr. `signal` aborts on the first Ctrl-C.
+ */
+export async function runCliCommand(name: string, body: (out: (text: string) => void, signal: AbortSignal) => Promise<number>): Promise<number> {
   const write = process.stdout.write;
   const out = write.bind(process.stdout);
-  // `@actions/core` logs to stdout, which here carries only the review.
+  // `@actions/core` logs to stdout, which here carries only the result.
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
   const cancel = new AbortController();
-  // The first Ctrl-C stops the review at its next step. A second one exits at once.
+  // The first Ctrl-C stops the command at its next step. A second one exits at once.
   const onSignal = (): void => (cancel.signal.aborted ? process.exit(130) : cancel.abort(new Error('Interrupted')));
   process.on('SIGINT', onSignal);
   try {
+    return await body(text => out(text), cancel.signal);
+  } catch (error) {
+    process.stderr.write(`manki ${name}: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 2;
+  } finally {
+    process.off('SIGINT', onSignal);
+    removeSeededAuthFiles();
+    process.stdout.write = write;
+  }
+}
+
+/** Runs `manki review` and returns its exit code. */
+export function runReviewCommand(argv: string[]): Promise<number> {
+  return runCliCommand(REVIEW_COMMAND, async (out, signal) => {
     const args = parseReviewArgs(argv);
     if (args.help) {
       out(`${USAGE}\n`);
@@ -124,17 +141,10 @@ export async function runReviewCommand(argv: string[]): Promise<number> {
       ...(args.title !== undefined && { title: args.title }),
       ...(args.bodyFile !== undefined && { body: readFileSync(args.bodyFile, 'utf-8') }),
       providerInputs,
-      signal: cancel.signal,
+      signal,
     });
     if (args.record) writeFileSync(args.record, `${JSON.stringify(review.context, null, 2)}\n`);
     out(args.json ? formatReviewJson(review) : formatReviewText(review));
     return exitCodeOf(review);
-  } catch (error) {
-    process.stderr.write(`manki review: ${error instanceof Error ? error.message : String(error)}\n`);
-    return 2;
-  } finally {
-    process.off('SIGINT', onSignal);
-    removeSeededAuthFiles();
-    process.stdout.write = write;
-  }
+  });
 }
