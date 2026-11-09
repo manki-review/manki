@@ -4,6 +4,7 @@ import { join } from 'path';
 
 import {
   parseFindings,
+  parseProof,
   validateSeverity,
   determineOutcome,
   stringifyFindingFingerprint,
@@ -128,7 +129,7 @@ describe('parseFindings', () => {
       {
         severity: 'blocker', title: 'Division by zero', file: 'src/api.ts', line: 42, description: 'd',
         evidence: ['src/api.ts:42 divides by `page`', '', 7],
-        proof: ['`src/api.ts:42`', 'src/api.ts:40-42 (the loop)', 'the division', 'Makefile:3.'],
+        proof: ['`src/api.ts:42`', 'src/api.ts:40-42 (the loop)', 'the division', 'Makefile:3.', 'app/views.py:12, 40-42 reads it'],
         claimsMissing: true, emptySearch: 'grep `page === 0` under src: no match',
         preExisting: true, preExistingReason: 'The division predates this PR.',
       },
@@ -141,9 +142,11 @@ describe('parseFindings', () => {
 
     expect(checked.evidence).toEqual({
       checks: ['src/api.ts:42 divides by `page`'],
-      proof: ['src/api.ts:42', 'src/api.ts:40-42', 'Makefile:3'],
+      // An entry that lists several lines gives a location for each.
+      proof: ['src/api.ts:42', 'src/api.ts:40-42', 'Makefile:3', 'app/views.py:12', 'app/views.py:40-42'],
       emptySearch: 'grep `page === 0` under src: no match',
     });
+    expect(parseProof([`src/a.ts:${Array.from({ length: 50 }, (_, i) => i + 1).join(',')}`])).toHaveLength(10);
     expect(checked.notChecked).toBeUndefined();
     expect([checked.preExisting, unchecked.preExisting]).toEqual(['The division predates this PR.', undefined]);
     expect([unchecked.evidence, unchecked.notChecked]).toEqual([{ checks: [], proof: [], emptySearch: '' }, true]);
