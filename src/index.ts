@@ -43,6 +43,7 @@ import {
   fetchRepoContext,
   formatUnreviewedNotice,
   fetchFileContents,
+  MAX_CONTENT_API_BYTES,
   fetchInterRoundDiff,
   formatFoundAgainReply,
   fetchHeadSha,
@@ -1043,7 +1044,7 @@ async function collectOpenThreads(
   try {
     [fileContents, lockfileContents] = await Promise.all([
       fetchFileContents(octokit, owner, repo, commitSha, filePaths),
-      lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, undefined, Infinity) : new Map<string, string>(),
+      lockfileThreadPaths.length > 0 ? fetchFileContents(octokit, owner, repo, commitSha, lockfileThreadPaths, MAX_CONTENT_API_BYTES, Infinity) : new Map<string, string>(),
     ]);
   } catch (error) {
     core.warning(`Failed to fetch file contents: ${error}`);

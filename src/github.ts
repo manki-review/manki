@@ -2698,7 +2698,7 @@ export async function fetchFileContents(
 }
 
 /** The largest file the contents API returns with its content. */
-const MAX_CONTENT_API_BYTES = 1024 * 1024;
+export const MAX_CONTENT_API_BYTES = 1024 * 1024;
 
 /** Returns the lines of each of `files` at `ref`, leaving out any file that can't be read. */
 async function fetchFileLines(octokit: Octokit, owner: string, repo: string, ref: string, files: string[]): Promise<Map<string, string[]>> {
