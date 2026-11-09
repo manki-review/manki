@@ -2190,12 +2190,50 @@ const REFUTATION_SUMMARY: Record<RefutationOutcome, string> = { confirmed: 'doub
 
 /** Shortens model text to one plain line, so no raw tool output or code block reaches the comment. */
 function oneLine(text: string): string {
-  const line = sanitizeMarkdown(text).replace(/```/g, '').replace(/\s+/g, ' ').trim();
-  return balanceCodeSpans(line.length <= MAX_CHECK_CHARS ? line : `${line.slice(0, MAX_CHECK_CHARS - 1).trimEnd()}…`);
+  const line = balanceCodeSpans(sanitizeMarkdown(text).replace(/```/g, '').replace(/\s+/g, ' ').trim());
+  return line.length <= MAX_CHECK_CHARS ? line : shortenLine(line);
 }
 
 // A backtick run Markdown reads as code, not one escaped with a backslash.
 const LIVE_BACKTICKS_RE = /(?<!\\)`+/g;
+
+/**
+ * Cuts a line whose code spans pair to `MAX_CHECK_CHARS`, ending in an ellipsis. A span the cut falls in is closed
+ * after the ellipsis, or left out when none of its code would show, so the cut never leaves a span open.
+ */
+function shortenLine(line: string): string {
+  const keep = MAX_CHECK_CHARS - 1;
+  let open: RegExpMatchArray | undefined;
+  let stop = keep;
+  for (const run of line.matchAll(LIVE_BACKTICKS_RE)) {
+    if (run.index! + run[0].length <= keep) {
+      open = !open ? run : run[0].length === open[0].length ? undefined : open;
+      continue;
+    }
+    if (open) {
+      const [fence] = open;
+      // A longer backtick run inside the span can be cut down to the fence's length, so a run at the cut is dropped.
+      const code = line.slice(open.index! + fence.length, keep - fence.length).replace(/`+$/, '').trimEnd();
+      if (code.trim()) return `${line.slice(0, open.index! + fence.length)}${code}…${fence}`;
+      stop = open.index!;
+    } else {
+      stop = Math.min(run.index!, keep);
+    }
+    break;
+  }
+  return `${line.slice(0, stop).trimEnd()}…`;
+}
+
+/**
+ * Returns a line of code as inline code cut to `MAX_CHECK_CHARS`, or nothing for a blank line or one with hidden
+ * characters, which a reader could not see. Code is not model text, so it skips `balanceCodeSpans`, which would read a
+ * backslash at its end as escaping the closing backtick. Only the HTML comment marks Manki reads its data from are broken up.
+ */
+function codeLine(code: string): string {
+  if (hiddenCharacters(code).length > 0) return '';
+  const line = code.replace(/<!--|-->/g, mark => mark.split('').join('\u200B')).replace(/\s+/g, ' ').trim();
+  return line ? inlineCode(line.length <= MAX_CHECK_CHARS ? line : `${line.slice(0, MAX_CHECK_CHARS - 1)}…`) : '';
+}
 
 /** Returns `line` with every live backtick escaped, so it shows as text. */
 function escapeBackticks(line: string): string {
@@ -2257,8 +2295,8 @@ function balanceCodeSpans(line: string): string {
 /** Lines `start` to `end` of `file`. */
 interface CodeRange { file: string; start: number; end: number }
 
-/** One check behind a finding: what it showed, and the lines it cites when it starts with a location. */
-interface Check { text: string; at?: CodeRange; proofOnly?: boolean }
+/** One check behind a finding: what it showed, empty for a bare location, and the lines it cites when it starts with one. */
+interface Check { text: string; at?: CodeRange }
 
 /** Links a finding's code to the reviewed commit. `files` holds the lines of the files read there, which keep a preview inside its file. */
 interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]> }
@@ -2273,7 +2311,7 @@ function parseCheck(entry: string): Check | undefined {
   const rest = oneLine(located && start > 0 && end >= start ? entry.slice(located[0].length) : entry);
   const text = rest ? `${rest[0].toUpperCase()}${rest.slice(1)}` : '';
   if (!located || start <= 0 || end < start) return text ? { text } : undefined;
-  return { text: text || 'Shows the failure.', at: { file: sanitizeFilePath(path), start, end } };
+  return { text, at: { file: sanitizeFilePath(path), start, end } };
 }
 
 const overlaps = (a: CodeRange, b: CodeRange): boolean => a.file === b.file && a.start <= b.end && b.start <= a.end;
@@ -2283,7 +2321,7 @@ function findingChecks({ evidence }: Finding): Check[] {
   const checks = (evidence?.checks ?? []).flatMap(entry => parseCheck(entry) ?? []);
   for (const proof of evidence?.proof ?? []) {
     const check = parseCheck(proof);
-    if (check?.at && !checks.some(c => c.at && overlaps(c.at, check.at!))) checks.push({ text: 'Shows the failure.', at: check.at, proofOnly: true });
+    if (check?.at && !checks.some(c => c.at && overlaps(c.at, check.at!))) checks.push({ text: '', at: check.at });
   }
   if (evidence?.emptySearch) checks.push({ text: `Searched with no match: ${oneLine(evidence.emptySearch)}` });
   return checks;
@@ -2352,21 +2390,30 @@ function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: 
     return finding.toolSource || finding.reviewers.length === 0 ? [] : [`${CHECKS_MARKER}\n**Not checked against the code.** Nothing was cited to back it.`];
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
-  // The comment already sits on its own line, so a bare proving line there shows only when nothing else does.
   const ownChecks = checks.filter(isOwn);
-  const own = ownChecks.filter(c => !c.proofOnly).length > 0 || checks.length > ownChecks.length || refutation
-    ? ownChecks.filter(c => !c.proofOnly) : ownChecks;
+  const own = ownChecks.filter(c => c.text);
+  // The comment already sits on its own line, so a bare location there is listed only when nothing else shows.
+  const bare = own.length === 0 && checks.length === ownChecks.length && !refutation ? ownChecks : [];
   const previews = checkPreviews(checks.filter(c => c.at && !isOwn(c)), files);
-  const listed = [...previews.slice(MAX_CHECK_PREVIEWS).flatMap(p => p.checks), ...checks.filter(c => !c.at)];
+  const listed = [...bare, ...previews.slice(MAX_CHECK_PREVIEWS).flatMap(p => p.checks), ...checks.filter(c => !c.at)];
   const shown = previews.slice(0, MAX_CHECK_PREVIEWS);
+  // A bare location in the list shows its first line of code, when that file was read.
+  const listItem = ({ text, at }: Check): string => {
+    if (!at) return `- ${text}`;
+    const said = text || codeLine(files.get(at.file)?.[at.start - 1] ?? '');
+    return `- ${linkedRange(at, linkTo)}${said ? `: ${said}` : ''}`;
+  };
   const parts = [
     ...(refutation ? [refutationLine(refutation, linkTo)] : []),
     ...(own.length ? [`On the ${ownLine} line: ${own.map(c => c.text).join(' ')}`] : []),
     ...shown.map(({ range, checks: shared }) => {
-      const said = shared.length === 1 ? shared[0].text : `${shared.map(c => `- ${c.text}`).join('\n')}\n`;
-      return `${said}\n${linkTo(range.file, range.start, range.end)}`;
+      // The preview shows the code, so a bare location in it adds no line of its own.
+      const said = shared.filter(c => c.text);
+      const link = linkTo(range.file, range.start, range.end);
+      if (said.length === 0) return link;
+      return `${said.length === 1 ? said[0].text : `${said.map(c => `- ${c.text}`).join('\n')}\n`}\n${link}`;
     }),
-    ...(listed.length ? [listed.map(c => `- ${c.at ? `${linkedRange(c.at, linkTo)}: ` : ''}${c.text}`).join('\n')] : []),
+    ...(listed.length ? [listed.map(listItem).join('\n')] : []),
   ];
   // A fold never holds a single line, so a lone one shows open.
   if (parts.length === 1 && shown.length === 0 && !parts[0].includes('\n')) {

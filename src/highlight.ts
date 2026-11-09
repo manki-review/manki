@@ -5,13 +5,17 @@ const TOKEN_RE = /[A-Za-z_$][\w$]*(?:[./][A-Za-z_$][\w$-]*)*/g;
 // A `<summary>` comes first, since GitHub renders its content as HTML only and it gets `<code>` instead of backticks.
 // As in Markdown, inline code closes only on a run of as many backticks, within its paragraph, and an escaped backtick
 // is text. An unclosed run stays text, so it cannot pair with a backtick further on and leave the code after it unprotected.
-const PROTECTED_RE = /<summary>[^\n]*?<\/summary>|(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\1[ \t]*(?=\n|$)|\\`|(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\2(?!`)|<!--[\s\S]*?-->|<\/?[A-Za-z][^>\n]*>|!?\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/[^\s)]+/g;
+// Text between two escaped backticks on a line is code shown as text, so it stays as it is too.
+const PROTECTED_RE = /<summary>[^\n]*?<\/summary>|(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\1[ \t]*(?=\n|$)|\\`[^`\n]*?\\`|\\`|(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\2(?!`)|<!--[\s\S]*?-->|<\/?[A-Za-z][^>\n]*>|!?\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/[^\s)]+/g;
 // Inside a `<summary>`: existing code and the tags, which hold attributes such as link targets.
 const SUMMARY_PROTECTED_RE = /<code>[\s\S]*?<\/code>|<[^>]*>/g;
 
-/** Whether a token looks like code rather than a word: snake_case, camelCase, PascalCase with an inner capital, or dotted. */
+/**
+ * Whether a token looks like code rather than a word: snake_case, dotted, or camelCase and PascalCase with an inner
+ * capital. Units and names such as `MiB` or `macOS` end in their only capitals, so they stay words.
+ */
 function isCodeLike(token: string): boolean {
-  return token.length >= 3 && (/_/.test(token) || /[a-z\d][A-Z]/.test(token) || /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(token));
+  return token.length >= 3 && (/_/.test(token) || /[a-z\d][A-Z](?![A-Z]*$)/.test(token) || /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(token));
 }
 
 /** Collects the identifiers on the diff's added lines and the changed file paths, for `highlightCode`. */
