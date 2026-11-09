@@ -1,0 +1,34 @@
+{
+  "name": "declared-gap",
+  "case": "declared-gap",
+  "allowed": [
+    "blocker"
+  ],
+  "pr": {
+    "title": "Add account transfers",
+    "body": "Adds `transfer` for moving funds between accounts.\n\n## Known limitations\n\n- If crediting the destination fails, the debit is not rolled back yet. Left open for a follow-up."
+  },
+  "finding": {
+    "title": "A failed credit loses the debited amount",
+    "file": "payments/ledger.py",
+    "line": 28,
+    "description": "`transfer` commits the debit at line 27 before `credit` runs. When the destination account is frozen, `credit` raises `AccountFrozen` and the money has left the source account without reaching any other.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "evidence": {
+      "checks": [
+        "payments/ledger.py:27 commits the debit on its own",
+        "payments/ledger.py:22 `credit` raises for a frozen account"
+      ],
+      "proof": [
+        "payments/ledger.py:27",
+        "payments/ledger.py:28",
+        "payments/ledger.py:22"
+      ]
+    },
+    "suggestedFix": "Run the debit and the credit in one transaction and commit once, after both succeed."
+  },
+  "prDiff": "diff --git a/payments/ledger.py b/payments/ledger.py\nindex 1111111..2222222 100644\n--- a/payments/ledger.py\n+++ b/payments/ledger.py\n@@ -20,5 +20,10 @@\n def credit(db, account_id, amount):\n     if is_frozen(db, account_id):\n         raise AccountFrozen(account_id)\n     db.execute(\"UPDATE accounts SET balance = balance + ? WHERE id = ?\", (amount, account_id))\n \n+def transfer(db, src_id, dst_id, amount):\n+    db.execute(\"UPDATE accounts SET balance = balance - ? WHERE id = ?\", (amount, src_id))\n+    db.commit()\n+    credit(db, dst_id, amount)\n+    db.commit()\n"
+}

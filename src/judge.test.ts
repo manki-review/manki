@@ -243,7 +243,9 @@ describe('buildJudgeSystemPrompt', () => {
       expect(prompt).toContain(`**${test}**`);
     }
     expect(prompt).toContain('cites the lines, as `file:line`, that show the failure');
-    expect(prompt).toContain('lines this PR adds, changes or removes, in any of its commits, or those changes cause it. Removing a check, a lock or a guard causes the defect it let through.');
+    expect(prompt).toContain('The code is not a declared placeholder, a stub that does nothing yet and that no path reaches, and no TODO with a tracking issue covers it.');
+    expect(prompt).toContain('lines this PR adds, changes or removes, in any of its commits, or those changes cause it. A defect in lines this PR adds is its own, even when the bad state those lines mishandle existed before, so it is never "not a regression". Removing a check, a lock or a guard causes the defect it let through.');
+    expect(prompt).toContain('only when the diff shows this PR neither causes nor exposes the defect. A defect in lines this PR adds is never pre-existing.');
     expect(prompt).toContain('## Grade Stability');
     expect(prompt).toContain('Change the grade only when the code at that spot changed or you have evidence the earlier round did not have');
     expect(prompt).toContain('A failure that outside input can trigger is never hypothetical');
@@ -259,7 +261,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('| Style, naming, docs | `nitpick` | `nitpick` |');
   });
 
-  it('lists what is never a blocker and makes intended but surprising behaviour a suggestion, except for a removed guard or resource exhaustion', () => {
+  it('lists what is never a blocker and makes intended but surprising behaviour a suggestion, except for a removed guard, resource exhaustion or a gap the author admits', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     const section = prompt.slice(prompt.indexOf('## Never a Blocker'), prompt.indexOf('## Code You Cannot See'));
     for (const rule of [
@@ -273,6 +275,8 @@ describe('buildJudgeSystemPrompt', () => {
       '**Behaviour that is intended but surprising is a `suggestion`.**',
       'This never applies to a security defect, to resource exhaustion, or to a removed guard, check or limit',
       'The outside input and examples under Repository Rules outrank it.',
+      'A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the grade its damage earns.',
+      '`reasoning` may note that the author lists it, but the note never lowers the grade. A TODO with a tracking issue still follows test 5.',
     ]) {
       expect(section).toContain(rule);
     }
@@ -281,7 +285,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toMatch(/capped at `suggestion`|fact you cannot check/);
   });
 
-  it('never drops or caps a finding for code the judge cannot see or a path it doubts is reached, and says tools check it only when they do', () => {
+  it('never drops or caps a finding for code the judge cannot see or a path it doubts is reached, asks for the grade every finding earns if its doubts hold, and says tools check it only when they do', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     const section = prompt.slice(prompt.indexOf('## Code You Cannot See'), prompt.indexOf('## Grade Stability'));
     expect(section).toContain('Code you cannot see and a path you cannot follow are no evidence against a finding, so on their own they never drop a finding, and never lower a `blocker` or a `warning` below `warning`.');
@@ -289,10 +293,12 @@ describe('buildJudgeSystemPrompt', () => {
     expect(section).toContain('A doubt that the failure is reached is the same kind of gap: no caller in the code shown passes the value that triggers it, the path looks latent, or a real input may never take it.');
     expect(section).toContain("A path through a library's public API is reached, since any caller of that API can pass a value it accepts, with no caller inside the repository.");
     expect(section).toContain("The rare internal edge case column and the rule on a check of a trusted internal value still apply when the code shown proves that the code's own logic keeps the value valid: that is evidence, not a doubt. Only a doubt the code shown does not settle counts here.");
-    expect(section).toContain('Set `gradeIfConfirmed` on such a finding to the grade these rules give it if that code is as the finding says and the path exists, and to "" on all others.');
-    expect(section).not.toContain('Manki then reads that code');
-    expect(prompt).toContain('"gradeIfConfirmed": ""');
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki then reads that code and follows that path with tools. A confirmation gives the finding that grade, and a disproof drops it.');
+    expect(section).toContain('Its `gradeIfConfirmed` is the grade these rules give it if that code is as the finding says and the path exists.');
+    const unsure = prompt.slice(prompt.indexOf('## When You Are Unsure'), prompt.indexOf('## Worked Examples'));
+    expect(unsure).toContain('Set `gradeIfConfirmed` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals `severity`.');
+    expect(prompt).not.toContain('Manki checks the doubt with tools');
+    expect(prompt).toContain('"gradeIfConfirmed": "blocker" | "warning" | "suggestion" | "nitpick" | "ignore"');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('When it is above `severity`, Manki checks the doubt with tools. A confirmation gives the finding that grade, and a disproof drops it. A finding you mark `ignore` is never checked.');
   });
 
   it('blocks on a claimed build, type or test failure only when CI confirms it', () => {
@@ -981,16 +987,17 @@ describe('extractCodeContext', () => {
 });
 
 describe('parseJudgeResponse', () => {
-  it('keeps a category and an effort from the fixed lists, and drops any other value with a warning', () => {
+  it('keeps a category and an effort from the fixed lists, drops any other value with a warning, and warns when a finding has no `gradeIfConfirmed`', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const result = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
-      { id: 1, title: 'A', severity: 'warning', reasoning: 'r', confidence: 'high', category: 'concurrency', effort: 'larger' },
+      { id: 1, title: 'A', severity: 'warning', reasoning: 'r', confidence: 'high', category: 'concurrency', effort: 'larger', gradeIfConfirmed: 'warning' },
       { id: 2, title: 'B', severity: 'warning', reasoning: 'r', confidence: 'high', category: 'Bug', effort: 'huge' },
-      { id: 3, title: 'C', severity: 'warning', reasoning: 'r', confidence: 'high', category: 'toString' },
+      { id: 3, title: 'C', severity: 'warning', reasoning: 'r', confidence: 'high', category: 'toString', gradeIfConfirmed: 'severe' },
     ] }));
     expect(result.findings.map(f => [f.category, f.effort])).toEqual([['concurrency', 'larger'], [undefined, undefined], [undefined, undefined]]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned category "Bug", which is not one of correctness, security'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned effort "huge"'));
+    expect(warnSpy).toHaveBeenCalledWith('The judge gave no `gradeIfConfirmed` for 2 of 3 findings');
     warnSpy.mockRestore();
   });
 
@@ -1322,7 +1329,7 @@ describe('runJudgeAgent', () => {
     const [withTools, noBudget, noWorkspace] = mockSendMessage.mock.calls;
     expect(withTools[2]).toEqual({ effort: 'high', timeoutMs: 900_000, promptTemplate: expect.stringContaining('## Your Tools'), repoTools: { root: '/work/pr-head', steps: 30 } });
     expect(withTools[0]).toContain('You can read the PR\'s head commit with read-only tools, up to 30 calls in all.');
-    expect(withTools[0]).toContain('Set `gradeIfConfirmed` only for a doubt your calls did not settle.');
+    expect(withTools[0]).toContain('Set `gradeIfConfirmed` above `severity` only for a doubt your calls did not settle.');
     for (const [system, , options] of [noBudget, noWorkspace]) {
       expect(system).not.toContain('## Your Tools');
       expect(options).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.any(String) });
@@ -1540,22 +1547,25 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Unseen kept', severity: 'warning', line: 7 }),
       makeFinding({ title: 'Unseen dropped', severity: 'warning', line: 8 }),
       makeFinding({ title: 'Unknown grade', severity: 'warning', line: 9 }),
+      makeFinding({ title: 'Second cache left stale', severity: 'warning', line: 11 }),
     ];
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's',
       findings: [
         { id: 1, title: 'Deadlock on stop', severity: 'warning', gradeIfConfirmed: 'blocker', reasoning: 'warning. The second lock path sits outside the code shown.', confidence: 'medium' },
         { id: 2, title: 'Missing bound', severity: 'suggestion', gradeIfConfirmed: 'warning', reasoning: 'r', confidence: 'medium' },
-        { id: 3, title: 'Slow path', severity: 'warning', gradeIfConfirmed: '', reasoning: 'Performance never blocks.', confidence: 'high' },
+        { id: 3, title: 'Slow path', severity: 'warning', gradeIfConfirmed: 'warning', reasoning: 'Performance never blocks.', confidence: 'high' },
         { id: 4, title: 'Unseen kept', severity: 'warning', gradeIfConfirmed: 'warning', reasoning: 'r', confidence: 'medium' },
         { id: 5, title: 'Unseen dropped', severity: 'ignore', gradeIfConfirmed: 'blocker', reasoning: 'r', confidence: 'medium' },
         { id: 6, title: 'Unknown grade', severity: 'suggestion', gradeIfConfirmed: 'severe', reasoning: 'r', confidence: 'medium' },
+        { id: 7, title: 'Second cache left stale', severity: 'warning', gradeIfConfirmed: 'blocker', reasoning: 'warning. Not sure this PR causes it, since stale entries may predate it.', confidence: 'medium' },
       ],
     }) });
     const refuterMessages: string[] = [];
     const replies: Record<string, unknown> = {
       'Deadlock on stop': { outcome: 'confirmed', reason: 'Both paths take the lock.', proof: ['src/lock.ts:30'] },
       'Missing bound': { outcome: 'disproved', reason: 'The caller bounds it.', proof: ['src/index.ts:4'] },
+      'Second cache left stale': { outcome: 'confirmed', reason: 'The new invalidation clears only the first cache.', proof: ['src/index.ts:11'] },
     };
     const refuter: LLMClient = {
       repoTools: true,
@@ -1575,14 +1585,17 @@ describe('runJudgeAgent', () => {
         // The refuter confirmed it, so it gets the grade the judge would give if the unseen code holds, above its finder's.
         ['Deadlock on stop', 'blocker'],
         ['Missing bound', 'ignore'],
-        // Lowered for another reason than unseen code, so the refuter never sees it.
+        // Lowered by a rule, not a doubt, so its conditional grade is its grade and the refuter never sees it.
         ['Slow path', 'warning'],
         // A conditional grade no higher than the judge's, one on a dropped finding, or one that is no grade is never checked.
         ['Unseen kept', 'warning'],
         ['Unseen dropped', 'ignore'],
         ['Unknown grade', 'suggestion'],
+        // Any doubt the judge names, not only unseen code, goes to the refuter.
+        ['Second cache left stale', 'blocker'],
       ]);
-      expect(refuterMessages).toHaveLength(2);
+      expect(refuterMessages).toHaveLength(3);
+      expect(refuterMessages.find(m => m.includes(': Second cache left stale\n'))).toContain("- **Judge's reasoning**: warning. Not sure this PR causes it");
       expect(refuterMessages.every(m => m.includes('- **Outside input in this repository, as its maintainers define it**: Callers of the public API.'))).toBe(true);
       expect(result.findings[0].gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'Both paths take the lock.' }]);
       expect(result.findings[0].gradeIfConfirmed).toBeUndefined();
@@ -1624,7 +1637,7 @@ describe('runJudgeAgent', () => {
     expect(result.findings.map(f => f.category)).toEqual(['security', undefined, undefined]);
   });
 
-  it('keeps a reviewer\'s pre-existing mark only when the judge keeps it, and every merged copy is marked and off the diff', async () => {
+  it('keeps a reviewer\'s pre-existing mark only when the judge keeps it and every merged copy is marked and off the diff, and hides one on a line the PR adds from the judge', async () => {
     const old = 'The loop had no bound before this PR.';
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 'Old defects.',
@@ -1641,9 +1654,11 @@ describe('runJudgeAgent', () => {
         { id: 10, title: 'Old parser leak in generated code', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 9 },
         { id: 11, title: 'Old buffer reuse', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
         { id: 12, title: 'Old buffer reuse in the removed module', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 11 },
+        { id: 13, title: 'New parser misses the old state', severity: 'blocker', reasoning: 'r', confidence: 'high', preExisting: true },
       ],
     }) });
-    // The default diff changes lines 1-20 of src/index.ts.
+    // The diff shows lines 1-20 of src/index.ts and adds only line 15.
+    const hunk = makeHunk({ oldLines: 19, content: Array.from({ length: 20 }, (_, i) => `${i === 14 ? '+' : ' '}line ${i + 1}`).join('\n') });
     const off = (line: number) => ({ line, evidence: { checks: [], proof: [] } });
     const input: JudgeInput = {
       findings: [
@@ -1661,13 +1676,15 @@ describe('runJudgeAgent', () => {
         makeFinding({ title: 'Old parser leak in generated code', preExisting: old, file: 'gen/parser.ts', ...off(5) }),
         makeFinding({ title: 'Old buffer reuse', preExisting: old, ...off(90) }),
         makeFinding({ title: 'Old buffer reuse in the removed module', preExisting: old, file: 'src/legacy.ts', ...off(5) }),
+        // A defect in a line the PR adds is its own, so the judge never sees the claim, but the finding keeps it for the record.
+        makeFinding({ title: 'New parser misses the old state', preExisting: old, ...off(15) }),
       ],
-      diff: makeDiff([makeDiffFile(), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] })]),
+      diff: makeDiff([makeDiffFile({ hunks: [hunk] }), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] })]),
       excludedPaths: ['gen/parser.ts'], rawDiff: '', repoContext: '', agentCount: 2,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(mockSendMessage.mock.calls[0][1]).toContain(`- **Pre-existing, the reviewer says**: ${old}`);
+    expect(mockSendMessage.mock.calls[0][1].split(`- **Pre-existing, the reviewer says**: ${old}`)).toHaveLength(12);
     expect(result.findings.map(f => [f.title, f.preExisting])).toEqual([
       ['Unbounded retry', old],
       ['Caller breaks on null', undefined],
@@ -1676,6 +1693,7 @@ describe('runJudgeAgent', () => {
       ['Old lock order', old],
       ['Old parser leak', undefined],
       ['Old buffer reuse', undefined],
+      ['New parser misses the old state', old],
     ]);
   });
 
@@ -5024,9 +5042,11 @@ const GRADING_CASES = [
   'library-resource-exhaustion',
   'unconfirmed-build-claim',
   'public-api-reachable',
+  'declared-gap',
+  'added-code-not-pre-existing',
 ] as const;
 
-const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable'];
+const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing'];
 
 interface GradingFixture {
   name: string;
@@ -5036,6 +5056,8 @@ interface GradingFixture {
   prDiff: string;
   priorRound?: { commitSha: string; severity: FindingSeverity; title: string; suggestedFix?: string };
   interRoundDiff?: string;
+  /** The PR's title and description, shown to the judge as the PR context. */
+  pr?: { title: string; body: string };
 }
 
 const PRIOR_ROUND_CASES: readonly string[] = ['grade-stable', 'own-proposal-objection', 'own-proposal-worse'];
@@ -5059,7 +5081,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims and public API reachability, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps and pre-existing claims on added lines, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 
@@ -5067,6 +5089,7 @@ describe('judge grading fixture corpus', () => {
     expect(extractCodeContext(fixture.finding, parsePRDiff(fixture.prDiff))).toContain(`>>> ${fixture.finding.line}:`);
     expect(fixture.allowed.includes('blocker')).toBe(BLOCKER_CASES.includes(fixture.case) || fixture.case === 'own-proposal-worse');
     expect(fixture.priorRound !== undefined).toBe(PRIOR_ROUND_CASES.includes(fixture.case));
+    expect(fixture.pr !== undefined).toBe(fixture.case === 'declared-gap');
     const appliesFix = computeProvenanceMap(gradingPriorRounds(fixture), fixture.prDiff)
       .some(e => e.file === fixture.finding.file && fixture.finding.line >= e.lineStart && fixture.finding.line <= e.lineEnd);
     expect(appliesFix).toBe(fixture.case.startsWith('own-proposal-'));
@@ -5088,6 +5111,7 @@ describe('judge grading fixture corpus', () => {
       isFollowUp: priorRounds !== undefined,
       priorRounds,
       interRoundDiff: fixture.interRoundDiff,
+      ...(fixture.pr && { prContext: { ...fixture.pr, baseBranch: 'main' } }),
     });
 
     const actual = result.findings[0]?.severity;
