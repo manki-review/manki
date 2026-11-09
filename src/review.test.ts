@@ -3171,8 +3171,8 @@ describe('runReview', () => {
       dedup: {
         sendMessage: jest.fn().mockResolvedValue({
           content: JSON.stringify([
-            { index: 1, matchedDismissed: 1 },
-            { index: 2, matchedDismissed: 1 },
+            { index: 1, matchedEarlier: 1 },
+            { index: 2, matchedEarlier: 1 },
           ]),
         }),
       } as unknown as import('./providers').LLMClient,

@@ -92,6 +92,10 @@ describe('deduplicateFindings', () => {
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(0);
     expect(result.duplicates).toHaveLength(1);
+
+    // An outdated thread has `line` 0, so it is matched on the line its finding was posted on.
+    expect(deduplicateFindings(findings, [{ ...previous[0], line: 0, originalLine: 30, findingLine: 42 }]).duplicates).toHaveLength(1);
+    expect(deduplicateFindings(findings, [{ ...previous[0], line: 0, originalLine: 20 }]).duplicates).toHaveLength(0);
   });
 
   it('does not match different file with same title', () => {
@@ -2021,7 +2025,7 @@ describe('llmDeduplicateFindings', () => {
     ];
     const mockClient = {
       sendMessage: jest.fn().mockResolvedValue({
-        content: '[{ "index": 1, "matchedDismissed": 1 }]',
+        content: '[{ "index": 1, "matchedEarlier": 1 }]',
       }),
     } as unknown as import('./providers').LLMClient;
 
@@ -2037,7 +2041,7 @@ describe('llmDeduplicateFindings', () => {
     const kept = await llmDeduplicateFindings(findings, [fixed], mockClient);
     expect(kept.duplicates).toHaveLength(0);
     expect(kept.unique).toEqual([{ ...findings[0], resemblesFixed: { title: 'Null safety issue', file: 'src/foo.ts', line: 10 } }, findings[1]]);
-    jest.mocked(mockClient.sendMessage).mockResolvedValueOnce({ content: '[{ "index": 1, "matchedDismissed": 1 }, { "index": 1, "matchedDismissed": 2 }]' } as never);
+    jest.mocked(mockClient.sendMessage).mockResolvedValueOnce({ content: '[{ "index": 1, "matchedEarlier": 1 }, { "index": 1, "matchedEarlier": 2 }]' } as never);
     const both = await llmDeduplicateFindings(findings, [fixed, previous[0]], mockClient);
     expect(both.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
 
@@ -2083,6 +2087,41 @@ describe('llmDeduplicateFindings', () => {
     expect(result.duplicates).toHaveLength(0);
   });
 
+  it('catches a reworded repeat of a waived or answered finding from its description and posted line', async () => {
+    // Three wordings of one finding, each posted a round after the one before.
+    const memory = { file: 'src/memory.ts', severity: 'warning' as const };
+    const waived = makePrevious({
+      ...memory, severity: 'suggestion', status: 'resolved', threadId: 'T1', line: 0, originalLine: 84, findingLine: 84, answer: 'Agreed. The move is the follow-up.',
+      title: 'Repos with `memory.enabled` and no `memory.repo` lose their existing memory silently',
+      description: "Before this change, an empty `memory.repo` meant `<owner>/review-memory` (the removed `resolveMemoryRepo`, called with the App's memory token). Now the same config goes to the central store, which starts empty for that repo.",
+    });
+    const second = makeFinding({
+      ...memory, line: 79,
+      title: 'Repos on the old default `<owner>/review-memory` quietly lose their stored memory',
+      description: 'Before this change, an empty `memory.repo` resolved to `<owner>/review-memory` (the removed `resolveMemoryRepo`). Now an empty `memory.repo` goes straight to the central store.',
+    });
+    const third = makeFinding({
+      ...memory, line: 79,
+      title: 'Repos on the old default `<owner>/review-memory` silently lose their memory and start writing to the central repository',
+      description: 'Before this change, an empty `memory.repo` resolved to `<owner>/review-memory` through `resolveMemoryRepo`. Now an empty `memory.repo` goes straight to `serviceMemoryStore`, with no warning or log line.',
+    });
+    const match = { sendMessage: jest.fn().mockResolvedValue({ content: '[{ "index": 1, "matchedEarlier": 1 }]' }) } as unknown as import('./providers').LLMClient;
+
+    // The titles share too few words for the static match, so the model compares the descriptions on the posted line.
+    expect(deduplicateFindings([second], [waived]).unique).toEqual([second]);
+    expect(await llmDeduplicateFindings([second], [waived], match)).toEqual({ unique: [], duplicates: [{ finding: second, matchedTitle: waived.title, matchType: 'llm' }] });
+    const [, prompt] = jest.mocked(match.sendMessage).mock.calls[0];
+    expect(prompt).toContain('(src/memory.ts:84): Before this change, an empty memory.repo meant');
+    expect(prompt).toContain('(src/memory.ts:79): Before this change, an empty memory.repo resolved to');
+
+    // An open thread Manki answered is matched too, and its repeat goes to the judge with the answer, even as a blocker.
+    const answered = makePrevious({ ...memory, status: 'replied', threadId: 'T2', line: 79, title: second.title, description: second.description, answer: 'Unverified. The move is not in this PR.' });
+    const withAnswer = { answeredIn: { threadId: 'T2', answer: 'Unverified. The move is not in this PR.' } };
+    expect(await llmDeduplicateFindings([third], [answered], match)).toEqual({ unique: [{ ...third, ...withAnswer }], duplicates: [] });
+    const blocker = { ...third, severity: 'blocker' as const };
+    expect(await llmDeduplicateFindings([blocker], [answered], match)).toEqual({ unique: [{ ...blocker, ...withAnswer }], duplicates: [] });
+  });
+
   it('does not treat replied findings as dismissed', async () => {
     const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 10 })];
     const previous = [makePrevious({ title: 'Missing null check', status: 'replied' })];
@@ -2104,7 +2143,7 @@ describe('llmDeduplicateFindings', () => {
     ];
     const mockClient = {
       sendMessage: jest.fn().mockResolvedValue({
-        content: '```json\n[{ "index": 1, "matchedDismissed": 1 }]\n```',
+        content: '```json\n[{ "index": 1, "matchedEarlier": 1 }]\n```',
       }),
     } as unknown as import('./providers').LLMClient;
 
@@ -2116,7 +2155,7 @@ describe('llmDeduplicateFindings', () => {
     expect(result.duplicates[0].matchedTitle).toBe('Null safety issue');
   });
 
-  it('keeps finding in unique when matchedDismissed index is out of bounds', async () => {
+  it('keeps finding in unique when matchedEarlier index is out of bounds', async () => {
     const findings = [
       makeFinding({ title: 'Null check missing', file: 'src/foo.ts', line: 10 }),
     ];
@@ -2126,7 +2165,7 @@ describe('llmDeduplicateFindings', () => {
     ];
     const mockClient = {
       sendMessage: jest.fn().mockResolvedValue({
-        content: '[{ "index": 1, "matchedDismissed": 99 }]',
+        content: '[{ "index": 1, "matchedEarlier": 99 }]',
       }),
     } as unknown as import('./providers').LLMClient;
 
