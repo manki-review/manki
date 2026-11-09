@@ -285,15 +285,18 @@ export function applySuppressions(
   return { kept, suppressed };
 }
 
+/**
+ * Whether a suppression `pattern` hides a finding titled `title`, regardless of its file. Backticks are ignored, since a
+ * command cannot carry inline code and GitHub shows a title's code without them.
+ */
+export function patternMatchesTitle(pattern: string, title: string): boolean {
+  const plain = (text: string) => text.replace(/`/g, '').toLowerCase();
+  const patternPlain = plain(pattern);
+  return patternPlain.length >= 3 && plain(title).includes(patternPlain);
+}
+
 export function matchesSuppression(finding: Finding, suppression: Suppression): boolean {
-  const titleLower = finding.title.toLowerCase();
-  const patternLower = suppression.pattern.toLowerCase();
-
-  if (!patternLower || patternLower.length < 3) {
-    return false;
-  }
-
-  if (!titleLower.includes(patternLower)) {
+  if (!patternMatchesTitle(suppression.pattern, finding.title)) {
     return false;
   }
 

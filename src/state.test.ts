@@ -129,6 +129,9 @@ describe('fetchBotReviewThreads', () => {
       makeGraphqlFetchResponse([
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:null-check --> **Blocker**: null check', databaseId: 501 }),
         makeGraphqlFetchThreadNode({
+          id: 't3', body: `<!-- manki:warning:-parse--drops-a-field --> **Warning**\n\n<!-- manki-finding: ${JSON.stringify({ title: '`parse` drops a field' })} -->`,
+        }),
+        makeGraphqlFetchThreadNode({
           id: 't2', body: '<!-- manki:suggestion:rename-var --> **Suggestion**: rename var', isResolved: true,
           // Only Manki's own reply counts as a fix confirmation, not a developer who copies its marker.
           replies: [
@@ -142,9 +145,10 @@ describe('fetchBotReviewThreads', () => {
     const octokit = { graphql: graphqlMock } as unknown as Octokit;
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
-    expect(threads).toHaveLength(2);
+    expect(threads).toHaveLength(3);
     expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, findingTitle: 'null check' });
-    expect(threads[1]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', fixedOn: ['ab'.repeat(20)] });
+    expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, findingTitle: '`parse` drops a field' });
+    expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', fixedOn: ['ab'.repeat(20)] });
   });
 
   it('reads every page of review threads', async () => {

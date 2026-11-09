@@ -190,6 +190,13 @@ describe('matchesSuppression', () => {
     const finding = makeFinding({ title: 'foo bar baz' });
     expect(matchesSuppression(finding, makeSuppression({ pattern: 'foo' }))).toBe(true);
   });
+
+  it('ignores backticks, so a title copied as GitHub shows it matches', () => {
+    const finding = makeFinding({ title: '`parse` drops a field' });
+    expect(matchesSuppression(finding, makeSuppression({ pattern: 'parse drops a field' }))).toBe(true);
+    expect(matchesSuppression(finding, makeSuppression({ pattern: "`parse` drops" }))).toBe(true);
+    expect(matchesSuppression(finding, makeSuppression({ pattern: '`ab`' }))).toBe(false);
+  });
 });
 
 describe('sanitizeMemoryField', () => {
