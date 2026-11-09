@@ -1403,9 +1403,9 @@ describe('postReview body lead', () => {
     agentNames: [],
   };
 
-  async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = [], context?: RoundContext): Promise<{ body: string; event: string; approvalHeld: ApprovalHeld }> {
+  async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = [], context?: RoundContext, restart?: string): Promise<{ body: string; event: string; approvalHeld: ApprovalHeld }> {
     mockCreateReview.mockClear();
-    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, context, context && 1000, { existingThreads });
+    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, context, context && 1000, { existingThreads, restart });
     return { ...mockCreateReview.mock.calls[0][0] as { body: string; event: string }, approvalHeld };
   }
 
@@ -1665,8 +1665,9 @@ describe('postReview body lead', () => {
       ...base, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', verdictReason: 'prior_unaddressed',
       verdictTrace: { survivingBlockers: [], unresolvedPriors: [prior] },
       needsHuman: { cause: 'budget', blockers: [prior] },
-    });
+    }, [], undefined, 'A review you start by hand also turns automatic review back on for the next 3 rounds.');
     expect(lead(budgetStuck.body)).toMatch(/^\u{1F6D1} \*\*Needs a human:\*\* 1 blocker still open after the last automatic round\./u);
+    expect(budgetStuck.body).toContain('Automatic review is paused until someone comments `@manki review`. A review you start by hand also turns automatic review back on for the next 3 rounds.\n\n- `src/a.ts:10`: Still open prior');
     expect(budgetStuck.body.split('Still open prior')).toHaveLength(2);
     expect(budgetStuck.body).not.toContain('Still open from earlier reviews');
     expect(stuck.body).not.toContain('What this does');

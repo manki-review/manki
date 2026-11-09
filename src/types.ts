@@ -823,9 +823,14 @@ export interface ReviewConfig {
   convergence?: {
     /**
      * Hard cap on the number of automatic review rounds since Manki last approved the PR. After the last round,
-     * automatic review is paused until `@manki review`, which runs one more round. `0` disables the cap.
+     * automatic review is paused until `@manki review`. `0` disables the cap.
      */
     max_auto_rounds?: number;
+    /**
+     * Automatic rounds a review started by hand turns back on while automatic review is paused, when the cap allows fewer.
+     * `0` grants none, so after a round-cap pause a review started by hand reviews only its own round.
+     */
+    rounds_after_restart?: number;
     /** Glob patterns for test files. Suggestion/nitpick findings on these paths are dropped on round 2+. */
     test_path_patterns?: string[];
     /** When true, a prior-round finding whose thread a human resolved, or Manki resolved as judge-addressed, suppresses matching current findings. */

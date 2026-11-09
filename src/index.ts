@@ -972,14 +972,14 @@ async function postPauseNotice(
   target: RunTarget, progress: RunProgress, pause: PauseState, maxAutoRounds: number,
   previousFindings: PreviousFinding[], lastRoundAt?: string,
 ): Promise<CheckReport> {
-  const { capReached, capRounds, reason } = pause;
+  const { capReached, capRounds, reason, restart } = pause;
   core.info(capReached
     ? `Round cap reached (${capRounds} rounds with new changes since the last approval >= max ${maxAutoRounds}) — skipping auto review`
     : 'Last round did not converge — skipping auto review');
   const settings = progressSettings(target, progress, 'automatic review paused');
   const blockers = formatOpenBlockers(previousFindings);
   const body = withSettingsBlock(
-    withMarkers(`${reason} Automatic review is paused.${blockers ? `\n\n${blockers}` : ''}`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER),
+    withMarkers(`${reason} Automatic review is paused.${restart ? ` ${restart}` : ''}${blockers ? `\n\n${blockers}` : ''}`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER),
     settings,
   );
   await replaceWithNotice(target, progress, PAUSE_NOTICE_MARKER, body, lastRoundAt);
@@ -1376,7 +1376,7 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
 }
 
 /** Posts the round's review and dismisses the previous one. Returns the new review's id, and whether its approval was held. */
-async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
+async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const { octokit, owner, repo, prNumber, commitSha, diff, recap } = run;
   // A finding on a parsed lockfile gets a thread on its line like any other.
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, withLockfiles(diff, run.lockfiles), context, reviewTimeMs, {
@@ -1384,6 +1384,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     draft: run.options.draft,
     configFailed: configFailed(run.reviewSource),
     memorySkip: run.memorySkip?.message,
+    restart,
     skipped: { excluded: run.excludedFiles.filter(f => !run.lockfiles.some(l => l.path === f.path)), binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
@@ -1654,7 +1655,7 @@ async function runFullReview(
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
     const pause = pauseState(recap, config);
-    const { capRounds, paused } = pause;
+    const { roundsLeft, paused } = pause;
     if (paused && !skipCap && !forceReview) {
       checkReport = await postPauseNotice(target, progress, pause, maxAutoRounds, recap.previousFindings, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
@@ -1698,7 +1699,7 @@ async function runFullReview(
       prAuthorLogin,
       interRoundDiff,
       headSha: commitSha,
-      finalRound: !paused && countsTowardCap && maxAutoRounds > 0 && capRounds + 1 === maxAutoRounds,
+      finalRound: !paused && countsTowardCap && roundsLeft === 1,
       workspace,
       deeper: options.deeper,
       excludedPaths: excludedFiles.map(f => f.path),
@@ -1726,15 +1727,15 @@ async function runFullReview(
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
     const resolved = await resolveAddressedThreads(run, result);
     const context = buildContext();
+    const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     let posted: Awaited<ReturnType<typeof postRound>>;
     try {
-      posted = await postRound(run, result, context, reviewTimeMs);
+      posted = await postRound(run, result, context, reviewTimeMs, pauseAfter.restart);
     } catch (error) {
       // A thread is resolved only by a review that replaces the previous one.
       await reopenThreads(octokit, resolved);
       throw error;
     }
-    const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     await reportPrState(owner, repo, prNumber, {
       reviewed: { commit: commitSha },
       ...(result.verdict === 'APPROVE' && { approval: { commit: commitSha, held: !!posted.approvalHeld } }),
