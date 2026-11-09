@@ -9,7 +9,7 @@ import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { resolveInRoot } from './mcp-server';
 import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
-import { hiddenCharacters, safeTruncate } from './utils';
+import { escapeRegExp, hiddenCharacters, safeTruncate } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -502,10 +502,6 @@ function claimedSymbols(text: string): string[] {
     if (name.length >= 3) symbols.add(name);
   }
   return [...symbols].slice(0, MAX_CLAIMED_SYMBOLS);
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** Logs why `source` gave nothing and returns that reason, short enough for the round record. */

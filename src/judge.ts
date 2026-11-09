@@ -260,6 +260,8 @@ export interface JudgeInput {
   relatedRepos?: RelatedRepo[];
   /** A client with `repoTools` and the checked-out PR head, with which the judge tries to refute each blocker and open lead. */
   refutation?: { client: LLMClient; workspace: string };
+  /** The section `listUsesOutsideDiff` builds, shown to the judge and the refuter. */
+  usesOutsideDiff?: string;
 }
 
 export interface JudgedFinding {
@@ -643,6 +645,7 @@ export function buildJudgeUserMessage(
   interRoundDiff?: string,
   prDiff?: string,
   findingNotes: (finding: Finding) => string[] = () => [],
+  usesOutsideDiff = '',
 ): string {
   const parts: string[] = [];
 
@@ -791,6 +794,8 @@ export function buildJudgeUserMessage(
       parts.push('');
     }
   }
+
+  if (usesOutsideDiff) parts.push(usesOutsideDiff);
 
   parts.push(`## Findings to Evaluate (${findings.length} total)\n`);
 
@@ -1070,7 +1075,7 @@ export async function runJudgeAgent(
   inPrSuppressedCount?: number;
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
 }> {
-  const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads, relatedRepos, refutation } = input;
+  const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads, relatedRepos, refutation, usesOutsideDiff } = input;
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
 
   const hasOpenThreads = (openThreads?.length ?? 0) > 0;
@@ -1117,7 +1122,7 @@ export async function runJudgeAgent(
   const proofFiles = (f: Finding) => (f.evidence?.proof ?? []).map(location => location.replace(/:\d+(?:-\d+)?$/, ''));
   const judgedFiles = new Set([...findings.flatMap(f => [f.file, ...proofFiles(f)]), ...(openThreads ?? []).map(t => t.file)]);
   const judgedDiff = rebuildRawDiff({ ...diff, files: diff.files.filter(f => judgedFiles.has(f.path)).map(shortenLongLines) });
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes);
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff);
 
   const effort = input.effort ?? 'high';
   let judgeResult = await sendWithParseRetry(
@@ -1196,7 +1201,7 @@ export async function runJudgeAgent(
   const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds), staysPreExisting), staysPreExisting);
   const suppression = applyCrossRoundSuppression(mapped, priorRounds, crossRoundOptions);
   const { findings: suppressed, count: inPrCount } = applyInPrSuppression(suppression.findings, inPrSuppressions);
-  const checked = refutation ? await refuteBlockers(refutation.client, suppressed, { workspace: refutation.workspace, priorRounds, effort, diff }) : suppressed;
+  const checked = refutation ? await refuteBlockers(refutation.client, suppressed, { workspace: refutation.workspace, priorRounds, effort, diff, usesOutsideDiff }) : suppressed;
 
   return {
     findings: checked,

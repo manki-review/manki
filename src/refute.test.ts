@@ -14,14 +14,14 @@ const finding = (title: string, overrides: Partial<Finding> = {}): Finding => ({
 });
 
 /** A client with tools that answers each finding, picked by its title in the user message, with a canned reply. */
-function fakeClient(replies: Record<string, unknown>): LLMClient & { calls: [string, SendMessageOptions | undefined][] } {
-  const calls: [string, SendMessageOptions | undefined][] = [];
+function fakeClient(replies: Record<string, unknown>): LLMClient & { calls: [string, SendMessageOptions | undefined, string][] } {
+  const calls: [string, SendMessageOptions | undefined, string][] = [];
   return {
     repoTools: true,
     calls,
     async sendMessage(_system, user, options) {
       const title = Object.keys(replies).find(t => user.includes(`: ${t}\n`))!;
-      calls.push([title, options]);
+      calls.push([title, options, user]);
       const reply = replies[title];
       if (reply instanceof Error) throw reply;
       return { content: typeof reply === 'string' ? reply : JSON.stringify(reply) };
@@ -90,7 +90,8 @@ describe('refuteBlockers', () => {
       finding('Dropped lead', { severity: 'ignore', notChecked: true, lead }),
     ];
 
-    const result = await refuteBlockers(client, findings, { workspace, effort: 'high', diff });
+    const usesOutsideDiff = '## Uses Outside the Diff\n\nsrc/api.ts:9 checks both inputs.\n\n';
+    const result = await refuteBlockers(client, findings, { workspace, effort: 'high', diff, usesOutsideDiff });
 
     expect(result.map(f => [f.title, f.severity, f.refutation?.outcome])).toEqual([
       // PR content the refuter reads could steer a disproof, so it never lowers a blocker. The reason is kept.
@@ -139,6 +140,8 @@ describe('refuteBlockers', () => {
     // Every blocker and lead was asked once, and the warning never.
     expect(client.calls.map(([title]) => title).sort()).toEqual(['Blocking lead unsettled', 'Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved by an unrelated file', 'Disproved in its own file', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead disproved', 'Lead unsettled', 'Security disproved', 'Unproven and contradicted', 'Unproven disproved', 'Unproven lead confirmed', 'Unsettled']);
     expect(client.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15 }, timeoutMs: 600_000 });
+    // Every refuter sees the same list of uses the finders and the judge saw, after the finding.
+    expect(client.calls.every(([, , user]) => user.endsWith('\n\n## Uses Outside the Diff\n\nsrc/api.ts:9 checks both inputs.'))).toBe(true);
   });
 
   it('reuses the outcome an earlier round stored for the same finding while every file it rests on is unchanged', async () => {

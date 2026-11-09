@@ -1,5 +1,10 @@
 import * as core from '@actions/core';
 
+/** Returns `text` with every character a regular expression gives a meaning escaped. */
+export function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Truncate a string to a maximum length, appending "..." if truncated.
  */

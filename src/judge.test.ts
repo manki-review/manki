@@ -562,7 +562,7 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).not.toContain('## Changed Files in This PR');
   });
 
-  it('includes the PR diff section only when a diff is given, truncated like the reviewer diff', () => {
+  it('includes the PR diff section only when a diff is given, truncated like the reviewer diff, and the uses outside the diff after it', () => {
     const findings = [makeFinding()];
     const prDiff = 'diff --git a/src/foo.ts b/src/foo.ts\n+const x = 1;';
     const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, undefined, undefined, prDiff);
@@ -581,7 +581,14 @@ describe('buildJudgeUserMessage', () => {
     for (const empty of [undefined, '', '  \n']) {
       const noDiffMsg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, undefined, undefined, empty);
       expect(noDiffMsg).not.toContain('## Pull Request Diff');
+      expect(noDiffMsg).not.toContain('## Uses Outside the Diff');
     }
+
+    // The uses outside the diff follow the diff, so a finding that cites one of their lines can be checked here.
+    const uses = '## Uses Outside the Diff\n\nwallet/src/fees.rs:2: if p.mn_type.is_some() {\n\n';
+    const withUses = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, undefined, undefined, prDiff, undefined, uses);
+    expect(withUses.indexOf('## Pull Request Diff')).toBeLessThan(withUses.indexOf(uses));
+    expect(withUses.indexOf(uses)).toBeLessThan(withUses.indexOf('## Findings to Evaluate'));
   });
 
   it('omits changed files section when undefined', () => {

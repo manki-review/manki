@@ -237,6 +237,12 @@ Manki also looks for hidden characters on the lines the PR adds in any changed f
 
 Manki skips `actionlint`, `zizmor` or `shellcheck` when CI already runs it: when a workflow on the base branch names the tool outside a comment, or a check run on the base branch's head commit has the tool's name in its name. The PR can change neither, so a job it adds cannot turn a tool off. The `Manki context` block records the skip. Since no CI shows them to the author, every result goes to the judge as a candidate finding, and a reviewer finding on the same line is never dropped for it. A result the judge keeps is posted with the tool in its label, such as `⚠️ **Warning** (gitleaks):`. A clean run posts nothing. The `Manki context` block records each enabled analyzer under `staticAnalysis.analyzers`, with how many results it found or why it was skipped.
 
+## Uses outside the diff
+
+When the PR head is checked out for the repository tools, Manki lists where the code the PR changes is used elsewhere, before any model runs. It takes the changed types, struct fields, enum variants, functions, constants and config keys from the hunks: through ast-grep for Rust, TypeScript, JavaScript and Python, and from keyword declarations (`func`, `class`, `struct` and similar) and config keys with an underscore in other files. When a type's body changes, its other fields and variants are searched too, after the changed symbols. Manki searches the head commit for each name as a whole word, outside the changed lines and `exclude_paths`. Code comes first, then comments, then documents. Within each, a package that depends on the changed one comes first, then other files of the same package, then the same file, and last a package that does not depend on it, which can only hold a namesake. Each symbol shows at most 4 uses and the list at most 40, and the section says how many it left out. A name with more than 80 uses, or one as common as `new`, `len` or `from`, is named but not listed. The list also shows each type whose fields the changed lines read or change, with all its fields, so the finders see state kept next to the field the PR touches.
+
+The finders, the judge and the refuter all get the list, so a finding that cites one of its lines rests on code the judge can see. Building it takes seconds and calls no model. Without a checkout, or when the search fails, the review runs without it and the log says why.
+
 ## Related repositories
 
 `related_repos` lists public repositories on github.com that the review may read as context. Each entry has:
