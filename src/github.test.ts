@@ -1184,21 +1184,50 @@ describe('postReview with context', () => {
     const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
     const noise = () => randomBytes(100).toString('hex');
     const entries: FindingFingerprintEntry[] = [{ fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'kept' }, severity: 'warning' }];
+    const usesOutsideDiff = {
+      symbols: [{ name: 'parse_header', declared: 'src/parse.py:4', uses: ['src/read.py:9', 'cmd/main.go:30'] }],
+      types: ['src/model.ts:12: interface Header { size: number; flags: number }'],
+    };
     const ctx = makeContext({
       findings: { count: 1, severityCounts: { warning: 1 }, entries },
-      reviewers: { agents: ['Correctness'], rawFindings: Array.from({ length: 600 }, (_, i) => ({ title: noise(), file: `src/${i}.ts`, line: i, severity: 'nitpick' as const, reviewers: ['Correctness'], description: noise() })) },
-      usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'] }] },
+      reviewers: {
+        agents: ['Correctness'],
+        rawFindings: Array.from({ length: 600 }, (_, i) => ({
+          title: `Finding ${i}`, file: `src/${i}.ts`, line: i, severity: 'nitpick' as const, reviewers: ['Correctness'], description: noise(),
+          suggestedFix: noise(), evidence: { checks: [noise()], proof: [`src/${i}.ts:${i}`] },
+        })),
+      },
+      judge: { summary: 'Fine.', dropped: [{ title: 'Dropped', file: 'src/a.ts', line: 1, reviewers: ['Correctness'] }] },
+      usesOutsideDiff,
     });
 
+    // The raw findings and the uses outside the diff stay in short form, so a missed defect can still be traced.
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('Many findings.');
     const [record] = extractReviewRecords(body).records.map(r => JSON.parse(r) as RoundContext);
-    expect(record.meta.omitted).toEqual(['reviewers.rawFindings', 'usesOutsideDiff']);
-    expect(record.reviewers.rawFindings).toBeUndefined();
-    expect(record.usesOutsideDiff).toBeUndefined();
+    expect(record.meta.omitted).toEqual(['judge.dropped']);
+    expect(record.meta.compacted).toEqual(['reviewers.rawFindings', 'usesOutsideDiff']);
+    expect(record.reviewers.rawFindings).toHaveLength(600);
+    expect(record.reviewers.rawFindings?.[7]).toEqual({ title: 'Finding 7', file: 'src/7.ts', line: 7, severity: 'nitpick', reviewers: ['Correctness'] });
+    expect(record.usesOutsideDiff).toEqual({ symbols: usesOutsideDiff.symbols, types: ['src/model.ts:12'] });
+    expect(record.judge.dropped).toBeUndefined();
     expect(record.findings.entries).toEqual(entries);
     expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without per-file and per-finding diagnostics'));
+
+    // When even the short form does not fit, both are left out too.
+    const noisy = makeContext({
+      findings: { count: 1, severityCounts: { warning: 1 }, entries },
+      reviewers: { agents: ['Correctness'], rawFindings: Array.from({ length: 600 }, (_, i) => ({ title: noise(), file: `src/${i}.ts`, line: i, severity: 'nitpick' as const, reviewers: ['Correctness'], description: noise() })) },
+      usesOutsideDiff,
+    });
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, noisy, 1000);
+    const [dropped] = extractReviewRecords(mockCreateReview.mock.calls[1][0].body as string).records.map(r => JSON.parse(r) as RoundContext);
+    expect(dropped.meta.omitted).toEqual(['reviewers.rawFindings', 'usesOutsideDiff']);
+    expect(dropped.meta.compacted).toBeUndefined();
+    expect(dropped.reviewers.rawFindings).toBeUndefined();
+    expect(dropped.usesOutsideDiff).toBeUndefined();
+    expect(dropped.findings.entries).toEqual(entries);
 
     const huge = makeContext({
       findings: { count: 600, severityCounts: { nitpick: 600 }, entries: Array.from({ length: 600 }, (_, i) => ({ fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: noise() }, severity: 'nitpick' as const, title: noise() })) },
