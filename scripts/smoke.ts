@@ -17,8 +17,8 @@ import {
   buildAuthForProvider,
   createLLMClient,
   parseModelSpec,
+  readProviderInputsFromEnv,
   sanitizeLogOutput,
-  type ProviderInputs,
   type SendMessageOptions,
 } from '../src/providers';
 
@@ -89,17 +89,6 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): SmokeArgs {
     throw new Error('--model is required. Run with --help for usage.');
   }
   return { model, effort, prompt: prompt ?? DEFAULT_PROMPT };
-}
-
-export function readProviderInputsFromEnv(): ProviderInputs {
-  return {
-    anthropicOauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '',
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
-    openaiOauthToken: process.env.OPENAI_OAUTH_TOKEN ?? '',
-    openaiApiKey: process.env.OPENAI_API_KEY ?? '',
-    geminiOauthToken: process.env.GEMINI_OAUTH_TOKEN ?? '',
-    geminiApiKey: process.env.GEMINI_API_KEY ?? '',
-  };
 }
 
 async function main(): Promise<number> {

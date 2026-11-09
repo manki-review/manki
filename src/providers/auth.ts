@@ -12,6 +12,18 @@ export interface ProviderInputs {
   geminiApiKey: string;
 }
 
+/** Reads the credentials from the environment variables named after the action's secrets. */
+export function readProviderInputsFromEnv(): ProviderInputs {
+  return {
+    anthropicOauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '',
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
+    openaiOauthToken: process.env.OPENAI_OAUTH_TOKEN ?? '',
+    openaiApiKey: process.env.OPENAI_API_KEY ?? '',
+    geminiOauthToken: process.env.GEMINI_OAUTH_TOKEN ?? '',
+    geminiApiKey: process.env.GEMINI_API_KEY ?? '',
+  };
+}
+
 export function buildAuthForProvider(provider: ProviderName, inputs: ProviderInputs): ProviderAuth {
   switch (provider) {
     case 'anthropic':

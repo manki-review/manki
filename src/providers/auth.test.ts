@@ -1,4 +1,4 @@
-import { buildAuthForProvider, hasAnyProviderCredentials, ProviderInputs } from './auth';
+import { buildAuthForProvider, hasAnyProviderCredentials, ProviderInputs, readProviderInputsFromEnv } from './auth';
 
 const empty: ProviderInputs = {
   anthropicOauthToken: '',
@@ -77,5 +77,44 @@ describe('buildAuthForProvider', () => {
   it('throws for an unsupported/unknown provider', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => buildAuthForProvider('unknown' as any, empty)).toThrow('Unsupported provider: unknown');
+  });
+});
+
+describe('readProviderInputsFromEnv', () => {
+  const origEnv = process.env;
+
+  afterEach(() => {
+    process.env = origEnv;
+  });
+
+  it('maps each env var to the correct ProviderInputs field', () => {
+    process.env = {
+      CLAUDE_CODE_OAUTH_TOKEN: 'a',
+      ANTHROPIC_API_KEY: 'b',
+      OPENAI_OAUTH_TOKEN: 'c',
+      OPENAI_API_KEY: 'd',
+      GEMINI_OAUTH_TOKEN: 'e',
+      GEMINI_API_KEY: 'f',
+    };
+    expect(readProviderInputsFromEnv()).toEqual({
+      anthropicOauthToken: 'a',
+      anthropicApiKey: 'b',
+      openaiOauthToken: 'c',
+      openaiApiKey: 'd',
+      geminiOauthToken: 'e',
+      geminiApiKey: 'f',
+    });
+  });
+
+  it('returns empty strings when env vars are absent', () => {
+    process.env = {};
+    expect(readProviderInputsFromEnv()).toEqual({
+      anthropicOauthToken: '',
+      anthropicApiKey: '',
+      openaiOauthToken: '',
+      openaiApiKey: '',
+      geminiOauthToken: '',
+      geminiApiKey: '',
+    });
   });
 });
