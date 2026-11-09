@@ -1401,10 +1401,12 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped, memorySkip }: {
+  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped, memorySkip, restart }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configFailed?: boolean; noVerdict?: boolean;
     /** Why the round ran without memory, with the fix. */
     memorySkip?: string;
+    /** What a review started by hand turns back on, for a round that pauses automatic review. */
+    restart?: string;
     /** Changed files no model read. Any one holds the approval. */
     skipped?: SkippedFiles;
   } = {},
@@ -1528,7 +1530,7 @@ export async function postReview(
     const overrides = event === 'APPROVE' && formatSecurityOverrides(existingThreads.flatMap(t =>
       t.securityOverride ? [{ title: t.title, threadUrl: t.threadUrl, login: t.securityOverride.login }] : []));
     const sections = [
-      formatNeedsHuman(result),
+      formatNeedsHuman(result, restart),
       (blockingThreads || stillOpen.length > 0) && [blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n'),
       generalFindings.length > 0 && `**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`,
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
@@ -1888,9 +1890,9 @@ function formatTraceEntry(p: Pick<VerdictTraceEntry, 'file' | 'title' | 'line' |
   return `- ${location}${title}${link}`;
 }
 
-function formatNeedsHuman(result: ReviewResult): string | null {
+function formatNeedsHuman(result: ReviewResult, restart?: string): string | null {
   if (result.outcome !== 'NOT_CONVERGING' || !result.needsHuman) return null;
-  return `Automatic review is paused until someone comments \`@manki review\`.\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
+  return `Automatic review is paused until someone comments \`@manki review\`.${restart ? ` ${restart}` : ''}\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
 }
 
 /** Returns `text` for a link label on one line, with the backslashes and brackets that would end the label escaped. */

@@ -5,7 +5,7 @@ import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS }
 import { formatFindingComment } from './github';
 import { extractApprovalRecords, formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG } from './config';
-import { ApprovalRecord, Finding } from './types';
+import { ApprovalRecord, Finding, RoundContext } from './types';
 import * as authModule from './auth';
 
 jest.mock('./auth', () => ({
@@ -798,7 +798,7 @@ describe('checkAndAutoApprove', () => {
     notConverging.meta.outcome = 'NOT_CONVERGING';
     it.each([
       ['the last round did not converge', DEFAULT_CONFIG, [formatReviewRecord(notConverging)], 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick **Review again** in the settings block', 'automatic_pause'],
-      ['the round cap is reached', DEFAULT_CONFIG, Array.from({ length: 10 }, (_, i) => formatReviewRecord(makeRoundContext(i + 1))), 'Manki has reviewed new changes in 10/10 rounds on this PR. Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes. Automatic review is paused.', 'automatic_pause'],
+      ['the round cap is reached', DEFAULT_CONFIG, Array.from({ length: 10 }, (_, i) => formatReviewRecord(makeRoundContext(i + 1))), 'Manki has reviewed new changes in 10/10 rounds on this PR. Rounds that keep finding problems usually mean the approach needs another look, so step back and reconsider it before pushing more fixes. Automatic review is paused. Tick **Review again** in the settings block, or comment `@manki review`, to review it. A review you start by hand also turns automatic review back on for the next 3 rounds.', 'automatic_pause'],
       ['automatic review is off', AUTO_REVIEW_OFF, [], 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.', 'auto_review_off'],
     ])('posts one withheld notice with the reason when %s', async (_label, config, roundBodies, reason, cause) => {
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
@@ -1213,6 +1213,66 @@ describe('pauseState', () => {
     expect(pauseState({ priorRounds: rounds }, DEFAULT_CONFIG)).toMatchObject({ capRounds: 10, paused: true });
     rounds[1].meta.draft = true;
     rounds[3].meta.draft = true;
-    expect(pauseState({ priorRounds: rounds }, DEFAULT_CONFIG)).toEqual({ capRounds: 8, capReached: false, paused: false });
+    expect(pauseState({ priorRounds: rounds }, DEFAULT_CONFIG)).toEqual({ capRounds: 8, roundsLeft: 2, capReached: false, paused: false });
+  });
+
+  it('turns automatic review back on for `rounds_after_restart` rounds after a review started by hand while paused', () => {
+    const byHand = (round: RoundContext, bypassReason: 'manual_review_command' | 'force_review' = 'manual_review_command'): RoundContext => ({
+      ...round, meta: { ...round.meta, cap: { priorRoundCount: round.meta.round - 1, maxAutoRounds: 10, skipCap: true, forceReview: bypassReason === 'force_review', bypassReason } },
+    });
+    const rounds = (n: number, from = 1) => Array.from({ length: n }, (_, i) => makeRoundContext(from + i));
+    const state = (priorRounds: RoundContext[], config = DEFAULT_CONFIG) => pauseState({ priorRounds }, config);
+    const restartLine = 'A review you start by hand also turns automatic review back on for the next 3 rounds.';
+
+    const capped = rounds(10);
+    expect(state(capped)).toMatchObject({ capRounds: 10, roundsLeft: 0, capReached: true, paused: true, restart: restartLine });
+
+    // The round started by hand does not count, so exactly three automatic rounds follow it.
+    const restarted = [...capped, byHand(makeRoundContext(11))];
+    expect(state(restarted)).toEqual({ capRounds: 11, roundsLeft: 3, capReached: false, paused: false });
+    expect(state([...restarted, ...rounds(2, 12)])).toMatchObject({ roundsLeft: 1, paused: false });
+    const pausedAgain = [...restarted, ...rounds(3, 12)];
+    expect(state(pausedAgain)).toMatchObject({
+      capRounds: 14, roundsLeft: 0, paused: true, restart: restartLine,
+      reason: expect.stringMatching(/^Manki has reviewed new changes in 14\/10 rounds on this PR\./),
+    });
+
+    // Every later restart grants the same rounds again.
+    const second = [...pausedAgain, byHand(makeRoundContext(15), 'force_review')];
+    expect(state(second)).toMatchObject({ roundsLeft: 3, paused: false });
+    expect(state([...second, ...rounds(3, 16)])).toMatchObject({ roundsLeft: 0, paused: true });
+
+    // An approval resets the count to the full limit.
+    const approved = makeRoundContext(19, { verdict: 'APPROVE' });
+    expect(state([...second, ...rounds(3, 16), approved])).toEqual({ capRounds: 0, roundsLeft: 10, capReached: false, paused: false });
+    expect(state([...second, ...rounds(3, 16), approved, ...rounds(2, 20)])).toMatchObject({ capRounds: 2, roundsLeft: 8 });
+
+    // A review started by hand while not paused restarts nothing and counts like any other round.
+    expect(state([...rounds(3), byHand(makeRoundContext(4)), ...rounds(1, 5)])).toMatchObject({ capRounds: 5, roundsLeft: 5, paused: false });
+
+    // `0` keeps a restart to the one round asked for.
+    const once = { ...DEFAULT_CONFIG, convergence: { ...DEFAULT_CONFIG.convergence, rounds_after_restart: 0 } };
+    expect(state(capped, once)).not.toHaveProperty('restart');
+    expect(state(restarted, once)).toMatchObject({ capRounds: 11, roundsLeft: 0, paused: true });
+
+    // After a blocker came back, a restart keeps the rounds the cap still allows when they are more.
+    const early = rounds(4);
+    early[3].meta.outcome = 'NOT_CONVERGING';
+    expect(state(early)).toMatchObject({ paused: true, capReached: false, restart: 'A review you start by hand also turns automatic review back on for the next 6 rounds.' });
+    expect(state([...early, byHand(makeRoundContext(5))])).toMatchObject({ roundsLeft: 6, paused: false });
+    expect(state([...early, byHand(makeRoundContext(5))], once)).toMatchObject({ roundsLeft: 6, paused: false });
+    const late = rounds(9);
+    late[8].meta.outcome = 'NOT_CONVERGING';
+    expect(state(late)).toMatchObject({ roundsLeft: 1, paused: true, restart: restartLine });
+    expect(state([...late, byHand(makeRoundContext(10))])).toMatchObject({ roundsLeft: 3, paused: false });
+
+    // A restarted round that ends `NOT_CONVERGING` pauses again at once.
+    const blockedAgain = byHand(makeRoundContext(11));
+    blockedAgain.meta.outcome = 'NOT_CONVERGING';
+    expect(state([...capped, blockedAgain])).toMatchObject({ roundsLeft: 3, paused: true, reason: 'The last Manki round found a blocker that came back after a fix.' });
+
+    // With the cap off, a restart turns automatic review back on with no limit.
+    const uncapped = { ...DEFAULT_CONFIG, convergence: { ...DEFAULT_CONFIG.convergence, max_auto_rounds: 0 } };
+    expect(state(early, uncapped)).toMatchObject({ roundsLeft: Infinity, restart: 'A review you start by hand also turns automatic review back on.' });
   });
 });

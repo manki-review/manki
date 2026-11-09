@@ -1902,9 +1902,9 @@ describe('runFullReview orchestration', () => {
     });
 
     it.each([
-      ['ADDRESS_FIRST', 'REQUEST_CHANGES', 'failure', 'Changes requested', null],
-      ['NOT_CONVERGING', 'REQUEST_CHANGES', 'failure', 'Needs a human', { reason: 'The last Manki round found a blocker that came back after a fix.' }],
-    ] as const)('completes the check for a %s round as %s, and reports the pause it starts', async (outcome, verdict, conclusion, title, pause) => {
+      ['ADDRESS_FIRST', 'REQUEST_CHANGES', 'failure', 'Changes requested', null, undefined],
+      ['NOT_CONVERGING', 'REQUEST_CHANGES', 'failure', 'Needs a human', { reason: 'The last Manki round found a blocker that came back after a fix.' }, 'A review you start by hand also turns automatic review back on.'],
+    ] as const)('completes the check for a %s round as %s, and reports the pause it starts', async (outcome, verdict, conclusion, title, pause, restart) => {
       jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
         verdict, outcome, summary: 'Round summary', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
       });
@@ -1913,6 +1913,8 @@ describe('runFullReview orchestration', () => {
 
       expect(completedCheck()).toMatchObject({ conclusion, output: { title, summary: 'Round summary' } });
       expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, { reviewed: { commit: 'abc123' }, pause });
+      // The review body says what a review started by hand turns back on.
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.restart).toBe(restart);
     });
 
     it('completes the check as failure for an incomplete round', async () => {
@@ -6029,6 +6031,31 @@ describe('runFullReview orchestration', () => {
       expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalledWith(
         expect.objectContaining({ body: expect.stringContaining('Automatic review is paused') }),
       );
+    });
+
+    it('turns automatic review back on for `rounds_after_restart` rounds after a review started by hand, then pauses again', async () => {
+      const config = memoryEnabledConfig(5);
+      jest.mocked(configModule.loadConfig).mockReturnValue({ ...config, convergence: { ...config.convergence, rounds_after_restart: 3 } });
+      const rounds = priorRounds(9).map(roundContextFromLegacy);
+      rounds[5].meta.cap = { priorRoundCount: 5, maxAutoRounds: 5, skipCap: true, forceReview: false, bypassReason: 'manual_review_command' };
+      const runs = jest.mocked(reviewModule.runReview).mock.calls;
+      const lastPause = () => jest.mocked(authModule.reportPrState).mock.calls.at(-1)![3].pause;
+
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds.slice(0, 6) });
+      await callRunFullReview();
+      expect(runs[0][1]).toMatchObject({ finalRound: false });
+      expect(lastPause()).toBeNull();
+
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds.slice(0, 8) });
+      await callRunFullReview();
+      expect(runs[1][1]).toMatchObject({ finalRound: true });
+
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
+      await callRunFullReview();
+      expect(runs).toHaveLength(2);
+      expect(pauseNotice()).toContain('Manki has reviewed new changes in 9/5 rounds on this PR.');
+      expect(pauseNotice()).toContain('Automatic review is paused. A review you start by hand also turns automatic review back on for the next 3 rounds.');
+      expect(lastPause()).toEqual({ reason: expect.stringContaining('9/5 rounds') });
     });
 
     it('does nothing when max_auto_rounds is 0 (cap disabled)', async () => {

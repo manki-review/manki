@@ -54,6 +54,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   review_passes: 1,
   convergence: {
     max_auto_rounds: 10,
+    rounds_after_restart: 3,
     test_path_patterns: ['**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**'],
     suppress_resolved_threads: true,
   },
@@ -112,7 +113,7 @@ const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
 const PLANNER_KEYS: ReadonlySet<string> = new Set(['enabled', 'paired']);
 const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps']);
 const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'wait_timeout_seconds', 'analyzers']);
-const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'test_path_patterns', 'suppress_resolved_threads']);
+const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'rounds_after_restart', 'test_path_patterns', 'suppress_resolved_threads']);
 const METRICS_KEYS: ReadonlySet<string> = new Set(['fix_rate']);
 const MEMORY_KEYS: ReadonlySet<string> = new Set(['enabled', 'repo']);
 
@@ -357,13 +358,10 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
       errors.push('`convergence` must be an object');
     } else {
       warnUnknownKeys(convergence, CONVERGENCE_KEYS, 'convergence', warnings);
-      if ('max_auto_rounds' in convergence) {
-        if (
-          typeof convergence.max_auto_rounds !== 'number' ||
-          !Number.isInteger(convergence.max_auto_rounds) ||
-          convergence.max_auto_rounds < 0
-        ) {
-          errors.push('`convergence.max_auto_rounds` must be a non-negative integer');
+      for (const key of ['max_auto_rounds', 'rounds_after_restart']) {
+        const value = convergence[key];
+        if (key in convergence && (typeof value !== 'number' || !Number.isInteger(value) || value < 0)) {
+          errors.push(`\`convergence.${key}\` must be a non-negative integer`);
         }
       }
       if ('test_path_patterns' in convergence) {
