@@ -283,9 +283,17 @@ describe('formatFindingComment', () => {
       '',
       '</details>',
     ].join('\n'));
-    // Two checks of one line that quote different code both show.
+    // Two checks of one line that quote different code both show, also when an earlier check that quotes both is dropped.
     expect(render({ ...baseFinding, evidence: { proof: [], checks: ['src/util.ts:12 reads `count`', 'src/util.ts:12 never resets `total`'] } }))
       .toContain(`- Reads \`count\`\n- Never resets \`total\`\n\n${link('src/util.ts', 11, 15)}`);
+    const chained = render({ ...baseFinding, evidence: { proof: [], checks: [
+      'src/util.ts:12 compares `count < max`', 'src/util.ts:10-14 `if (count < max) total += n`', 'src/util.ts:14 never resets `total += n`',
+    ] } });
+    expect(chained).toContain('- Compares `count < max`\n- Never resets `total += n`');
+    expect(chained).not.toContain('if (count < max)');
+    // An unlinked check is compared by what it says after its place, so a bare place hides nothing.
+    expect(render({ ...baseFinding, evidence: { proof: [], checks: ['src/legacy/parser.py', 'src/legacy/parser.py swallows ValueError'] } }))
+      .toContain('- src/legacy/parser.py\n- src/legacy/parser.py swallows ValueError');
 
     // A file cited by name alone gets the directories of the one changed or read file it names, and stays text when it names several.
     // A path that opens a check keeps its case, and every line a location lists is cited, with none left in the text.
@@ -295,9 +303,10 @@ describe('formatFindingComment', () => {
       'config.py:5 reads the environment',
       'src/legacy/parser.py `parse()` swallows `ValueError`',
       'src/util.ts:3,25: `retries` and `timeout` are public fields',
-    ] } }, { ...links, changed: ['pkg/store/cache.go', 'lib/a/config.py', 'lib/b/config.py'] });
+      'app/routes.ts:8 is the other copy',
+    ] } }, { ...links, changed: ['pkg/store/cache.go', 'lib/a/config.py', 'lib/b/config.py', 'packages/web/app/routes.ts'] });
     expect(named).toContain([
-      '<summary>How this was checked: 4 places read, 2 other checks</summary>',
+      '<summary>How this was checked: 5 places read, 2 other checks</summary>',
       '',
       'Holds the lock while it calls `load`',
       link('pkg/store/cache.go', 16, 20),
@@ -307,8 +316,11 @@ describe('formatFindingComment', () => {
       '',
       link('src/util.ts', 2, 6),
       '',
-      link('src/util.ts', 24, 28),
+      // A path with directories is kept as written, even when a changed file's path ends with it.
+      'Is the other copy',
+      link('app/routes.ts', 7, 8),
       '',
+      `- [\`src/util.ts:25\`](${link('src/util.ts', 25)}): \`line 25\``,
       '- config.py:5 reads the environment',
       '- src/legacy/parser.py `parse()` swallows `ValueError`',
     ].join('\n'));

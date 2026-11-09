@@ -2293,11 +2293,11 @@ interface Check { text: string; at?: CodeRange; also?: CodeRange[] }
 interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[] }
 
 /**
- * Returns `path` as the repository path it names. A path no known file ends in is kept as written, and one that the
- * ends of several known files match is ambiguous, so it returns nothing.
+ * Returns `path` as the repository path it names. A file name with no directories gets those of the one known file
+ * with that name, is kept as written when none has it, and returns nothing when several have it.
  */
 function knownPath(path: string, known: readonly string[]): string | undefined {
-  if (known.includes(path)) return path;
+  if (path.includes('/') || known.includes(path)) return path;
   const matches = [...new Set(known.filter(file => file.endsWith(`/${path}`)))];
   return matches.length <= 1 ? matches[0] ?? path : undefined;
 }
@@ -2337,9 +2337,11 @@ function checkWords(text: string): string {
  */
 function sameCheck(a: Check, b: Check): boolean {
   const lead = (text: string): string | undefined => text.match(/^[^\s`]*(?:\/|:\d)[^\s`]*/)?.[0];
-  const samePlace = a.at && b.at ? overlaps(a.at, b.at) : !a.at && !b.at && lead(a.text) !== undefined && lead(a.text) === lead(b.text);
-  if (!samePlace) return false;
-  const [shorter, longer] = [checkWords(a.text), checkWords(b.text)].sort((x, y) => x.length - y.length);
+  const place = !a.at && !b.at ? lead(a.text) : undefined;
+  if (a.at && b.at ? !overlaps(a.at, b.at) : place === undefined || place !== lead(b.text)) return false;
+  // An unlinked check names its place in its text, which is no part of what it says.
+  const said = (check: Check): string => checkWords(place ? check.text.slice(place.length) : check.text);
+  const [shorter, longer] = [said(a), said(b)].sort((x, y) => x.length - y.length);
   return shorter.trim().includes(' ') && longer.includes(shorter);
 }
 
@@ -2349,7 +2351,7 @@ function sameCheck(a: Check, b: Check): boolean {
  */
 function findingChecks({ evidence }: Finding, known: readonly string[]): Check[] {
   const parsed = (evidence?.checks ?? []).flatMap(entry => parseCheck(entry, known) ?? []);
-  const checks = parsed.filter((check, i) => !parsed.slice(0, i).some(earlier => sameCheck(earlier, check)));
+  const checks = parsed.reduce<Check[]>((kept, check) => (kept.some(k => sameCheck(k, check)) ? kept : [...kept, check]), []);
   const proven = (evidence?.proof ?? []).flatMap(proof => parseCheck(proof, known)?.at ?? []);
   for (const at of [...parsed.flatMap(c => c.also ?? []), ...proven]) {
     if (!checks.some(c => c.at && overlaps(c.at, at))) checks.push({ text: '', at });
