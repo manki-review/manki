@@ -1883,7 +1883,10 @@ const RELATION_LABEL: Record<Exclude<RelatedRelation, 'unrelated'>, string> = {
   overlapping: 'Overlaps',
 };
 
-/** Returns the note listing the open PRs and issues the dedup model tied to this PR, or null when it tied none. */
+/**
+ * Returns the note listing the open PRs and issues the dedup model tied to this PR, or null when it tied none. The
+ * model's reason stays out, since the other PRs' and issues' text can steer it, and only the round record keeps it.
+ */
 function formatRelatedWork(work: RelatedWork | undefined, owner: string, repo: string): string | null {
   const labels = Object.keys(RELATION_LABEL);
   const related = (work?.items ?? [])
@@ -1893,7 +1896,7 @@ function formatRelatedWork(work: RelatedWork | undefined, owner: string, repo: s
   const lines = related.map(item => {
     const url = `${github.context.serverUrl}/${owner}/${repo}/${item.kind === 'pr' ? 'pull' : 'issues'}/${item.number}`;
     const draft = item.draft ? ' (draft)' : '';
-    return `- ${RELATION_LABEL[item.relation]} · [#${item.number} ${linkText(item.title)}](${url})${draft}${item.reason ? ` · ${linkText(item.reason)}` : ''}`;
+    return `- ${RELATION_LABEL[item.relation]} · [#${item.number} ${linkText(item.title)}](${url})${draft}`;
   });
   return `**Related work:** open PRs and issues that may cover the same change. None of them blocks.\n\n${lines.join('\n')}`;
 }

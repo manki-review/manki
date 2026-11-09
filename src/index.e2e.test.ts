@@ -540,8 +540,9 @@ describe('runFullReview end to end', () => {
 
     const [review] = postedReviews();
     expect(review).toMatchObject({ state: 'APPROVED', commit_id: HEAD_SHA });
-    expect(review.body).toContain('- Duplicate · [#50 Store the sum first](https://github.com/acme/widgets/pull/50) · Both keep the sum in a variable.');
-    expect(review.body).toContain('- Fixed here, not linked · [#60 Sum is computed twice](https://github.com/acme/widgets/issues/60) · The refactor computes the sum once.');
+    expect(review.body).toContain('- Duplicate · [#50 Store the sum first](https://github.com/acme/widgets/pull/50)\n- Fixed here, not linked · [#60 Sum is computed twice](https://github.com/acme/widgets/issues/60)\n');
+    // Only the hidden round record keeps the model's reason.
+    expect(review.body.split('<!-- manki-context')[0]).not.toContain('Both keep the sum in a variable.');
     expect(review.body).not.toContain('Docs only');
     expect(mockGitHub.searches).toEqual(['repo:acme/widgets is:issue is:open (variable)']);
     expect(mockGitHub.roundContext(review).relatedWork).toEqual({

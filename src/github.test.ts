@@ -4177,7 +4177,7 @@ describe('postReview non-blocking findings', () => {
     for (const title of ['Still open', 'Fixed since', 'Withdrawn one', 'Agreed then kept', 'No marker']) expect(body).not.toContain(title);
   });
 
-  it('notes the related open PRs and issues, most telling first, with their untrusted text neutralized, and keeps the approval', async () => {
+  it('notes the related open PRs and issues, most telling first, with their titles neutralized and no model reason, and keeps the approval', async () => {
     const { octokit, createReview } = makeOctokit();
     const result: ReviewResult = {
       ...buildResult([]),
@@ -4200,10 +4200,11 @@ describe('postReview non-blocking findings', () => {
     expect(review.body).toContain([
       '**Related work:** open PRs and issues that may cover the same change. None of them blocks.',
       '',
-      '- Duplicate · [#20 Same change](https://github.com/owner/repo/pull/20) (draft) · Both add the note.',
-      '- Fixed here, not linked · [#42 Ping @​alice, see docs](https://github.com/owner/repo/issues/42) · Resolves it, cc @​bob.',
+      '- Duplicate · [#20 Same change](https://github.com/owner/repo/pull/20) (draft)',
+      '- Fixed here, not linked · [#42 Ping @\u200Balice, see docs](https://github.com/owner/repo/issues/42)',
       '- Overlaps · [#21 Touches \\[the\\] parser](https://github.com/owner/repo/pull/21)',
     ].join('\n'));
+    expect(review.body).not.toContain('Resolves it');
     expect(review.body).not.toContain('Unrelated one');
     expect(review.body).not.toContain('Never classified');
 
