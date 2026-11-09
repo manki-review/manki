@@ -3,7 +3,7 @@ import { readFileSync, statSync } from 'fs';
 
 import { extractCurrentCodeWindow } from './code-window';
 import { resolveInRoot } from './mcp-server';
-import { LLMClient, SendMessageOptions } from './providers';
+import { LLMClient, QuotaError, SendMessageOptions } from './providers';
 import { extractJSON } from './json';
 import {
   filterLearningsForFinding,
@@ -1185,10 +1185,10 @@ export async function runJudgeAgent(
   const changedFiles = diff.files;
 
   const openBlockerCount = openThreads ? earlierBlockerThreadIds(openThreads, priorRounds).size : 0;
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos, openBlockerCount, !!refutation, toolSteps);
+  const judgePrompt = (steps: number) => buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos, openBlockerCount, !!refutation, steps);
   // The prompt's sections follow the round: a follow-up, open threads, earlier blockers, a second finder and the tools
   // that settle leads. Every one is on here, so the recorded digest changes only with the template or the repository's rules.
-  const promptTemplate = buildJudgeSystemPrompt(config, 2, true, 1, relatedRepos, 2, true, toolSteps);
+  const judgeTemplate = (steps: number) => buildJudgeSystemPrompt(config, 2, true, 1, relatedRepos, 2, true, steps);
   const { classes } = resolveRouting(config.review);
   const citedCode = refutation ? citedCodeOutsideDiff(findings, diff, refutation.workspace) : new Map<Finding, string[]>();
   const findingNotes = (f: Finding): string[] => {
@@ -1208,12 +1208,15 @@ export async function runJudgeAgent(
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff);
 
   const effort = input.effort ?? 'high';
-  const judgeOptions: SendMessageOptions = toolSteps > 0
-    ? { effort, timeoutMs: JUDGE_TOOLS_TIMEOUT_MS, promptTemplate, repoTools: { root: refutation!.workspace, steps: toolSteps } }
-    : { effort, timeoutMs: JUDGE_TIMEOUT_MS, promptTemplate };
-  let judgeResult = await sendWithParseRetry(
+  const judgeCall = (steps: number): { systemPrompt: string; options: SendMessageOptions } => ({
+    systemPrompt: judgePrompt(steps),
+    options: steps > 0
+      ? { effort, timeoutMs: JUDGE_TOOLS_TIMEOUT_MS, promptTemplate: judgeTemplate(steps), repoTools: { root: refutation!.workspace, steps } }
+      : { effort, timeoutMs: JUDGE_TIMEOUT_MS, promptTemplate: judgeTemplate(0) },
+  });
+  const judge = ({ systemPrompt, options }: ReturnType<typeof judgeCall>) => sendWithParseRetry(
     userMessage,
-    message => client.sendMessage(systemPrompt, message, judgeOptions),
+    message => client.sendMessage(systemPrompt, message, options),
     (reply) => {
       if (reply.truncated) {
         throw new Error(`judge reply truncated at the output token limit (length ${reply.content.length})`);
@@ -1226,6 +1229,18 @@ export async function runJudgeAgent(
     },
     (error) => core.warning(`Judge reply could not be used (${error}), asking once more`),
   );
+  let call = judgeCall(toolSteps);
+  let judgeResult: JudgeResult;
+  try {
+    judgeResult = await judge(call);
+  } catch (error) {
+    // A judge with tools can run out of turns or time, so it grades once more the way it does without them.
+    if (toolSteps === 0 || error instanceof QuotaError) throw error;
+    core.warning(`The judge with tools failed (${error}), grading once more without tools`);
+    call = judgeCall(0);
+    judgeResult = await judge(call);
+  }
+  const { systemPrompt, options: judgeOptions } = call;
 
   // Defense-in-depth: when the inter-round diff is empty, force every open
   // thread to `not_addressed` regardless of what the LLM returned. The

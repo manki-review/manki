@@ -21,7 +21,7 @@ import {
   JudgedFinding,
   MAX_INTER_ROUND_DIFF_CHARS,
 } from './judge';
-import { LLMClient, SendMessageOptions } from './providers';
+import { LLMClient, QuotaError, SendMessageOptions } from './providers';
 import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
@@ -1298,6 +1298,26 @@ describe('runJudgeAgent', () => {
       expect(system).not.toContain('## Your Tools');
       expect(options).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.any(String) });
     }
+  });
+
+  it('grades once more without tools when the judge with tools fails, but never on a used-up quota', async () => {
+    const reply = { content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', severity: 'warning', reasoning: 'r', confidence: 'high' }] }) };
+    const refuter = { repoTools: true, sendMessage: jest.fn() } as unknown as LLMClient;
+    const input: JudgeInput = {
+      findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace: '/work/pr-head' }, toolSteps: 30,
+    };
+
+    mockSendMessage.mockRejectedValueOnce(new Error('Claude CLI stopped: error_max_turns')).mockResolvedValueOnce(reply);
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings[0].severity).toBe('warning');
+    const [, again] = mockSendMessage.mock.calls;
+    expect(again[0]).not.toContain('## Your Tools');
+    expect(again[2]).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.not.stringContaining('## Your Tools') });
+
+    mockSendMessage.mockReset();
+    mockSendMessage.mockRejectedValueOnce(new QuotaError('rate limited', 'requests'));
+    await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toThrow('rate limited');
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('passes effort option to sendMessage', async () => {
