@@ -1056,6 +1056,13 @@ function matchPreviousType(finding: Finding, previous: PreviousFinding): Duplica
   return matchType;
 }
 
+type DedupItem = { title: string; file: string; line: number; description?: string };
+
+/** Returns `f` as one line for the dedup model: its title, its location and the start of its description. */
+function describeForDedup(f: DedupItem): string {
+  return `"${sanitize(f.title)}" (${sanitize(f.file)}:${f.line})${f.description ? `: "${sanitize(f.description, LLM_DEDUP_DESCRIPTION_CHARS)}"` : ''}`;
+}
+
 /**
  * Asks `client` which findings repeat an earlier resolved one in the same file, in any wording. A repeat of a waived
  * finding is dropped, and a repeat of a fixed one goes to the judge with a note.
@@ -1076,9 +1083,7 @@ async function llmDeduplicateFindings(
     return { unique: findings, duplicates: [] };
   }
 
-  const list = (items: Array<{ title: string; file: string; line: number; description?: string }>): string => items.map((f, i) =>
-    `${i + 1}. "${sanitize(f.title)}" (${sanitize(f.file)}:${f.line})${f.description ? `: "${sanitize(f.description, LLM_DEDUP_DESCRIPTION_CHARS)}"` : ''}`,
-  ).join('\n');
+  const list = (items: DedupItem[]): string => items.map((f, i) => `${i + 1}. ${describeForDedup(f)}`).join('\n');
 
   try {
     const response = await client.sendMessage(
