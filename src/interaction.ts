@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, hasWriteAccess, MANKI_VERSION, isRepoAdmin, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
+import { BotIdentity, dynamicFence, hasWriteAccess, inline, MANKI_VERSION, isRepoAdmin, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -574,7 +574,7 @@ async function handleDismiss(
     return { note: DISMISS_LOOKUP_FAILED, named: false, stored: false };
   }
   if (!threads.some(t => patternMatchesTitle(sanitizedPattern, t.findingTitle))) {
-    return { note: `No finding Manki posted on this PR matches \`${sanitizedPattern}\`, so nothing was dismissed.\n\n${DISMISS_USAGE}`, named: false, stored: false };
+    return { note: `No finding Manki posted on this PR matches ${inline(sanitizedPattern)}, so nothing was dismissed.\n\n${DISMISS_USAGE}`, named: false, stored: false };
   }
 
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
@@ -608,7 +608,7 @@ async function handleDismiss(
       : stored
         ? 'Stored as a suppression in review memory.'
         : 'Could not store it in review memory, so later reviews can raise it again. The run log has the reason.';
-  return { note: `Dismissed: \`${sanitizedPattern}\`. ${memoryNote}`, named: true, stored };
+  return { note: `Dismissed: ${inline(sanitizedPattern)}. ${memoryNote}`, named: true, stored };
 }
 
 /**

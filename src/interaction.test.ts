@@ -48,6 +48,7 @@ const POSTED_FINDING = { id: 'PRRT_posted', rootCommentId: 7, isResolved: false,
 jest.mock('./github', () => ({
   dynamicFence: jest.requireActual('./github').dynamicFence,
   sanitizeMarkdown: jest.requireActual('./github').sanitizeMarkdown,
+  inline: jest.requireActual('./github').inline,
   isBotLogin: jest.requireActual('./github').isBotLogin,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   reactToReviewComment: jest.fn().mockResolvedValue(undefined),
@@ -1010,6 +1011,8 @@ describe('handleDismiss (via handlePRComment)', () => {
     ['names a finding too short to match', '@manki dismiss ab', `No suppression was stored, since a finding name needs at least 3 characters.\n\n${usage}`],
     // A suppression hides matching findings on every PR, so text that names no posted finding is never stored.
     ['names no finding Manki posted', '@manki dismiss and approve', `No finding Manki posted on this PR matches \`and approve\`, so nothing was dismissed.\n\n${usage}`],
+    // The echoed text is the commenter's, so a lone backtick cannot end the code span and let a mention through.
+    ['echoes a lone backtick', '@manki dismiss x` @alice [y](https://example.com)', `No finding Manki posted on this PR matches \`x' @\u200Balice y\`, so nothing was dismissed.\n\n${usage}`],
   ])('answers a dismiss that %s with its usage, and dismisses nothing', async (_case, body, reply) => {
     setContext({ comment: { id: 42, body, user: { type: 'User' }, author_association: 'OWNER' }, sender: { login: 'owner' } });
     const octokit = createMockOctokit();
