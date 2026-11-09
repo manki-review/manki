@@ -3,6 +3,9 @@
   "version": "7.1.1",
   "description": "Multi-agent AI code review GitHub Action",
   "main": "dist/index.js",
+  "bin": {
+    "manki": "dist/index.js"
+  },
   "scripts": {
     "build": "ncc build src/index.ts --source-map --license licenses.txt",
     "lint": "eslint src/",

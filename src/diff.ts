@@ -120,6 +120,13 @@ export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
   return rebuildRawDiff(filterDiff(parsePRDiff(rawDiff), excludePaths).diff);
 }
 
+/** Parses a PR's raw diff and splits it into the files the review reads and the files `excludePaths` leaves out. */
+export function reviewableDiff(rawDiff: string, excludePaths: string[]): { fullDiff: ParsedDiff; diff: ParsedDiff; excludedFiles: RoundDiffExcludedFile[]; rawDiff: string } {
+  const fullDiff = parsePRDiff(rawDiff);
+  const { diff, excluded } = filterDiff(fullDiff, excludePaths);
+  return { fullDiff, diff, excludedFiles: excluded, rawDiff: rebuildRawDiff(diff) };
+}
+
 /** The change a file's diff makes, without hunk positions, so a rebase that moves it keeps it. */
 function fileChange(file: DiffFile): unknown[] {
   return [file.changeType, file.oldPath, file.path, file.modeChange, file.hunks.map(h => h.content)];

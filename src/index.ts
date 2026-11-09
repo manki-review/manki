@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import * as path from 'path';
@@ -5,20 +6,22 @@ import * as path from 'path';
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AuthResult, createAuthenticatedOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
-import { changedKeys, loadConfig, resolveFallbackModel, resolveModel, resolvePairModel } from './config';
+import { changedKeys, loadConfig, resolveModel } from './config';
+import { REVIEW_COMMAND, runReviewCommand } from './cli';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
-import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, shortenLongLines, tagFindingOrigins } from './diff';
+import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
-import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
+import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
+import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
@@ -30,6 +33,8 @@ import { ConfigSource, DashboardData, FullReviewOptions, MemoryLoadStatus, OpenT
 import {
   fetchPRDiff,
   fetchConfigFile,
+  configFailed,
+  loadBaseConfig,
   readConfigFile,
   fetchRepoContext,
   formatUnreviewedNotice,
@@ -717,7 +722,7 @@ async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ c
   const repoConfigPath = outside ? '.manki.yml' : repoRelative.split(path.sep).join('/');
   try {
     const headConfig = loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath);
-    const { config, source } = await loadBaseConfig(octokit, owner, repo, baseRef, repoConfigPath);
+    const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, repoConfigPath), repoConfigPath, failureReason);
     const changed = changedKeys(headConfig, config);
     if (changed.length > 0) {
       core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${repoConfigPath}. The change applies after merge: this round uses the base branch's settings.`);
@@ -728,33 +733,6 @@ async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ c
     core.setFailed(reason);
     await postConfigErrorComment(octokit, owner, repo, prNumber, reason);
     return undefined;
-  }
-}
-
-/**
- * Reads the config from the base branch. A base config that cannot be read or does not load gives the defaults, and
- * `configFailed` holds the round's approval, so the PR that fixes it is still reviewed but never approved.
- */
-function configFailed(source: ConfigSource): boolean {
-  return source === 'base_unreadable' || source === 'base_invalid';
-}
-
-async function loadBaseConfig(octokit: Octokit, owner: string, repo: string, baseRef: string, configPath: string): Promise<{ config: ReviewConfig; source: ConfigSource }> {
-  const fallBack = (source: ConfigSource, problem: string, error: unknown) => {
-    core.warning(`${problem} ${configPath} on the base branch, reviewing with the defaults and no approval: ${failureReason(error)}`);
-    return { config: loadConfig(undefined), source };
-  };
-  let content: string | null;
-  try {
-    content = await readConfigFile(octokit, owner, repo, baseRef, configPath);
-  } catch (error) {
-    return fallBack('base_unreadable', 'Could not read', error);
-  }
-  try {
-    const config = loadConfig(content ?? undefined, configPath);
-    return { config, source: config.review ? 'base' : 'builtin' };
-  } catch (error) {
-    return fallBack('base_invalid', 'Could not load', error);
   }
 }
 
@@ -833,53 +811,9 @@ async function loadRecap(
 }
 
 /** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
-function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs): { clients: ReviewClients; models: ReviewModels } {
-  const models: ReviewModels = {
-    planner: resolveModel(config, 'planner'),
-    reviewer: resolveModel(config, 'reviewer'),
-    reviewerPair: resolvePairModel(config),
-    judge: resolveModel(config, 'judge'),
-    dedup: resolveModel(config, 'dedup'),
-  };
-  core.info(`Models — planner: ${models.planner}, reviewer: ${models.reviewer}, reviewer pair: ${models.reviewerPair}, judge: ${models.judge}, dedup: ${models.dedup}`);
-
-  const buildClient = (model: string) => {
-    const spec = parseModelSpec(model);
-    const auth = buildAuthForProvider(spec.provider, providerInputs);
-    return createLLMClient(spec.provider, spec.model, auth);
-  };
-  const reviewer = buildClient(models.reviewer);
-  const reviewerByModel = new Map<string, LLMClient>([[models.reviewer, reviewer]]);
-  for (const model of teamModels(config)) {
-    if (!reviewerByModel.has(model)) reviewerByModel.set(model, buildClient(model));
-  }
-  const judge = buildClient(models.judge);
-  const planner = config.planner?.enabled !== false ? buildClient(models.planner) : undefined;
-  const dedup = buildClient(models.dedup);
-  const fallbackClients = new Map<string, LLMClient>([...reviewerByModel, [models.judge, judge]]);
-  const fallbackFor = (stageModel: string) => {
-    const model = resolveFallbackModel(config, stageModel);
-    if (!model) return undefined;
-    if (!fallbackClients.has(model)) fallbackClients.set(model, buildClient(model));
-    return { model, client: fallbackClients.get(model)! };
-  };
-  const fallbacks: NonNullable<ReviewClients['fallbacks']> = {
-    ...(planner && { planner: fallbackFor(models.planner) }),
-    reviewerByModel: new Map([...reviewerByModel.keys()].flatMap((model) => {
-      const fallback = fallbackFor(model);
-      return fallback ? [[model, fallback] as const] : [];
-    })),
-    judge: fallbackFor(models.judge),
-    dedup: fallbackFor(models.dedup),
-  };
-  return { clients: { reviewer, reviewerByModel, judge, planner, dedup, fallbacks }, models };
-}
-
 async function collectDiff(target: RunTarget, config: ReviewConfig) {
   const { octokit, owner, repo, prNumber } = target;
-  const fullDiff = parsePRDiff(await fetchPRDiff(octokit, owner, repo, prNumber));
-  const { diff, excluded: excludedFiles } = filterDiff(fullDiff, config.exclude_paths);
-  return { fullDiff, diff, excludedFiles, rawDiff: rebuildRawDiff(diff) };
+  return reviewableDiff(await fetchPRDiff(octokit, owner, repo, prNumber), config.exclude_paths);
 }
 
 function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled: boolean, deeper?: boolean): DashboardData {
@@ -932,40 +866,6 @@ async function postUnreviewedRound(
   await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: metadata.timing.totalMs }, metadata, progressSettings(target, progress, 'up to date', { reviewed: true }));
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
   return { conclusion: 'action_required', title: 'Not reviewed', summary };
-}
-
-/**
- * Eagerly install any provider CLI before the planner timer starts. The
- * fallback `npm install -g` inside `ensureCLI` takes around 30s on a
- * cold runner and would otherwise race the planner's own 30s timeout.
- * Warming up once here pays the cost before any per-call deadline runs.
- * Deduplicate by client instance so roles that share a client don't
- * serialize redundant install retries on failure.
- */
-function fallbackClientsOf({ fallbacks }: ReviewClients): LLMClient[] {
-  if (!fallbacks) return [];
-  return [fallbacks.planner, ...(fallbacks.reviewerByModel?.values() ?? []), fallbacks.judge, fallbacks.dedup].flatMap(f => f ? [f.client] : []);
-}
-
-async function warmUpClients(clients: ReviewClients): Promise<void> {
-  const warmupTargets = new Set<LLMClient>(
-    [clients.planner, ...(clients.reviewerByModel?.values() ?? []), clients.judge, clients.dedup, ...fallbackClientsOf(clients)].filter(
-      (c): c is LLMClient => !!c,
-    ),
-  );
-  await Promise.allSettled(
-    [...warmupTargets].map((c) =>
-      c.warmupCLI
-        ? c.warmupCLI().catch((error) =>
-            core.warning(
-              sanitizeLogOutput(
-                `Provider CLI warmup failed (${c.constructor.name}): ${error instanceof Error ? error.message : error}`,
-              ),
-            ),
-          )
-        : Promise.resolve(),
-    ),
-  );
 }
 
 async function loadRunMemory(
@@ -2108,6 +2008,7 @@ async function main(): Promise<void> {
 if (process.env.NODE_ENV !== 'test') {
   if (process.argv[2] === MCP_SERVER_COMMAND) runMcpServer(process.argv.slice(3));
   else if (process.argv[2] === STEP_HOOK_COMMAND) runStepHook(process.argv[3], process.argv[4]);
+  else if (process.argv[2] === REVIEW_COMMAND) runReviewCommand(process.argv.slice(3)).then((code) => { process.exitCode = code; });
   else main();
 }
 

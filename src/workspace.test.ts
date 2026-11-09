@@ -66,7 +66,7 @@ describe('fetchWorkspace', () => {
     }
   }, GIT_TEST_TIMEOUT_MS);
 
-  it('sends the token as a basic auth header with the fetch', async () => {
+  it('sends the token as a basic auth header with the fetch, and removes the workspace when the fetch fails', async () => {
     const headers: (string | undefined)[] = [];
     const server = createServer((request, response) => {
       headers.push(request.headers.authorization);
@@ -81,5 +81,6 @@ describe('fetchWorkspace', () => {
     }
     expect(headers.length).toBeGreaterThan(0);
     expect(new Set(headers)).toEqual(new Set([`basic ${Buffer.from(`x-access-token:${TOKEN}`).toString('base64')}`]));
+    expect(readdirSync(root)).toEqual(['source']);
   }, GIT_TEST_TIMEOUT_MS);
 });

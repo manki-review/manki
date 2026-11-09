@@ -1881,33 +1881,19 @@ describe('fetchFileContents', () => {
 });
 
 describe('resolveReferences', () => {
-  function mockOctokit(files: Record<string, string | 'error'>) {
+  function mockFiles(files: Record<string, string>) {
     return {
-      rest: {
-        repos: {
-          getContent: jest.fn(async ({ path }: { path: string }) => {
-            const content = files[path];
-            if (!content || content === 'error') {
-              throw new Error(`Not found: ${path}`);
-            }
-            return {
-              data: {
-                content: Buffer.from(content).toString('base64'),
-                encoding: 'base64',
-              },
-            };
-          }),
-        },
-      },
-    } as unknown as Parameters<typeof resolveReferences>[0];
+      read: jest.fn(async (path: string) => files[path] ?? null),
+      list: jest.fn(async () => Object.keys(files)),
+    };
   }
 
   it('resolves a single @rules/ reference', async () => {
-    const octokit = mockOctokit({
+    const files = mockFiles({
       '.claude/rules/commit-format.md': '## Commit Format\n\nKeep messages short.',
     });
     const content = 'Instructions:\n\n@rules/commit-format.md\n\nEnd.';
-    const result = await resolveReferences(octokit, 'owner', 'repo', 'main', content, '.claude');
+    const result = await resolveReferences(files, content, '.claude');
 
     expect(result).toContain('## Commit Format');
     expect(result).toContain('Keep messages short.');
@@ -1916,12 +1902,12 @@ describe('resolveReferences', () => {
   });
 
   it('resolves multiple references', async () => {
-    const octokit = mockOctokit({
+    const files = mockFiles({
       '.claude/rules/a.md': 'Content A',
       '.claude/rules/b.md': 'Content B',
     });
     const content = '@rules/a.md\n@rules/b.md';
-    const result = await resolveReferences(octokit, 'owner', 'repo', 'main', content, '.claude');
+    const result = await resolveReferences(files, content, '.claude');
 
     expect(result).toContain('Content A');
     expect(result).toContain('Content B');
@@ -1930,9 +1916,9 @@ describe('resolveReferences', () => {
   });
 
   it('leaves reference as-is with comment when file is missing', async () => {
-    const octokit = mockOctokit({});
+    const files = mockFiles({});
     const content = 'Before\n@rules/missing.md\nAfter';
-    const result = await resolveReferences(octokit, 'owner', 'repo', 'main', content, '.claude');
+    const result = await resolveReferences(files, content, '.claude');
 
     expect(result).toContain('@rules/missing.md');
     expect(result).toContain('<!-- Could not resolve reference: rules/missing.md -->');
@@ -1941,11 +1927,11 @@ describe('resolveReferences', () => {
   });
 
   it('respects max depth to prevent infinite recursion', async () => {
-    const octokit = mockOctokit({
+    const files = mockFiles({
       '.claude/rules/loop.md': '@rules/loop.md',
     });
     const content = '@rules/loop.md';
-    const result = await resolveReferences(octokit, 'owner', 'repo', 'main', content, '.claude');
+    const result = await resolveReferences(files, content, '.claude');
 
     // At depth 0: resolves @rules/loop.md -> "@rules/loop.md" (the file content)
     // At depth 1: resolves that -> "@rules/loop.md" again
@@ -1955,19 +1941,19 @@ describe('resolveReferences', () => {
   });
 
   it('skips path traversal attempts', async () => {
-    const octokit = mockOctokit({});
+    const files = mockFiles({});
     const content = 'Before\n@../../etc/passwd.md\nAfter';
-    const result = await resolveReferences(octokit, 'owner', 'repo', 'main', content, '.claude');
+    const result = await resolveReferences(files, content, '.claude');
 
     // The traversal reference should remain untouched (not fetched, no error comment)
     expect(result).toBe(content);
-    expect(octokit.rest.repos.getContent).not.toHaveBeenCalled();
+    expect(files.read).not.toHaveBeenCalled();
   });
 
   it('returns content unchanged when there are no references', async () => {
-    const octokit = mockOctokit({});
+    const files = mockFiles({});
     const content = '## Instructions\n\nJust regular markdown content.';
-    const result = await resolveReferences(octokit, 'owner', 'repo', 'main', content, '.claude');
+    const result = await resolveReferences(files, content, '.claude');
 
     expect(result).toBe(content);
   });

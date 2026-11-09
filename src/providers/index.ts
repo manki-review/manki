@@ -1,4 +1,4 @@
-export { buildAuthForProvider, hasAnyProviderCredentials } from './auth';
+export { buildAuthForProvider, hasAnyProviderCredentials, readProviderInputsFromEnv } from './auth';
 export type { ProviderInputs } from './auth';
 export { removeSeededAuthFiles, sanitizeLogOutput } from './cli-utils';
 export { createLLMClient } from './factory';
