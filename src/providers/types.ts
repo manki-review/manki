@@ -23,6 +23,8 @@ export interface LLMResponse {
   toolSteps?: ToolStep[];
   /** Tool calls that read each related repo, by `owner/name`. Unset when none did. */
   relatedReads?: Record<string, number>;
+  /** The files the model's tool calls read, each once, relative to the repository root. Unset when it read none. */
+  filesRead?: string[];
   /** The subscription usage limits the CLI reported for its account. Unset when it reported none. */
   limits?: LimitUsage[];
 }
@@ -123,6 +125,8 @@ export interface LLMCall extends LLMUsage {
   toolSteps?: ToolStep[];
   /** Tool calls that read each related repo, by `owner/name`. Unset when none did. */
   relatedReads?: Record<string, number>;
+  /** The files the call's tool calls read, each once, relative to the repository root. Unset when it read none. */
+  filesRead?: string[];
   /**
    * The first 12 hex digits of the SHA-256 of the call's system prompt with its digits replaced, so calls before and
    * after a prompt change compare, and the counts a prompt quotes do not split one version.

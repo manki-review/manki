@@ -4958,14 +4958,15 @@ describe('recordCalls', () => {
     for (const steps of [4, 5]) await recordCalls(fallback, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps } });
     await recordCalls(refusing, finder, budgeted).sendMessage('other', 'user', { repoTools: { root: '/work', steps: 4 } }).catch(() => undefined);
     // A client that reports no tool steps, such as Codex, leaves it unknown whether the model was told to wrap up.
-    const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5', relatedReads: { 'o/r': 2 } }), repoTools: true } as unknown as LLMClient;
+    const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5', relatedReads: { 'o/r': 2 }, filesRead: ['src/a.ts'] }), repoTools: true } as unknown as LLMClient;
     await recordCalls(silent, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } });
-    // A call that failed keeps the related repo reads its error carries.
-    const timedOut = Object.assign(new Error('Codex CLI timed out'), { relatedReads: { 'o/r': 1 } });
+    // A call that failed keeps the related repo reads and files read its error carries.
+    const timedOut = Object.assign(new Error('Codex CLI timed out'), { relatedReads: { 'o/r': 1 }, filesRead: ['src/b.ts'] });
     const failing = { sendMessage: jest.fn().mockRejectedValue(timedOut), repoTools: true } as unknown as LLMClient;
     await recordCalls(failing, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } }).catch(() => undefined);
-    expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest, c.relatedReads])).toEqual([
-      [4, true, true, undefined], [5, undefined, true, undefined], [undefined, undefined, false, undefined], [3, undefined, true, { 'o/r': 2 }], [3, undefined, true, { 'o/r': 1 }],
+    expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest, c.relatedReads, c.filesRead])).toEqual([
+      [4, true, true, undefined, undefined], [5, undefined, true, undefined, undefined], [undefined, undefined, false, undefined, undefined],
+      [3, undefined, true, { 'o/r': 2 }, ['src/a.ts']], [3, undefined, true, { 'o/r': 1 }, ['src/b.ts']],
     ]);
     expect(budgeted.at(-1)).toMatchObject({ failed: true, error: 'Codex CLI timed out' });
     expect([recordCalls(fallback, finder, []).repoTools, judge.repoTools]).toEqual([true, undefined]);
