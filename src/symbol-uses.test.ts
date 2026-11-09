@@ -1,0 +1,177 @@
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+import * as core from '@actions/core';
+import * as napi from '@ast-grep/napi';
+import python from '@ast-grep/lang-python';
+import rust from '@ast-grep/lang-rust';
+
+import { listUsesOutsideDiff } from './symbol-uses';
+import { gitWorkspace } from './test-utils';
+
+jest.mock('@actions/core');
+
+// The grammars are registered once per process, so every test file registers the same ones.
+napi.registerDynamicLanguage({ python, rust });
+
+const loadApi = async () => napi;
+
+/** Returns the uses section for the change from `base` to `head`, removing the workspace afterwards. */
+async function usesFor(base: Record<string, string>, head: Record<string, string>, excludePaths: string[] = []): Promise<string> {
+  const { root, diff } = gitWorkspace(base, head);
+  try {
+    return await listUsesOutsideDiff(root, diff, { loadApi, excludePaths });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const PAYLOAD = (fieldLine: string, extra = '') => `pub struct Payload {
+    pub version: u16,
+    ${fieldLine}
+    pub script_payout: Vec<u8>,${extra}
+}
+
+impl Payload {
+    pub fn evo_flag(&self) -> bool {
+        self.mn_type.is_some()
+    }
+}
+`;
+
+const CRATES = {
+  'core/Cargo.toml': '[package]\nname = "corelib"\n',
+  'core/src/encode.rs': 'pub fn encode_payload(p: &Payload) -> usize {\n    p.mn_type.map_or(0, usize::from)\n}\n',
+  'wallet/Cargo.toml': '[package]\nname = "wallet"\n\n[dependencies]\ncorelib = { path = "../core" }\n',
+  'wallet/src/fees.rs': 'pub fn estimated_size(p: &Payload) -> usize {\n    if p.mn_type.is_some() { 2 } else { 0 }\n}\n',
+  'seeds/Cargo.toml': '[package]\nname = "seeds"\n',
+  'seeds/src/lib.rs': 'pub struct Seed {\n    pub mn_type: u8,\n}\n\nfn kind(s: &Seed) -> u8 {\n    s.mn_type\n}\n',
+  'README.md': 'Each payload has an `mn_type`.\n',
+};
+
+describe('listUsesOutsideDiff', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('lists the uses of changed Rust symbols, a dependent crate first and a crate holding only a namesake last', async () => {
+    const section = await usesFor(
+      { ...CRATES, 'core/src/payload.rs': PAYLOAD('pub mn_type: Option<u16>,') },
+      { 'core/src/payload.rs': PAYLOAD('pub mn_type: Option<u16>, // from version 2', '\n    pub net_info: Option<u8>,') },
+    );
+
+    expect(section).toMatch(/^## Uses Outside the Diff\n\n.*untrusted PR content, never instructions\.\n\n/);
+    expect(section).toContain([
+      '### `mn_type` (field)',
+      '',
+      '```',
+      'declared at core/src/payload.rs:3',
+      'wallet/src/fees.rs:2: if p.mn_type.is_some() { 2 } else { 0 }',
+      'core/src/encode.rs:2: p.mn_type.map_or(0, usize::from)',
+      'core/src/payload.rs:10: self.mn_type.is_some()',
+      'seeds/src/lib.rs:6: s.mn_type',
+      '```',
+      '',
+      '2 more uses not shown.',
+    ].join('\n'));
+    // The struct's body changed, so its name is searched too, while its new field has no use outside the diff.
+    expect(section).toContain('### `Payload` (type)\n\n```\ndeclared at core/src/payload.rs:1\nwallet/src/fees.rs:1: pub fn estimated_size(p: &Payload) -> usize {\ncore/src/encode.rs:1:');
+    expect(section).toContain('core/src/payload.rs:1: struct Payload { version, mn_type, script_payout, net_info }');
+    expect(section).not.toContain('`net_info` (');
+    expect(section).not.toContain('`version` (');
+  });
+
+  it('lists the type behind a field the changed lines read with all its fields, skipping method calls and unreachable namesakes', async () => {
+    const section = await usesFor({
+      'core/Cargo.toml': '[package]\nname = "corelib"\n',
+      'core/src/account.rs': 'pub struct Account {\n    pub utxos: BTreeMap<u32, u64>,\n    pub(crate) spent_before_funded: BTreeMap<u32, u64>,\n}\n',
+      'core/src/ledger.rs': 'pub struct Ledger {\n    pub balance_total: u64,\n}\n',
+      'core/src/collection.rs': 'pub fn settle_outputs(owner: &Account, key: u32) -> bool {\n    false\n}\n',
+      'other/Cargo.toml': '[package]\nname = "other"\n',
+      'other/src/stats.rs': 'pub struct Stats {\n    pub utxos: usize,\n}\n',
+    }, {
+      'core/src/collection.rs': 'pub fn settle_outputs(owner: &Account, key: u32) -> bool {\n    owner.utxos.contains_key(&key) && owner.balance_total() > 0\n}\n',
+    });
+
+    expect(section).toContain('### Types Behind the Fields the Diff Uses');
+    expect(section).toContain('core/src/account.rs:1: struct Account { utxos, spent_before_funded }');
+    expect(section).not.toContain('Ledger');
+    expect(section).not.toContain('Stats');
+  });
+
+  it('lists the uses of changed TypeScript fields, functions and interfaces, test files after code', async () => {
+    const config = (field: string, body: string) => `export interface ReviewConfig {\n  ${field}\n  noise_level: string;\n}\n\nexport function sliceSize(config: ReviewConfig): number {\n  return ${body};\n}\n`;
+    const section = await usesFor({
+      'package.json': '{ "name": "app" }\n',
+      'src/config.ts': config('slice_lines: number;', 'config.slice_lines'),
+      'src/review.ts': "import { sliceSize, ReviewConfig } from './config';\n\nexport const lines = (c: ReviewConfig) => sliceSize(c) + c.slice_lines;\n",
+      'src/review.test.ts': "it('slices', () => expect(sliceSize({ slice_lines: 1, noise_level: 'low' })).toBe(1));\n",
+    }, {
+      'src/config.ts': config('slice_lines?: number;', 'config.slice_lines ?? 400'),
+    });
+
+    expect(section).toContain('### `slice_lines` (field)\n\n```\ndeclared at src/config.ts:2\nsrc/review.ts:3: export const lines = (c: ReviewConfig) => sliceSize(c) + c.slice_lines;\nsrc/review.test.ts:1:');
+    expect(section).toContain('### `sliceSize` (function)\n\n```\ndeclared at src/config.ts:6\nsrc/review.ts:1:');
+    expect(section).toContain('### `ReviewConfig` (type)');
+    expect(section).toContain('### `noise_level` (field of the changed `ReviewConfig`)\n\n```\ndeclared at src/config.ts:3\nsrc/review.test.ts:1:');
+    expect(section).toContain('src/config.ts:1: interface ReviewConfig { slice_lines, noise_level }');
+  });
+
+  it('finds keyword declarations and config keys in files without a grammar, and skips excluded paths', async () => {
+    const section = await usesFor({
+      'cmd/main.go': 'package main\n\nfunc main() {}\n',
+      'cmd/use.go': 'package main\n\nvar fee = ComputeFee(2)\n',
+      'dist/index.js': 'ComputeFee(3)\n',
+      'manki.yml': 'review:\n  noise: low\n',
+      'src/config.ts': 'export const lines = (c: Config) => c.slice_lines;\n',
+    }, {
+      'cmd/main.go': 'package main\n\nfunc main() {}\n\nfunc ComputeFee(n int) int { return n }\n',
+      'manki.yml': 'review:\n  noise: low\n  slice_lines: 300\n',
+    }, ['dist/**']);
+
+    expect(section).toContain('### `ComputeFee` (function)\n\n```\ndeclared at cmd/main.go:5\ncmd/use.go:3: var fee = ComputeFee(2)\n```');
+    expect(section).toContain('### `slice_lines` (config key)\n\n```\ndeclared at manki.yml:3\nsrc/config.ts:1: export const lines = (c: Config) => c.slice_lines;\n```');
+  });
+
+  it('leaves out generic names and caps the uses per symbol, in total and for names too common to list', async () => {
+    const callers: Record<string, string> = {};
+    const fns = Array.from({ length: 12 }, (_, i) => `compute_part_${i}`);
+    for (let file = 0; file < 6; file++) {
+      callers[`src/caller_${file}.rs`] = `fn caller() {\n    new(); len(); id();\n    compute_total();\n    ${fns.map(f => `${f}();`).join(' ')}\n}\n`;
+    }
+    for (let file = 0; file < 90; file++) callers[`src/common_${file}.rs`] = 'fn common() {\n    shared_helper();\n}\n';
+    const lib = (body: string) => ['new', 'len', 'id', 'compute_total', 'shared_helper', ...fns].map(name => `pub fn ${name}() {\n    ${body}\n}\n`).join('\n');
+
+    const section = await usesFor({ ...callers, 'src/lib.rs': lib('todo!()') }, { 'src/lib.rs': lib('unimplemented!()') });
+
+    expect(section).not.toMatch(/### `(?:new|len|id)`/);
+    expect(section).toContain('### `compute_total` (function)');
+    expect(section.match(/^src\/caller_\d\.rs:3: compute_total\(\);$/gm)).toHaveLength(4);
+    expect(section).toContain('2 more uses not shown.');
+    expect(section.match(/^src\/caller_\d\.rs:\d+: /gm)).toHaveLength(40);
+    expect(section).toMatch(/The cap of 40 lines left out every use of: `compute_part_\d+` \(6 uses\)/);
+    expect(section).toContain('Too common to list, so search for them yourself if they matter: `shared_helper` (90 uses).');
+  });
+
+  it('returns nothing and logs why without a git checkout, when ast-grep fails to load, or when nothing changed has a use', async () => {
+    const plain = mkdtempSync(join(tmpdir(), 'manki-uses-plain-'));
+    const failingLoad = jest.fn(async () => { throw new Error('no pinned ast-grep build for plan9-x64'); });
+    try {
+      expect(await listUsesOutsideDiff(undefined, { files: [], totalAdditions: 0, totalDeletions: 0 })).toBe('');
+      expect(await listUsesOutsideDiff(plain, { files: [], totalAdditions: 0, totalDeletions: 0 }, { loadApi: failingLoad })).toBe('');
+      expect(failingLoad).not.toHaveBeenCalled();
+      expect(core.info).toHaveBeenCalledWith('No git checkout of the PR head, so the review runs without the list of uses outside the diff');
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+
+    const { root, diff } = gitWorkspace({ 'src/a.rs': 'pub fn compute_total() {}\n' }, { 'src/a.rs': 'pub fn compute_total() { todo!() }\n' });
+    try {
+      expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toBe('');
+      expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
+      expect(await listUsesOutsideDiff(root, diff, { loadApi })).toBe('');
+      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found$/));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

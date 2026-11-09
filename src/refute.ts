@@ -102,7 +102,7 @@ function priorRefutation(finding: Finding, workspace: string, priorRounds: Round
   return undefined;
 }
 
-function buildRefuteMessage(finding: Finding): string {
+function buildRefuteMessage(finding: Finding, usesOutsideDiff = ''): string {
   const lines = [
     `## ${finding.lead ? 'Open lead' : 'Blocker'}: ${sanitizeForPromptEmbed(finding.title)}`,
     '',
@@ -112,7 +112,7 @@ function buildRefuteMessage(finding: Finding): string {
     ...(finding.evidence?.proof.length ? [`- **Proving lines cited**: ${finding.evidence.proof.map(sanitizeForPromptEmbed).join(', ')}`] : []),
     ...(finding.lead ? [`- **Checked so far**: ${sanitizeForPromptEmbed(finding.lead.checked)}`, `- **Left to check**: ${sanitizeForPromptEmbed(finding.lead.left)}`] : []),
   ];
-  return lines.join('\n');
+  return usesOutsideDiff ? `${lines.join('\n')}\n\n${usesOutsideDiff.trimEnd()}` : lines.join('\n');
 }
 
 function parseRefutation(text: string, workspace: string, file: string, diff?: ParsedDiff): Refutation {
@@ -157,6 +157,8 @@ export interface RefuteOptions {
   effort?: 'low' | 'medium' | 'high';
   /** The PR's diff, whose lines a disproof may cite besides the finding's own file. */
   diff?: ParsedDiff;
+  /** The section `listUsesOutsideDiff` builds. */
+  usesOutsideDiff?: string;
 }
 
 /**
@@ -164,7 +166,7 @@ export interface RefuteOptions {
  * `MAX_PARALLEL_REFUTATIONS` at a time, and grades it by the outcome. An earlier round's outcome for the same finding is
  * reused without a new check while the files it rests on are unchanged. A call that fails leaves the judge's grade.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff }: RefuteOptions): Promise<Finding[]> {
   return mapWithConcurrency(findings, MAX_PARALLEL_REFUTATIONS, async finding => {
     // A finding the judge or a suppression dropped stays dropped, even when it was a lead.
     if (finding.severity === 'ignore' || (finding.severity !== 'blocker' && !finding.lead && !finding.tags?.includes(UNPROVEN_TAG))) return finding;
@@ -176,7 +178,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     }
     try {
       const refutation = await sendWithParseRetry(
-        buildRefuteMessage(finding),
+        buildRefuteMessage(finding, usesOutsideDiff),
         message => client.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
           ...(effort && { effort }), repoTools: { root: workspace, steps: REFUTE_STEPS }, timeoutMs: REFUTE_TIMEOUT_MS,
         }),

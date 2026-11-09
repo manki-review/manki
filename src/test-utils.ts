@@ -1,11 +1,33 @@
 import { execFileSync } from 'child_process';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { dirname, join } from 'path';
 
-import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, RoundContext } from './types';
+import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RoundContext } from './types';
 import { BotIdentity, CodeLinks, titleToSlug } from './github';
+import { parsePRDiff } from './diff';
 
 /** Runs git in `cwd` with a fixed author and returns its trimmed output. */
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
+}
+
+/** Commits `base` in a new git repo, writes `head` over it and returns the repo with the staged diff between the two. */
+export function gitWorkspace(base: Record<string, string>, head: Record<string, string>): { root: string; diff: ParsedDiff } {
+  const root = mkdtempSync(join(tmpdir(), 'manki-workspace-'));
+  const write = (files: Record<string, string>) => {
+    for (const [path, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), content);
+    }
+  };
+  write(base);
+  git(root, 'init', '-q');
+  git(root, 'add', '-A');
+  git(root, 'commit', '-qm', 'base');
+  write(head);
+  git(root, 'add', '-A');
+  return { root, diff: parsePRDiff(git(root, 'diff', '--cached', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/')) };
 }
 
 /** `pageInfo` of the last page of a GraphQL connection. */
