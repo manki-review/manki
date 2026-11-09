@@ -92,7 +92,7 @@ describe('runComparisons', () => {
     const result = await runComparisons(() => client, { fields, implementations });
 
     expect(client.calls).toHaveLength(13);
-    expect(client.calls.filter(c => c.user.includes('`c` instead')).map(c => c.user.includes('Your previous reply could not be used'))).toEqual([false, true]);
+    expect(client.calls.filter(c => c.user.includes('`c` instead')).map(c => c.user.includes('Reply with only the JSON array'))).toEqual([false, true]);
     expect(result.comparisons.map(c => `${c.reviewer}: ${c.status}`)).toEqual([
       ...['a', 'b', 'c', 'd', 'e', 'f'].map(s => `Sibling field: utxos vs ${s}: ${s === 'b' ? 'failed' : 'answered'}`),
       ...Array.from({ length: 6 }, (_, i) => `Sibling code: check_${i}: answered`),

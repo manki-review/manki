@@ -145,6 +145,7 @@ export async function runComparisons(
           return parseFindings(reply.content, q.reviewer);
         },
         error => core.warning(`${q.reviewer} reply could not be used (${error}), asking once more`),
+        'array',
       );
       core.info(`${q.reviewer}: ${findings.length} finding(s)`);
       return { record: { ...record, status: 'answered', findings: findings.length }, findings };

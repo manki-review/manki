@@ -146,6 +146,10 @@ const RULES: Record<Family, FamilyRules> = {
 };
 
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+// A type or trait named by a plain path such as `bincode::Decode`. Any other text, such as a macro, is never quoted in a prompt.
+const TYPE_PATH = /^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*$/;
+// A file name safe to quote in a prompt heading.
+const PLAIN_FILE_NAME = /^[\w.+@-]+$/;
 // A declaration a keyword opens, for languages without a grammar here.
 const DECLARATION_LINE = /^\s*(?:(?:export|pub(?:\([^)]*\))?|public|private|protected|internal|static|async|final|abstract|open|data|sealed)\s+)*(def|class|func|function|fn|struct|interface|enum|trait|type|const|record|object)\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/;
 const KEYWORD_KIND: Record<string, SymbolKind> = { def: 'function', func: 'function', function: 'function', fn: 'function', const: 'constant' };
@@ -423,7 +427,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   }
   // A new namesake declared earlier in the diff must not take the place of the declaration whose readers can break.
   for (const [name, symbol] of redefined) symbols.set(name, symbol);
-  const implementations = siblingImplementations(workspace, parser, files, touched, added);
+  const implementations = siblingImplementations(workspace, parser, files, touched, added, excludePaths);
 
   const searched = [...symbols.values()]
     .filter(s => !isGeneric(s.name))
@@ -732,9 +736,10 @@ class ParsedFile {
       const scope = decl.node.ancestors().find(a => this.rules.owners[a.kind()] || this.rules.declarations[a.kind()] === 'function');
       if (!scope || !this.rules.owners[scope.kind()] || this.inTests(decl.node)) return [];
       const fields = this.rules.owners[scope.kind()];
-      const owner = scope.field(fields.type)?.text().replace(/<[\s\S]*>/, '').trim();
+      const owner = scope.field(fields.type)?.text().replace(/<[\s\S]*>/, '').trim() ?? '';
       const trait = fields.trait ? scope.field(fields.trait)?.text().replace(/<[\s\S]*>/, '').trim() : undefined;
-      return owner ? [{ name: decl.name, owner, ...(trait && { trait }), decl }] : [];
+      if (!TYPE_PATH.test(owner) || (trait !== undefined && !TYPE_PATH.test(trait))) return [];
+      return [{ name: decl.name, owner, ...(trait && { trait }), decl }];
     });
   }
 
@@ -1047,12 +1052,12 @@ function siblingFields(
   return ranked.sort((a, b) => a.rank - b.rank || a.order - b.order).slice(0, MAX_QUESTIONS).map(r => r.question);
 }
 
-/** Returns the head files of `dir` in the language family of `path`, outside tests, by name. */
-function filesBeside(workspace: string, dir: string, path: string): string[] {
+/** Returns the head files of `dir` in the language family of `path`, outside tests and `excludePaths`, by name. */
+function filesBeside(workspace: string, dir: string, path: string, excludePaths: string[]): string[] {
   const family = languageOf(path)?.family;
   try {
-    return readdirSync(join(workspace, dir)).sort().map(name => dir === '.' ? name : `${dir}/${name}`)
-      .filter(file => languageOf(file)?.family === family && !TEST_PATH.test(file));
+    return readdirSync(join(workspace, dir)).filter(name => PLAIN_FILE_NAME.test(name)).sort().map(name => dir === '.' ? name : `${dir}/${name}`)
+      .filter(file => languageOf(file)?.family === family && !TEST_PATH.test(file) && !findExcludePattern(file, excludePaths));
   } catch {
     return [];
   }
@@ -1064,7 +1069,7 @@ function filesBeside(workspace: string, dir: string, path: string): string[] {
  * left out. Groups where the change touches more members come first, then trait methods, then more changed lines.
  */
 function siblingImplementations(
-  workspace: string, parser: Parser, files: DiffFile[], touched: Map<string, Set<number>>, added: Map<string, Set<number>>,
+  workspace: string, parser: Parser, files: DiffFile[], touched: Map<string, Set<number>>, added: Map<string, Set<number>>, excludePaths: string[],
 ): SiblingImplementationQuestion[] {
   const keyOf = (m: Method) => `${m.trait ?? ''}::${m.name}`;
   // A removal marks the head line after it, which is the first line of the next function when a whole function before it went.
@@ -1075,7 +1080,7 @@ function siblingImplementations(
   if (changed.length === 0) return [];
   const wanted = new Set(changed.flatMap(c => c.methods.map(keyOf)));
   const dirs = new Map(changed.map(({ file }) => [dirname(file), file]));
-  const beside = [...dirs].flatMap(([dir, file]) => filesBeside(workspace, dir, file)).filter(file => !code.includes(file)).slice(0, MAX_SIBLING_FILES);
+  const beside = [...dirs].flatMap(([dir, file]) => filesBeside(workspace, dir, file, excludePaths)).filter(file => !code.includes(file)).slice(0, MAX_SIBLING_FILES);
   const groups = new Map<string, Array<Method & { file: string; parsed: ParsedFile; changed: number }>>();
   for (const file of [...new Set([...code, ...beside])]) {
     const parsed = parser.parse(file);

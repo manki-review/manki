@@ -252,7 +252,7 @@ mod tests {
     expect(siblings.implementations).toEqual([]);
   });
 
-  it('compares the functions of one name or trait method on sibling types in the changed files and beside them, most touched first, leaving out nested functions and untouched neighbours of removed code', async () => {
+  it('compares the functions of one name or trait method on sibling types in the changed files and beside them, most touched first, leaving out nested functions, untouched neighbours of removed code, excluded files and types no plain path names', async () => {
     const decode = (type: string, body: string) => `impl Decodable for ${type} {\n    fn consensus_decode(r: &mut R) -> Result<Self, Error> {\n        let version = u16::consensus_decode(r)?;\n${body}        Ok(Self { version })\n    }\n}\n`;
     const methods = (type: string, size: string, before = '') => `impl ${type} {\n    fn is_new(&self) -> bool {\n        self.version >= 3\n    }\n\n${before}    pub fn size(&self) -> usize {\n        ${size}\n    }\n}\n`;
     const base = {
@@ -261,13 +261,15 @@ mod tests {
       'src/payload/revocation.rs': decode('RevocationPayload', '        if version == 0 {\n            return Err(Error::Version);\n        }\n')
         + 'impl RevocationPayload {\n    fn helper(&self) -> usize {\n        fn size() -> usize { 1 }\n        size()\n    }\n}\n',
       'src/other/remote.rs': decode('RemotePayload', ''),
+      'src/payload/a_wire.generated.rs': decode('WirePayload', '        let _wire = 1;\n'),
+      'src/payload/macro.rs': decode('payload_type!(Macro)', '        let _macro = 1;\n'),
     };
     const { siblings } = await usesFor(base, {
       'src/payload/service.rs': (decode('ServicePayload', '        if version > 3 {\n            return Err(Error::Version);\n        }\n') + methods('ServicePayload', '2'))
         .replace('>= 3', '>= 3 && self.version < 9'),
       'src/payload/registrar.rs': base['src/payload/registrar.rs'].replace('let version = u16::consensus_decode(r)?;', 'let version = u16::consensus_decode(r)?; // v3')
         .replace('        let _legacy = 0;\n', '').replace('        2\n', '        4\n').replace('>= 3', '>= 3 && self.version < 9'),
-    });
+    }, ['*.generated.*']);
 
     expect(siblings.implementations.map(q => [q.trait, q.name, q.members.map(m => `${m.owner}${m.changed ? '*' : ''}`)])).toEqual([
       ['Decodable', 'consensus_decode', ['RegistrarPayload*', 'ServicePayload*', 'RevocationPayload']],
