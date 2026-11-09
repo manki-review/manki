@@ -1,0 +1,45 @@
+id: swift-nio-3689-r2
+repo: apple/swift-nio
+source: swift-nio upstream PR 3689, round 2
+base: a931f2c1de8dd49381ce3bf2e279d033f68d8865
+head: 770febe2ca89da121c0dee861c9117d08b090ded
+title: "Add channel options for a vsock socket's local and remote addresses"
+body: |
+  Add channel options to read a vsock socket's local and remote addresses
+
+  ### Motivation
+
+  `Channel.remoteAddress` and `Channel.localAddress` are always `nil` on vsock channels.
+  `NIOCore.SocketAddress` has no vsock representation. NIOPosix otherwise supports vsock through `VsockAddress`, `ServerBootstrap.bind(to:)` and `ClientBootstrap.connect(to:)`.
+  So a server accepting a vsock connection can't find out which context (VM) connected. A listener bound to `VsockAddress/Port/any` can't find out which port the kernel gave it.
+
+  The peer's context ID is the only identity a vsock connection carries. The kernel supplies it, not the peer. That makes it the natural thing to key authorization on.
+  `ChannelOptions.localVsockContextID` already exists for the same reason on the local side. It reports the context ID without the port. A wildcard bind therefore still leaves servers and tests hard-coding a port and racing for it.
+
+  ### Modifications
+
+  - Add `ChannelOptions.Types.RemoteVsockAddress` and `LocalVsockAddress`. Both are get-only options with `Value == VsockAddress`.
+
+  - Add `BaseSocket.getRemoteVsockAddress()` and `getLocalVsockAddress()`. On a non-vsock socket these calls fill a different `sockaddr`. Reinterpreting those bytes would yield a context ID derived from unrelated data, such as an IP address and port. Callers key authorization on the CID, so failing beats returning something meaningless.
+
+  - Service both in `SocketChannel.getOption0`. `LocalVsockAddress` is serviced on `ServerSocketChannel` too, which is the case which needs it. `RemoteVsockAddress` isn't: a listener has no peer.
+
+  - Tests: both options are rejected on a connected non-vsock socket. Over vsock loopback, a client's peer port is the port the listener bound, and the accepted channel reports the same CID the client saw. A listener bound to `Port/any` reports a concrete port and a context ID matching `getLocalVsockContextID()`, and the channel option agrees with the socket. The loopback tests are gated on `System.supportsVsockLoopback`, matching `testGetLocalCID` and `testEchoVsock`.
+
+  ### Result
+
+  ```swift
+  let peer = try await channel.getOption(.remoteVsockAddress).get()
+  peer.cid    // the connecting context's CID
+
+  let local = try await listener.getOption(.localVsockAddress).get()
+  local.port  // the port a Port/any bind was given
+  ```
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`getVsockAddress` declares a `sockaddr_vm` and rebinds it with `withMemoryRebound(to: sockaddr.self, capacity: 1)` before handing it to `getsockname` or `getpeername`. On Darwin `sockaddr_vm` is a packed 12-byte struct and `sockaddr` is 16 bytes, so the rebound region runs 4 bytes past the variable, which is undefined behaviour under Swift's pointer rules. The address has to be read into a `sockaddr_storage` through `withMutableSockAddr`, as `BaseSocket.get_addr` does, and converted afterwards."
+    locations: ["Sources/NIOPosix/VsockAddress.swift", "getVsockAddress", "getLocalVsockAddress", "getRemoteVsockAddress", "withMemoryRebound"]
+    fix: "adc6d3efcc3e509aa18da4a529818387c05d86ef"
+nice_to_have: []

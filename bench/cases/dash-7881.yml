@@ -1,0 +1,54 @@
+id: dash-7881
+repo: xdustinface/dash
+source: dash upstream PR 7881
+base: 1bc5197892208b807937c8194618bd580cdd1f35
+head: cdfffd3044dcc131e07e4d9b4bd97df67126569c
+title: "fix: refuse to sign shared registrar updates that pay outside the funding wallet"
+body: |
+  ## Issue being fixed or feature implemented
+
+  A shared masternode key rotation (`ProUpSharedRegTx`) is approved by every share owner, but those approvals sign only the payload: the new operator/voting keys plus `inputsHash`, which covers the input outpoints. Nothing covers the outputs. `protx shared_combine` then re-signs the fee inputs with the calling wallet and, with `submit=true`, broadcasts the result.
+
+  This lets a co-owner steal from another owner. Coin outpoints are public, so the attacker builds a rotation request that spends one of the victim's coins as its "fee input" and sends almost all of the value to themselves. They add their own approval and pass the request on. The victim's wallet can sign every input, so the Qt dialog (`RotateSharedKeysDialog::preparedByThisWallet()`) concludes the victim prepared the request. That hides the decoded key-change summary and enables Send. Clicking Approve and then Send signs and broadcasts the theft. The same trick can also rotate keys without showing the user what changes.
+
+  The feature has not shipped yet.
+
+  ## What was done?
+
+  - **`CombineShared` (registrar-update path):** before re-signing, reject the transaction if any output pays a script this wallet cannot spend. A prepared update only returns change to the wallet that funded it, so honest requests still pass. The check covers both the GUI and direct `protx shared_combine` callers, with or without `submit`.
+  - **`RotateSharedKeysDialog::showRequestedChange()`:** show the decoded operator/voting change whenever a request is loaded. Whether this wallet prepared the request is only a guess, and it no longer decides what the user sees. It still controls which editing controls and send hints appear: a wrong guess there at worst produces the error above.
+
+  ## How Has This Been Tested?
+
+  `feature_masternode_shares.py`, in the existing "unanimous registrar signing works across wallets" scenario:
+  - New case: the funding wallet is given a fully approved request whose outputs were rewritten to another wallet's address. `shared_combine` with `submit=true` is now refused.
+  - The existing non-funding-wallet case now hits the new error before signing is attempted; its expected message is updated.
+
+  Run locally on macOS arm64 (non-debug build): the test passes with the fix. With the `CombineShared` check reverted, the new case fails with `No exception raised`, meaning the funding wallet signed and broadcast the forged transaction. dash-qt builds with the dialog change. The GUI change itself was not exercised interactively.
+
+  ## Breaking Changes
+
+  `protx shared_combine` on a `ProUpSharedRegTx` now fails when any output pays a script the calling wallet cannot spend. Combining from a non-funding wallet already failed during input signing; it now fails earlier, with this message instead.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The output check in `CombineShared` runs against whichever wallet calls it, and the registrar-update path still calls `Finish` with `allow_partial=true`. A co-owner can combine a request that spends the victim's coin and pays the co-owner on the co-owner's own wallet with `submit=false`. Every output is spendable there, so the check passes and the partially signed hex comes back for the victim to finish with `signrawtransactionwithwallet`, the flow the `Finish` error text and the RPC help recommend."
+    locations: ["src/evo/providertx_service.cpp", "CombineShared", "Finish", "allow_partial"]
+    fix: "dc2745845c46c5ab3eaa9df1b19b9fe398b8aa48"
+  - id: K2
+    severity: warning
+    mechanism: "The check in `CombineShared` looks only at output scripts, never at amounts. A forged request can keep the funder's change script but shrink its value, and the funding wallet signs it, so the difference becomes fee. With `submit=false` the signed hex is returned with no fee ceiling at all, since only `Broadcast` applies `DEFAULT_MAX_RAW_TX_FEE_RATE`."
+    locations: ["src/evo/providertx_service.cpp", "CombineShared", "isSpendable"]
+    fix: "dc2745845c46c5ab3eaa9df1b19b9fe398b8aa48"
+  - id: K3
+    severity: warning
+    mechanism: "When funding makes no change, `fundTransaction` leaves its zero-valued `OP_RETURN` dummy output in the transaction, and `isSpendable` is false for that script. The new loop over `tx.vout` in `CombineShared` therefore refuses a genuine registrar update that was prepared without change."
+    locations: ["src/evo/providertx_service.cpp", "CombineShared", "isSpendable", "fundTransaction"]
+    fix: "dc2745845c46c5ab3eaa9df1b19b9fe398b8aa48"
+  - id: K4
+    severity: warning
+    mechanism: "`CombineShared` checks only the outputs, not which of the wallet's coins the inputs spend. A forged request that spends one of the funder's locked coins, such as a masternode collateral, back to the same script passes the check, and the funding wallet signs and broadcasts it, spending the collateral."
+    locations: ["src/evo/providertx_service.cpp", "CombineShared"]
+    fix: "6116d4d7fb7fa3f2a8476bbd000c12c59bb2c9c5"
+nice_to_have: []

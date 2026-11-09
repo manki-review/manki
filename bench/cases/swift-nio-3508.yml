@@ -1,0 +1,31 @@
+id: swift-nio-3508
+repo: apple/swift-nio
+source: swift-nio upstream PR 3508
+base: 9b92dcd5c22ae17016ad867852e0850f1f9f93ed
+head: b773de6f952db43705b4a264e1400e9be6f19383
+title: "Allow to copy files and symlinks while overwriting the destination"
+body: |
+  Adds capability to NIOFS to copy regular files and symlink, allowing to overwrite the destination.
+
+  ### Motivation:
+
+  Per upstream issue 3403 and upstream PR 3470 we want to add `overwriting: true` to `FileSystem.copyItem`.
+
+  ### Modifications:
+
+  1. Adds `overwriting:` parameter to  `FileSystemProtocol.copyItem`.
+  2. Adds `overwriting:` parameter to `FileSystem.copyItem` and implementation for regular files and symbolic links.
+  3. Adds tests.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "With `overwriting: true`, `_copyRegularFile` (the Linux branch) and `_copySymbolicLink` open the destination's parent with `_openDirectory(at: destinationPath.removingLastComponent())`. For a relative destination with no directory part, such as `bar`, `removingLastComponent()` returns an empty `FilePath`, so opening the directory fails and the copy throws instead of replacing `bar` in the current directory. An empty parent has to fall back to `.`."
+    locations: ["Sources/NIOFS/FileSystem.swift", "_copyRegularFile", "_copySymbolicLink", "removingLastComponent", "_openDirectory"]
+    fix: "faaddd01144c1a75ac4fc39fb332397a28e08077"
+  - id: K2
+    severity: warning
+    mechanism: "The final rename target is built with `FilePath(destinationFilename.string)` in `_copyRegularFile` and `FilePath(filenameComponent.string)` in `_copySymbolicLink`. `FilePath.Component.string` repairs bytes that are not valid UTF-8, so for such a destination filename the temporary file is renamed to a different, mangled name while the real destination stays untouched and the copy reports success. The component should become a `FilePath` directly, without going through `String`."
+    locations: ["Sources/NIOFS/FileSystem.swift", "_copyRegularFile", "_copySymbolicLink", "destinationFilename", "filenameComponent"]
+    fix: "cf6030dbfe644d4ab5fef98250a1859ee312747d"
+nice_to_have: []
