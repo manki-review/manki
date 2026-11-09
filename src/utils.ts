@@ -158,7 +158,12 @@ const MAX_PARSE_ERROR_CHARS = 300;
  */
 export function parseRetryNote(error: unknown, shape: 'object' | 'array' = 'object'): string {
   const reason = safeTruncate(error instanceof Error ? error.message : String(error), MAX_PARSE_ERROR_CHARS);
-  return `Your previous reply could not be used: ${reason}\n\nReply with only the JSON ${shape} the system prompt describes, with no text, markdown or code fence around it.`;
+  return `Your previous reply could not be used: ${reason}\n\n${jsonOnlyReply(shape)}`;
+}
+
+/** Returns the instruction to reply with only the JSON `shape` the system prompt describes. */
+export function jsonOnlyReply(shape: 'object' | 'array' = 'object'): string {
+  return `Reply with only the JSON ${shape} the system prompt describes, with no text, markdown or code fence around it.`;
 }
 
 /**

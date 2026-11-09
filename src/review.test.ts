@@ -2807,6 +2807,8 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
     expect(result.outcome).toBe('READY');
     const [first, second] = jest.mocked(clients.judge.sendMessage).mock.calls.map(call => call[1]);
+    // The format closes the message, after the diff, so the reader still has it in view when it answers.
+    expect(first.endsWith('\n\nReply with only the JSON object the system prompt describes, with no text, markdown or code fence around it.')).toBe(true);
     expect(second.startsWith(`${first}\n\nYour previous reply could not be used: malformed verdict`)).toBe(true);
     expect(second).toContain('Reply with only the JSON object the system prompt describes');
     expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Verdict reader reply could not be used'));
