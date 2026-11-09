@@ -116,6 +116,14 @@ function staysOpenNote(isSecurity: boolean, fixed: boolean): string {
 
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
 
+const DISMISS_USAGE = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` stores a suppression, so later reviews do not raise findings with that title.';
+
+const DISMISS_NO_FINDING = `Nothing was dismissed, since no finding was named.\n\n${DISMISS_USAGE}`;
+
+const DISMISS_TOO_SHORT = `No suppression was stored, since a finding name needs at least 3 characters.\n\n${DISMISS_USAGE}`;
+
+const DISMISS_FAILED = 'Could not resolve this thread. The run log has the reason.';
+
 const MEMORY_DISABLED = 'Review memory is off for this repo. Add `memory.enabled: true` to `.manki.yml` to turn it on. When it is on already, the run log says why memory was skipped, such as `memory.repo` without `memory_repo_token`.';
 
 const GLOBAL_MEMORY_BY_HAND = 'Nothing was stored. Global memory applies to every repo, so the owner of the memory repository edits `_global/` by hand.';
@@ -172,19 +180,21 @@ function roundPointer(commit: string, { status, reason }: ThreadEvaluation): str
 /**
  * Resolves `thread` with `reason`. A blocking or security thread is left open unless `mayClear`.
  * With `adminOverride`, the PR author clears such a thread as a repo admin, and Manki records that in the thread first.
+ * Returns whether the thread is resolved.
  */
-async function resolveThreadOf(octokit: Octokit, thread: ReviewThread, reason: ResolutionReason, mayClear: boolean, adminOverride?: string): Promise<void> {
-  if (thread.isResolved) return;
+async function resolveThreadOf(octokit: Octokit, thread: ReviewThread, reason: ResolutionReason, mayClear: boolean, adminOverride?: string): Promise<boolean> {
+  if (thread.isResolved) return true;
   if (isGuarded(thread) && !mayClear) {
     if (!adminOverride) {
       core.info(`Left thread ${thread.id} open, since only a maintainer other than the PR author, or a repo admin, can dismiss a blocking or security finding`);
-      return;
+      return false;
     }
     // The recorded override is what lets later rounds count the resolved thread, so without it the thread stays open.
-    if (thread.recordedOverride?.login !== adminOverride && (await announceSecurityOverrides(octokit, [{ thread: thread.id, login: adminOverride, via: 'dismiss' }])).length === 0) return;
+    if (thread.recordedOverride?.login !== adminOverride && (await announceSecurityOverrides(octokit, [{ thread: thread.id, login: adminOverride, via: 'dismiss' }])).length === 0) return false;
   }
   await resolveReviewThread(octokit, thread.id, reason);
   core.info(`Resolved thread ${thread.id} after the reply`);
+  return true;
 }
 
 /**
@@ -443,10 +453,14 @@ export async function handlePRComment(
       await handleExplain(octokit, client, owner, repo, issueNumber, topic);
       break;
     }
-    case 'dismiss':
-      await handleDismiss(octokit, owner, repo, issueNumber, command.args, memory);
-      await reactToIssueComment(octokit, owner, repo, commentId, '+1');
+    case 'dismiss': {
+      const dismissal = await handleDismiss(octokit, owner, repo, issueNumber, command.args, memory);
+      await octokit.rest.issues.createComment({
+        owner, repo, issue_number: issueNumber, body: withMarkers(dismissal?.note ?? DISMISS_NO_FINDING, BOT_MARKER),
+      });
+      if (dismissal?.dismissed) await reactToIssueComment(octokit, owner, repo, commentId, '+1');
       break;
+    }
     case 'remember':
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
       await handleRemember(octokit, owner, repo, issueNumber, command.args, memory);
@@ -528,6 +542,10 @@ async function handleExplain(
   });
 }
 
+/**
+ * Stores a suppression for the finding `findingRef` names. Returns the note to post, and whether a finding was
+ * dismissed, or `undefined` when `findingRef` names none.
+ */
 async function handleDismiss(
   octokit: Octokit,
   owner: string,
@@ -535,16 +553,14 @@ async function handleDismiss(
   prNumber: number,
   findingRef: string,
   memory?: MemoryStore,
-): Promise<void> {
+): Promise<{ note: string; dismissed: boolean } | undefined> {
+  if (!findingRef.trim()) return undefined;
   const sanitizedPattern = findingRef
     .replace(/</g, '').replace(/>/g, '')
     .slice(0, 200)
     .trim();
 
-  if (findingRef && sanitizedPattern.length < 3) {
-    core.warning('Finding reference too short to create suppression');
-    return;
-  }
+  if (sanitizedPattern.length < 3) return { note: DISMISS_TOO_SHORT, dismissed: false };
 
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
@@ -553,7 +569,7 @@ async function handleDismiss(
   }
 
   let stored = false;
-  if (isTrusted && memory && sanitizedPattern) {
+  if (isTrusted && memory) {
     try {
       await writeSuppression(memory, {
         id: `supp-${Date.now()}`,
@@ -576,39 +592,38 @@ async function handleDismiss(
       ? 'Only collaborators can store a dismissal in review memory, so later reviews can raise it again.'
       : stored
         ? 'Stored as a suppression in review memory.'
-        : !sanitizedPattern
-          ? 'Nothing was stored in review memory, since no finding was named.'
-          : 'Could not store it in review memory, so later reviews can raise it again. The run log has the reason.';
-  await octokit.rest.issues.createComment({
-    owner,
-    repo,
-    issue_number: prNumber,
-    body: withMarkers(`Dismissed${sanitizedPattern ? `: \`${sanitizedPattern}\`` : ''}. ${memoryNote}`, BOT_MARKER),
-  });
+        : 'Could not store it in review memory, so later reviews can raise it again. The run log has the reason.';
+  return { note: `Dismissed: \`${sanitizedPattern}\`. ${memoryNote}`, dismissed: true };
 }
 
 /**
  * Resolves the Manki thread a `dismiss` reply was posted in, for someone who could resolve it by hand.
  * On a blocking or security thread the PR author may do so too when they are a repo admin.
+ * Returns whether the thread is resolved, with a note when it is not, or `undefined` outside a Manki finding's thread.
  */
-async function resolveDismissedThread(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number): Promise<void> {
+async function resolveDismissedThread(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
+): Promise<{ resolved: boolean; note?: string } | undefined> {
   const payload = github.context.payload;
   const inReplyTo = payload.comment?.in_reply_to_id;
-  if (!inReplyTo) return;
+  if (!inReplyTo) return undefined;
   const senderLogin = payload.sender?.login;
   try {
     const { data: parent } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: inReplyTo });
     const root = await fetchThreadRoot(octokit, owner, repo, inReplyTo, parent);
-    if (!root || !isBotComment(root.comment.body ?? '')) return;
+    if (!root || !isBotComment(root.comment.body ?? '')) return undefined;
     const { mayResolve, isPrAuthor, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, payload.pull_request?.user?.login);
-    if (!mayResolve) return;
+    if (!mayResolve) return { resolved: false, note: 'Only the PR author or someone with write access can dismiss this finding, so the thread stays open.' };
     const thread = await findBotThread(octokit, bot, owner, repo, prNumber, root.id);
-    if (!thread) return;
+    if (!thread) throw new Error(`no Manki thread starts at comment ${root.id}`);
     const adminOverride = isGuarded(thread) && !mayClear && isPrAuthor && !!senderLogin
       && await isRepoAdmin(octokit, owner, repo, senderLogin);
-    await resolveThreadOf(octokit, thread, 'WONT_FIX', mayClear, adminOverride ? senderLogin : undefined);
+    if (await resolveThreadOf(octokit, thread, 'WONT_FIX', mayClear, adminOverride ? senderLogin : undefined)) return { resolved: true };
+    // Without an override the sender may not clear the thread. With one, Manki could not record the override.
+    return { resolved: false, note: adminOverride ? DISMISS_FAILED : staysOpenNote(!!thread.isSecurity, false) };
   } catch (error) {
     core.warning(`Failed to resolve the dismissed thread: ${error}`);
+    return { resolved: false, note: DISMISS_FAILED };
   }
 }
 
@@ -969,11 +984,20 @@ export async function handleReviewCommentCommand(
   }
 
   switch (command.type) {
-    case 'dismiss':
-      await handleDismiss(octokit, owner, repo, prNumber, command.args, memory);
-      await resolveDismissedThread(octokit, bot, owner, repo, prNumber);
-      await reactToReviewComment(octokit, owner, repo, commentId, '+1');
+    case 'dismiss': {
+      const dismissal = await handleDismiss(octokit, owner, repo, prNumber, command.args, memory);
+      const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber);
+      // A resolved thread needs no note, and outside a Manki finding's thread only a named finding can be dismissed.
+      const threadNote = thread ? thread.note : dismissal ? undefined : DISMISS_NO_FINDING;
+      const notes = [dismissal?.note, threadNote].filter((note): note is string => !!note);
+      if (notes.length > 0) {
+        await octokit.rest.pulls.createReplyForReviewComment({
+          owner, repo, pull_number: prNumber, comment_id: commentId, body: withMarkers(notes.join('\n\n'), BOT_MARKER),
+        });
+      }
+      if (dismissal?.dismissed || thread?.resolved) await reactToReviewComment(octokit, owner, repo, commentId, '+1');
       break;
+    }
     case 'remember':
       await reactToReviewComment(octokit, owner, repo, commentId, 'eyes');
       await handleRemember(octokit, owner, repo, prNumber, command.args, memory);
