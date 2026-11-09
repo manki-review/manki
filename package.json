@@ -16,6 +16,7 @@
     "review-history": "tsx scripts/review-history.ts",
     "review-stats": "tsx scripts/review-stats.ts",
     "missed-blockers": "tsx scripts/missed-blockers.ts",
+    "bench-report": "tsx scripts/bench-report.ts",
     "calibration": "tsx scripts/calibration.ts",
     "bench": "npm run build && node dist/index.js bench",
     "config-reference": "tsx scripts/config-reference.ts",

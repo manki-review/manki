@@ -22,7 +22,7 @@ const DEFAULT_RUNS = 3;
 const HOLDOUT_DIR = 'bench/holdout';
 const CASE_SETS = ['tuning', 'holdout'] as const;
 /** Tuning cases are what changes are developed against. Hold-out cases are run only before a release. */
-type CaseSet = typeof CASE_SETS[number];
+export type CaseSet = typeof CASE_SETS[number];
 const DEFAULT_MATCHER_MODEL = 'claude-sonnet-5-5';
 const MAX_MATCHER_DESCRIPTION = 2000;
 
@@ -402,7 +402,10 @@ interface VariantReport extends Variant {
   cases: CaseReport[];
 }
 
-interface BenchReport {
+export interface BenchReport {
+  /** The Manki ref and commit a merged CI report reviewed with. */
+  ref?: string;
+  commit?: string;
   mankiVersion: string;
   startedAt: string;
   runsPerCase: number;
@@ -419,19 +422,20 @@ function mean(values: Array<number | null>): number | null {
   return known.length > 0 ? known.reduce((a, b) => a + b, 0) / known.length : null;
 }
 
-function buildVariantReport(variant: Variant, results: CaseResults): VariantReport {
-  const cases = results.map(({ benchCase, runs }) => {
-    const complete = runs.filter(run => run.complete);
-    const report = (item: KeyItem, tier: ItemReport['tier']): ItemReport => {
-      const verdicts = complete.map(run => run.matches.find(m => m.item === item.id)?.verdict);
-      return { id: item.id, tier, severity: item.severity, caught: verdicts.filter(v => v === 'MATCH').length, partial: verdicts.filter(v => v === 'PARTIAL').length, runs: complete.length };
-    };
-    return {
-      id: benchCase.id, set: benchCase.set, source: benchCase.source, keyVersion: benchCase.keyVersion,
-      items: [...benchCase.mustCatch.map(item => report(item, 'must_catch')), ...benchCase.niceToHave.map(item => report(item, 'nice_to_have'))],
-      runs,
-    };
-  });
+function caseReport(benchCase: BenchCase, runs: RunScore[]): CaseReport {
+  const complete = runs.filter(run => run.complete);
+  const report = (item: KeyItem, tier: ItemReport['tier']): ItemReport => {
+    const verdicts = complete.map(run => run.matches.find(m => m.item === item.id)?.verdict);
+    return { id: item.id, tier, severity: item.severity, caught: verdicts.filter(v => v === 'MATCH').length, partial: verdicts.filter(v => v === 'PARTIAL').length, runs: complete.length };
+  };
+  return {
+    id: benchCase.id, set: benchCase.set, source: benchCase.source, keyVersion: benchCase.keyVersion,
+    items: [...benchCase.mustCatch.map(item => report(item, 'must_catch')), ...benchCase.niceToHave.map(item => report(item, 'nice_to_have'))],
+    runs,
+  };
+}
+
+function variantReport(variant: Variant, cases: CaseReport[]): VariantReport {
   return {
     ...variant,
     summary: summarize(cases),
@@ -468,7 +472,139 @@ function summarize(cases: CaseReport[]): VariantSummary {
 }
 
 export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' | 'matcherModel'>, variants: VariantResults[]): BenchReport {
-  return { mankiVersion: MANKI_VERSION, ...meta, variants: variants.map(({ variant, results }) => buildVariantReport(variant, results)) };
+  return {
+    mankiVersion: MANKI_VERSION, ...meta,
+    variants: variants.map(({ variant, results }) => variantReport(variant, results.map(({ benchCase, runs }) => caseReport(benchCase, runs)))),
+  };
+}
+
+/**
+ * Joins reports that each scored some of `cases`, such as one per CI job, into one report. Each case takes its set from
+ * `cases`. A case no report holds gets one failed run in every variant, so it counts as incomplete.
+ */
+export function mergeReports(parts: BenchReport[], cases: BenchCase[], meta: Pick<BenchReport, 'ref' | 'commit'>): BenchReport {
+  if (parts.length === 0) throw new Error('No report to merge');
+  const names = [...new Set(parts.flatMap(p => p.variants.map(v => v.name)))];
+  const variants = names.map((name) => {
+    const found = parts.flatMap(p => p.variants.filter(v => v.name === name));
+    const scored = new Map(found.flatMap(v => v.cases).map(c => [c.id, c]));
+    const unknown = [...scored.keys()].find(id => !cases.some(c => c.id === id));
+    if (unknown) throw new Error(`The reports hold case ${unknown}, which is not one of the cases to merge`);
+    return variantReport({ name, overrides: found[0].overrides }, cases.map((c) => {
+      const scoredCase = scored.get(c.id);
+      return scoredCase ? { ...scoredCase, set: c.set } : caseReport(c, [failedRun(new Error('No report: the job for this case failed or was cancelled.'))]);
+    }));
+  });
+  return {
+    ...meta, mankiVersion: parts[0].mankiVersion, startedAt: parts.map(p => p.startedAt).sort()[0], runsPerCase: parts[0].runsPerCase,
+    matcherModel: parts[0].matcherModel, variants,
+  };
+}
+
+/** How far the found must-catch items may fall before a release fails. */
+const GATE_MARGIN = 1;
+const GATE_EPSILON = 1e-9;
+
+interface GateSide {
+  /** Runs of each shared case over all reports of the side, the fewest of any case. */
+  runs: number;
+  /** Must-catch items matched at the key's grade or above, summed over the shared cases, as a mean per run. */
+  found: number;
+  /** Blocker findings that match no key item, summed over the shared cases, as a mean per run. */
+  falseBlockers: number;
+}
+
+export interface GateResult {
+  variant: string;
+  verdict: 'PASS' | 'FAIL' | 'RERUN' | 'NO DECISION';
+  reason: string;
+  /** The hold-out cases both sides scored with the same key version. */
+  shared: string[];
+  baseline?: GateSide;
+  candidate?: GateSide;
+}
+
+function gateSide(variants: VariantReport[], shared: string[]): GateSide {
+  const perCase = shared.map(id => variants.map(v => v.cases.find(c => c.id === id)!));
+  const meanPerRun = (score: (c: CaseReport, run: RunScore) => number) =>
+    perCase.reduce((sum, reports) => sum + (mean(reports.flatMap(c => c.runs.map(run => score(c, run)))) ?? 0), 0);
+  return {
+    runs: Math.min(...perCase.map(reports => reports.reduce((sum, c) => sum + c.runs.length, 0))),
+    found: meanPerRun((c, run) => c.items.filter(item => item.tier === 'must_catch'
+      && run.matches.some(m => m.item === item.id && m.verdict === 'MATCH' && severityCredit(m.severity, item.severity) === 1)).length),
+    falseBlockers: meanPerRun((_, run) => run.falseBlockers),
+  };
+}
+
+function figure(value: number): string {
+  return String(Number(value.toFixed(2)));
+}
+
+/**
+ * Applies the release gate to each variant both sides scored, on the hold-out cases both scored with the same key
+ * version. A side with an incomplete review decides nothing. More false blockers fail. Found must-catch items may fall
+ * by at most `GATE_MARGIN`, and a fall within it on a single candidate run asks for a rerun, decided on the mean.
+ * Throws when the candidate reports reviewed different commits, the baseline reviewed the candidate's commit, or the
+ * reports were matched by different models.
+ */
+export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): GateResult[] {
+  if (baseline.length === 0 || candidate.length === 0) throw new Error('The gate needs a baseline and a candidate report');
+  const all = [...baseline, ...candidate];
+  const commits = new Set(candidate.map(r => r.commit).filter(Boolean));
+  if (commits.size > 1) throw new Error(`The candidate reports reviewed different commits: ${[...commits].join(', ')}`);
+  const own = baseline.find(r => r.commit && commits.has(r.commit));
+  if (own) throw new Error(`The baseline reviewed the candidate's own commit ${own.commit}`);
+  const matchers = new Set(all.map(r => r.matcherModel));
+  if (matchers.size > 1) throw new Error(`The reports were matched by different models: ${[...matchers].join(', ')}`);
+  const names = candidate[0].variants.map(v => v.name).filter(name => all.every(r => r.variants.some(v => v.name === name)));
+  if (names.length === 0) throw new Error('The baseline and candidate reports share no variant');
+  return names.map((name): GateResult => {
+    const pick = (reports: BenchReport[]) => reports.map(r => r.variants.find(v => v.name === name)!);
+    const [base, cand, every] = [pick(baseline), pick(candidate), pick(all)];
+    const shared = every[0].cases.filter(c => c.set === 'holdout'
+      && every.every(v => v.cases.some(o => o.id === c.id && o.set === 'holdout' && o.keyVersion === c.keyVersion))).map(c => c.id);
+    if (shared.length === 0) return { variant: name, verdict: 'NO DECISION', reason: 'The baseline and the candidate share no hold-out case with the same key version.', shared };
+    const incomplete = (side: VariantReport[]) => shared.filter(id => side.some((v) => {
+      const runs = v.cases.find(c => c.id === id)!.runs;
+      return runs.length === 0 || runs.some(run => !run.complete);
+    }));
+    const [baseIncomplete, candIncomplete] = [incomplete(base), incomplete(cand)];
+    if (baseIncomplete.length > 0 || candIncomplete.length > 0) {
+      const sides = [['baseline', baseIncomplete], ['candidate', candIncomplete]] as const;
+      const listed = sides.filter(([, ids]) => ids.length > 0).map(([side, ids]) => `The ${side} has incomplete reviews on ${ids.join(', ')}.`);
+      return { variant: name, verdict: 'NO DECISION', reason: `${listed.join(' ')} A run with incomplete reviews does not count, so run that side again.`, shared };
+    }
+    const [b, c] = [gateSide(base, shared), gateSide(cand, shared)];
+    const drop = b.found - c.found;
+    const sides = { shared, baseline: b, candidate: c };
+    if (c.falseBlockers > b.falseBlockers + GATE_EPSILON) {
+      return { variant: name, verdict: 'FAIL', reason: `False blockers rose from ${figure(b.falseBlockers)} to ${figure(c.falseBlockers)} per run.`, ...sides };
+    }
+    if (drop > GATE_MARGIN + GATE_EPSILON) {
+      return { variant: name, verdict: 'FAIL', reason: `Must-catch items found at the key's grade fell by ${figure(drop)}, more than ${GATE_MARGIN}.`, ...sides };
+    }
+    if (drop > GATE_EPSILON && c.runs < 2) {
+      return {
+        variant: name, verdict: 'RERUN', ...sides,
+        reason: `Must-catch items found at the key's grade fell by ${figure(drop)}, within the margin of ${GATE_MARGIN}. Run the candidate once more and decide on the mean of both runs.`,
+      };
+    }
+    const change = drop > GATE_EPSILON ? `fell by ${figure(drop)} on the mean of ${c.runs} runs, within the margin of ${GATE_MARGIN}` : 'did not fall';
+    return { variant: name, verdict: 'PASS', reason: `False blockers did not rise, and must-catch items found at the key's grade ${change}.`, ...sides };
+  });
+}
+
+/** Returns the gate results as Markdown: per variant the verdict and its reason, and the figures of both sides. */
+export function formatGate(results: GateResult[]): string {
+  return results.map((r) => {
+    const lines = [`### Release gate, ${r.variant}: ${r.verdict}`, '', r.reason, ''];
+    if (r.baseline && r.candidate) {
+      const row = (label: string, value: (side: GateSide) => number) => `| ${label} | ${figure(value(r.baseline!))} | ${figure(value(r.candidate!))} |`;
+      lines.push('| Figure | Baseline | Candidate |', '| --- | --- | --- |', row('Runs per case', s => s.runs), row('Must-catch found at grade', s => s.found), row('False blockers', s => s.falseBlockers), '');
+    }
+    lines.push(`Shared hold-out cases (${r.shared.length}): ${r.shared.join(', ') || 'none'}`, '');
+    return lines.join('\n');
+  }).join('\n');
 }
 
 function percent(value: number | null): string {
@@ -492,7 +628,7 @@ function setSummaries(variant: VariantReport): Array<{ label: string; set: CaseS
  * Returns a Markdown table with one column per variant and set: the summary figures, then each key item's catch rate
  * in the column of its case's set.
  */
-function formatComparison(variants: VariantReport[]): string {
+export function formatComparison(variants: VariantReport[]): string {
   const columns = variants.flatMap(v => setSummaries(v).map(({ label, set, summary }) => ({ name: label ? `${v.name} ${label}` : v.name, summary, cases: v.cases.filter(c => c.set === set) })));
   const row = (label: string, cells: string[]) => `| ${[label, ...cells].join(' | ')} |`;
   const figure = (label: string, value: (s: VariantSummary) => string) => row(label, columns.map(c => value(c.summary)));

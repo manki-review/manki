@@ -43,6 +43,12 @@ Both sets mix repositories, languages and sizes: rust-dashcore (Rust), manki and
 
 `npm run missed-blockers -- --repo <owner/name> [--last <n>]` drafts more cases from Manki's own misses. It reads the round records of the last merged pull requests and finds each round whose blockers sit on code the round before it had already reviewed (`origin: reviewed`), which no earlier round raised as a blocker. Each such earlier round becomes a draft in `bench/drafts/`: its commit is the head, its merge base with the base commit the pull request recorded is the base, and each missed blocker is a `must_catch` item. Run it on a repository Manki reviews, such as manki-review/manki or the owner's forks, since a case names its repository. A draft has `key_version: 0`. Check its items, severities and locations, then set `key_version` to 1 and move it to `bench/cases` or `bench/holdout`. The body is the pull request body as it is now, and references to repositories outside manki-review and the forks are written as plain text.
 
+## On GitHub
+
+The **Benchmark** workflow (`.github/workflows/bench.yml`) runs the bench without local clones. Start it from the Actions tab with **Run workflow**. Each case runs in its own job, four at a time. A job builds Manki at `ref`, fetches the case's two commits in full, and runs that ref's `manki bench` on the case file of the workflow's own commit. The `report` job merges the case reports with `npm run bench-report -- merge`, writes the comparison table to its summary and uploads `report.json` as the `bench-report` artifact. Given the run ids of earlier runs in `baseline`, it also applies the release gate in `RELEASE.md`.
+
+Each ref scores with its own bench code. After a change to the matcher, run the baseline's ref again rather than compare with an older report. To compare downloaded reports locally, run `npm run bench-report -- gate --baseline old.json --candidate new.json`.
+
 ## Comparing setups
 
 `--variant <name>=<file>` scores one setup: the YAML file holds config set on top of each case's base `.manki.yml`, where mappings merge key by key and any other value replaces. `--variant <name>` without a file runs the base config as it is. Repeat it to score several setups on the same cases in one run. `--set <key.path>=<value>` sets one value, read as YAML, on top of every variant. Paths are relative to this checkout, since `npm run` starts there.

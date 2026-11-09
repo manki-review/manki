@@ -3,10 +3,10 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'f
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { BenchCase, buildReport, candidateFindings, formatBenchSummary, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, buildReport, candidateFindings, formatBenchSummary, formatGate, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
-import type { Finding, RoundContext, RoundOutcome } from './types';
+import type { Finding, FindingSeverity, RoundContext, RoundOutcome } from './types';
 
 jest.mock('@actions/core');
 
@@ -400,6 +400,83 @@ describe('runBench and buildReport', () => {
     await expect(runBench([benchCase], { ...options, checkouts: new Map() })).rejects.toThrow('No checkout for owner/demo');
     await expect(runBench([{ ...benchCase, head: 'c'.repeat(40) }], { ...options, checkouts: new Map([['owner/demo', checkout]]) })).rejects.toThrow(new RegExp(`Commit ${'c'.repeat(40)} of case demo-1 is not in .*Git said: `));
     expect(review).not.toHaveBeenCalled();
+  });
+});
+
+describe('mergeReports and gateReports', () => {
+  type Run = Awaited<ReturnType<typeof scoreRun>>;
+  const meta = { startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' };
+  const [first, second] = ['demo-1', 'demo-2'].map(id => parseCase(CASE_YAML.replace('id: demo-1', `id: ${id}`), `${id}.yml`, 'holdout'));
+  const tuning = parseCase(CASE_YAML.replace('id: demo-1', 'id: demo-3'), 'demo-3.yml');
+
+  /** A run that reports K1 at `k1`, if given, and `falseBlockers` blockers that match no item. */
+  async function run(benchCase: BenchCase, k1?: FindingSeverity, falseBlockers = 0, complete = true): Promise<Run> {
+    const findings = [
+      ...(k1 ? [makeFinding({ severity: k1, file: 'src/read.rs' })] : []),
+      ...Array.from({ length: falseBlockers }, () => makeFinding({ severity: 'blocker', file: 'src/other.rs' })),
+    ];
+    const matcher: Matcher = async item => (item.id === 'K1' && k1 ? { verdict: 'MATCH', findings: [0], reason: 'same' } : { verdict: 'NONE', findings: [], reason: 'none' });
+    return scoreRun(benchCase, makeReview(k1 === 'blocker' ? 'ADDRESS_FIRST' : 'READY', findings, complete), matcher);
+  }
+
+  function report(runs: Array<[BenchCase, Run[]]>) {
+    return buildReport(meta, [{ variant: { name: 'base', overrides: {} }, results: runs.map(([benchCase, caseRuns]) => ({ benchCase, runs: caseRuns })) }]);
+  }
+
+  it('joins one report per case, takes each set from the cases, and fails a case no report holds', async () => {
+    const parts = [
+      { ...report([[{ ...first, set: 'tuning' }, [await run(first, 'blocker')]]]), startedAt: '2026-11-09T02:00:00.000Z' },
+      report([[tuning, [await run(tuning)]]]),
+    ];
+    const merged = mergeReports(parts, [first, second, tuning], { ref: 'v7.3.0', commit: 'c'.repeat(40) });
+    expect(merged).toMatchObject({ ref: 'v7.3.0', commit: 'c'.repeat(40), startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' });
+    const [variant] = merged.variants;
+    expect(variant.cases.map(c => [c.id, c.set, c.runs.map(r => r.complete)])).toEqual([['demo-1', 'holdout', [true]], ['demo-2', 'holdout', [false]], ['demo-3', 'tuning', [true]]]);
+    expect(variant.cases[1].runs[0].error).toBe('No report: the job for this case failed or was cancelled.');
+    expect(variant.sets.holdout).toMatchObject({ runs: 2, incompleteRuns: 1, mustCatchRecall: 0.5 });
+    expect(() => mergeReports(parts, [first], {})).toThrow('The reports hold case demo-3, which is not one of the cases to merge');
+    expect(() => mergeReports([], [first], {})).toThrow('No report to merge');
+  });
+
+  it('passes, fails or asks for a rerun on the shared hold-out cases, counting only matches at the key grade', async () => {
+    const baseline = report([[first, [await run(first, 'blocker')]], [second, [await run(second, 'blocker')]], [tuning, [await run(tuning, 'blocker')]]]);
+    const gate = async (firstK1?: FindingSeverity, secondK1?: FindingSeverity, falseBlockers = 0) => gateReports([baseline], [
+      report([[first, [await run(first, firstK1, falseBlockers)]], [second, [await run(second, secondK1)]], [tuning, [await run(tuning)]]]),
+    ])[0];
+
+    expect(await gate('blocker', 'blocker')).toMatchObject({
+      variant: 'base', verdict: 'PASS', shared: ['demo-1', 'demo-2'],
+      baseline: { runs: 1, found: 2, falseBlockers: 0 }, candidate: { runs: 1, found: 2, falseBlockers: 0 },
+    });
+    expect(await gate('blocker', 'blocker', 1)).toMatchObject({ verdict: 'FAIL', reason: 'False blockers rose from 0 to 1 per run.' });
+    expect(await gate('blocker', 'warning')).toMatchObject({ verdict: 'RERUN', candidate: { found: 1 } });
+    expect(await gate()).toMatchObject({ verdict: 'FAIL', reason: "Must-catch items found at the key's grade fell by 2, more than 1." });
+
+    const rerun = report([[first, [await run(first, 'blocker')]], [second, [await run(second)]]]);
+    const atMargin = report([[first, [await run(first, 'blocker')]], [second, [await run(second, 'blocker')]]]);
+    expect(gateReports([baseline], [rerun, atMargin])[0]).toMatchObject({ verdict: 'PASS', candidate: { runs: 2, found: 1.5 } });
+    expect(gateReports([baseline], [rerun, rerun])[0]).toMatchObject({ verdict: 'PASS', candidate: { runs: 2, found: 1 } });
+  });
+
+  it('decides nothing on an incomplete run or without a shared hold-out case, and leaves a case with another key version out', async () => {
+    const baseline = report([[first, [await run(first, 'blocker')]], [second, [await run(second, 'blocker')]]]);
+    expect(gateReports([baseline], [report([[first, [await run(first, 'blocker', 0, false)]], [second, [await run(second, 'blocker')]]])])[0]).toMatchObject({
+      verdict: 'NO DECISION', reason: 'The candidate has incomplete reviews on demo-1. A run with incomplete reviews does not count, so run that side again.',
+    });
+    const rekeyed = report([[first, [await run(first, 'blocker')]], [{ ...second, keyVersion: 3 }, [await run(second)]]]);
+    expect(gateReports([baseline], [rekeyed])[0]).toMatchObject({ verdict: 'PASS', shared: ['demo-1'] });
+    expect(gateReports([baseline], [report([[tuning, [await run(tuning)]]])])[0]).toMatchObject({ verdict: 'NO DECISION', shared: [] });
+    expect(() => gateReports([], [baseline])).toThrow('The gate needs a baseline and a candidate report');
+    const at = (commit: string) => ({ ...baseline, commit });
+    expect(gateReports([at('a')], [at('b'), at('b')])[0].verdict).toBe('PASS');
+    expect(() => gateReports([at('a')], [at('b'), at('c')])).toThrow('The candidate reports reviewed different commits: b, c');
+    expect(() => gateReports([at('a')], [at('a')])).toThrow("The baseline reviewed the candidate's own commit a");
+    expect(() => gateReports([baseline], [{ ...baseline, matcherModel: 'model-b' }])).toThrow('The reports were matched by different models: model-a, model-b');
+
+    const text = formatGate(gateReports([baseline], [baseline]));
+    expect(text).toContain("### Release gate, base: PASS\n\nFalse blockers did not rise, and must-catch items found at the key's grade did not fall.\n");
+    expect(text).toContain('| Figure | Baseline | Candidate |\n| --- | --- | --- |\n| Runs per case | 1 | 1 |\n| Must-catch found at grade | 2 | 2 |\n| False blockers | 0 | 0 |\n');
+    expect(text).toContain('Shared hold-out cases (2): demo-1, demo-2');
   });
 });
 
