@@ -343,17 +343,19 @@ async function waitForChecks(
 }
 
 /**
- * Returns the changed lockfiles at the PR head, within `MAX_LOCKFILE_BYTES` each and `MAX_LOCKFILES_TOTAL_BYTES` in all.
- * They are fetched raw, since the contents API sends no content above 1 MB.
+ * Returns the changed lockfiles `keep` accepts at the PR head, within `MAX_LOCKFILE_BYTES` each and
+ * `MAX_LOCKFILES_TOTAL_BYTES` in all. They are fetched raw, since the contents API sends no content above 1 MB.
  */
-async function fetchLockfiles(octokit: Octokit, { owner, repo, headSha, fullDiff }: StaticSignalRequest): Promise<Map<string, string>> {
+export async function fetchLockfiles(
+  octokit: Octokit, { owner, repo, headSha, fullDiff }: Pick<StaticSignalRequest, 'owner' | 'repo' | 'headSha' | 'fullDiff'>, keep = isLockfile,
+): Promise<Map<string, string>> {
   const lockfiles = new Map<string, string>();
   let total = 0;
-  for (const { path } of fullDiff.files.filter(f => f.changeType !== 'deleted' && isLockfile(f.path))) {
+  for (const { path } of fullDiff.files.filter(f => f.changeType !== 'deleted' && keep(f.path))) {
     const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref: headSha, mediaType: { format: 'raw' } });
     const content = data as unknown as string;
     if (content.length > MAX_LOCKFILE_BYTES || total + content.length > MAX_LOCKFILES_TOTAL_BYTES) {
-      core.info(`Static analysis: dependencies skips ${path}, ${content.length} bytes is over the lockfile budget`);
+      core.info(`Skipping ${path}: ${content.length} bytes is over the lockfile budget`);
       continue;
     }
     lockfiles.set(path, content);
