@@ -3,12 +3,13 @@ import { readFileSync } from 'fs';
 
 import * as core from '@actions/core';
 
-import { isLineInDiff } from './diff';
+import { isLineInDiff, rebuildRawDiff, shortenLongLines } from './diff';
+import { fenceText } from './github';
 import { extractJSON } from './json';
 import { resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
-import { parseProof, titlesMatch } from './review';
+import { parseProof, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
 import { Finding, FindingSeverity, gradeStep, ParsedDiff, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
@@ -18,6 +19,7 @@ const REFUTE_STEPS = 15;
 const REFUTE_TIMEOUT_MS = 600_000;
 const MAX_REASON_CHARS = 500;
 const MAX_JUDGE_NOTES_CHARS = 1000;
+const MAX_FILE_CHANGE_CHARS = 8000;
 const MAX_PARALLEL_REFUTATIONS = 3;
 const OUTCOMES: readonly RefutationOutcome[] = ['disproved', 'confirmed', 'unsettled'];
 // How far a finding may move between rounds and still count as the same one.
@@ -37,6 +39,7 @@ To refute it:
 - A finding that one piece of code lacks a check, a lock or an error path its sibling has goes through the same search: find why the sibling has it, and whether that reason holds here.
 - For a doubt that the failure is reached, search for a path from an entry point to the failing code. A public function, method, constructor or field is an entry point when the repository is a library, as its manifest shows, or when the outside input in the message names that API: any caller of it can pass a value it accepts, so a path from it counts as reached with no caller in the repository. In an application, an exported function is no entry point on its own and needs a caller. Confirm when such a path carries the triggering value, and disprove only when every path checks the value or cannot carry it.
 - For any other doubt, the judge's reasoning names the premise it doubts. Check that premise in the code.
+- For a doubt that this PR causes the defect, use the PR's change to the finding's file, shown in the message. Confirm only when the failure sits in a line the PR changes or a changed line causes it. When the change shown cannot settle it, answer unsettled.
 - Reading code cannot confirm that it fails to compile or that a test fails. Return such a claim as unsettled unless a counterexample disproves it.
 
 - **disproved**: you found the reason the failure cannot happen. Cite where in \`proof\`, with at least one line of the finding's own file or of the PR's diff, or the answer counts as unsettled. For a counterexample, cite it and the finding's own line.
@@ -123,7 +126,10 @@ function findingKind(finding: Finding): string {
   return 'Blocker';
 }
 
-function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput = ''): string {
+function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput = '', diff?: ParsedDiff): string {
+  // A doubt the judge named can be whether the PR causes the defect, which only the PR's change settles.
+  const showsChange = !!finding.gradeIfConfirmed && !!diff;
+  const changed = showsChange ? diff.files.find(f => f.path === finding.file) : undefined;
   const lines = [
     `## ${findingKind(finding)}: ${sanitizeForPromptEmbed(finding.title)}`,
     '',
@@ -134,8 +140,12 @@ function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput
     ...(finding.lead ? [`- **Checked so far**: ${sanitizeForPromptEmbed(finding.lead.checked)}`, `- **Left to check**: ${sanitizeForPromptEmbed(finding.lead.left)}`] : []),
     ...(finding.gradeIfConfirmed && finding.judgeNotes ? [`- **Judge's reasoning**: ${sanitizeForPromptEmbed(finding.judgeNotes.slice(0, MAX_JUDGE_NOTES_CHARS))}`] : []),
     ...(outsideInput ? [`- **Outside input in this repository, as its maintainers define it**: ${sanitizeForPromptEmbed(outsideInput.trim())}`] : []),
+    ...(showsChange && !changed ? ["- **The PR's change to this file**: none, the PR does not change it."] : []),
   ];
-  return usesOutsideDiff ? `${lines.join('\n')}\n\n${usesOutsideDiff.trimEnd()}` : lines.join('\n');
+  const change = changed && diff
+    ? `## The PR's Change to This File\n\n${fenceText(truncateDiff(rebuildRawDiff({ ...diff, files: [shortenLongLines(changed)] }), MAX_FILE_CHANGE_CHARS), 'diff')}`
+    : '';
+  return [lines.join('\n'), change, usesOutsideDiff.trimEnd()].filter(Boolean).join('\n\n');
 }
 
 function parseRefutation(text: string, workspace: string, file: string, diff?: ParsedDiff): Refutation {
@@ -213,7 +223,7 @@ export interface RefuteOptions {
   workspace: string;
   priorRounds?: RoundContext[];
   effort?: 'low' | 'medium' | 'high';
-  /** The PR's diff, whose lines a disproof may cite besides the finding's own file. */
+  /** The PR's diff, whose lines a disproof may cite besides the finding's own file. A refuter checking a doubt the judge named sees its change to the finding's file. */
   diff?: ParsedDiff;
   /** The section `listUsesOutsideDiff` builds. */
   usesOutsideDiff?: string;
@@ -241,7 +251,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     }
     try {
       const refutation = await sendWithParseRetry(
-        buildRefuteMessage(finding, usesOutsideDiff, outsideInput),
+        buildRefuteMessage(finding, usesOutsideDiff, outsideInput, diff),
         message => refuter.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
           ...(effort && { effort }), repoTools: { root: workspace, steps: REFUTE_STEPS }, timeoutMs: REFUTE_TIMEOUT_MS,
         }),
