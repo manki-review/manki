@@ -2086,6 +2086,8 @@ describe('runReview', () => {
         [9, 'unsettled', 1, true],
         [8, 'disproved', 1, true],
       ]);
+      // Each lead records the refuter's answer, so a lead listed and never posted still counts in the statistics.
+      expect(result.leads?.map(l => l.refutation?.outcome)).toEqual(['confirmed', 'disproved', 'unsettled', undefined, 'unsettled', 'disproved']);
     });
 
     it('lists a warning lead without sending it to a judge that has no tools to settle it', async () => {

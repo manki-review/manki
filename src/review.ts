@@ -1926,6 +1926,7 @@ function recordLeads(leads: Finding[], listed: Finding[], judged: Finding[], pos
     return {
       title: l.title, file: l.file, line: l.line, severity: l.severity, reviewers: l.reviewers, description: l.description, lead: l.lead!,
       outcome, since: l.leadSince ?? round, ...(posted.some(p => sameLead(p, l)) && { posted: true as const }),
+      ...(verdict?.refutation && { refutation: verdict.refutation }), ...(verdict?.pairRefutation && { pairRefutation: verdict.pairRefutation }),
     };
   });
 }

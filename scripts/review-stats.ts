@@ -11,9 +11,11 @@
 import * as github from '@actions/github';
 
 import { replyOutcome } from '../src/interaction';
+import { summarizeCalls } from '../src/providers';
+import type { LLMCall } from '../src/providers';
 import { threadSeverity } from '../src/recap';
 import { extractApprovalRecords } from '../src/review-record';
-import type { ApprovalRecord, ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
+import type { ApprovalRecord, Refutation, ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
 import { githubToken, historyLines } from './review-history';
 
 const DEFAULT_LAST = 40;
@@ -84,6 +86,13 @@ export interface ReviewStats {
   readerRounds: number;
   readerBlockers: number;
   refutations: Map<string, number>;
+  /**
+   * Per finding the second refuter answered, the first refuter's outcome and its own, such as `confirmed / disproved`.
+   * An answer a later round reused counts once, as in `refutations`.
+   */
+  pairRefutations: Map<string, number>;
+  /** The second refuter's calls. */
+  pairRefutationCalls: LLMCall[];
   costPerPr: number[];
   costPerRound: number[];
   followUpRounds: number;
@@ -120,9 +129,13 @@ interface LimitStats {
   roundsPast: number[];
 }
 
+function increment(counts: Map<string, number>, key: string, by = 1): void {
+  counts.set(key, (counts.get(key) ?? 0) + by);
+}
+
 function tally(stats: ReviewStats, decision: Decision, value: string, by = 1): void {
   const counts = stats.decisions.get(decision) ?? new Map<string, number>();
-  counts.set(value, (counts.get(value) ?? 0) + by);
+  increment(counts, value, by);
   stats.decisions.set(decision, counts);
 }
 
@@ -177,7 +190,7 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
   const stats: ReviewStats = {
     prs: 0, unreviewed: 0, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, severityCounts: {}, findings: 0, onReviewedCode: 0,
     blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), readerRounds: 0, readerBlockers: 0,
-    refutations: new Map(), costPerPr: [], costPerRound: [], followUpRounds: 0, interRoundDiffCutOrUnknown: 0,
+    refutations: new Map(), pairRefutations: new Map(), pairRefutationCalls: [], costPerPr: [], costPerRound: [], followUpRounds: 0, interRoundDiffCutOrUnknown: 0,
     decisions: new Map(), learningsLoaded: [], suppressionsLoaded: [], slicesPerRound: [], changedSinceLastRound: [], fixClaims: [],
     relatedRepos: new Map(), limits: new Map(),
   };
@@ -191,6 +204,7 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
     if (pr.rounds[0]?.meta.outcome === 'READY') stats.passedFirstRound++;
     if (pr.rounds.length >= MANY_ROUNDS) stats.manyRounds++;
     let prCost = 0;
+    const answers = new Set<string>();
     for (const round of pr.rounds) {
       stats.rounds++;
       const cost = round.usage?.estimatedCostUsd ?? 0;
@@ -200,11 +214,25 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
         stats.findings++;
         stats.severityCounts[entry.severity] = (stats.severityCounts[entry.severity] ?? 0) + 1;
         if (entry.origin === 'reviewed') stats.onReviewedCode++;
-        if (entry.refutation) {
-          const key = `${entry.severity} ${entry.refutation.outcome}`;
-          stats.refutations.set(key, (stats.refutations.get(key) ?? 0) + 1);
-        }
       }
+      // A finding a disproof dropped is listed with the judge's drops, and a lead left unsettled only under `leads`.
+      const refuted = [
+        ...(round.findings?.entries ?? []), ...(round.findings?.unposted ?? []), ...(round.judge?.dropped ?? []).map(d => ({ ...d, severity: 'ignore' })),
+        ...(round.leads ?? []).filter(l => l.outcome === 'unsettled' && !l.posted),
+      ];
+      // A reused answer is the stored one, so it is counted only in the round that gave it.
+      // The answer holds its reason, files and code digest, so two findings never share one.
+      const fresh = (refuter: string, refutation: Refutation | undefined): refutation is Refutation => {
+        const answer = refutation && JSON.stringify([refuter, refutation]);
+        if (!answer || answers.has(answer)) return false;
+        answers.add(answer);
+        return true;
+      };
+      for (const { severity, refutation, pairRefutation } of refuted) {
+        if (fresh('first', refutation)) increment(stats.refutations, `${severity} ${refutation.outcome}`);
+        if (fresh('second', pairRefutation)) increment(stats.pairRefutations, `${refutation?.outcome ?? 'none'} / ${pairRefutation.outcome}`);
+      }
+      stats.pairRefutationCalls.push(...(round.usage?.llmCalls ?? []).filter(c => c.agent === 'refute_pair'));
       const models = new Map((round.reviewers?.agentMetrics ?? []).map(a => [a.name, a.model ?? a.name]));
       for (const agent of round.reviewers?.agentMetrics ?? []) {
         const stat = finder(stats, agent.model ?? agent.name);
@@ -314,6 +342,29 @@ function share(part: number, whole: number): string {
   return whole > 0 ? `${Math.round((part / whole) * 100)}% (${part} of ${whole})` : '-';
 }
 
+/**
+ * Returns the lines on the second refuter: how often it agreed with the first, split from it, and changed the outcome
+ * the first alone would give, which it does on a split or when it settles what the first left unsettled or never answered.
+ */
+function pairRefutationLines({ pairRefutations, pairRefutationCalls }: ReviewStats): string[] {
+  const pairs = [...pairRefutations.entries()].map(([key, n]) => ({ key, n, first: key.split(' / ')[0], second: key.split(' / ')[1] }));
+  const checked = pairs.reduce((sum, p) => sum + p.n, 0);
+  if (checked === 0 && pairRefutationCalls.length === 0) return ['No second refuter.'];
+  const count = (test: (p: { first: string; second: string }) => boolean) => pairs.filter(test).reduce((sum, p) => sum + p.n, 0);
+  const split = (p: { first: string; second: string }) => [p.first, p.second].sort().join() === 'confirmed,disproved';
+  const { estimatedCostUsd, unpricedCalls } = summarizeCalls(pairRefutationCalls);
+  return [
+    `- Findings checked: ${checked}, for ${estimatedCostUsd.toFixed(2)} USD${unpricedCalls > 0 ? ` plus ${unpricedCalls} unpriced ${unpricedCalls === 1 ? 'call' : 'calls'}` : ''}`,
+    `- Agreed with the first refuter: ${share(count(p => p.first === p.second), checked)}`,
+    `- Split, one confirmed and one disproved: ${share(count(split), checked)}`,
+    `- Changed the outcome the first refuter alone gave: ${share(count(p => split(p) || (p.second !== 'unsettled' && ['none', 'unsettled'].includes(p.first))), checked)}`,
+    '',
+    '| first / second | count |',
+    '| --- | ---: |',
+    ...pairs.sort((a, b) => b.n - a.n).map(p => `| ${p.key} | ${p.n} |`),
+  ];
+}
+
 /** Renders the report, headed with `repo` when one is given. */
 export function renderStats(stats: ReviewStats, repo?: string): string {
   const perRound = (count: number) => (stats.rounds > 0 ? (count / stats.rounds).toFixed(2) : '-');
@@ -353,6 +404,10 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     ...(stats.refutations.size > 0
       ? ['| severity and outcome | count |', '| --- | ---: |', ...[...stats.refutations.entries()].sort((a, b) => b[1] - a[1]).map(([key, n]) => `| ${key} | ${n} |`)]
       : ['No refutations.']),
+    '',
+    '## Second refuter',
+    '',
+    ...pairRefutationLines(stats),
     '',
     '## Cost and inter-round diffs',
     '',

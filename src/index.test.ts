@@ -6375,7 +6375,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(reviewModule.runReview).mockClear();
       jest.mocked(configModule.loadConfig).mockReturnValue({ ...baseConfig, models: { reviewer: 'claude-sonnet-5-5', refuter_pair: 'gpt-5.5' } });
       await callRunFullReview();
-      // The round records the model only when the second refuter checked a finding.
+      // The round records the model only when the second refuter checked a finding, or an earlier answer of it was reused.
       expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[7]?.models).not.toHaveProperty('refuterPair');
       const refuteCall = { stage: 'judge', agent: 'refute_pair', attempt: 1, promptDigest: 'd', durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0 };
       const reviewed = await jest.mocked(reviewModule.runReview).mock.results[0].value;
@@ -6383,6 +6383,10 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
       expect(jest.mocked(reviewModule.runReview).mock.calls[0][0].refuterPair).toBe(refuterClient);
       expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('refuter pair: gpt-5.5'));
+      expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[7]?.models.refuterPair).toBe('gpt-5.5');
+      const reused = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['general'], pairRefutation: { outcome: 'confirmed' as const, reason: 'r', files: ['src/app.ts'], codeDigest: 'd' } };
+      jest.mocked(reviewModule.runReview).mockResolvedValueOnce({ ...reviewed, findings: [reused], allJudgedFindings: [reused] });
+      await callRunFullReview();
       expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[7]?.models.refuterPair).toBe('gpt-5.5');
 
       jest.mocked(reviewModule.runReview).mockClear();
