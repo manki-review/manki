@@ -205,13 +205,13 @@ ${packages}
       '  changed app 1.0.0 (line 11)',
       '    added dependencies.is-odd = ^3.0.1',
       '    changed dependencies.lodash: ^4.17.20 -> ^4.17.21',
-      '  added is-odd 3.0.1 from https://npm.example.net/is-odd/-/is-odd-3.0.1.tgz (line 16)',
+      '  added is-odd 3.0.1 from https://npm.example.net/is-odd/-/is-odd-3.0.1.tgz (line 16) [source no other package uses]',
       '    added license = MIT',
       '  changed left-pad 1.3.0, source https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz -> https://evil.example.com/left-pad-1.3.0.tgz, checksum changed (line 24)'
         + ' [source changed, source does not name this package and version, checksum changed without a version change]',
       '  updated lodash 4.17.20 -> 4.17.21 (line 28)',
     ].join('\n'));
-    expect(lockfileSignals(lockfiles).map(s => [s.file, s.line])).toEqual([['package-lock.json', 24]]);
+    expect(lockfileSignals(lockfiles).map(s => [s.file, s.line])).toEqual([['package-lock.json', 16], ['package-lock.json', 24]]);
   });
 
   it('lists a bump in an npm lockfile version 2 once, without its legacy `dependencies` map', () => {
@@ -222,6 +222,27 @@ ${packages}
     }, null, 2);
 
     expect(formatLockfileChanges(read('package-lock.json', lock('4.17.20'), lock('4.17.21')))).toBe('package-lock.json\n  updated lodash 4.17.20 -> 4.17.21 (line 7)');
+  });
+
+  it('reads the legacy forms npm 6 writes for a workspace link, a git dependency and an alias', () => {
+    const git = 'git+ssh://git@github.com/example/tool.git#4f3c2b1a';
+    const lock = (version: string) => JSON.stringify({
+      lockfileVersion: 2,
+      packages: {
+        'node_modules/a': { resolved: 'packages/a', link: true },
+        'node_modules/tool': { version: '1.0.0', resolved: git },
+        'node_modules/pad': { name: 'left-pad', version: '1.3.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz', integrity: 'sha512-pad' },
+        'node_modules/lodash': { version, resolved: `https://registry.npmjs.org/lodash/-/lodash-${version}.tgz` },
+      },
+      dependencies: {
+        a: { version: 'file:packages/a' },
+        tool: { version: git, from: 'tool@github:example/tool' },
+        pad: { version: 'npm:left-pad@1.3.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz', integrity: 'sha512-pad' },
+        lodash: { version, resolved: `https://registry.npmjs.org/lodash/-/lodash-${version}.tgz` },
+      },
+    }, null, 2);
+
+    expect(formatLockfileChanges(read('package-lock.json', lock('4.17.20'), lock('4.17.21')))).toBe('package-lock.json\n  updated lodash 4.17.20 -> 4.17.21 (line 19)');
   });
 
   it('lists a Yarn 1 lockfile with scoped packages, and flags a downgrade', () => {
@@ -295,6 +316,21 @@ ${extra}
       '    added linkType = hard',
       '    added requested = left-pad@https://github.com/example/left-pad.git#commit=4f3c2b1a',
     ].join('\n'));
+  });
+
+  it('reads a package Yarn 2 patches by the source it wraps, so a bump of it raises no alert', () => {
+    const lock = (version: string) => `__metadata:
+  version: 8
+
+"typescript@patch:typescript@npm%3A^5.3.0#optional!builtin<compat/typescript>":
+  version: ${version}
+  resolution: "typescript@patch:typescript@npm%3A${version}#optional!builtin<compat/typescript>::version=${version}&hash=e012d7"
+  checksum: 10c0/${version}
+  languageName: node
+  linkType: hard
+`;
+
+    expect(formatLockfileChanges(read('yarn.lock', lock('5.3.3'), lock('5.4.2')))).toBe('yarn.lock\n  updated typescript 5.3.3 -> 5.4.2 (line 5)');
   });
 
   it('lists a pnpm lockfile with its snapshots and importers', () => {

@@ -35,8 +35,8 @@ const PARSERS: Readonly<Record<string, Parser>> = {
   'pnpm-lock.yaml': parsePnpmLock,
 };
 
-type PackageFlag = 'source changed' | 'git source' | 'path source' | 'source does not name this package and version'
-  | 'checksum changed without a version change' | 'downgrade';
+type PackageFlag = 'source changed' | 'source no other package uses' | 'git source' | 'path source'
+  | 'source does not name this package and version' | 'checksum changed without a version change' | 'downgrade';
 
 export interface PackageChange {
   kind: 'added' | 'removed' | 'updated' | 'changed';
@@ -184,24 +184,35 @@ function diffEntries(before: LockEntry[], after: LockEntry[], file: DiffFile): P
   const removed = [...old].filter(([key]) => !now.has(key)).map(([, entry]) => entry);
   // A version change moves an entry to a new key. Same-name entries are paired when both sides hold as many.
   const unpaired = { added: [] as LockEntry[], removed: [] as LockEntry[] };
-  for (const name of new Set([...added, ...removed].map(e => e.name))) {
-    const gone = removed.filter(e => e.name === name).sort(byVersion);
-    const come = added.filter(e => e.name === name).sort(byVersion);
-    if (gone.length === come.length) gone.forEach((e, i) => pairs.push([e, come[i]]));
+  const gone = byName(removed);
+  const come = byName(added);
+  for (const name of new Set([...gone.keys(), ...come.keys()])) {
+    const was = (gone.get(name) ?? []).sort(byVersion);
+    const is = (come.get(name) ?? []).sort(byVersion);
+    if (was.length === is.length) was.forEach((e, i) => pairs.push([e, is[i]]));
     else {
-      unpaired.removed.push(...gone);
-      unpaired.added.push(...come);
+      unpaired.removed.push(...was);
+      unpaired.added.push(...is);
     }
   }
+  // An added package from a registry or repository no package used before needs a reason, even when its URL looks standard.
+  const known = new Set(before.filter(e => e.isPackage).map(e => sourceOrigin(e.source)));
+  const newOrigin = (a: LockEntry): PackageFlag[] => known.size > 0 && !known.has(sourceOrigin(a.source)) && sourceKind(a.source) === 'registry' ? ['source no other package uses'] : [];
   const lineIn = entryLines(after, file);
   const changes: PackageChange[] = [
     ...pairs.map(([b, a]) => changeOf(b, a, lineIn(a))),
     ...unpaired.added.map((a): PackageChange => ({
-      kind: 'added', name: a.name, newVersion: a.version, newSource: a.source, fields: fieldChanges(new Map(), a.fields), flags: a.isPackage ? sourceFlags(a) : [], line: lineIn(a),
+      kind: 'added', name: a.name, newVersion: a.version, newSource: a.source, fields: fieldChanges(new Map(), a.fields), flags: a.isPackage ? [...newOrigin(a), ...sourceFlags(a)] : [], line: lineIn(a),
     })),
     ...unpaired.removed.map((b): PackageChange => ({ kind: 'removed', name: b.name, oldVersion: b.version, oldSource: b.source, fields: [], flags: [] })),
   ];
   return changes.sort((x, y) => x.name.localeCompare(y.name) || (x.line ?? 0) - (y.line ?? 0));
+}
+
+function byName(entries: LockEntry[]): Map<string, LockEntry[]> {
+  const map = new Map<string, LockEntry[]>();
+  for (const entry of entries) map.set(entry.name, [...(map.get(entry.name) ?? []), entry]);
+  return map;
 }
 
 /** Keys each entry by its own key or its name and version, and tells apart two that share one by their source. */
@@ -227,13 +238,15 @@ function byVersion(a: LockEntry, b: LockEntry): number {
 
 /** Returns where each entry of `entries` shows in `file`'s diff: its first added line, else the line it starts at. */
 function entryLines(entries: LockEntry[], file: DiffFile): (entry: LockEntry) => number | undefined {
-  const added = [...addedLines(file).keys()];
-  const starts = entries.map(e => e.line).filter((l): l is number => l !== undefined).sort((a, b) => a - b);
-  return (entry) => {
-    if (entry.line === undefined) return undefined;
-    const next = starts.find(l => l > entry.line!) ?? Infinity;
-    return added.find(l => l >= entry.line! && l < next) ?? entry.line;
-  };
+  const added = [...addedLines(file).keys()].sort((a, b) => a - b);
+  const starts = [...new Set(entries.map(e => e.line).filter((l): l is number => l !== undefined))].sort((a, b) => a - b);
+  const shown = new Map<number, number>();
+  let next = 0;
+  starts.forEach((start, i) => {
+    while (next < added.length && added[next] < start) next++;
+    shown.set(start, next < added.length && added[next] < (starts[i + 1] ?? Infinity) ? added[next] : start);
+  });
+  return (entry) => entry.line === undefined ? undefined : shown.get(entry.line);
 }
 
 function changeOf(b: LockEntry, a: LockEntry, line: number | undefined): PackageChange {
@@ -453,11 +466,20 @@ function checkLegacyMap(legacy: unknown, packages: Record<string, unknown>, pref
   for (const [name, entry] of Object.entries(legacy)) {
     const path = `${prefix}node_modules/${name}`;
     const installed = packages[path];
-    if (!isObject(entry) || !isObject(installed) || ['version', 'resolved', 'integrity'].some(key => entry[key] !== installed[key])) {
+    if (!isObject(entry) || !isObject(installed) || !sameArtifact(entry, installed)) {
       throw new Error(`its legacy \`dependencies\` map does not match \`packages\` at ${path}`);
     }
     checkLegacyMap(entry.dependencies, packages, `${path}/`);
   }
+}
+
+/** Whether a legacy entry names the artifact of its `packages` entry. Its `version` holds a link, alias or URL as npm 6 writes them. */
+function sameArtifact(entry: Record<string, unknown>, installed: Record<string, unknown>): boolean {
+  if (entry.integrity !== installed.integrity || (entry.resolved !== undefined && entry.resolved !== installed.resolved)) return false;
+  const version = String(entry.version);
+  if (version.startsWith('file:')) return installed.link === true && version === `file:${String(installed.resolved)}`;
+  if (version.startsWith('npm:')) return version === `npm:${String(installed.name)}@${String(installed.version)}`;
+  return version.includes(':') ? version === installed.resolved : version === installed.version;
 }
 
 /** Returns the line of each key of the `packages` map, which npm writes one level deeper than `packages`, at any indent. */
@@ -543,13 +565,17 @@ function parseYarnBerryLock(text: string): LockEntry[] {
     const resolved = String(resolution ?? '');
     const name = packageName(resolved);
     const ref = resolved.slice(name.length + 1);
+    // A `patch:` package is the package it wraps with a patch applied, such as Yarn's built-in fix for TypeScript.
+    const patched = /^patch:([^#]+)#(.*?)(?:::.*)?$/.exec(ref);
+    const wrapped = patched ? decodeURIComponent(patched[1]) : undefined;
+    const source = wrapped ? wrapped.slice(packageName(wrapped).length + 1) : ref;
     return {
       isPackage: !ref.startsWith('workspace:'),
       name,
       version: optional(version) ?? '',
-      source: ref.startsWith('npm:') ? 'npm' : ref,
+      source: source.startsWith('npm:') ? 'npm' : source,
       checksum: optional(checksum),
-      fields: flatten({ requested: key, ...other }),
+      fields: flatten({ requested: key, ...(patched && { patch: patched[2] }), ...other }),
       line: topLines.get(key),
     };
   })];

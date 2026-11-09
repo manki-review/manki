@@ -685,7 +685,7 @@ export async function runReview(
   const related: RelatedRepoTools | undefined = workspace && config.related_repos?.length && [...finderClients.values()].some(c => c.repoTools)
     ? { repos: config.related_repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related') }
     : undefined;
-  const changedSinceLastRound = filesChangedSinceLastRound(diff, priorRounds, interRoundDiff);
+  const changedSinceLastRound = filesChangedSinceLastRound(diffWithLockfiles, priorRounds, interRoundDiff);
   const earlierBlockers = blockersToRecheck(previousFindings ?? [], changedSinceLastRound);
   const uses = await usesPromise;
   // Asked alongside the finders on the reviewer model, at the effort of its finder. An unanswered question leaves the round complete, since the finders read the whole change.
@@ -1097,7 +1097,7 @@ export async function runReview(
   // Warning leads need the judge's tools to be settled, so without them they stay only listed.
   const settleLeads = !!(workspace && clients.judge.repoTools);
   const lastRound = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round).at(-1);
-  const { current, carried } = withEarlierLeads(allFindings, lastRound?.leads, round, diff, changedSinceLastRound);
+  const { current, carried } = withEarlierLeads(allFindings, lastRound?.leads, round, diffWithLockfiles, changedSinceLastRound);
   if (carried.length > 0) core.info(`Carrying over ${carried.length} open lead(s) the last round left unsettled`);
   const { findings: checkedFindings, openLeads: listedLeads } = splitOpenLeads([...current, ...carried], settleLeads);
   const openLeads = [...listedLeads];
@@ -1190,7 +1190,7 @@ export async function runReview(
     core.info(`Running judge on ${findingsForJudge.length} findings...`);
     const judgeInput: JudgeInput = {
       findings: findingsForJudge,
-      diff,
+      diff: diffWithLockfiles,
       ...(options.excludedPaths && { excludedPaths: options.excludedPaths }),
       rawDiff,
       memory: memory ?? undefined,
@@ -1302,7 +1302,7 @@ export async function runReview(
   const sortedPriorRounds = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round);
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
-  const changedFiles = new Set(diff.files.map(f => f.path));
+  const changedFiles = new Set(diffWithLockfiles.files.map(f => f.path));
   finalFindings = finalFindings.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
   const priorBlockers = collectPriorBlockers(sortedPriorRounds);
   const pushChangedFiles = filesChangedByPush(interRoundDiff);
@@ -1357,7 +1357,7 @@ export async function runReview(
       // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found. It drops a
       // claimed build failure that was posted as a warning.
       const refuted = (refutation
-        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff, usesOutsideDiff, outsideInput: config.review?.outside_input })
+        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
         : readerBlockers).filter(f => f.severity !== 'ignore');
       const folded = foldIntoReaderBlockers(finalFindings, refuted);
       const readerFindings = folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);

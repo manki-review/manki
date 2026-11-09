@@ -1059,7 +1059,7 @@ async function collectRoundSignals(
   const relatedWorkPromise = prContext
     ? findRelatedWork(octokit, { owner, repo, prNumber, title: prContext.title, body: prContext.body, diff })
     : Promise.resolve(undefined);
-  // A parsed lockfile stays in the PR's change at the last round, so a finding on a later push to it counts as new.
+  // A parsed lockfile stays in the diffs between rounds, so a push that changes it counts as a change.
   const parsedLockfiles = new Set(lockfiles.map(l => l.path));
   const reviewed = withLockfiles(diff, lockfiles);
   // Fetch the PR's own change since the prior round so the judge
@@ -1076,7 +1076,7 @@ async function collectRoundSignals(
   let linkedIssues;
   const diffPromise: Promise<string | undefined> = shouldFetchDiff && lastPriorSha
     ? fetchInterRoundDiff(octokit, owner, repo, lastPriorSha, commitSha)
-      .then(raw => filterRawDiff(raw, config.exclude_paths))
+      .then(raw => filterRawDiff(raw, config.exclude_paths, parsedLockfiles))
     : Promise.resolve(undefined);
   // The base branch diffed against the prior commit gives the PR's own change then, without what a rebase brought in.
   const priorChangePromise: Promise<ParsedDiff | undefined> = !lastPriorSha || lastPriorSha === commitSha

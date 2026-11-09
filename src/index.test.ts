@@ -5385,10 +5385,11 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledTimes(outcome === 'superseded' ? 1 : 0);
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(2);
-    expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**']);
+    expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**'], new Set());
     expect(jest.mocked(diffModule.filterRawDiff)).toHaveBeenCalledWith(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
       ['dist/**'],
+      new Set(),
     );
     const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     expect(runReviewArgs.rawDiff).toBe(diffModule.rebuildRawDiff({ files: [testFile], totalAdditions: 10, totalDeletions: 5 }));

@@ -119,8 +119,8 @@ export function filterDiff(
 /**
  * Removes files matching `excludePaths` from a raw unified diff.
  */
-export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
-  return rebuildRawDiff(filterDiff(parsePRDiff(rawDiff), excludePaths).diff);
+export function filterRawDiff(rawDiff: string, excludePaths: string[], keep?: ReadonlySet<string>): string {
+  return rebuildRawDiff(filterDiff(parsePRDiff(rawDiff), excludePaths, keep).diff);
 }
 
 /** Parses a PR's raw diff and splits it into the files the review reads and the files `excludePaths` leaves out. */
