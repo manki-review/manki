@@ -83,6 +83,7 @@ export const SETTINGS: Setting[] = [
   { key: 'review_passes', type: 'integer from 1 to 5', description: 'Runs each finder this many times with the files in shuffled order, and keeps only the findings the passes agree on.' },
   { key: 'noise_level', type: '`low`, `medium` or `high`', description: '`low` tells the finders to leave out style, formatting and anything a formatter or linter catches, except a break of a rule in the repository\'s own `AGENTS.md` or `CLAUDE.md`, which is reported with the rule quoted. `high` asks for borderline suggestions too.' },
   { key: 'instructions', type: 'string', default: 'none', description: 'Extra context for the finders. They also read the root `AGENTS.md` and `CLAUDE.md`, and the nearest ones above each changed file.' },
+  { key: 'project', type: 'string', default: 'none', description: 'A short phrase naming what the project is, such as `blockchain consensus library`. The finders read it as "This PR is in a blockchain consensus library project". Without it they go by the repository description and the `AGENTS.md` and `CLAUDE.md` files.' },
   { key: 'reviewers', type: 'list', default: 'none', description: 'Extra checks, each added as a focus line to the finder prompt.' },
   { key: 'reviewers[].name', type: 'string', default: 'required', description: 'The check\'s name.' },
   { key: 'reviewers[].focus', type: 'string', default: 'required', description: 'What the finders check for.' },

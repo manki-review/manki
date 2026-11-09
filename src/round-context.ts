@@ -340,7 +340,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
         prType: result.plannerResult.prType,
         ...(plannerDurationMs != null && { durationMs: plannerDurationMs }),
         ...(result.plannerResult.language && { language: result.plannerResult.language }),
-        ...(result.plannerResult.context && { context: result.plannerResult.context }),
       };
     })(),
     reviewers: {

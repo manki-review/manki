@@ -580,7 +580,6 @@ export interface PlannerResult extends Triage {
   judgeEffort: EffortLevel;
   prType: ValidPrType | 'unknown';
   language?: string;
-  context?: string;
   /** Answers the planner left out or got wrong, which took the side that adds review. */
   defaultedFields?: string[];
 }
@@ -662,6 +661,8 @@ export interface ReviewConfig {
   slice_lines?: number;
   reviewers: ReviewerAgent[];
   instructions: string;
+  /** A short phrase naming what the project is, such as `blockchain consensus library`. */
+  project?: string;
   memory: {
     enabled: boolean;
     repo: string;
@@ -1340,8 +1341,6 @@ export interface RoundPlanner {
   durationMs?: number;
   /** Sanitized programming-language hint, when the planner identified one. */
   language?: string;
-  /** Sanitized free-text PR context hint, when the planner identified one. */
-  context?: string;
 }
 
 export interface RoundReviewers {

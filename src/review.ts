@@ -418,7 +418,6 @@ Answer each of trivial, subtle and paired by its own rule only, never from anoth
    - "test": adding or updating tests only
    Pick the dominant intent. Prefer "feat" over "chore" when the change adds capability, "fix" over "refactor" when it corrects broken behavior, "build" over "ci" when it touches packaging or deps rather than workflow YAML, "refactor" over "style" when structure changes, not just formatting.
 6. language: the primary programming language of the changed code (e.g., "typescript", "rust", "python"). Omit if unclear.
-7. context: a short phrase describing the project domain (e.g., "blockchain consensus library", "REST API server"). Omit if unclear.
 
 Respond with ONLY a JSON object (no markdown fences):
 {
@@ -427,8 +426,7 @@ Respond with ONLY a JSON object (no markdown fences):
   "paired": true,
   "judgeEffort": "medium",
   "prType": "feat",
-  "language": "typescript",
-  "context": "GitHub Actions bot"
+  "language": "typescript"
 }`;
 }
 
@@ -523,14 +521,12 @@ export async function runPlanner(
     const prTypeRaw = typeof answers.prType === 'string' ? answers.prType : 'unknown';
     const prType: ValidPrType | 'unknown' = VALID_PR_TYPES.has(prTypeRaw) ? (prTypeRaw as ValidPrType) : 'unknown';
 
-    // Parse and sanitize language and context to prevent prompt injection
+    // Sanitize language to prevent prompt injection
     const rawLang = typeof answers.language === 'string' ? sanitizePlannerField(answers.language, 100) : '';
     const language = rawLang ? rawLang.toLowerCase() : undefined;
-    const rawCtx = typeof answers.context === 'string' ? sanitizePlannerField(answers.context, 200) : '';
-    const context = rawCtx || undefined;
 
     return {
-      trivial, subtle, paired, judgeEffort, prType, language, context,
+      trivial, subtle, paired, judgeEffort, prType, language,
       ...(defaultedFields.length > 0 && { defaultedFields }),
     };
   } catch (error) {
@@ -684,7 +680,7 @@ export async function runReview(
   const usesOutsideDiff = await usesPromise;
   // Only a retry passes `retryNote`, the note of the reply it corrects, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
-    effort: finder.effort, language: plannerResult?.language, context: plannerResult?.context, workspace, related, changedSinceLastRound, usesOutsideDiff,
+    effort: finder.effort, language: plannerResult?.language, workspace, related, changedSinceLastRound, usesOutsideDiff,
     ...(retryNote && { retryNote }),
   });
 
@@ -1455,7 +1451,6 @@ export interface BuildReviewerUserMessageOptions {
 interface RunReviewerAgentOptions {
   effort?: EffortLevel;
   language?: string;
-  context?: string;
   workspace?: string;
   related?: RelatedRepoTools;
   changedSinceLastRound?: string[];
@@ -1554,9 +1549,9 @@ async function runReviewerOnSlice(
   options: RunReviewerAgentOptions = {},
   sliceNote?: string,
 ): Promise<AgentResult> {
-  const { effort, language, context, workspace, related, changedSinceLastRound, usesOutsideDiff, retryNote } = options;
+  const { effort, language, workspace, related, changedSinceLastRound, usesOutsideDiff, retryNote } = options;
   const tools = !!workspace && !!client.repoTools;
-  const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, context, config.noise_level, tools);
+  const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, config.noise_level, tools);
   const message = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, sliceNote, usesOutsideDiff });
   const userMessage = retryNote ? `${message}\n\n${retryNote}` : message;
 
@@ -1586,7 +1581,6 @@ export function buildReviewerSystemPrompt(
   reviewer: ReviewerAgent,
   config: ReviewConfig,
   language?: string,
-  context?: string,
   noiseLevel: NoiseLevel = 'low',
   tools = false,
 ): string {
@@ -1594,12 +1588,13 @@ export function buildReviewerSystemPrompt(
 
 Your role: ${reviewer.name}`;
 
-  if (language || context) {
+  const project = config.project?.trim();
+  if (language || project) {
     if (language) {
       prompt += `\n\nThis PR is primarily ${language} code`;
-      if (context) prompt += ` in a ${context} project`;
+      if (project) prompt += ` in a ${project} project`;
     } else {
-      prompt += `\n\nThis PR is in a ${context} project`;
+      prompt += `\n\nThis PR is in a ${project} project`;
     }
     prompt += '.';
   }
