@@ -379,6 +379,26 @@ ${body}	return true
     expect(siblings.implementations[3].members[1].code).toContain('4:  \tif s.side < 0 {');
   });
 
+  it('lists the uses of a large generated file in time that grows linearly with its size', async () => {
+    // One added struct with many fields: every field is a changed declaration on a touched line.
+    const fields = Array.from({ length: 20_000 }, (_, i) => `\tField${i} int`).join('\n');
+    let started = Date.now();
+    const added = await usesFor({ 'gen/doc.go': 'package gen\n' }, { 'gen/big.go': `package gen\n\ntype Big struct {\n${fields}\n}\n` });
+    expect(added.section).toContain('gen/big.go:3: struct Big { Field0, Field1,');
+    expect(Date.now() - started).toBeLessThan(10_000);
+
+    // Many types that each declare the field a changed line reads: every one is a matching line to place in its type.
+    const types = Array.from({ length: 5_000 }, (_, i) => `type Kind${i} struct {\n\tWeight int\n}`).join('\n');
+    started = Date.now();
+    const read = await usesFor(
+      { 'gen/types.go': `package gen\n\n${types}\n`, 'app/use.go': 'package app\n\nfunc use(t Kind0) int {\n\treturn 0\n}\n' },
+      { 'app/use.go': 'package app\n\nfunc use(t Kind0) int {\n\treturn t.Weight\n}\n' },
+    );
+    // So many types declare the field that none is listed for it.
+    expect(read.section).toBe('');
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 60_000);
+
   const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };
 
   it('returns nothing and logs why without a git checkout, when ast-grep fails to load, or when nothing changed has a use', async () => {

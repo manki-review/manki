@@ -42,6 +42,8 @@ const MAX_REFERENCE_LINE_CHARS = 1000;
 const GREP_TIMEOUT_MS = 30_000;
 const GREP_MAX_BUFFER = 64 * 1024 * 1024;
 const MAX_LOOKUP_FIELDS = 8;
+/** Changed lines a sibling field question quotes, with their hunks. */
+const MAX_QUESTION_LOOKUPS = 20;
 /** Questions of each kind handed on, ranked. The stage asking them caps them again and records the rest as cut. */
 const MAX_QUESTIONS = 20;
 const MAX_GROUP_MEMBERS = 4;
@@ -310,7 +312,7 @@ export interface SiblingFieldQuestion {
   sibling: string;
   /** The item the first lookup passes, such as `key` in `sessions.contains_key(key)`. */
   item: string;
-  /** Every changed line that looks `item` up in `field`, the first one asked about. */
+  /** The first `MAX_QUESTION_LOOKUPS` changed lines that look `item` up in `field`, the first one asked about. */
   lookups: Array<{ file: string; line: number; text: string }>;
   definition: CodeExcerpt;
   /** The diff hunks holding the lookups. */
@@ -434,7 +436,8 @@ function formatReferenceUses(names: string[], found: Map<string, Array<Hit & { r
     const hits = found.get(name)!;
     const word = referencePattern(name);
     // A constant or type is best shown where it is defined. A lowercase name declared elsewhere is mostly a local namesake.
-    const declares = (text: string) => /^[A-Z]/.test(name) && declaresWord(word, text);
+    const declaration = /^[A-Z]/.test(name) ? declarationPattern(word) : undefined;
+    const declares = (text: string) => !!declaration?.test(text);
     const seen = new Map<string, number>();
     const ranked = hits.map(hit => {
       const key = `${hit.repo}:${hit.file}`;
@@ -479,13 +482,16 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
       const changed = changedDeclarations(parsed.declarations, lines, file.path);
       for (const symbol of changed) addSymbol(symbols, symbol);
       const replaced = replacedLines(file);
+      // Every added line of a run shares the run's removed lines, so each run's words are collected once.
+      const runWords = new Map<string[], Set<string>>();
+      const wordsOf = (run: string[]) => runWords.get(run) ?? runWords.set(run, new Set(run.flatMap(text => text.match(/[\w$]+/g) ?? []))).get(run)!;
       for (const symbol of changed) {
         const { name, kind, tier, line, start = line, end = line } = symbol;
         if ((kind !== 'field' && kind !== 'variant') || tier !== 0) continue;
         // An added declaration line edits the field only when it replaces one naming it. Otherwise any other added line
         // of the declaration does: a doc or attribute line above it, or a continuation line holding its type.
         const edited = replaced.has(line)
-          ? replaced.get(line)!.some(text => wordPattern([name]).test(text))
+          ? wordsOf(replaced.get(line)!).has(name)
           : Array.from({ length: end - start + 1 }, (_, i) => start + i).some(l => replaced.has(l));
         if (edited && !redefined.has(name)) redefined.set(name, symbol);
       }
@@ -625,9 +631,9 @@ function referencePattern(name: string): RegExp {
   return /[a-z]/.test(name) ? wordPattern(nameVariants(name), 'i') : wordPattern([name]);
 }
 
-/** Whether `line` looks like it declares `word`, as `#define`, a type or a constant does, but not a parameter. */
-function declaresWord(word: RegExp, line: string): boolean {
-  return new RegExp(`(?:#define\\s+|\\b(?:class|struct|enum|union|const|constexpr|static|typedef|using|fn|def|func|type|let|var|interface)\\b[^;=(){}]*?)${word.source}\\s*(?:[=;{(:[<]|$)`, 'i').test(line);
+/** Matches a line that looks like it declares `word`, as `#define`, a type or a constant does, but not a parameter. */
+function declarationPattern(word: RegExp): RegExp {
+  return new RegExp(`(?:#define\\s+|\\b(?:class|struct|enum|union|const|constexpr|static|typedef|using|fn|def|func|type|let|var|interface)\\b[^;=(){}]*?)${word.source}\\s*(?:[=;{(:[<]|$)`, 'i');
 }
 
 function addSymbol(symbols: Map<string, ChangedSymbol>, symbol: ChangedSymbol): void {
@@ -641,7 +647,9 @@ function lineOf(node: SgNode): number {
 
 /** Returns the declarations a touched line falls in, and the untouched fields and variants of each changed type. */
 function changedDeclarations(declarations: Declaration[], touched: Set<number>, file: string): ChangedSymbol[] {
-  const touches = (from: number, to: number) => [...touched].some(line => line >= from && line <= to);
+  const lines = [...touched].sort((a, b) => a - b);
+  const touches = (from: number, to: number) => (lines[firstAtOrAfter(lines, from)] ?? Infinity) <= to;
+  const inTests = testCodeChecker();
   const names = new Map(declarations.map(d => [d.key, d.name]));
   const ownerOf = (decl: Declaration) => decl.container && (decl.kind === 'field' || decl.kind === 'variant') ? { owner: names.get(decl.container) } : {};
   const changed: ChangedSymbol[] = [];
@@ -652,13 +660,15 @@ function changedDeclarations(declarations: Declaration[], touched: Set<number>, 
     if (!header && !body) continue;
     changed.push({
       name: decl.name, kind: decl.kind, file, line: lineOf(decl.node), tier: header ? 0 : 1, ...ownerOf(decl), container: decl.container,
-      start: decl.start, end: decl.end, ...(inTestCode(decl.node) && { test: true }),
+      start: decl.start, end: decl.end, ...(inTests(decl.node) && { test: true }),
     });
     // A changed attribute such as a derive leaves the members as they were, so only a changed body brings them in.
     if (decl.shape && body) changedTypes.add(decl.key);
   }
+  const changedNames = new Set(changed.map(s => s.name));
   for (const decl of declarations) {
-    if (decl.container && changedTypes.has(decl.container) && (decl.kind === 'field' || decl.kind === 'variant') && !changed.some(s => s.name === decl.name)) {
+    if (decl.container && changedTypes.has(decl.container) && (decl.kind === 'field' || decl.kind === 'variant') && !changedNames.has(decl.name)) {
+      changedNames.add(decl.name);
       changed.push({ name: decl.name, kind: decl.kind, file, line: lineOf(decl.node), tier: 2, ...ownerOf(decl), container: decl.container });
     }
   }
@@ -667,14 +677,33 @@ function changedDeclarations(declarations: Declaration[], touched: Set<number>, 
 
 const TEST_ATTRIBUTE = /^#\[(?:[\w:]+::)?test\b|^#\[cfg\(test\)\]/;
 
-/** Whether `node` or a node around it carries a test attribute, as a `#[test]` function or a `#[cfg(test)]` module does. */
-function inTestCode(node: SgNode): boolean {
-  return [node, ...node.ancestors()].some(n => {
-    for (let prev = n.prev(); prev && /attribute_item|comment/.test(String(prev.kind())); prev = prev.prev()) {
-      if (TEST_ATTRIBUTE.test(prev.text())) return true;
+/**
+ * Returns a check of whether a node or a node around it carries a test attribute, as a `#[test]` function or a
+ * `#[cfg(test)]` module does. Each node's own attributes are read once, however many declarations share it as an ancestor.
+ */
+function testCodeChecker(): (node: SgNode) => boolean {
+  const marked = new Map<string, boolean>();
+  const isMarked = (n: SgNode): boolean => {
+    const key = nodeKey(n);
+    if (!marked.has(key)) {
+      let found = false;
+      for (let prev = n.prev(); prev && !found && /attribute_item|comment/.test(String(prev.kind())); prev = prev.prev()) found = TEST_ATTRIBUTE.test(prev.text());
+      marked.set(key, found);
     }
-    return false;
-  });
+    return marked.get(key)!;
+  };
+  return node => [node, ...node.ancestors()].some(isMarked);
+}
+
+/** Returns the index of the first of the sorted `lines` that is at least `line`, or `lines.length` when none is. */
+function firstAtOrAfter(lines: number[], line: number): number {
+  let [low, high] = [0, lines.length];
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (lines[mid] < line) low = mid + 1;
+    else high = mid;
+  }
+  return low;
 }
 
 /** Returns the declarations and config keys on added lines, for a file without a grammar here. */
@@ -725,12 +754,22 @@ function namedSibling(node: SgNode, side: 'prev' | 'next'): SgNode | undefined {
   return undefined;
 }
 
+function appendTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
+}
+
 function nodeKey(node: SgNode): string {
   return `${node.kind()}:${node.range().start.index}`;
 }
 
 class ParsedFile {
   readonly declarations: Declaration[];
+  private readonly byKey = new Map<string, Declaration>();
+  private readonly members = new Map<string, Declaration[]>();
+  private readonly fieldsByLine = new Map<number, Declaration[]>();
+  private readonly listings = new Map<string, Omit<StructListing, 'file'> | undefined>();
 
   constructor(private readonly root: SgRoot, private readonly rules: FamilyRules, private readonly lines: string[]) {
     const kinds = Object.keys(rules.declarations);
@@ -745,6 +784,11 @@ class ParsedFile {
       return names.length > 1 ? names.flatMap(name => this.declaration(node, name) ?? []) : this.declaration(node) ?? [];
     })
       .filter(d => d.kind !== 'field' || !this.rules.fieldName || (!fields.has(`${d.container}:${d.name}`) && !!fields.add(`${d.container}:${d.name}`)));
+    for (const decl of this.declarations) {
+      this.byKey.set(decl.key, decl);
+      if (decl.container) appendTo(this.members, decl.container, decl);
+      if (decl.kind === 'field') appendTo(this.fieldsByLine, lineOf(decl.node), decl);
+    }
   }
 
   /** `named` picks one of the names of a node that declares several. */
@@ -798,20 +842,26 @@ class ParsedFile {
 
   /** Returns the type with `key` in `file` as one line with all its fields, or `undefined` when it is no struct-like type. */
   structListing(key: string | undefined, file: string): StructListing | undefined {
-    const type = this.declarations.find(d => d.key === key);
+    if (key === undefined) return undefined;
+    if (!this.listings.has(key)) this.listings.set(key, this.listing(key));
+    const listing = this.listings.get(key);
+    return listing && { file, ...listing };
+  }
+
+  private listing(key: string): Omit<StructListing, 'file'> | undefined {
+    const type = this.byKey.get(key);
     const keyword = type && this.rules.structs[type.node.kind()];
     if (!type || !keyword) return undefined;
     // A class lists only its fields, while an interface's method signatures are part of its shape.
-    const fields = this.declarations.filter(d => d.container === key && (d.kind === 'field' || (d.kind === 'function' && keyword !== 'class')))
-      .map(d => d.name);
+    const fields = (this.members.get(key) ?? []).filter(d => d.kind === 'field' || (d.kind === 'function' && keyword !== 'class')).map(d => d.name);
     const shown = fields.slice(0, MAX_STRUCT_FIELDS).join(', ');
     const more = fields.length > MAX_STRUCT_FIELDS ? `, and ${fields.length - MAX_STRUCT_FIELDS} more` : '';
-    return { file, line: lineOf(type.node), text: `${keyword} ${type.name} { ${shown}${more} }`, key: type.key };
+    return { line: lineOf(type.node), text: `${keyword} ${type.name} { ${shown}${more} }`, key: type.key };
   }
 
   /** Returns each field the type with `key` declares with the text of its type. A field without a written type is left out. */
   structFields(key: string): Array<{ name: string; type: string }> {
-    return this.declarations.filter(d => d.container === key && d.kind === 'field').flatMap(d => {
+    return (this.members.get(key) ?? []).filter(d => d.kind === 'field').flatMap(d => {
       const type = d.node.field('type')?.text().replace(/^\s*:\s*/, '').trim() ?? this.rules.valueType?.(d.node);
       return type ? [{ name: d.name, type }] : [];
     });
@@ -895,7 +945,7 @@ class ParsedFile {
 
   /** Returns the `key` of the type declaring field `name` at `line`, or `undefined` when no field of that name is declared there. */
   fieldContainer(name: string, line: number): string | undefined {
-    return this.declarations.find(d => d.kind === 'field' && d.name === name && lineOf(d.node) === line)?.container;
+    return this.fieldsByLine.get(line)?.find(d => d.name === name)?.container;
   }
 }
 
@@ -911,7 +961,9 @@ function isTopLevelConstant(node: SgNode): boolean {
  * searches the files on disk instead, so a sparse checkout never fetches the blobs it left out.
  */
 async function grepWords(workspace: string, names: string[], { onDisk = false, ignoreCase = false } = {}): Promise<Hit[]> {
-  const args = ['grep', ...(onDisk ? ['--no-index'] : []), '-n', '-z', '-I', '-w', ...(ignoreCase ? ['-i'] : []), '--no-color', '-F', ...names.flatMap(name => ['-e', name])];
+  // One alternation, since git grep checks each `-e` pattern on its own, which is slow on a file full of near matches.
+  const pattern = `(${names.map(escapeRegExp).join('|')})`;
+  const args = ['grep', ...(onDisk ? ['--no-index'] : []), '-n', '-z', '-I', '-w', ...(ignoreCase ? ['-i'] : []), '--no-color', '-E', '-e', pattern];
   const stdout = await execFileAsync('git', args, { cwd: workspace, env: gitEnv(), timeout: GREP_TIMEOUT_MS, maxBuffer: GREP_MAX_BUFFER })
     .then(result => result.stdout)
     // git grep exits 1 when no line matches.
@@ -929,14 +981,20 @@ async function grepWords(workspace: string, names: string[], { onDisk = false, i
 class Packages {
   private readonly cache = new Map<string, string>();
   private readonly manifests = new Map<string, string>();
+  private readonly dependencies = new Map<string, boolean>();
 
   constructor(private readonly workspace: string) {}
 
   /** Whether package `root` names the package `dependency` in its manifest, so code in it can use that package's symbols. */
   dependsOn(root: string, dependency: string): boolean {
-    const name = PACKAGE_NAME.exec(this.manifest(dependency))?.[1];
-    if (!name) return true;
-    return new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`).test(this.manifest(root).replace(PACKAGE_NAME, ''));
+    const key = `${root}\0${dependency}`;
+    let depends = this.dependencies.get(key);
+    if (depends === undefined) {
+      const name = PACKAGE_NAME.exec(this.manifest(dependency))?.[1];
+      depends = !name || new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`).test(this.manifest(root).replace(PACKAGE_NAME, ''));
+      this.dependencies.set(key, depends);
+    }
+    return depends;
   }
 
   private manifest(root: string): string {
@@ -1100,9 +1158,11 @@ function compareRanks(a: number[], b: number[]): number {
  */
 function structsDeclaringField(parser: Parser, name: string, hits: Hit[], readers: Set<string>, packages: Packages): StructListing[] {
   const found: StructListing[] = [];
+  const patterns = new Map<Family, RegExp | undefined>();
+  const patternFor = (family: Family) => patterns.has(family) ? patterns.get(family) : patterns.set(family, RULES[family].fieldLine?.(name)).get(family);
   for (const hit of hits) {
     const language = languageOf(hit.file);
-    const fieldLine = language && RULES[language.family].fieldLine?.(name);
+    const fieldLine = language && patternFor(language.family);
     if (!fieldLine?.test(hit.text.slice(0, MAX_FIELD_LINE_CHARS))) continue;
     const parsed = parser.parse(hit.file);
     const listing = parsed?.structListing(parsed.fieldContainer(name, hit.line), hit.file);
@@ -1188,9 +1248,11 @@ function hunkAround(file: DiffFile, line: number): string | undefined {
 function siblingFields(
   parser: Parser, lookups: Array<Lookup & { file: string }>, fields: string[], hits: Hit[], packages: Packages, diff: ParsedDiff, added: Map<string, Set<number>>,
 ): SiblingFieldQuestion[] {
+  const diffFiles = new Map(diff.files.map(f => [f.path, f]));
   const ranked = fields.flatMap((field, order) => {
-    const uses = lookups.filter(l => l.field === field);
-    const struct = structsDeclaringField(parser, field, hits, new Set(uses.map(u => u.file)), packages)[0];
+    const all = lookups.filter(l => l.field === field);
+    const uses = all.slice(0, MAX_QUESTION_LOOKUPS);
+    const struct = structsDeclaringField(parser, field, hits, new Set(all.map(u => u.file)), packages)[0];
     const parsed = struct && parser.parse(struct.file);
     const decl = parsed?.declarations.find(d => d.key === struct.key);
     if (!parsed || !decl) return [];
@@ -1199,7 +1261,7 @@ function siblingFields(
     if (!own) return [];
     const definition = parsed.excerpt(decl, struct.file, added.get(struct.file) ?? new Set());
     const hunks = [...new Set(uses.flatMap(u => {
-      const file = diff.files.find(f => f.path === u.file);
+      const file = diffFiles.get(u.file);
       return (file && hunkAround(file, u.line)) ?? [];
     }))];
     return declared.flatMap(other => {
@@ -1235,15 +1297,20 @@ function siblingImplementations(
   workspace: string, parser: Parser, files: DiffFile[], touched: Map<string, Set<number>>, added: Map<string, Set<number>>, excludePaths: string[],
 ): SiblingImplementationQuestion[] {
   const keyOf = (m: Method) => `${m.trait ?? ''}::${m.name}`;
+  const sorted = new Map([...touched].map(([file, lines]) => [file, [...lines].sort((a, b) => a - b)]));
   // A removal marks the head line after it, which is the first line of the next function when a whole function before it went.
-  const changedLines = (m: Method, file: string) => [...touched.get(file) ?? []]
-    .filter(l => l <= m.decl.end && (l > m.decl.start || (l === m.decl.start && !!added.get(file)?.has(l)))).length;
+  const changedLines = (m: Method, file: string) => {
+    const lines = sorted.get(file) ?? [];
+    const inside = firstAtOrAfter(lines, m.decl.end + 1) - firstAtOrAfter(lines, m.decl.start + 1);
+    return inside + Number(!!touched.get(file)?.has(m.decl.start) && !!added.get(file)?.has(m.decl.start));
+  };
   const code = files.filter(f => !TEST_PATH.test(f.path)).map(f => f.path);
+  const inCode = new Set(code);
   const changed = code.map(file => ({ file, methods: (parser.parse(file)?.methods() ?? []).filter(m => changedLines(m, file) > 0) })).filter(c => c.methods.length > 0);
   if (changed.length === 0) return [];
   const wanted = new Set(changed.flatMap(c => c.methods.map(keyOf)));
   const dirs = new Map(changed.map(({ file }) => [dirname(file), file]));
-  const beside = [...dirs].flatMap(([dir, file]) => filesBeside(workspace, dir, file, excludePaths)).filter(file => !code.includes(file)).slice(0, MAX_SIBLING_FILES);
+  const beside = [...dirs].flatMap(([dir, file]) => filesBeside(workspace, dir, file, excludePaths)).filter(file => !inCode.has(file)).slice(0, MAX_SIBLING_FILES);
   const groups = new Map<string, Array<Method & { file: string; parsed: ParsedFile; changed: number }>>();
   for (const file of [...new Set([...code, ...beside])]) {
     const parsed = parser.parse(file);
