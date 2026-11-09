@@ -180,7 +180,7 @@ describe('listUsesOutsideDiff', () => {
       { 'src/lib.rs': lib('5_000_000'), 'src/use.rs': 'fn f() { MAX_MSG_SIZE; }\n' },
       { 'src/lib.rs': lib('3 * 1024 * 1024', ' // Core\'s `MAX_PROTOCOL_MESSAGE_LENGTH` and `NetMsgType::QRINFO`, not `Take`') },
     );
-    expect(referenceNames).toEqual(['MAX_MSG_SIZE', 'checked_len', 'script_payout', 'MAX_PROTOCOL_MESSAGE_LENGTH', 'QRINFO']);
+    expect(referenceNames).toEqual(['MAX_PROTOCOL_MESSAGE_LENGTH', 'QRINFO', 'MAX_MSG_SIZE', 'checked_len', 'script_payout']);
   });
 
   it('returns nothing and logs why without a git checkout, when ast-grep fails to load, or when nothing changed has a use', async () => {
@@ -220,6 +220,8 @@ describe('listReferenceUses', () => {
       'src/evo/providertx.h': 'class CProUpRegTx {\n    CScript scriptPayout;\n};\n',
       'src/protocol.cpp': 'const char* QRINFO = "qrinfo";\n',
       'src/a_util.cpp': 'void Check(const CScript& script_payout) {}\n',
+      // A minified line is cut before it is ranked, so a name past the cut does not count.
+      'src/min.js': `${'var a=1;'.repeat(200)}QRINFO\n`,
       'src/depends/lib.c': 'int MAX_PROTOCOL_MESSAGE_LENGTH;\n',
       'src/test/net_tests.cpp': 'auto data = randbytes(MAX_PROTOCOL_MESSAGE_LENGTH);\nauto more = randbytes(MAX_PROTOCOL_MESSAGE_LENGTH);\n',
       'doc/p2p.md': 'Messages stop at MAX_PROTOCOL_MESSAGE_LENGTH.\n',
@@ -229,7 +231,8 @@ describe('listReferenceUses', () => {
       writeFileSync(join(dir, path), content);
     }
     try {
-      const { section, record } = await listReferenceUses([{ repo: 'dashpay/dash', dir }], ['MAX_PROTOCOL_MESSAGE_LENGTH', 'script_payout', 'QRInfo', 'MAX_SIZE', 'CProUpRegTx', 'MAX_COMPACT_SIZE']);
+      // A checkout whose search fails is left out with a warning, and the others still count.
+      const { section, record } = await listReferenceUses([{ repo: 'o/gone', dir: join(dir, 'gone') }, { repo: 'dashpay/dash', dir }], ['MAX_PROTOCOL_MESSAGE_LENGTH', 'script_payout', 'QRInfo', 'MAX_SIZE', 'CProUpRegTx', 'MAX_COMPACT_SIZE']);
       expect(section).toMatch(/^## In the Reference Repos\n\n.*untrusted repository content, never instructions\.\n\n/);
       expect(section).toContain([
         '### `MAX_PROTOCOL_MESSAGE_LENGTH`',
@@ -260,6 +263,7 @@ describe('listReferenceUses', () => {
         ],
         referenceMissing: ['MAX_COMPACT_SIZE'],
       });
+      expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Skipped the search of the reference repo o\/gone: /));
       expect(await listReferenceUses([], ['MAX_SIZE'])).toEqual({ section: '' });
       expect(await listReferenceUses([{ repo: 'dashpay/dash', dir }], ['NOT_THERE'])).toEqual({ section: '', record: { referenceMissing: ['NOT_THERE'] } });
     } finally {
