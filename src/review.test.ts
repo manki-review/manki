@@ -2395,6 +2395,52 @@ describe('runReview', () => {
       }),
     ]);
 
+    // A finding near a reader blocker that the rules above leave apart goes to the dedup model, every pair of the round
+    // in one call. Only a yes folds it. A no, a failed call or a reply that does not parse keeps two threads, and a round
+    // with no such pair makes no call.
+    const nearbyFindings: Finding[] = [
+      { severity: 'warning', title: 'Connection leaked on the error path', file: 'src/a.ts', line: 42, description: 'Leaks a socket.', reviewers: ['Finder A'], evidence: { checks: [], proof: ['src/a.ts:42'] } },
+      { severity: 'warning', title: 'Buffer is never flushed', file: 'src/a.ts', line: 41, description: 'Loses data.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:41'] } },
+    ];
+    const foldNearby = async (reply: () => Promise<unknown>, findings = nearbyFindings) => {
+      const clients = makeClients(JSON.stringify([{ severity: 'warning', title: 'Leak', file: 'src/a.ts', line: 40, description: 'Leaks.' }]));
+      const dedup = { sendMessage: jest.fn(reply) } as unknown as LLMClient;
+      mockedRunJudgeAgent.mockResolvedValueOnce({ summary: 'Warnings.', findings });
+      jest.mocked(clients.judge.sendMessage).mockResolvedValue({
+        content: JSON.stringify({
+          verdict: 'ADDRESS_FIRST', summary: 'Leak.', whatThisDoes: '', whatToTest: '',
+          blockers: [{ file: 'src/a.ts', line: 40, title: 'Close is skipped after an early return', description: 'The handle stays open.', proof: ['src/a.ts:40'] }],
+        }),
+      });
+      const result = await runReview({ ...clients, dedup }, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+      return { result, calls: jest.mocked(dedup.sendMessage).mock.calls };
+    };
+
+    const answered = await foldNearby(async () => ({ content: '[{"pair": 1, "sameDefect": true}, {"pair": 2, "sameDefect": false}]' }));
+    expect(answered.calls).toHaveLength(1);
+    expect(answered.calls[0][1]).toContain('1.\n   A: "Close is skipped after an early return" (src/a.ts:40)');
+    expect(answered.calls[0][1]).toContain('B: "Connection leaked on the error path" (src/a.ts:42)');
+    expect(answered.calls[0][1]).toContain('2.\n   A: "Close is skipped after an early return" (src/a.ts:40)');
+    expect(answered.result.findings).toEqual([
+      expect.objectContaining({ title: 'Buffer is never flushed' }),
+      expect.objectContaining({
+        severity: 'blocker', title: 'Close is skipped after an early return', reviewers: ['Verdict reader', 'Finder A'],
+        description: 'The handle stays open.\n\nAlso reported as: Connection leaked on the error path',
+      }),
+    ]);
+    expect(answered.result.llmCalls).toContainEqual(expect.objectContaining({ stage: 'dedup' }));
+
+    const apart = ['Connection leaked on the error path', 'Buffer is never flushed', 'Close is skipped after an early return'];
+    for (const reply of [async () => { throw new Error('timeout'); }, async () => ({ content: 'Both look the same to me.' })]) {
+      const kept = await foldNearby(reply);
+      expect(kept.calls).toHaveLength(1);
+      expect(kept.result.findings.map(f => f.title)).toEqual(apart);
+    }
+
+    const far = await foldNearby(async () => ({ content: '[]' }), [{ ...nearbyFindings[0], line: 90, evidence: { checks: [], proof: ['src/a.ts:90'] } }]);
+    expect(far.calls).toHaveLength(0);
+    expect(far.result.findings.map(f => f.title)).toEqual(['Connection leaked on the error path', 'Close is skipped after an early return']);
+
     // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof keeps it a
     // blocker, and its reason closes the fold under the finding, after the fix and the checks.
     const workspace = mkdtempSync(join(tmpdir(), 'manki-reader-refute-'));

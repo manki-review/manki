@@ -8,7 +8,7 @@ import { mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
-import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
+import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
 import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
@@ -1370,7 +1370,9 @@ export async function runReview(
       const refuted = (refutation
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
         : readerBlockers).filter(f => f.severity !== 'ignore');
-      const folded = foldIntoReaderBlockers(finalFindings, refuted);
+      const foldWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
+      const folded = await foldIntoReaderBlockers(finalFindings, refuted, foldWrap?.client);
+      if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       const readerFindings = folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
       finalFindings = [...folded.findings, ...readerFindings];
       threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
@@ -2287,15 +2289,24 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
 
 /**
  * Folds each kept finding that names the problem of a verdict reader blocker into that blocker, so one problem gets one
- * thread. The blocker keeps its grade and takes what `foldInto` merges. It takes the finding's code fix only when it
- * has none and both sit on one line, since a one-line fix replaces the line its comment sits on. A title the blocker's
- * does not contain is added to its description, so a second defect folded in by mistake still shows.
+ * thread. A pair `sameProblem` does not settle but that sits near each other is folded when `dedup` says both describe
+ * the same defect, asked in one call for the whole round. The blocker keeps its grade and takes what `foldInto` merges.
+ * It takes the finding's code fix only when it has none and both sit on one line, since a one-line fix replaces the line
+ * its comment sits on. A title the blocker's does not contain is added to its description, so a second defect folded
+ * in by mistake still shows.
  */
-function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { findings: Finding[]; blockers: Finding[] } {
+async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], dedup: LLMClient | undefined): Promise<{ findings: Finding[]; blockers: Finding[] }> {
   const merged = blockers.map(b => ({ ...b }));
   // Match against the reader's own blocker, so a finding never folds in through what an earlier fold added.
-  const kept = findings.filter(f => {
-    const index = blockers.findIndex(b => sameProblem(b, f));
+  const matched = findings.map(f => blockers.findIndex(b => sameProblem(b, f)));
+  const pairs = findings.flatMap((f, i) => matched[i] === -1 ? blockers.flatMap((b, j) => nearEachOther(b, f) ? [{ i, j }] : []) : []);
+  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} nearby finding pairs stay apart unchecked, since the round has no dedup model`);
+  const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, j }) => [blockers[j], findings[i]]), dedup) : [];
+  pairs.forEach(({ i, j }, k) => {
+    if (answers[k] && matched[i] === -1) matched[i] = j;
+  });
+  const kept = findings.filter((f, i) => {
+    const index = matched[i];
     if (index === -1) return true;
     const blocker = merged[index];
     const overlap = titleOverlapType(blocker.title, f.title);
@@ -2322,6 +2333,14 @@ function sameProblem(a: Finding, b: Finding): boolean {
   if (overlap === null) return false;
   if (overlap === 'word_overlap') return citesLineOf(a, b) && citesLineOf(b, a);
   return citesLineOf(a, b) || citesLineOf(b, a) || near;
+}
+
+/** Whether `a` and `b` sit in one file, and their lines or the narrow proof lines they cite there are at most `DISMISSED_LINE_TOLERANCE` apart. */
+function nearEachOther(a: Finding, b: Finding): boolean {
+  if (!a.file || a.file !== b.file) return false;
+  const lines = (f: Finding) => [{ start: f.line, end: f.line }, ...narrowProof(f).filter(at => at.file === a.file)];
+  const other = lines(b);
+  return lines(a).some(x => other.some(y => x.start - DISMISSED_LINE_TOLERANCE <= y.end && y.start - DISMISSED_LINE_TOLERANCE <= x.end));
 }
 
 /** Returns the locations `f` cites as proof in spans no wider than `DISMISSED_LINE_TOLERANCE`. A wider span proves no one line. */
