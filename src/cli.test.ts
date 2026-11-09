@@ -60,10 +60,13 @@ describe('exitCodeOf', () => {
 });
 
 describe('formatReviewJson', () => {
-  it('round-trips the outcome, summary and findings', () => {
-    const local = review('ADDRESS_FIRST', [finding]);
-    expect(JSON.parse(formatReviewJson(local))).toEqual({
-      outcome: 'ADDRESS_FIRST', verdict: 'REQUEST_CHANGES', summary: 'Summary of the round', base: local.base, head: local.head, findings: [finding],
+  it('round-trips the outcome, summary and findings, with every control character escaped', () => {
+    const steered = { ...finding, title: 'Off \u001b[2J by \u009b2J one\u007f' };
+    const local = review('ADDRESS_FIRST', [finding, steered]);
+    const json = formatReviewJson(local);
+    expect(json).not.toMatch(/(?![\n])\p{Cc}/u);
+    expect(JSON.parse(json)).toEqual({
+      outcome: 'ADDRESS_FIRST', verdict: 'REQUEST_CHANGES', summary: 'Summary of the round', base: local.base, head: local.head, findings: [finding, steered],
     });
   });
 });

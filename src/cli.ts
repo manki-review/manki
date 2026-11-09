@@ -79,9 +79,13 @@ export function exitCodeOf({ result, approvalHeld }: LocalReview): number {
   return outcomeReport(result.outcome, result.summary, approvalHeld).conclusion === 'success' ? 0 : 1;
 }
 
-/** Returns the outcome, summary and findings as JSON. Parsing it gives back the same values. */
+/**
+ * Returns the outcome, summary and findings as JSON. Parsing it gives back the same values. `JSON.stringify` leaves
+ * DEL and the C1 control characters raw, so they are escaped too and never reach a terminal as escapes.
+ */
 export function formatReviewJson({ result, base, head }: LocalReview): string {
-  return `${JSON.stringify({ outcome: result.outcome, verdict: result.verdict, summary: result.summary, base, head, findings: result.findings }, null, 2)}\n`;
+  const json = JSON.stringify({ outcome: result.outcome, verdict: result.verdict, summary: result.summary, base, head, findings: result.findings }, null, 2);
+  return `${json.replace(/(?![\n])\p{Cc}/gu, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)}\n`;
 }
 
 /**

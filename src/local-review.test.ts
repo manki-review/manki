@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
@@ -96,12 +96,17 @@ describe('reviewLocal', () => {
   });
 
   it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
-    let workspaceSeen: { content: string; env: boolean } | undefined;
+    let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean } | undefined;
     jest.mocked(runReview).mockImplementation(async (_clients, options) => {
-      workspaceSeen = { content: readFileSync(join(options.workspace!, 'src/a.ts'), 'utf-8'), env: existsSync(join(options.workspace!, '.env')) };
+      const workspace = options.workspace!;
+      workspaceSeen = { content: readFileSync(join(workspace, 'src/a.ts'), 'utf-8'), env: existsSync(join(workspace, '.env')), linkIsFile: lstatSync(join(workspace, 'link')).isFile() };
       return { verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] };
     });
-    const patch = git(repo, 'diff', 'main', 'feature');
+    git(repo, 'checkout', '-q', '-b', 'with-link', 'feature');
+    symlinkSync('/etc/hosts', join(repo, 'link'));
+    commit(repo, 'Add a link', {});
+    git(repo, 'checkout', '-q', 'main');
+    const patch = git(repo, 'diff', 'main', 'with-link');
     writeFileSync(join(repo, '.env'), 'SECRET=1\n');
 
     const review = await reviewLocal({
@@ -110,12 +115,32 @@ describe('reviewLocal', () => {
     });
 
     const options = jest.mocked(runReview).mock.calls[0][1];
-    expect(workspaceSeen).toEqual({ content: 'const a = 1;\nconst b = 4;\n', env: false });
+    expect(workspaceSeen).toEqual({ content: 'const a = 1;\nconst b = 4;\n', env: false, linkIsFile: true });
     expect(options.workspace).not.toBe(repo);
     expect(existsSync(options.workspace!)).toBe(false);
     expect(options.rawDiff).toContain('docs/x.md');
     expect(options.prContext).toEqual({ title: 'My change', body: 'Why it changes', baseBranch: 'main' });
     expect(review.base).toBe(review.head);
+  });
+
+  it('reads a symlinked config and instruction file at their targets, and no target outside the tree', async () => {
+    jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    git(repo, 'checkout', '-q', '-b', 'linked', base);
+    rmSync(join(repo, '.manki.yml'));
+    rmSync(join(repo, 'AGENTS.md'));
+    symlinkSync('config/manki.yml', join(repo, '.manki.yml'));
+    symlinkSync('docs/rules.md', join(repo, 'AGENTS.md'));
+    symlinkSync('../../etc/hosts', join(repo, 'CLAUDE.md'));
+    commit(repo, 'Link the config', { 'config/manki.yml': 'exclude_paths:\n  - "vendor/**"\n', 'docs/rules.md': 'Linked rules.\n' });
+    git(repo, 'checkout', '-q', '-b', 'linked-change');
+    commit(repo, 'Change a', { 'src/a.ts': 'const a = 5;\n' });
+
+    await reviewLocal({ repoRoot: repo, base: 'linked', head: 'linked-change', providerInputs: inputs });
+
+    const options = jest.mocked(runReview).mock.calls[0][1];
+    expect(options.config.exclude_paths).toContain('vendor/**');
+    expect(options.repoContext).toContain('Linked rules.');
+    expect(options.repoContext).not.toContain('CLAUDE.md');
   });
 
   it('refuses a patch that does not apply to the head', async () => {

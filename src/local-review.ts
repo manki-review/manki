@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { rmSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { join, posix } from 'path';
 import { pathToFileURL } from 'url';
 
 import { changedKeys, loadConfig } from './config';
@@ -50,14 +50,21 @@ export interface LocalReview {
   approvalHeld: ApprovalHeld;
 }
 
-/** Reads the files of `commit` in the repository at `root`. */
+const MAX_SYMLINK_HOPS = 5;
+
+/** Reads the files of `commit` in the repository at `root`. A symlink reads as its target, while that stays in the tree. */
 function gitRepoFiles(root: string, commit: string): RepoFiles {
+  const read = async (path: string, hops = 0): Promise<string | null> => {
+    // Prints `<mode> <type> <object>\t<path>`, or nothing for a missing path.
+    const [mode, type, object] = (await runGit(root, ['--literal-pathspecs', 'ls-tree', '-z', commit, '--', path])).split('\t')[0].split(' ');
+    if (type !== 'blob') return null;
+    const content = await runGit(root, ['cat-file', 'blob', object]);
+    if (mode !== '120000') return content;
+    const target = posix.normalize(posix.join(posix.dirname(path), content));
+    return hops < MAX_SYMLINK_HOPS && !posix.isAbsolute(content) && !target.startsWith('../') ? read(target, hops + 1) : null;
+  };
   return {
-    read: async (path) => {
-      // Prints `<mode> <type> <object>\t<path>`, or nothing for a missing path.
-      const [, type, object] = (await runGit(root, ['--literal-pathspecs', 'ls-tree', '-z', commit, '--', path])).split('\t')[0].split(' ');
-      return type === 'blob' ? runGit(root, ['cat-file', 'blob', object]) : null;
-    },
+    read: path => read(path),
     list: async () => (await runGit(root, ['ls-tree', '-r', '-z', '--name-only', commit])).split('\0').filter(Boolean),
   };
 }
@@ -78,7 +85,8 @@ async function applyPatch(dir: string, patch: string, head: string): Promise<voi
   const file = join(dir, '.git', 'manki-review.patch');
   // `git apply` reads a patch without its final newline as corrupt.
   writeFileSync(file, patch.endsWith('\n') ? patch : `${patch}\n`);
-  await runGit(dir, ['apply', '--whitespace=nowarn', file]).catch((error: Error) => {
+  // A symlink the patch adds is written as a plain file holding its target, as `fetchWorkspace` checks one out.
+  await runGit(dir, ['-c', 'core.symlinks=false', 'apply', '--whitespace=nowarn', file]).catch((error: Error) => {
     throw new Error(`The patch does not apply to ${head.slice(0, 7)}: ${error.message}`);
   });
 }
