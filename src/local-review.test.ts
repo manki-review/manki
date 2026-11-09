@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
+import * as core from '@actions/core';
+
 import { reviewLocal } from './local-review';
 import { runReview } from './review';
 import type { Finding, ReviewResult, RoundOutcome } from './types';
@@ -92,9 +94,14 @@ describe('reviewLocal', () => {
     expect(review.context.meta).toMatchObject({ prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, outcome: 'ADDRESS_FIRST' });
   });
 
-  it('reviews a patch on the checkout with the given config, title and body', async () => {
-    jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+  it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
+    let workspaceSeen: { content: string; env: boolean } | undefined;
+    jest.mocked(runReview).mockImplementation(async (_clients, options) => {
+      workspaceSeen = { content: readFileSync(join(options.workspace!, 'src/a.ts'), 'utf-8'), env: existsSync(join(options.workspace!, '.env')) };
+      return { verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] };
+    });
     const patch = git(repo, 'diff', 'main', 'feature');
+    writeFileSync(join(repo, '.env'), 'SECRET=1\n');
 
     const review = await reviewLocal({
       repoRoot: repo, base: 'main', head: 'HEAD', patch, config: { ...jest.requireActual('./config').DEFAULT_CONFIG, exclude_paths: [] },
@@ -102,11 +109,31 @@ describe('reviewLocal', () => {
     });
 
     const options = jest.mocked(runReview).mock.calls[0][1];
-    expect(options.workspace).toBe(repo);
+    expect(workspaceSeen).toEqual({ content: 'const a = 1;\nconst b = 4;\n', env: false });
+    expect(options.workspace).not.toBe(repo);
+    expect(existsSync(options.workspace!)).toBe(false);
     expect(options.rawDiff).toContain('docs/x.md');
     expect(options.prContext).toEqual({ title: 'My change', body: 'Why it changes', baseBranch: 'main' });
-    expect(existsSync(repo)).toBe(true);
     expect(review.base).toBe(review.head);
+  });
+
+  it('refuses a patch that does not apply to the head', async () => {
+    await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'HEAD', patch: git(repo, 'diff', 'feature~1', 'feature'), providerInputs: inputs }))
+      .rejects.toThrow('The patch does not apply to');
+    expect(runReview).not.toHaveBeenCalled();
+  });
+
+  it('reviews with the defaults when the base config does not load, as a pull request round does', async () => {
+    jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    git(repo, 'checkout', '-q', '-b', 'broken', base);
+    commit(repo, 'Break config', { '.manki.yml': 'exclude_paths: [\n' });
+    git(repo, 'checkout', '-q', '-b', 'fix');
+    commit(repo, 'Fix config', { '.manki.yml': 'exclude_paths: []\n', 'src/a.ts': 'const a = 2;\n' });
+
+    await reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', providerInputs: inputs });
+
+    expect(jest.mocked(runReview).mock.calls[0][1].config.exclude_paths).toEqual(jest.requireActual('./config').DEFAULT_CONFIG.exclude_paths);
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not load .manki.yml on the base branch, reviewing with the defaults'));
   });
 
   it('refuses a change with no reviewable files before any model call', async () => {

@@ -1,4 +1,4 @@
-import { exitCodeOf, formatReviewJson, formatReviewText, parseReviewArgs } from './cli';
+import { exitCodeOf, formatReviewJson, formatReviewText, parseReviewArgs, runReviewCommand } from './cli';
 import type { LocalReview } from './local-review';
 import type { Finding, RoundContext, RoundOutcome } from './types';
 
@@ -69,10 +69,43 @@ describe('formatReviewText', () => {
     expect(text).toContain('Reads past the end.');
     expect(text).toContain('Stop at `len - 1`.');
     expect(text).toContain('On the flagged line: Reads `items[len]`');
-    expect(text).not.toContain('<!--');
+    expect(text).not.toContain('manki-checks');
   });
 
   it('shows only the outcome and summary when nothing was found', () => {
     expect(formatReviewText(review('READY'))).toBe('## Approved: aaaaaaa..bbbbbbb\n\nSummary of the round\n');
+  });
+});
+
+describe('runReviewCommand', () => {
+  const savedEnv = process.env;
+  let stdout: jest.SpyInstance;
+  let stderr: jest.SpyInstance;
+
+  beforeEach(() => {
+    stdout = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    stdout.mockRestore();
+    stderr.mockRestore();
+    process.env = savedEnv;
+  });
+
+  it('prints the usage to stdout for --help', async () => {
+    expect(await runReviewCommand(['--help'])).toBe(0);
+    expect(stdout).toHaveBeenCalledWith(expect.stringContaining('Usage: manki review'));
+  });
+
+  it('fails with exit code 2 on stderr without credentials or with a bad option, and restores stdout', async () => {
+    process.env = {};
+    const write = process.stdout.write;
+    expect(await runReviewCommand([])).toBe(2);
+    expect(await runReviewCommand(['--bogus'])).toBe(2);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('manki review: No credentials set.'));
+    expect(stderr).toHaveBeenCalledWith('manki review: Unknown option --bogus\n');
+    expect(stdout).not.toHaveBeenCalled();
+    expect(process.stdout.write).toBe(write);
   });
 });

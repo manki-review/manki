@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'fs';
 
 import { outcomeReport } from './check-run';
 import { loadConfig } from './config';
-import { formatFindingBlock } from './github';
+import { CHECKS_MARKER, formatFindingBlock } from './github';
 import { LocalReview, reviewLocal } from './local-review';
 import { hasAnyProviderCredentials, readProviderInputsFromEnv, removeSeededAuthFiles } from './providers';
 import { runGit } from './workspace';
@@ -16,7 +16,7 @@ shows it, with the pipeline a pull request round runs. Nothing is written to Git
 <base> defaults to the remote's default branch, <head> to HEAD.
 
 Options:
-  --patch <file>      Review a patch instead. The tools then read the checkout as it is.
+  --patch <file>      Review a patch against <head> instead of the commits.
   --config <file>     Use this config instead of the base's .manki.yml.
   --title <text>      Pull request title shown to the models. Defaults to the head commit's subject.
   --body-file <file>  Pull request description shown to the models.
@@ -89,8 +89,7 @@ export function formatReviewText({ result, base, head }: LocalReview): string {
   const blocks = result.findings.map(f => formatFindingBlock(f, links));
   const lead = [`## ${title}: ${base.slice(0, 7)}..${head.slice(0, 7)}`, result.summary].filter(Boolean).join('\n\n');
   const text = [lead, ...blocks].join('\n\n---\n\n');
-  // Hidden markers only matter on GitHub.
-  return `${text.replace(/<!--[\s\S]*?-->\n?/g, '')}\n`;
+  return `${text.split(`${CHECKS_MARKER}\n`).join('')}\n`;
 }
 
 async function defaultBase(root: string): Promise<string> {
@@ -99,11 +98,13 @@ async function defaultBase(root: string): Promise<string> {
 
 /** Runs `manki review` and returns its exit code. The review goes to stdout, every log line to stderr. */
 export async function runReviewCommand(argv: string[]): Promise<number> {
-  const out = process.stdout.write.bind(process.stdout);
+  const write = process.stdout.write;
+  const out = write.bind(process.stdout);
   // `@actions/core` logs to stdout, which here carries only the review.
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
   const cancel = new AbortController();
-  const onSignal = (): void => cancel.abort(new Error('Interrupted'));
+  // The first Ctrl-C stops the review at its next step. A second one exits at once.
+  const onSignal = (): void => (cancel.signal.aborted ? process.exit(130) : cancel.abort(new Error('Interrupted')));
   process.on('SIGINT', onSignal);
   try {
     const args = parseReviewArgs(argv);
@@ -134,6 +135,6 @@ export async function runReviewCommand(argv: string[]): Promise<number> {
   } finally {
     process.off('SIGINT', onSignal);
     removeSeededAuthFiles();
-    process.stdout.write = out;
+    process.stdout.write = write;
   }
 }
