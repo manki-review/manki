@@ -230,6 +230,12 @@ export interface Finding {
 export type PreExistingCheck = 'pre_existing' | 'no_location' | 'excluded_file' | 'deleted_file' | 'touches_diff';
 
 /** How a round split a diff too large to read at once. */
+/** A fetched reference repo: its `owner/name` and the directory holding its checkout. */
+export interface ReferenceCheckout {
+  repo: string;
+  dir: string;
+}
+
 /** How one configured related repo fared in a round, and how often the round's finders read it. */
 export interface RoundRelatedRepo {
   repo: string;
@@ -256,6 +262,18 @@ export interface RoundUses {
   common?: string[];
   /** Symbols the cap on listed lines left out. */
   capped?: string[];
+  /** Each name found in the reference repos, with the lines shown. */
+  reference?: RoundReferenceUse[];
+  /** Names searched for that no reference line holds. */
+  referenceMissing?: string[];
+}
+
+export interface RoundReferenceUse {
+  name: string;
+  /** Each line shown, as `owner/name:path:line`. */
+  lines: string[];
+  /** Lines found but not shown. */
+  notShown?: number;
 }
 
 export interface RoundUsesSymbol {

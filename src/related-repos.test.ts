@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { devNull, tmpdir } from 'os';
 import { join } from 'path';
 
-import { fetchedRelatedRepos, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
+import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { RelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -256,6 +256,11 @@ describe('relatedRepoLoader', () => {
     expect(core.warning).toHaveBeenCalledWith(
       "Could not fetch related repo dashpay/dips, which must be public on github.com: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
     );
+
+    // Fetching the references up front takes each outcome of the round, leaves out the failed one and never fetches a consumer.
+    const before = calls.length;
+    expect(await fetchReferenceRepos({ repos: [DASH, DIPS, PLATFORM], cacheDir, stateDir }, { run, log })).toEqual([{ repo: 'dashpay/dash', dir: join(cacheDir, 'dashpay', 'dash') }]);
+    expect(calls).toHaveLength(before);
   });
 
   it('gives each repo one time limit across its git commands', async () => {
