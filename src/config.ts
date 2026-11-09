@@ -121,7 +121,7 @@ interface ConfigValidationResult {
   warnings: string[];
 }
 
-function validateConfig(config: Record<string, unknown>): ConfigValidationResult {
+export function validateConfig(config: Record<string, unknown>): ConfigValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
 

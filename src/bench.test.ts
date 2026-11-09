@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'f
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { BenchCase, buildReport, candidateFindings, formatBenchSummary, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, parseBenchArgs, parseCase, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, buildReport, candidateFindings, formatBenchSummary, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
 import type { Finding, RoundContext, RoundOutcome } from './types';
@@ -259,7 +259,7 @@ describe('runBench and buildReport', () => {
   const inputs = { anthropicOauthToken: 'token', anthropicApiKey: '', openaiOauthToken: '', openaiApiKey: '', geminiOauthToken: '', geminiApiKey: '' };
   const blocker = makeFinding({ severity: 'blocker', file: 'src/read.rs' });
 
-  it('reviews each case the asked number of times, records a failed or incomplete run apart, and reports catch rates per item and severity', async () => {
+  it('reviews each case the asked number of times with the overrides, records a failed or incomplete run apart, and reports catch rates side by side', async () => {
     const runs: Array<RoundOutcome | Error> = ['ADDRESS_FIRST', new Error('provider down'), 'READY', 'INCOMPLETE', 'ADDRESS_FIRST'];
     let call = 0;
     const review = jest.fn(async (_input: LocalReviewInput) => {
@@ -274,32 +274,62 @@ describe('runBench and buildReport', () => {
     const matcher: Matcher = async item => (item.id === 'K1' ? verdicts[k1++] : { verdict: 'NONE', findings: [], reason: 'none' });
     const onCase = jest.fn();
 
-    const results = await runBench([benchCase], { runs: 5, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review, onCase });
+    const overrides = { models: { reviewer: 'claude-opus-5-5' } };
+    const baseReview = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
+    await runBench([benchCase], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: baseReview });
+    expect(baseReview.mock.calls[0][0]).not.toHaveProperty('configOverrides');
+    const [{ variant, results }] = await runBench([benchCase], { runs: 5, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review, onCase, variants: [{ name: 'opus', overrides }] });
 
     expect(review).toHaveBeenCalledTimes(5);
-    expect(review.mock.calls[0]).toEqual([expect.objectContaining({ repoRoot: checkout, base: benchCase.base, head: benchCase.head, title: 'fix: bound the reader', body: 'Reads lengths with a bound.\n' })]);
-    expect(onCase).toHaveBeenCalledWith(results);
+    expect(review.mock.calls[0]).toEqual([expect.objectContaining({
+      repoRoot: checkout, base: benchCase.base, head: benchCase.head, title: 'fix: bound the reader', body: 'Reads lengths with a bound.\n', configOverrides: overrides,
+    })]);
+    expect(variant).toEqual({ name: 'opus', overrides });
+    expect(onCase).toHaveBeenCalledWith([{ variant, results }]);
     expect(results[0].runs[1]).toMatchObject({ outcome: 'FAILED', complete: false, error: 'provider down', mustCatchRecall: null, verdictCorrect: null });
 
-    const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 5, matcherModel: 'model-a' }, results);
-    expect(report.cases[0].items).toEqual([
+    const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 5, matcherModel: 'model-a' }, [
+      { variant: { name: 'base', overrides: {} }, results },
+      { variant: { name: 'opus', overrides }, results },
+    ]);
+    expect(report.variants.map(v => [v.name, v.overrides])).toEqual([['base', {}], ['opus', overrides]]);
+    expect(report.variants[0].cases[0].items).toEqual([
       { id: 'K1', tier: 'must_catch', severity: 'blocker', caught: 2, partial: 1, runs: 3 },
       { id: 'K2', tier: 'must_catch', severity: 'warning', caught: 0, partial: 0, runs: 3 },
       { id: 'N1', tier: 'nice_to_have', severity: 'suggestion', caught: 0, partial: 0, runs: 3 },
     ]);
-    expect(report.summary).toEqual({
+    expect(report.variants[0].summary).toEqual({
       runs: 5, incompleteRuns: 2, mustCatchRecall: 1 / 3, weightedRecall: expect.closeTo(0.4), verdictAccuracy: 2 / 3,
       bySeverity: { blocker: { caught: 2, partial: 1, total: 3 }, warning: { caught: 0, partial: 0, total: 3 } },
-      falseBlockers: 0, extraFindings: 0, duplicates: 0, costUsd: 5,
+      falseBlockers: 0, extraFindings: 0, duplicates: 0, costUsd: 5, costPerRunUsd: 1.25, wallTimePerRunMs: 90,
     });
     expect(JSON.parse(JSON.stringify(report))).toStrictEqual(report);
     const summary = formatBenchSummary(report);
+    expect(summary).toMatch(/^== base\ndemo-1 \(demo upstream PR 7\)\n/);
+    expect(summary).toContain('\n== opus\n');
     expect(summary).toContain('  K1 must blocker: 2/3, 1 partial\n');
     expect(summary).toContain('  run 2: FAILED: provider down\n');
     expect(summary).toContain('  run 4: INCOMPLETE: The review did not complete.\n');
     expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 extra, 0 duplicates, files read finder-a 3, $1.25\n');
     expect(summary).toContain('5 runs (2 incomplete). Must-catch recall 33%, weighted 40%, verdicts 67%.');
     expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, extra findings 0, duplicates 0, cost $5.00.');
+    expect(summary.slice(summary.indexOf('| Metric'))).toBe([
+      '| Metric | base | opus |',
+      '| --- | --- | --- |',
+      '| Must-catch recall | 33% | 33% |',
+      '| Weighted recall | 40% | 40% |',
+      '| Verdict accuracy | 67% | 67% |',
+      '| False blockers | 0 | 0 |',
+      '| Extra findings | 0 | 0 |',
+      '| Duplicates | 0 | 0 |',
+      '| Incomplete runs | 2 of 5 | 2 of 5 |',
+      '| Cost per run | $1.25 | $1.25 |',
+      '| Wall time per run | 0m 00s | 0m 00s |',
+      '| demo-1 K1 (must blocker) | 2/3, 1 partial | 2/3, 1 partial |',
+      '| demo-1 K2 (must warning) | 0/3 | 0/3 |',
+      '| demo-1 N1 (nice suggestion) | 0/3 | 0/3 |',
+      '',
+    ].join('\n'));
   });
 
   it('tries the matcher again before giving up a finished review, and keeps its findings and cost when it gives up', async () => {
@@ -314,11 +344,11 @@ describe('runBench and buildReport', () => {
     };
     const options = { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, review };
 
-    const [retried] = await runBench([benchCase], { ...options, matcher: flaky });
+    const [{ results: [retried] }] = await runBench([benchCase], { ...options, matcher: flaky });
     expect(retried.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: true });
     expect(retried.runs[0].error).toBeUndefined();
 
-    const [failed] = await runBench([benchCase], { ...options, matcher: broken });
+    const [{ results: [failed] }] = await runBench([benchCase], { ...options, matcher: broken });
     expect(failed.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: false, error: 'no such model', costUsd: 1.25, mustCatchRecall: null });
     expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1 }]);
     expect(review).toHaveBeenCalledTimes(2);
@@ -334,9 +364,15 @@ describe('runBench and buildReport', () => {
     expect(review).toHaveBeenCalledTimes(1);
   });
 
-  it('checks every checkout before the first review', async () => {
+  it('checks every checkout and every variant before the first review', async () => {
     const review = jest.fn();
     const options = { runs: 1, providerInputs: inputs, matcher: jest.fn(), review };
+    const checkouts = new Map([['owner/demo', checkout]]);
+    const good = { name: 'good', overrides: { review_passes: 2 } };
+    await expect(runBench([benchCase], { ...options, checkouts, variants: [good, { name: 'bad', overrides: { review_passes: 9 } }] }))
+      .rejects.toThrow('Variant bad does not load on case demo-1: Invalid config in .manki.yml with the overrides');
+    await expect(runBench([benchCase], { ...options, checkouts, variants: [good, { name: 'typo', overrides: { models: { reviwer: 'claude-opus-5-5' } } }] }))
+      .rejects.toThrow('Variant typo does not load on case demo-1: The config overrides name keys the config does not know: Unknown config key: "models.reviwer"');
     await expect(runBench([benchCase], { ...options, checkouts: new Map() })).rejects.toThrow('No checkout for owner/demo');
     await expect(runBench([{ ...benchCase, head: 'c'.repeat(40) }], { ...options, checkouts: new Map([['owner/demo', checkout]]) })).rejects.toThrow(new RegExp(`Commit ${'c'.repeat(40)} of case demo-1 is not in .*Git said: `));
     expect(review).not.toHaveBeenCalled();
@@ -346,8 +382,15 @@ describe('runBench and buildReport', () => {
 describe('parseBenchArgs', () => {
   it('reads the options and defaults', () => {
     expect(parseBenchArgs([])).toMatchObject({ cases: 'bench/cases', only: [], runs: 3, matcherModel: 'claude-sonnet-5-5', cache: 'bench/.matcher-cache.json', help: false });
-    const args = parseBenchArgs(['--checkout', 'owner/demo=/src/a=b', '--case', 'x', '--case', 'y', '--runs', '1', '--out', 'r.json', '--config', 'c.yml', '--matcher-model', 'm', '--cache', 'c.json']);
-    expect(args).toMatchObject({ only: ['x', 'y'], runs: 1, out: 'r.json', config: 'c.yml', matcherModel: 'm', cache: 'c.json' });
+    const args = parseBenchArgs([
+      '--checkout', 'owner/demo=/src/a=b', '--case', 'x', '--case', 'y', '--runs', '1', '--out', 'r.json', '--matcher-model', 'm', '--cache', 'c.json',
+      '--variant', 'base', '--variant', 'opus=bench/opus.yml', '--set', 'models.reviewer=claude-opus-5-5', '--set', 'review_passes=2', '--set', 'exclude_paths=[a, b]',
+    ]);
+    expect(args).toMatchObject({
+      only: ['x', 'y'], runs: 1, out: 'r.json', matcherModel: 'm', cache: 'c.json',
+      variants: [{ name: 'base' }, { name: 'opus', file: 'bench/opus.yml' }],
+      sets: [{ models: { reviewer: 'claude-opus-5-5' } }, { review_passes: 2 }, { exclude_paths: ['a', 'b'] }],
+    });
     expect([...args.checkouts]).toEqual([['owner/demo', '/src/a=b']]);
   });
 
@@ -356,8 +399,36 @@ describe('parseBenchArgs', () => {
     [['--checkout', 'owner/demo'], '--checkout takes <owner/name>=<dir>'],
     [['--out'], '--out requires a value'],
     [['--bogus'], 'Unknown argument --bogus'],
+    [['--config', 'c.yml'], 'Unknown argument --config'],
+    [['--variant', 'two words=x.yml'], '--variant takes <name>[=<file>]'],
+    [['--variant', 'a', '--variant', 'a=x.yml'], '--variant a is given twice'],
+    [['--set', 'models.reviewer'], '--set takes <key.path>=<value>'],
+    [['--set', 'models..reviewer=x'], '--set takes <key.path>=<value>'],
   ])('refuses %j', (argv, message) => {
     expect(() => parseBenchArgs(argv)).toThrow(message);
+  });
+});
+
+describe('resolveVariants', () => {
+  it('runs the base config without a variant, reads each variant file, and sets every --set on top', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'manki-variants-'));
+    try {
+      const opus = join(dir, 'opus.yml');
+      writeFileSync(opus, 'models:\n  reviewer: claude-opus-5-5\n  reviewer_pair: claude-opus-5-5\n');
+      writeFileSync(join(dir, 'empty.yml'), '');
+      writeFileSync(join(dir, 'list.yml'), '- a\n');
+      const sets = [{ models: { judge: 'claude-sonnet-5-5' } }];
+
+      expect(resolveVariants({ variants: [], sets: [] })).toEqual([{ name: 'base', overrides: {} }]);
+      expect(resolveVariants({ variants: [{ name: 'base' }, { name: 'opus', file: opus }, { name: 'empty', file: join(dir, 'empty.yml') }], sets })).toEqual([
+        { name: 'base', overrides: { models: { judge: 'claude-sonnet-5-5' } } },
+        { name: 'opus', overrides: { models: { reviewer: 'claude-opus-5-5', reviewer_pair: 'claude-opus-5-5', judge: 'claude-sonnet-5-5' } } },
+        { name: 'empty', overrides: { models: { judge: 'claude-sonnet-5-5' } } },
+      ]);
+      expect(() => resolveVariants({ variants: [{ name: 'list', file: join(dir, 'list.yml') }], sets: [] })).toThrow('The overrides of variant list');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

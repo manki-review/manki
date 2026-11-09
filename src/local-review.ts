@@ -2,8 +2,9 @@ import * as core from '@actions/core';
 import { rmSync, writeFileSync } from 'fs';
 import { join, posix } from 'path';
 import { pathToFileURL } from 'url';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
-import { changedKeys, loadConfig } from './config';
+import { changedKeys, loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, reviewableDiff, tagFindingOrigins } from './diff';
 import { ApprovalHeld, buildRepoContext, configFailed, loadBaseConfig, RepoFiles } from './github';
 import type { ProviderInputs } from './providers';
@@ -14,6 +15,41 @@ import type { ConfigSource, ReviewConfig, ReviewResult, RoundContext, RoundOutco
 import { fetchWorkspace, runGit } from './workspace';
 
 const DEFAULT_CONFIG_PATH = '.manki.yml';
+
+/** Config keys and their values, as a `.manki.yml` holds them. */
+export type ConfigOverrides = Record<string, unknown>;
+
+function isMapping(value: unknown): value is ConfigOverrides {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Returns `base` with `overrides` set on top. A mapping in both merges key by key, and any other value replaces. */
+export function overlayConfig(base: ConfigOverrides, overrides: ConfigOverrides): ConfigOverrides {
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(overrides)) {
+    const current = merged[key];
+    merged[key] = isMapping(value) && isMapping(current) ? overlayConfig(current, value) : value;
+  }
+  return merged;
+}
+
+/**
+ * Loads `content` with `overrides` set on top. Throws when either makes the config invalid, or when an override names a
+ * key the config does not know, so a variant never runs on the defaults or on the base setup by mistake.
+ */
+function loadOverlaidConfig(content: string | null, configPath: string, overrides: ConfigOverrides): { config: ReviewConfig; source: ConfigSource } {
+  const unknown = validateConfig(overrides).warnings.filter(warning => warning.startsWith('Unknown config key'));
+  if (unknown.length > 0) throw new Error(`The config overrides name keys the config does not know: ${unknown.join('; ')}`);
+  let parsed: unknown;
+  try {
+    parsed = content ? parseYaml(content) : null;
+  } catch (error) {
+    throw new Error(`Invalid YAML in ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (parsed !== null && parsed !== undefined && !isMapping(parsed)) throw new Error(`Invalid config in ${configPath}: the top level must be a mapping of keys to values`);
+  const config = loadConfig(stringifyYaml(overlayConfig(parsed ?? {}, overrides)), `${configPath} with the overrides`);
+  return { config, source: config.review ? 'base' : 'builtin' };
+}
 
 /** What a local review reads. Nothing is read from or written to GitHub. */
 export interface LocalReviewInput {
@@ -29,6 +65,8 @@ export interface LocalReviewInput {
   patch?: string;
   /** Replaces the config the base commit holds. */
   config?: ReviewConfig;
+  /** Set on top of the base commit's config before it is validated. Unused with `config`. */
+  configOverrides?: ConfigOverrides;
   configPath?: string;
   /** Shown to the models as the pull request title. Defaults to the subject of `head`. */
   title?: string;
@@ -69,15 +107,29 @@ function gitRepoFiles(root: string, commit: string): RepoFiles {
   };
 }
 
-/** Loads the config at `base` the way a pull request round does, and logs the keys `head` changes. */
-async function loadLocalConfig(root: string, base: string, head: string, configPath: string): Promise<{ config: ReviewConfig; source: ConfigSource }> {
+/**
+ * Loads the config at `base` the way a pull request round does, and logs the keys `head` changes. With `overrides`, they
+ * are set on top, and a config that does not load throws instead of falling back to the defaults.
+ */
+async function loadLocalConfig(
+  root: string, base: string, head: string, configPath: string, overrides?: ConfigOverrides,
+): Promise<{ config: ReviewConfig; source: ConfigSource }> {
   const headConfig = loadConfig(await gitRepoFiles(root, head).read(configPath) ?? undefined, configPath);
-  const loaded = await loadBaseConfig(() => gitRepoFiles(root, base).read(configPath), configPath, error => (error instanceof Error ? error.message : String(error)));
-  const changed = changedKeys(headConfig, loaded.config);
+  const read = () => gitRepoFiles(root, base).read(configPath);
+  const loaded = overrides
+    ? loadOverlaidConfig(await read(), configPath, overrides)
+    : await loadBaseConfig(read, configPath, error => (error instanceof Error ? error.message : String(error)));
+  // A key the overrides set differs from the head's whatever the change did, so it is left out.
+  const changed = changedKeys(headConfig, loaded.config).filter(key => !(overrides && key in overrides));
   if (changed.length > 0) {
     core.info(`This change edits ${changed.map(key => `\`${key}\``).join(', ')} in ${configPath}, which applies after merge: this review uses the base's settings.`);
   }
   return loaded;
+}
+
+/** Loads the config at `base` in `repoRoot` with `overrides` set on top, as a review with them does. Throws when it does not load. */
+export async function loadConfigWithOverrides(repoRoot: string, base: string, overrides: ConfigOverrides, configPath = DEFAULT_CONFIG_PATH): Promise<ReviewConfig> {
+  return loadOverlaidConfig(await gitRepoFiles(repoRoot, base).read(configPath), configPath, overrides).config;
 }
 
 /** Applies `patch` to the checkout at `dir`. Throws when it does not apply. */
@@ -100,7 +152,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
   const configPath = input.configPath ?? DEFAULT_CONFIG_PATH;
   const head = (await runGit(repoRoot, ['rev-parse', '--verify', `${input.head}^{commit}`])).trim();
   const base = patch === undefined ? (await runGit(repoRoot, ['merge-base', input.base, head])).trim() : head;
-  const loaded = input.config ? { config: input.config, source: 'base' as const } : await loadLocalConfig(repoRoot, base, head, configPath);
+  const loaded = input.config ? { config: input.config, source: 'base' as const } : await loadLocalConfig(repoRoot, base, head, configPath, input.configOverrides);
   const { config } = loaded;
   const raw = patch ?? await runGit(repoRoot, ['diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', base, head]);
   const { fullDiff, diff, excludedFiles, rawDiff } = reviewableDiff(raw, config.exclude_paths);

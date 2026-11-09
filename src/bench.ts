@@ -4,14 +4,13 @@ import { dirname, join } from 'path';
 import { parse as parseYaml } from 'yaml';
 
 import { runCliCommand } from './cli';
-import { loadConfig } from './config';
 import { MANKI_VERSION } from './github';
 import { extractJSON } from './json';
-import { LocalReview, LocalReviewInput, reviewLocal } from './local-review';
+import { ConfigOverrides, loadConfigWithOverrides, LocalReview, LocalReviewInput, overlayConfig, reviewLocal } from './local-review';
 import { hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { buildLLMClient } from './review-clients';
-import { Finding, FindingSeverity, ReviewConfig, SEVERITY_ORDER } from './types';
+import { Finding, FindingSeverity, SEVERITY_ORDER } from './types';
 import { runGit } from './workspace';
 
 export const BENCH_COMMAND = 'bench';
@@ -349,35 +348,55 @@ interface SeverityRecall {
   total: number;
 }
 
+interface VariantSummary {
+  runs: number;
+  incompleteRuns: number;
+  /** Mean over the complete runs of cases with must-catch items. */
+  mustCatchRecall: number | null;
+  weightedRecall: number | null;
+  /** Correct verdicts over the runs that have an expected verdict. */
+  verdictAccuracy: number | null;
+  /** Must-catch catches per key severity, over the complete runs. */
+  bySeverity: Partial<Record<KeySeverity, SeverityRecall>>;
+  falseBlockers: number;
+  extraFindings: number;
+  duplicates: number;
+  costUsd: number;
+  /** Mean cost of the runs that got a review. */
+  costPerRunUsd: number | null;
+  /** Mean wall time of the runs that got a review. */
+  wallTimePerRunMs: number | null;
+}
+
+/** One setup the bench scores: a name and the config it sets on top of each case's base `.manki.yml`. */
+interface Variant {
+  name: string;
+  overrides: ConfigOverrides;
+}
+
+interface VariantReport extends Variant {
+  summary: VariantSummary;
+  cases: CaseReport[];
+}
+
 interface BenchReport {
   mankiVersion: string;
   startedAt: string;
   runsPerCase: number;
   matcherModel: string;
-  summary: {
-    runs: number;
-    incompleteRuns: number;
-    /** Mean over the complete runs of cases with must-catch items. */
-    mustCatchRecall: number | null;
-    weightedRecall: number | null;
-    /** Correct verdicts over the runs that have an expected verdict. */
-    verdictAccuracy: number | null;
-    /** Must-catch catches per key severity, over the complete runs. */
-    bySeverity: Partial<Record<KeySeverity, SeverityRecall>>;
-    falseBlockers: number;
-    extraFindings: number;
-    duplicates: number;
-    costUsd: number;
-  };
-  cases: CaseReport[];
+  variants: VariantReport[];
 }
+
+type CaseResults = Array<{ benchCase: BenchCase; runs: RunScore[] }>;
+
+type VariantResults = { variant: Variant; results: CaseResults };
 
 function mean(values: Array<number | null>): number | null {
   const known = values.filter((v): v is number => v !== null);
   return known.length > 0 ? known.reduce((a, b) => a + b, 0) / known.length : null;
 }
 
-export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' | 'matcherModel'>, results: Array<{ benchCase: BenchCase; runs: RunScore[] }>): BenchReport {
+function buildVariantReport(variant: Variant, results: CaseResults): VariantReport {
   const cases = results.map(({ benchCase, runs }) => {
     const complete = runs.filter(run => run.complete);
     const report = (item: KeyItem, tier: ItemReport['tier']): ItemReport => {
@@ -391,7 +410,7 @@ export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' 
     };
   });
   const runs = cases.flatMap(c => c.runs);
-  const bySeverity: BenchReport['summary']['bySeverity'] = {};
+  const bySeverity: VariantSummary['bySeverity'] = {};
   for (const item of cases.flatMap(c => c.items).filter(i => i.tier === 'must_catch')) {
     const entry = bySeverity[item.severity] ??= { caught: 0, partial: 0, total: 0 };
     entry.caught += item.caught;
@@ -399,9 +418,9 @@ export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' 
     entry.total += item.runs;
   }
   const verdicts = runs.map(r => r.verdictCorrect).filter((v): v is boolean => v !== null);
+  const reviewed = runs.filter(r => r.outcome !== 'FAILED');
   return {
-    mankiVersion: MANKI_VERSION,
-    ...meta,
+    ...variant,
     summary: {
       runs: runs.length,
       incompleteRuns: runs.filter(r => !r.complete).length,
@@ -413,34 +432,77 @@ export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' 
       extraFindings: runs.reduce((sum, r) => sum + r.extraFindings, 0),
       duplicates: runs.reduce((sum, r) => sum + r.duplicates, 0),
       costUsd: runs.reduce((sum, r) => sum + r.costUsd, 0),
+      costPerRunUsd: mean(reviewed.map(r => r.costUsd)),
+      wallTimePerRunMs: mean(reviewed.map(r => r.durationMs)),
     },
     cases,
   };
+}
+
+export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' | 'matcherModel'>, variants: VariantResults[]): BenchReport {
+  return { mankiVersion: MANKI_VERSION, ...meta, variants: variants.map(({ variant, results }) => buildVariantReport(variant, results)) };
 }
 
 function percent(value: number | null): string {
   return value === null ? 'n/a' : `${Math.round(value * 100)}%`;
 }
 
-/** Returns the report as plain text: per case, each key item's catch rate and the run totals, then the summary. */
+function minutes(ms: number | null): string {
+  if (ms === null) return 'n/a';
+  const seconds = Math.round(ms / 1000);
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+/** Returns a Markdown table with one column per variant: the summary figures, then each key item's catch rate. */
+function formatComparison(variants: VariantReport[]): string {
+  const row = (label: string, cells: string[]) => `| ${[label, ...cells].join(' | ')} |`;
+  const figure = (label: string, value: (s: VariantSummary) => string) => row(label, variants.map(v => value(v.summary)));
+  const items = variants[0]?.cases.flatMap(c => c.items.map(item => ({ caseId: c.id, item }))) ?? [];
+  return [
+    row('Metric', variants.map(v => v.name)),
+    row('---', variants.map(() => '---')),
+    figure('Must-catch recall', s => percent(s.mustCatchRecall)),
+    figure('Weighted recall', s => percent(s.weightedRecall)),
+    figure('Verdict accuracy', s => percent(s.verdictAccuracy)),
+    figure('False blockers', s => String(s.falseBlockers)),
+    figure('Extra findings', s => String(s.extraFindings)),
+    figure('Duplicates', s => String(s.duplicates)),
+    figure('Incomplete runs', s => `${s.incompleteRuns} of ${s.runs}`),
+    figure('Cost per run', s => (s.costPerRunUsd === null ? 'n/a' : `$${s.costPerRunUsd.toFixed(2)}`)),
+    figure('Wall time per run', s => minutes(s.wallTimePerRunMs)),
+    ...items.map(({ caseId, item }) => row(`${caseId} ${item.id} (${item.tier === 'must_catch' ? 'must' : 'nice'} ${item.severity})`, variants.map((v) => {
+      const found = v.cases.find(c => c.id === caseId)?.items.find(i => i.id === item.id);
+      return found ? `${found.caught}/${found.runs}${found.partial ? `, ${found.partial} partial` : ''}` : 'n/a';
+    }))),
+  ].join('\n');
+}
+
+/**
+ * Returns the report as plain text: per variant and case, each key item's catch rate and the run totals, then the
+ * variant's summary, and last a Markdown table that sets the variants side by side.
+ */
 export function formatBenchSummary(report: BenchReport): string {
   const lines: string[] = [];
-  for (const c of report.cases) {
-    lines.push(`${c.id} (${c.source})`);
-    for (const item of c.items) {
-      lines.push(`  ${item.id} ${item.tier === 'must_catch' ? 'must' : 'nice'} ${item.severity}: ${item.caught}/${item.runs}${item.partial ? `, ${item.partial} partial` : ''}`);
+  for (const variant of report.variants) {
+    lines.push(`== ${variant.name}`);
+    for (const c of variant.cases) {
+      lines.push(`${c.id} (${c.source})`);
+      for (const item of c.items) {
+        lines.push(`  ${item.id} ${item.tier === 'must_catch' ? 'must' : 'nice'} ${item.severity}: ${item.caught}/${item.runs}${item.partial ? `, ${item.partial} partial` : ''}`);
+      }
+      for (const [i, run] of c.runs.entries()) {
+        const reads = run.finders.map(f => `${f.name} ${f.filesRead}`).join(', ') || 'none';
+        lines.push(run.error
+          ? `  run ${i + 1}: ${run.outcome}: ${run.error}`
+          : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${run.extraFindings} extra, ${run.duplicates} duplicates, files read ${reads}, $${run.costUsd.toFixed(2)}`);
+      }
     }
-    for (const [i, run] of c.runs.entries()) {
-      const reads = run.finders.map(f => `${f.name} ${f.filesRead}`).join(', ') || 'none';
-      lines.push(run.error
-        ? `  run ${i + 1}: ${run.outcome}: ${run.error}`
-        : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${run.extraFindings} extra, ${run.duplicates} duplicates, files read ${reads}, $${run.costUsd.toFixed(2)}`);
-    }
+    const s = variant.summary;
+    const severities = KEY_SEVERITIES.flatMap(sev => (s.bySeverity[sev] ? [`${sev} ${s.bySeverity[sev]!.caught}/${s.bySeverity[sev]!.total}`] : []));
+    lines.push(`${s.runs} runs (${s.incompleteRuns} incomplete). Must-catch recall ${percent(s.mustCatchRecall)}, weighted ${percent(s.weightedRecall)}, verdicts ${percent(s.verdictAccuracy)}.`);
+    lines.push(`By severity: ${severities.join(', ') || 'n/a'}. False blockers ${s.falseBlockers}, extra findings ${s.extraFindings}, duplicates ${s.duplicates}, cost $${s.costUsd.toFixed(2)}.`, '');
   }
-  const s = report.summary;
-  const severities = KEY_SEVERITIES.flatMap(sev => (s.bySeverity[sev] ? [`${sev} ${s.bySeverity[sev]!.caught}/${s.bySeverity[sev]!.total}`] : []));
-  lines.push('', `${s.runs} runs (${s.incompleteRuns} incomplete). Must-catch recall ${percent(s.mustCatchRecall)}, weighted ${percent(s.weightedRecall)}, verdicts ${percent(s.verdictAccuracy)}.`);
-  lines.push(`By severity: ${severities.join(', ') || 'n/a'}. False blockers ${s.falseBlockers}, extra findings ${s.extraFindings}, duplicates ${s.duplicates}, cost $${s.costUsd.toFixed(2)}.`);
+  lines.push(formatComparison(report.variants));
   return `${lines.join('\n')}\n`;
 }
 
@@ -448,14 +510,14 @@ interface BenchOptions {
   runs: number;
   /** Local clone of each case repo, by `owner/name`. */
   checkouts: ReadonlyMap<string, string>;
-  /** Replaces the `.manki.yml` each case's base holds. */
-  config?: ReviewConfig;
+  /** The setups to score, one after another. Defaults to one variant, `base`, with no overrides. */
+  variants?: Variant[];
   providerInputs: ProviderInputs;
   matcher: Matcher;
   review?: (input: LocalReviewInput) => Promise<LocalReview>;
   signal?: AbortSignal;
-  /** Called after each case with the results so far, so they can be saved before the next case. */
-  onCase?: (results: Array<{ benchCase: BenchCase; runs: RunScore[] }>) => void;
+  /** Called after each case with every variant's results so far, so they can be saved before the next case. */
+  onCase?: (variants: VariantResults[]) => void;
 }
 
 /**
@@ -472,11 +534,12 @@ function failedRun(error: unknown, review?: LocalReview): RunScore {
 }
 
 /**
- * Reviews each case `runs` times and scores every review. Checks that every case's commits are in its checkout first.
+ * Reviews each case `runs` times per variant and scores every review. First checks that every case's commits are in
+ * its checkout and that every variant's config loads on every case, so nothing is spent on a setup that cannot run.
  * A run that fails is recorded with its error, and the next one starts. Only an abort through `signal` stops the bench.
  */
-export async function runBench(cases: BenchCase[], options: BenchOptions): Promise<Array<{ benchCase: BenchCase; runs: RunScore[] }>> {
-  const { checkouts, review = reviewLocal } = options;
+export async function runBench(cases: BenchCase[], options: BenchOptions): Promise<VariantResults[]> {
+  const { checkouts, review = reviewLocal, variants = [{ name: 'base', overrides: {} }] } = options;
   for (const c of cases) {
     const checkout = checkouts.get(c.repo);
     if (!checkout) throw new Error(`No checkout for ${c.repo}, which case ${c.id} needs. Pass --checkout ${c.repo}=<dir>.`);
@@ -486,28 +549,42 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
       });
     }
   }
-  const results: Array<{ benchCase: BenchCase; runs: RunScore[] }> = [];
-  for (const benchCase of cases) {
-    const runs: RunScore[] = [];
-    for (let i = 0; i < options.runs; i++) {
-      let local: LocalReview | undefined;
-      try {
-        local = await review({
-          repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
-          providerInputs: options.providerInputs, signal: options.signal, ...(options.config && { config: options.config }),
-        });
-        const reviewed = local;
-        // The matcher is tried twice before a finished review is given up, and the cache keeps what it already decided.
-        runs.push(await scoreRun(benchCase, reviewed, options.matcher).catch(() => scoreRun(benchCase, reviewed, options.matcher)));
-      } catch (error) {
-        options.signal?.throwIfAborted();
-        runs.push(failedRun(error, local));
-      }
+  for (const { name, overrides } of variants) {
+    if (Object.keys(overrides).length === 0) continue;
+    for (const c of cases) {
+      await loadConfigWithOverrides(checkouts.get(c.repo)!, c.base, overrides).catch((error: Error) => {
+        throw new Error(`Variant ${name} does not load on case ${c.id}: ${error.message}`);
+      });
     }
-    results.push({ benchCase, runs });
-    options.onCase?.(results);
   }
-  return results;
+  const done: VariantResults[] = [];
+  for (const variant of variants) {
+    const results: CaseResults = [];
+    for (const benchCase of cases) {
+      const runs: RunScore[] = [];
+      for (let i = 0; i < options.runs; i++) {
+        let local: LocalReview | undefined;
+        try {
+          local = await review({
+            repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
+            providerInputs: options.providerInputs, signal: options.signal,
+            // A variant without overrides reviews like a pull request round, falling back to the defaults on a broken base config.
+            ...(Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
+          });
+          const reviewed = local;
+          // The matcher is tried twice before a finished review is given up, and the cache keeps what it already decided.
+          runs.push(await scoreRun(benchCase, reviewed, options.matcher).catch(() => scoreRun(benchCase, reviewed, options.matcher)));
+        } catch (error) {
+          options.signal?.throwIfAborted();
+          runs.push(failedRun(error, local));
+        }
+      }
+      results.push({ benchCase, runs });
+      options.onCase?.([...done, { variant, results }]);
+    }
+    done.push({ variant, results });
+  }
+  return done;
 }
 
 interface BenchArgs {
@@ -515,7 +592,10 @@ interface BenchArgs {
   only: string[];
   runs: number;
   checkouts: Map<string, string>;
-  config?: string;
+  /** Each `--variant`, with the file of overrides it names, if any. */
+  variants: Array<{ name: string; file?: string }>;
+  /** Each `--set`, as the overrides it sets. */
+  sets: ConfigOverrides[];
   out?: string;
   matcherModel: string;
   cache: string;
@@ -532,16 +612,22 @@ Options:
   --cases <dir>                  Case files (default bench/cases).
   --case <id>                    Run only this case. Repeatable.
   --runs <n>                     Reviews per case (default ${DEFAULT_RUNS}).
-  --config <file>                Use this config instead of each base's .manki.yml.
+  --variant <name>[=<file>]      Score a setup: the YAML file's config is set on top of each case's base
+                                 .manki.yml, and nested mappings merge. No file runs the base config.
+                                 Repeat to compare setups side by side (default: one variant, base).
+  --set <key.path>=<value>       Set one config value, a YAML value, on top of every variant. Repeatable.
   --matcher-model <model>        Model that matches findings to key items (default ${DEFAULT_MATCHER_MODEL}).
   --cache <file>                 Matcher decisions kept between runs (default bench/.matcher-cache.json).
   --out <file>                   Report path (default bench/results/<time>.json).
   --help                         Print this message.
 
-Exits 0 when at least one review completed, and 2 when none did or the bench could not start.`;
+Exits 0 when every variant completed at least one review, and 2 when one did not or the bench could not start.`;
 
 export function parseBenchArgs(argv: string[]): BenchArgs {
-  const args: BenchArgs = { cases: 'bench/cases', only: [], runs: DEFAULT_RUNS, checkouts: new Map(), matcherModel: DEFAULT_MATCHER_MODEL, cache: 'bench/.matcher-cache.json', help: false };
+  const args: BenchArgs = {
+    cases: 'bench/cases', only: [], runs: DEFAULT_RUNS, checkouts: new Map(), variants: [], sets: [], matcherModel: DEFAULT_MATCHER_MODEL,
+    cache: 'bench/.matcher-cache.json', help: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = (): string => {
@@ -559,14 +645,36 @@ export function parseBenchArgs(argv: string[]): BenchArgs {
       const [repo, dir] = value().split(/=(.*)/s, 2);
       if (!repo || !dir) throw new Error('--checkout takes <owner/name>=<dir>');
       args.checkouts.set(repo, dir);
-    } else if (arg === '--config') args.config = value();
-    else if (arg === '--out') args.out = value();
+    } else if (arg === '--variant') {
+      const [name, file] = value().split(/=(.*)/s, 2);
+      if (!/^[\w.-]+$/.test(name)) throw new Error('--variant takes <name>[=<file>], with a name of letters, digits, `.`, `_` or `-`');
+      if (args.variants.some(v => v.name === name)) throw new Error(`--variant ${name} is given twice`);
+      args.variants.push({ name, ...(file && { file }) });
+    } else if (arg === '--set') {
+      const [path, raw] = value().split(/=(.*)/s, 2);
+      const keys = path.split('.');
+      if (raw === undefined || keys.some(key => !key)) throw new Error('--set takes <key.path>=<value>');
+      const leaf: unknown = parseYaml(raw);
+      args.sets.push(keys.reduceRight<unknown>((inner, key) => ({ [key]: inner }), leaf) as ConfigOverrides);
+    } else if (arg === '--out') args.out = value();
     else if (arg === '--matcher-model') args.matcherModel = value();
     else if (arg === '--cache') args.cache = value();
     else if (arg === '--help' || arg === '-h') args.help = true;
     else throw new Error(`Unknown argument ${arg}`);
   }
   return args;
+}
+
+/** Reads each variant's file and sets every `--set` on top. Without a `--variant`, the one variant is `base`. */
+export function resolveVariants(args: Pick<BenchArgs, 'variants' | 'sets'>): Variant[] {
+  const listed = args.variants.length > 0 ? args.variants : [{ name: 'base' }];
+  return listed.map(({ name, file }: { name: string; file?: string }) => {
+    const parsed: unknown = file ? parseYaml(readFileSync(file, 'utf-8')) : null;
+    if (parsed !== null && parsed !== undefined && (typeof parsed !== 'object' || Array.isArray(parsed))) {
+      throw new Error(`The overrides of variant ${name} in ${file} must be a mapping of config keys`);
+    }
+    return { name, overrides: args.sets.reduce(overlayConfig, (parsed ?? {}) as ConfigOverrides) };
+  });
 }
 
 function writeJson(path: string, value: unknown): void {
@@ -587,22 +695,24 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     const cases = loadCases(args.cases, args.only);
     const cache = loadMatcherCache(args.cache);
     const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
+    const variants = resolveVariants(args);
     const startedAt = new Date().toISOString();
     const meta = { startedAt, runsPerCase: args.runs, matcherModel: args.matcherModel };
     const outPath = args.out ?? join('bench', 'results', `${startedAt.replace(/[:.]/g, '-')}.json`);
     const results = await runBench(cases, {
-      runs: args.runs, checkouts: args.checkouts, providerInputs, matcher, signal,
-      ...(args.config !== undefined && { config: loadConfig(readFileSync(args.config, 'utf-8'), args.config) }),
-      onCase: (done) => {
+      runs: args.runs, checkouts: args.checkouts, providerInputs, matcher, signal, variants,
+      onCase: (sofar) => {
+        const { variant, results: current } = sofar.at(-1)!;
         writeJson(args.cache, Object.fromEntries(cache));
-        writeJson(outPath, buildReport(meta, done));
-        process.stderr.write(`bench: ${done.at(-1)!.benchCase.id} done, ${done.length} of ${cases.length} cases, report so far in ${outPath}\n`);
+        writeJson(outPath, buildReport(meta, sofar));
+        process.stderr.write(`bench: ${variant.name}: ${current.at(-1)!.benchCase.id} done, ${current.length} of ${cases.length} cases, report so far in ${outPath}\n`);
       },
     });
     const report = buildReport(meta, results);
     writeJson(outPath, report);
     out(formatBenchSummary(report));
     out(`Report: ${outPath}\n`);
-    return report.summary.incompleteRuns === report.summary.runs ? 2 : 0;
+    // A variant with no completed review leaves the comparison without one of its columns.
+    return report.variants.some(v => v.summary.incompleteRuns === v.summary.runs) ? 2 : 0;
   });
 }
