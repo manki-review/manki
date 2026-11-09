@@ -409,7 +409,19 @@ ${body}	return true
     expect(deep.section).toBe('');
     expect(core.info).toHaveBeenCalledWith('Uses outside the diff: gen/deep.go nests deeper than 256 levels, so it is read like a file without a grammar');
     expect(Date.now() - started).toBeLessThan(10_000);
-  }, 60_000);
+
+    // A long member chain nests the syntax tree as deep as nested blocks do.
+    started = Date.now();
+    const chain = await usesFor({ 'src/chain.ts': 'export const chain = 0;\n' }, { 'src/chain.ts': `export const chain = start${'.next'.repeat(20_000)};\n` });
+    expect(chain.section).toBe('');
+    expect(core.info).toHaveBeenCalledWith('Uses outside the diff: src/chain.ts nests deeper than 256 levels, so it is read like a file without a grammar');
+    expect(Date.now() - started).toBeLessThan(10_000);
+
+    // Long config lines with underscores and no key separator.
+    started = Date.now();
+    await usesFor({ 'conf/app.yml': 'name: app\n' }, { 'conf/app.yml': `name: app\n${`k${'_a'.repeat(20_000)} x\n`.repeat(20)}` });
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 120_000);
 
   const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };
 

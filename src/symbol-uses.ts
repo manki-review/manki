@@ -36,8 +36,9 @@ const MAX_LINE_CHARS = 160;
 const MAX_HIDDEN_NAMES = 20;
 const MAX_FILE_BYTES = 1024 * 1024;
 /**
- * A file nesting deeper than this is not parsed. Finding a node's parent or neighbour costs its depth in the syntax tree,
- * so a deeply nested file would make the per-declaration work grow with the square of its depth.
+ * A file whose syntax tree nests deeper than this is not parsed. Finding a node's parent or neighbour costs its depth,
+ * so a deep tree, from nested blocks or from a long chain such as `a.b.c...` or `x + y + z...`, would make the work
+ * per node grow with the depth.
  */
 const MAX_NESTING = 256;
 const MIN_NAME_LENGTH = 4;
@@ -241,8 +242,8 @@ const PLAIN_FILE_NAME = /^[\w.+@-]+$/;
 const DECLARATION_LINE = /^\s*(?:(?:export|pub(?:\([^)]*\))?|public|private|protected|internal|static|async|final|abstract|open|data|sealed)\s+)*(def|class|func|function|fn|struct|interface|enum|trait|type|const|record|object)\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/;
 const KEYWORD_KIND: Record<string, SymbolKind> = { def: 'function', func: 'function', function: 'function', fn: 'function', const: 'constant' };
 const CONFIG_FILE = /\.(?:ya?ml|toml|json)$/i;
-// Only keys with an underscore, such as `slice_lines`, are distinct enough to search for.
-const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*_[\w-]*)"?\s*[:=]/;
+// A config key. Only keys with an underscore, such as `slice_lines`, are distinct enough to search for.
+const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*)"?\s*[:=]/;
 // Nodes that wrap a declaration, so the comments above them belong to it.
 const WRAPPERS = ['export_statement', 'lexical_declaration', 'decorated_definition', 'expression_statement', 'type_declaration', 'const_declaration'];
 const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|test_utils|spec)\/|[._](?:test|spec)s?\.\w+$|(?:^|\/)test_[^/]*\.py$/;
@@ -716,7 +717,7 @@ function keywordDeclarations(file: DiffFile): ChangedSymbol[] {
   const config = CONFIG_FILE.test(file.path);
   return [...addedLines(file)].flatMap(([line, text]) => {
     const match = (config ? CONFIG_KEY_LINE : DECLARATION_LINE).exec(text);
-    if (!match) return [];
+    if (!match || (config && !match[1].includes('_'))) return [];
     const kind: SymbolKind = config ? 'key' : KEYWORD_KIND[match[1]] ?? 'type';
     return [{ name: config ? match[1] : match[2], kind, file: file.path, line, tier: 0 as const }];
   });
@@ -745,11 +746,12 @@ class Parser {
       const { absolute } = resolveInRoot(this.workspace, path);
       if (statSync(absolute).size > MAX_FILE_BYTES) return undefined;
       const source = readFileSync(absolute, 'utf-8');
-      if (nestingDepth(source) > MAX_NESTING) {
+      const root = this.api.parse(language.lang, source);
+      if (nestsDeeperThan(root.root(), MAX_NESTING)) {
         core.info(`Uses outside the diff: ${path} nests deeper than ${MAX_NESTING} levels, so it is read like a file without a grammar`);
         return undefined;
       }
-      return new ParsedFile(this.api.parse(language.lang, source), RULES[language.family], source.split('\n'));
+      return new ParsedFile(root, RULES[language.family], source.split('\n'));
     } catch (error) {
       core.info(`Uses outside the diff: could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
@@ -769,24 +771,15 @@ function appendTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   else map.set(key, [value]);
 }
 
-/**
- * Returns an upper estimate of how deep `source` nests: the deepest run of open brackets, or the widest indent in steps
- * of four columns, a tab counting as four.
- */
-function nestingDepth(source: string): number {
-  let [depth, deepest, indent, atLineStart] = [0, 0, 0, true];
-  for (const char of source) {
-    if (char === '\n') [indent, atLineStart] = [0, true];
-    else if (atLineStart && (char === ' ' || char === '\t')) {
-      indent += char === '\t' ? 4 : 1;
-      deepest = Math.max(deepest, Math.ceil(indent / 4));
-    } else {
-      atLineStart = false;
-      if (char === '{' || char === '[' || char === '(') deepest = Math.max(deepest, ++depth);
-      else if ((char === '}' || char === ']' || char === ')') && depth > 0) depth--;
-    }
+/** Whether the syntax tree under `root` nests deeper than `limit` levels. It reads each node once and stops at the first too deep. */
+function nestsDeeperThan(root: SgNode, limit: number): boolean {
+  const stack: Array<[SgNode, number]> = [[root, 0]];
+  for (let next = stack.pop(); next; next = stack.pop()) {
+    const [node, depth] = next;
+    if (depth > limit) return true;
+    for (const child of node.children()) stack.push([child, depth + 1]);
   }
-  return deepest;
+  return false;
 }
 
 function nodeKey(node: SgNode): string {
