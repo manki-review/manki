@@ -39,12 +39,12 @@ Respond with ONLY a JSON object (no markdown fences):
 {
   "verdict": "READY" | "ADDRESS_FIRST",
   "blockers": [{
-    "file": "src/sync.ts",
+    "file": "api/list.go",
     "line": 42,
-    "title": "Startup aborts for a client synced from a checkpoint",
-    "description": "With no filter headers the bound falls back to 0, and truncating storage above 0 fails. Handle the missing header separately.",
-    "evidence": ["src/sync.ts:40 reads \`filter_height\`, which is \`None\` after a checkpoint sync"],
-    "proof": ["src/sync.ts:42"],
+    "title": "The last partial page of results is never returned",
+    "description": "The page count rounds down, so when the total is not a multiple of the page size the items on the last page are never sent. Round the page count up.",
+    "evidence": ["api/list.go:42 computes \`pages := total / pageSize\`, which is 2 for 120 items and a page size of 50"],
+    "proof": ["api/list.go:42"],
     "buildClaim": false
   }],
   "summary": "string",
