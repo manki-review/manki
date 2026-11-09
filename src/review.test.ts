@@ -2043,8 +2043,12 @@ describe('runReview', () => {
     const diff = diffChanging('src/a.ts');
     const config = makeConfig({ judge: { tool_steps: 30 } });
     const clients = makeClients();
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
     await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
-    expect(mockedRunJudgeAgent.mock.calls[0][2].toolSteps).toBeUndefined();
+    expect(mockedRunJudgeAgent.mock.calls[0][2].toolSteps).toBe(0);
+    // A budget the judge cannot use is logged, so a benchmark variant never looks as if it ran with tools.
+    expect(infoSpy).toHaveBeenCalledWith('The judge gets no tools this round, since its model has no repository tools or the PR head is not checked out');
+    infoSpy.mockRestore();
 
     Object.assign(clients.judge, { repoTools: true });
     await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });

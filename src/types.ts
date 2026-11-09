@@ -715,10 +715,6 @@ export interface ReviewConfig {
     /** Model a stage moves to when a safety filter refuses it. Unset means `reviewer`. */
     fallback?: string;
   };
-  judge?: {
-    /** Read-only repository tool calls the judge may make while it grades. 0 gives it none. */
-    tool_steps?: number;
-  };
   planner?: {
     enabled?: boolean;
     /**
@@ -726,6 +722,10 @@ export interface ReviewConfig {
      * such as a security-sensitive one, still gets a pair.
      */
     paired?: PairedPin;
+  };
+  judge?: {
+    /** Read-only repository tool calls the judge may make while it grades. 0 gives it none. */
+    tool_steps?: number;
   };
   /** Review groups and how PR classes route to them. Always read from the base branch, so a PR cannot weaken its own review. */
   review?: ReviewRoutingConfig;
