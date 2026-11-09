@@ -2275,9 +2275,11 @@ function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHea
  */
 function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[]): { findings: Finding[]; blockers: Finding[] } {
   const merged = blockers.map(b => ({ ...b }));
+  // Match against the reader's own blocker, so a finding never folds in through what an earlier fold added.
   const kept = findings.filter(f => {
-    const blocker = merged.find(b => sameProblem(b, f));
-    if (!blocker) return true;
+    const index = blockers.findIndex(b => sameProblem(b, f));
+    if (index === -1) return true;
+    const blocker = merged[index];
     const overlap = titleOverlapType(blocker.title, f.title);
     if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}`;
     foldInto(blocker, f);
