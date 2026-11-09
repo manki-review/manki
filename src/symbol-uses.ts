@@ -56,6 +56,8 @@ const MAX_QUESTION_LOOKUPS = 20;
 const MAX_QUESTIONS = 20;
 const MAX_GROUP_MEMBERS = 4;
 const MAX_SIBLING_FILES = 40;
+/** The characters of function bodies read in a round to tell whether sibling functions read the same. */
+const MAX_COMPARED_CHARS = 2 * 1024 * 1024;
 const MAX_EXCERPT_LINES = 120;
 const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
@@ -1461,12 +1463,26 @@ function siblingImplementations(
       for (const key of keysOf(m).filter(k => wanted.has(k))) appendTo(groups, key, { ...m, file, parsed: parsed!, changed: changedLines(m, file) });
     }
   }
+  // A body is read once, and only within `MAX_COMPARED_CHARS` a round, since a method's body holds every class nested in
+  // it. A body past that budget counts as different from every other.
+  let unread = MAX_COMPARED_CHARS;
+  const texts = new Map<string, string>();
+  const bodyText = ({ file, decl }: { file: string; decl: Declaration }): string => {
+    const id = `${file}:${decl.key}`;
+    if (!texts.has(id)) {
+      const body = decl.node.field('body') ?? decl.node;
+      const size = body.range().end.index - body.range().start.index;
+      const read = size <= unread;
+      if (read) unread -= size;
+      texts.set(id, read ? body.text().replace(/\s+/g, ' ') : `\0${id}`);
+    }
+    return texts.get(id)!;
+  };
   const candidates = [...groups.values()].flatMap((all, order) => {
     const owners = new Set<string>();
     const members = [...all].sort((a, b) => Number(b.changed > 0) - Number(a.changed > 0))
       .filter(m => !owners.has(m.owner) && !!owners.add(m.owner)).slice(0, MAX_GROUP_MEMBERS);
-    const bodies = new Set(members.map(m => (m.decl.node.field('body') ?? m.decl.node).text().replace(/\s+/g, ' ')));
-    if (members.length < 2 || bodies.size < 2) return [];
+    if (members.length < 2 || new Set(members.map(bodyText)).size < 2) return [];
     const touchedMembers = members.filter(m => m.changed > 0);
     const lines = touchedMembers.reduce((sum, m) => sum + m.changed, 0);
     return [{ members, order, ids: members.map(m => `${m.file}:${m.decl.key}`), touchedCount: touchedMembers.length, lines }];

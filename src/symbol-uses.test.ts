@@ -367,6 +367,14 @@ ${body}	return true
       { 'src/pairs/square.ts': view('Square', 'Shape, Named', 'box'), 'src/pairs/circle.ts': view('Circle', 'Shape, Stored', 'disc') },
     );
     expect(summary(views.siblings)).toEqual([['toString', ['Circle*', 'Square*']], ['toString', ['Circle*', 'Label']], ['toString', ['Square*', 'Label']]]);
+    // A round reads at most 2 MB of bodies, so a third body this long counts as different and the group is asked.
+    const long = (name: string, end: string) => `export class ${name} {\n  area() {\n    const s = '${'x'.repeat(900_000)}';\n    // one\n    // two\n    // three\n    return ${end};\n  }\n}\n`;
+    const longs = await usesFor(
+      { 'src/long/a.ts': long('A', 's + 1'), 'src/long/b.ts': long('B', 's'), 'src/long/c.ts': long('C', 's') },
+      { 'src/long/a.ts': long('A', 's') },
+    );
+    expect(summary(longs.siblings)).toEqual([['area', ['A*', 'B', 'C']]]);
+
     // Methods that share a line are each a member of their own group.
     const row = (name: string, value: number) => `export class ${name} { first() { return ${value}; } second() { return ${value}; } third() { return ${value}; } }\n`;
     const rows = await usesFor({ 'src/rows/a.ts': row('A', 1), 'src/rows/b.ts': row('B', 2) }, { 'src/rows/a.ts': row('A', 3) });
