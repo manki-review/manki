@@ -2186,6 +2186,15 @@ function shortenLine(line: string): string {
   return `${line.slice(0, stop).trimEnd()}…`;
 }
 
+/**
+ * Returns a line of code as inline code cut to `MAX_CHECK_CHARS`, or nothing for a blank line. Code is not model text,
+ * so it skips `balanceCodeSpans`, which would read a backslash at its end as escaping the closing backtick.
+ */
+function codeLine(code: string): string {
+  const line = sanitizeMarkdown(code).replace(/\s+/g, ' ').trim();
+  return line ? inlineCode(line.length <= MAX_CHECK_CHARS ? line : `${line.slice(0, MAX_CHECK_CHARS - 1)}…`) : '';
+}
+
 /** Returns `line` with every live backtick escaped, so it shows as text. */
 function escapeBackticks(line: string): string {
   return line.replace(/(?<!\\)`/g, '\\`');
@@ -2351,8 +2360,7 @@ function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: 
   // A bare location in the list shows its first line of code, when that file was read.
   const listItem = ({ text, at }: Check): string => {
     if (!at) return `- ${text}`;
-    const code = files.get(at.file)?.[at.start - 1]?.trim();
-    const said = text || (code ? oneLine(inlineCode(code)) : '');
+    const said = text || codeLine(files.get(at.file)?.[at.start - 1] ?? '');
     return `- ${linkedRange(at, linkTo)}${said ? `: ${said}` : ''}`;
   };
   const parts = [

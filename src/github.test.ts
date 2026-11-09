@@ -245,6 +245,10 @@ describe('formatFindingComment', () => {
     const bare = render({ ...baseFinding, evidence: { checks: ['src/util.ts:3 reads it'], proof: ['src/util.ts:5', 'src/other.ts:9'] } });
     expect(bare).toContain(`\n\nReads it\n${link('src/util.ts', 2, 8)}\n\n${link('src/other.ts', 8, 9)}\n\n</details>`);
     expect(render({ ...baseFinding, evidence: { checks: ['src/util.ts:3'], proof: ['src/main.ts:42', 'src/main.ts:2'] } })).not.toContain('Shows the failure.');
+    // A code line that ends in a backslash stays code.
+    const continued = { ...links, files: new Map([...links.files, ['src/run.sh', ['FOO=1 \\', '  make']]]) };
+    expect(formatFindingComment({ ...baseFinding, file: 'src/run.sh', line: 1, evidence: { checks: [], proof: ['src/run.sh:1'] } }, continued))
+      .toContain(`**Checked:** [\`src/run.sh:1\`](${link('src/run.sh', 1)}): \`FOO=1 \\\`\n`);
 
     // A cited path is model output, so one that could end the link or leave the repository stays plain text.
     const steered = render({ ...baseFinding, evidence: { checks: ['a)www.evil.com/b.ts:3 is safe', '../../other/repo/blob/main/x.ts:1 is fine'], proof: ['../x.ts:2'] } });
