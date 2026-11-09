@@ -51,7 +51,7 @@ See [How reviews work](docs/how-reviews-work.md#review-pipeline) for the full wa
 |---------|-------------|
 | `/manki review` | Review the head commit, unless Manki already has a complete review of it. Then the settings block shows it as up to date, and ticking Review again there reviews the commit again |
 | `/manki explain [topic]` | Ask about the PR changes |
-| `/manki dismiss [finding]` | Dismiss a finding. In a Manki finding's thread it resolves the thread, or says in the thread why it stays open. A named finding is stored as a suppression in memory. Without either, Manki replies with how to use it |
+| `/manki dismiss [finding]` | Dismiss a finding. In a Manki finding's thread it resolves the thread, or says in the thread why it stays open. A named finding is stored as a suppression in memory when its text matches a finding Manki posted on the PR. Without either, Manki replies with how to use it |
 | `/manki remember <instruction>` | Teach it something for future reviews |
 | `/manki remember global: <instruction>` | Stores nothing. Global learnings apply to every repo sharing the memory, so the owner of the memory repo edits `_global/` by hand |
 | `/manki check` | Check thread resolution and auto-approve if clear |

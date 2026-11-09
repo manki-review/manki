@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
-import { MemoryStore, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
+import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { BotIdentity, dynamicFence, hasWriteAccess, MANKI_VERSION, isRepoAdmin, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
@@ -116,13 +116,15 @@ function staysOpenNote(isSecurity: boolean, fixed: boolean): string {
 
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
 
-const DISMISS_USAGE = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` stores a suppression, so later reviews do not raise findings with that title.';
+const DISMISS_USAGE = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR and stores a suppression, so later reviews do not raise findings with that title.';
 
 const DISMISS_NO_FINDING = `Nothing was dismissed, since no finding was named.\n\n${DISMISS_USAGE}`;
 
 const DISMISS_TOO_SHORT = `No suppression was stored, since a finding name needs at least 3 characters.\n\n${DISMISS_USAGE}`;
 
 const DISMISS_FAILED = 'Could not resolve this thread. The run log has the reason.';
+
+const DISMISS_LOOKUP_FAILED = 'Could not read the findings Manki posted on this PR, so nothing was dismissed. The run log has the reason.';
 
 const MEMORY_DISABLED = 'Review memory is off for this repo. Add `memory.enabled: true` to `.manki.yml` to turn it on. When it is on already, the run log says why memory was skipped, such as `memory.repo` without `memory_repo_token`.';
 
@@ -454,7 +456,7 @@ export async function handlePRComment(
       break;
     }
     case 'dismiss': {
-      const dismissal = await handleDismiss(octokit, owner, repo, issueNumber, command.args, memory);
+      const dismissal = await handleDismiss(octokit, bot, owner, repo, issueNumber, command.args, memory);
       await octokit.rest.issues.createComment({
         owner, repo, issue_number: issueNumber, body: withMarkers(dismissal?.note ?? DISMISS_NO_FINDING, BOT_MARKER),
       });
@@ -544,10 +546,12 @@ async function handleExplain(
 
 /**
  * Stores a suppression for the finding `findingRef` names. Returns the note to post, and whether the suppression was
- * stored, or `undefined` when `findingRef` names none.
+ * stored, or `undefined` when `findingRef` names none. A suppression hides findings on every PR, so only text that matches
+ * a finding Manki posted on this PR is stored.
  */
 async function handleDismiss(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
@@ -561,6 +565,17 @@ async function handleDismiss(
     .trim();
 
   if (sanitizedPattern.length < 3) return { note: DISMISS_TOO_SHORT, stored: false };
+
+  let threads: ReviewThread[];
+  try {
+    threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
+  } catch (error) {
+    core.warning(`Failed to read the findings a dismiss names: ${error}`);
+    return { note: DISMISS_LOOKUP_FAILED, stored: false };
+  }
+  if (!threads.some(t => patternMatchesTitle(sanitizedPattern, t.findingTitle))) {
+    return { note: `No finding Manki posted on this PR matches \`${sanitizedPattern}\`, so nothing was dismissed.\n\n${DISMISS_USAGE}`, stored: false };
+  }
 
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
@@ -985,7 +1000,7 @@ export async function handleReviewCommentCommand(
 
   switch (command.type) {
     case 'dismiss': {
-      const dismissal = await handleDismiss(octokit, owner, repo, prNumber, command.args, memory);
+      const dismissal = await handleDismiss(octokit, bot, owner, repo, prNumber, command.args, memory);
       const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber);
       // A resolved thread needs no note, and outside a Manki finding's thread only a named finding can be dismissed.
       const threadNote = thread ? thread.note : dismissal ? undefined : DISMISS_NO_FINDING;

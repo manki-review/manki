@@ -37,9 +37,13 @@ jest.mock('./memory', () => ({
   removeLearning: jest.fn().mockResolvedValue({ removed: null, remaining: 0 }),
   removeSuppression: jest.fn().mockResolvedValue({ removed: null, remaining: 0 }),
   sanitizeMemoryField: jest.fn((v: string) => v),
+  patternMatchesTitle: jest.requireActual('./memory').patternMatchesTitle,
 }));
 
 const MEMORY = { name: 'test-owner/memory' } as memory.MemoryStore;
+
+/** A finding Manki posted on the PR, which a named `dismiss` must match before it stores a suppression. */
+const POSTED_FINDING = { id: 'PRRT_posted', rootCommentId: 7, isResolved: false, isBlocking: false, findingTitle: 'Null-check-warning: `parse` skips the guard' };
 
 jest.mock('./github', () => ({
   dynamicFence: jest.requireActual('./github').dynamicFence,
@@ -492,6 +496,7 @@ describe('handlePRComment', () => {
 
   it('dispatches dismiss command', async () => {
     setContext({ comment: { id: 42, body: '@manki dismiss null-check', user: { type: 'User' }, author_association: 'COLLABORATOR' }, sender: { login: 'writer' } });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([POSTED_FINDING]);
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, MEMORY);
     expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, '+1');
@@ -957,6 +962,10 @@ describe('handleReviewCommentReply', () => {
 });
 
 describe('handleDismiss (via handlePRComment)', () => {
+  beforeEach(() => {
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([POSTED_FINDING]);
+  });
+
   it.each(['CONTRIBUTOR', 'MEMBER', 'COLLABORATOR'])('acknowledges dismiss from a %s without write access without persisting', async association => {
     setContext({ comment: { id: 42, body: '@manki dismiss null-check', user: { type: 'User' }, author_association: association }, sender: { login: 'reader' } });
     const octokit = createMockOctokit();
@@ -994,11 +1003,13 @@ describe('handleDismiss (via handlePRComment)', () => {
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
   });
 
-  const usage = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` stores a suppression, so later reviews do not raise findings with that title.';
+  const usage = 'Usage:\n- `/manki dismiss` as a reply in a Manki finding\'s thread dismisses that finding.\n- `/manki dismiss <finding title>` names a finding Manki posted on this PR and stores a suppression, so later reviews do not raise findings with that title.';
 
   it.each([
     ['names no finding', '@manki dismiss', `Nothing was dismissed, since no finding was named.\n\n${usage}`],
     ['names a finding too short to match', '@manki dismiss ab', `No suppression was stored, since a finding name needs at least 3 characters.\n\n${usage}`],
+    // A suppression hides matching findings on every PR, so text that names no posted finding is never stored.
+    ['names no finding Manki posted', '@manki dismiss and approve', `No finding Manki posted on this PR matches \`and approve\`, so nothing was dismissed.\n\n${usage}`],
   ])('answers a dismiss that %s with its usage, and dismisses nothing', async (_case, body, reply) => {
     setContext({ comment: { id: 42, body, user: { type: 'User' }, author_association: 'OWNER' }, sender: { login: 'owner' } });
     const octokit = createMockOctokit();
@@ -1006,6 +1017,17 @@ describe('handleDismiss (via handlePRComment)', () => {
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({ body: `${reply}\n\n<!-- manki -->` }));
     expect(memory.writeSuppression).not.toHaveBeenCalled();
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
+  });
+
+  it('stores nothing when the posted findings cannot be read', async () => {
+    jest.mocked(state.fetchBotReviewThreads).mockRejectedValueOnce(new Error('GraphQL 502'));
+    setContext({ comment: { id: 42, body: '@manki dismiss null-check', user: { type: 'User' }, author_association: 'OWNER' }, sender: { login: 'owner' } });
+    const octokit = createMockOctokit();
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, MEMORY);
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: 'Could not read the findings Manki posted on this PR, so nothing was dismissed. The run log has the reason.\n\n<!-- manki -->',
+    }));
+    expect(memory.writeSuppression).not.toHaveBeenCalled();
   });
 });
 
@@ -1242,6 +1264,7 @@ describe('handleReviewCommentCommand', () => {
     ['reacts with nothing when memory is off', undefined, 'Review memory is off', false],
   ])('answers a named dismiss in its own thread, %s', async (_case, store, note, reacts) => {
     setContext({ comment: { id: 55, body: '/manki dismiss null-check', user: { type: 'User' }, author_association: 'COLLABORATOR' }, sender: { login: 'writer' } });
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([POSTED_FINDING]);
     const octokit = createMockOctokit();
     const command = parseCommand('/manki dismiss null-check');
     await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 55, command, store);
