@@ -41,7 +41,7 @@ import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundUsage } from './round-context';
-import { WRITING_RULES } from './writing-rules';
+import { VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, withRefusalFallback, wrapClientForUsage } from './providers';
 
 const READY_VERDICT = JSON.stringify({
@@ -2900,6 +2900,7 @@ describe('runReview', () => {
     const [firstCall] = jest.mocked(firstClients.judge.sendMessage).mock.calls;
     const [laterCall] = jest.mocked(laterClients.judge.sendMessage).mock.calls;
     expect(laterCall).toEqual(firstCall);
+    expect(laterCall[0]).toContain(VERIFY_CLAIMS_RULE);
     const prompt = `${laterCall[0]}\n${laterCall[1]}`;
     for (const leaked of ['Prior round concern', 'PR claims it is safe', 'Already reviewed', 'Linked issue', 'inter-round delta', 'thread-only file', 'round 3', 'Round 3']) {
       expect(prompt).not.toContain(leaked);

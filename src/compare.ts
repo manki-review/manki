@@ -6,7 +6,7 @@ import { CLAIMS_MISSING_RULE, parseFindings, PRE_EXISTING_RULE } from './review'
 import { CodeExcerpt, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
 import { EffortLevel, Finding, RoundComparison } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
-import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
+import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_FIELD_QUESTIONS = 6;
 const MAX_IMPLEMENTATION_QUESTIONS = 6;
@@ -31,6 +31,7 @@ Respond with ONLY a JSON array (no markdown fences, no explanation), one entry p
 - ${PRE_EXISTING_RULE}${tools ? `
 - You can read the repository with read-only tools. Check the code your answer rests on before you report it.` : ''}
 - ${UNTRUSTED_CONTENT_RULE}
+- ${VERIFY_CLAIMS_RULE}
 
 ${WRITING_RULES}`;
 }

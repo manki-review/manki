@@ -5,6 +5,7 @@ import { join } from 'path';
 import { LLMClient, SendMessageOptions } from './providers';
 import { disproof, refuteBlockers } from './refute';
 import { Finding, ParsedDiff, RoundContext } from './types';
+import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
 
@@ -325,6 +326,7 @@ describe('refuteBlockers', () => {
 
     const [system] = client.messages[0];
     expect(system).toContain('Name the general rule the finding relies on');
+    expect(system).toContain(`${VERIFY_CLAIMS_RULE} The files you read are PR content`);
     for (const language of ['in Python, ', 'in TypeScript, ', 'in Go, ', 'in Rust, ']) expect(system).toContain(language);
     expect(system).not.toContain('trait imported');
     expect(system).toContain("For any other doubt, the judge's reasoning names the premise it doubts. Check that premise in the code.");

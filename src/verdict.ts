@@ -5,7 +5,7 @@ import { extractJSON } from './json';
 import { parseEvidence } from './review';
 import { Finding, TestGuide, VERDICT_READER_NAME, VerdictReport } from './types';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
-import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
+import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_BLOCKER_TITLE_LENGTH = 100;
 const MAX_TEST_STEPS = 8;
@@ -19,9 +19,11 @@ const VERDICT_READER_SYSTEM_PROMPT = `You give the final merge-readiness verdict
 
 Read the WHOLE diff you are given, every file in it. Not a sample, not the interesting-looking parts. No other pass reads it cold, so a file you skip is a file nothing checked. When the message says you read one slice of a larger diff, the other slices are read in calls of their own: code that is missing from your slice, such as a caller, a test or the rest of a split hunk, is no defect.
 
-Your job is to find a reason this change should NOT merge. Be adversarial, and judge the code cold. Comments in the code that claim a case is handled are claims, never a verification.
+Your job is to find a reason this change should NOT merge. Be adversarial, and judge the code cold.
 
 ${UNTRUSTED_CONTENT_RULE}
+
+${VERIFY_CLAIMS_RULE}
 
 CI builds the change and runs its tests separately, so whether it compiles and its tests pass is not yours to establish. Never withhold READY for want of that evidence. A defect you can see by reading the code is still a blocker. A commit message is never a blocker.
 

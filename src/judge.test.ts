@@ -27,7 +27,7 @@ import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { preExistingCheck, truncateDiff } from './review';
 import { parsePRDiff } from './diff';
-import { WRITING_RULES } from './writing-rules';
+import { VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { Finding, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
@@ -239,6 +239,7 @@ describe('buildJudgeSystemPrompt', () => {
   it('requires all five blocker tests and keeps a grade until the code or the evidence changes', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('A finding is a `blocker` only when it passes all five tests:');
+    expect(prompt).toContain(`never how confidently the finding is worded.\n\n${VERIFY_CLAIMS_RULE}\n`);
     for (const test of ['The PR causes it.', 'The failure can be named.', 'The damage is serious.', 'The code proves it.', 'The author would fix it.']) {
       expect(prompt).toContain(`**${test}**`);
     }
@@ -275,6 +276,7 @@ describe('buildJudgeSystemPrompt', () => {
       '**Behaviour that is intended but surprising is a `suggestion`.**',
       'This never applies to a security defect, to resource exhaustion, or to a removed guard, check or limit',
       'The outside input and examples under Repository Rules outrank it.',
+      'That is the one claim the code cannot check that counts, and only for behaviour the code shows works as described.',
       'A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the grade its damage earns.',
       '`reasoning` may note that the author lists it, but the note never lowers the grade. A TODO with a tracking issue still follows test 5.',
     ]) {
@@ -295,7 +297,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(section).toContain("The rare internal edge case column and the rule on a check of a trusted internal value still apply when the code shown proves that the code's own logic keeps the value valid: that is evidence, not a doubt. Only a doubt the code shown does not settle counts here.");
     expect(section).toContain('Its `gradeIfConfirmed` is the grade these rules give it if that code is as the finding says and the path exists.');
     const unsure = prompt.slice(prompt.indexOf('## When You Are Unsure'), prompt.indexOf('## Worked Examples'));
-    expect(unsure).toContain('Set `gradeIfConfirmed` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals `severity`.');
+    expect(unsure).toContain('Set `gradeIfConfirmed` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals `severity`. Never mark a finding `ignore` for an unsettled doubt alone: when it would earn `warning` or `blocker` if the doubt holds, grade it by these rules and set `gradeIfConfirmed`.');
     expect(prompt).not.toContain('Manki checks the doubt with tools');
     expect(prompt).toContain('"gradeIfConfirmed": "blocker" | "warning" | "suggestion" | "nitpick" | "ignore"');
     expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('When it is above `severity`, Manki checks the doubt with tools. A confirmation gives the finding that grade, and a disproof drops it. A finding you mark `ignore` is never checked.');
