@@ -34,6 +34,9 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     enabled: true,
     paired: 'auto',
   },
+  judge: {
+    tool_steps: 0,
+  },
   static_analysis: {
     checks: true,
     code_scanning: true,
@@ -81,6 +84,7 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'memory',
   'models',
   'planner',
+  'judge',
   'review',
   'static_analysis',
   'related_repos',
@@ -97,6 +101,7 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
 const IGNORED_KEYS = new Set(['review_level', 'review_thresholds', 'stats']);
 
 const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
+const MAX_JUDGE_TOOL_STEPS = 100;
 
 export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', 'reviewer_pair', 'judge', 'refuter_pair', 'dedup', 'fallback']);
 export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'outside_input', 'examples']);
@@ -105,6 +110,7 @@ const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
 const PLANNER_KEYS: ReadonlySet<string> = new Set(['enabled', 'paired']);
+const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps']);
 const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'wait_timeout_seconds', 'analyzers']);
 const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'test_path_patterns', 'suppress_resolved_threads']);
 const METRICS_KEYS: ReadonlySet<string> = new Set(['fix_rate']);
@@ -253,6 +259,18 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
           errors.push('`planner.paired` must be one of: auto, always, never');
         }
         warnings.push('`planner.paired` is deprecated. Route classes to review groups with `review.routing` instead: `always` is `behavior` and `internal` on a two-finder group, `never` is `behavior` on a one-finder group.');
+      }
+    }
+  }
+
+  if ('judge' in config) {
+    const judge = config.judge as Record<string, unknown>;
+    if (!judge || typeof judge !== 'object' || Array.isArray(judge)) {
+      errors.push('`judge` must be an object');
+    } else {
+      warnUnknownKeys(judge, JUDGE_KEYS, 'judge', warnings);
+      if ('tool_steps' in judge && (!Number.isInteger(judge.tool_steps) || (judge.tool_steps as number) < 0 || (judge.tool_steps as number) > MAX_JUDGE_TOOL_STEPS)) {
+        errors.push(`\`judge.tool_steps\` must be an integer from 0 to ${MAX_JUDGE_TOOL_STEPS}`);
       }
     }
   }
@@ -641,6 +659,8 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
       result.models = { ...defaults.models, ...Object.fromEntries(known) } as ReviewConfig['models'];
     } else if (key === 'planner' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.planner = { ...defaults.planner, ...(value as Record<string, unknown>) } as ReviewConfig['planner'];
+    } else if (key === 'judge' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      result.judge = { ...defaults.judge, ...(value as Record<string, unknown>) } as ReviewConfig['judge'];
     } else if (key === 'static_analysis' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.static_analysis = { ...defaults.static_analysis, ...(value as Record<string, unknown>) } as ReviewConfig['static_analysis'];
     } else if (key === 'convergence' && typeof value === 'object' && value !== null && !Array.isArray(value)) {

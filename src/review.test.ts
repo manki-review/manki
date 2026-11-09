@@ -2039,6 +2039,31 @@ describe('runReview', () => {
     expect(result.verdictReport).toBeUndefined();
   });
 
+  it('gives the judge the configured tool budget only when it can read the checked-out head', async () => {
+    const diff = diffChanging('src/a.ts');
+    const config = makeConfig({ judge: { tool_steps: 30 } });
+    const clients = makeClients();
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
+    expect(mockedRunJudgeAgent.mock.calls[0][2].toolSteps).toBe(0);
+    // A budget the judge cannot use is logged, so a benchmark variant never looks as if it ran with tools.
+    expect(infoSpy).toHaveBeenCalledWith('The judge gets no tools this round, since its model has no repository tools or the PR head is not checked out');
+    infoSpy.mockRestore();
+
+    Object.assign(clients.judge, { repoTools: true });
+    await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
+    expect(mockedRunJudgeAgent.mock.calls[1][2]).toEqual(expect.objectContaining({ toolSteps: 30, refutation: expect.objectContaining({ workspace: '/work/pr-head' }) }));
+
+    // A refused call may move to the fallback, which would be told it has tools it does not have.
+    const fallback = (repoTools: boolean) => ({ model: 'gpt-5', client: { repoTools, sendMessage: jest.fn() } as unknown as LLMClient });
+    clients.fallbacks = { judge: fallback(false) };
+    await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
+    expect(mockedRunJudgeAgent.mock.calls[2][2].toolSteps).toBe(0);
+    clients.fallbacks = { judge: fallback(true) };
+    await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
+    expect(mockedRunJudgeAgent.mock.calls[3][2].toolSteps).toBe(30);
+  });
+
   describe('open leads', () => {
     const leadOf = (severity: string, title: string, file: string, line: number) => ({ lead: true, severity, title, file, line, description: `${title}.`, checked: 'read the file', left: 'check the caller' });
     const refuted = (outcome: 'confirmed' | 'disproved' | 'unsettled') => ({ outcome, reason: `It is ${outcome}.`, files: ['src/a.ts'], codeDigest: 'abc' });

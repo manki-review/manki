@@ -21,7 +21,7 @@ import {
   JudgedFinding,
   MAX_INTER_ROUND_DIFF_CHARS,
 } from './judge';
-import { LLMClient, SendMessageOptions } from './providers';
+import { LLMClient, QuotaError, RefusalError, SendMessageOptions } from './providers';
 import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
@@ -1278,6 +1278,49 @@ describe('runJudgeAgent', () => {
     // The rounds send different system prompts, but the same template.
     expect(first[0]).not.toBe(second[0]);
     expect(first[1]).toBe(second[1]);
+  });
+
+  it('gives the judge read-only tools on the workspace only when it has a tool budget and a refutation client', async () => {
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', severity: 'suggestion', reasoning: 'r', confidence: 'high' }] }) });
+    const refuter = { repoTools: true, sendMessage: jest.fn() } as unknown as LLMClient;
+    const base: JudgeInput = { findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1 };
+
+    await runJudgeAgent(mockClient, makeConfig(), { ...base, refutation: { client: refuter, workspace: '/work/pr-head' }, toolSteps: 30 });
+    await runJudgeAgent(mockClient, makeConfig(), { ...base, refutation: { client: refuter, workspace: '/work/pr-head' } });
+    // Without the checked-out head there is nothing to read, so the budget gives no tools.
+    await runJudgeAgent(mockClient, makeConfig(), { ...base, toolSteps: 30 });
+
+    const [withTools, noBudget, noWorkspace] = mockSendMessage.mock.calls;
+    expect(withTools[2]).toEqual({ effort: 'high', timeoutMs: 900_000, promptTemplate: expect.stringContaining('## Your Tools'), repoTools: { root: '/work/pr-head', steps: 30 } });
+    expect(withTools[0]).toContain('You can read the PR\'s head commit with read-only tools, up to 30 calls in all.');
+    expect(withTools[0]).toContain('Set `gradeIfConfirmed` only for a doubt your calls did not settle.');
+    for (const [system, , options] of [noBudget, noWorkspace]) {
+      expect(system).not.toContain('## Your Tools');
+      expect(options).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.any(String) });
+    }
+  });
+
+  it('grades once more without tools when the judge with tools fails, but never on a used-up quota or a refusal', async () => {
+    const reply = { content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', severity: 'warning', reasoning: 'r', confidence: 'high' }] }) };
+    const refuter = { repoTools: true, sendMessage: jest.fn() } as unknown as LLMClient;
+    const input: JudgeInput = {
+      findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace: '/work/pr-head' }, toolSteps: 30,
+    };
+
+    mockSendMessage.mockRejectedValueOnce(new Error('Claude CLI stopped: error_max_turns')).mockResolvedValueOnce(reply);
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings[0].severity).toBe('warning');
+    const [, again] = mockSendMessage.mock.calls;
+    expect(again[0]).not.toContain('## Your Tools');
+    expect(again[2]).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.not.stringContaining('## Your Tools') });
+
+    // A used-up quota fails again, and a refusal already moved to the fallback model.
+    for (const error of [new QuotaError('rate limited', 'requests'), new RefusalError('refused twice', 'cyber')]) {
+      mockSendMessage.mockReset();
+      mockSendMessage.mockRejectedValueOnce(error);
+      await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toThrow(error.message);
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('passes effort option to sendMessage', async () => {

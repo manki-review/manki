@@ -128,7 +128,7 @@ const QUICK_CHECK_STEPS = 8;
 const FINDER_STEPS = 30;
 const RISKY_FINDER_STEPS = 40;
 // A safety net for a finder with tools. The step budget is what normally ends its call.
-const FINDER_TOOLS_TIMEOUT_MS = 900_000;
+export const FINDER_TOOLS_TIMEOUT_MS = 900_000;
 
 /** A finder reply that is not the JSON array of findings, which a retry with `parseRetryNote` can correct. */
 class FinderReplyError extends Error {}
@@ -1186,6 +1186,7 @@ export async function runReview(
       suppressResolvedThreads,
       ...(related && { relatedRepos: related.repos }),
       ...(refutation && { refutation }),
+      toolSteps: judgeToolSteps(config, clients, !!refutation),
       usesOutsideDiff,
     };
     const judgeStart = Date.now();
@@ -2181,6 +2182,24 @@ function confirmFixes(
     }
     return e;
   });
+}
+
+/**
+ * Returns the tool budget the judge gets, and logs why a configured budget goes unused. The judge is told it has tools,
+ * so a refused call must not move to a fallback that has none, or that fallback would grade as if it had read code.
+ */
+function judgeToolSteps(config: ReviewConfig, clients: ReviewClients, canReadHead: boolean): number {
+  const steps = config.judge?.tool_steps ?? 0;
+  const fallback = clients.fallbacks?.judge;
+  if (steps > 0 && !canReadHead) {
+    core.info('The judge gets no tools this round, since its model has no repository tools or the PR head is not checked out');
+    return 0;
+  }
+  if (steps > 0 && fallback && !fallback.client.repoTools) {
+    core.info(`The judge gets no tools this round, since its fallback ${fallback.model} has none`);
+    return 0;
+  }
+  return steps;
 }
 
 /**
