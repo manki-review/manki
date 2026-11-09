@@ -202,14 +202,15 @@ export interface FinderSteps {
   name: string;
   model?: string;
   toolSteps: number;
-  /** Tool steps whose tool reads files. */
-  readSteps: number;
+  /** Distinct files the finder's tool calls read, over all its calls. */
+  filesRead: number;
 }
 
 export interface RunScore {
   outcome: string;
-  /** False for a review that did not complete, or a run that failed with `error`. */
+  /** False for a review that did not complete, or a run that failed. */
   complete: boolean;
+  /** Why the run failed or the review did not complete. */
   error?: string;
   findings: Array<Pick<Finding, 'severity' | 'title' | 'file' | 'line'>>;
   matches: ItemMatch[];
@@ -240,16 +241,16 @@ function severityCredit(given: FindingSeverity | undefined, expected: KeySeverit
 }
 
 function finderSteps(review: LocalReview): FinderSteps[] {
-  const byName = new Map<string, FinderSteps>();
+  const byName = new Map<string, { model?: string; toolSteps: number; files: Set<string> }>();
   for (const call of review.context.usage?.llmCalls ?? []) {
     if (call.stage !== 'reviewer' || !call.agent) continue;
-    const entry = byName.get(call.agent) ?? { name: call.agent, toolSteps: 0, readSteps: 0 };
+    const entry = byName.get(call.agent) ?? { toolSteps: 0, files: new Set<string>() };
     entry.model ??= call.model;
     entry.toolSteps += call.toolSteps?.length ?? 0;
-    entry.readSteps += call.toolSteps?.filter(step => /read/i.test(step.tool)).length ?? 0;
+    for (const file of call.filesRead ?? []) entry.files.add(file);
     byName.set(call.agent, entry);
   }
-  return [...byName.values()];
+  return [...byName].map(([name, { model, toolSteps, files }]) => ({ name, ...(model && { model }), toolSteps, filesRead: files.size }));
 }
 
 /** Matches the findings of one review to the case's key and scores it. */
@@ -275,6 +276,7 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
   return {
     ...reviewFacts(review),
     complete: reviewComplete,
+    ...(!reviewComplete && { error: review.result.summary || 'The review did not complete.' }),
     matches,
     mustCatchRecall: mustCatch.length > 0 && reviewComplete ? mustCatch.filter(strict).length / mustCatch.length : null,
     weightedRecall: mustCatch.length > 0 && reviewComplete ? mustCatch.reduce((sum, item) => sum + SEVERITY_WEIGHT[item.severity] * severityCredit(strict(item)?.severity, item.severity), 0) / totalWeight : null,
@@ -407,10 +409,10 @@ export function formatBenchSummary(report: BenchReport): string {
       lines.push(`  ${item.id} ${item.tier === 'must_catch' ? 'must' : 'nice'} ${item.severity}: ${item.caught}/${item.runs}${item.partial ? `, ${item.partial} partial` : ''}`);
     }
     for (const [i, run] of c.runs.entries()) {
-      const reads = run.finders.map(f => `${f.name} ${f.readSteps}`).join(', ') || 'none';
+      const reads = run.finders.map(f => `${f.name} ${f.filesRead}`).join(', ') || 'none';
       lines.push(run.error
-        ? `  run ${i + 1}: failed: ${run.error}`
-        : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${run.extraFindings} extra, ${run.duplicates} duplicates, reads ${reads}, $${run.costUsd.toFixed(2)}`);
+        ? `  run ${i + 1}: ${run.outcome}: ${run.error}`
+        : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${run.extraFindings} extra, ${run.duplicates} duplicates, files read ${reads}, $${run.costUsd.toFixed(2)}`);
     }
   }
   const s = report.summary;

@@ -50,8 +50,8 @@ function makeReview(outcome: RoundOutcome, findings: Finding[], complete = true)
       usage: {
         estimatedCostUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 50, wallClockMs: 90,
         llmCalls: [
-          { stage: 'reviewer', agent: 'finder-a', model: 'claude-sonnet-5-5', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, toolSteps: [{ tool: 'Read' }, { tool: 'Grep' }, { tool: 'mcp__manki__read_file' }] },
-          { stage: 'reviewer', agent: 'finder-a', model: 'claude-sonnet-5-5', attempt: 2, durationMs: 1, costUsd: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, toolSteps: [{ tool: 'Read' }] },
+          { stage: 'reviewer', agent: 'finder-a', model: 'claude-sonnet-5-5', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, toolSteps: [{ tool: 'Read' }, { tool: 'Grep' }, { tool: 'mcp__manki__read_file' }], filesRead: ['src/a.rs', 'src/b.rs'] },
+          { stage: 'reviewer', agent: 'finder-a', model: 'claude-sonnet-5-5', attempt: 2, durationMs: 1, costUsd: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, toolSteps: [{ tool: 'Read' }], filesRead: ['src/b.rs', 'src/c.rs'] },
           { stage: 'judge', model: 'claude-opus-5-5', attempt: 1, durationMs: 1, costUsd: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, toolSteps: [{ tool: 'Read' }] },
         ],
       },
@@ -198,7 +198,7 @@ describe('scoreRun', () => {
     ]);
     expect(score).toMatchObject({
       outcome: 'ADDRESS_FIRST', complete: true, mustCatchRecall: 0.5, weightedRecall: 3 / 5, verdictCorrect: true, falseBlockers: 1, extraFindings: 1, duplicates: 1,
-      finders: [{ name: 'finder-a', model: 'claude-sonnet-5-5', toolSteps: 4, readSteps: 3 }],
+      finders: [{ name: 'finder-a', model: 'claude-sonnet-5-5', toolSteps: 4, filesRead: 3 }],
       costUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 90,
     });
     expect(score.findings[2]).toEqual({ severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1 });
@@ -217,7 +217,7 @@ describe('scoreRun', () => {
     const clean: BenchCase = { ...benchCase, mustCatch: [], niceToHave: [] };
     expect(await scoreRun(clean, makeReview('READY', []), stub({}))).toMatchObject({ mustCatchRecall: null, weightedRecall: null, verdictCorrect: true });
     expect(await scoreRun(clean, makeReview('ADDRESS_FIRST', [makeFinding({ severity: 'blocker' })]), stub({}))).toMatchObject({ verdictCorrect: false, falseBlockers: 1 });
-    expect(await scoreRun(benchCase, makeReview('INCOMPLETE', [], false), stub({}))).toMatchObject({ complete: false, mustCatchRecall: null, weightedRecall: null, verdictCorrect: null });
+    expect(await scoreRun(benchCase, makeReview('INCOMPLETE', [], false), stub({}))).toMatchObject({ complete: false, error: 'The review did not complete.', mustCatchRecall: null, weightedRecall: null, verdictCorrect: null });
   });
 });
 
@@ -278,8 +278,9 @@ describe('runBench and buildReport', () => {
     expect(JSON.parse(JSON.stringify(report))).toStrictEqual(report);
     const summary = formatBenchSummary(report);
     expect(summary).toContain('  K1 must blocker: 2/3, 1 partial\n');
-    expect(summary).toContain('  run 2: failed: provider down\n');
-    expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 extra, 0 duplicates, reads finder-a 3, $1.25\n');
+    expect(summary).toContain('  run 2: FAILED: provider down\n');
+    expect(summary).toContain('  run 4: INCOMPLETE: The review did not complete.\n');
+    expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 extra, 0 duplicates, files read finder-a 3, $1.25\n');
     expect(summary).toContain('5 runs (2 incomplete). Must-catch recall 33%, weighted 40%, verdicts 67%.');
     expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, extra findings 0, duplicates 0, cost $5.00.');
   });

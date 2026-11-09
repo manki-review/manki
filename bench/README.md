@@ -9,6 +9,8 @@ npm run bench -- --checkout xdustinface/rust-dashcore=/path/to/rust-dashcore    
 npm run bench -- --checkout xdustinface/rust-dashcore=/path/to/rust-dashcore --case rdc-1295 --runs 1
 ```
 
+The seed set holds the five rust-dashcore replays. The misses #1163 is to collect are not cases yet, since that issue lists none so far.
+
 Each case repo needs a local clone holding the case's `base` and `head` commits. For the rust-dashcore cases, fetch the fork's `test-base/<n>` and `test/<n>` branches. The review reads `.manki.yml` from `base`, unless `--config` names another file, and the tools read a fresh copy holding only `head`, so no later fix commit is visible to them.
 
 ## Case files
