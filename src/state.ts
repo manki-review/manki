@@ -284,25 +284,35 @@ function startedByHand(round: RoundContext): boolean {
  * Counts the rounds since the last approval, or in all rounds without one. `total` counts every round that reviewed a new
  * change, and `left` is how many automatic rounds remain before the round cap pauses automatic review, `Infinity` with the
  * cap off. Draft rounds don't count. The round cap stops fix loops, so a round after an approval, such as on a rebase,
- * starts the count again. A round a person started while automatic review was paused restarts it: `left` becomes the
- * larger of the rounds it had left and `rounds_after_restart`.
+ * starts the count again. A round a person started while automatic review was paused restarts it: it counts like any
+ * other round, then `left` becomes the larger of the rounds still left and `rounds_after_restart`. `sinceRestart` counts
+ * the rounds with new changes after the last restart, and is `undefined` without one.
  */
-function countRounds(priorRounds: RoundContext[], lastApprovalAt: string | undefined, config: ReviewConfig): { total: number; left: number; approved: boolean } {
+function countRounds(
+  priorRounds: RoundContext[], lastApprovalAt: string | undefined, config: ReviewConfig,
+): { total: number; left: number; sinceRestart?: number; approved: boolean } {
   const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
   const roundsAfterRestart = config.convergence?.rounds_after_restart ?? 0;
   let start = priorRounds.length;
   while (start > 0 && !approvedSince(priorRounds[start - 1], lastApprovalAt)) start--;
   let total = 0;
+  let sinceRestart: number | undefined;
   let left = maxAutoRounds > 0 ? maxAutoRounds : Infinity;
   for (let i = start; i < priorRounds.length; i++) {
     const round = priorRounds[i];
     const paused = left <= 0 || (i > start && priorRounds[i - 1].meta.outcome === 'NOT_CONVERGING');
     const counts = !round.meta.draft && isNewChange({ commitSha: round.meta.commitSha, changeDigest: round.diff?.changeDigest }, priorRounds[i - 1]);
-    if (counts) total++;
-    if (paused && startedByHand(round)) left = Math.max(left, roundsAfterRestart);
-    else if (counts) left--;
+    if (counts) {
+      total++;
+      left--;
+      if (sinceRestart !== undefined) sinceRestart++;
+    }
+    if (paused && startedByHand(round)) {
+      left = Math.max(left, roundsAfterRestart);
+      sinceRestart = 0;
+    }
   }
-  return { total, left, approved: start > 0 || lastApprovalAt !== undefined };
+  return { total, left, sinceRestart, approved: start > 0 || lastApprovalAt !== undefined };
 }
 
 interface PauseState {
@@ -334,13 +344,17 @@ function restartLine(rounds: number): string | undefined {
  */
 function pauseState({ priorRounds, lastApprovalAt }: Pick<RecapState, 'priorRounds' | 'lastApprovalAt'>, config: ReviewConfig): PauseState {
   const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-  const { total: capRounds, left: roundsLeft, approved } = countRounds(priorRounds, lastApprovalAt, config);
+  const { total: capRounds, left: roundsLeft, sinceRestart, approved } = countRounds(priorRounds, lastApprovalAt, config);
   const capReached = roundsLeft <= 0;
   const lastRound = priorRounds.at(-1);
+  const since = approved ? ' since its last approval' : '';
+  const reviewed = sinceRestart === undefined ? `${capRounds}/${maxAutoRounds} rounds on this PR${since}`
+    : `${capRounds} rounds on this PR${since}${sinceRestart > 0 ? `, ${sinceRestart} of them after the last review started by hand` : ''}`;
   const reason = capReached
-    ? `Manki has reviewed new changes in ${capRounds}/${maxAutoRounds} rounds on this PR${approved ? ' since its last approval' : ''}. ${RETHINK_LINE}`
+    ? `Manki has reviewed new changes in ${reviewed}. ${RETHINK_LINE}`
     : lastRound?.meta.outcome === 'NOT_CONVERGING' && !approvedSince(lastRound, lastApprovalAt) ? 'The last Manki round found a blocker that came back after a fix.' : undefined;
-  const restart = reason && restartLine(Math.max(roundsLeft, config.convergence?.rounds_after_restart ?? 0));
+  // The restart usually reviews a new change, which uses one of the rounds still left.
+  const restart = reason && restartLine(Math.max(roundsLeft - 1, config.convergence?.rounds_after_restart ?? 0));
   return { capRounds, roundsLeft, capReached, paused: reason !== undefined, ...(reason && { reason }), ...(restart && { restart }) };
 }
 

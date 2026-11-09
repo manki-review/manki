@@ -1227,14 +1227,14 @@ describe('pauseState', () => {
     const capped = rounds(10);
     expect(state(capped)).toMatchObject({ capRounds: 10, roundsLeft: 0, capReached: true, paused: true, restart: restartLine });
 
-    // The round started by hand does not count, so exactly three automatic rounds follow it.
+    // The round started by hand counts, but exactly three automatic rounds follow it.
     const restarted = [...capped, byHand(makeRoundContext(11))];
     expect(state(restarted)).toEqual({ capRounds: 11, roundsLeft: 3, capReached: false, paused: false });
     expect(state([...restarted, ...rounds(2, 12)])).toMatchObject({ roundsLeft: 1, paused: false });
     const pausedAgain = [...restarted, ...rounds(3, 12)];
     expect(state(pausedAgain)).toMatchObject({
       capRounds: 14, roundsLeft: 0, paused: true, restart: restartLine,
-      reason: expect.stringMatching(/^Manki has reviewed new changes in 14\/10 rounds on this PR\./),
+      reason: expect.stringMatching(/^Manki has reviewed new changes in 14 rounds on this PR, 3 of them after the last review started by hand\. Rounds that/),
     });
 
     // Every later restart grants the same rounds again.
@@ -1253,14 +1253,15 @@ describe('pauseState', () => {
     // `0` keeps a restart to the one round asked for.
     const once = { ...DEFAULT_CONFIG, convergence: { ...DEFAULT_CONFIG.convergence, rounds_after_restart: 0 } };
     expect(state(capped, once)).not.toHaveProperty('restart');
-    expect(state(restarted, once)).toMatchObject({ capRounds: 11, roundsLeft: 0, paused: true });
+    expect(state(restarted, once)).toMatchObject({ capRounds: 11, roundsLeft: 0, paused: true, reason: expect.stringMatching(/^Manki has reviewed new changes in 11 rounds on this PR\. Rounds that/) });
 
-    // After a blocker came back, a restart keeps the rounds the cap still allows when they are more.
+    // After a blocker came back, the restarted round counts and the cap keeps the rounds it still allows when they are more.
     const early = rounds(4);
     early[3].meta.outcome = 'NOT_CONVERGING';
-    expect(state(early)).toMatchObject({ paused: true, capReached: false, restart: 'A review you start by hand also turns automatic review back on for the next 6 rounds.' });
-    expect(state([...early, byHand(makeRoundContext(5))])).toMatchObject({ roundsLeft: 6, paused: false });
-    expect(state([...early, byHand(makeRoundContext(5))], once)).toMatchObject({ roundsLeft: 6, paused: false });
+    expect(state(early)).toMatchObject({ paused: true, capReached: false, restart: 'A review you start by hand also turns automatic review back on for the next 5 rounds.' });
+    expect(state([...early, byHand(makeRoundContext(5))])).toMatchObject({ roundsLeft: 5, paused: false });
+    expect(state([...early, byHand(makeRoundContext(5))], once)).toMatchObject({ roundsLeft: 5, paused: false });
+    expect(state(early, once)).toMatchObject({ restart: 'A review you start by hand also turns automatic review back on for the next 5 rounds.' });
     const late = rounds(9);
     late[8].meta.outcome = 'NOT_CONVERGING';
     expect(state(late)).toMatchObject({ roundsLeft: 1, paused: true, restart: restartLine });

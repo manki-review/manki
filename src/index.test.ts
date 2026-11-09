@@ -6053,9 +6053,9 @@ describe('runFullReview orchestration', () => {
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
       await callRunFullReview();
       expect(runs).toHaveLength(2);
-      expect(pauseNotice()).toContain('Manki has reviewed new changes in 9/5 rounds on this PR.');
+      expect(pauseNotice()).toContain('Manki has reviewed new changes in 9 rounds on this PR, 3 of them after the last review started by hand.');
       expect(pauseNotice()).toContain('Automatic review is paused. A review you start by hand also turns automatic review back on for the next 3 rounds.');
-      expect(lastPause()).toEqual({ reason: expect.stringContaining('9/5 rounds') });
+      expect(lastPause()).toEqual({ reason: expect.stringContaining('9 rounds on this PR, 3 of them') });
     });
 
     it('does nothing when max_auto_rounds is 0 (cap disabled)', async () => {
