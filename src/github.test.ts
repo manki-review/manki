@@ -384,11 +384,11 @@ describe('formatFindingComment', () => {
     // A disproof keeps a security warning, so its line names security findings, not only blockers, and links its proof.
     const disprovedFinding: Finding = {
       ...baseFinding, severity: 'warning', tags: ['security'], evidence: { checks: [], proof: ['src/main.ts:42'] },
-      refutation: { outcome: 'disproved', reason: 'A comment says it is intended.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc' },
+      refutation: { outcome: 'disproved', reason: 'A comment says it is intended.', proof: ['src/main.ts:40', 'Makefile:7'], files: ['src/main.ts'], codeDigest: 'abc' },
     };
     const disproved = render(disprovedFinding);
     expect(render({ ...disprovedFinding, evidence: { checks: ['src/util.ts:3 marks it intended'], proof: [] } })).toContain('<summary>How this was checked: 1 place read, doubt found</summary>');
-    expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}).`);
+    expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
 
