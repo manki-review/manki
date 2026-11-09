@@ -12,6 +12,7 @@ const diff: ParsedDiff = {
         '+const { data } = await octokit.rest.pulls.get({ owner, repo });',
         '+if (excludePaths.length) return createReview(review_body);',
         '+const MAX_COMPACT_SIZE = 32; // MiB, not KiB, GiB or MB, on macOS and iOS, read by readBytes and fetchPRDiff, not toJSON',
+        '+const mask = 0x7fff_ffff & 0b1010_0000;',
         ' const ReviewResult = unchanged_context;',
       ].join('\n'),
     }],
@@ -43,6 +44,9 @@ describe('highlightCode', () => {
     expect(highlightCode(text, tokens)).toBe(text);
     const units = 'Each length is capped at `MAX_COMPACT_SIZE` (32 MiB), but nothing bounds the sum.';
     expect(highlightCode(units, tokens)).toBe(units);
+    // A number is not an identifier, even one whose tail looks like one.
+    const number = 'The mask is 0x7fff_ffff, and the flag 0b1010_0000.';
+    expect(highlightCode(number, new Set(['x7fff_ffff', 'b1010_0000']))).toBe(number);
   });
 
   it('never touches inline code, code blocks, links or HTML comments', () => {

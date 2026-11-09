@@ -1,6 +1,7 @@
 import { ParsedDiff } from './types';
 
-const TOKEN_RE = /[A-Za-z_$][\w$]*(?:[./][A-Za-z_$][\w$-]*)*/g;
+// An identifier starts at a word boundary, so the `x0ff_ff` in a number such as `0x0ff_ff` is not one.
+const TOKEN_RE = /(?<![\w$])[A-Za-z_$][\w$]*(?:[./][A-Za-z_$][\w$-]*)*/g;
 // Text that already renders as code or must not change: fences, inline code, HTML comments and tags, links and URLs.
 // A `<summary>` comes first, since GitHub renders its content as HTML only and it gets `<code>` instead of backticks.
 // As in Markdown, inline code closes only on a run of as many backticks, within its paragraph, and an escaped backtick
