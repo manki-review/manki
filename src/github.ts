@@ -2336,6 +2336,12 @@ function parseCheck(entry: string, known: readonly string[]): Check | undefined 
   return { text, at, ...(also.length && { also }) };
 }
 
+/** Returns every range a proving line's location lists. */
+function provenRanges(entry: string, known: readonly string[]): CodeRange[] {
+  const { at, also = [] } = parseCheck(entry, known) ?? {};
+  return at ? [at, ...also] : [];
+}
+
 const overlaps = (a: CodeRange, b: CodeRange): boolean => a.file === b.file && a.start <= b.end && b.start <= a.end;
 
 /** Returns the words of `text` in lower case, with a space on each side. */
@@ -2367,7 +2373,7 @@ function sameCheck(a: Check, b: Check): boolean {
 function findingChecks({ evidence }: Finding, known: readonly string[]): Check[] {
   const parsed = (evidence?.checks ?? []).flatMap(entry => parseCheck(entry, known) ?? []);
   const checks = parsed.reduce<Check[]>((kept, check) => (kept.some(k => sameCheck(k, check)) ? kept : [...kept, check]), []);
-  const proven = (evidence?.proof ?? []).flatMap(proof => parseCheck(proof, known)?.at ?? []);
+  const proven = (evidence?.proof ?? []).flatMap(proof => provenRanges(proof, known));
   for (const at of [...parsed.flatMap(c => c.also ?? []), ...proven]) {
     if (!checks.some(c => c.at && overlaps(c.at, at))) checks.push({ text: '', at });
   }
@@ -2418,7 +2424,7 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
 }
 
 function refutationPart(label: string, lead: string, { outcome, reason, proof }: Refutation, linkTo: LineLink, known: readonly string[]): FoldPart {
-  const cited = outcome === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p, known)?.at ?? []);
+  const cited = outcome === 'confirmed' ? [] : (proof ?? []).flatMap(p => provenRanges(p, known));
   const text = [lead, reason ? oneLine(reason) : '', cited.length ? `See ${cited.map(r => linkedRange(r, linkTo)).join(', ')}.` : '']
     .filter(Boolean).join(' ');
   return { label, text, open: `**${label}:** ${text}` };
