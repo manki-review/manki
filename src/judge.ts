@@ -484,7 +484,7 @@ When you cannot tell whether a finding is real, resolve it by its grade:
 
 Being certain overrides this. It governs doubt, never judgment.
 
-Set \`gradeIfConfirmed\` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals \`severity\`.${toolsCheckFindings ? ' When it is above `severity`, Manki checks the doubt with tools. A confirmation gives the finding that grade, and a disproof drops it.' : ''}
+Set \`gradeIfConfirmed\` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals \`severity\`.${toolsCheckFindings ? ' When it is above `severity`, Manki checks the doubt with tools. A confirmation gives the finding that grade, and a disproof drops it. A finding you mark `ignore` is never checked.' : ''}
 
 Start \`reasoning\` with your verdict, then the facts behind it. For a blocker, name the failure and cite the proving lines (e.g., "blocker. When a request omits \`page\`, \`listItems\` at src/api.ts:42 divides by zero and the handler returns 500 for every default listing.").
 
@@ -893,7 +893,7 @@ export function buildJudgeUserMessage(
   return parts.join('\n');
 }
 
-/** Drops a reviewer's pre-existing claim on a line the PR adds, since a defect there is the PR's own. */
+/** Hides a reviewer's pre-existing claim on a line the PR adds from the judge, since a defect there is the PR's own. */
 function withoutPreExistingOnAddedLine(finding: Finding, diff: ParsedDiff): Finding {
   const file = finding.preExisting ? diff.files.find(df => df.path === finding.file) : undefined;
   if (!file || !addedLines(file).has(finding.line)) return finding;
@@ -1327,7 +1327,10 @@ export async function runJudgeAgent(
   const excludedPaths = new Set(input.excludedPaths);
   // A copy the judge merges or drops must pass every pre-existing check itself, since only the kept finding is checked later.
   const staysPreExisting = (copy: Finding): boolean => preExistingCheck(copy, diff, excludedPaths) === 'pre_existing';
-  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds), staysPreExisting), staysPreExisting);
+  // A claim hidden from the judge goes back on the finding, so the round record shows the claim and why it failed.
+  const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
+  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds), staysPreExisting), staysPreExisting)
+    .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f));
   const suppression = applyCrossRoundSuppression(mapped, priorRounds, crossRoundOptions);
   const { findings: suppressed, count: inPrCount } = applyInPrSuppression(suppression.findings, inPrSuppressions);
   const checked = refutation ? await refuteBlockers(refutation.client, suppressed, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input }) : suppressed;

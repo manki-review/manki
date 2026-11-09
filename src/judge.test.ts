@@ -298,7 +298,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(unsure).toContain('Set `gradeIfConfirmed` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals `severity`.');
     expect(prompt).not.toContain('Manki checks the doubt with tools');
     expect(prompt).toContain('"gradeIfConfirmed": "blocker" | "warning" | "suggestion" | "nitpick" | "ignore"');
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('When it is above `severity`, Manki checks the doubt with tools. A confirmation gives the finding that grade, and a disproof drops it.');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('When it is above `severity`, Manki checks the doubt with tools. A confirmation gives the finding that grade, and a disproof drops it. A finding you mark `ignore` is never checked.');
   });
 
   it('blocks on a claimed build, type or test failure only when CI confirms it', () => {
@@ -1637,7 +1637,7 @@ describe('runJudgeAgent', () => {
     expect(result.findings.map(f => f.category)).toEqual(['security', undefined, undefined]);
   });
 
-  it('keeps a reviewer\'s pre-existing mark only when the judge keeps it, every merged copy is marked and off the diff, and the finding is off the lines the PR adds', async () => {
+  it('keeps a reviewer\'s pre-existing mark only when the judge keeps it and every merged copy is marked and off the diff, and hides one on a line the PR adds from the judge', async () => {
     const old = 'The loop had no bound before this PR.';
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 'Old defects.',
@@ -1676,7 +1676,7 @@ describe('runJudgeAgent', () => {
         makeFinding({ title: 'Old parser leak in generated code', preExisting: old, file: 'gen/parser.ts', ...off(5) }),
         makeFinding({ title: 'Old buffer reuse', preExisting: old, ...off(90) }),
         makeFinding({ title: 'Old buffer reuse in the removed module', preExisting: old, file: 'src/legacy.ts', ...off(5) }),
-        // A defect in a line the PR adds is its own, so the judge never sees the claim and cannot keep it.
+        // A defect in a line the PR adds is its own, so the judge never sees the claim, but the finding keeps it for the record.
         makeFinding({ title: 'New parser misses the old state', preExisting: old, ...off(15) }),
       ],
       diff: makeDiff([makeDiffFile({ hunks: [hunk] }), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] })]),
@@ -1693,7 +1693,7 @@ describe('runJudgeAgent', () => {
       ['Old lock order', old],
       ['Old parser leak', undefined],
       ['Old buffer reuse', undefined],
-      ['New parser misses the old state', undefined],
+      ['New parser misses the old state', old],
     ]);
   });
 
