@@ -786,6 +786,9 @@ models:
       expect(core.error).toHaveBeenCalledWith('`judge.tool_steps` must be an integer from 0 to 100');
       expect(() => loadConfig('judge: 30\n')).toThrow('Invalid config');
       expect(core.error).toHaveBeenCalledWith('`judge` must be an object');
+      // A misspelled key would leave the tools off without a word.
+      loadConfig('judge:\n  toolsteps: 30\n');
+      expect(core.warning).toHaveBeenCalledWith('Unknown config key: "judge.toolsteps"');
     });
   });
 

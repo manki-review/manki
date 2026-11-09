@@ -266,8 +266,13 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
     const judge = config.judge as Record<string, unknown>;
     if (!judge || typeof judge !== 'object' || Array.isArray(judge)) {
       errors.push('`judge` must be an object');
-    } else if ('tool_steps' in judge && (!Number.isInteger(judge.tool_steps) || (judge.tool_steps as number) < 0 || (judge.tool_steps as number) > MAX_JUDGE_TOOL_STEPS)) {
-      errors.push(`\`judge.tool_steps\` must be an integer from 0 to ${MAX_JUDGE_TOOL_STEPS}`);
+    } else {
+      for (const key of Object.keys(judge)) {
+        if (key !== 'tool_steps') warnings.push(`Unknown config key: "judge.${key}"`);
+      }
+      if ('tool_steps' in judge && (!Number.isInteger(judge.tool_steps) || (judge.tool_steps as number) < 0 || (judge.tool_steps as number) > MAX_JUDGE_TOOL_STEPS)) {
+        errors.push(`\`judge.tool_steps\` must be an integer from 0 to ${MAX_JUDGE_TOOL_STEPS}`);
+      }
     }
   }
 

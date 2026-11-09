@@ -1185,7 +1185,7 @@ export async function runReview(
       resolvedThreadIds,
       suppressResolvedThreads,
       ...(related && { relatedRepos: related.repos }),
-      ...(refutation && { refutation, toolSteps: config.judge?.tool_steps ?? 0 }),
+      ...(refutation && { refutation, toolSteps: judgeToolSteps(config, clients) }),
       usesOutsideDiff,
     };
     const judgeStart = Date.now();
@@ -2181,6 +2181,20 @@ function confirmFixes(
     }
     return e;
   });
+}
+
+/**
+ * Returns the tool budget the judge gets. The judge is told it has tools, so a refused call must not move to a fallback
+ * that has none, or that fallback would grade as if it had read code it never saw.
+ */
+function judgeToolSteps(config: ReviewConfig, clients: ReviewClients): number {
+  const steps = config.judge?.tool_steps ?? 0;
+  const fallback = clients.fallbacks?.judge;
+  if (steps > 0 && fallback && !fallback.client.repoTools) {
+    core.info(`The judge gets no tools this round, since its fallback ${fallback.model} has none`);
+    return 0;
+  }
+  return steps;
 }
 
 /**

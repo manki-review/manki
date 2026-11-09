@@ -2049,6 +2049,15 @@ describe('runReview', () => {
     Object.assign(clients.judge, { repoTools: true });
     await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
     expect(mockedRunJudgeAgent.mock.calls[1][2]).toEqual(expect.objectContaining({ toolSteps: 30, refutation: expect.objectContaining({ workspace: '/work/pr-head' }) }));
+
+    // A refused call may move to the fallback, which would be told it has tools it does not have.
+    const fallback = (repoTools: boolean) => ({ model: 'gpt-5', client: { repoTools, sendMessage: jest.fn() } as unknown as LLMClient });
+    clients.fallbacks = { judge: fallback(false) };
+    await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
+    expect(mockedRunJudgeAgent.mock.calls[2][2].toolSteps).toBe(0);
+    clients.fallbacks = { judge: fallback(true) };
+    await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
+    expect(mockedRunJudgeAgent.mock.calls[3][2].toolSteps).toBe(30);
   });
 
   describe('open leads', () => {
