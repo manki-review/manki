@@ -50,6 +50,8 @@ const MAX_EXCERPT_LINES = 120;
 const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
 const MAX_ITEM_CHARS = 60;
+/** The longest item source read before its whitespace is collapsed to at most `MAX_ITEM_CHARS`. */
+const MAX_ITEM_SOURCE_CHARS = 4 * MAX_ITEM_CHARS;
 /** A field pattern reads only this much of a line, which holds any declaration, so a crafted line cannot slow it. */
 const MAX_FIELD_LINE_CHARS = 300;
 
@@ -77,6 +79,7 @@ const LOOKUP_METHODS = new Set([
 ]);
 // Functions that take a collection first and an item second, such as Go's `delete(m, k)`.
 const LOOKUP_FUNCTIONS = new Set(['delete', 'append', 'slices.Contains', 'slices.Index']);
+const MAX_LOOKUP_FUNCTION_CHARS = Math.max(...[...LOOKUP_FUNCTIONS].map(name => name.length));
 // Type names that only hold or wrap the type that says what a field stores.
 const CONTAINERS = new Set([
   'Vec', 'VecDeque', 'HashMap', 'BTreeMap', 'HashSet', 'BTreeSet', 'IndexMap', 'IndexSet', 'BinaryHeap', 'LinkedList', 'SmallVec',
@@ -831,7 +834,8 @@ class ParsedFile {
         const method = parent.field(access.field)?.text() ?? '';
         if (call?.kind() !== callKind || !LOOKUP_METHODS.has(method)) return [];
         item = call.field('arguments')?.children().find(c => c.isNamed());
-      // The branches below read only the node's neighbours, so a long call, subscript or comparison stays linear.
+      // The branches below read only the node's neighbours and copy no text longer than a lookup holds, so a long call,
+      // chain, subscript or comparison stays linear.
       } else if (index && parent?.kind() === index) {
         if (namedSibling(node, 'prev')) return [];
         item = namedSibling(node, 'next');
@@ -842,14 +846,17 @@ class ParsedFile {
         item = left;
       } else {
         const call = parent?.parent();
-        const callee = call?.kind() === callKind ? call.field('function')?.text() ?? '' : '';
-        if (!parent || !call || !LOOKUP_FUNCTIONS.has(callee) || nodeKey(call.field('arguments') ?? call) !== nodeKey(parent) || namedSibling(node, 'prev')) return [];
+        const callee = call?.kind() === callKind ? call.field('function') : null;
+        // The callee's text is read only when it is short enough to name a lookup function, so a huge callee costs nothing per argument.
+        const short = !!callee && callee.range().end.index - callee.range().start.index <= MAX_LOOKUP_FUNCTION_CHARS;
+        if (!parent || !call || !short || !LOOKUP_FUNCTIONS.has(callee!.text()) || nodeKey(call.field('arguments') ?? call) !== nodeKey(parent) || namedSibling(node, 'prev')) return [];
         item = namedSibling(node, 'next');
       }
-      const text = (item?.text() ?? '').replace(/^&\s*(?:mut\s+)?/, '').replace(/\s+/g, ' ');
+      if (!item || item.range().end.index - item.range().start.index > MAX_ITEM_SOURCE_CHARS) return [];
+      const text = item.text().replace(/^&\s*(?:mut\s+)?/, '').replace(/\s+/g, ' ');
       // A prompt quotes the item in a code span, which a backtick would close.
       if (!text || text.length > MAX_ITEM_CHARS || text.includes('`')) return [];
-      return [{ field: field.text(), item: text, line: lineOf(field), text: this.lines[lineOf(field) - 1]?.trim().slice(0, MAX_LINE_CHARS) ?? '' }];
+      return [{ field: field.text(), item: text, line: lineOf(field), text: this.lines[lineOf(field) - 1]?.slice(0, MAX_ITEM_SOURCE_CHARS + MAX_LINE_CHARS).trim().slice(0, MAX_LINE_CHARS) ?? '' }];
     });
   }
 
