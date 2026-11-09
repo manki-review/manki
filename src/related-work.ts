@@ -23,6 +23,7 @@ const MAX_OWN_FILES = 50;
 const MAX_REASON = 200;
 const MAX_SKIP_REASON = 200;
 const CLASSIFY_TIMEOUT_MS = 120_000;
+const LOOKUP_TIMEOUT_MS = 15_000;
 const CONVENTIONAL_PREFIX = /^\w+(?:\([^)]*\))?!?:\s*/;
 const RELATIONS: Record<RelatedItem['kind'], ReadonlySet<RelatedRelation>> = {
   pr: new Set(['duplicate', 'overlapping', 'unrelated']),
@@ -46,7 +47,7 @@ interface OpenPrNode {
 }
 
 /** The PR `findRelatedWork` looks for related work of. */
-export interface RelatedWorkTarget {
+interface RelatedWorkTarget {
   owner: string;
   repo: string;
   prNumber: number;
@@ -57,11 +58,17 @@ export interface RelatedWorkTarget {
 
 /**
  * Lists the open PRs that change a file this PR changes, most shared files first, and the open issues a search for
- * the declared names and the title's words finds, without the issues the body links. A list that fails is left out
- * and named in `skipped`.
+ * the declared names and the title's words finds, without the issues the body links. A list that fails, or that is
+ * not done within `LOOKUP_TIMEOUT_MS`, is left out and named in `skipped`.
  */
 export async function findRelatedWork(octokit: Octokit, target: RelatedWorkTarget): Promise<RelatedWork> {
-  const [prs, issues] = await Promise.allSettled([findOverlappingPrs(octokit, target), searchIssues(octokit, target)]);
+  // The review waits for the lookup, and the throttle can wait out a rate limit on the GraphQL list.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${LOOKUP_TIMEOUT_MS / 1000}s`)), LOOKUP_TIMEOUT_MS);
+  });
+  const [prs, issues] = await Promise.allSettled([findOverlappingPrs(octokit, target), searchIssues(octokit, target)].map(list => Promise.race([list, deadline])));
+  clearTimeout(timer);
   const skipped = [
     ...(prs.status === 'rejected' ? [`open PRs: ${skipReason(prs.reason)}`] : []),
     ...(issues.status === 'rejected' ? [`issue search: ${skipReason(issues.reason)}`] : []),

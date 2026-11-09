@@ -67,7 +67,7 @@ describe('findRelatedWork', () => {
     expect(work.skipped).toBeUndefined();
   });
 
-  it('skips a list that fails and names why, and searches nothing without a term', async () => {
+  it('skips a list that fails or hangs past the deadline and names why, and searches nothing without a term', async () => {
     const { octokit, search } = makeOctokit([]);
     jest.mocked(octokit.graphql).mockRejectedValueOnce(new Error('GraphQL down'));
     search.mockRejectedValueOnce(Object.assign(new Error('API rate limit exceeded'), { status: 403 }));
@@ -79,6 +79,21 @@ describe('findRelatedWork', () => {
     search.mockClear();
     expect(await findRelatedWork(octokit, target(diffOf(file('src/a.ts')), { title: 'fix: a bug' }))).toEqual({ items: [] });
     expect(search).not.toHaveBeenCalled();
+
+    // A GraphQL list held up by a rate limit wait gives up at the deadline, and the search that finished is kept.
+    jest.useFakeTimers();
+    try {
+      jest.mocked(octokit.graphql).mockReturnValueOnce(new Promise(() => {}) as never);
+      search.mockResolvedValueOnce({ data: { total_count: 1, items: [{ number: 42, title: 'Open issue', body: '' }] } });
+      const pending = findRelatedWork(octokit, target(diffOf(file('src/a.ts'))));
+      await jest.advanceTimersByTimeAsync(15_000);
+      expect(await pending).toEqual({
+        items: [{ kind: 'issue', number: 42, title: 'Open issue', excerpt: '' }], skipped: ['open PRs: timed out after 15s'],
+      });
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
