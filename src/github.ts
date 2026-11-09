@@ -2566,8 +2566,8 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
     ...(finding.judgeConfidence && { confidence: finding.judgeConfidence }),
     flaggedBy: finding.reviewers,
     title: finding.title,
-    ...(finding.suggestedFix && { fix: finding.suggestedFix.slice(0, 200) }),
-    ...(finding.howToFix && { howToFix: finding.howToFix.slice(0, 300) }),
+    ...(finding.suggestedFix && { fix: safeTruncate(finding.suggestedFix, 200) }),
+    ...(finding.howToFix && { howToFix: safeTruncate(finding.howToFix, 300) }),
     ...(finding.tags && finding.tags.length > 0 && { tags: finding.tags }),
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
   };

@@ -477,6 +477,7 @@ describe('formatFindingComment', () => {
       reviewers: ['Security', 'Testing'],
       judgeConfidence: 'high',
       suggestedFix: 'a'.repeat(250),
+      howToFix: 'b'.repeat(301),
       tags: ['own-proposal-followup'],
       originalSeverity: 'blocker',
     };
@@ -489,7 +490,9 @@ describe('formatFindingComment', () => {
       confidence: 'high',
       flaggedBy: ['Security', 'Testing'],
       title: 'Null pointer dereference',
-      fix: 'a'.repeat(200),
+      // A cut fix ends in an ellipsis, so a follow-up that shows it never passes a cut sentence off as the whole fix.
+      fix: `${'a'.repeat(200)}...`,
+      howToFix: `${'b'.repeat(300)}...`,
       tags: ['own-proposal-followup'],
       originalSeverity: 'blocker',
     });
