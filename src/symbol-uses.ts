@@ -50,6 +50,8 @@ const MAX_EXCERPT_LINES = 120;
 const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
 const MAX_ITEM_CHARS = 60;
+/** A field pattern reads only this much of a line, which holds any declaration, so a crafted line cannot slow it. */
+const MAX_FIELD_LINE_CHARS = 300;
 
 // Names so common across codebases that their uses say nothing about the change.
 const GENERIC_NAMES = new Set([
@@ -194,7 +196,7 @@ const RULES: Record<Family, FamilyRules> = {
     access: { kind: 'selector_expression', field: 'field' },
     call: 'call_expression',
     leading: ['comment'],
-    fieldLine: name => new RegExp(`^\\s*(?:\\w+, *)*${escapeRegExp(name)}(?:, *\\w+)*\\s+[^\\s=:,(]`),
+    fieldLine: name => new RegExp(`^[\\t ]*(?:[\\w, ]*, *)?${escapeRegExp(name)}(?:, *\\w+)*[\\t ]+[^\\s=:,(]`),
     object: 'operand',
     index: 'index_expression',
     owners: {},
@@ -1078,7 +1080,7 @@ function structsDeclaringField(parser: Parser, name: string, hits: Hit[], reader
   for (const hit of hits) {
     const language = languageOf(hit.file);
     const fieldLine = language && RULES[language.family].fieldLine?.(name);
-    if (!fieldLine?.test(hit.text)) continue;
+    if (!fieldLine?.test(hit.text.slice(0, MAX_FIELD_LINE_CHARS))) continue;
     const parsed = parser.parse(hit.file);
     const listing = parsed?.structListing(parsed.fieldContainer(name, hit.line), hit.file);
     if (listing) found.push(listing);
