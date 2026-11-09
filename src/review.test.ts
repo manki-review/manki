@@ -42,7 +42,7 @@ import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundUsage } from './round-context';
 import { WRITING_RULES } from './writing-rules';
-import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, summarizeCalls, withRefusalFallback, wrapClientForUsage } from './providers';
+import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, withRefusalFallback, wrapClientForUsage } from './providers';
 
 const READY_VERDICT = JSON.stringify({
   verdict: 'READY',
@@ -2020,6 +2020,35 @@ describe('runReview', () => {
     expect(result.comparisons).toEqual([{ kind: 'field', reviewer, at: ['src/queue.ts:6'], status: 'answered', findings: 1 }]);
     expect(result.llmCalls?.filter(c => c.stage === 'compare').map(c => c.agent)).toEqual([reviewer]);
     expect(result.agentNames).not.toContain(reviewer);
+  });
+
+  it('stops waiting for a comparison a grace period after the finders are done, records it as timed out and completes the round', async () => {
+    const queue = (body: string) => `export class Queue {\n  pending: Set<string> = new Set();\n  done: Set<string> = new Set();\n\n  start(id: string) {\n${body}  }\n}\n`;
+    const { root, diff } = gitWorkspace({ 'src/queue.ts': queue('') }, { 'src/queue.ts': queue('    if (this.pending.has(id)) return;\n') });
+    const clients = makeClients();
+    jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, _user: string, options?: SendMessageOptions) => {
+      if (!system.startsWith('You compare code')) return { content: '[]' };
+      return new Promise((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
+    });
+    // The grace timer fires at once, so the hanging comparison is cut as soon as the finders are done.
+    const realSetTimeout = global.setTimeout;
+    const timers = jest.spyOn(global, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      if (ms === 60_000) {
+        fn();
+        return realSetTimeout(() => undefined, 0);
+      }
+      return realSetTimeout(fn, ms);
+    }) as typeof setTimeout);
+    let result;
+    try {
+      result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, signal: new AbortController().signal });
+    } finally {
+      timers.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(result.comparisons).toEqual([{ kind: 'field', reviewer: 'Sibling field: pending vs done', at: ['src/queue.ts:6'], status: 'timed_out' }]);
+    expect(result.reviewComplete).toBe(true);
   });
 
   it('runs a single-pass review and returns approved result with no findings', async () => {

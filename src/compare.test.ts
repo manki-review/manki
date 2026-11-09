@@ -1,4 +1,5 @@
 import { runComparisons } from './compare';
+import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE } from './review';
 import { LLMClient, SendMessageOptions } from './providers';
 import { SiblingFieldQuestion, SiblingImplementationQuestion } from './symbol-uses';
 
@@ -22,7 +23,9 @@ const implementationQuestion = (name: string, trait?: string): SiblingImplementa
   ],
 });
 
-/** A client that answers each call with the reply `reply` picks for its user message, and keeps every call. */
+const HANG = 'hang until aborted';
+
+/** A client that answers each call with the reply `reply` picks for its user message, and keeps every call. `HANG` waits for the call's signal. */
 function fakeClient(reply: (user: string) => string | Error, repoTools = true): LLMClient & { calls: Array<{ system: string; user: string; options?: SendMessageOptions }> } {
   const calls: Array<{ system: string; user: string; options?: SendMessageOptions }> = [];
   return {
@@ -32,6 +35,7 @@ function fakeClient(reply: (user: string) => string | Error, repoTools = true): 
       calls.push({ system, user, options });
       const answer = reply(user);
       if (answer instanceof Error) throw answer;
+      if (answer === HANG) return new Promise((_, reject) => options?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
       return { content: answer };
     },
   };
@@ -42,9 +46,15 @@ const FINDING = JSON.stringify([{
   description: 'The lookup only checks `utxos`.', evidence: ['src/account.rs:5 declares `spent_before_funded`'], proof: ['src/settle.rs:2'],
 }]);
 
+const GAP = JSON.stringify([{
+  severity: 'warning', title: 'The registrar decoder accepts any version', file: 'src/registrar.rs', line: 9, description: 'Only the service decoder checks it.',
+  evidence: ['src/service.rs:3 rejects versions above 3'], claimsMissing: true, emptySearch: 'grep `version >` in src/registrar.rs: no match',
+  preExisting: true, preExistingReason: 'The registrar decoder never checked the version.',
+}]);
+
 describe('runComparisons', () => {
   it('asks one small call per question with the code it compares, and names its findings after the question', async () => {
-    const client = fakeClient(user => user.includes('spent_before_funded') ? FINDING : '[]');
+    const client = fakeClient(user => user.includes('spent_before_funded') ? FINDING : GAP);
     const names: string[] = [];
     const result = await runComparisons(name => {
       names.push(name);
@@ -55,6 +65,7 @@ describe('runComparisons', () => {
     const [field, implementation] = client.calls;
     expect(field.options).toEqual({ effort: 'high', repoTools: { root: '/repo', steps: 12 }, timeoutMs: 600_000 });
     expect(field.system).toContain('You can read the repository with read-only tools.');
+    expect(field.system).toContain(`- ${CLAIMS_MISSING_RULE}\n- ${PRE_EXISTING_RULE}`);
     expect(field.user).toContain('The change looks up `outpoint` in `utxos` of `Account`, on the first line below. Can `outpoint` be held in `spent_before_funded` instead? If so, does the change handle it? Read where `spent_before_funded` is written before you answer.');
     expect(field.user).toContain('The changed lines that use `utxos`:\n\n```\nsrc/settle.rs:2: if account.utxos.contains_key(&outpoint) {\nsrc/settle.rs:5: let held = account.utxos.remove(&outpoint);\n```');
     expect(field.user).toContain('## `Account`\n\n');
@@ -71,10 +82,13 @@ describe('runComparisons', () => {
     expect(result.findings).toEqual([expect.objectContaining({
       severity: 'blocker', file: 'src/settle.rs', line: 2, reviewers: ['Sibling field: utxos vs spent_before_funded'],
       evidence: { checks: ['src/account.rs:5 declares `spent_before_funded`'], proof: ['src/settle.rs:2'] },
+    }), expect.objectContaining({
+      file: 'src/registrar.rs', reviewers: ['Sibling code: Decodable::consensus_decode'], preExisting: 'The registrar decoder never checked the version.',
+      evidence: { checks: ['src/service.rs:3 rejects versions above 3'], proof: [], emptySearch: 'grep `version >` in src/registrar.rs: no match' },
     })]);
     expect(result.comparisons).toEqual([
       { kind: 'field', reviewer: 'Sibling field: utxos vs spent_before_funded', at: ['src/settle.rs:2'], status: 'answered', findings: 1 },
-      { kind: 'implementations', reviewer: 'Sibling code: Decodable::consensus_decode', at: ['src/service.rs:2', 'src/registrar.rs:8'], status: 'answered', findings: 0 },
+      { kind: 'implementations', reviewer: 'Sibling code: Decodable::consensus_decode', at: ['src/service.rs:2', 'src/registrar.rs:8'], status: 'answered', findings: 1 },
     ]);
 
     const plain = fakeClient(() => '[]', false);
@@ -104,5 +118,25 @@ describe('runComparisons', () => {
       'Sibling field: utxos vs h: cut',
       'Sibling code: check_0 #2: cut',
     ]);
+  });
+
+  it('records a question still running when the signal stops the round waiting as timed out, and asks none after it', async () => {
+    const deadline = new AbortController();
+    const client = fakeClient(user => {
+      if (user.includes('`slow` instead')) {
+        setImmediate(() => deadline.abort());
+        return HANG;
+      }
+      return '[]';
+    });
+    const result = await runComparisons(() => client, { fields: [fieldQuestion('quick'), fieldQuestion('slow')], implementations: [] }, { signal: deadline.signal });
+
+    expect(result.comparisons.map(c => `${c.reviewer}: ${c.status}`)).toEqual(['Sibling field: utxos vs quick: answered', 'Sibling field: utxos vs slow: timed_out']);
+    expect(client.calls.every(c => c.options?.signal === deadline.signal)).toBe(true);
+
+    const late = fakeClient(() => '[]');
+    const skipped = await runComparisons(() => late, { fields: [fieldQuestion('quick')], implementations: [] }, { signal: deadline.signal });
+    expect(late.calls).toEqual([]);
+    expect(skipped.comparisons).toEqual([{ kind: 'field', reviewer: 'Sibling field: utxos vs quick', at: ['src/settle.rs:2'], status: 'timed_out' }]);
   });
 });

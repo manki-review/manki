@@ -70,7 +70,7 @@ export function withRefusalFallback(
 export function withSignal(client: LLMClient, signal: AbortSignal | undefined): LLMClient {
   if (!signal) return client;
   return {
-    sendMessage: (sys, user, opts) => client.sendMessage(sys, user, { ...opts, signal }),
+    sendMessage: (sys, user, opts) => client.sendMessage(sys, user, { ...opts, signal: opts?.signal ? AbortSignal.any([opts.signal, signal]) : signal }),
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
     ...(client.repoTools ? { repoTools: true } : {}),
   };
