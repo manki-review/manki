@@ -267,7 +267,7 @@ export function applySuppressions(
   const suppressed: Finding[] = [];
 
   for (const finding of findings) {
-    const lowered = [UNPROVEN_TAG, UNBUILT_TAG].some(tag => finding.tags?.includes(tag)) || !!finding.refutation;
+    const lowered = [UNPROVEN_TAG, UNBUILT_TAG].some(tag => finding.tags?.includes(tag)) || !!(finding.refutation ?? finding.pairRefutation);
     if (!SUPPRESSIBLE_SEVERITIES.has(finding.severity) || finding.tags?.includes(SECURITY_TAG) || lowered || finding.toolSource) {
       kept.push(finding);
       continue;

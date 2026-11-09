@@ -2229,16 +2229,20 @@ describe('runReview', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-reader-refute-'));
     try {
       writeFileSync(join(workspace, 'a.ts'), 'const cache = new Map();\nexport function put(k, v) { cache.clear(); cache.set(k, v); }\n');
-      const refuting = makeClients();
-      Object.assign(refuting.judge, { repoTools: true });
-      jest.mocked(refuting.judge.sendMessage).mockImplementation(async (_system, _message, options) => ({
-        content: options?.repoTools
-          ? JSON.stringify({ outcome: 'disproved', reason: 'Every write clears the cache first.', proof: ['a.ts:2'] })
-          : JSON.stringify({
-            verdict: 'ADDRESS_FIRST', summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y',
-            blockers: [{ file: 'a.ts', line: 1, title: 'The cache is never invalidated.', evidence: ['a.ts:1 builds the cache'], proof: ['a.ts:1'] }],
-          }),
-      }));
+      const refutingClients = () => {
+        const clients = makeClients();
+        Object.assign(clients.judge, { repoTools: true });
+        jest.mocked(clients.judge.sendMessage).mockImplementation(async (_system, _message, options) => ({
+          content: options?.repoTools
+            ? JSON.stringify({ outcome: 'disproved', reason: 'Every write clears the cache first.', proof: ['a.ts:2'] })
+            : JSON.stringify({
+              verdict: 'ADDRESS_FIRST', summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y',
+              blockers: [{ file: 'a.ts', line: 1, title: 'The cache is never invalidated.', evidence: ['a.ts:1 builds the cache'], proof: ['a.ts:1'] }],
+            }),
+        }));
+        return clients;
+      };
+      const refuting = refutingClients();
       const refuted = await runReview(refuting, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', workspace });
       expect(refuted.outcome).toBe('ADDRESS_FIRST');
       expect(refuted.verdictReason).toBe('verdict_reader');
@@ -2250,6 +2254,23 @@ describe('runReview', () => {
       const comment = formatFindingComment(refuted.findings[0], TEST_LINKS);
       expect(comment).toMatch(/<summary>How this was checked: 1 place read, doubt found<\/summary>\n\n\*\*Doubt found:\*\* [^\n]*Every write clears the cache first\./);
       expect(comment).toContain('On the commented line: Builds the cache');
+
+      // A second refuter on another model checks it too. Two disproofs still leave it blocking, posted with both reasons.
+      const refuterPair = { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ outcome: 'disproved', reason: 'Only tests read the cache.', proof: ['a.ts:2'] }) }) };
+      const twice = await runReview({ ...refutingClients(), refuterPair }, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', workspace });
+      expect(twice.outcome).toBe('ADDRESS_FIRST');
+      expect(twice.findings).toEqual([expect.objectContaining({
+        severity: 'blocker', file: 'a.ts', pairRefutation: expect.objectContaining({ outcome: 'disproved', reason: 'Only tests read the cache.' }),
+      })]);
+      expect(refuterPair.sendMessage.mock.calls.map(call => call[2]?.repoTools?.root)).toEqual([workspace]);
+      expect(formatFindingComment(twice.findings[0], TEST_LINKS)).toMatch(/\*\*Doubt found:\*\* [^\n]*Every write clears the cache first\.[^\n]*\n\n\*\*Second check, on another model:\*\* doubt found\. Only tests read the cache\./);
+      expect(twice.llmCalls?.filter(c => c.agent?.startsWith('refute')).map(c => c.agent).sort()).toEqual(['refute', 'refute_pair']);
+      // A judge without tools runs no refuter, so the second one cannot run either, and the log says so.
+      const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+      await runReview({ ...makeClients(), refuterPair }, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', workspace });
+      expect(refuterPair.sendMessage).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('No second refuter runs'));
+      warnSpy.mockRestore();
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

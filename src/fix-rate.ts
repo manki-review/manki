@@ -100,7 +100,7 @@ export async function recordFixRate(
       category: entry.category ?? 'unknown',
       effort: entry.effort ?? 'unknown',
       hadEvidence: citesEvidence(entry.evidence),
-      judgeChecked: !!entry.refutation,
+      judgeChecked: !!(entry.refutation ?? entry.pairRefutation),
     }, outcome);
   }
 

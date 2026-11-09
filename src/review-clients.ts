@@ -18,9 +18,10 @@ export function buildReviewClients(config: ReviewConfig, providerInputs: Provide
     reviewer: resolveModel(config, 'reviewer'),
     reviewerPair: resolvePairModel(config),
     judge: resolveModel(config, 'judge'),
+    ...(config.models?.refuter_pair && { refuterPair: config.models.refuter_pair }),
     dedup: resolveModel(config, 'dedup'),
   };
-  core.info(`Models — planner: ${models.planner}, reviewer: ${models.reviewer}, reviewer pair: ${models.reviewerPair}, judge: ${models.judge}, dedup: ${models.dedup}`);
+  core.info(`Models — planner: ${models.planner}, reviewer: ${models.reviewer}, reviewer pair: ${models.reviewerPair}, judge: ${models.judge}, refuter pair: ${models.refuterPair ?? 'off'}, dedup: ${models.dedup}`);
 
   const buildClient = (model: string) => buildLLMClient(model, providerInputs);
   const reviewer = buildClient(models.reviewer);
@@ -29,6 +30,7 @@ export function buildReviewClients(config: ReviewConfig, providerInputs: Provide
     if (!reviewerByModel.has(model)) reviewerByModel.set(model, buildClient(model));
   }
   const judge = buildClient(models.judge);
+  const refuterPair = models.refuterPair ? buildClient(models.refuterPair) : undefined;
   const planner = config.planner?.enabled !== false ? buildClient(models.planner) : undefined;
   const dedup = buildClient(models.dedup);
   const fallbackClients = new Map<string, LLMClient>([...reviewerByModel, [models.judge, judge]]);
@@ -47,7 +49,7 @@ export function buildReviewClients(config: ReviewConfig, providerInputs: Provide
     judge: fallbackFor(models.judge),
     dedup: fallbackFor(models.dedup),
   };
-  return { clients: { reviewer, reviewerByModel, judge, planner, dedup, fallbacks }, models };
+  return { clients: { reviewer, reviewerByModel, judge, ...(refuterPair && { refuterPair }), planner, dedup, fallbacks }, models };
 }
 
 /**
@@ -65,7 +67,7 @@ function fallbackClientsOf({ fallbacks }: ReviewClients): LLMClient[] {
 
 export async function warmUpClients(clients: ReviewClients): Promise<void> {
   const warmupTargets = new Set<LLMClient>(
-    [clients.planner, ...(clients.reviewerByModel?.values() ?? []), clients.judge, clients.dedup, ...fallbackClientsOf(clients)].filter(
+    [clients.planner, ...(clients.reviewerByModel?.values() ?? []), clients.judge, clients.refuterPair, clients.dedup, ...fallbackClientsOf(clients)].filter(
       (c): c is LLMClient => !!c,
     ),
   );

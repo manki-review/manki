@@ -2179,9 +2179,10 @@ const LINKABLE_PATH_RE = /^[\w@+.-]+(?:\/[\w@+.-]+)*$/;
 const REFUTATION_LINE: Record<RefutationOutcome, string> = {
   confirmed: '**Double-checked:** Manki tried to disprove this by reading the code and could not.',
   unsettled: '**Not settled:** Manki tried to disprove this by reading the code and could not decide.',
-  // A posted disproved finding is a blocker or a security finding, since a disproof drops any other.
+  // A posted disproved finding is a blocker, a security finding or one a second check confirmed, since a disproof drops any other.
   disproved: '**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself.',
 };
+const PAIR_REFUTATION_LABEL = '**Second check, on another model:**';
 
 /** Opens the checks under a finding comment, so reading the comment back stops its description there. */
 const CHECKS_MARKER = '<!-- manki-checks -->';
@@ -2369,31 +2370,39 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
   return `[${inlineCode(rangeLabel(range))}](${linkTo(range.file, range.start, range.end)})`;
 }
 
-function refutationLine({ outcome, reason, proof }: Refutation, linkTo: LineLink): string {
+function refutationLine(label: string, { outcome, reason, proof }: Refutation, linkTo: LineLink): string {
   const cited = outcome === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p)?.at ?? []);
-  return [REFUTATION_LINE[outcome], reason ? oneLine(reason) : '', cited.length ? `See ${cited.map(r => linkedRange(r, linkTo)).join(', ')}.` : '']
+  return [label, reason ? oneLine(reason) : '', cited.length ? `See ${cited.map(r => linkedRange(r, linkTo)).join(', ')}.` : '']
     .filter(Boolean).join(' ');
+}
+
+/** Returns a line for each refuter that checked `finding`. */
+function refutationLines({ refutation, pairRefutation }: Finding, linkTo: LineLink): string[] {
+  return [
+    ...(refutation ? [refutationLine(REFUTATION_LINE[refutation.outcome], refutation, linkTo)] : []),
+    ...(pairRefutation ? [refutationLine(`${PAIR_REFUTATION_LABEL} ${REFUTATION_SUMMARY[pairRefutation.outcome]}.`, pairRefutation, linkTo)] : []),
+  ];
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
  * Returns the collapsed "How this was checked" section of `finding`. Its summary counts the places read and names
- * the refuter's outcome. Inside are that outcome, the check on the finding's own line, a code preview with a sentence
+ * each refuter's outcome. Inside are those outcomes, the check on the finding's own line, a code preview with a sentence
  * for up to `MAX_CHECK_PREVIEWS` other places, and the rest as links. A finding that cites nothing gets an open line
  * that says so, unless a tool reported it or it is an earlier round's finding.
  */
 function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: string): string[] {
   const checks = findingChecks(finding);
-  const { refutation } = finding;
-  if (checks.length === 0 && !refutation) {
+  const refutations = refutationLines(finding, linkTo);
+  if (checks.length === 0 && refutations.length === 0) {
     return finding.toolSource || finding.reviewers.length === 0 ? [] : [`${CHECKS_MARKER}\n**Not checked against the code.** Nothing was cited to back it.`];
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
   const ownChecks = checks.filter(isOwn);
   const own = ownChecks.filter(c => c.text);
   // The comment already sits on its own line, so a bare location there is listed only when nothing else shows.
-  const bare = own.length === 0 && checks.length === ownChecks.length && !refutation ? ownChecks : [];
+  const bare = own.length === 0 && checks.length === ownChecks.length && refutations.length === 0 ? ownChecks : [];
   const previews = checkPreviews(checks.filter(c => c.at && !isOwn(c)), files);
   const listed = [...bare, ...previews.slice(MAX_CHECK_PREVIEWS).flatMap(p => p.checks), ...checks.filter(c => !c.at)];
   const shown = previews.slice(0, MAX_CHECK_PREVIEWS);
@@ -2404,7 +2413,7 @@ function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: 
     return `- ${linkedRange(at, linkTo)}${said ? `: ${said}` : ''}`;
   };
   const parts = [
-    ...(refutation ? [refutationLine(refutation, linkTo)] : []),
+    ...refutations,
     ...(own.length ? [`On the ${ownLine} line: ${own.map(c => c.text).join(' ')}`] : []),
     ...shown.map(({ range, checks: shared }) => {
       // The preview shows the code, so a bare location in it adds no line of its own.
@@ -2421,7 +2430,8 @@ function checksSection(finding: Finding, { linkTo, files }: CodeLinks, ownLine: 
   }
   const read = checks.filter(c => c.at).length;
   const other = checks.length - read;
-  const counts = [read && `${read} ${read === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check'), refutation && REFUTATION_SUMMARY[refutation.outcome]].filter(Boolean);
+  const counts = [read && `${read} ${read === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check'),
+    finding.refutation && REFUTATION_SUMMARY[finding.refutation.outcome], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[finding.pairRefutation.outcome]}`].filter(Boolean);
   return [`${CHECKS_MARKER}\n<details>\n<summary>How this was checked: ${counts.join(', ')}</summary>\n\n${parts.join('\n\n')}\n\n</details>`];
 }
 

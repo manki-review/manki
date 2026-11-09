@@ -276,6 +276,15 @@ describe('formatFindingComment', () => {
     expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}).`);
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
+
+    // A second refuter on another model gets a line of its own, so a split shows both reasons.
+    const split = render({
+      ...baseFinding, evidence: { checks: [], proof: [] },
+      refutation: { outcome: 'confirmed', reason: 'No caller checks `value` first.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc' },
+      pairRefutation: { outcome: 'disproved', reason: 'The parser rejects it.', proof: ['src/util.ts:3'], files: ['src/main.ts', 'src/util.ts'], codeDigest: 'def' },
+    });
+    expect(split).toContain('<summary>How this was checked: double-checked, second check: doubt found</summary>');
+    expect(split).toContain(`**Double-checked:** Manki tried to disprove this by reading the code and could not. No caller checks \`value\` first.\n\n**Second check, on another model:** doubt found. The parser rejects it. See [\`src/util.ts:3\`](${link('src/util.ts', 3)}).`);
   });
 
   it('keeps the code spans of every check line balanced, so no line breaks the Markdown after it', () => {
