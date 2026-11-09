@@ -154,7 +154,8 @@ describe('listUsesOutsideDiff', () => {
     ].join('\n');
 
     const { section, record } = await usesFor(
-      { ...callers, 'src/lib.rs': lib('todo!()', '/// Shares held.') },
+      // A removed line elsewhere in the file that names the new field does not make it an edited one.
+      { ...callers, 'src/lib.rs': lib('todo!("shared_total")', '/// Shares held.') },
       // A new type declaring the same field name comes first, and must not hide the redefined field.
       { 'src/lib.rs': lib('unimplemented!()', '/// Shares held, zero once settled.', '\n    pub shared_total: u8,', 'pub struct Fresh {\n    pub shared_count: u8,\n}\n') },
     );

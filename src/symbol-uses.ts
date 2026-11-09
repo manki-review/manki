@@ -297,10 +297,10 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     if (parsed) {
       const changed = changedDeclarations(parsed.declarations, lines, file.path);
       for (const symbol of changed) addSymbol(symbols, symbol);
-      const added = addedLines(file);
-      const removed = removedText(file);
+      const replaced = replacedLines(file);
       for (const { name, kind, tier, line } of changed) {
-        if ((kind === 'field' || kind === 'variant') && tier === 0 && (!added.has(line) || wordPattern([name]).test(removed))) redefined.add(name);
+        const edited = !replaced.has(line) || replaced.get(line)!.some(text => wordPattern([name]).test(text));
+        if ((kind === 'field' || kind === 'variant') && tier === 0 && edited) redefined.add(name);
       }
       for (const field of changed.filter(s => s.kind === 'field' && s.tier === 0)) {
         const listing = parsed.structListing(field.container, file.path);
@@ -357,9 +357,24 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   return { ...nothing, section, record };
 }
 
-/** Returns the text of the lines the diff removes from `file`. */
-function removedText(file: DiffFile): string {
-  return file.hunks.flatMap(h => h.content.split('\n').filter(line => line.startsWith('-')).map(line => line.slice(1))).join('\n');
+/** Returns, for each head line the diff adds to `file`, the lines removed in the same run of changed lines. */
+function replacedLines(file: DiffFile): Map<number, string[]> {
+  const replaced = new Map<number, string[]>();
+  for (const hunk of file.hunks) {
+    let line = hunk.newStart;
+    let removed: string[] = [];
+    for (const content of hunk.content.split('\n')) {
+      if (content.startsWith('\\')) continue;
+      if (content.startsWith('-')) {
+        removed.push(content.slice(1));
+        continue;
+      }
+      if (content.startsWith('+')) replaced.set(line, removed);
+      else removed = [];
+      line++;
+    }
+  }
+  return replaced;
 }
 
 /** Returns the head lines the diff adds, and the head line after each run of removed lines. */
