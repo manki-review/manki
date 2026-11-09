@@ -1871,9 +1871,9 @@ function formatNeedsHuman(result: ReviewResult): string | null {
   return `Automatic review is paused until someone comments \`@manki review\`.\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
 }
 
-/** Returns `text` for a link label on one line, with the brackets that would end the label escaped. */
+/** Returns `text` for a link label on one line, with the backslashes and brackets that would end the label escaped. */
 function linkText(text: string): string {
-  return sanitizeMarkdown(text).replace(/\s+/g, ' ').trim().replace(/[[\]]/g, '\\$&');
+  return sanitizeMarkdown(text).replace(/\s+/g, ' ').trim().replace(/[\\[\]]/g, '\\$&');
 }
 
 // Most telling first, which is also the order the note lists them in.

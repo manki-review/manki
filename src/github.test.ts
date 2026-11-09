@@ -4187,6 +4187,7 @@ describe('postReview non-blocking findings', () => {
           { kind: 'issue', number: 42, title: 'Ping @alice, see [docs](https://evil.example)', excerpt: '', relation: 'fixes_issue', reason: 'Resolves it, cc @bob.' },
           { kind: 'pr', number: 20, title: 'Same change', excerpt: '', sharedFiles: 2, draft: true, relation: 'duplicate', reason: 'Both add the note.' },
           { kind: 'pr', number: 22, title: 'Unrelated one', excerpt: '', relation: 'unrelated' },
+          { kind: 'issue', number: 44, title: 'Ends in a backslash \\', excerpt: '', relation: 'overlapping' },
           { kind: 'issue', number: 43, title: 'Never classified', excerpt: '' },
         ],
       },
@@ -4203,6 +4204,7 @@ describe('postReview non-blocking findings', () => {
       '- Duplicate · [#20 Same change](https://github.com/owner/repo/pull/20) (draft)',
       '- Fixed here, not linked · [#42 Ping @\u200Balice, see docs](https://github.com/owner/repo/issues/42)',
       '- Overlaps · [#21 Touches \\[the\\] parser](https://github.com/owner/repo/pull/21)',
+      '- Overlaps · [#44 Ends in a backslash \\\\](https://github.com/owner/repo/issues/44)',
     ].join('\n'));
     expect(review.body).not.toContain('Resolves it');
     expect(review.body).not.toContain('Unrelated one');
