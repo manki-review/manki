@@ -1391,6 +1391,8 @@ describe('selectTeam', () => {
     for (const focus of [first, second]) expect(focus).toContain('This repository also asks you to check:\n- Protocol Compliance: DIP compliance');
     // Both lenses run the checks for defects in the change and in the code around it.
     for (const check of [
+      'resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or recursion sized by the input, or a size limit removed or raised.',
+      'For a library, outside input is anything a caller of its public API can pass, readers and byte streams included.',
       'Dropped cases: for each pattern match, `select!` arm, `catch`, ignored result such as `let _ =`',
       'Tests: for each test the change adds or edits, name the changed line whose revert makes it fail.',
       'one that sets private fields or internal state instead of calling the public API',

@@ -7,7 +7,7 @@ export const TRIVIAL_VERIFIER_AGENT: ReviewerAgent = Object.freeze({
 
 const CHECKS = {
   correctness: 'Correctness: wrong results, missed edge cases, null or undefined handling, races, broken invariants.',
-  security: 'Security: injection, authentication or permission bypass, secret or token exposure, unsafe handling of untrusted input. A security defect always blocks the merge, so report every one you find.',
+  security: 'Security: injection, authentication or permission bypass, secret or token exposure, unsafe handling of untrusted input, resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or recursion sized by the input, or a size limit removed or raised. For a library, outside input is anything a caller of its public API can pass, readers and byte streams included. A security defect always blocks the merge, so report every one you find.',
   errorPaths: 'Error paths: a failure that is swallowed, loses its cause, or leaves state half changed.',
   droppedCases: 'Dropped cases: for each pattern match, `select!` arm, `catch`, ignored result such as `let _ =`, or fallback such as `.ok()` or `unwrap_or_default` the change adds, name the variants and errors it leaves out and what happens to each.',
   tests: 'Tests: for each test the change adds or edits, name the changed line whose revert makes it fail. A test with no such line, one that sets private fields or internal state instead of calling the public API, or one whose mocks replace the code under test is a defect.',
