@@ -311,13 +311,13 @@ describe('formatFindingComment', () => {
   });
 
   it('ends every finding with a box that files it as an issue, security and verdict reader ones included', () => {
-    const box = /\n\n<!-- manki-issue-box -->\n- \[ \] Create an issue for this <!-- manki-box:issue:src\/main\.ts:42:Null-pointer-dereference -->\n\n<!-- manki:blocker:/;
+    const box = /\n\n<!-- manki-issue-box -->\n- \[ \] Create an issue for this <!-- manki-box:issue:src\/main\.ts:42:d32251b30965 -->\n\n<!-- manki:blocker:/;
     expect(render(baseFinding)).toMatch(box);
     // The review already shows a security finding, so a box on it discloses nothing more.
     expect(render({ ...baseFinding, tags: ['security'], category: 'security' })).toMatch(box);
     expect(render({ ...baseFinding, reviewers: ['Verdict reader'] })).toMatch(box);
     // A file name that would end the hidden comment is encoded in the id.
-    expect(render({ ...baseFinding, file: 'src/a-->b.ts' })).toContain('<!-- manki-box:issue:src/a--%3Eb.ts:42:Null-pointer-dereference -->');
+    expect(render({ ...baseFinding, file: 'src/a-->b.ts' })).toContain('<!-- manki-box:issue:src/a--%3Eb.ts:42:d32251b30965 -->');
   });
 
   it('keeps the finding data in a hidden comment, never in visible text', () => {
@@ -1590,7 +1590,7 @@ describe('postReview body lead', () => {
       '</details>',
       '',
       '<!-- manki-issue-box -->',
-      '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:47:Extract-helper -->',
+      '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:47:cb8097f95d17 -->',
     ].join('\n'));
     expect(body).not.toContain('smaller fix');
   });
@@ -3842,7 +3842,7 @@ describe('postReview fallback paths', () => {
       const update = updateReview.mock.calls[0][0].body as string;
       expect(update).toContain('*(Review body truncated)*');
       expect(extractReviewRecords(update).records.map(r => JSON.parse(r))).toEqual([{ ...context, output: { bodyLength: expect.any(Number), commentLengths: [expect.any(Number)] } }]);
-      expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n**What goes wrong:** Desc.\n\n<!-- manki-issue-box -->\n- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:40:Refused-thread -->\n\n<!-- manki-stats: ');
+      expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n**What goes wrong:** Desc.\n\n<!-- manki-issue-box -->\n- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:40:4846db4cafa8 -->\n\n<!-- manki-stats: ');
       expect(update.length).toBeLessThanOrEqual(60000 + 600);
     });
 
@@ -4013,7 +4013,7 @@ describe('postReview non-blocking findings', () => {
       '</details>',
       '',
       '<!-- manki-issue-box -->',
-      '- [ ] Create an issue for this <!-- manki-box:issue::0:Missing-file-context -->',
+      '- [ ] Create an issue for this <!-- manki-box:issue::0:13b2ce8dbe6c -->',
       '',
       '<details>',
       '<summary>\u2728 <b>Off the diff</b><br><sub><b>Suggestion, not blocking</b> · <a href="https://github.com/owner/repo/blob/abc1234/src/a.ts#L40"><code>src/a.ts:40</code></a></sub></summary>',
@@ -4036,7 +4036,7 @@ describe('postReview non-blocking findings', () => {
       '</details>',
       '',
       '<!-- manki-issue-box -->',
-      '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:40:Off-the-diff -->',
+      '- [ ] Create an issue for this <!-- manki-box:issue:src/a.ts:40:dbf7a9628065 -->',
     ].join('\n'));
     expect(review.body.indexOf('<b>Off the diff</b>')).toBeLessThan(review.body.indexOf('<b>Typo in name</b>'));
     expect(review.body).not.toContain('not listed');
