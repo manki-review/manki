@@ -974,7 +974,18 @@ describe('handleDismiss (via handlePRComment)', () => {
     expect(core.info).toHaveBeenCalledWith(expect.stringContaining('non-collaborator'));
     expect(memory.writeSuppression).not.toHaveBeenCalled();
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
-      body: 'Dismissed: `null-check`. Only collaborators can store a dismissal in review memory, so later reviews can raise it again.\n\n<!-- manki -->',
+      body: 'Nothing was stored for `null-check`, since only collaborators can store a dismissal in review memory. Later reviews can raise it again.\n\n<!-- manki -->',
+    }));
+    expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
+  });
+
+  it('says nothing was stored when review memory is off', async () => {
+    setContext({ comment: { id: 42, body: '@manki dismiss null-check', user: { type: 'User' }, author_association: 'OWNER' }, sender: { login: 'owner' } });
+    const octokit = createMockOctokit();
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1);
+    expect(memory.writeSuppression).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: 'Nothing was stored for `null-check`, since review memory is off or was skipped for this run. Later reviews can raise it again.\n\n<!-- manki -->',
     }));
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
   });
@@ -999,7 +1010,7 @@ describe('handleDismiss (via handlePRComment)', () => {
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, MEMORY);
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
-      body: 'Dismissed: `null-check-warning`. Could not store it in review memory, so later reviews can raise it again. The run log has the reason.\n\n<!-- manki -->',
+      body: 'Nothing was stored for `null-check-warning`, since the write to review memory failed. The run log has the reason. Later reviews can raise it again.\n\n<!-- manki -->',
     }));
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
   });
@@ -1264,8 +1275,8 @@ describe('handlePRComment error propagation', () => {
 
 describe('handleReviewCommentCommand', () => {
   it.each([
-    ['stores it and reacts with +1', MEMORY, 'Stored as a suppression in review memory.', true],
-    ['reacts with nothing when memory is off', undefined, 'Review memory is off', false],
+    ['stores it and reacts with +1', MEMORY, 'Dismissed: `null-check`. Stored as a suppression in review memory.', true],
+    ['reacts with nothing when memory is off', undefined, 'Nothing was stored for `null-check`, since review memory is off', false],
   ])('answers a named dismiss in its own thread, %s', async (_case, store, note, reacts) => {
     setContext({ comment: { id: 55, body: '/manki dismiss null-check', user: { type: 'User' }, author_association: 'COLLABORATOR' }, sender: { login: 'writer' } });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([POSTED_FINDING]);
@@ -1273,7 +1284,7 @@ describe('handleReviewCommentCommand', () => {
     const command = parseCommand('/manki dismiss null-check');
     await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 55, command, store);
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({
-      pull_number: 1, comment_id: 55, body: expect.stringContaining(`Dismissed: \`null-check\`. ${note}`),
+      pull_number: 1, comment_id: 55, body: expect.stringContaining(note),
     }));
     expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.reactToReviewComment).mock.calls).toEqual(reacts ? [[octokit, 'test-owner', 'test-repo', 55, '+1']] : []);

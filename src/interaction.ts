@@ -601,14 +601,14 @@ async function handleDismiss(
     }
   }
 
-  const memoryNote = !memory
-    ? 'Review memory is off or was skipped for this run, so later reviews can raise it again.'
+  const pattern = inline(sanitizedPattern);
+  if (stored) return { note: `Dismissed: ${pattern}. Stored as a suppression in review memory.`, named: true, stored };
+  const why = !memory
+    ? 'review memory is off or was skipped for this run.'
     : !isTrusted
-      ? 'Only collaborators can store a dismissal in review memory, so later reviews can raise it again.'
-      : stored
-        ? 'Stored as a suppression in review memory.'
-        : 'Could not store it in review memory, so later reviews can raise it again. The run log has the reason.';
-  return { note: `Dismissed: ${inline(sanitizedPattern)}. ${memoryNote}`, named: true, stored };
+      ? 'only collaborators can store a dismissal in review memory.'
+      : 'the write to review memory failed. The run log has the reason.';
+  return { note: `Nothing was stored for ${pattern}, since ${why} Later reviews can raise it again.`, named: true, stored };
 }
 
 /**
