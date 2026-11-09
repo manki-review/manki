@@ -35,6 +35,11 @@ const MAX_STRUCT_FIELDS = 24;
 const MAX_LINE_CHARS = 160;
 const MAX_HIDDEN_NAMES = 20;
 const MAX_FILE_BYTES = 1024 * 1024;
+/**
+ * A file nesting deeper than this is not parsed. Finding a node's parent or neighbour costs its depth in the syntax tree,
+ * so a deeply nested file would make the per-declaration work grow with the square of its depth.
+ */
+const MAX_NESTING = 256;
 const MIN_NAME_LENGTH = 4;
 const MAX_REFERENCE_LINES = 40;
 /** A reference line is cut to this length before it is ranked, since a minified file can hold one of megabytes. */
@@ -740,6 +745,10 @@ class Parser {
       const { absolute } = resolveInRoot(this.workspace, path);
       if (statSync(absolute).size > MAX_FILE_BYTES) return undefined;
       const source = readFileSync(absolute, 'utf-8');
+      if (nestingDepth(source) > MAX_NESTING) {
+        core.info(`Uses outside the diff: ${path} nests deeper than ${MAX_NESTING} levels, so it is read like a file without a grammar`);
+        return undefined;
+      }
       return new ParsedFile(this.api.parse(language.lang, source), RULES[language.family], source.split('\n'));
     } catch (error) {
       core.info(`Uses outside the diff: could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -758,6 +767,26 @@ function appendTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   const list = map.get(key);
   if (list) list.push(value);
   else map.set(key, [value]);
+}
+
+/**
+ * Returns an upper estimate of how deep `source` nests: the deepest run of open brackets, or the widest indent in steps
+ * of four columns, a tab counting as four.
+ */
+function nestingDepth(source: string): number {
+  let [depth, deepest, indent, atLineStart] = [0, 0, 0, true];
+  for (const char of source) {
+    if (char === '\n') [indent, atLineStart] = [0, true];
+    else if (atLineStart && (char === ' ' || char === '\t')) {
+      indent += char === '\t' ? 4 : 1;
+      deepest = Math.max(deepest, Math.ceil(indent / 4));
+    } else {
+      atLineStart = false;
+      if (char === '{' || char === '[' || char === '(') deepest = Math.max(deepest, ++depth);
+      else if ((char === '}' || char === ']' || char === ')') && depth > 0) depth--;
+    }
+  }
+  return deepest;
 }
 
 function nodeKey(node: SgNode): string {
@@ -1183,8 +1212,8 @@ function structsDeclaringField(parser: Parser, name: string, hits: Hit[], reader
 
 const shortLine = (text: string): string => text.length > MAX_EXCERPT_LINE_CHARS ? `${text.slice(0, MAX_EXCERPT_LINE_CHARS)} ...` : text;
 const typeNames = (type: string): string[] => type.match(/[A-Za-z_]\w*/g) ?? [];
-// A Go fixed-size array such as `[32]byte`: a size in brackets before the element type, with no type name before it.
-const GO_ARRAY = /(?<![\w\]])\[[^\][]+\](?=[\w*[])/g;
+// A Go fixed-size array such as `[32]byte` or `[4][4]int`: a size in brackets before the element type, with no type name before it.
+const GO_ARRAY = /(?<!\w)\[[^\][]+\](?=[\w*[])/g;
 
 /**
  * Whether a bracket in `type` holds items: `T[]`, `&[T]`, `list[T]`, `[]T` or `&[[u8; 32]]`. A fixed-size array such as

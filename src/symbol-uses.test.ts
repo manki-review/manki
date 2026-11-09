@@ -264,7 +264,8 @@ type Registry struct {
 	active, expired map[string]*Session
 	owners  map[int]string
 	digest  [32]byte
-	backup  [32]byte
+	grid    [4][4]int
+	board   [4][4]int
 	count   int
 }
 
@@ -294,7 +295,7 @@ ${body}	return true
 		return false
 	}
 	delete(r.active, id)
-	_ = r.digest[0]
+	_ = r.grid[0][1]
 `),
         'src/queue.ts': `export class Queue {\n  pending: Set<string>;\n  done: Set<string>;\n  count: number;\n\n  start(id: string) {\n${'    this.count++;\n'.repeat(150)}    if (this.pending.has(id)) return;\n${'    this.count--;\n'.repeat(100)}  }\n}\n`,
       },
@@ -302,6 +303,7 @@ ${body}	return true
 
     // A Python field typed only by its first value, such as `{}`, is compared only with a field holding the same kind of value.
     // Go fields declared on one line are each a field, and a short name such as `ids` is still asked about.
+    // A Go array of arrays such as `[4][4]int` is a value, like `[32]byte`.
     expect(siblings.fields.map(q => `${q.struct}.${q.field} -> ${q.sibling} (${q.item})`)).toEqual([
       'Scheduler.queued -> cancelled_early (job_id)',
       'Scheduler.pending_roots -> done_roots (root)',
@@ -396,6 +398,16 @@ ${body}	return true
     );
     // So many types declare the field that none is listed for it.
     expect(read.section).toBe('');
+    expect(Date.now() - started).toBeLessThan(10_000);
+
+    // Anonymous struct fields nested deep, with a change at the innermost level: every field encloses the ones after it.
+    const depth = 3_000;
+    const nested = (inner: string) => `package gen\n\ntype Deep struct {\n${Array.from({ length: depth }, (_, i) => `Level${i} struct {`).join('\n')}\n${inner}\n${'}\n'.repeat(depth)}}\n`;
+    started = Date.now();
+    const deep = await usesFor({ 'gen/deep.go': nested('Leaf int') }, { 'gen/deep.go': nested('Leaf int64') });
+    // A file nested that deep is not parsed, since every parent lookup would cost its depth.
+    expect(deep.section).toBe('');
+    expect(core.info).toHaveBeenCalledWith('Uses outside the diff: gen/deep.go nests deeper than 256 levels, so it is read like a file without a grammar');
     expect(Date.now() - started).toBeLessThan(10_000);
   }, 60_000);
 
