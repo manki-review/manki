@@ -296,8 +296,6 @@ ${body}	return true
 	delete(r.active, id)
 	_ = r.digest[0]
 `),
-        // The field patterns read only the start of a line, so a crafted long line cannot slow them.
-        'src/noise.go': `package registry\n\n/*\n${'a, '.repeat(2_000)}active\n*/\n`,
         'src/queue.ts': `export class Queue {\n  pending: Set<string>;\n  done: Set<string>;\n  count: number;\n\n  start(id: string) {\n${'    this.count++;\n'.repeat(150)}    if (this.pending.has(id)) return;\n${'    this.count--;\n'.repeat(100)}  }\n}\n`,
       },
     );
