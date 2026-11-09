@@ -488,7 +488,7 @@ export interface NeedsHuman {
   blockers: VerdictTraceEntry[];
 }
 
-export type VerdictReason = 'required_present' | 'prior_unaddressed' | 'only_nit_or_suggestion' | 'verdict_reader';
+export type VerdictReason = 'required_present' | 'prior_unaddressed' | 'warnings_present' | 'only_nit_or_suggestion' | 'verdict_reader';
 
 /** The verdict reader's answer on a round where no finding blocked. */
 export interface VerdictReport {

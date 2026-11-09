@@ -1379,6 +1379,8 @@ export async function runReview(
         outcome = 'ADDRESS_FIRST';
         verdictReason = 'verdict_reader';
         verdictTrace = { survivingBlockers: readerFindings.filter(f => f.severity === 'blocker').map(findingToTraceEntry), unresolvedPriors: [] };
+      } else {
+        verdictReason = readyReason(finalFindings);
       }
     }
   }
@@ -2070,7 +2072,8 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  * Decision order:
  *   1. any surviving `blocker` finding → ADDRESS_FIRST / required_present
  *   2. any prior-round `blocker` still unresolved → ADDRESS_FIRST / prior_unaddressed
- *   3. otherwise (only warnings, suggestions and nitpicks, or empty) → READY / only_nit_or_suggestion
+ *   3. otherwise, with a `warning` among the findings → READY / warnings_present
+ *   4. otherwise (only suggestions and nitpicks, or empty) → READY / only_nit_or_suggestion
  *
  * `verdictTrace.unresolvedPriors` lists the unresolved priors under either reason. A prior that
  * a surviving blocker names again (`sameAs`) or sits on, by thread, is left out: that blocker carries it.
@@ -2165,7 +2168,12 @@ export function determineOutcome(
 
   if (blockers.length > 0) return { outcome: 'ADDRESS_FIRST', verdictReason: 'required_present', verdictTrace };
   if (unresolvedPriors.length > 0) return { outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed', verdictTrace };
-  return { outcome: 'READY', verdictReason: 'only_nit_or_suggestion', verdictTrace };
+  return { outcome: 'READY', verdictReason: readyReason(findings), verdictTrace };
+}
+
+/** Returns why a round where nothing blocks is `READY`: warnings among its findings, or only smaller ones. */
+function readyReason(findings: Finding[]): VerdictReason {
+  return findings.some(f => f.severity === 'warning') ? 'warnings_present' : 'only_nit_or_suggestion';
 }
 
 /**

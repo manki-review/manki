@@ -249,7 +249,7 @@ describe('determineOutcome', () => {
 
   it('returns READY on warnings, security ones included', () => {
     const findings: Finding[] = [makeFinding({ severity: 'warning' }), makeFinding({ severity: 'warning', tags: ['security'], line: 20 })];
-    expect(determineOutcome(findings)).toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'only_nit_or_suggestion' }));
+    expect(determineOutcome(findings)).toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'warnings_present' }));
   });
 
   it('returns READY when there are only nitpicks', () => {
@@ -347,7 +347,7 @@ describe('determineOutcome', () => {
       for (const prior of priorWarnings) {
         for (const open of [[makeOpenThread({ severity: 'warning' })], null]) {
           expect(determineOutcome([warning, securityWarning, nitpick], prior, open))
-            .toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'only_nit_or_suggestion' }));
+            .toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'warnings_present' }));
         }
       }
 
@@ -2429,7 +2429,7 @@ describe('runReview', () => {
     const clients = makeClients();
     jest.mocked(clients.judge.sendMessage).mockResolvedValue({ content: reader([compileClaim]) });
     const alone = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '' });
-    expect([alone.outcome, alone.verdictReason]).toEqual(['READY', 'only_nit_or_suggestion']);
+    expect([alone.outcome, alone.verdictReason]).toEqual(['READY', 'warnings_present']);
     expect(alone.findings).toEqual([expect.objectContaining({
       severity: 'warning', title: 'Trait Encode not in scope', tags: ['unconfirmed-build-claim', 'follow-up'], toolEvidence: expect.objectContaining({ status: 'none' }),
     })]);
