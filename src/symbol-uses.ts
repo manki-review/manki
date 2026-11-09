@@ -56,10 +56,12 @@ const MAX_QUESTION_LOOKUPS = 20;
 const MAX_QUESTIONS = 20;
 const MAX_GROUP_MEMBERS = 4;
 const MAX_SIBLING_FILES = 40;
+const MAX_GROUPS_PER_FILE = 50;
 const MAX_EXCERPT_LINES = 120;
 const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
 const MAX_ITEM_CHARS = 60;
+const MAX_BASES = 8;
 /** The longest item source read before its whitespace is collapsed to at most `MAX_ITEM_CHARS`. */
 const MAX_ITEM_SOURCE_CHARS = 4 * MAX_ITEM_CHARS;
 /** A field pattern reads only this much of a line, which holds any declaration, so a crafted line cannot slow it. */
@@ -87,6 +89,22 @@ const LOOKUP_METHODS = new Set([
   'pop', 'setdefault', 'discard', 'append', 'index',
   'Load', 'Store', 'LoadOrStore', 'LoadAndDelete', 'Delete',
 ]);
+// Methods every type has, such as TypeScript's `constructor`, Go's `String` and `Error` or a Rust `new`, which like Python's
+// `__init__` and other dunder methods say nothing about two types being siblings unless the types share a base.
+const PROTOCOL_METHODS = new Set(['constructor', 'toString', 'toJSON', 'valueOf', 'String', 'GoString', 'Error', 'new']);
+// Standard Rust traits each type implements on its own, so sharing one does not make two types siblings.
+const STANDARD_TRAITS = new Set([
+  'Display', 'Debug', 'Clone', 'Copy', 'Default', 'From', 'Into', 'TryFrom', 'TryInto', 'FromStr', 'PartialEq', 'Eq', 'PartialOrd',
+  'Ord', 'Hash', 'Drop', 'Deref', 'DerefMut', 'AsRef', 'AsMut', 'Borrow', 'Iterator', 'IntoIterator', 'Serialize', 'Deserialize',
+]);
+// Standard bases unrelated classes name, such as Python's `Generic` or `Exception` and TypeScript's `Error`, which like
+// the standard Rust traits do not make two classes siblings.
+const STANDARD_BASES = new Set([
+  'object', 'Generic', 'Protocol', 'ABC', 'Enum', 'IntEnum', 'StrEnum', 'Flag', 'IntFlag', 'NamedTuple', 'TypedDict', 'Exception',
+  'BaseException', 'Error', 'Object',
+]);
+// A base named by a plain path such as `models.Model` or `ns.Base`.
+const BASE_PATH = /^[A-Za-z_]\w*(?:(?:\.|::)[A-Za-z_]\w*)*$/;
 // Functions that take a collection first and an item second, such as Go's `delete(m, k)`.
 const LOOKUP_FUNCTIONS = new Set(['delete', 'append', 'slices.Contains', 'slices.Index']);
 const MAX_LOOKUP_FUNCTION_CHARS = Math.max(...[...LOOKUP_FUNCTIONS].map(name => name.length));
@@ -134,6 +152,8 @@ interface FamilyRules {
   index?: string;
   /** Nodes whose functions are methods of one type, with the fields naming the type and the trait it implements. */
   owners: Record<string, { type: string; trait?: string }>;
+  /** The classes or interfaces a class extends or implements, such as `Base` in Python's `class A(Base)`. */
+  bases?: (scope: SgNode) => SgNode[];
   /** The type a method's receiver names, for a language that declares methods outside their type, such as Go. */
   receiver?: (node: SgNode) => string | undefined;
   /** The name of the field a declaration node declares, when the node has no `name` field, such as a Python assignment. */
@@ -179,6 +199,7 @@ const RULES: Record<Family, FamilyRules> = {
     object: 'object',
     index: 'subscript_expression',
     owners: { class_declaration: { type: 'name' }, abstract_class_declaration: { type: 'name' } },
+    bases: scope => scope.children().find(c => c.kind() === 'class_heritage')?.children().flatMap(clause => clause.children().filter(c => c.isNamed())) ?? [],
   },
   python: {
     declarations: { class_definition: 'type', function_definition: 'function', assignment: 'field' },
@@ -192,6 +213,7 @@ const RULES: Record<Family, FamilyRules> = {
     object: 'object',
     index: 'subscript',
     owners: { class_definition: { type: 'name' } },
+    bases: scope => scope.field('superclasses')?.children().filter(c => c.isNamed() && c.kind() !== 'keyword_argument') ?? [],
     fieldName: pythonFieldName,
     valueType: node => {
       const value = node.field('right');
@@ -354,6 +376,8 @@ interface Method {
   name: string;
   owner: string;
   trait?: string;
+  /** The classes or interfaces the owner extends or implements. */
+  bases: string[];
   decl: Declaration;
 }
 
@@ -874,6 +898,7 @@ class ParsedFile {
     this.tree.release();
     this.groups.clear();
     this.marked.clear();
+    this.bases.clear();
   }
 
   /** `named` picks one of the names of a node that declares several. */
@@ -993,20 +1018,36 @@ class ParsedFile {
   private findMethods(): Method[] {
     return this.declarations.filter(d => d.kind === 'function').flatMap(decl => {
       if (this.inTests(decl.node)) return [];
-      const { owner = '', trait } = this.rules.receiver ? { owner: this.rules.receiver(decl.node) } : this.scopeOf(decl.node);
+      const { owner = '', trait, bases = [] } = this.rules.receiver ? { owner: this.rules.receiver(decl.node) } : this.scopeOf(decl.node);
       if (!TYPE_PATH.test(owner) || (trait !== undefined && !TYPE_PATH.test(trait))) return [];
-      return [{ name: decl.name, owner, ...(trait && { trait }), decl }];
+      return [{ name: decl.name, owner, ...(trait && { trait }), bases, decl }];
     });
   }
 
-  /** Returns the type and trait of the block or class that declares a function, and nothing for a function nested in another. */
-  private scopeOf(node: SgNode): { owner?: string; trait?: string } {
+  /**
+   * Returns the type, trait and bases of the block or class that declares a function, and nothing for a function nested
+   * in another. A base written as a long expression is left out, since only a plain name can match another class's.
+   */
+  private scopeOf(node: SgNode): { owner?: string; trait?: string; bases?: string[] } {
     const scope = this.tree.ancestors(node).find(a => this.rules.owners[a.kind()] || this.rules.declarations[a.kind()] === 'function');
     const fields = scope && this.rules.owners[scope.kind()];
     if (!scope || !fields) return {};
     const owner = typeName(scope.field(fields.type)?.text() ?? '');
     const traitText = fields.trait && scope.field(fields.trait)?.text();
-    return { owner, trait: traitText ? typeName(traitText) : undefined };
+    return { owner, trait: traitText ? typeName(traitText) : undefined, bases: this.basesOf(scope) };
+  }
+
+  private readonly bases = new Map<number, string[]>();
+
+  /** Returns the first `MAX_BASES` bases `scope` names, read once per class however many methods it holds. */
+  private basesOf(scope: SgNode): string[] {
+    if (!this.bases.has(scope.id())) {
+      const named = (this.rules.bases?.(scope) ?? []).filter(base => base.range().end.index - base.range().start.index <= MAX_ITEM_CHARS);
+      const bases = named.map(base => typeName(base.text())).filter(base => BASE_PATH.test(base) && !STANDARD_BASES.has(base.split(/\.|::/).at(-1)!));
+      // Each protocol method gets a group key per base, so a crafted class with thousands of bases keeps only the first few.
+      this.bases.set(scope.id(), bases.slice(0, MAX_BASES));
+    }
+    return this.bases.get(scope.id())!;
   }
 
   /** Returns the lines of `decl` with their numbers, marking the lines in `added`, each cut after `MAX_EXCERPT_LINE_CHARS` and all after `MAX_EXCERPT_LINES`. */
@@ -1393,7 +1434,12 @@ function filesBeside(workspace: string, dir: string, path: string, excludePaths:
 function siblingImplementations(
   workspace: string, parser: Parser, files: DiffFile[], touched: Map<string, Set<number>>, added: Map<string, Set<number>>, excludePaths: string[],
 ): SiblingImplementationQuestion[] {
-  const keyOf = (m: Method) => `${m.trait ?? ''}::${m.name}`;
+  const keysOf = (m: Method): string[] => {
+    if (m.trait) return STANDARD_TRAITS.has(m.trait.split('::').at(-1)!) ? [] : [`${m.trait}::${m.name}`];
+    if (!/^__\w+__$/.test(m.name) && !PROTOCOL_METHODS.has(m.name)) return [`::${m.name}`];
+    // Keyed by the class itself too, so a base class's own implementation joins its subclasses' group.
+    return [...new Set([m.owner, ...m.bases].map(base => `${base.split(/\.|::/).at(-1)}::${m.name}`))];
+  };
   const sorted = new Map([...touched].map(([file, lines]) => [file, [...lines].sort((a, b) => a - b)]));
   // A removal marks the head line after it, which is the first line of the next function when a whole function before it went.
   const changedLines = (m: Method, file: string) => {
@@ -1405,23 +1451,30 @@ function siblingImplementations(
   const inCode = new Set(code);
   const changed = code.map(file => ({ file, methods: (parser.parse(file)?.methods ?? []).filter(m => changedLines(m, file) > 0) })).filter(c => c.methods.length > 0);
   if (changed.length === 0) return [];
-  const wanted = new Set(changed.flatMap(c => c.methods.map(keyOf)));
+  // Each changed file asks about at most `MAX_GROUPS_PER_FILE` groups, so a crafted file cannot make the groups unbounded.
+  const wanted = new Set(changed.flatMap(c => [...new Set(c.methods.flatMap(keysOf))].slice(0, MAX_GROUPS_PER_FILE)));
   const dirs = new Map(changed.map(({ file }) => [dirname(file), file]));
   const beside = [...dirs].flatMap(([dir, file]) => filesBeside(workspace, dir, file, excludePaths)).filter(file => !inCode.has(file)).slice(0, MAX_SIBLING_FILES);
   const groups = new Map<string, Array<Method & { file: string; parsed: ParsedFile; changed: number }>>();
   for (const file of [...new Set([...code, ...beside])]) {
     const parsed = parser.parse(file);
     for (const m of parsed?.methods ?? []) {
-      if (!wanted.has(keyOf(m))) continue;
-      appendTo(groups, keyOf(m), { ...m, file, parsed: parsed!, changed: changedLines(m, file) });
+      for (const key of keysOf(m).filter(k => wanted.has(k))) appendTo(groups, key, { ...m, file, parsed: parsed!, changed: changedLines(m, file) });
     }
   }
-  const ranked = [...groups.values()].flatMap((all, order) => {
+  const candidates = [...groups.values()].flatMap((all, order) => {
     const owners = new Set<string>();
     const members = [...all].sort((a, b) => Number(b.changed > 0) - Number(a.changed > 0))
       .filter(m => !owners.has(m.owner) && !!owners.add(m.owner)).slice(0, MAX_GROUP_MEMBERS);
     const bodies = new Set(members.map(m => (m.decl.node.field('body') ?? m.decl.node).text().replace(/\s+/g, ' ')));
-    if (members.length < 2 || bodies.size < 2) return [];
+    return members.length < 2 || bodies.size < 2 ? [] : [{ members, order, ids: new Set(members.map(m => `${m.file}:${m.decl.start}`)) }];
+  });
+  // Classes that share a base or two put a protocol method in nested groups. Largest first, a group whose members an
+  // earlier group already covers is dropped, which takes one pass over the members.
+  const covered = new Set<string>();
+  const ranked = [...candidates].sort((a, b) => b.ids.size - a.ids.size || a.order - b.order).flatMap(({ members, order, ids }) => {
+    if ([...ids].every(id => covered.has(id))) return [];
+    for (const id of ids) covered.add(id);
     const question: SiblingImplementationQuestion = {
       name: members[0].name, ...(members[0].trait && { trait: members[0].trait }),
       members: members.map(m => ({ ...m.parsed.excerpt(m.decl, m.file, added.get(m.file) ?? new Set()), owner: m.owner, changed: m.changed > 0 })),
