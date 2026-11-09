@@ -160,8 +160,7 @@ function undoDiff(head: string, file: DiffFile): string {
     // A hunk that adds no line starts after line `newStart`, any other one at it.
     const start = hunk.newLines === 0 ? hunk.newStart : hunk.newStart - 1;
     if (start < cursor || start > headLines.length) throw new Error('its diff does not match the file at the PR head');
-    out.push(...headLines.slice(cursor, start));
-    cursor = start;
+    for (; cursor < start; cursor++) out.push(headLines[cursor]);
     for (const line of hunk.content.split('\n')) {
       if (line.startsWith('\\')) continue;
       const text = line.slice(1);
@@ -174,7 +173,7 @@ function undoDiff(head: string, file: DiffFile): string {
       cursor++;
     }
   }
-  out.push(...headLines.slice(cursor));
+  for (; cursor < headLines.length; cursor++) out.push(headLines[cursor]);
   return out.join('\n');
 }
 
@@ -199,8 +198,8 @@ function diffEntries(before: LockEntry[], after: LockEntry[], file: DiffFile): P
     const is = (come.get(name) ?? []).sort(byVersion);
     if (was.length === is.length) was.forEach((e, i) => pairs.push([e, is[i]]));
     else {
-      unpaired.removed.push(...was);
-      unpaired.added.push(...is);
+      for (const e of was) unpaired.removed.push(e);
+      for (const e of is) unpaired.added.push(e);
     }
   }
   // An added package from a registry or repository no package used before needs a reason, even when its URL looks standard.
@@ -219,7 +218,11 @@ function diffEntries(before: LockEntry[], after: LockEntry[], file: DiffFile): P
 
 function byName(entries: LockEntry[]): Map<string, LockEntry[]> {
   const map = new Map<string, LockEntry[]>();
-  for (const entry of entries) map.set(entry.name, [...(map.get(entry.name) ?? []), entry]);
+  for (const entry of entries) {
+    const list = map.get(entry.name);
+    if (list) list.push(entry);
+    else map.set(entry.name, [entry]);
+  }
   return map;
 }
 
@@ -409,12 +412,12 @@ function parseCargoLock(text: string): LockEntry[] {
     }
     const match = TOML_KEY_VALUE.exec(line);
     if (!match) throw new Error(`line ${i + 1} is not a key and value`);
-    let value = match[2];
-    while (value.startsWith('[') && !value.trimEnd().endsWith(']')) {
+    const parts = [match[2]];
+    while (match[2].startsWith('[') && !parts.at(-1)!.trimEnd().endsWith(']')) {
       if (++i >= lines.length) throw new Error('a list does not end');
-      value += `\n${lines[i]}`;
+      parts.push(lines[i]);
     }
-    for (const [key, item] of tomlValue(match[1], value.trim())) {
+    for (const [key, item] of tomlValue(match[1], parts.join('\n').trim())) {
       if (table.has(key)) throw new Error(`line ${i + 1} repeats ${key}`);
       table.set(key, item);
     }

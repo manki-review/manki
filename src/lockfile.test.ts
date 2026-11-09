@@ -5,6 +5,7 @@ import { dirname, join } from 'path';
 
 import { parsePRDiff } from './diff';
 import { formatLockfileChanges, isParsedLockfile, lockfilesLast, lockfileSignals, readLockfileChanges } from './lockfile';
+import { toolAlertFindings } from './static-signals';
 import { ParsedDiff } from './types';
 
 /** Diffs two versions of a lockfile with git, as a PR diff shows them. `null` stands for a missing file. */
@@ -417,6 +418,19 @@ ${scheduler ? '\n  scheduler@0.23.2:\n    dependencies:\n      loose-envify: 1.4
 
   it('says so when a lockfile change moves no package', () => {
     expect(formatLockfileChanges(read('Cargo.lock', `# old\nversion = 4\n`, `# new\nversion = 4\n`))).toBe('Cargo.lock\n  no package changes');
+  });
+
+  it('gives each flagged package of a one-line package-lock.json an alert of its own, and reads a lockfile of many lines', () => {
+    const lock = (resolved: string) => JSON.stringify({ lockfileVersion: 3, packages: {
+      'node_modules/a': { version: '1.0.0', resolved: resolved.replace('$', 'a'), integrity: 'sha512-a' },
+      'node_modules/b': { version: '1.0.0', resolved: resolved.replace('$', 'b'), integrity: 'sha512-b' },
+    } }) + '\n';
+
+    const lockfiles = read('package-lock.json', lock('https://registry.npmjs.org/$/-/$-1.0.0.tgz'), lock('https://evil.example.com/$-1.0.0.tgz'));
+
+    expect(toolAlertFindings(lockfileSignals(lockfiles)).map(f => [f.line, f.title.slice(0, 26)])).toEqual([[1, 'lockfile-change: changed a'], [1, 'lockfile-change: changed b']]);
+    const many = `version = 4\n${Array.from({ length: 40_000 }, (_, i) => `\n[[package]]\nname = "c${i}"\nversion = "1.0.0"\n`).join('')}`;
+    expect(formatLockfileChanges(read('Cargo.lock', many, many.replace('name = "c39999"\nversion = "1.0.0"', 'name = "c39999"\nversion = "1.0.1"')))).toBe('Cargo.lock\n  updated c39999 1.0.0 -> 1.0.1 (line 160001)');
   });
 
   it('keeps a value from the PR on one line', () => {

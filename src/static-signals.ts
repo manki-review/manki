@@ -399,7 +399,7 @@ export function formatStaticSignals(signals: StaticSignal[]): string {
 export function toolAlertFindings(signals: StaticSignal[]): Finding[] {
   const seen = new Set<string>();
   return signals.filter(s => {
-    const key = `${s.file}:${s.line}:${s.ruleId || s.message}`;
+    const key = `${s.file}:${s.line}:${s.ruleId}:${s.message}`;
     if (seen.has(key) || !isTriagedSignal(s)) return false;
     seen.add(key);
     return true;
