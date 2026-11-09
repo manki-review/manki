@@ -1,0 +1,53 @@
+id: rdc-1138
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1138, replayed as fork PR xdustinface/rust-dashcore#188
+base: 9dfbd041c8d47cef91ef6ffa96142d963008dda5
+head: 3b150e4de8b9a2bbf268b5859047440363a60b5c
+title: "feat(dash)!: decode and encode ProUpServTx and ProUpRegTx version 3"
+body: |
+  Closes upstream issue 1133. Part of upstream issue 1047.
+
+  ProTx version 3 (`ExtAddr`, gated on v24) changes two update payloads (layouts from Core's `src/evo/providertx.h`):
+
+  - **ProUpServTx:** the service is an extended `netInfo` instead of a fixed ip and port, and Evo nodes write only `platformNodeID` (the platform ports live in `netInfo`). We rejected version 3 as unsupported, failing the whole block.
+  - **ProUpRegTx:** `scriptPayout` is replaced by DIP-0026 payouts, a `u8` count followed by `{scriptPayout, reward}` entries. We decoded version 3 with the old layout, misaligning the block.
+
+  ## Changes
+
+  - `ProTxVersion::ExtAddr = 3`.
+  - `ProviderUpdateServicePayload::net_info: Option<ExtNetInfo>`, present from version 3 (`ip_address`/`port` are zero then). Reuses the `ExtNetInfo` parser of the masternode list entries (upstream PR 797), now `Hash` and crate-visible.
+  - `ProviderUpdateRegistrarPayload::payouts: Option<Vec<MasternodePayoutShare>>`, present from version 3 (`script_payout` is empty then). New `MasternodePayoutShare`, to be reused by ProRegTx v3 (upstream issue 1132).
+  - ProUpServTx now reads `mn_type` from version 2 onwards, as Core does, instead of only at version 2.
+  - Hand-written bincode for both payloads with the derived layout, writing the new field only from version 3, so data persisted before keeps decoding.
+
+  Breaking: new public fields on both payloads.
+
+  ## Not in this PR
+
+  - The wallet still matches ProUpRegTx payouts through `script_payout` only, so it won't see a v3 ProUpRegTx paying one of its scripts.
+  - The FFI payload views still expose ip/port only (`0.0.0.0:0` for v3).
+  - The new fields follow the existing `Option` pattern; enums for the parts that vary (e.g. `MasternodeNetInfo` for the service) would make version/field mismatches unrepresentable.
+
+  ## Testing
+
+  - Unit: v3 round trips for both payloads (byte positions of `netInfo` and the payout count, exact bytes consumed, `size()`), Evo v3 without platform ports, version 4 rejected, v3 ProUpRegTx without payouts fails to encode, bincode v3 round trips. Existing v1/v2 vectors still pass.
+  - `cargo test -p dashcore -p key-wallet -p key-wallet-ffi -p key-wallet-manager`, `cargo test -p dash-spv` with dashd integration tests, clippy `-D warnings`.
+  - No real v3 transaction vectors yet: our regtest dashd doesn't run v24.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`TransactionBuilder::estimated_payload_size` in key-wallet still sizes ProUpServTx with a fixed ip and port plus platform ports, and ProUpRegTx with `script_payout` only, so a version 3 transaction is underpriced (about 56 bytes short for two P2PKH payouts), and the finalizer's estimate guard cannot catch it."
+    locations: ["key-wallet/src/wallet/managed_wallet_info/transaction_builder.rs", "estimated_payload_size", "TransactionBuilder"]
+    fix: "31215cb1c"
+  - id: K2
+    severity: warning
+    mechanism: "`ProviderUpdateRegistrarPayload::consensus_decode` has no version check: version 0 is accepted and version 4 and above is read with the version 3 layout. ProUpServTx and Dash Core reject both."
+    locations: ["dash/src/blockdata/transaction/special_transaction/provider_update_registrar.rs", "ProviderUpdateRegistrarPayload", "consensus_decode"]
+    fix: "6cd43fc07"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "Design: model the ProUpServTx service as the existing `MasternodeNetInfo` now, since the PR is breaking anyway, instead of a second break later."
+    locations: ["dash/src/blockdata/transaction/special_transaction/provider_update_service.rs", "MasternodeNetInfo", "net_info"]
+    fix: "1efd8e6b8"

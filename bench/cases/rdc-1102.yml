@@ -1,0 +1,34 @@
+id: rdc-1102
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1102, replayed as fork PR xdustinface/rust-dashcore#185
+base: 2322ef8b4b1e75a8c4adff7e80ef6b42d63a21a1
+head: 630a8275eec7f34ea4382211b773ec4e95474764
+title: "fix(dash-spv): follow the network onto a branch that replaces stored blocks"
+body: |
+  When the network reorganized onto a branch that replaces blocks the client already stored, the client stayed on the old branch for good. The headers of the new branch do not connect to any segment of the header pipeline, so they were dropped with a "no segment matched" warning, every time.
+
+  The block headers manager now looks up where such headers branch off: past the headers it already stores, if the parent of the first unknown one is stored below the tip, it emits `SyncEvent::ForkDetected` with that height. The sync loop then hands it to `handle_fork()`, which, under the lifecycle lock, stops the client, truncates the stored headers, filter headers, filters and blocks above the fork, and runs the client again, so it syncs onto the branch the network follows. To run again without releasing the lock, `run()` now delegates to `run_locked()`.
+
+  The wallet is not rewound: its synced height only moves forward, so the blocks of the new branch below its old height are not rescanned, and transactions of the dropped blocks stay as they were.
+
+  `test_sync_follows_reorg` makes dashd replace its last 3 blocks with a branch of 5 and requires the client to end on the new tip. Without this change it times out with the client still on the old branch.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "An error from `stop_locked` in `handle_fork` returns early through `?` after the loop was taken out of `sync_loop`, so truncation and restart never run and the client stays stopped on the old branch."
+    locations: ["dash-spv/src/client/lifecycle.rs", "handle_fork", "stop_locked"]
+    fix: "a7ac6d6eb"
+  - id: K2
+    severity: warning
+    mechanism: "`handle_fork` truncates chain storage but restarts with the same wallet state. A wallet synced past `fork_height` can skip replacement blocks, and transactions from removed blocks stay, leaving balances and confirmations stale. Acknowledged and deferred upstream."
+    locations: ["dash-spv/src/client/lifecycle.rs", "handle_fork", "fork_height"]
+  - id: K3
+    severity: warning
+    mechanism: "The fork-event receiver in `sync_coordinator.rs` only handles `Ok(ForkDetected)`. A `Lagged` error is ignored, so fork recovery can be skipped silently. Acknowledged and deferred upstream."
+    locations: ["dash-spv/src/client/sync_coordinator.rs", "Lagged", "ForkDetected"]
+  - id: K4
+    severity: blocker
+    mechanism: "Security (DoS): `ForkDetected` fires from an unmatched `Headers` message before `BlockHeaderValidator` runs. A peer sending one header whose parent is a stored block below the tip makes `handle_fork` truncate stored headers and filter data. A validated higher-work branch should be required before truncating. Acknowledged and deferred upstream."
+    locations: ["dash-spv/src/sync/block_headers/manager.rs", "ForkDetected", "BlockHeaderValidator", "handle_fork"]
+nice_to_have: []

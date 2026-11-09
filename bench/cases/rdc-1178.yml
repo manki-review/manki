@@ -1,0 +1,30 @@
+id: rdc-1178
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1178, replayed as fork PR xdustinface/rust-dashcore#184
+base: 6b7bde74ee33ff85574cd44eaa3efed719ca84cc
+head: 56106419105f25aa2ffba02dee7eef64c39758c5
+title: "fix(dash-spv): make stop wait for the tasks the sync loop detaches"
+body: |
+  The sync loop runs fork recovery (`handle_fork`) and the stop of a failed loop (`stop_failed`) in detached tasks. Each holds a client clone, and with it the storage and its lock file. `stop()` didn't wait for them, so it could return while they still held the lock (upstream platform issue 5381).
+
+  - Those tasks now go into a `JoinSet` on the client.
+  - `stop()` joins them after releasing the `sync_loop` lock, which they take themselves. With the loop already taken, they return without acting.
+
+  Closes upstream issue 1171
+key_version: 1
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "`stop()` joins the detached tasks while holding `detached_tasks`, but `run()` can take `sync_loop` in the meantime. A detached `stop_failed` or `handle_fork` then acts on whichever loop is in `sync_loop`, so it can wait on a new loop whose own spawn blocks on `detached_tasks`: a deadlock, or `stop()` returns with a loop still running and holding the storage."
+    locations: ["dash-spv/src/client/lifecycle.rs", "dash-spv/src/client/sync_coordinator.rs", "detached_tasks", "stop_failed", "handle_fork"]
+    fix: "9d0d4d5a9"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "The test `stop_waits_for_detached_tasks` pushes a task straight into the private field, so it exercises neither real spawn site in `sync_coordinator.rs`. Reverting them leaves it green."
+    locations: ["stop_waits_for_detached_tasks", "dash-spv/src/client/mod.rs"]
+    fix: "9d0d4d5a9"
+  - id: N2
+    severity: nitpick
+    mechanism: "Style: the `Arc::clone` and the new `use std::sync::Arc` in `sync_coordinator.rs` are unneeded, the new `detached_tasks` field has no doc comment, and the test uses inline paths (`std::time::Duration`, `tokio::time::sleep`)."
+    locations: ["dash-spv/src/client/sync_coordinator.rs", "dash-spv/src/client/mod.rs"]

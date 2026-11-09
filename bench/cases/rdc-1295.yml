@@ -1,0 +1,62 @@
+id: rdc-1295
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1295, replayed as fork PR xdustinface/rust-dashcore#186
+base: d9c30a7cb2c6f305cd528833193497500160aa1c
+head: 63a021e6c52d7be694e779a0b3ba403e7ee7a881
+title: "fix(key-wallet): keep a funds account's output out of the other funds accounts"
+body: |
+  ## Problem
+
+  `ManagedWalletInfo::update_balance` adds up the balances of the funds accounts. If two funds accounts hold the same outpoint, the wallet counts it twice.
+
+  A host can create that state. For example, a restore loads an output paid to a CoinJoin address into BIP44. A rescan then records the transaction for the CoinJoin account, which inserts the same outpoint again.
+
+  ## Fix
+
+  After each account records or confirms a transaction (`WalletTransactionChecker::check_core_transaction`, on both the block/mempool path and the InstantSend path), `ManagedAccountCollection::settle_outputs_held_elsewhere` runs for that account. It removes from the other accounts of `all_funding_accounts` (BIP44, BIP32, CoinJoin, DashPay receiving) any output of the transaction that:
+  - pays one of this account's own addresses, and
+  - this account holds.
+
+  The removed copy's InstantSend-lock, trusted and locked flags carry over to the owner's copy. A lock set on either copy stays. A DashPay external account holds a contact's coins, so it takes nothing from the wallet's own accounts.
+
+  Fixes upstream issue 1294.
+
+  Left open:
+  - **Only the UTXO moves.** The other account's reservations, spent-output tracking and any transaction record for that outpoint stay where they are.
+  - **A host-written duplicate settles only when its transaction is next processed** (a rescan, block or InstantSend lock). There is no wallet-wide sweep.
+  - **The move is silent.** No record or event reports it, so a host that restores per-account UTXOs from its own storage can bring the duplicate back on the next restore.
+
+  ## Changelog
+
+  - key-wallet: an outpoint held by a funds account that does not own its address moves to the owning account when that account records the transaction, so the wallet balance counts it once.
+
+  ## Tests
+
+  `an_output_held_by_another_funds_account_moves_to_its_owner`, with two cases. In both, a transaction pays BIP44 and pays X to a CoinJoin address, and BIP44 holds a restored copy of X.
+  - **rescan:** the transaction is recorded in a block. Afterwards only the CoinJoin account holds X, X is confirmed, and the balance counts it once.
+  - **after a locked mempool copy:** the CoinJoin account saw the transaction in the mempool and its copy of X is locked. After the block, the lock stays.
+
+  Both cases fail on `dev`: BIP44 still holds X, and the balance is 1,300,000 instead of 800,000.
+
+  `a_payment_the_reverse_external_chain_also_matches_stays_ours`: a wallet holding both identities of a friendship derives the same addresses for its DashPay receiving chain and for the reverse external chain. A payment to one of them stays in the receiving account and counts in the balance.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "The owner check in `settle_outputs_held_elsewhere` reads only `utxos`. When the owning account holds the output only in `spent_before_funded`, the copy in another funding account stays spendable and counted in the balance."
+    locations: ["key-wallet/src/managed_account/managed_account_collection.rs", "settle_outputs_held_elsewhere", "spent_before_funded"]
+    fix: "095f7f208"
+  - id: K2
+    severity: warning
+    mechanism: "The duplicate removal in `settle_outputs_held_elsewhere` is reported to no persistence event, so a host mirror keeps the duplicate and restores it later."
+    locations: ["key-wallet/src/managed_account/managed_account_collection.rs", "settle_outputs_held_elsewhere"]
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "Design: the pass cleans the duplicate up after it exists instead of keeping the host from creating it. The library never credits an output to an account that does not own its address, and the bad state comes from the host's restore. Upstream reworked it into `ManagedWalletInfo::restore_utxos`, which inserts each UTXO only into the account whose pools contain its script."
+    locations: ["key-wallet/src/managed_account/managed_account_collection.rs", "key-wallet/src/transaction_checking/wallet_checker.rs", "settle_outputs_held_elsewhere"]
+  - id: N2
+    severity: suggestion
+    mechanism: "The `is_instantlocked`, `is_trusted` and `is_locked` flag merge in the settle pass duplicates the merge in `ManagedCoreFundsAccount::update_utxos`."
+    locations: ["key-wallet/src/managed_account/managed_account_collection.rs", "update_utxos", "is_instantlocked"]
+    fix: "f233dcc96"

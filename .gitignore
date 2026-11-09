@@ -8,3 +8,5 @@ dist/
 .env
 .claude/
 coverage/
+bench/results/
+bench/.matcher-cache.json
