@@ -128,6 +128,14 @@ describe('listUsesOutsideDiff', () => {
     expect(section).toContain('### `ReviewConfig` (type)');
     expect(section).toContain('### `noise_level` (field of the changed `ReviewConfig`)\n\n```\ndeclared at src/config.ts:3\nsrc/review.test.ts:1:');
     expect(section).toContain('src/config.ts:1: interface ReviewConfig { slice_lines, noise_level }');
+
+    // A field name repeated in two inline object types is a field of each.
+    const retry = (delay: string) => `export interface RetryConfig {\n  reads: { retry_delay: number };\n  writes: { retry_delay: ${delay} };\n}\n`;
+    const nested = await usesFor(
+      { 'src/retry.ts': retry('number'), 'src/client.ts': 'export const wait = (c: RetryConfig) => c.writes.retry_delay;\n' },
+      { 'src/retry.ts': retry('number | null') },
+    );
+    expect(nested.section).toContain('### `retry_delay` (field of `RetryConfig`)\n\n```\ndeclared at src/retry.ts:3\nsrc/client.ts:1:');
   });
 
   it('finds keyword declarations and config keys in files without a grammar, and skips excluded paths', async () => {

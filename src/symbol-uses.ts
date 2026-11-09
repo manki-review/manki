@@ -721,7 +721,7 @@ class ParsedFile {
     const fields = new Set<string>();
     // A Python field is assigned on any number of lines, and the first one declares it.
     this.declarations = [...nodes, ...members].flatMap(node => this.declaration(node) ?? [])
-      .filter(d => d.kind !== 'field' || (!fields.has(`${d.container}:${d.name}`) && !!fields.add(`${d.container}:${d.name}`)));
+      .filter(d => d.kind !== 'field' || !this.rules.fieldName || (!fields.has(`${d.container}:${d.name}`) && !!fields.add(`${d.container}:${d.name}`)));
   }
 
   private declaration(node: SgNode): Declaration | undefined {
