@@ -16,6 +16,10 @@ const review = (id: number, context: RoundContext) => ({ id, body: `Review.\n${f
 
 describe('review stats', () => {
   it('adds up rounds, findings, blocker outcomes, finders, refutations, cost and inter-round diffs over merged PRs', () => {
+    const disprovedBlocker = { outcome: 'disproved' as const, reason: 'r', files: [], codeDigest: 'd' };
+    const confirmedBlocker = { outcome: 'confirmed' as const, reason: 'r', files: [], codeDigest: 'd' };
+    const unsettled = (reason: string) => ({ outcome: 'unsettled' as const, reason, files: [], codeDigest: 'd' });
+    const lead = { title: 'l', file: 'a', line: 1, severity: 'warning' as const, reviewers: [], description: 'd', lead: { checked: 'c', left: 'l' }, since: 1 };
     const first = makeRoundContext(1, {
       meta: { prNumber: 1, commitSha: 'a', round: 1, timestamp: 't', mankiVersion: '7', outcome: 'ADDRESS_FIRST' },
       findings: {
@@ -23,8 +27,7 @@ describe('review stats', () => {
         severityCounts: {},
         entries: [
           {
-            ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: 'd' },
-            pairRefutation: { outcome: 'confirmed', reason: 'r', files: [], codeDigest: 'd' },
+            ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: disprovedBlocker, pairRefutation: confirmedBlocker,
           },
           { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed' },
         ],
@@ -50,10 +53,16 @@ describe('review stats', () => {
         // A finding a disproof dropped is listed with the judge's drops, and its refutations count too.
         dropped: [{
           title: 't', file: 'a', line: 1, reviewers: [],
-          refutation: { outcome: 'unsettled', reason: 'r', files: [], codeDigest: 'd' }, pairRefutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: 'd' },
+          refutation: unsettled('first'), pairRefutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: 'd' },
         }],
       },
-      usage: { estimatedCostUsd: 0.25 },
+      // The blocker's answers are reused from round 1, so they count once. A lead left unsettled counts, a posted one does not.
+      findings: { count: 0, severityCounts: {}, entries: [], unposted: [{ ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: disprovedBlocker, pairRefutation: confirmedBlocker }] },
+      leads: [
+        { ...lead, outcome: 'unsettled', refutation: unsettled('lead first'), pairRefutation: unsettled('lead second') },
+        { ...lead, outcome: 'confirmed', posted: true, refutation: confirmedBlocker },
+      ],
+      usage: { estimatedCostUsd: 0.25, llmCalls: [{ ...call('gpt-5', 3), stage: 'judge', agent: 'refute_pair', costUsd: null }] },
     });
     const threadComments = [
       { id: 10, body: '**Blocker**: Bug <!-- manki:blocker:Bug -->', user: bot },
@@ -95,9 +104,8 @@ describe('review stats', () => {
       // Rounds 2 of the first PR and 4 and 5 of the second had a whole diff. Round 2 of the second was cut, round 3 unknown.
       followUpRounds: 5, interRoundDiffCutOrUnknown: 2,
     });
-    expect(Object.fromEntries(stats.refutations)).toEqual({ 'blocker disproved': 1, 'ignore unsettled': 1 });
-    expect(Object.fromEntries(stats.pairRefutations)).toEqual({ 'disproved / confirmed': 1, 'unsettled / disproved': 1 });
-    expect(stats.pairRefutationCost).toBeCloseTo(0.12);
+    expect(Object.fromEntries(stats.refutations)).toEqual({ 'blocker disproved': 1, 'ignore unsettled': 1, 'warning unsettled': 1 });
+    expect(Object.fromEntries(stats.pairRefutations)).toEqual({ 'disproved / confirmed': 1, 'unsettled / disproved': 1, 'unsettled / unsettled': 1 });
     expect(Object.fromEntries(stats.finders)).toEqual({
       'claude-sonnet': { rounds: 1, rawFindings: 3, keptOnly: 1, keptShared: 1, toolSteps: [4, 2], budgetedCalls: 1, wrapUps: 0 },
       'claude-opus': { rounds: 1, rawFindings: 1, keptOnly: 0, keptShared: 1, toolSteps: [10], budgetedCalls: 1, wrapUps: 1 },
@@ -109,13 +117,13 @@ describe('review stats', () => {
     expect(report).toContain('- Needed 5 or more rounds: 50% (1 of 2)');
     expect(report).toContain('| blocker | 1 | 0.14 |');
     expect(report).toContain('- Blocker threads: 3, fixed 1, withdrawn 1, other 1');
-    // The split and the answer the first refuter left unsettled both changed the outcome, and neither agreed.
+    // The split and the answer the first refuter left unsettled both changed the outcome. The lead's two answers agreed.
     expect(report).toContain([
       '## Second refuter', '',
-      '- Findings checked: 2, for 0.12 USD',
-      '- Agreed with the first refuter: 0% (0 of 2)',
-      '- Split, one confirmed and one disproved: 50% (1 of 2)',
-      '- Changed the outcome the first refuter alone gave: 100% (2 of 2)',
+      '- Findings checked: 3, for 0.12 USD plus 1 unpriced call',
+      '- Agreed with the first refuter: 33% (1 of 3)',
+      '- Split, one confirmed and one disproved: 33% (1 of 3)',
+      '- Changed the outcome the first refuter alone gave: 67% (2 of 3)',
     ].join('\n'));
     expect(report).toContain('| claude-sonnet | 1 | 3 | 3.00 | 1 | 1 | mean 3.0, median 3.0, max 4.0 | 0% (0 of 1) |');
     expect(report).toContain('| claude-opus | 1 | 1 | 1.00 | 0 | 1 | mean 10.0, median 10.0, max 10.0 | 100% (1 of 1) |');

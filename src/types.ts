@@ -364,6 +364,9 @@ export interface RoundLead {
   since: number;
   /** Set when the lead was posted as a finding, so the next round does not carry it over. */
   posted?: true;
+  /** Mirror `Finding.refutation` and `Finding.pairRefutation` of the judged lead. */
+  refutation?: Refutation;
+  pairRefutation?: Refutation;
 }
 
 /** `none` means no tool spoke to the claim. Silence is never evidence against a finding. */
