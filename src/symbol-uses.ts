@@ -52,6 +52,8 @@ const MAX_EXCERPT_LINE_CHARS = 300;
 const MAX_ITEM_CHARS = 60;
 /** A field pattern reads only this much of a line, which holds any declaration, so a crafted line cannot slow it. */
 const MAX_FIELD_LINE_CHARS = 300;
+/** A line longer than this is never scanned for limits, so a crafted line cannot slow the limit patterns. */
+const MAX_SCANNED_LINE_CHARS = 500;
 
 // Names so common across codebases that their uses say nothing about the change.
 const GENERIC_NAMES = new Set([
