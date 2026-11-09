@@ -1052,8 +1052,8 @@ function matchPreviousType(finding: Finding, previous: PreviousFinding): Duplica
 }
 
 /**
- * Asks `client` which findings repeat an earlier resolved or answered one, in any wording. A repeat of a waived finding
- * is dropped, and any other repeat goes to the judge with a note. A model match never drops a repeat of an answered thread.
+ * Asks `client` which findings repeat an earlier resolved or answered one in the same file, in any wording. A repeat of a
+ * waived finding is dropped, and any other repeat goes to the judge with a note. A model match never drops a repeat of an answered thread.
  */
 async function llmDeduplicateFindings(
   findings: Finding[],
@@ -1066,7 +1066,7 @@ async function llmDeduplicateFindings(
   }
 
   const list = (items: Array<{ title: string; file: string; line: number; description?: string }>): string => items.map((f, i) =>
-    `${i + 1}. "${sanitize(f.title)}" (${sanitize(f.file)}:${f.line})${f.description ? `: ${sanitize(f.description, LLM_DEDUP_DESCRIPTION_CHARS)}` : ''}`,
+    `${i + 1}. "${sanitize(f.title)}" (${sanitize(f.file)}:${f.line})${f.description ? `: "${sanitize(f.description, LLM_DEDUP_DESCRIPTION_CHARS)}"` : ''}`,
   ).join('\n');
 
   try {
@@ -1085,7 +1085,8 @@ async function llmDeduplicateFindings(
     const unique: Finding[] = [];
     const duplicates: DuplicateMatch[] = [];
     for (let i = 0; i < findings.length; i++) {
-      const priors = matches.filter(m => m.index - 1 === i).map(m => earlier[m.matchedEarlier - 1]).filter(p => p !== undefined);
+      // A finding in another file is another place, which the static matcher never matches either.
+      const priors = matches.filter(m => m.index - 1 === i).map(m => earlier[m.matchedEarlier - 1]).filter(p => p?.file === findings[i].file);
       const waived = priors.find(p => p.status === 'resolved' && mayWaive(p, findings[i]));
       const fixed = priors.find(p => p.fixed);
       const answered = priors.find(isAnswered);

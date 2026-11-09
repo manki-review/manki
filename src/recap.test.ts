@@ -2111,8 +2111,8 @@ describe('llmDeduplicateFindings', () => {
     expect(deduplicateFindings([second], [waived]).unique).toEqual([second]);
     expect(await llmDeduplicateFindings([second], [waived], match)).toEqual({ unique: [], duplicates: [{ finding: second, matchedTitle: waived.title, matchType: 'llm' }] });
     const [, prompt] = jest.mocked(match.sendMessage).mock.calls[0];
-    expect(prompt).toContain('(src/memory.ts:84): Before this change, an empty memory.repo meant');
-    expect(prompt).toContain('(src/memory.ts:79): Before this change, an empty memory.repo resolved to');
+    expect(prompt).toContain('(src/memory.ts:84): "Before this change, an empty memory.repo meant');
+    expect(prompt).toContain('(src/memory.ts:79): "Before this change, an empty memory.repo resolved to');
 
     // An open thread Manki answered is matched too, and its repeat goes to the judge with the answer, even as a blocker.
     const answered = makePrevious({ ...memory, status: 'replied', threadId: 'T2', line: 79, title: second.title, description: second.description, answer: 'Unverified. The move is not in this PR.' });
@@ -2120,6 +2120,12 @@ describe('llmDeduplicateFindings', () => {
     expect(await llmDeduplicateFindings([third], [answered], match)).toEqual({ unique: [{ ...third, ...withAnswer }], duplicates: [] });
     const blocker = { ...third, severity: 'blocker' as const };
     expect(await llmDeduplicateFindings([blocker], [answered], match)).toEqual({ unique: [{ ...blocker, ...withAnswer }], duplicates: [] });
+
+    // The same problem in another file is another place, so a match there changes nothing.
+    const elsewhere = { ...blocker, file: 'src/index.ts' };
+    for (const prior of [answered, waived]) {
+      expect(await llmDeduplicateFindings([elsewhere], [prior], match)).toEqual({ unique: [elsewhere], duplicates: [] });
+    }
   });
 
   it('does not treat replied findings as dismissed', async () => {
