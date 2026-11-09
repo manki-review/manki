@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.3.1] - 2026-11-10
+
+Manki 7.3.1 grades findings more honestly. Every stage checks what it is told against the code before that changes a grade, a gap the PR admits keeps the grade its damage earns, and every doubt the judge cannot settle goes to the refuter. A finding comment opens with what goes wrong and keeps the rest in one fold that leads with the fix. Automatic review pauses later and resumes after a review started by hand.
+
+### Upgrading
+
+1. The judge now checks claims instead of trusting them. The PR description, code comments, linked issues, author replies, another model's finding and an earlier round's verdict move a grade only when the code confirms them. A gap the PR description, a comment or a TODO calls deferred, out of scope or not handled yet keeps the grade its damage earns, so expect more warnings and blockers on PRs that list known limitations. A declared placeholder or a TODO with a tracking issue still counts as before ([#1288](https://github.com/manki-review/manki/pull/1288), [#1295](https://github.com/manki-review/manki/pull/1295)).
+2. The judge states, for every finding, the grade it earns if the premise the judge doubts holds. Any doubt that leaves a finding below that grade goes to the refuter, not only doubts about unseen code or whether a path is reached, so a round can make a few more refuter calls. A defect in lines the PR adds is never treated as pre-existing ([#1288](https://github.com/manki-review/manki/pull/1288), [#1295](https://github.com/manki-review/manki/pull/1295)).
+3. A finding comment shows "What goes wrong" open, with a committable suggestion still open under it. One fold holds the rest and leads with the fix: "How to fix it", "Why it matters", "Checked in the code" and the refuter's outcome. A finding in the review body uses the same fold ([#1306](https://github.com/manki-review/manki/pull/1306)).
+4. `convergence.max_auto_rounds` defaults to 10 instead of 5. When automatic review is paused, a review started by hand turns it back on for the next `convergence.rounds_after_restart` automatic rounds, 3 by default. Set it to 0 for the old behaviour, where a restart reviews only the round asked for. An open PR that is paused now and already had a review started by hand gets up to 3 automatic rounds back once after the upgrade ([#1313](https://github.com/manki-review/manki/pull/1313), [#1317](https://github.com/manki-review/manki/pull/1317)).
+5. The subscription limit box under the verdict shows only just after a usage window passes 70% or 80%, up to 2 points past the mark, and on every review from 90%. The progress comment still shows every reading on every review ([#1316](https://github.com/manki-review/manki/pull/1316)).
+6. Python and Go get sibling field and sibling implementation questions, as Rust, TypeScript and JavaScript do. Other languages get the uses list only. Methods every type has, such as Python `__init__` and other dunder methods, TypeScript `constructor` and `toString`, Go `String` and `Error` or a Rust `new`, are compared only between classes that share a base class or interface, and standard Rust trait methods such as `Display` or `Clone` not at all ([#1289](https://github.com/manki-review/manki/pull/1289), [#1321](https://github.com/manki-review/manki/pull/1321)).
+7. Releases are published from GitHub with an approval, now that the release App is set up. `RELEASE.md` names the tag rule as a ruleset of the `manki` repository and says to check the `release` environment's protection ([#1319](https://github.com/manki-review/manki/pull/1319)).
+
+### How finders search
+
+- A new "Narrowed input" check: when a change narrows what it accepts, with a lower or new limit, stricter validation, a narrower type, a new required field or a stricter format, the finder finds every producer of that input, in this repository or in a reference it mirrors, and checks that each still fits ([#1301](https://github.com/manki-review/manki/pull/1301)).
+- The finder checklist and its example finding are language-neutral, with examples in Rust, TypeScript, Python and Go. The reference behaviour check applies whenever the changed code implements or mirrors a spec, another implementation or an API it talks to ([#1286](https://github.com/manki-review/manki/pull/1286), [#1295](https://github.com/manki-review/manki/pull/1295)).
+- For a field or variant whose meaning the diff changes, the uses list ranks first the uses in files that name its type, shows up to 12 of them instead of 4, and says how many it cut. The `ast_grep` repository tool also searches Go ([#1289](https://github.com/manki-review/manki/pull/1289)).
+- A sibling implementation question about a method every type has compares the classes that share a base, together with the base's own method, so two subclasses of `Account` compare their `__eq__` with each other and with `Account.__eq__`. Each class's first 8 bases count, standard bases such as `object`, `ABC`, `Enum` or `Error` are left out, and each changed file asks about at most 50 groups ([#1321](https://github.com/manki-review/manki/pull/1321)).
+
+### Review loop and verdicts
+
+- A kept finding folds into a verdict reader blocker when both sit within a few lines in one file and cite a common proof line near both, whatever their titles say. The blocker's description keeps the other title ([#1287](https://github.com/manki-review/manki/pull/1287), [#1294](https://github.com/manki-review/manki/pull/1294)).
+- The verdict reader's message ends with its reply format, so fewer rounds pay for a second reader call after a Markdown answer ([#1293](https://github.com/manki-review/manki/pull/1293)).
+- A proof entry that lists several lines, such as `app/views.py:12,40-42`, keeps every line instead of the first, and one long entry no longer crowds the others out ([#1309](https://github.com/manki-review/manki/pull/1309), [#1311](https://github.com/manki-review/manki/pull/1311)).
+- The judge sees a finding below a removed line at its correct line number ([#1295](https://github.com/manki-review/manki/pull/1295)).
+- The refuter's examples of language rules cover Python, TypeScript, Go and Rust instead of one Rust rule ([#1288](https://github.com/manki-review/manki/pull/1288)).
+
+### Review format
+
+- "Checked in the code" shows one check per place when reviewers quote the same code, links a bare file name to the changed or read file it names, keeps a path's lower case, no longer marks code inside a number such as `0x7fff_ffff`, and links every line of a location that lists several ([#1304](https://github.com/manki-review/manki/pull/1304)).
+- After a restart, the round cap notice counts the rounds since the last approval and those since the last review started by hand, instead of a fraction past the cap ([#1317](https://github.com/manki-review/manki/pull/1317)).
+
+### Commands and settings boxes
+
+- A `dismiss` that dismisses nothing says so and shows the command's usage. In a review thread it answers in that thread, and says why when it leaves the thread open. A named `dismiss` stores a suppression only when its text matches a finding Manki posted on the PR, and says why when nothing was stored ([#1302](https://github.com/manki-review/manki/pull/1302), [#1307](https://github.com/manki-review/manki/pull/1307)).
+- In webhook mode, ticking "Review again" or another settings box always starts a run. The run takes the sender from the newest edit by a person, not from Manki's own status edit that lands right after ([#1300](https://github.com/manki-review/manki/pull/1300)).
+
+### Review records and statistics
+
+- A round record over the size budget keeps the finders' raw findings and the uses list in short form, named in `meta.compacted`, before it drops them. A round with warnings and no blocker records the reason `warnings_present` instead of `only_nit_or_suggestion` ([#1287](https://github.com/manki-review/manki/pull/1287)).
+
+### Internal
+
+- The benchmark grows from the five replay cases to cases from more repositories and languages, split into a tuning set and a hold-out set that `--holdout` reports side by side. A Benchmark workflow runs it on GitHub, and `RELEASE.md` makes the hold-out score the release gate A tuning case checks that one round finds every instance of one defect class ([#1291](https://github.com/manki-review/manki/pull/1291), [#1296](https://github.com/manki-review/manki/pull/1296), [#1298](https://github.com/manki-review/manki/pull/1298), [#1322](https://github.com/manki-review/manki/pull/1322)).
+
 ## [7.3.0] - 2026-11-09
 
 Manki 7.3 gives the finders more to compare against. Every finder runs the same checklist, the reference repos are searched before the finders start, and small targeted calls compare sibling fields and implementations while the finders run. The judge reads the PR description and can send a doubt about whether a path is reached to the refuter. A second refuter on another model and a judge with repository tools are new opt-in settings. A PR that only bumps dependencies in a supported lockfile can be approved again.
