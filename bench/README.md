@@ -26,7 +26,7 @@ npm run bench -- --checkout xdustinface/rust-dashcore=/path/to/rust-dashcore \
 npm run bench -- --checkout xdustinface/rust-dashcore=/path/to/rust-dashcore --set models.judge=claude-sonnet-5-5
 ```
 
-A config that the overrides make invalid fails the run before any model call, and it never falls back to the defaults. The report holds one entry per variant, and the printed summary ends with a Markdown table that sets the variants side by side: recall, verdict accuracy, false blockers, extra findings, duplicates, incomplete runs, cost and wall time per run, and each key item's catch rate. The matcher cache is shared, so the same findings are matched once.
+Before the first review, every variant's config is loaded on every case. A variant whose overrides make a config invalid, or name a key the config does not know, stops the bench there, so no variant runs on the defaults or on the base setup by mistake. The bench exits 2 when a variant completes no review. The report holds one entry per variant, and the printed summary ends with a Markdown table that sets the variants side by side: recall, verdict accuracy, false blockers, extra findings, duplicates, incomplete runs, cost and wall time per run, and each key item's catch rate. The matcher cache is shared, so the same findings are matched once.
 
 ## Case files
 

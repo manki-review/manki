@@ -6,7 +6,7 @@ import { parse as parseYaml } from 'yaml';
 import { runCliCommand } from './cli';
 import { MANKI_VERSION } from './github';
 import { extractJSON } from './json';
-import { ConfigOverrides, LocalReview, LocalReviewInput, overlayConfig, reviewLocal } from './local-review';
+import { ConfigOverrides, loadConfigWithOverrides, LocalReview, LocalReviewInput, overlayConfig, reviewLocal } from './local-review';
 import { hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { buildLLMClient } from './review-clients';
@@ -389,6 +389,8 @@ interface BenchReport {
 
 type CaseResults = Array<{ benchCase: BenchCase; runs: RunScore[] }>;
 
+type VariantResults = { variant: Variant; results: CaseResults };
+
 function mean(values: Array<number | null>): number | null {
   const known = values.filter((v): v is number => v !== null);
   return known.length > 0 ? known.reduce((a, b) => a + b, 0) / known.length : null;
@@ -437,7 +439,7 @@ function buildVariantReport(variant: Variant, results: CaseResults): VariantRepo
   };
 }
 
-export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' | 'matcherModel'>, variants: Array<{ variant: Variant; results: CaseResults }>): BenchReport {
+export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' | 'matcherModel'>, variants: VariantResults[]): BenchReport {
   return { mankiVersion: MANKI_VERSION, ...meta, variants: variants.map(({ variant, results }) => buildVariantReport(variant, results)) };
 }
 
@@ -508,14 +510,14 @@ interface BenchOptions {
   runs: number;
   /** Local clone of each case repo, by `owner/name`. */
   checkouts: ReadonlyMap<string, string>;
-  /** Set on top of each case's base `.manki.yml`. */
-  configOverrides?: ConfigOverrides;
+  /** The setups to score, one after another. Defaults to one variant, `base`, with no overrides. */
+  variants?: Variant[];
   providerInputs: ProviderInputs;
   matcher: Matcher;
   review?: (input: LocalReviewInput) => Promise<LocalReview>;
   signal?: AbortSignal;
-  /** Called after each case with the results so far, so they can be saved before the next case. */
-  onCase?: (results: CaseResults) => void;
+  /** Called after each case with every variant's results so far, so they can be saved before the next case. */
+  onCase?: (variants: VariantResults[]) => void;
 }
 
 /**
@@ -532,11 +534,12 @@ function failedRun(error: unknown, review?: LocalReview): RunScore {
 }
 
 /**
- * Reviews each case `runs` times and scores every review. Checks that every case's commits are in its checkout first.
+ * Reviews each case `runs` times per variant and scores every review. First checks that every case's commits are in
+ * its checkout and that every variant's config loads on every case, so nothing is spent on a setup that cannot run.
  * A run that fails is recorded with its error, and the next one starts. Only an abort through `signal` stops the bench.
  */
-export async function runBench(cases: BenchCase[], options: BenchOptions): Promise<CaseResults> {
-  const { checkouts, review = reviewLocal } = options;
+export async function runBench(cases: BenchCase[], options: BenchOptions): Promise<VariantResults[]> {
+  const { checkouts, review = reviewLocal, variants = [{ name: 'base', overrides: {} }] } = options;
   for (const c of cases) {
     const checkout = checkouts.get(c.repo);
     if (!checkout) throw new Error(`No checkout for ${c.repo}, which case ${c.id} needs. Pass --checkout ${c.repo}=<dir>.`);
@@ -546,28 +549,40 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
       });
     }
   }
-  const results: CaseResults = [];
-  for (const benchCase of cases) {
-    const runs: RunScore[] = [];
-    for (let i = 0; i < options.runs; i++) {
-      let local: LocalReview | undefined;
-      try {
-        local = await review({
-          repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
-          providerInputs: options.providerInputs, signal: options.signal, ...(options.configOverrides && { configOverrides: options.configOverrides }),
-        });
-        const reviewed = local;
-        // The matcher is tried twice before a finished review is given up, and the cache keeps what it already decided.
-        runs.push(await scoreRun(benchCase, reviewed, options.matcher).catch(() => scoreRun(benchCase, reviewed, options.matcher)));
-      } catch (error) {
-        options.signal?.throwIfAborted();
-        runs.push(failedRun(error, local));
-      }
+  for (const { name, overrides } of variants) {
+    if (Object.keys(overrides).length === 0) continue;
+    for (const c of cases) {
+      await loadConfigWithOverrides(checkouts.get(c.repo)!, c.base, overrides).catch((error: Error) => {
+        throw new Error(`Variant ${name} does not load on case ${c.id}: ${error.message}`);
+      });
     }
-    results.push({ benchCase, runs });
-    options.onCase?.(results);
   }
-  return results;
+  const done: VariantResults[] = [];
+  for (const variant of variants) {
+    const results: CaseResults = [];
+    for (const benchCase of cases) {
+      const runs: RunScore[] = [];
+      for (let i = 0; i < options.runs; i++) {
+        let local: LocalReview | undefined;
+        try {
+          local = await review({
+            repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
+            providerInputs: options.providerInputs, signal: options.signal, configOverrides: variant.overrides,
+          });
+          const reviewed = local;
+          // The matcher is tried twice before a finished review is given up, and the cache keeps what it already decided.
+          runs.push(await scoreRun(benchCase, reviewed, options.matcher).catch(() => scoreRun(benchCase, reviewed, options.matcher)));
+        } catch (error) {
+          options.signal?.throwIfAborted();
+          runs.push(failedRun(error, local));
+        }
+      }
+      results.push({ benchCase, runs });
+      options.onCase?.([...done, { variant, results }]);
+    }
+    done.push({ variant, results });
+  }
+  return done;
 }
 
 interface BenchArgs {
@@ -604,7 +619,7 @@ Options:
   --out <file>                   Report path (default bench/results/<time>.json).
   --help                         Print this message.
 
-Exits 0 when at least one review completed, and 2 when none did or the bench could not start.`;
+Exits 0 when every variant completed at least one review, and 2 when one did not or the bench could not start.`;
 
 export function parseBenchArgs(argv: string[]): BenchArgs {
   const args: BenchArgs = {
@@ -682,22 +697,20 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     const startedAt = new Date().toISOString();
     const meta = { startedAt, runsPerCase: args.runs, matcherModel: args.matcherModel };
     const outPath = args.out ?? join('bench', 'results', `${startedAt.replace(/[:.]/g, '-')}.json`);
-    const done: Array<{ variant: Variant; results: CaseResults }> = [];
-    for (const variant of variants) {
-      const results = await runBench(cases, {
-        runs: args.runs, checkouts: args.checkouts, providerInputs, matcher, signal, configOverrides: variant.overrides,
-        onCase: (sofar) => {
-          writeJson(args.cache, Object.fromEntries(cache));
-          writeJson(outPath, buildReport(meta, [...done, { variant, results: sofar }]));
-          process.stderr.write(`bench: ${variant.name}: ${sofar.at(-1)!.benchCase.id} done, ${sofar.length} of ${cases.length} cases, report so far in ${outPath}\n`);
-        },
-      });
-      done.push({ variant, results });
-    }
-    const report = buildReport(meta, done);
+    const results = await runBench(cases, {
+      runs: args.runs, checkouts: args.checkouts, providerInputs, matcher, signal, variants,
+      onCase: (sofar) => {
+        const { variant, results: current } = sofar.at(-1)!;
+        writeJson(args.cache, Object.fromEntries(cache));
+        writeJson(outPath, buildReport(meta, sofar));
+        process.stderr.write(`bench: ${variant.name}: ${current.at(-1)!.benchCase.id} done, ${current.length} of ${cases.length} cases, report so far in ${outPath}\n`);
+      },
+    });
+    const report = buildReport(meta, results);
     writeJson(outPath, report);
     out(formatBenchSummary(report));
     out(`Report: ${outPath}\n`);
-    return report.variants.every(v => v.summary.incompleteRuns === v.summary.runs) ? 2 : 0;
+    // A variant with no completed review leaves the comparison without one of its columns.
+    return report.variants.some(v => v.summary.incompleteRuns === v.summary.runs) ? 2 : 0;
   });
 }

@@ -4,7 +4,7 @@ import { join, posix } from 'path';
 import { pathToFileURL } from 'url';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
-import { changedKeys, loadConfig } from './config';
+import { changedKeys, loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, reviewableDiff, tagFindingOrigins } from './diff';
 import { ApprovalHeld, buildRepoContext, configFailed, loadBaseConfig, RepoFiles } from './github';
 import type { ProviderInputs } from './providers';
@@ -33,8 +33,13 @@ export function overlayConfig(base: ConfigOverrides, overrides: ConfigOverrides)
   return merged;
 }
 
-/** Loads `content` with `overrides` set on top. Throws when either makes the config invalid, so a variant never runs on the defaults. */
+/**
+ * Loads `content` with `overrides` set on top. Throws when either makes the config invalid, or when an override names a
+ * key the config does not know, so a variant never runs on the defaults or on the base setup by mistake.
+ */
 function loadOverlaidConfig(content: string | null, configPath: string, overrides: ConfigOverrides): { config: ReviewConfig; source: ConfigSource } {
+  const unknown = validateConfig(overrides).warnings.filter(warning => warning.startsWith('Unknown config key'));
+  if (unknown.length > 0) throw new Error(`The config overrides name keys the config does not know: ${unknown.join('; ')}`);
   let parsed: unknown;
   try {
     parsed = content ? parseYaml(content) : null;
@@ -114,11 +119,17 @@ async function loadLocalConfig(
   const loaded = overrides
     ? loadOverlaidConfig(await read(), configPath, overrides)
     : await loadBaseConfig(read, configPath, error => (error instanceof Error ? error.message : String(error)));
-  const changed = changedKeys(headConfig, loaded.config);
+  // A key the overrides set differs from the head's whatever the change did, so it is left out.
+  const changed = changedKeys(headConfig, loaded.config).filter(key => !(overrides && key in overrides));
   if (changed.length > 0) {
     core.info(`This change edits ${changed.map(key => `\`${key}\``).join(', ')} in ${configPath}, which applies after merge: this review uses the base's settings.`);
   }
   return loaded;
+}
+
+/** Loads the config at `base` in `repoRoot` with `overrides` set on top, as a review with them does. Throws when it does not load. */
+export async function loadConfigWithOverrides(repoRoot: string, base: string, overrides: ConfigOverrides, configPath = DEFAULT_CONFIG_PATH): Promise<ReviewConfig> {
+  return loadOverlaidConfig(await gitRepoFiles(repoRoot, base).read(configPath), configPath, overrides).config;
 }
 
 /** Applies `patch` to the checkout at `dir`. Throws when it does not apply. */

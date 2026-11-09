@@ -275,13 +275,14 @@ describe('runBench and buildReport', () => {
     const onCase = jest.fn();
 
     const overrides = { models: { reviewer: 'claude-opus-5-5' } };
-    const results = await runBench([benchCase], { runs: 5, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review, onCase, configOverrides: overrides });
+    const [{ variant, results }] = await runBench([benchCase], { runs: 5, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review, onCase, variants: [{ name: 'opus', overrides }] });
 
     expect(review).toHaveBeenCalledTimes(5);
     expect(review.mock.calls[0]).toEqual([expect.objectContaining({
       repoRoot: checkout, base: benchCase.base, head: benchCase.head, title: 'fix: bound the reader', body: 'Reads lengths with a bound.\n', configOverrides: overrides,
     })]);
-    expect(onCase).toHaveBeenCalledWith(results);
+    expect(variant).toEqual({ name: 'opus', overrides });
+    expect(onCase).toHaveBeenCalledWith([{ variant, results }]);
     expect(results[0].runs[1]).toMatchObject({ outcome: 'FAILED', complete: false, error: 'provider down', mustCatchRecall: null, verdictCorrect: null });
 
     const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 5, matcherModel: 'model-a' }, [
@@ -340,11 +341,11 @@ describe('runBench and buildReport', () => {
     };
     const options = { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, review };
 
-    const [retried] = await runBench([benchCase], { ...options, matcher: flaky });
+    const [{ results: [retried] }] = await runBench([benchCase], { ...options, matcher: flaky });
     expect(retried.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: true });
     expect(retried.runs[0].error).toBeUndefined();
 
-    const [failed] = await runBench([benchCase], { ...options, matcher: broken });
+    const [{ results: [failed] }] = await runBench([benchCase], { ...options, matcher: broken });
     expect(failed.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: false, error: 'no such model', costUsd: 1.25, mustCatchRecall: null });
     expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1 }]);
     expect(review).toHaveBeenCalledTimes(2);
@@ -360,9 +361,15 @@ describe('runBench and buildReport', () => {
     expect(review).toHaveBeenCalledTimes(1);
   });
 
-  it('checks every checkout before the first review', async () => {
+  it('checks every checkout and every variant before the first review', async () => {
     const review = jest.fn();
     const options = { runs: 1, providerInputs: inputs, matcher: jest.fn(), review };
+    const checkouts = new Map([['owner/demo', checkout]]);
+    const good = { name: 'good', overrides: { review_passes: 2 } };
+    await expect(runBench([benchCase], { ...options, checkouts, variants: [good, { name: 'bad', overrides: { review_passes: 9 } }] }))
+      .rejects.toThrow('Variant bad does not load on case demo-1: Invalid config in .manki.yml with the overrides');
+    await expect(runBench([benchCase], { ...options, checkouts, variants: [good, { name: 'typo', overrides: { models: { reviwer: 'claude-opus-5-5' } } }] }))
+      .rejects.toThrow('Variant typo does not load on case demo-1: The config overrides name keys the config does not know: Unknown config key: "models.reviwer"');
     await expect(runBench([benchCase], { ...options, checkouts: new Map() })).rejects.toThrow('No checkout for owner/demo');
     await expect(runBench([{ ...benchCase, head: 'c'.repeat(40) }], { ...options, checkouts: new Map([['owner/demo', checkout]]) })).rejects.toThrow(new RegExp(`Commit ${'c'.repeat(40)} of case demo-1 is not in .*Git said: `));
     expect(review).not.toHaveBeenCalled();
