@@ -35,6 +35,8 @@ const MAX_STRUCT_FIELDS = 24;
 const MAX_LINE_CHARS = 160;
 const MAX_HIDDEN_NAMES = 20;
 const MAX_FILE_BYTES = 1024 * 1024;
+const MAX_PARSED_FILES = 200;
+const MAX_PARSED_BYTES = 16 * 1024 * 1024;
 /**
  * A file whose syntax tree nests deeper than this is not parsed. Finding a node's parent or neighbour costs its depth,
  * so a deep tree, from nested blocks or from a long chain such as `a.b.c...` or `x + y + z...`, would make the work
@@ -290,6 +292,8 @@ interface Declaration {
   container?: string;
   /** Whether its untouched fields and variants are searched too when it changes. */
   shape: boolean;
+  /** Whether it is test code, such as a `#[test]` function or one inside `#[cfg(test)]`. */
+  test: boolean;
 }
 
 interface Hit {
@@ -484,9 +488,9 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   const lookups: Array<Lookup & { file: string }> = [];
   for (const file of files) {
     const lines = touched.get(file.path)!;
-    const parsed = parser.parse(file.path);
+    const parsed = parser.parse(file.path, lines);
     if (parsed) {
-      const changed = changedDeclarations(parsed.declarations, lines, file.path, node => parsed.inTestCode(node));
+      const changed = changedDeclarations(parsed.declarations, lines, file.path);
       for (const symbol of changed) addSymbol(symbols, symbol);
       const replaced = replacedLines(file);
       // Every added line of a run shares the run's removed lines, so each run's words are collected once.
@@ -506,7 +510,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
         const listing = parsed.structListing(field.container, file.path);
         if (listing) changedFieldStructs.push(listing);
       }
-      for (const name of parsed.fieldReads(lines)) {
+      for (const name of parsed.reads) {
         const entry = references.get(name) ?? { code: 0, count: 0, files: new Set<string>() };
         entry.count++;
         if (!TEST_PATH.test(file.path)) entry.code++;
@@ -514,7 +518,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
         references.set(name, entry);
       }
       // Appended one by one, since spreading a very long list into `push` overflows the call stack.
-      if (!TEST_PATH.test(file.path)) for (const lookup of parsed.collectionLookups(lines)) lookups.push({ ...lookup, file: file.path });
+      if (!TEST_PATH.test(file.path)) for (const lookup of parsed.lookups) lookups.push({ ...lookup, file: file.path });
     } else {
       for (const symbol of keywordDeclarations(file)) addSymbol(symbols, symbol);
     }
@@ -560,6 +564,10 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   const types = structs.map(s => `${s.file}:${s.line}: ${s.text}`);
   if (types.length > 0) {
     sections.push(`### Types Behind the Fields the Diff Uses\n\nEach type declaring a field the changed lines read or change, with all its fields.\n\n${fenceText(types.join('\n'))}`);
+  }
+  if (parser.skipped > 0) {
+    core.info(`Uses outside the diff: the parse limit left ${parser.skipped} files unparsed`);
+    sections.push(`The limit of ${MAX_PARSED_FILES} parsed files or ${MAX_PARSED_BYTES / 1024 / 1024} MB per round left ${parser.skipped} more ${parser.skipped === 1 ? 'file' : 'files'} unparsed, so types, fields and lookups in them are not listed.`);
   }
   if (sections.length === 0) return { ...nothing, siblings };
   const record: RoundUses = {
@@ -654,7 +662,7 @@ function lineOf(node: SgNode): number {
 }
 
 /** Returns the declarations a touched line falls in, and the untouched fields and variants of each changed type. */
-function changedDeclarations(declarations: Declaration[], touched: Set<number>, file: string, inTests: (node: SgNode) => boolean): ChangedSymbol[] {
+function changedDeclarations(declarations: Declaration[], touched: Set<number>, file: string): ChangedSymbol[] {
   const lines = [...touched].sort((a, b) => a - b);
   const touches = (from: number, to: number) => (lines[firstAtOrAfter(lines, from)] ?? Infinity) <= to;
   const names = new Map(declarations.map(d => [d.key, d.name]));
@@ -667,7 +675,7 @@ function changedDeclarations(declarations: Declaration[], touched: Set<number>, 
     if (!header && !body) continue;
     changed.push({
       name: decl.name, kind: decl.kind, file, line: lineOf(decl.node), tier: header ? 0 : 1, ...ownerOf(decl), container: decl.container,
-      start: decl.start, end: decl.end, ...(inTests(decl.node) && { test: true }),
+      start: decl.start, end: decl.end, ...(decl.test && { test: true }),
     });
     // A changed attribute such as a derive leaves the members as they were, so only a changed body brings them in.
     if (decl.shape && body) changedTypes.add(decl.key);
@@ -712,22 +720,37 @@ export function declaredNames(diff: ParsedDiff): string[] {
 }
 
 /** Reads and parses head files once each. */
+/**
+ * Reads and parses head files once each, within a budget of `MAX_PARSED_FILES` files and `MAX_PARSED_BYTES` per round,
+ * since every parsed file keeps its syntax tree for the round. Files past the budget are counted in `skipped`.
+ */
 class Parser {
   private readonly cache = new Map<string, ParsedFile | undefined>();
+  private files = 0;
+  private bytes = 0;
+  skipped = 0;
 
   constructor(private readonly workspace: string, private readonly api?: AstGrepApi) {}
 
-  parse(path: string): ParsedFile | undefined {
-    if (!this.cache.has(path)) this.cache.set(path, this.load(path));
+  /** `touched` holds the head lines the diff changes, for a changed file, which must be parsed before any other use of it. */
+  parse(path: string, touched?: Set<number>): ParsedFile | undefined {
+    if (!this.cache.has(path)) this.cache.set(path, this.load(path, touched));
     return this.cache.get(path);
   }
 
-  private load(path: string): ParsedFile | undefined {
+  private load(path: string, touched?: Set<number>): ParsedFile | undefined {
     const language = languageOf(path);
     if (!language || !this.api) return undefined;
     try {
       const { absolute } = resolveInRoot(this.workspace, path);
-      if (statSync(absolute).size > MAX_FILE_BYTES) return undefined;
+      const size = statSync(absolute).size;
+      if (size > MAX_FILE_BYTES) return undefined;
+      if (this.files >= MAX_PARSED_FILES || this.bytes + size > MAX_PARSED_BYTES) {
+        this.skipped++;
+        return undefined;
+      }
+      this.files++;
+      this.bytes += size;
       const source = readFileSync(absolute, 'utf-8');
       const root = this.api.parse(language.lang, source);
       const tree = Tree.build(root.root(), MAX_NESTING);
@@ -735,7 +758,7 @@ class Parser {
         core.info(`Uses outside the diff: ${path} nests deeper than ${MAX_NESTING} levels, so it is read like a file without a grammar`);
         return undefined;
       }
-      return new ParsedFile(root, RULES[language.family], source.split('\n'), tree);
+      return new ParsedFile(root, RULES[language.family], source.split('\n'), tree, touched);
     } catch (error) {
       core.info(`Uses outside the diff: could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
@@ -790,6 +813,11 @@ class Tree {
     return this.links.get(node.id())?.next;
   }
 
+  /** Drops the links once the file that owns them has read what it needs. */
+  release(): void {
+    this.links.clear();
+  }
+
   ancestors(node: SgNode): SgNode[] {
     const list: SgNode[] = [];
     for (let parent = this.parent(node); parent; parent = this.parent(parent)) list.push(parent);
@@ -801,14 +829,27 @@ function nodeKey(node: SgNode): string {
   return `${node.kind()}:${node.range().start.index}`;
 }
 
+/**
+ * A parsed head file. Everything that needs a node's parent or neighbours is computed while it is built, from the
+ * `Tree` it is given, and the tree's links are dropped afterwards, so a parsed file keeps no record per syntax node.
+ */
 class ParsedFile {
   readonly declarations: Declaration[];
+  /** The functions declared on a type, outside tests. */
+  readonly methods: Method[];
+  /** The name of each field a touched line reads, such as `b` in `a.b`, leaving out method calls. */
+  readonly reads: string[];
+  /** Each lookup of an item in a collection field on a touched line, outside tests. */
+  readonly lookups: Lookup[];
   private readonly byKey = new Map<string, Declaration>();
   private readonly members = new Map<string, Declaration[]>();
   private readonly fieldsByLine = new Map<number, Declaration[]>();
   private readonly listings = new Map<string, Omit<StructListing, 'file'> | undefined>();
+  private readonly groups = new Map<string, number>();
+  private readonly marked = new Map<number, boolean>();
 
-  constructor(private readonly root: SgRoot, private readonly rules: FamilyRules, private readonly lines: string[], private readonly tree: Tree) {
+  /** `touched` holds the head lines the diff changes in a changed file, whose reads and lookups are collected. */
+  constructor(root: SgRoot, private readonly rules: FamilyRules, private readonly lines: string[], private readonly tree: Tree, touched = new Set<number>()) {
     const kinds = Object.keys(rules.declarations);
     const nodes = root.root().findAll({ rule: { any: kinds.map(kind => ({ kind })) } });
     // A plain TypeScript enum member is a bare property name in the enum's body.
@@ -826,6 +867,13 @@ class ParsedFile {
       if (decl.container) appendTo(this.members, decl.container, decl);
       if (decl.kind === 'field') appendTo(this.fieldsByLine, lineOf(decl.node), decl);
     }
+    this.methods = this.findMethods();
+    const accesses = touched.size > 0 && rules.access ? root.root().findAll({ rule: { kind: rules.access.kind } }) : [];
+    this.reads = this.fieldReads(accesses, touched);
+    this.lookups = this.collectionLookups(accesses, touched);
+    this.tree.release();
+    this.groups.clear();
+    this.marked.clear();
   }
 
   /** `named` picks one of the names of a node that declares several. */
@@ -839,11 +887,9 @@ class ParsedFile {
     const container = this.tree.ancestors(node).find(a => this.rules.declarations[a.kind()] === 'type' || a.kind() === 'enum_variant');
     return {
       node, name, kind, start: this.leadingStart(node), headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),
-      shape: this.rules.shapes.includes(String(node.kind())), ...(container && { container: nodeKey(container) }),
+      shape: this.rules.shapes.includes(String(node.kind())), test: this.inTestCode(node), ...(container && { container: nodeKey(container) }),
     };
   }
-
-  private readonly groups = new Map<string, number>();
 
   /** Whether `parent` holds a single child of `kind`, counted once per parent so a large grouped block stays linear. */
   private holdsOne(parent: SgNode, kind: string): boolean {
@@ -864,11 +910,10 @@ class ParsedFile {
     return start;
   }
 
-  /** Returns the name of each field a touched line reads, such as `b` in `a.b`, leaving out method calls. */
-  fieldReads(touched: Set<number>): string[] {
+  private fieldReads(accesses: SgNode[], touched: Set<number>): string[] {
     const access = this.rules.access;
     if (!access) return [];
-    return this.root.root().findAll({ rule: { kind: access.kind } }).flatMap(node => {
+    return accesses.flatMap(node => {
       const field = node.field(access.field);
       if (!field || !IDENTIFIER.test(field.text()) || !touched.has(lineOf(field))) return [];
       const parent = this.tree.parent(node);
@@ -904,14 +949,11 @@ class ParsedFile {
     });
   }
 
-  /**
-   * Returns each lookup of an item in a collection field on a touched line, outside tests, such as `a.jobs.get(id)`,
-   * `a.jobs[id]`, `id in a.jobs` or `delete(a.jobs, id)`.
-   */
-  collectionLookups(touched: Set<number>): Lookup[] {
+  /** Returns lookups such as `a.jobs.get(id)`, `a.jobs[id]`, `id in a.jobs` or `delete(a.jobs, id)` among `accesses`. */
+  private collectionLookups(accesses: SgNode[], touched: Set<number>): Lookup[] {
     const { access, object, index, call: callKind, membership } = this.rules;
     if (!access || !object) return [];
-    return this.root.root().findAll({ rule: { kind: access.kind } }).flatMap(node => {
+    return accesses.flatMap(node => {
       const field = node.field(access.field);
       if (!field || !IDENTIFIER.test(field.text()) || !touched.has(lineOf(field)) || this.inTests(node)) return [];
       const parent = this.tree.parent(node);
@@ -948,7 +990,7 @@ class ParsedFile {
   }
 
   /** Returns each function declared on a type, such as a method in a Rust `impl` block, a class or with a Go receiver, outside tests. */
-  methods(): Method[] {
+  private findMethods(): Method[] {
     return this.declarations.filter(d => d.kind === 'function').flatMap(decl => {
       if (this.inTests(decl.node)) return [];
       const { owner = '', trait } = this.rules.receiver ? { owner: this.rules.receiver(decl.node) } : this.scopeOf(decl.node);
@@ -980,13 +1022,11 @@ class ParsedFile {
     return !!test && this.tree.ancestors(node).some(test);
   }
 
-  private readonly marked = new Map<number, boolean>();
-
   /**
    * Whether `node` or a node around it carries a test attribute, as a `#[test]` function or a `#[cfg(test)]` module does.
    * Each node's own attributes are read once, however many declarations share it as an ancestor.
    */
-  inTestCode(node: SgNode): boolean {
+  private inTestCode(node: SgNode): boolean {
     return [node, ...this.tree.ancestors(node)].some(n => {
       if (!this.marked.has(n.id())) {
         let found = false;
@@ -1207,32 +1247,35 @@ function compareRanks(a: number[], b: number[]): number {
 
 /**
  * Returns the struct-like types that declare field `name`, from the lines `hits` holds, those in the package of a file in
- * `readers` first, then those in a package a reader depends on. A type no reader can reach is left out. Returns none when
- * more than `AMBIGUOUS_FIELD_TYPES` types declare it.
+ * `readers` first, then those in a package a reader depends on. A file no reader can reach is never parsed. Files are
+ * parsed nearest first and only until more than `AMBIGUOUS_FIELD_TYPES` types declare the field, which returns none.
  */
 function structsDeclaringField(parser: Parser, name: string, hits: Hit[], readers: Set<string>, packages: Packages): StructListing[] {
-  const found: StructListing[] = [];
   const patterns = new Map<Family, RegExp | undefined>();
   const patternFor = (family: Family) => patterns.has(family) ? patterns.get(family) : patterns.set(family, RULES[family].fieldLine?.(name)).get(family);
-  for (const hit of hits) {
-    const language = languageOf(hit.file);
-    const fieldLine = language && patternFor(language.family);
-    if (!fieldLine?.test(hit.text.slice(0, MAX_FIELD_LINE_CHARS))) continue;
-    const parsed = parser.parse(hit.file);
-    const listing = parsed?.structListing(parsed.fieldContainer(name, hit.line), hit.file);
-    if (listing) found.push(listing);
-  }
-  const unique = dedupeListings(found);
-  if (unique.length > AMBIGUOUS_FIELD_TYPES) return [];
   const readerPackages = [...new Set([...readers].map(file => packages.of(file)))];
-  const reach = (listing: StructListing): number => {
-    const root = packages.of(listing.file);
+  const reach = (file: string): number => {
+    const root = packages.of(file);
     if (readerPackages.includes(root)) return 0;
     return readerPackages.some(reader => packages.dependsOn(reader, root)) ? 1 : 2;
   };
-  return unique.map(listing => ({ listing, rank: reach(listing) })).filter(({ rank }) => rank < 2)
-    .sort((a, b) => a.rank - b.rank || a.listing.file.localeCompare(b.listing.file) || a.listing.line - b.listing.line)
-    .slice(0, MAX_STRUCTS_PER_FIELD).map(({ listing }) => listing);
+  const candidates = hits.flatMap(hit => {
+    const language = languageOf(hit.file);
+    const fieldLine = language && patternFor(language.family);
+    const rank = fieldLine?.test(hit.text.slice(0, MAX_FIELD_LINE_CHARS)) ? reach(hit.file) : 2;
+    return rank < 2 ? [{ hit, rank }] : [];
+  }).sort((a, b) => a.rank - b.rank || a.hit.file.localeCompare(b.hit.file) || a.hit.line - b.hit.line);
+  const found: StructListing[] = [];
+  const seen = new Set<string>();
+  for (const { hit } of candidates) {
+    const parsed = parser.parse(hit.file);
+    const listing = parsed?.structListing(parsed.fieldContainer(name, hit.line), hit.file);
+    if (!listing || seen.has(`${listing.file}:${listing.line}`)) continue;
+    seen.add(`${listing.file}:${listing.line}`);
+    found.push(listing);
+    if (found.length > AMBIGUOUS_FIELD_TYPES) return [];
+  }
+  return found.slice(0, MAX_STRUCTS_PER_FIELD);
 }
 
 const shortLine = (text: string): string => text.length > MAX_EXCERPT_LINE_CHARS ? `${text.slice(0, MAX_EXCERPT_LINE_CHARS)} ...` : text;
@@ -1360,7 +1403,7 @@ function siblingImplementations(
   };
   const code = files.filter(f => !TEST_PATH.test(f.path)).map(f => f.path);
   const inCode = new Set(code);
-  const changed = code.map(file => ({ file, methods: (parser.parse(file)?.methods() ?? []).filter(m => changedLines(m, file) > 0) })).filter(c => c.methods.length > 0);
+  const changed = code.map(file => ({ file, methods: (parser.parse(file)?.methods ?? []).filter(m => changedLines(m, file) > 0) })).filter(c => c.methods.length > 0);
   if (changed.length === 0) return [];
   const wanted = new Set(changed.flatMap(c => c.methods.map(keyOf)));
   const dirs = new Map(changed.map(({ file }) => [dirname(file), file]));
@@ -1368,7 +1411,7 @@ function siblingImplementations(
   const groups = new Map<string, Array<Method & { file: string; parsed: ParsedFile; changed: number }>>();
   for (const file of [...new Set([...code, ...beside])]) {
     const parsed = parser.parse(file);
-    for (const m of parsed?.methods() ?? []) {
+    for (const m of parsed?.methods ?? []) {
       if (!wanted.has(keyOf(m))) continue;
       appendTo(groups, keyOf(m), { ...m, file, parsed: parsed!, changed: changedLines(m, file) });
     }

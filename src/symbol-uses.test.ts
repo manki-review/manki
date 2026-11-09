@@ -441,6 +441,14 @@ ${body}	return true
     expect(Date.now() - started).toBeLessThan(10_000);
   }, 120_000);
 
+  it('parses at most 200 files a round and says how many it left unparsed', async () => {
+    const handler = (i: number, value: number) => `package gen\n\nfunc Handle${i}() int { return ${value} }\n`;
+    const files = (value: number) => Object.fromEntries(Array.from({ length: 210 }, (_, i) => [`gen/h${String(i).padStart(3, '0')}.go`, handler(i, value)]));
+    const { section } = await usesFor(files(1), files(2));
+    expect(section).toContain('The limit of 200 parsed files or 16 MB per round left 10 more files unparsed, so types, fields and lookups in them are not listed.');
+    expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the parse limit left 10 files unparsed');
+  });
+
   const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };
 
   it('returns nothing and logs why without a git checkout, when ast-grep fails to load, or when nothing changed has a use', async () => {
