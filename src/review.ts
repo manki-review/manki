@@ -1926,8 +1926,8 @@ function textOf(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, EVIDENCE_LINE_CHARS) : '';
 }
 
-function textLines(value: unknown): string[] {
-  return Array.isArray(value) ? value.map(textOf).filter(line => line.length > 0).slice(0, MAX_EVIDENCE_LINES) : [];
+function textLines(value: unknown, max = MAX_EVIDENCE_LINES): string[] {
+  return Array.isArray(value) ? value.map(textOf).filter(line => line.length > 0).slice(0, max) : [];
 }
 
 /**
@@ -1936,7 +1936,7 @@ function textLines(value: unknown): string[] {
  * comes before any further one, so an entry that lists many lines cannot push another entry out.
  */
 export function parseProof(value: unknown): string[] {
-  const listed = textLines(value).flatMap(entry => {
+  const listed = textLines(value, Infinity).flatMap(entry => {
     const [, file, lines] = entry.replace(/`/g, '').match(PROOF_LOCATION) ?? [];
     return file ? [lines.split(/, ?/).map(range => `${file}:${range}`)] : [];
   });
