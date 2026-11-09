@@ -135,7 +135,7 @@ interface FamilyRules {
   /** The type a method's receiver names, for a language that declares methods outside their type, such as Go. */
   receiver?: (node: SgNode) => string | undefined;
   /** The name of the field a declaration node declares, when the node has no `name` field, such as a Python assignment. */
-  fieldName?: (node: SgNode) => SgNode | undefined;
+  fieldName?: (node: SgNode, tree: Tree) => SgNode | undefined;
   /** The type a field holds when no type is written, such as `set` for a Python field assigned `set()`. */
   valueType?: (node: SgNode) => string | undefined;
   /** The names a declaration node declares when it can declare several, such as Go's `a, b int`. */
@@ -222,14 +222,15 @@ function typeName(text: string): string {
 }
 
 /** Returns the name of the field a Python assignment declares: a name assigned in a class body, or `self.name` in `__init__`. */
-function pythonFieldName(node: SgNode): SgNode | undefined {
+function pythonFieldName(node: SgNode, tree: Tree): SgNode | undefined {
   const left = node.field('left');
-  const statement = node.parent();
+  const statement = tree.parent(node);
   if (statement?.kind() !== 'expression_statement') return undefined;
-  if (left?.kind() === 'identifier') return statement.parent()?.parent()?.kind() === 'class_definition' ? left : undefined;
+  const grandparent = (n: SgNode | undefined) => n && tree.parent(tree.parent(n) ?? n);
+  if (left?.kind() === 'identifier') return grandparent(statement)?.kind() === 'class_definition' ? left : undefined;
   if (left?.kind() !== 'attribute' || left.field('object')?.text() !== 'self') return undefined;
-  const method = node.ancestors().find(a => a.kind() === 'function_definition');
-  const inInit = method?.field('name')?.text() === '__init__' && method.parent()?.parent()?.kind() === 'class_definition';
+  const method = tree.ancestors(node).find(a => a.kind() === 'function_definition');
+  const inInit = method?.field('name')?.text() === '__init__' && grandparent(method)?.kind() === 'class_definition';
   return inInit ? left.field('attribute') ?? undefined : undefined;
 }
 
@@ -485,7 +486,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     const lines = touched.get(file.path)!;
     const parsed = parser.parse(file.path);
     if (parsed) {
-      const changed = changedDeclarations(parsed.declarations, lines, file.path);
+      const changed = changedDeclarations(parsed.declarations, lines, file.path, node => parsed.inTestCode(node));
       for (const symbol of changed) addSymbol(symbols, symbol);
       const replaced = replacedLines(file);
       // Every added line of a run shares the run's removed lines, so each run's words are collected once.
@@ -653,10 +654,9 @@ function lineOf(node: SgNode): number {
 }
 
 /** Returns the declarations a touched line falls in, and the untouched fields and variants of each changed type. */
-function changedDeclarations(declarations: Declaration[], touched: Set<number>, file: string): ChangedSymbol[] {
+function changedDeclarations(declarations: Declaration[], touched: Set<number>, file: string, inTests: (node: SgNode) => boolean): ChangedSymbol[] {
   const lines = [...touched].sort((a, b) => a - b);
   const touches = (from: number, to: number) => (lines[firstAtOrAfter(lines, from)] ?? Infinity) <= to;
-  const inTests = testCodeChecker();
   const names = new Map(declarations.map(d => [d.key, d.name]));
   const ownerOf = (decl: Declaration) => decl.container && (decl.kind === 'field' || decl.kind === 'variant') ? { owner: names.get(decl.container) } : {};
   const changed: ChangedSymbol[] = [];
@@ -683,24 +683,6 @@ function changedDeclarations(declarations: Declaration[], touched: Set<number>, 
 }
 
 const TEST_ATTRIBUTE = /^#\[(?:[\w:]+::)?test\b|^#\[cfg\(test\)\]/;
-
-/**
- * Returns a check of whether a node or a node around it carries a test attribute, as a `#[test]` function or a
- * `#[cfg(test)]` module does. Each node's own attributes are read once, however many declarations share it as an ancestor.
- */
-function testCodeChecker(): (node: SgNode) => boolean {
-  const marked = new Map<string, boolean>();
-  const isMarked = (n: SgNode): boolean => {
-    const key = nodeKey(n);
-    if (!marked.has(key)) {
-      let found = false;
-      for (let prev = n.prev(); prev && !found && /attribute_item|comment/.test(String(prev.kind())); prev = prev.prev()) found = TEST_ATTRIBUTE.test(prev.text());
-      marked.set(key, found);
-    }
-    return marked.get(key)!;
-  };
-  return node => [node, ...node.ancestors()].some(isMarked);
-}
 
 /** Returns the index of the first of the sorted `lines` that is at least `line`, or `lines.length` when none is. */
 function firstAtOrAfter(lines: number[], line: number): number {
@@ -748,11 +730,12 @@ class Parser {
       if (statSync(absolute).size > MAX_FILE_BYTES) return undefined;
       const source = readFileSync(absolute, 'utf-8');
       const root = this.api.parse(language.lang, source);
-      if (nestsDeeperThan(root.root(), MAX_NESTING)) {
+      const tree = Tree.build(root.root(), MAX_NESTING);
+      if (!tree) {
         core.info(`Uses outside the diff: ${path} nests deeper than ${MAX_NESTING} levels, so it is read like a file without a grammar`);
         return undefined;
       }
-      return new ParsedFile(root, RULES[language.family], source.split('\n'));
+      return new ParsedFile(root, RULES[language.family], source.split('\n'), tree);
     } catch (error) {
       core.info(`Uses outside the diff: could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
@@ -761,8 +744,8 @@ class Parser {
 }
 
 /** Returns the nearest named node before or after `node` among its siblings. */
-function namedSibling(node: SgNode, side: 'prev' | 'next'): SgNode | undefined {
-  for (let sibling = node[side](); sibling; sibling = sibling[side]()) if (sibling.isNamed()) return sibling;
+function namedSibling(tree: Tree, node: SgNode, side: 'prev' | 'next'): SgNode | undefined {
+  for (let sibling = tree[side](node); sibling; sibling = tree[side](sibling)) if (sibling.isNamed()) return sibling;
   return undefined;
 }
 
@@ -772,15 +755,46 @@ function appendTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   else map.set(key, [value]);
 }
 
-/** Whether the syntax tree under `root` nests deeper than `limit` levels. It reads each node once and stops at the first too deep. */
-function nestsDeeperThan(root: SgNode, limit: number): boolean {
-  const stack: Array<[SgNode, number]> = [[root, 0]];
-  for (let next = stack.pop(); next; next = stack.pop()) {
-    const [node, depth] = next;
-    if (depth > limit) return true;
-    for (const child of node.children()) stack.push([child, depth + 1]);
+/**
+ * Each node's parent and neighbours, recorded in one walk of the syntax tree. Tree-sitter finds a parent or neighbour
+ * by scanning the parent's children from the start, so asking it per node grows with the square of a flat file.
+ */
+class Tree {
+  private readonly links = new Map<number, { parent: SgNode; prev?: SgNode; next?: SgNode }>();
+
+  /** Returns the tree under `root`, or `undefined` when it nests deeper than `limit` levels. */
+  static build(root: SgNode, limit: number): Tree | undefined {
+    const tree = new Tree();
+    const stack: Array<[SgNode, number]> = [[root, 0]];
+    for (let next = stack.pop(); next; next = stack.pop()) {
+      const [node, depth] = next;
+      if (depth > limit) return undefined;
+      const children = node.children();
+      children.forEach((child, i) => {
+        tree.links.set(child.id(), { parent: node, prev: i > 0 ? children[i - 1] : undefined, next: children.at(i + 1) });
+        stack.push([child, depth + 1]);
+      });
+    }
+    return tree;
   }
-  return false;
+
+  parent(node: SgNode): SgNode | undefined {
+    return this.links.get(node.id())?.parent;
+  }
+
+  prev(node: SgNode): SgNode | undefined {
+    return this.links.get(node.id())?.prev;
+  }
+
+  next(node: SgNode): SgNode | undefined {
+    return this.links.get(node.id())?.next;
+  }
+
+  ancestors(node: SgNode): SgNode[] {
+    const list: SgNode[] = [];
+    for (let parent = this.parent(node); parent; parent = this.parent(parent)) list.push(parent);
+    return list;
+  }
 }
 
 function nodeKey(node: SgNode): string {
@@ -794,7 +808,7 @@ class ParsedFile {
   private readonly fieldsByLine = new Map<number, Declaration[]>();
   private readonly listings = new Map<string, Omit<StructListing, 'file'> | undefined>();
 
-  constructor(private readonly root: SgRoot, private readonly rules: FamilyRules, private readonly lines: string[]) {
+  constructor(private readonly root: SgRoot, private readonly rules: FamilyRules, private readonly lines: string[], private readonly tree: Tree) {
     const kinds = Object.keys(rules.declarations);
     const nodes = root.root().findAll({ rule: { any: kinds.map(kind => ({ kind })) } });
     // A plain TypeScript enum member is a bare property name in the enum's body.
@@ -817,12 +831,12 @@ class ParsedFile {
   /** `named` picks one of the names of a node that declares several. */
   private declaration(node: SgNode, named?: SgNode): Declaration | undefined {
     const kind = node.kind() === 'property_identifier' ? 'variant' : this.rules.declarations[node.kind()];
-    const name = (named ?? (node.kind() === 'property_identifier' ? node : this.rules.fieldName?.(node) ?? node.field('name')))?.text();
+    const name = (named ?? (node.kind() === 'property_identifier' ? node : this.rules.fieldName?.(node, this.tree) ?? node.field('name')))?.text();
     if (!kind || !name || !IDENTIFIER.test(name)) return undefined;
-    if (node.kind() === 'variable_declarator' && !isTopLevelConstant(node)) return undefined;
+    if (node.kind() === 'variable_declarator' && !isTopLevelConstant(node, this.tree)) return undefined;
     const body = node.field('body') ?? node.field('value');
     const end = node.range().end.line + 1;
-    const container = node.ancestors().find(a => this.rules.declarations[a.kind()] === 'type' || a.kind() === 'enum_variant');
+    const container = this.tree.ancestors(node).find(a => this.rules.declarations[a.kind()] === 'type' || a.kind() === 'enum_variant');
     return {
       node, name, kind, start: this.leadingStart(node), headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),
       shape: this.rules.shapes.includes(String(node.kind())), ...(container && { container: nodeKey(container) }),
@@ -842,9 +856,9 @@ class ParsedFile {
     let anchor = node;
     // A grouped declaration such as Go's `const ( ... )` wraps several, so the comments above it belong to none of them.
     const wraps = (parent: SgNode) => WRAPPERS.includes(String(parent.kind())) && this.holdsOne(parent, String(anchor.kind()));
-    for (let parent = node.parent(); parent && wraps(parent); parent = parent.parent()) anchor = parent;
+    for (let parent = this.tree.parent(node); parent && wraps(parent); parent = this.tree.parent(parent)) anchor = parent;
     let start = lineOf(anchor);
-    for (let prev = anchor.prev(); prev && this.rules.leading.includes(String(prev.kind())) && prev.range().end.line + 1 >= start - 1; prev = prev.prev()) {
+    for (let prev = this.tree.prev(anchor); prev && this.rules.leading.includes(String(prev.kind())) && prev.range().end.line + 1 >= start - 1; prev = this.tree.prev(prev)) {
       start = lineOf(prev);
     }
     return start;
@@ -857,7 +871,7 @@ class ParsedFile {
     return this.root.root().findAll({ rule: { kind: access.kind } }).flatMap(node => {
       const field = node.field(access.field);
       if (!field || !IDENTIFIER.test(field.text()) || !touched.has(lineOf(field))) return [];
-      const parent = node.parent();
+      const parent = this.tree.parent(node);
       const callee = parent?.kind() === this.rules.call ? parent.field('function') : null;
       return callee && nodeKey(callee) === nodeKey(node) ? [] : [field.text()];
     });
@@ -900,30 +914,30 @@ class ParsedFile {
     return this.root.root().findAll({ rule: { kind: access.kind } }).flatMap(node => {
       const field = node.field(access.field);
       if (!field || !IDENTIFIER.test(field.text()) || !touched.has(lineOf(field)) || this.inTests(node)) return [];
-      const parent = node.parent();
+      const parent = this.tree.parent(node);
       let item: SgNode | undefined;
       if (parent?.kind() === access.kind && parent.field(object)?.range().start.index === node.range().start.index) {
-        const call = parent.parent();
+        const call = this.tree.parent(parent);
         const method = parent.field(access.field)?.text() ?? '';
         if (call?.kind() !== callKind || !LOOKUP_METHODS.has(method)) return [];
         item = call.field('arguments')?.children().find(c => c.isNamed());
       // The branches below read only the node's neighbours and copy no text longer than a lookup holds, so a long call,
       // chain, subscript or comparison stays linear.
       } else if (index && parent?.kind() === index) {
-        if (namedSibling(node, 'prev')) return [];
-        item = namedSibling(node, 'next');
+        if (namedSibling(this.tree, node, 'prev')) return [];
+        item = namedSibling(this.tree, node, 'next');
       } else if (membership && parent?.kind() === membership.kind) {
-        const operator = node.prev();
-        const left = operator?.prev();
-        if (!operator || operator.isNamed() || !membership.operator.test(operator.text()) || node.next() || !left || left.prev()) return [];
+        const operator = this.tree.prev(node);
+        const left = operator && this.tree.prev(operator);
+        if (!operator || operator.isNamed() || !membership.operator.test(operator.text()) || this.tree.next(node) || !left || this.tree.prev(left)) return [];
         item = left;
       } else {
-        const call = parent?.parent();
+        const call = parent && this.tree.parent(parent);
         const callee = call?.kind() === callKind ? call.field('function') : null;
         // The callee's text is read only when it is short enough to name a lookup function, so a huge callee costs nothing per argument.
         const short = !!callee && callee.range().end.index - callee.range().start.index <= MAX_LOOKUP_FUNCTION_CHARS;
-        if (!parent || !call || !short || !LOOKUP_FUNCTIONS.has(callee!.text()) || nodeKey(call.field('arguments') ?? call) !== nodeKey(parent) || namedSibling(node, 'prev')) return [];
-        item = namedSibling(node, 'next');
+        if (!parent || !call || !short || !LOOKUP_FUNCTIONS.has(callee!.text()) || nodeKey(call.field('arguments') ?? call) !== nodeKey(parent) || namedSibling(this.tree, node, 'prev')) return [];
+        item = namedSibling(this.tree, node, 'next');
       }
       if (!item || item.range().end.index - item.range().start.index > MAX_ITEM_SOURCE_CHARS) return [];
       const text = item.text().replace(/^&\s*(?:mut\s+)?/, '').replace(/\s+/g, ' ');
@@ -945,7 +959,7 @@ class ParsedFile {
 
   /** Returns the type and trait of the block or class that declares a function, and nothing for a function nested in another. */
   private scopeOf(node: SgNode): { owner?: string; trait?: string } {
-    const scope = node.ancestors().find(a => this.rules.owners[a.kind()] || this.rules.declarations[a.kind()] === 'function');
+    const scope = this.tree.ancestors(node).find(a => this.rules.owners[a.kind()] || this.rules.declarations[a.kind()] === 'function');
     const fields = scope && this.rules.owners[scope.kind()];
     if (!scope || !fields) return {};
     const owner = typeName(scope.field(fields.type)?.text() ?? '');
@@ -963,7 +977,24 @@ class ParsedFile {
 
   private inTests(node: SgNode): boolean {
     const test = this.rules.testModule;
-    return !!test && node.ancestors().some(test);
+    return !!test && this.tree.ancestors(node).some(test);
+  }
+
+  private readonly marked = new Map<number, boolean>();
+
+  /**
+   * Whether `node` or a node around it carries a test attribute, as a `#[test]` function or a `#[cfg(test)]` module does.
+   * Each node's own attributes are read once, however many declarations share it as an ancestor.
+   */
+  inTestCode(node: SgNode): boolean {
+    return [node, ...this.tree.ancestors(node)].some(n => {
+      if (!this.marked.has(n.id())) {
+        let found = false;
+        for (let prev = this.tree.prev(n); prev && !found && /attribute_item|comment/.test(String(prev.kind())); prev = this.tree.prev(prev)) found = TEST_ATTRIBUTE.test(prev.text());
+        this.marked.set(n.id(), found);
+      }
+      return this.marked.get(n.id())!;
+    });
   }
 
   /** Returns the `key` of the type declaring field `name` at `line`, or `undefined` when no field of that name is declared there. */
@@ -972,11 +1003,11 @@ class ParsedFile {
   }
 }
 
-function isTopLevelConstant(node: SgNode): boolean {
-  const declaration = node.parent();
-  const scope = declaration?.parent();
+function isTopLevelConstant(node: SgNode, tree: Tree): boolean {
+  const declaration = tree.parent(node);
+  const scope = declaration && tree.parent(declaration);
   return declaration?.kind() === 'lexical_declaration'
-    && (scope?.kind() === 'program' || (scope?.kind() === 'export_statement' && scope.parent()?.kind() === 'program'));
+    && (scope?.kind() === 'program' || (scope?.kind() === 'export_statement' && tree.parent(scope)?.kind() === 'program'));
 }
 
 /**

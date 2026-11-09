@@ -432,6 +432,13 @@ ${body}	return true
     expect(grouped.siblings.implementations.map(q => [q.name, q.members.length])).toEqual([['Area', 4]]);
     // Four files of 20,000 methods each take longer to parse, so this bound is wider. Copying the group per member took over 30 seconds.
     expect(Date.now() - started).toBeLessThan(20_000);
+
+    // A flat file of many top-level functions, one changed: each declaration has thousands of siblings.
+    const flat = (body: string) => `package gen\n\n${Array.from({ length: 55_000 }, (_, i) => `func F${i}(){${i === 54_999 ? body : '1'}}`).join('\n')}\n`;
+    started = Date.now();
+    const wide = await usesFor({ 'gen/flat.go': flat('1') }, { 'gen/flat.go': flat('2') });
+    expect(wide.section).toBe('');
+    expect(Date.now() - started).toBeLessThan(10_000);
   }, 120_000);
 
   const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };
