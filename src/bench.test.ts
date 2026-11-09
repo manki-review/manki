@@ -29,6 +29,7 @@ must_catch:
     mechanism: The reader allocates from a peer length.
     locations: [src/read.rs, read_len]
     fix: abc1234
+    source: owner review
   - id: K2
     severity: warning
     mechanism: The error path drops the lock.
@@ -67,7 +68,7 @@ describe('parseCase', () => {
     expect(parseCase(CASE_YAML, 'demo.yml')).toEqual({
       id: 'demo-1', repo: 'owner/demo', source: 'demo upstream PR 7', base: SHA_A, head: SHA_B, title: 'fix: bound the reader', body: 'Reads lengths with a bound.\n', keyVersion: 2,
       mustCatch: [
-        { id: 'K1', severity: 'blocker', mechanism: 'The reader allocates from a peer length.', locations: ['src/read.rs', 'read_len'], fix: 'abc1234' },
+        { id: 'K1', severity: 'blocker', mechanism: 'The reader allocates from a peer length.', locations: ['src/read.rs', 'read_len'], fix: 'abc1234', source: 'owner review' },
         { id: 'K2', severity: 'warning', mechanism: 'The error path drops the lock.', locations: ['unlock'] },
       ],
       niceToHave: [{ id: 'N1', severity: 'suggestion', mechanism: 'The test duplicates a helper.', locations: [] }],
@@ -86,6 +87,7 @@ describe('parseCase', () => {
     ['title: "fix: bound the reader"', 'title: ""', '`title` must be a non-empty string'],
     ['severity: warning', 'severity: major', 'must_catch[1].severity must be one of blocker, warning, suggestion, nitpick'],
     ['locations: [unlock]', 'locations: unlock', 'must_catch[1].locations must be a list of strings'],
+    ['source: owner review', 'source: [owner]', 'must_catch[0].source must be a string'],
     ['  - id: N1', '  - id: K1', 'item id K1 is used twice'],
   ])('refuses a case where %s is %s', (from, to, message) => {
     expect(() => parseCase(CASE_YAML.replace(from, to), 'bad.yml')).toThrow(`bad.yml`);
