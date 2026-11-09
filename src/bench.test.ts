@@ -110,7 +110,7 @@ describe('parseCase', () => {
 });
 
 describe('loadCases', () => {
-  it('keeps only the asked cases of the sets given, and refuses an unknown id or an id used in two sets', () => {
+  it('keeps only the asked cases of the sets given, and refuses an unknown id, an id used in two sets or a set without cases', () => {
     const dir = mkdtempSync(join(tmpdir(), 'manki-cases-'));
     const holdout = mkdtempSync(join(tmpdir(), 'manki-holdout-'));
     try {
@@ -124,6 +124,9 @@ describe('loadCases', () => {
       expect(loadCases({ tuning: dir, holdout }, ['demo-1', 'demo-3']).map(c => [c.id, c.set])).toEqual([['demo-1', 'tuning'], ['demo-3', 'holdout']]);
       writeFileSync(join(holdout, 'd.yml'), CASE_YAML);
       expect(() => loadCases({ tuning: dir, holdout })).toThrow('Case id demo-1 is used twice');
+      rmSync(join(holdout, 'c.yml'));
+      rmSync(join(holdout, 'd.yml'));
+      expect(() => loadCases({ tuning: dir, holdout })).toThrow(`No case files in ${holdout}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(holdout, { recursive: true, force: true });

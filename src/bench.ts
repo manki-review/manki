@@ -117,11 +117,17 @@ export function parseCase(text: string, file: string, set: CaseSet = 'tuning'): 
   };
 }
 
-/** Loads every `.yml` case in the directory of each set given, or only those whose id is in `only`. */
+/**
+ * Loads every `.yml` case in the directory of each set given, or only those whose id is in `only`. Throws when a
+ * directory holds no case, so a set never drops out of the scores unnoticed.
+ */
 export function loadCases(dirs: Partial<Record<CaseSet, string>>, only: string[] = []): BenchCase[] {
   const cases = CASE_SETS.flatMap((set) => {
     const dir = dirs[set];
-    return dir ? readdirSync(dir).filter(f => f.endsWith('.yml')).sort().map(f => parseCase(readFileSync(join(dir, f), 'utf-8'), join(dir, f), set)) : [];
+    if (!dir) return [];
+    const files = readdirSync(dir).filter(f => f.endsWith('.yml')).sort();
+    if (files.length === 0) throw new Error(`No case files in ${dir}`);
+    return files.map(f => parseCase(readFileSync(join(dir, f), 'utf-8'), join(dir, f), set));
   });
   const repeated = cases.find((c, i) => cases.findIndex(other => other.id === c.id) !== i);
   if (repeated) throw new Error(`Case id ${repeated.id} is used twice`);
