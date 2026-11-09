@@ -3,13 +3,14 @@ import * as core from '@actions/core';
 import { fenceText } from './github';
 import { LLMClient, SendMessageOptions } from './providers';
 import { CLAIMS_MISSING_RULE, parseFindings, PRE_EXISTING_RULE } from './review';
-import { CodeExcerpt, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
-import { EffortLevel, Finding, RoundComparison } from './types';
+import { CodeExcerpt, LimitQuestion, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
+import { EffortLevel, Finding, RelatedRepoTools, RoundComparison } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_FIELD_QUESTIONS = 6;
 const MAX_IMPLEMENTATION_QUESTIONS = 6;
+const MAX_LIMIT_QUESTIONS = 4;
 const MAX_PARALLEL_QUESTIONS = 4;
 const COMPARE_STEPS = 12;
 // A safety net. The step budget is what normally ends the call.
@@ -76,6 +77,21 @@ ${MARKS_NOTE}
 ${members.join('\n\n')}`;
 }
 
+function limitMessage(q: LimitQuestion, reference: boolean): string {
+  const change = q.previous ? `lowers the limit \`${q.name}\` from \`${q.previous}\` to \`${q.value}\`` : `adds the limit \`${q.name}\` at \`${q.value}\``;
+  return `## Question
+
+The change ${change}, on the line below. Which code produces the values this limit checks, and how large can they get? Search this repository${reference ? ' and the reference repositories' : ''} for every producer, above all one that does not check the limit itself before it sends, stores or waits. Report each producer that can exceed the new limit, on the changed line, and cite the line that produces the value.
+
+The changed line:
+
+${fenceText(`${q.file}:${q.line}: ${q.text}`)}
+
+## Changed Hunk
+
+${fenceText(q.hunk, 'diff')}`;
+}
+
 /** Appends ` #2`, ` #3` and so on to a name already taken, so each question's findings name it alone. */
 function uniqueNames(labels: string[]): string[] {
   const taken = new Set<string>();
@@ -94,18 +110,23 @@ interface Question {
   message: (tools: boolean) => string;
 }
 
-function questionsOf(siblings: SiblingQuestions): Question[] {
+function questionsOf(siblings: SiblingQuestions, reference: boolean): Question[] {
   const labels = [
     ...siblings.fields.map(q => `Sibling field: ${q.field} vs ${q.sibling}`),
     ...siblings.implementations.map(q => `Sibling code: ${q.trait ? `${q.trait}::` : ''}${q.name}`),
+    ...siblings.limits.map(q => `Limit producers: ${q.name}`),
   ];
   const names = uniqueNames(labels);
+  const limitsAt = siblings.fields.length + siblings.implementations.length;
   return [
     ...siblings.fields.map((q, i): Question => ({
       kind: 'field', reviewer: names[i], at: [`${q.lookups[0].file}:${q.lookups[0].line}`], message: tools => fieldMessage(q, tools),
     })),
     ...siblings.implementations.map((q, i): Question => ({
       kind: 'implementations', reviewer: names[siblings.fields.length + i], at: q.members.map(m => `${m.file}:${m.line}`), message: () => implementationMessage(q),
+    })),
+    ...siblings.limits.map((q, i): Question => ({
+      kind: 'limit', reviewer: names[limitsAt + i], at: [`${q.file}:${q.line}`], message: () => limitMessage(q, reference),
     })),
   ];
 }
@@ -116,32 +137,39 @@ export interface ComparisonOptions {
   workspace?: string;
   /** Stops the questions still running or not yet asked, which are then recorded as `timed_out`. */
   signal?: AbortSignal;
+  /** The related repos a limit question may also read with the repository tools. */
+  related?: RelatedRepoTools;
 }
 
 /**
- * Asks one call per sibling question, at most `MAX_FIELD_QUESTIONS` field and `MAX_IMPLEMENTATION_QUESTIONS`
- * implementation questions, `MAX_PARALLEL_QUESTIONS` at a time, each on the client `clientFor` returns for its reviewer
- * name. Returns their findings, which carry that name, and a record of every question, the ones past the caps as `cut`.
- * A call that fails is recorded as `failed`, and one `signal` stopped as `timed_out`. It never throws.
+ * Asks one call per sibling question, at most `MAX_FIELD_QUESTIONS` field, `MAX_IMPLEMENTATION_QUESTIONS`
+ * implementation and `MAX_LIMIT_QUESTIONS` limit questions, `MAX_PARALLEL_QUESTIONS` at a time, each on the client
+ * `clientFor` returns for its reviewer name. A limit question is asked only when that client can read the repository,
+ * since only the code says who produces the values. Returns their findings, which carry that name, and a record of every
+ * question asked or cut, the ones past the caps as `cut`. A call that fails is recorded as `failed`, and one `signal`
+ * stopped as `timed_out`. It never throws.
  */
 export async function runComparisons(
-  clientFor: (reviewer: string) => LLMClient, siblings: SiblingQuestions, { effort, workspace, signal }: ComparisonOptions = {},
+  clientFor: (reviewer: string) => LLMClient, siblings: SiblingQuestions, { effort, workspace, signal, related }: ComparisonOptions = {},
 ): Promise<{ findings: Finding[]; comparisons: RoundComparison[] }> {
-  const questions = questionsOf(siblings);
+  const questions = questionsOf(siblings, !!related?.repos.some(r => r.kind === 'reference'));
+  const clients = new Map<string, LLMClient>();
+  const clientOf = (q: Question) => clients.get(q.reviewer) ?? clients.set(q.reviewer, clientFor(q.reviewer)).get(q.reviewer)!;
   const fields = questions.filter(q => q.kind === 'field');
   const implementations = questions.filter(q => q.kind === 'implementations');
-  const asked = [...fields.slice(0, MAX_FIELD_QUESTIONS), ...implementations.slice(0, MAX_IMPLEMENTATION_QUESTIONS)];
-  const cut = [...fields.slice(MAX_FIELD_QUESTIONS), ...implementations.slice(MAX_IMPLEMENTATION_QUESTIONS)];
+  const limits = questions.filter(q => q.kind === 'limit' && !!workspace && !!clientOf(q).repoTools);
+  const asked = [...fields.slice(0, MAX_FIELD_QUESTIONS), ...implementations.slice(0, MAX_IMPLEMENTATION_QUESTIONS), ...limits.slice(0, MAX_LIMIT_QUESTIONS)];
+  const cut = [...fields.slice(MAX_FIELD_QUESTIONS), ...implementations.slice(MAX_IMPLEMENTATION_QUESTIONS), ...limits.slice(MAX_LIMIT_QUESTIONS)];
   if (asked.length > 0) core.info(`Asking ${asked.length} sibling comparison question(s)${cut.length > 0 ? `, ${cut.length} cut by the cap` : ''}`);
   const answers = await mapWithConcurrency(asked, MAX_PARALLEL_QUESTIONS, async (q): Promise<{ record: RoundComparison; findings: Finding[] }> => {
-    const client = clientFor(q.reviewer);
+    const client = clientOf(q);
     const tools = !!workspace && !!client.repoTools;
     const record = { kind: q.kind, reviewer: q.reviewer, at: q.at };
     if (signal?.aborted) return { record: { ...record, status: 'timed_out' }, findings: [] };
     const options: SendMessageOptions = {
       ...(effort && { effort }),
       ...(signal && { signal }),
-      ...(tools && { repoTools: { root: workspace!, steps: COMPARE_STEPS }, timeoutMs: COMPARE_TIMEOUT_MS }),
+      ...(tools && { repoTools: { root: workspace!, steps: COMPARE_STEPS, ...(q.kind === 'limit' && related && { related }) }, timeoutMs: COMPARE_TIMEOUT_MS }),
     };
     try {
       const findings = await sendWithParseRetry(

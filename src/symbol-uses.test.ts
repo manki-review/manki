@@ -381,7 +381,43 @@ ${body}	return true
     expect(siblings.implementations[3].members[1].code).toContain('4:  \tif s.side < 0 {');
   });
 
-  const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };
+  it('names each limit the diff lowers or adds, in code and config of any language, leaving out raised, moved, minimum and test limits', async () => {
+    const grpc = (size: string) => `package server\n\nfunc options() []grpc.ServerOption {\n\treturn []grpc.ServerOption{\n\t\tgrpc.MaxRecvMsgSize(${size}),\n\t}\n}\n`;
+    const { siblings } = await usesFor({
+      'server/limits.rs': 'pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;\npub const MAX_PEERS: usize = 8;\n',
+      'server/grpc.go': grpc('16 << 20'),
+      'app/models.py': 'class Order(models.Model):\n    note = models.CharField(max_length=1000)\n',
+      '.github/workflows/ci.yml': 'jobs:\n  test:\n    timeout-minutes: 30\n',
+      'include/config.h': '#define MAX_CLIENTS 64 // per worker\n',
+      'web/src/old.ts': 'export const RATE_LIMIT_PER_MINUTE = 60;\nexport const other = 1;\n',
+      'web/src/limits.ts': 'export const other = 2;\n',
+      'web/src/limits.test.ts': 'export const other = 3;\n',
+      'docs/limits.md': 'Default:\n',
+    }, {
+      'server/limits.rs': 'pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;\npub const MAX_PEERS: usize = 16;\n',
+      'server/grpc.go': grpc('4 << 20'),
+      'app/models.py': 'class Order(models.Model):\n    note = models.CharField(max_length=255)\n    code = models.CharField(min_length=3)\n',
+      '.github/workflows/ci.yml': 'jobs:\n  test:\n    timeout-minutes: 10 # a full run takes 12\n',
+      'include/config.h': '#define MAX_CLIENTS 0x20 // per worker\n',
+      'web/src/old.ts': 'export const other = 1;\n',
+      'web/src/limits.ts': 'export const other = 2;\nexport const RATE_LIMIT_PER_MINUTE = 60;\nexport const UPLOAD_LIMIT_BYTES = 5_000_000;\nexport const retries = 3;\n',
+      'web/src/limits.test.ts': 'export const other = 3;\nconst MAX_ITEMS = 1;\n',
+      'docs/limits.md': 'Default:\nmax_items: 10\n',
+    });
+
+    expect(siblings.limits.map(q => `${q.file}:${q.line} ${q.name}: ${q.previous ?? 'new'} -> ${q.value}`)).toEqual([
+      '.github/workflows/ci.yml:3 timeout-minutes: 30 -> 10',
+      'app/models.py:2 max_length: 1000 -> 255',
+      'include/config.h:1 MAX_CLIENTS: 64 -> 0x20',
+      'server/grpc.go:5 MaxRecvMsgSize: 16 << 20 -> 4 << 20',
+      'server/limits.rs:1 MAX_FRAME_BYTES: 16 * 1024 * 1024 -> 4 * 1024 * 1024',
+      'web/src/limits.ts:3 UPLOAD_LIMIT_BYTES: new -> 5_000_000',
+    ]);
+    expect(siblings.limits[0].text).toBe('timeout-minutes: 10 # a full run takes 12');
+    expect(siblings.limits[0].hunk).toMatch(/^diff --git a\/\.github\/workflows\/ci\.yml b\/\.github\/workflows\/ci\.yml\n[\s\S]*\n- {4}timeout-minutes: 30\n\+ {4}timeout-minutes: 10 # a full run takes 12$/);
+  });
+
+  const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [], limits: [] } };
 
   it('returns nothing and logs why without a git checkout, when ast-grep fails to load, or when nothing changed has a use', async () => {
     const plain = mkdtempSync(join(tmpdir(), 'manki-uses-plain-'));
@@ -400,7 +436,7 @@ ${body}	return true
       expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual(NOTHING);
       expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
       expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({ ...NOTHING, referenceNames: ['compute_total'] });
-      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons$/));
+      expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field, 0 sibling implementation and 0 limit comparisons$/));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

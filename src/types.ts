@@ -324,11 +324,14 @@ export interface RoundUsesSymbol {
 
 /** A targeted call comparing changed code with the code beside it, asked alongside the finders. */
 export interface RoundComparison {
-  /** `field` asks whether a sibling field can hold the item a change looks up, `implementations` compares sibling functions. */
-  kind: 'field' | 'implementations';
+  /**
+   * `field` asks whether a sibling field can hold the item a change looks up, `implementations` compares sibling
+   * functions, and `limit` asks which code produces values against a limit the change lowers or adds.
+   */
+  kind: 'field' | 'implementations' | 'limit';
   /** The reviewer name its findings carry. */
   reviewer: string;
-  /** The changed lookup, or each function compared, as `file:line`. */
+  /** The changed lookup, each function compared, or the changed limit, as `file:line`. */
   at: string[];
   /**
    * `failed` when the call failed or its reply did not parse twice, `cut` when the round's cap left it out, and
