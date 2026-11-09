@@ -118,11 +118,12 @@ describe('listUsesOutsideDiff', () => {
       {
         changed: 'src/account.ts', before: 'export interface Account {\n  balance: number;\n}\n', after: 'export interface Account {\n  balance: bigint;\n}\n',
         ledger: 'src/ledger.ts', report: 'src/report.ts',
-        ledgerText: `import { Account } from './account';\n\n${reads(i => `export const read${i} = (a: Account) => a.balance;`)}\n\nexport class AccountView {\n  balance = 0;\n\n  shown() {\n    return this.balance;\n  }\n}\n\nexport interface Joint extends Account {\n  balance: bigint;\n}\n\nexport type Shared = Account & {\n  balance: bigint;\n};\n`,
+        ledgerText: `import { Account } from './account';\n\n${reads(i => `export const read${i} = (a: Account) => a.balance;`)}\n\nexport class AccountView {\n  balance = 0;\n\n  shown() {\n    return this.balance;\n  }\n}\n\nexport interface Joint extends Account {\n  balance: bigint;\n}\n\nexport type Shared = Account & {\n  balance: bigint;\n};\n\nexport class Printer {\n  show(x: { balance: bigint }) {\n    return x;\n  }\n}\n`,
         reportText: 'export const opened = (e: Event) => e.holder.balance;\n',
         shown: (n: number) => `src/ledger.ts:${n + 3}: export const read${n} = (a: Account) => a.balance;`, reportLine: 'src/report.ts:1: export const opened = (e: Event) => e.holder.balance;',
-        // An interface that extends the changed one, and a type that names it, declare the same field.
-        extra: ['src/ledger.ts:18: balance: bigint;', 'src/ledger.ts:22: balance: bigint;'],
+        // An interface that extends the changed one, and a type that names it, declare the same field. A parameter's inline
+        // type is no field of the class around it, and the changed type fits it.
+        extra: ['src/ledger.ts:18: balance: bigint;', 'src/ledger.ts:22: balance: bigint;', 'src/ledger.ts:26: show(x: { balance: bigint }) {'],
       },
       {
         changed: 'bank/account.go', before: 'package bank\n\ntype Account struct {\n\tBalance int64\n}\n', after: 'package bank\n\ntype Account struct {\n\tBalance uint64\n}\n',

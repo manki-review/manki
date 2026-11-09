@@ -289,6 +289,8 @@ const KEYWORD_KIND: Record<string, SymbolKind> = { def: 'function', func: 'funct
 const CONFIG_FILE = /\.(?:ya?ml|toml|json)$/i;
 // A config key. Only keys with an underscore, such as `slice_lines`, are distinct enough to search for.
 const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*)"?\s*[:=]/;
+// Type expressions that declare fields in place, such as a TypeScript `{ a: number }` or a Go `struct { A int }`.
+const INLINE_TYPES = new Set(['object_type', 'struct_type']);
 // Nodes that wrap a declaration, so the comments above them belong to it.
 const WRAPPERS = ['export_statement', 'lexical_declaration', 'decorated_definition', 'expression_statement', 'type_declaration', 'const_declaration'];
 const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|test_utils|spec)\/|[._](?:test|spec)s?\.\w+$|(?:^|\/)test_[^/]*\.py$/;
@@ -893,8 +895,9 @@ class ParsedFile {
   private readonly byKey = new Map<string, Declaration>();
   private readonly members = new Map<string, Declaration[]>();
   private readonly fieldsByLine = new Map<number, Declaration[]>();
-  /** Each field as `Type.field`, by the name of the type that declares it. */
+  /** Each field a type declares itself, as `Type.field`, and the `key` of each such field. */
   private readonly ownFields = new Set<string>();
+  private readonly ownFieldKeys = new Set<string>();
   /** The types and enum variants this file declares, the first of each name. */
   private readonly typesByName = new Map<string, Declaration>();
   /** The methods that name their receiver, by first line, their first lines, and the index of the one around each. */
@@ -925,7 +928,10 @@ class ParsedFile {
       if (decl.kind === 'field') appendTo(this.fieldsByLine, lineOf(decl.node), decl);
     }
     for (const decl of this.declarations) {
-      if (decl.kind === 'field' && decl.container) this.ownFields.add(`${this.byKey.get(decl.container)?.name}.${decl.name}`);
+      if (decl.kind === 'field' && decl.container && this.isOwnField(decl)) {
+        this.ownFields.add(`${this.byKey.get(decl.container)?.name}.${decl.name}`);
+        this.ownFieldKeys.add(decl.key);
+      }
       if ((decl.kind === 'type' || decl.kind === 'variant') && !this.typesByName.has(decl.name)) this.typesByName.set(decl.name, decl);
     }
     this.methods = this.findMethods();
@@ -1141,7 +1147,8 @@ class ParsedFile {
     const code = text.replace(COMMENT, '');
     const word = wordPattern([name]);
     const total = code.match(new RegExp(word.source, 'g'))?.length ?? 0;
-    const type = this.byKey.get(this.fieldContainer(name, line) ?? '');
+    const field = this.fieldsByLine.get(line)?.find(d => d.name === name);
+    const type = field && this.ownFieldKeys.has(field.key) ? this.byKey.get(field.container!) : undefined;
     let other: string | undefined;
     if (type) {
       if (total === 1) other = type.name;
@@ -1181,6 +1188,19 @@ class ParsedFile {
       this.lineageBases.set(scope.id(), plain ? names.map(n => n.split(/\.|::/).at(-1)!) : undefined);
     }
     return this.lineageBases.get(scope.id());
+  }
+
+  /**
+   * Whether field `decl` belongs to its type itself, not to an inline type or a function inside the type, such as the
+   * `{ a: number }` of a method's parameter. A family that names its fields itself, such as Python, places them already.
+   */
+  private isOwnField(decl: Declaration): boolean {
+    if (this.rules.fieldName) return true;
+    for (let a = this.tree.parent(decl.node); a && nodeKey(a) !== decl.container; a = this.tree.parent(a)) {
+      if (this.rules.declarations[a.kind()] === 'function') return false;
+      if (INLINE_TYPES.has(String(a.kind())) && nodeKey(this.tree.parent(a) ?? a) !== decl.container) return false;
+    }
+    return true;
   }
 
   /** Returns the innermost method of `selfMethods` that holds `line`, such as the one around a nested class's method. */
