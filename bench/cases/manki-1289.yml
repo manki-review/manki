@@ -1,0 +1,81 @@
+# This case measures whether one round finds every instance of one defect class: input a pull request author controls
+# makes a scan in src/symbol-uses.ts super-linear. Manki found these one per round over nine rounds. The same-class
+# step of manki-review/manki#1318 is tuned against this case, so it stays in the tuning set.
+id: manki-1289
+repo: manki-review/manki
+source: manki PR 1289, round 1
+base: 1e6103800e0680d13890aef05c2ca18961d04b84
+head: cc00362db19a2df3e65f15d3410ed3b3765a711f
+title: "feat: rank redefined field uses, add Python and Go"
+body: |
+  ## Summary
+
+  The "Uses Outside the Diff" list now ranks the readers of a field or variant whose meaning the diff changes by whether their file names the changed type, shows more of them, and says how many were cut. Sibling field and sibling implementation detection now covers Python and Go, and other languages get a conservative line-based fallback for sibling fields. The test fixtures in `symbol-uses.test.ts` and `compare.test.ts` are rewritten with neutral Rust, TypeScript, Python, Go, Java and C# code.
+
+  ## Changes
+
+  - **Rank uses by type.** For a redefined field or variant, a use in a file that also names the declaring type ranks first, and a use in a file that never names it ranks last with the existing unreachable-package namesakes. Such a field shows up to 12 uses instead of 4, still inside the 60-line total, and the cut note says how many of the uses left out sit in files that name the type. Each field's heading now names its type, such as `(field of `Order`)`.
+    - Defect class: stale readers of a field whose meaning, units or serialization changed while its name stayed.
+    - Example elsewhere: a TypeScript API makes `profile.nickname` display-only. Readers in files that import `Profile` matter, while `pet.nickname` reads in unrelated files used to fill the 4 slots.
+    - Could make worse: a longer uses section and some cost. A namesake in a file that also names the type still ranks high.
+  - **Python.** Fields are class-body assignments and `self` assignments in `__init__`, typed by annotation or by the kind of their first value (`{}` is `dict`). Lookups cover `in` and `not in`, subscripts, and `get`, `pop`, `setdefault`, `discard`, `append` and `index`. Python classes are listed with their fields. A `test_*.py` file counts as a test.
+  - **Go.** Loads the pinned `@ast-grep/lang-go@0.0.6` grammar beside Python and Rust (one more ~330 KB SHA-512 pinned download, in parallel). Covers struct fields, map index lookups, `delete` and `append`, `sync.Map` methods, and methods of one name on sibling receiver types. `[32]byte` is a value, not a collection. The `ast_grep` repository tool can now search Go too. `isAstGrepFile` now also requires a rule for the language, so a Go-only PR does not load ast-grep for static analysis that has no Go rules.
+    - Defect class for Python and Go: a lookup that checks one collection while the item can sit in a sibling one, and one implementation missing a check its siblings have.
+    - Example elsewhere: a Python worker pool checks `worker_id in self.idle` but never `self.retired`. A Go `Close` deletes from `r.active` while closed sessions sit in `r.expired`.
+    - Could make worse: more comparison calls on Python and Go PRs, within the existing cap of 6 per kind. A Python field without an annotation is compared only with a field holding the same kind of value, so `set()` against `{}` is never asked about.
+  - **Fallback for other languages** (second commit). Lookups come from added lines, such as `jobs.get(id)`, `this.jobs.containsKey(id)` or `jobs_[id]`. The class comes from the nearest less indented line that opens one, so a local variable in a method never counts. A question is asked only for a field declared with the very same collection type, and these lookups queue after parsed ones.
+    - Example elsewhere: a Java `SessionStore.close` checks `live.containsKey(id)` while a `closed` map of the same type holds ended sessions.
+    - Could make worse: a few extra questions in Java, C#, C++ or Kotlin code, limited by the same-type rule. Fields declared without an explicit type, such as Kotlin `val x = mutableMapOf()`, are missed.
+  - **Neutral fixtures and text.** The replay-derived names are gone from the two test files, the reference-search prompt sentence, doc comments, `docs/how-reviews-work.md`, and `GENERIC_NAMES`, which no longer special-cases `consensus_encode` and `consensus_decode` (the 80-use cutoff covers a name that common).
+
+  The targeted comparison call for a lowered or added limit (item 3 of the issue) follows in a separate PR.
+
+  ## Testing
+
+  `npx jest` on the touched files passes: `symbol-uses.test.ts`, `compare.test.ts`, `ast-grep.test.ts`, `mcp-server.test.ts` and `static-signals.test.ts` (60 tests). New cases cover the type-first ranking in Rust and TypeScript, the 12-use cap and its cut note, Python and Go sibling fields and implementations, Go fixed-size arrays, and the Java and C# fallback including a method-local map that must not count.
+
+  Part of #1284, whose item 3 follows in a second PR that closes it.
+  Part of #1281
+key_version: 1
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: '`LINE_LOOKUP` puts `\s*`, a lazy run of any character but brackets, commas, semicolons and backticks, which also matches spaces, and another `\s*` in a row before a required `,` or `)`. `lineLookups` runs it with the `g` flag on every added line, so a long run of spaces without a closing `,` or `)` backtracks cubically and hangs the review before any model runs.'
+    locations: ["src/symbol-uses.ts", "lineLookups", "LINE_LOOKUP"]
+    fix: "da19c894cc78f561ceca34d855224d0d1af85c8f"
+  - id: K2
+    severity: blocker
+    mechanism: 'The Go `receiver` rule strips type arguments with `.replace(/\[[\s\S]*\]$/, '''')`. On a receiver type with many `[` that does not end in `]`, such as `[][][]...T`, every `[` scans to the end of the text and fails, so the time grows with the square of the type''s length. `methods()` runs it for every method in the changed Go files and the files beside them.'
+    locations: ["src/symbol-uses.ts", "receiver", "methods"]
+    fix: "69d7671b42f7e124d45c943b7bff1d459d20ba00"
+  - id: K3
+    severity: blocker
+    mechanism: '`collectionLookups` calls `named(parent)` for every member access inside a call''s arguments, a subscript or a membership test, before it checks that the access is the first operand. Each call lists every sibling, so one call with k member-access arguments, a Python subscript `x[a.b, a.c, ...]` or a chained `in` comparison costs k squared nodes.'
+    locations: ["src/symbol-uses.ts", "collectionLookups", "named(parent)"]
+    fix: "c30415c33046e9f47b12b5844ce6b281438ea48a"
+  - id: K4
+    severity: blocker
+    mechanism: '`collectionLookups` copies `call.field(''function'')?.text()` for every access whose grandparent is a call, and `item?.text()` before the `MAX_ITEM_CHARS` check. In a fluent chain such as `b.a(x.y).b(x.y)...` each callee is the whole chain before it, and in nested subscripts such as `a.m[a.m[...]]` each item is the rest of the expression, so the copied text grows with the square of the expression.'
+    locations: ["src/symbol-uses.ts", "collectionLookups", "MAX_ITEM_CHARS"]
+    fix: "d40836175b981fc4f81ffc30e59038623ef8a17e"
+  - id: K5
+    severity: blocker
+    mechanism: '`changedDeclarations` spreads the whole `touched` set into a new array in `touches`, twice for every declaration, and its second loop runs `changed.some` over all changed symbols for each declaration. A large added file with many one-line fields or Go `const` specs costs declarations times touched lines.'
+    locations: ["src/symbol-uses.ts", "changedDeclarations", "touches"]
+    fix: "716adcf2110c1fdc2286cb952619cf9238808ca1"
+  - id: K6
+    severity: blocker
+    mechanism: '`structsDeclaringField` calls `fieldContainer` for every grep hit whose line matches `fieldLine`, and `fieldContainer` scans every declaration of the file with `find`, calling `range()` on each. `structListing` then scans all declarations again. One large struct of matching field lines read on a changed line costs hits times declarations.'
+    locations: ["src/symbol-uses.ts", "structsDeclaringField", "fieldContainer", "structListing"]
+    fix: "716adcf2110c1fdc2286cb952619cf9238808ca1"
+  - id: K7
+    severity: blocker
+    mechanism: '`ParsedFile` walks `node.ancestors()` for every node it checks: in `declaration` to find the container, and in `inTests` for every declaration and every member access. A deep syntax tree, such as Go anonymous struct fields nested thousands of levels or a long `a.b.c...` chain, makes the total walk grow with the square of the depth.'
+    locations: ["src/symbol-uses.ts", "inTests", "ancestors"]
+    fix: "bfb585ec294ada6d04090155f07c886ea5c059ec"
+  - id: K8
+    severity: blocker
+    mechanism: '`siblingImplementations` adds each method with `groups.set(key, [...groups.get(key) ?? [], m])`, copying the whole group on every insert. A generated Go file where every type has `String()` or `Reset()`, plus the files beside it, makes the copies grow with the square of the group size.'
+    locations: ["src/symbol-uses.ts", "siblingImplementations", "groups.set"]
+    fix: "cd58d9a25bce3b7b5560c5e5cf736b66d1f5e595"
+nice_to_have: []
