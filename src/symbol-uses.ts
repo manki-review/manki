@@ -56,6 +56,7 @@ const MAX_QUESTION_LOOKUPS = 20;
 const MAX_QUESTIONS = 20;
 const MAX_GROUP_MEMBERS = 4;
 const MAX_SIBLING_FILES = 40;
+const MAX_GROUPS_PER_FILE = 50;
 const MAX_EXCERPT_LINES = 120;
 const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
@@ -1450,7 +1451,8 @@ function siblingImplementations(
   const inCode = new Set(code);
   const changed = code.map(file => ({ file, methods: (parser.parse(file)?.methods ?? []).filter(m => changedLines(m, file) > 0) })).filter(c => c.methods.length > 0);
   if (changed.length === 0) return [];
-  const wanted = new Set(changed.flatMap(c => c.methods.flatMap(keysOf)));
+  // Each changed file asks about at most `MAX_GROUPS_PER_FILE` groups, so a crafted file cannot make the groups unbounded.
+  const wanted = new Set(changed.flatMap(c => [...new Set(c.methods.flatMap(keysOf))].slice(0, MAX_GROUPS_PER_FILE)));
   const dirs = new Map(changed.map(({ file }) => [dirname(file), file]));
   const beside = [...dirs].flatMap(([dir, file]) => filesBeside(workspace, dir, file, excludePaths)).filter(file => !inCode.has(file)).slice(0, MAX_SIBLING_FILES);
   const groups = new Map<string, Array<Method & { file: string; parsed: ParsedFile; changed: number }>>();
@@ -1467,11 +1469,12 @@ function siblingImplementations(
     const bodies = new Set(members.map(m => (m.decl.node.field('body') ?? m.decl.node).text().replace(/\s+/g, ' ')));
     return members.length < 2 || bodies.size < 2 ? [] : [{ members, order, ids: new Set(members.map(m => `${m.file}:${m.decl.start}`)) }];
   });
-  // Classes that share a base or two put a protocol method in nested groups, so a group within one already asked is dropped.
-  const asked: Array<Set<string>> = [];
+  // Classes that share a base or two put a protocol method in nested groups. Largest first, a group whose members an
+  // earlier group already covers is dropped, which takes one pass over the members.
+  const covered = new Set<string>();
   const ranked = [...candidates].sort((a, b) => b.ids.size - a.ids.size || a.order - b.order).flatMap(({ members, order, ids }) => {
-    if (asked.some(group => [...ids].every(id => group.has(id)))) return [];
-    asked.push(ids);
+    if ([...ids].every(id => covered.has(id))) return [];
+    for (const id of ids) covered.add(id);
     const question: SiblingImplementationQuestion = {
       name: members[0].name, ...(members[0].trait && { trait: members[0].trait }),
       members: members.map(m => ({ ...m.parsed.excerpt(m.decl, m.file, added.get(m.file) ?? new Set()), owner: m.owner, changed: m.changed > 0 })),

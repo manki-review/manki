@@ -338,6 +338,16 @@ ${body}	return true
     expect(siblings.implementations).toEqual([]);
   });
 
+  it('asks about at most 50 method groups per changed file', async () => {
+    // 50 changed dunder methods give 100 group keys, so the cap leaves out the later half, and with it the one group that has a sibling.
+    const many = (value: number) => `class Many(Base):\n${Array.from({ length: 50 }, (_, i) => `    def __x${i}__(self):\n        return ${value}\n`).join('')}`;
+    const { siblings } = await usesFor(
+      { 'src/many/many.py': many(1), 'src/many/other.py': 'class Other(Base):\n    def __x49__(self):\n        return 2\n' },
+      { 'src/many/many.py': many(3) },
+    );
+    expect(siblings.implementations).toEqual([]);
+  });
+
   it('compares the functions of one name or trait method on sibling types in the changed files and beside them, in Rust, Python, Go and TypeScript, most touched first, leaving out nested functions, untouched neighbours of removed code, excluded files, types no plain path names, standard traits and protocol methods of types that share no base', async () => {
     const decode = (type: string, body: string) => `impl FromWire for ${type} {\n    fn from_wire(r: &mut R) -> Result<Self, Error> {\n        let version = u16::from_wire(r)?;\n${body}        Ok(Self { version })\n    }\n}\n`;
     const methods = (type: string, size: string, before = '') => `impl ${type} {\n    fn is_new(&self) -> bool {\n        self.version >= 3\n    }\n\n${before}    pub fn size(&self) -> usize {\n        ${size}\n    }\n}\n`;
