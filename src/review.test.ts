@@ -3728,7 +3728,7 @@ describe('runReview', () => {
     );
     expect(planningCalls).toHaveLength(2);
     expect(planningCalls[0][0].plannerResult).toBeUndefined();
-    expect(planningCalls[1][0]).toEqual(expect.objectContaining({ teamAgentNames: result.agentNames, reviewerEffort: 'medium' }));
+    expect(planningCalls[1][0]).toEqual(expect.objectContaining({ teamAgentNames: result.agentNames }));
     expect(planningCalls[1][0].heuristicFallback).toBeUndefined();
     expect(result.plannerResult).toEqual(expect.objectContaining({ judgeEffort: 'low', prType: 'feat' }));
 
@@ -3814,7 +3814,7 @@ describe('runReview', () => {
     expect(fallback).toBeDefined();
     expect(fallback!.plannerResult).toBeUndefined();
     expect(fallback!.teamAgentNames).toEqual(result.agentNames);
-    expect(fallback!.reviewerEffort).toBe('high');
+    expect(result.agentEffortMap).toEqual(new Map(result.agentNames.map(name => [name, 'high'])));
     expect(fallback!.plannerDurationMs).toBeGreaterThanOrEqual(0);
   });
 
@@ -3828,7 +3828,7 @@ describe('runReview', () => {
     const planningCalls = onProgress.mock.calls
       .map((c: [import('./review').ReviewProgress]) => c[0])
       .filter(p => p.phase === 'planning');
-    expect(planningCalls).toEqual([expect.objectContaining({ teamAgentNames: result.agentNames, reviewerEffort: 'high' })]);
+    expect(planningCalls).toEqual([expect.objectContaining({ teamAgentNames: result.agentNames })]);
     expect(planningCalls[0].heuristicFallback).toBeUndefined();
   });
 
@@ -5233,7 +5233,7 @@ describe('runReview triage', () => {
     expect(result.agentEffortMap).toEqual(new Map([['Claude Sonnet 5.5 · medium', 'medium']]));
     expect(result.agentModels).toEqual(new Map([['Claude Sonnet 5.5 · medium', 'claude-sonnet-5-5']]));
     expect(result.routing).toEqual({ class: 'internal', rank: 30, matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' });
-    expect(progress).toContainEqual(expect.objectContaining({ phase: 'planning', teamAgentNames: ['Claude Sonnet 5.5 · medium'], reviewerEffort: 'medium', routing: expect.objectContaining({ class: 'internal', group: 'solo' }) }));
+    expect(progress).toContainEqual(expect.objectContaining({ phase: 'planning', teamAgentNames: ['Claude Sonnet 5.5 · medium'], routing: expect.objectContaining({ class: 'internal', group: 'solo' }) }));
   });
 
   it.each<[string, string | undefined, string, string | undefined]>([

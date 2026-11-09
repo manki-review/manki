@@ -2589,12 +2589,12 @@ describe('buildDashboard', () => {
   it('renders plannerInfo with structured details', () => {
     const data: DashboardData = {
       phase: 'started', lineCount: 200, agentCount: 5,
-      plannerInfo: { agentCount: 5, reviewerEffort: 'medium', judgeEffort: 'high', prType: 'feat' },
+      plannerInfo: { agentCount: 5, judgeEffort: 'high', prType: 'feat' },
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Planner**');
     expect(md).toContain(`${INDENT}feat · 200 lines · 5 agents`);
-    expect(md).toContain(`${INDENT}review effort: medium · judge effort: high`);
+    expect(md).toContain(`${INDENT}judge effort: high`);
   });
 
   it('renders the resolved roster size on the Planner line, not the planner-requested teamSize', () => {
@@ -2602,7 +2602,7 @@ describe('buildDashboard', () => {
     // teamSize, which can diverge when prior-round pinning grows the roster.
     const data: DashboardData = {
       phase: 'started', lineCount: 120, agentCount: 5,
-      plannerInfo: { agentCount: 5, reviewerEffort: 'medium', judgeEffort: 'high', prType: 'fix' },
+      plannerInfo: { agentCount: 5, judgeEffort: 'high', prType: 'fix' },
     };
     const md = buildDashboard(data);
     expect(md).toContain(`${INDENT}fix · 120 lines · 5 agents`);
@@ -2612,7 +2612,7 @@ describe('buildDashboard', () => {
   it('omits the prType chip when the value is off-vocab and never leaks the raw value', () => {
     const data: DashboardData = {
       phase: 'started', lineCount: 100, agentCount: 3,
-      plannerInfo: { agentCount: 3, reviewerEffort: 'low', judgeEffort: 'low', prType: '<script>alert(1)</script>' },
+      plannerInfo: { agentCount: 3, judgeEffort: 'low', prType: '<script>alert(1)</script>' },
     };
     const md = buildDashboard(data);
     expect(md).toContain(`${INDENT}100 lines · 3 agents`);
@@ -2623,7 +2623,7 @@ describe('buildDashboard', () => {
   it('omits the prType chip when the value is the `unknown` sentinel', () => {
     const data: DashboardData = {
       phase: 'started', lineCount: 100, agentCount: 3,
-      plannerInfo: { agentCount: 3, reviewerEffort: 'low', judgeEffort: 'low', prType: 'unknown' },
+      plannerInfo: { agentCount: 3, judgeEffort: 'low', prType: 'unknown' },
     };
     const md = buildDashboard(data);
     expect(md).toContain(`${INDENT}100 lines · 3 agents`);
@@ -2636,7 +2636,7 @@ describe('buildDashboard', () => {
     prType => {
       const data: DashboardData = {
         phase: 'started', lineCount: 50, agentCount: 2,
-        plannerInfo: { agentCount: 2, reviewerEffort: 'low', judgeEffort: 'low', prType },
+        plannerInfo: { agentCount: 2, judgeEffort: 'low', prType },
       };
       const md = buildDashboard(data);
       expect(md).toContain(`${INDENT}${prType} · 50 lines · 2 agents`);
@@ -2672,22 +2672,21 @@ describe('buildDashboard', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 400, agentCount: 5,
       keptCount: 3, droppedCount: 5, rawFindingCount: 8,
-      plannerInfo: { agentCount: 5, reviewerEffort: 'medium', judgeEffort: 'high', prType: 'fix' },
+      plannerInfo: { agentCount: 5, judgeEffort: 'high', prType: 'fix' },
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Planner**');
     expect(md).toContain(`${INDENT}fix · 400 lines · 5 agents`);
-    expect(md).toContain(`${INDENT}review effort: medium · judge effort: high`);
+    expect(md).toContain(`${INDENT}judge effort: high`);
   });
 
   it('sanitizes unknown effort values in plannerInfo', () => {
     const data: DashboardData = {
       phase: 'started', lineCount: 100, agentCount: 3,
-      plannerInfo: { agentCount: 3, reviewerEffort: 'injected' as unknown as 'low', judgeEffort: 'high', prType: 'feat' },
+      plannerInfo: { agentCount: 3, judgeEffort: 'injected' as unknown as 'low', prType: 'feat' },
     };
     const md = buildDashboard(data);
-    expect(md).toContain('review effort: unknown');
-    expect(md).toContain('judge effort: high');
+    expect(md).toContain('judge effort: unknown');
     expect(md).not.toContain('injected');
   });
 
@@ -2724,7 +2723,7 @@ describe('buildDashboard', () => {
   it('renders planner duration when plannerInfo and plannerDurationMs are provided', () => {
     const data: DashboardData = {
       phase: 'started', lineCount: 200, agentCount: 5,
-      plannerInfo: { agentCount: 5, reviewerEffort: 'medium', judgeEffort: 'high', prType: 'feat' },
+      plannerInfo: { agentCount: 5, judgeEffort: 'high', prType: 'feat' },
       plannerDurationMs: 1200,
     };
     const md = buildDashboard(data);
@@ -2743,7 +2742,7 @@ describe('buildDashboard', () => {
   it('omits planner duration when plannerDurationMs is not set', () => {
     const data: DashboardData = {
       phase: 'started', lineCount: 200, agentCount: 5,
-      plannerInfo: { agentCount: 5, reviewerEffort: 'medium', judgeEffort: 'high', prType: 'feat' },
+      plannerInfo: { agentCount: 5, judgeEffort: 'high', prType: 'feat' },
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Planner**');
@@ -2823,7 +2822,7 @@ describe('buildDashboard', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 400, agentCount: 5,
       rawFindingCount: 10, keptCount: 6, droppedCount: 4,
-      plannerInfo: { agentCount: 5, reviewerEffort: 'low', judgeEffort: 'medium', prType: 'fix' },
+      plannerInfo: { agentCount: 5, judgeEffort: 'medium', prType: 'fix' },
       plannerDurationMs: 2500,
       judgeDurationMs: 65000,
     };

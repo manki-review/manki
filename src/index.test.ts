@@ -2859,11 +2859,12 @@ describe('runFullReview orchestration', () => {
       sensitivePaths: true,
       defaultedFields: ['subtle'],
       teamSize: 2,
-      reviewerEffort: 'medium',
       judgeEffort: 'high',
       prType: 'feat',
       language: 'typescript',
     }));
+    // Each finder's effort is recorded with the finder, never one for the whole team.
+    expect(ctx!.planner).not.toHaveProperty('reviewerEffort');
   });
 
   it('builds `RoundPlanner` with `source: "heuristic_fallback"` and `fallbackReason` when the planner failed', async () => {
@@ -3848,7 +3849,6 @@ describe('runFullReview orchestration', () => {
           phase: 'planning',
           plannerResult: { trivial: false, subtle: true, paired: true, judgeEffort: 'medium', prType: 'feat' },
           teamAgentNames: team,
-          reviewerEffort: 'high',
           plannerDurationMs: 100,
         });
         onProgress?.({
@@ -3874,7 +3874,7 @@ describe('runFullReview orchestration', () => {
       const finalDashboard = progressCommentCalls[progressCommentCalls.length - 1][4];
       expect(finalDashboard.agentCount).toBe(2);
       expect(finalDashboard.agentProgress?.map((a: { name: string }) => a.name)).toEqual(team);
-      expect(finalDashboard.plannerInfo).toEqual({ agentCount: 2, reviewerEffort: 'high', judgeEffort: 'medium', prType: 'feat' });
+      expect(finalDashboard.plannerInfo).toEqual({ agentCount: 2, judgeEffort: 'medium', prType: 'feat' });
       // Metrics from the agent-complete callback survive the reconcile after runReview.
       const entry = finalDashboard.agentProgress?.find((a: { name: string }) => a.name === team[0]);
       expect(entry?.findingCount).toBe(3);
@@ -4265,7 +4265,6 @@ describe('runFullReview orchestration', () => {
             phase: 'planning',
             plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const },
             teamAgentNames: ['general'],
-            reviewerEffort: 'low',
           });
           onProgress({
             phase: 'agent-complete',
@@ -4324,7 +4323,6 @@ describe('runFullReview orchestration', () => {
             phase: 'planning',
             plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const },
             teamAgentNames: ['general'],
-            reviewerEffort: 'low',
           });
           onProgress({
             phase: 'agent-complete',
@@ -4482,7 +4480,6 @@ describe('runFullReview orchestration', () => {
             rawFindingCount: 0,
             plannerResult: { trivial: false, subtle: false, paired: true, judgeEffort: 'low', prType: 'feat' },
             teamAgentNames: ['general', 'Security & Safety'],
-            reviewerEffort: 'medium',
             plannerDurationMs: 400,
           });
         }
@@ -4514,7 +4511,7 @@ describe('runFullReview orchestration', () => {
     expect(firstDashboard.heuristicFallback).toBeFalsy();
     expect(firstDashboard.phase).toBe('started');
     expect(firstDashboard.plannerInfo).toEqual(
-      expect.objectContaining({ agentCount: 2, reviewerEffort: 'medium' }),
+      expect.objectContaining({ agentCount: 2 }),
     );
   });
 
@@ -4535,7 +4532,6 @@ describe('runFullReview orchestration', () => {
             phase: 'planning',
             plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const },
             teamAgentNames: ['general'],
-            reviewerEffort: 'low',
           });
           onProgress({
             phase: 'judging',
@@ -4584,7 +4580,6 @@ describe('runFullReview orchestration', () => {
             phase: 'planning',
             plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const },
             teamAgentNames: ['general'],
-            reviewerEffort: 'low',
           });
           onProgress({
             phase: 'reviewed',
@@ -4900,7 +4895,7 @@ describe('runFullReview orchestration', () => {
       async (_clients, { onProgress }) => {
         if (onProgress) {
           onProgress({ phase: 'planning' });
-          onProgress({ phase: 'planning', plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const }, teamAgentNames: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'], reviewerEffort: 'low' });
+          onProgress({ phase: 'planning', plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const }, teamAgentNames: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'] });
         }
         jest.advanceTimersByTime(600);
         await Promise.resolve();
@@ -4922,7 +4917,7 @@ describe('runFullReview orchestration', () => {
     const dashboardWithPlanner = dashboardCalls.find(call => call[4]?.plannerInfo !== undefined);
     expect(dashboardWithPlanner).toBeDefined();
     expect(dashboardWithPlanner![4].plannerInfo).toEqual({
-      agentCount: 3, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore',
+      agentCount: 3, judgeEffort: 'low', prType: 'chore',
     });
   });
 

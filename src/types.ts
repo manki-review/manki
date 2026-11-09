@@ -982,7 +982,6 @@ export interface DashboardData {
   plannerInfo?: {
     /** Number of agents that read the diff. */
     agentCount: number;
-    reviewerEffort: EffortLevel;
     judgeEffort: EffortLevel;
     /**
      * Raw prType as received from a `PlannerResult` or replayed from a persisted
@@ -1373,8 +1372,6 @@ export interface RoundPlanner {
   defaultedFields?: string[];
   /** Number of agents that read the diff. */
   teamSize?: number;
-  /** Effort the agents ran at. */
-  reviewerEffort?: EffortLevel;
   judgeEffort?: EffortLevel;
   prType?: string;
   durationMs?: number;
