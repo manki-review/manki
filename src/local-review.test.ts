@@ -51,6 +51,8 @@ describe('reviewLocal', () => {
     base = commit(repo, 'base', {
       '.manki.yml': 'exclude_paths:\n  - "docs/**"\n',
       'AGENTS.md': 'Use tabs.\n',
+      'CONTRIBUTING.md': 'See [conventions](guides/conventions.md).\n',
+      'guides/conventions.md': 'Name things plainly.\n',
       'src/a.ts': 'const a = 1;\nconst b = 2;\n',
     });
     git(repo, 'checkout', '-q', '-b', 'feature');
@@ -83,6 +85,7 @@ describe('reviewLocal', () => {
     expect(options.excludedPaths).toEqual(['docs/x.md']);
     expect(options.config.exclude_paths).toContain('docs/**');
     expect(options.repoContext).toContain('Use tabs.');
+    expect(options.repoContext).toContain('Name things plainly.');
     expect(options.prContext).toEqual({ title: 'Change a', body: '', baseBranch: 'main' });
     expect(options.headSha).toBe(head);
     expect(workspaceSeen?.content).toBe('const a = 1;\nconst b = 3;\n');

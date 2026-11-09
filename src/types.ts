@@ -244,6 +244,28 @@ export interface RoundRelatedRepo {
   reads?: number;
 }
 
+/** What the "Uses Outside the Diff" section showed the finders, as locations without the quoted code. */
+export interface RoundUses {
+  /** Each symbol listed with its uses. */
+  symbols?: RoundUsesSymbol[];
+  /** Each type listed with all its fields, as `file:line: struct Name { fields }`. */
+  types?: string[];
+  /** Symbols named but not listed, since they have too many uses. */
+  common?: string[];
+  /** Symbols the cap on listed lines left out. */
+  capped?: string[];
+}
+
+export interface RoundUsesSymbol {
+  name: string;
+  /** Where the symbol is declared, as `file:line`. */
+  declared: string;
+  /** Each use shown, as `file:line`. */
+  uses: string[];
+  /** Uses found but not shown. */
+  notShown?: number;
+}
+
 export interface RoundSlicing {
   /** The changed files in each slice. A file split across slices counts in each. */
   files: number[];
@@ -452,6 +474,8 @@ export interface ReviewResult {
   slicing?: RoundSlicing;
   /** The configured related repos, with the outcome of each fetch. */
   relatedRepos?: RoundRelatedRepo[];
+  /** What the finders were shown as uses outside the diff. */
+  usesOutsideDiff?: RoundUses;
   /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
   changedSinceLastRoundCount?: number;
   /** The open or earlier threads where someone claimed a fix: resolved, answered by a person, or confirmed by a round. */
@@ -1061,6 +1085,8 @@ export interface RoundContext {
   slicing?: RoundSlicing;
   /** The configured related repos, with the outcome of each fetch. */
   relatedRepos?: RoundRelatedRepo[];
+  /** What the finders were shown as uses outside the diff. */
+  usesOutsideDiff?: RoundUses;
   /** How each open lead ended, so the next round carries over the ones still unsettled. */
   leads?: RoundLead[];
   /**

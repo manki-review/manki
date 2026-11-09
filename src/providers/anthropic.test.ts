@@ -545,6 +545,7 @@ describe('sendViaOAuth — error paths', () => {
       '- `dashpay/dash` at `v23.0.0`, reference: a codebase this one implements or ports. Only `src/` is fetched.',
       '- `dashpay/platform`, consumer: a codebase that depends on this one.',
     ].join('\n'));
+    expect(systemPromptFile).toContain('- Read a **reference** whenever the PR title, description or changed code says the change matches it, or follows its spec or proposal: open the code the claim names and compare it with the change.');
     expect(systemPromptFile).toContain('A change that breaks a consumer is a `warning` that lists the consumer\'s call sites');
     expect(response.toolSteps?.map(step => step.tool)).toEqual(['Read', 'mcp__manki__git_history', 'Read', 'mcp__manki__read_file']);
     expect(response.filesRead).toEqual(['src/a.rs', 'dashpay/dash:src/net.cpp']);

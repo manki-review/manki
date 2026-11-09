@@ -424,6 +424,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(result.slicing && { slicing: result.slicing }),
     ...(result.leads && result.leads.length > 0 && { leads: result.leads }),
     ...(result.relatedRepos && { relatedRepos: result.relatedRepos.map(r => withReads(r, llmCalls)) }),
+    ...(result.usesOutsideDiff && { usesOutsideDiff: result.usesOutsideDiff }),
   };
 }
 

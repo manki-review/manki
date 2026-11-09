@@ -189,13 +189,14 @@ exports[`selectTeam folds custom reviewers into both finder prompts, and gives t
   "first": "defects in the change. Check, in this order:
 1. Correctness: wrong results, missed edge cases, null or undefined handling, races, broken invariants.
 2. Security: injection, authentication or permission bypass, secret or token exposure, unsafe handling of untrusted input, resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or recursion sized by the input, or a size limit removed or raised. For a library, outside input is anything a caller of its public API can pass, readers and byte streams included. A security defect always blocks the merge, so report every one you find.
-3. Error paths: a failure that is swallowed, loses its cause, or leaves state half changed.
-4. Dropped cases: for each pattern match, \`select!\` arm, \`catch\`, ignored result such as \`let _ =\`, or fallback such as \`.ok()\` or \`unwrap_or_default\` the change adds, name the variants and errors it leaves out and what happens to each.
-5. Tests: for each test the change adds or edits, name the changed line whose revert makes it fail. A test with no such line, one that sets private fields or internal state instead of calling the public API, or one whose mocks replace the code under test is a defect.
-6. Contract breaks: changed behavior of an API, config key, file or wire format, or stored data that existing code relies on.
-7. Readers: search the whole repository, other packages included, for each changed type, field, variant and function, and check that every reader still works, not only each caller.
-8. Sibling state: when the change checks, adds or removes an item in one collection, read the type that holds it and check every other collection, cache, size or fee estimate, serializer and persistence event that holds or reports the same item.
-9. Sibling symmetry: compare each changed function with its counterpart, such as encode and decode, the other enum arms or the same function for another type. A check, version guard, lock or event that one has and the other lacks is a defect.
+3. Reference claims: when the PR title, description or changed code says the change matches another implementation, a spec or a standard, open the code or text it names and compare it with the change line by line. Read it in a **reference** related repo when one is listed. Report each difference the PR does not call out, citing both sides.
+4. Error paths: a failure that is swallowed, loses its cause, or leaves state half changed.
+5. Dropped cases: for each pattern match, \`select!\` arm, \`catch\`, ignored result such as \`let _ =\`, or fallback such as \`.ok()\` or \`unwrap_or_default\` the change adds, name the variants and errors it leaves out and what happens to each.
+6. Tests: for each test the change adds or edits, name the changed line whose revert makes it fail. A test with no such line, one that sets private fields or internal state instead of calling the public API, or one whose mocks replace the code under test is a defect.
+7. Contract breaks: changed behavior of an API, config key, file or wire format, or stored data that existing code relies on.
+8. Readers: search the whole repository, other packages included, for each changed type, field, variant and function, and check that every reader still works, not only each caller.
+9. Sibling state: when the change checks, adds or removes an item in one collection, read the type that holds it and check every other collection, cache, size or fee estimate, serializer and persistence event that holds or reports the same item.
+10. Sibling symmetry: compare each changed function with its counterpart, such as encode and decode, the other enum arms or the same function for another type. A check, version guard, lock or event that one has and the other lacks is a defect.
 
 A PR can hold several defects of different kinds. Look for all of them, not only the first or the worst.
 
@@ -205,14 +206,15 @@ This repository also asks you to check:
 1. Readers: search the whole repository, other packages included, for each changed type, field, variant and function, and check that every reader still works, not only each caller.
 2. Sibling state: when the change checks, adds or removes an item in one collection, read the type that holds it and check every other collection, cache, size or fee estimate, serializer and persistence event that holds or reports the same item.
 3. Sibling symmetry: compare each changed function with its counterpart, such as encode and decode, the other enum arms or the same function for another type. A check, version guard, lock or event that one has and the other lacks is a defect.
-4. Tests: for each test the change adds or edits, name the changed line whose revert makes it fail. A test with no such line, one that sets private fields or internal state instead of calling the public API, or one whose mocks replace the code under test is a defect.
-5. Reuse: for each constant, helper, type or loop the change adds, search for an existing one that does the same, and cite its \`file:line\`.
-6. Repository rules: check each added line against the rules in the repository context, such as \`AGENTS.md\` or \`CLAUDE.md\`, and quote the rule it breaks.
-7. Correctness: wrong results, missed edge cases, null or undefined handling, races, broken invariants.
-8. Security: injection, authentication or permission bypass, secret or token exposure, unsafe handling of untrusted input, resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or recursion sized by the input, or a size limit removed or raised. For a library, outside input is anything a caller of its public API can pass, readers and byte streams included. A security defect always blocks the merge, so report every one you find.
-9. Error paths: a failure that is swallowed, loses its cause, or leaves state half changed.
-10. Dropped cases: for each pattern match, \`select!\` arm, \`catch\`, ignored result such as \`let _ =\`, or fallback such as \`.ok()\` or \`unwrap_or_default\` the change adds, name the variants and errors it leaves out and what happens to each.
-11. Contract breaks: changed behavior of an API, config key, file or wire format, or stored data that existing code relies on.
+4. Reference claims: when the PR title, description or changed code says the change matches another implementation, a spec or a standard, open the code or text it names and compare it with the change line by line. Read it in a **reference** related repo when one is listed. Report each difference the PR does not call out, citing both sides.
+5. Tests: for each test the change adds or edits, name the changed line whose revert makes it fail. A test with no such line, one that sets private fields or internal state instead of calling the public API, or one whose mocks replace the code under test is a defect.
+6. Reuse: for each constant, helper, type or loop the change adds, search for an existing one that does the same, and cite its \`file:line\`.
+7. Repository rules: check each added line against the rules in the repository context, such as \`AGENTS.md\`, \`CLAUDE.md\` or \`CONTRIBUTING.md\`, and quote the rule it breaks.
+8. Correctness: wrong results, missed edge cases, null or undefined handling, races, broken invariants.
+9. Security: injection, authentication or permission bypass, secret or token exposure, unsafe handling of untrusted input, resource exhaustion or denial of service from outside input (CWE-400, CWE-770), such as an allocation, a loop or recursion sized by the input, or a size limit removed or raised. For a library, outside input is anything a caller of its public API can pass, readers and byte streams included. A security defect always blocks the merge, so report every one you find.
+10. Error paths: a failure that is swallowed, loses its cause, or leaves state half changed.
+11. Dropped cases: for each pattern match, \`select!\` arm, \`catch\`, ignored result such as \`let _ =\`, or fallback such as \`.ok()\` or \`unwrap_or_default\` the change adds, name the variants and errors it leaves out and what happens to each.
+12. Contract breaks: changed behavior of an API, config key, file or wire format, or stored data that existing code relies on.
 
 Report every blocker and every security issue you find, whichever check finds it. Report a reuse finding only with the existing code's \`file:line\`, and a rule finding only with the rule quoted.
 

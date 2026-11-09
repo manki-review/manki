@@ -389,14 +389,43 @@ function githubRepoFiles(octokit: Octokit, owner: string, repo: string, ref: str
   };
 }
 
+/** Returns the directory part of a repo path, or an empty string for a root file. */
+function dirOf(path: string): string {
+  return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+}
+
+// An inline markdown link to a `.md` file, with an optional `#anchor` or title after the path.
+const MARKDOWN_LINK_RE = /\]\(\s*<?([^\s()<>#?]+\.md)(?:[#?][^\s()<>]*)?>?(?:\s+"[^"]*")?\s*\)/g;
+
+/**
+ * Returns the repo paths of the `.md` files that `line`, in a file under `basePath`, links to. A URL, a path with `..`
+ * and a path that does not decode are left out. A path starting with `/` is relative to the repo root.
+ */
+function markdownLinks(line: string, basePath: string): string[] {
+  return [...line.matchAll(MARKDOWN_LINK_RE)].flatMap(([, target]) => {
+    let path: string;
+    try {
+      path = decodeURIComponent(target);
+    } catch {
+      return [];
+    }
+    if (/^[a-z][a-z\d+.-]*:/i.test(path) || path.includes('..')) return [];
+    const parts = path.startsWith('/') ? path.split('/') : [...basePath.split('/'), ...path.split('/')];
+    const resolved = parts.filter(part => part && part !== '.').join('/');
+    return resolved ? [resolved] : [];
+  });
+}
+
 /**
  * Resolve `@path/to/file.md` references in instruction file content by reading
- * the referenced files from the repo and inlining their content.
+ * the referenced files from the repo and inlining their content. Adds to `links`
+ * the `.md` files each read file links to with a markdown link.
  */
 async function resolveReferences(
   files: RepoFiles,
   content: string,
   basePath: string,
+  links: string[] = [],
   depth: number = 0,
 ): Promise<string> {
   if (depth >= MAX_RESOLVE_DEPTH) {
@@ -409,6 +438,7 @@ async function resolveReferences(
   for (const line of lines) {
     const match = line.match(/^@(\S+\.md)\s*$/);
     if (!match) {
+      links.push(...markdownLinks(line, basePath));
       resolvedLines.push(line);
       continue;
     }
@@ -426,21 +456,17 @@ async function resolveReferences(
       resolvedLines.push(`<!-- Could not resolve reference: ${filePath} -->`);
       continue;
     }
-    const fileDir = resolvedPath.includes('/') ? resolvedPath.substring(0, resolvedPath.lastIndexOf('/')) : '';
-    resolvedLines.push((await resolveReferences(files, fileContent, fileDir, depth + 1)).trimEnd());
+    resolvedLines.push((await resolveReferences(files, fileContent, dirOf(resolvedPath), links, depth + 1)).trimEnd());
   }
 
   return resolvedLines.join('\n');
 }
 
 const INSTRUCTION_FILE_NAMES = ['AGENTS.md', 'CLAUDE.md'];
-const ROOT_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md', '.claude/CLAUDE.md'];
+const ROOT_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md', '.claude/CLAUDE.md', 'CONTRIBUTING.md'];
 const MAX_INSTRUCTIONS_CHARS = 30_000;
 
-/**
- * Returns the repo description and the `AGENTS.md` and `CLAUDE.md` files at the root and nearest
- * above each changed file, nearest first, as `buildRepoContext` reads them at `ref`.
- */
+/** Returns the repo description and the instruction files `buildRepoContext` reads at `ref`. */
 export async function fetchRepoContext(
   octokit: Octokit,
   owner: string,
@@ -461,21 +487,29 @@ export async function fetchRepoContext(
 }
 
 /**
- * Returns the `AGENTS.md` and `CLAUDE.md` files at the root and nearest above each changed file, nearest first.
- * Files with the same content after `@file` resolution appear once. The file that crosses `MAX_INSTRUCTIONS_CHARS`
- * is cut, and farther files are left out.
+ * Returns the `AGENTS.md` and `CLAUDE.md` files nearest above each changed file, nearest first, then those at the root
+ * and the root `CONTRIBUTING.md`, then the `.md` files they link to, breadth first. A path appears once, and so do files
+ * with the same content after `@file` resolution. The file that crosses `MAX_INSTRUCTIONS_CHARS` is cut, and farther
+ * files are left out.
  */
 export async function buildRepoContext(files: RepoFiles, changedPaths: string[]): Promise<string> {
-  const paths = [...await findNearestInstructionFiles(files, changedPaths), ...ROOT_INSTRUCTION_FILES];
+  const queue = [...await findNearestInstructionFiles(files, changedPaths), ...ROOT_INSTRUCTION_FILES].map(path => ({ path, depth: 0 }));
+  const queued = new Set(queue.map(({ path }) => path));
 
   const parts: string[] = [];
   const seen = new Set<string>();
   let total = 0;
-  for (const path of paths) {
-    const content = await readInstructionFile(files, path);
-    if (content === null || !content.trim() || seen.has(content.trim())) continue;
-    seen.add(content.trim());
-    const part = `## ${path}\n\n${content}`;
+  for (const { path, depth } of queue) {
+    const file = await readInstructionFile(files, path);
+    if (file === null || !file.content.trim() || seen.has(file.content.trim())) continue;
+    seen.add(file.content.trim());
+    if (depth < MAX_RESOLVE_DEPTH) {
+      for (const link of file.links.filter(link => !queued.has(link))) {
+        queued.add(link);
+        queue.push({ path: link, depth: depth + 1 });
+      }
+    }
+    const part = `## ${path}\n\n${file.content}`;
     if (total + part.length > MAX_INSTRUCTIONS_CHARS) {
       parts.push(safeTruncate(part, MAX_INSTRUCTIONS_CHARS - total));
       core.info(`Repo instructions reached ${MAX_INSTRUCTIONS_CHARS} characters: cut ${path} and skipped any farther files`);
@@ -509,14 +543,14 @@ async function findNearestInstructionFiles(files: RepoFiles, changedPaths: strin
   const found = new Set<string>();
   for (const changedPath of changedPaths) {
     for (const name of INSTRUCTION_FILE_NAMES) {
-      let dir = changedPath.includes('/') ? changedPath.substring(0, changedPath.lastIndexOf('/')) : '';
+      let dir = dirOf(changedPath);
       while (dir) {
         const candidate = `${dir}/${name}`;
         if (existing.has(candidate)) {
           found.add(candidate);
           break;
         }
-        dir = dir.includes('/') ? dir.substring(0, dir.lastIndexOf('/')) : '';
+        dir = dirOf(dir);
       }
     }
   }
@@ -525,13 +559,16 @@ async function findNearestInstructionFiles(files: RepoFiles, changedPaths: strin
   return [...found].sort((a, b) => depth(b) - depth(a) || a.localeCompare(b));
 }
 
-/** Returns the file's content with `@file` references inlined, or null when it can't be read. */
-async function readInstructionFile(files: RepoFiles, path: string): Promise<string | null> {
+/**
+ * Returns the file's content with `@file` references inlined and the `.md` files it links to, or null when it can't be
+ * read.
+ */
+async function readInstructionFile(files: RepoFiles, path: string): Promise<{ content: string; links: string[] } | null> {
   try {
     const content = await files.read(path);
     if (content === null) return null;
-    const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
-    return await resolveReferences(files, content, dir);
+    const links: string[] = [];
+    return { content: await resolveReferences(files, content, dirOf(path), links), links };
   } catch (error) {
     core.warning(`Could not read instruction file ${path}: ${error}`);
     return null;

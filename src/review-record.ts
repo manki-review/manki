@@ -65,9 +65,11 @@ export function omitBulkyDiagnostics(context: RoundContext): RoundContext {
     ['reviewers.rawFindings', context.reviewers.rawFindings], ['judge.dropped', context.judge.dropped],
     ['dedup.duplicateMatches', context.dedup.duplicateMatches], ['dedup.staticSignalMatches', context.dedup.staticSignalMatches],
     ['recap.reclassifiedPriors', context.recap?.reclassifiedPriors],
+    ['usesOutsideDiff', context.usesOutsideDiff],
   ];
   return {
     ...context,
+    usesOutsideDiff: undefined,
     meta: { ...context.meta, omitted: present.filter(([, value]) => value !== undefined).map(([field]) => field) },
     diff,
     reviewers,

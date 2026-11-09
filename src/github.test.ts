@@ -1147,14 +1147,16 @@ describe('postReview with context', () => {
     const ctx = makeContext({
       findings: { count: 1, severityCounts: { warning: 1 }, entries },
       reviewers: { agents: ['Correctness'], rawFindings: Array.from({ length: 600 }, (_, i) => ({ title: noise(), file: `src/${i}.ts`, line: i, severity: 'nitpick' as const, reviewers: ['Correctness'], description: noise() })) },
+      usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'] }] },
     });
 
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('Many findings.');
     const [record] = extractReviewRecords(body).records.map(r => JSON.parse(r) as RoundContext);
-    expect(record.meta.omitted).toEqual(['reviewers.rawFindings']);
+    expect(record.meta.omitted).toEqual(['reviewers.rawFindings', 'usesOutsideDiff']);
     expect(record.reviewers.rawFindings).toBeUndefined();
+    expect(record.usesOutsideDiff).toBeUndefined();
     expect(record.findings.entries).toEqual(entries);
     expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without per-file and per-finding diagnostics'));
 
@@ -2282,6 +2284,31 @@ describe('fetchRepoContext instruction files', () => {
     expect(result.match(/Source agent rules/g)).toHaveLength(1);
     expect(result).not.toContain('## CLAUDE.md');
     expect(result).not.toContain('## src/CLAUDE.md');
+  });
+
+  it('reads the root CONTRIBUTING.md, then the .md files the instruction files link to, breadth first', async () => {
+    const octokit = mockOctokit(agentsTree, {
+      'src/AGENTS.md': 'Source rules, see [notes](notes.md).',
+      'AGENTS.md': 'Root rules: [style](docs/style.md#naming), [site](https://example.com/a.md), [up](../secret.md), [abs](/docs/abs.md) and [self](AGENTS.md).',
+      'CLAUDE.md': '@AGENTS.md\n',
+      'CONTRIBUTING.md': 'Contributing: see [AGENTS.md](AGENTS.md) and [conventions](./docs/conventions.md "Conventions").',
+      'src/notes.md': 'Source notes',
+      'docs/style.md': 'Style, see [deeper](deeper.md).',
+      'docs/abs.md': 'Absolute link',
+      'docs/conventions.md': 'Coding conventions',
+      'docs/deeper.md': 'Deeper, see [deepest](deepest.md).',
+      'docs/deepest.md': 'Deepest, see [too deep](too-deep.md).',
+      'docs/too-deep.md': 'Never read',
+    });
+
+    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    expect(result.match(/^## .+$/gm)).toEqual([
+      '## src/AGENTS.md', '## AGENTS.md', '## CONTRIBUTING.md',
+      '## src/notes.md', '## docs/style.md', '## docs/abs.md', '## docs/conventions.md', '## docs/deeper.md', '## docs/deepest.md',
+    ]);
+    const read = (octokit.rest.repos.getContent as unknown as jest.Mock).mock.calls.map(([{ path }]) => path);
+    expect(read).not.toEqual(expect.arrayContaining(['docs/too-deep.md']));
+    expect(read.filter((path: string) => path.includes('secret') || path.includes('example.com'))).toEqual([]);
   });
 
   it('includes files with identical content once', async () => {
