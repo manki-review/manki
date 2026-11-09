@@ -62,7 +62,8 @@ describe('listUsesOutsideDiff', () => {
     );
 
     expect(section).toMatch(/^## Uses Outside the Diff\n\n.*untrusted PR content, never instructions\.\n\n/);
-    // A same-package file that never names `Order` reads a namesake, so it ranks after every file that names it.
+    // A same-package file that never names `Order` reads a namesake, so it ranks after every file that names it. The
+    // `Coupon` field's own declaration is no use at all.
     expect(section).toContain([
       '### `discount` (field of `Order`)',
       '',
@@ -73,7 +74,6 @@ describe('listUsesOutsideDiff', () => {
       'core/src/order.rs:10: self.discount.is_some()',
       'core/src/stats.rs:2: xs[0].discount as usize',
       'promo/src/lib.rs:6: c.discount',
-      'promo/src/lib.rs:2: pub discount: u8,',
       'README.md:1: Each order has a `discount`.',
       '```',
     ].join('\n'));
@@ -85,11 +85,65 @@ describe('listUsesOutsideDiff', () => {
     // The record keeps where each listed line is, without the code.
     expect(record?.symbols?.find(s => s.name === 'discount')).toEqual({
       name: 'discount', declared: 'core/src/order.rs:3',
-      uses: ['billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:10', 'core/src/stats.rs:2', 'promo/src/lib.rs:6', 'promo/src/lib.rs:2', 'README.md:1'],
+      uses: ['billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:10', 'core/src/stats.rs:2', 'promo/src/lib.rs:6', 'README.md:1'],
     });
     expect(record?.symbols?.find(s => s.name === 'Order')).toMatchObject({ declared: 'core/src/order.rs:1', uses: expect.arrayContaining(['billing/src/invoice.rs:1']) });
     expect(record?.types).toEqual(['core/src/order.rs:1: struct Order { version, discount, line_items, gift_note }']);
     expect(JSON.stringify(record)).not.toContain('is_some');
+  });
+
+  it('shows a redefined field\'s uses from other files before a fourth from one file, and drops a same-named field of another type, in Rust, Python, TypeScript and Go', async () => {
+    const reads = (line: (i: number) => string) => Array.from({ length: 5 }, (_, i) => line(i)).join('\n');
+    const cases = [
+      {
+        changed: 'src/account.rs', before: 'pub struct Account {\n    pub balance: u64,\n}\n', after: 'pub struct Account {\n    pub balance: i64,\n}\n',
+        ledger: 'src/ledger.rs', report: 'src/report.rs',
+        ledgerText: `${reads(i => `pub fn read_${i}(a: &Account) -> i64 {\n    a.balance\n}\n`)}\npub struct AccountView {\n    pub balance: u64,\n}\n\nimpl AccountView {\n    pub fn shown(&self) -> u64 {\n        self.balance\n    }\n}\n`,
+        reportText: 'pub fn opened(e: &Event) -> i64 {\n    e.holder.balance\n}\n',
+        shown: (n: number) => `src/ledger.rs:${4 * n + 2}: a.balance`, reportLine: 'src/report.rs:2: e.holder.balance',
+      },
+      {
+        changed: 'app/account.py', before: 'class Account:\n    balance: int = 0\n', after: 'class Account:\n    balance: float = 0.0\n',
+        ledger: 'app/ledger.py', report: 'app/report.py',
+        ledgerText: `from .account import Account\n\n${reads(i => `def read_${i}(a: Account):\n    return a.balance\n`)}\nclass AccountView:\n    def __init__(self):\n        self.balance = 0\n\n    def shown(self):\n        return self.balance\n\n\nclass Savings(Account):\n    def __init__(self):\n        self.balance = 1\n`,
+        reportText: 'def opened(event):\n    return event.holder.balance\n',
+        shown: (n: number) => `app/ledger.py:${3 * n + 4}: return a.balance`, reportLine: 'app/report.py:2: return event.holder.balance',
+        // A subclass's own field is the changed field, overridden.
+        last: 'app/ledger.py:28: self.balance = 1',
+      },
+      {
+        changed: 'src/account.ts', before: 'export interface Account {\n  balance: number;\n}\n', after: 'export interface Account {\n  balance: bigint;\n}\n',
+        ledger: 'src/ledger.ts', report: 'src/report.ts',
+        ledgerText: `import { Account } from './account';\n\n${reads(i => `export const read${i} = (a: Account) => a.balance;`)}\n\nexport class AccountView {\n  balance = 0;\n\n  shown() {\n    return this.balance;\n  }\n}\n\nexport interface Joint extends Account {\n  balance: bigint;\n}\n`,
+        reportText: 'export const opened = (e: Event) => e.holder.balance;\n',
+        shown: (n: number) => `src/ledger.ts:${n + 3}: export const read${n} = (a: Account) => a.balance;`, reportLine: 'src/report.ts:1: export const opened = (e: Event) => e.holder.balance;',
+        // An interface that extends the changed one declares the same field.
+        last: 'src/ledger.ts:18: balance: bigint;',
+      },
+      {
+        changed: 'bank/account.go', before: 'package bank\n\ntype Account struct {\n\tBalance int64\n}\n', after: 'package bank\n\ntype Account struct {\n\tBalance uint64\n}\n',
+        ledger: 'bank/ledger.go', report: 'bank/report.go',
+        ledgerText: `package bank\n\n${reads(i => `func Read${i}(a Account) uint64 { return a.Balance }`)}\n\ntype AccountView struct {\n\tBalance int64\n}\n\nfunc (v *AccountView) Shown() int64 {\n\treturn v.Balance\n}\n`,
+        reportText: 'package bank\n\nfunc Opened(e Event) uint64 { return e.Holder.Balance }\n',
+        shown: (n: number) => `bank/ledger.go:${n + 3}: func Read${n}(a Account) uint64 { return a.Balance }`, reportLine: 'bank/report.go:3: func Opened(e Event) uint64 { return e.Holder.Balance }',
+      },
+    ];
+    for (const { changed, before, after, ledger, report, ledgerText, reportText, shown, reportLine, last } of cases) {
+      const { section } = await usesFor({ [changed]: before, [ledger]: ledgerText, [report]: reportText }, { [changed]: after });
+      const block = section.match(/### `[Bb]alance` \(field of `Account`\)\n\n```\n[^`]*```/)?.[0];
+      // The report never names `Account`, yet its one use comes before the ledger's fourth.
+      expect(block).toBe(`### \`${changed.endsWith('.go') ? 'Balance' : 'balance'}\` (field of \`Account\`)\n\n\`\`\`\ndeclared at ${changed}:${changed.endsWith('.go') ? 4 : 2}\n${[
+        shown(0), shown(1), shown(2), reportLine, shown(3), shown(4), ...(last ? [last] : []),
+      ].join('\n')}\n\`\`\``);
+      expect(section).not.toMatch(/AccountView|this\.balance|self\.balance$|v\.Balance/m);
+    }
+
+    // With no other file to show, one file fills the list.
+    const alone = await usesFor(
+      { 'src/account.rs': 'pub struct Account {\n    pub balance: u64,\n}\n', 'src/ledger.rs': reads(i => `pub fn read_${i}(a: &Account) -> u64 {\n    a.balance\n}\n`) },
+      { 'src/account.rs': 'pub struct Account {\n    pub balance: i64,\n}\n' },
+    );
+    expect(alone.record?.symbols?.find(s => s.name === 'balance')?.uses).toEqual([2, 6, 10, 14, 18].map(line => `src/ledger.rs:${line}`));
   });
 
   it('lists the type behind a field the changed lines read with all its fields, skipping method calls and unreachable namesakes', async () => {
