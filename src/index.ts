@@ -18,6 +18,7 @@ import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedE
 import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
+import { formatLockfileChanges, isParsedLockfile, LockfileDiff, readLockfileChanges } from './lockfile';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
@@ -26,7 +27,7 @@ import { disproof } from './refute';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
-import { collectStaticSignals } from './static-signals';
+import { collectStaticSignals, fetchLockfiles } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
@@ -690,6 +691,8 @@ const MAX_REVIEW_CHARS = 4_000_000;
 
 /** What a review round works on. Built once its inputs are collected, then passed to the stages that review, post and record. */
 interface ReviewRun extends RunTarget, RoundRecordInput {
+  /** The lockfiles a model reads as a package list, so they hold no approval. */
+  lockfiles: LockfileDiff[];
   commentId: number;
   dashboard: DashboardData;
   progress: RunProgress;
@@ -817,6 +820,17 @@ async function loadRecap(
 async function collectDiff(target: RunTarget, config: ReviewConfig) {
   const { octokit, owner, repo, prNumber } = target;
   return reviewableDiff(await fetchPRDiff(octokit, owner, repo, prNumber), config.exclude_paths);
+}
+
+/** Reads the package changes of the changed lockfiles Manki parses. A lockfile that can't be read stays unread. */
+async function collectLockfiles(target: RunTarget, fullDiff: ParsedDiff): Promise<LockfileDiff[]> {
+  const { octokit, owner, repo, commitSha } = target;
+  if (!fullDiff.files.some(f => isParsedLockfile(f.path))) return [];
+  const heads = await fetchLockfiles(octokit, { owner, repo, headSha: commitSha, fullDiff }, isParsedLockfile).catch((error: unknown) => {
+    core.warning(`Could not read the changed lockfiles, so no model reads them: ${error instanceof Error ? error.message : error}`);
+    return new Map<string, string>();
+  });
+  return readLockfileChanges(fullDiff, heads);
 }
 
 function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled: boolean, deeper?: boolean): DashboardData {
@@ -1038,7 +1052,7 @@ async function collectOpenThreads(
  * open PRs and issues that may relate to the PR, and the static analysis results.
  */
 async function collectRoundSignals(
-  target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, configPath: string, prContext?: PrContext,
+  target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, lockfiles: LockfileDiff[], configPath: string, prContext?: PrContext,
 ): Promise<{ interRoundDiff?: string; priorChange?: ParsedDiff; linkedIssues?: LinkedIssue[]; relatedWork?: RelatedWork; staticSignals: StaticSignal[]; staticAnalysis?: RoundStaticAnalysis }> {
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
   const prBody = prContext?.body;
@@ -1053,7 +1067,7 @@ async function collectRoundSignals(
 
   // Read with the workflow token, which carries the `checks` and `security-events` permissions the workflow grants.
   const staticSignalsPromise = collectStaticSignals(await workflowOctokit(), {
-    owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff, fullDiff,
+    owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff, fullDiff, lockfiles,
   });
 
   let linkedIssues;
@@ -1362,7 +1376,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     draft: run.options.draft,
     configFailed: configFailed(run.reviewSource),
     memorySkip: run.memorySkip?.message,
-    skipped: { excluded: run.excludedFiles, binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
+    skipped: { excluded: run.excludedFiles.filter(f => !run.lockfiles.some(l => l.path === f.path)), binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
   // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed.
@@ -1576,6 +1590,7 @@ async function runFullReview(
     const { clients, models } = built;
 
     const { fullDiff, diff, excludedFiles, rawDiff } = await collectDiff(target, config);
+    const lockfiles = await collectLockfiles(target, fullDiff);
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
     const dashboard = initialDashboard(diff, config, !!clients.planner, options.deeper);
@@ -1613,7 +1628,7 @@ async function runFullReview(
 
     core.info(`Reviewing ${diff.files.length} files (${fullDiff.files.length} total, ${excludedFiles.length} filtered out)`);
 
-    if (diff.files.length === 0) {
+    if (diff.files.length === 0 && lockfiles.length === 0) {
       core.info('No reviewable files in diff');
       // Every source reads the skipped files as the diff, so CI, dependency review and the analyzers still check them.
       const { signals } = await collectStaticSignals(await workflowOctokit(), { owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff: fullDiff, fullDiff });
@@ -1641,14 +1656,14 @@ async function runFullReview(
 
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
     const [{ interRoundDiff, priorChange, linkedIssues, relatedWork, staticSignals, staticAnalysis }, workspace] = await Promise.all([
-      collectRoundSignals(target, config, recap, diff, fullDiff, configPath, prContext),
+      collectRoundSignals(target, config, recap, diff, fullDiff, lockfiles, configPath, prContext),
       fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])]),
     ]);
 
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
-      diff, changeDigest: digest, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
+      diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
       commentId, dashboard, progress, startTime, parseEndTime,
     };
 
@@ -1679,6 +1694,7 @@ async function runFullReview(
       workspace,
       deeper: options.deeper,
       excludedPaths: excludedFiles.map(f => f.path),
+      lockfileChanges: formatLockfileChanges(lockfiles),
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.
     stop.signal.throwIfAborted();

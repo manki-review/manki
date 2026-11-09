@@ -9,6 +9,7 @@ import rust from '@ast-grep/lang-rust';
 import * as napi from '@ast-grep/napi';
 
 import { filterDiff, parsePRDiff } from './diff';
+import type { PackageChange } from './lockfile';
 import * as githubModule from './github';
 import { buildReviewerUserMessage } from './review';
 import { checkFindingClaims, collectStaticSignals, isUnconfirmedBuildClaim, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
@@ -220,6 +221,14 @@ describe('collectStaticSignals', () => {
     })) });
     const many = (await collectStaticSignals(crowded, { ...request(), diff: fullDiff, fullDiff })).signals;
     expect([many.length, ...many.slice(0, 3).map(s => s.source)]).toEqual([52, 'hidden_characters', 'hidden_characters', 'code_scanning']);
+
+    // A lockfile change that needs a reason gets an alert of its own, next to the hidden characters, and the judge triages it.
+    const downgrade: PackageChange = { kind: 'updated', name: 'hex', oldVersion: '0.4.3', newVersion: '0.4.2', fields: [], flags: ['downgrade'], line: 7 };
+    const withLockfile = (await collectStaticSignals(crowded, { ...request(), diff: fullDiff, fullDiff, lockfiles: [{ path: 'Cargo.lock', changes: [downgrade] }] })).signals;
+    expect([withLockfile.length, ...withLockfile.slice(1, 4).map(s => s.source)]).toEqual([53, 'hidden_characters', 'lockfile', 'code_scanning']);
+    expect(toolAlertFindings(withLockfile.filter(s => s.source === 'lockfile'))).toEqual([expect.objectContaining({
+      severity: 'warning', file: 'Cargo.lock', line: 7, toolSource: 'Manki', title: expect.stringMatching(/^lockfile-change: updated hex 0\.4\.3 -> 0\.4\.2: downgrade\./),
+    })]);
   });
 
   it('reads every source with one warning when the base config cannot be fetched', async () => {

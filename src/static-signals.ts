@@ -7,6 +7,7 @@ import { installTool, isLockfile, runActionlint, runGitleaks, runOpengrep, runOs
 import { loadStaticAnalysisConfig } from './config';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
+import { LockfileDiff, lockfileSignals } from './lockfile';
 import { resolveInRoot } from './mcp-server';
 import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, SECURITY_TAG, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { escapeRegExp, hiddenCharacters, safeTruncate } from './utils';
@@ -66,6 +67,8 @@ export interface StaticSignalRequest {
   diff: ParsedDiff;
   /** Every file the PR changes, before `exclude_paths`. `dependencies` reads it, so a lockfile the review skips is still scanned. */
   fullDiff: ParsedDiff;
+  /** The package changes of the lockfiles Manki parsed. A change that needs a reason gets an alert. */
+  lockfiles?: LockfileDiff[];
 }
 
 /** What `collectStaticSignals` needs from outside the GitHub API, so tests can stand in for it. */
@@ -188,10 +191,11 @@ export async function collectStaticSignals(
       return [];
     }
   }));
-  // A PR can change its own `exclude_paths`, so hidden characters are looked for in every changed file. Their alerts go
-  // first and each kind has its own cap, so neither can push the other out.
+  // A PR can change its own `exclude_paths`, so hidden characters are looked for in every changed file. Their alerts and
+  // the lockfile alerts go first and each kind has its own cap, so none can push another out.
   const hidden = hiddenCharacterSignals(fullDiff).slice(0, MAX_SIGNALS);
-  const onDiff = [...hidden, ...collected.flat().sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])];
+  const lockfile = lockfileSignals(request.lockfiles ?? []).slice(0, MAX_SIGNALS);
+  const onDiff = [...hidden, ...lockfile, ...collected.flat().sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])];
   if (onDiff.length > 0) core.info(`Static analysis: ${onDiff.length} result(s) on lines in the diff`);
   const record: RoundStaticAnalysis = {
     ...(runs.length > 0 && { analyzers: runs.sort((a, b) => ANALYZERS.indexOf(a.analyzer) - ANALYZERS.indexOf(b.analyzer)) }),
@@ -199,12 +203,12 @@ export async function collectStaticSignals(
     ...(hidden.length > 0 && { hiddenCharacters: hidden.length }),
     ...(checksStillPending.length > 0 && { checksStillPending }),
   };
-  return { signals: onDiff.slice(0, hidden.length + MAX_SIGNALS), ...(Object.keys(record).length > 0 && { record }) };
+  return { signals: onDiff.slice(0, hidden.length + lockfile.length + MAX_SIGNALS), ...(Object.keys(record).length > 0 && { record }) };
 }
 
 /** Whether Manki itself reported the result. Nobody sees those results unless the review posts them. */
 export function isAnalyzerSignal(signal: StaticSignal): boolean {
-  return signal.source === 'hidden_characters' || (ANALYZERS as readonly string[]).includes(signal.source);
+  return signal.source === 'hidden_characters' || signal.source === 'lockfile' || (ANALYZERS as readonly string[]).includes(signal.source);
 }
 
 /**
