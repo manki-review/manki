@@ -1312,7 +1312,7 @@ export interface RoundModels {
   planner?: string;
   reviewer: string;
   judge: string;
-  /** Model of the second refuter, on rounds where it checked a finding. */
+  /** Model of the second refuter, on rounds where it checked a finding or an earlier round's answer of it was reused. */
   refuterPair?: string;
   dedup?: string;
   /** Stages a safety filter refused that ran again on a fallback model, in the order they ran. */

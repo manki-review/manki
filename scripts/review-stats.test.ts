@@ -22,7 +22,10 @@ describe('review stats', () => {
         count: 2,
         severityCounts: {},
         entries: [
-          { ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: 'd' } },
+          {
+            ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: 'd' },
+            pairRefutation: { outcome: 'confirmed', reason: 'r', files: [], codeDigest: 'd' },
+          },
           { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed' },
         ],
       },
@@ -36,12 +39,20 @@ describe('review stats', () => {
           { ...call('claude-sonnet', 4), stepBudget: 15 }, { ...call('claude-opus', 10), stepBudget: 12, wrapUpNoted: true }, { ...call('j', 3), stage: 'judge' },
           // A fallback that answered for the Sonnet finder on another model still counts for that finder.
           { ...call('gpt-5', 2), agent: 'Sonnet', fallback: true },
+          { ...call('gpt-5', 5), stage: 'judge', agent: 'refute_pair', costUsd: 0.12 },
         ],
       },
     });
     const second = makeRoundContext(2, {
       meta: { prNumber: 1, commitSha: 'b', round: 2, timestamp: 't', mankiVersion: '7', outcome: 'READY' },
-      judge: { summary: '', interRoundDiffState: 'changed' },
+      judge: {
+        summary: '', interRoundDiffState: 'changed',
+        // A finding a disproof dropped is listed with the judge's drops, and its refutations count too.
+        dropped: [{
+          title: 't', file: 'a', line: 1, reviewers: [],
+          refutation: { outcome: 'unsettled', reason: 'r', files: [], codeDigest: 'd' }, pairRefutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: 'd' },
+        }],
+      },
       usage: { estimatedCostUsd: 0.25 },
     });
     const threadComments = [
@@ -84,7 +95,9 @@ describe('review stats', () => {
       // Rounds 2 of the first PR and 4 and 5 of the second had a whole diff. Round 2 of the second was cut, round 3 unknown.
       followUpRounds: 5, interRoundDiffCutOrUnknown: 2,
     });
-    expect(Object.fromEntries(stats.refutations)).toEqual({ 'blocker disproved': 1 });
+    expect(Object.fromEntries(stats.refutations)).toEqual({ 'blocker disproved': 1, 'ignore unsettled': 1 });
+    expect(Object.fromEntries(stats.pairRefutations)).toEqual({ 'disproved / confirmed': 1, 'unsettled / disproved': 1 });
+    expect(stats.pairRefutationCost).toBeCloseTo(0.12);
     expect(Object.fromEntries(stats.finders)).toEqual({
       'claude-sonnet': { rounds: 1, rawFindings: 3, keptOnly: 1, keptShared: 1, toolSteps: [4, 2], budgetedCalls: 1, wrapUps: 0 },
       'claude-opus': { rounds: 1, rawFindings: 1, keptOnly: 0, keptShared: 1, toolSteps: [10], budgetedCalls: 1, wrapUps: 1 },
@@ -96,6 +109,14 @@ describe('review stats', () => {
     expect(report).toContain('- Needed 5 or more rounds: 50% (1 of 2)');
     expect(report).toContain('| blocker | 1 | 0.14 |');
     expect(report).toContain('- Blocker threads: 3, fixed 1, withdrawn 1, other 1');
+    // The split and the answer the first refuter left unsettled both changed the outcome, and neither agreed.
+    expect(report).toContain([
+      '## Second refuter', '',
+      '- Findings checked: 2, for 0.12 USD',
+      '- Agreed with the first refuter: 0% (0 of 2)',
+      '- Split, one confirmed and one disproved: 50% (1 of 2)',
+      '- Changed the outcome the first refuter alone gave: 100% (2 of 2)',
+    ].join('\n'));
     expect(report).toContain('| claude-sonnet | 1 | 3 | 3.00 | 1 | 1 | mean 3.0, median 3.0, max 4.0 | 0% (0 of 1) |');
     expect(report).toContain('| claude-opus | 1 | 1 | 1.00 | 0 | 1 | mean 10.0, median 10.0, max 10.0 | 100% (1 of 1) |');
     expect(report).toContain('| blocker disproved | 1 |');
@@ -224,5 +245,6 @@ describe('review stats', () => {
     expect(report).toContain('- Rounds per PR: -');
     expect(report).toContain('- Passed after one round: -');
     expect(report).toContain('No refutations.');
+    expect(report).toContain('No second refuter.');
   });
 });
