@@ -5,7 +5,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { loadConfig } from './config';
-import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -1686,19 +1686,43 @@ function fenceText(text: string, info = ''): string {
 /** Manki's own description of how a review runs, linked from every review's footer. */
 const HOW_REVIEWS_WORK_URL = 'https://github.com/manki-review/manki/blob/main/docs/how-reviews-work.md';
 
+/** Formats a token count for reading, such as `980`, `23k` or `1.2M`. */
+function formatTokens(count: number): string {
+  if (count < 1000) return String(count);
+  const thousands = Math.round(count / 1000);
+  return thousands < 1000 ? `${thousands}k` : `${(count / 1_000_000).toFixed(1)}M`;
+}
+
+/**
+ * The round's token totals and estimated cost, such as `Tokens: 1.2M in (980k from cache) · 23k out · about $1.58 at
+ * API prices`. The cost is left out when no call was priced. Unset for a round without calls.
+ */
+function formatRoundUsage(usage: RoundUsage): string | undefined {
+  if (!usage.calls) return undefined;
+  const cache = usage.cacheReadTokens ? ` (${formatTokens(usage.cacheReadTokens)} from cache)` : '';
+  const unpriced = usage.unpricedCalls ?? 0;
+  const priced = usage.calls - (usage.failedCalls ?? 0) - unpriced;
+  const cost = usage.estimatedCostUsd ?? 0;
+  const amount = cost < 0.01 ? 'under $0.01' : `about $${cost.toFixed(2)}`;
+  const price = priced > 0 ? ` · ${amount} at API prices${unpriced > 0 ? ', partly priced' : ''}` : '';
+  return `Tokens: ${formatTokens(usage.inputTokens ?? 0)} in${cache} · ${formatTokens(usage.outputTokens ?? 0)} out${price}`;
+}
+
 /**
  * Returns the footer, a collapsed "About this review": the reviewed commit, and with a round context the round, the
- * lines read and the time it took, and the models that found and judged the findings.
+ * lines read and the time it took, the models that found and judged the findings, and the tokens and cost.
  */
 function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string, serverUrl: string, context?: RoundContext, reviewTimeMs?: number): string {
   const commit = `[\`${commitSha.slice(0, 7)}\`](${repoUrl(serverUrl, owner, repo)}/commit/${commitSha})`;
   // The routed group says which models read the PR. Without it, the configured finder models did.
   const routed = context?.routing?.reviewers.map(r => r.model);
   const finders = [...new Set(routed?.length ? routed : [context?.models.reviewer, context?.models.reviewerPair].filter((m): m is string => !!m))].map(m => inlineCode(m));
+  const usage = context && formatRoundUsage(context.usage);
   const lines = [
     `- Reviewed ${commit}${context ? `, round ${context.meta.round}` : ''}`,
     ...(context ? [`- ${countOf(context.diff.lines, 'changed line')} read${reviewTimeMs ? ` in ${formatDuration(reviewTimeMs)}` : ''}`] : []),
     ...(context ? [`- Found by ${finders.join(' and ')}, judged by ${inlineCode(context.models.judge)}`] : []),
+    ...(usage ? [`- ${usage}`] : []),
     `- [How Manki reviews](${HOW_REVIEWS_WORK_URL})`,
   ];
   return `<details>\n<summary>About this review</summary>\n\n${lines.join('\n')}\n\n</details>`;
