@@ -567,7 +567,9 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
         try {
           local = await review({
             repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
-            providerInputs: options.providerInputs, signal: options.signal, configOverrides: variant.overrides,
+            providerInputs: options.providerInputs, signal: options.signal,
+            // A variant without overrides reviews like a pull request round, falling back to the defaults on a broken base config.
+            ...(Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
           });
           const reviewed = local;
           // The matcher is tried twice before a finished review is given up, and the cache keeps what it already decided.

@@ -275,6 +275,9 @@ describe('runBench and buildReport', () => {
     const onCase = jest.fn();
 
     const overrides = { models: { reviewer: 'claude-opus-5-5' } };
+    const baseReview = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
+    await runBench([benchCase], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: baseReview });
+    expect(baseReview.mock.calls[0][0]).not.toHaveProperty('configOverrides');
     const [{ variant, results }] = await runBench([benchCase], { runs: 5, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review, onCase, variants: [{ name: 'opus', overrides }] });
 
     expect(review).toHaveBeenCalledTimes(5);
