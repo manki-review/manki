@@ -31,6 +31,12 @@ export function gitEnv(config: Record<string, string> = {}): NodeJS.ProcessEnv {
   return env;
 }
 
+/** Runs git in `dir` with `gitEnv` and returns what it printed. */
+export async function runGit(dir: string, args: string[], env = gitEnv()): Promise<string> {
+  const { stdout } = await execFileAsync('git', args, { cwd: dir, env, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER });
+  return stdout;
+}
+
 /**
  * Fetches commit `sha` of the repo at `url`, with `WORKSPACE_DEPTH` commits of history, into a new directory, checks
  * it out and returns the directory. `token` authenticates the fetch only: it reaches git through the environment, so
@@ -38,7 +44,7 @@ export function gitEnv(config: Record<string, string> = {}): NodeJS.ProcessEnv {
  */
 export async function fetchWorkspace(url: string, sha: string, token?: string): Promise<string> {
   const dir = makeScratchDir('repo');
-  const git = (args: string[], env = gitEnv()) => execFileAsync('git', args, { cwd: dir, env, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER });
+  const git = (args: string[], env = gitEnv()) => runGit(dir, args, env);
   const auth: Record<string, string> = token ? { 'http.extraHeader': `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}` } : {};
   await git(['init', '-q']);
   await git(['fetch', '-q', '--no-tags', `--depth=${WORKSPACE_DEPTH}`, url, sha], gitEnv(auth));

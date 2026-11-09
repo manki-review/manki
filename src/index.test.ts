@@ -112,12 +112,19 @@ jest.mock('./config', () => {
 
 jest.mock('./diff', () => {
   const filterFilesWithAttribution = jest.fn().mockReturnValue({ included: [], excluded: [] });
+  const parsePRDiff = jest.fn().mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 });
+  const filterDiff = jest.fn((diff: ParsedDiff, excludePaths: string[]) => {
+    const { included, excluded } = filterFilesWithAttribution(diff.files, excludePaths);
+    return { diff: { ...diff, files: included }, excluded };
+  });
   return {
-    parsePRDiff: jest.fn().mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 }),
+    parsePRDiff,
     filterFilesWithAttribution,
-    filterDiff: jest.fn((diff: ParsedDiff, excludePaths: string[]) => {
-      const { included, excluded } = filterFilesWithAttribution(diff.files, excludePaths);
-      return { diff: { ...diff, files: included }, excluded };
+    filterDiff,
+    reviewableDiff: jest.fn((rawDiff: string, excludePaths: string[]) => {
+      const fullDiff = parsePRDiff(rawDiff);
+      const { diff, excluded } = filterDiff(fullDiff, excludePaths);
+      return { fullDiff, diff, excludedFiles: excluded, rawDiff: jest.requireActual('./diff').rebuildRawDiff(diff) };
     }),
     filterRawDiff: jest.fn((rawDiff: string) => rawDiff),
     ownChangeSince: jest.fn((sinceLastRound: string) => sinceLastRound),

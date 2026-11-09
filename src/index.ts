@@ -12,7 +12,7 @@ import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, 
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
-import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, shortenLongLines, tagFindingOrigins } from './diff';
+import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
@@ -836,9 +836,7 @@ async function loadRecap(
 /** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
 async function collectDiff(target: RunTarget, config: ReviewConfig) {
   const { octokit, owner, repo, prNumber } = target;
-  const fullDiff = parsePRDiff(await fetchPRDiff(octokit, owner, repo, prNumber));
-  const { diff, excluded: excludedFiles } = filterDiff(fullDiff, config.exclude_paths);
-  return { fullDiff, diff, excludedFiles, rawDiff: rebuildRawDiff(diff) };
+  return reviewableDiff(await fetchPRDiff(octokit, owner, repo, prNumber), config.exclude_paths);
 }
 
 function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled: boolean, deeper?: boolean): DashboardData {
