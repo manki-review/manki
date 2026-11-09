@@ -1,0 +1,73 @@
+id: manki-1230
+repo: manki-review/manki
+source: manki PR 1230, round 1
+base: c47510686c561c9dc746b743fd900c86532a7b1f
+head: c60548068d8a8b3a8efe46ed9cc57dbcd8f65f76
+title: "feat: add `manki review` to review a change locally"
+body: |
+  ## Summary
+
+  Adds `manki review`, which runs the pull request review pipeline (planner, finders, dedup, judge with refutation, verdict reader) on a local change and writes nothing to GitHub. The same core, `reviewLocal`, is what the recall benchmark (#1228) will loop over.
+
+  The seam is outside `runReview`, which already takes plain inputs. Only what `src/index.ts` collects from GitHub around it gets a local source: the diff comes from `git diff <merge-base> <head>`, the config and the instruction files from the base commit, and the tool workspace from `fetchWorkspace` pointed at the local repo, so it holds only `head` and its history and the tools cannot read later commits. `src/review.ts` is not touched.
+
+  ## Changes
+
+  - `src/local-review.ts`: `reviewLocal(input)` returns the result and the round record a PR round would post. Memory, prior rounds, linked issues and static signals stay off, since they all come from GitHub.
+  - `src/cli.ts`: `manki review [<base>[..<head>]]` with `--patch`, `--config`, `--title`, `--body-file`, `--json` and `--record`. Findings print as Markdown in the review body's layout (severity, what goes wrong, fix, how it was checked). Logs go to stderr, so `--json` output stays clean. Exit code 0 when nothing blocks, 1 when something does, 2 when incomplete or failed.
+  - It is a subcommand of `dist/index.js`, because the provider CLIs start the tool server as `node <this script> mcp-server`. `package.json` gets `bin: manki`, and the release build already commits `dist/`, so `npx github:manki-review/manki#v7 review` works once a release carries it.
+  - Refactor commits, no behaviour change: `buildReviewClients` and `warmUpClients` move to `src/review-clients.ts`, `readProviderInputsFromEnv` moves from the smoke script to `src/providers/auth.ts`, the instruction files are read through a small `RepoFiles` reader (`buildRepoContext`), and `reviewableDiff` and `runGit` share the diff split and the git runner. One small difference: an `@file.md` reference that names a directory now gets the "Could not resolve reference" note like a missing file.
+  - README: a "Review locally" section.
+
+  What users get: a way to review a branch before pushing, with their own credentials as environment variables (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` and the rest of the Action's secret names).
+
+  Not in this PR: `review-stats` and `calibration` still read rounds from GitHub only, so a `--record` file is not yet an input to them. Memory reads are left out.
+
+  ## Testing
+
+  - `src/local-review.test.ts` builds a real git repo (base, branch, a later fix commit, base moving on) and calls `reviewLocal` with only `runReview` and the client factory mocked. It checks the merge-base diff, `exclude_paths` from the base config, the instruction files, the PR title, that the workspace holds `head` without the later commit and is removed afterwards, the round record, patch mode, and that a change with no reviewable files stops before any model call.
+  - `src/cli.test.ts` covers argument parsing, exit codes, the `--json` round-trip and the Markdown layout.
+  - Smoke on the built bundle: `node dist/index.js review --help`, and the missing-credentials and bad-option errors (exit 2). No model was run.
+
+  To try it on a branch: `npm ci && npm run build`, then from the repo to review: `CLAUDE_CODE_OAUTH_TOKEN=... node /path/to/manki/dist/index.js review`.
+
+  Closes #1203
+  Part of #1224
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "With `--patch`, `reviewLocal` skips `fetchWorkspace` and hands the live checkout `repoRoot` to the repository tools. The tools can then open untracked and git-ignored files such as `.env` or key files, and what they read goes to the model provider. The commit path avoids this by fetching only tracked content into a scratch repository."
+    locations: ["src/local-review.ts", "reviewLocal", "fetchWorkspace"]
+    fix: "a530b86f94e200ecc81a62864e6c2eb7df42a7fa"
+  - id: K2
+    severity: warning
+    mechanism: "`runReviewCommand` points `process.stdout.write` at stderr, and the providers register credentials with `registerSecret`, which calls `core.setSecret`. Outside GitHub Actions that prints a plain `::add-mask::<value>` line, so tokens such as a seeded Codex or Gemini OAuth token or a gateway key are written to the terminal."
+    locations: ["src/cli.ts", "runReviewCommand", "registerSecret"]
+    fix: "0adcf5ca7366ed41c80d233261c92ee2c219bc62"
+  - id: K3
+    severity: warning
+    mechanism: "`formatReviewText` prints the model's summary and findings to the terminal without removing control characters. Code under review can steer a model into emitting an escape sequence, which then acts on the user's terminal."
+    locations: ["src/cli.ts", "formatReviewText"]
+    fix: "0adcf5ca7366ed41c80d233261c92ee2c219bc62"
+  - id: K4
+    severity: warning
+    mechanism: "`runGit` keeps the 10 MB `GIT_MAX_BUFFER` meant for small git commands, but `reviewLocal` now also reads the whole `git diff` through it. A change with a large lockfile or generated files fails with a `maxBuffer` error before `exclude_paths` can drop those files."
+    locations: ["src/workspace.ts", "runGit", "GIT_MAX_BUFFER", "src/local-review.ts", "reviewLocal"]
+    fix: "a530b86f94e200ecc81a62864e6c2eb7df42a7fa"
+  - id: K5
+    severity: warning
+    mechanism: "`runReviewCommand` installs a `SIGINT` listener, which removes Node's default exit, but the abort signal reaches only `runReview`. During `warmUpClients`, `buildRepoContext` and `fetchWorkspace` Ctrl-C does nothing, and a second Ctrl-C does not force an exit either."
+    locations: ["src/cli.ts", "runReviewCommand", "src/local-review.ts", "reviewLocal"]
+    fix: "a530b86f94e200ecc81a62864e6c2eb7df42a7fa"
+  - id: K6
+    severity: suggestion
+    mechanism: "`gitRepoFiles.read` catches every `git cat-file` error and returns `null`, so a timeout or a bad commit reads as a missing file. The base `.manki.yml` and the instruction files then vanish silently and the review runs on the built-in config."
+    locations: ["src/local-review.ts", "gitRepoFiles"]
+    fix: "a530b86f94e200ecc81a62864e6c2eb7df42a7fa"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "`loadLocalConfig` calls `loadConfig` on the base `.manki.yml` without a catch, so an invalid base config makes `manki review` exit 2, while a pull request round warns and falls back to the defaults through `loadBaseConfig`."
+    locations: ["src/local-review.ts", "loadLocalConfig"]
+    fix: "a530b86f94e200ecc81a62864e6c2eb7df42a7fa"

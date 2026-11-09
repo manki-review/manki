@@ -1,0 +1,61 @@
+id: manki-1252
+repo: manki-review/manki
+source: manki PR 1252, round 1
+base: 82c79c221a911469e114a93bfa6760ed072e894e
+head: a347c0f502f6df4bd7c38b5ed33932d87508b910
+title: "ci: publish releases from GitHub with an approval"
+body: |
+  ## Summary
+
+  Releases can be published from GitHub. Once the `Release` workflow has built `dist/` on `release/vX.Y.Z`, a new `Publish release` workflow runs, shows what it will write, and waits for the owner to approve the `release` environment. After approval it tags and publishes with a token from a dedicated GitHub App, which the `release tags` ruleset lets through. The workflow runs `scripts/publish-release.sh` itself, so the checks live in one place, and the script stays the fallback for an org admin.
+
+  ## Changes
+
+  - `.github/workflows/publish-release.yml`: runs on `workflow_run` after `Release` succeeds, or by hand from `main` with the tag. The `verify` job runs the script's `--dry-run` with only a read token, including the `npm ci` rebuild that proves the build commit is the release commit plus a fresh `dist/`. The `publish` job runs in the `release` environment, refuses cleanly when the App secrets are missing, mints the App token and runs the script with `--verified=<sha>` on the commit the dry run verified.
+  - `scripts/publish-release.sh`: new `--verified=SHA` refuses unless the release branch still points at SHA and skips the rebuild. A dry run ends with `verified build commit SHA`. The publish job never runs `npm ci`, so no dependency install script ever runs next to the tag-writing token.
+  - `RELEASE.md`: step 6 describes the workflow with the script as the fallback, and a new "Release App setup" section lists the owner's steps. `CONTRIBUTING.md` and the `release.yml` header comment are updated to match.
+  - `workflow_run` carries a `zizmor: ignore[dangerous-triggers]` comment. It is safe here: the run checks out `main` only, uses no artifact from the `Release` run, and reads the branch name through an env var checked against `vX.Y.Z`.
+
+  ## Owner setup (manual, not done by this PR)
+
+  1. Create a GitHub App owned by the `manki-review` org, for example `manki-release`, with its webhook off. Repository permissions: Contents read and write, and Workflows read and write.
+  2. Note the App's Client ID and generate a private key.
+  3. Install the App on `manki-review` for the `manki` repository only.
+  4. Add the App as an always-allowed bypass actor on the `release tags` org ruleset.
+  5. Create the `release` environment in `manki`: you as required reviewer, "Prevent self-review" off (you both start and approve a run), deployment branches limited to `main`.
+  6. Add the environment secrets `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY` (the whole `.pem`).
+
+  Step 5's branch limit is what stops a run from another branch: a workflow file edited on a branch can drop any check, but it can't read the environment's secrets. The Workflows permission is there because GitHub refuses a tag push from an App when the moved range changes `.github/workflows/`, and moving `vX` covers a whole release. This is based on community reports, not GitHub's docs, so the first real run is the test.
+
+  The App ID is passed as a Client ID, because `actions/create-github-app-token` v3 deprecates `app-id` in favour of `client-id`.
+
+  ## What changes for users
+
+  Nothing for Manki users. For releases, the owner approves a workflow run instead of running the script locally, once the setup above is done.
+
+  ## Testing
+
+  - `npx jest scripts/publish-release.test.ts`: 12 pass. Covers the new dry-run line, `--verified` skipping the rebuild, and `--verified` refusing a branch that moved.
+  - `actionlint` and `zizmor` are clean on the new workflow and `release.yml`.
+  - The workflow has not been run. It needs the owner setup above.
+
+  Closes #1213
+  Part of #1242
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The `workflow_run` trigger names `workflows: [Release]`, which matches any workflow with that name, including one a fork PR adds on `pull_request`. The `verify` job checks only `workflow_run.conclusion == 'success'` and takes the tag from `workflow_run.head_branch`, which the fork chooses. A fork PR can therefore start `Publish release` for any `release/vX.Y.Z` branch and put a publish request in front of the approver. The guard should also require a `push` run of `.github/workflows/release.yml` from this repository."
+    locations: [".github/workflows/publish-release.yml", "workflow_run", "verify"]
+    fix: "6a06f17caac3fcc195dc46a3c2a59487cf192f9e"
+  - id: K2
+    severity: suggestion
+    mechanism: "The `concurrency` group is set at workflow level, so every `workflow_run` event joins it before the `verify` guard runs, including runs that the guard then skips. Such a run, for example one started by a fork's `Release` workflow on the same branch name, can replace and cancel a pending publish run in the group."
+    locations: [".github/workflows/publish-release.yml", "concurrency"]
+    fix: "723bd2183619426907b8bf7765f716caaa09de8d"
+  - id: K3
+    severity: warning
+    mechanism: "The concurrency group is keyed per tag, so two approved publishes of one major version, such as `v7.2.1` and `v7.3.0`, can run at once. `publish-release.sh` reads the remote tags and then force-moves `vX` and sets the latest release, so the older release can end up as `vX`."
+    locations: [".github/workflows/publish-release.yml", "concurrency", "publish"]
+    fix: "e051282baa649fa829ca46cd7ac49b1390a6552d"
+nice_to_have: []

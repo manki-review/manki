@@ -1,0 +1,96 @@
+id: cli-14007
+repo: cli/cli
+source: cli upstream PR 14007
+base: 89f3699581659f514c4276bef0820d8caadbb67d
+head: 0280868a8c7ae85dad62a77d6e8928f864577ad6
+title: "Guard `pr merge --delete-branch` against worktree conflicts"
+body: |
+  Closes upstream issue 3442
+
+  Makes `gh pr merge --delete-branch` behave safely under git worktrees. Today the local-cleanup half of `--delete-branch` unconditionally runs `git checkout <base-branch>` then deletes the branch. In a worktree setup this either fails (`fatal: '<base>' is already used by worktree at ...`) or silently repurposes the worktree, leaving a confusing partial state.
+
+  ## Changes
+
+  Branches the local-cleanup logic on whether the PR head branch is checked out in a linked worktree:
+
+  1. **cwd IS the linked worktree for the PR head branch** - skip local cleanup, print a warning with manual instructions. The merge and remote branch deletion still succeed.
+  2. **PR head branch is in a sibling linked worktree** - `git worktree remove` it, then delete the local branch ref. No `git checkout <base>` needed.
+  3. **No worktree conflict** - existing behavior unchanged.
+
+  In all cases `gh pr merge` never exits non-zero solely because local worktree cleanup could not complete.
+
+  ## Demo
+
+  <details>
+  <summary>Text transcript of the demo</summary>
+
+  Three worktrees are set up: `main-checkout` (main), `feature-wt` (linked, on `wt-demo-scenario1`), and `sibling-wt` (linked, on `wt-demo-scenario2`).
+
+  1. **Show starting state**
+     `git worktree list` shows all three worktrees.
+
+  2. **Scenario 1: merge from inside the PR's linked worktree**
+     ```
+     cd /tmp/worktree-demo/feature-wt
+     git branch --show-current
+     wt-demo-scenario1
+
+     gh pr merge --squash --delete-branch
+     ✓ Squashed and merged pull request 27 (Demo scenario 1)
+     ! Branch wt-demo-scenario1 is checked out in the current worktree (/private/tmp/worktree-demo/feature-wt); skipping local delete
+       To finish cleanup, first navigate out of the worktree, then run:
+       git worktree remove /private/tmp/worktree-demo/feature-wt && git branch -D wt-demo-scenario1
+     ✓ Deleted remote branch wt-demo-scenario1
+     ```
+
+  3. **Scenario 2: merge from main worktree (PR branch lives in sibling)**
+     ```
+     cd /tmp/worktree-demo/main-checkout
+     gh pr merge wt-demo-scenario2 --squash --delete-branch
+     ✓ Squashed and merged pull request 28 (Demo scenario 2)
+     ✓ Removed worktree /private/tmp/worktree-demo/sibling-wt
+     ✓ Deleted local branch wt-demo-scenario2
+     ✓ Deleted remote branch wt-demo-scenario2
+     ```
+
+  4. **Final state**
+     `git worktree list` shows only `main-checkout` and `feature-wt` remain - `sibling-wt` was removed automatically, while `feature-wt` was preserved with cleanup instructions.
+
+  </details>
+
+  ## Design decisions
+
+  - **`linkedWorktreeForBranch()` skips `worktrees[0]`** - git always lists the main worktree first. By iterating `[1:]` we only consider linked worktrees, eliminating false positives in normal (non-worktree) repos.
+  - **`len(worktrees) > 1` guard** - if only the main worktree exists, no linked worktrees are possible so we skip worktree logic entirely.
+  - **No `--force` on `git worktree remove`** - a dirty worktree is reported as a warning rather than forced, preserving uncommitted work.
+  - **Conventional single-working-directory path unchanged** - the `git checkout <base>` + pull + delete path only runs when there's no worktree involvement.
+
+  ## Test scenarios (4 new + 9 updated)
+
+  | Scenario | Behavior |
+  |----------|----------|
+  | cwd is linked worktree on PR branch | Warn + skip local delete |
+  | PR branch in sibling linked worktree | Remove worktree + delete branch |
+  | Dirty sibling worktree | Warn, skip branch delete |
+  | No worktree conflict (normal repo) | Existing behavior unchanged |
+
+  All 9 existing `deleteLocalBranch` tests updated with worktree stubs to prevent panics from the new `git worktree list` call.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`linkedWorktreeForBranch` skips `worktrees[0]`, and the current-worktree guard only fires when the current branch is the PR head. When the head branch is checked out in the main worktree and the command runs from a linked worktree on another branch, `deleteLocalBranch` calls `DeleteLocalBranch`, git refuses to delete a branch checked out elsewhere, and the error makes `gh pr merge` exit non-zero and skip `deleteRemoteBranch`."
+    locations: ["pkg/cmd/pr/merge/merge.go", "deleteLocalBranch", "linkedWorktreeForBranch"]
+    fix: "d7fe64365fd9598964057172c255075acfaae608"
+  - id: K2
+    severity: warning
+    mechanism: "When the PR head is the current branch in the main worktree, `deleteLocalBranch` still checks out the base branch first. If the base branch is checked out in a linked worktree, `CheckoutBranch` fails and the error is returned, so `gh pr merge` exits non-zero and skips `deleteRemoteBranch`, which the PR says must not happen for local cleanup."
+    locations: ["pkg/cmd/pr/merge/merge.go", "deleteLocalBranch", "CheckoutBranch"]
+    fix: "f5a53636ebfaed1ced51aeba0b9bd896649470e7"
+    source: "author's own later commit"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "The new `parseWorktrees` parser for `git worktree list --porcelain` has no unit test in the `git` package."
+    locations: ["git/client.go", "parseWorktrees"]
+    fix: "d7fe64365fd9598964057172c255075acfaae608"

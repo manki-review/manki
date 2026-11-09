@@ -1,0 +1,43 @@
+id: ts-54
+repo: manki-review/token-service
+source: token-service PR 54, round 1
+base: a2023ed4d18520cf7ffad779f5c148c9eacbf7e7
+head: 87b1fff665d621f54b0d77a9f037f141081a096a
+title: "fix: give tokens only to the run Manki dispatched"
+body: |
+  ## Summary
+
+  Security fix. `/token` handed the review token, and the memory token, to any workflow of an allowed repository that could get an OIDC token, such as a branch workflow or a `pull_request` workflow. Now only the run a PR coordinator dispatched gets a token. Everything else gets `403` and a `token_refused` log line.
+
+  ## Changes
+
+  - `src/oidc.ts`: `verifyGitHubOIDC` requires the `run_id`, `event_name`, `workflow_ref` and `ref` claims, which GitHub puts in every Actions token, and checks `run_id` is numeric.
+  - `src/index.ts`: after the installation lookup and the permission cap, `refuseWorkflow` checks:
+    - `event_name` is `workflow_dispatch`;
+    - `workflow_ref` is `<repository>/.github/workflows/<file>@<ref>` for the token's own repository, with `<ref>` the run's `refs/heads/...` ref;
+    - the run, read with a one-off `actions: read` token (audited as `run_check`), is a `workflow_dispatch` run by `manki-review[bot]` whose title names the PR (`parseRunTitle`);
+    - that PR's coordinator holds the run (`PrCoordinator.refuseRun`).
+  - `src/coordinator.ts`: `refuseRun` accepts only a run of an item it holds as dispatching or running, from the item's dispatched workflow file, on the default branch. A dispatch answered without its run id is matched by the delivery id in the run title and takes the run id, so its first `/token` call is not refused. `markRunning` no longer clears a run id already set that way.
+  - `src/dispatch.ts`: `numberFromRunTitle` becomes `parseRunTitle`, which also returns the delivery id.
+  - README documents the rule.
+
+  ## What changes for users
+
+  Only Manki's dispatched runs get tokens. A workflow that ran the Action outside webhook dispatch, such as a test workflow, falls back to `github-actions[bot]`, as the Action already does when the token service refuses.
+
+  ## Testing
+
+  - `npx vitest run` and `npm run typecheck` clean.
+  - `/token` tests: a `pull_request` workflow, a workflow of another repository, a `workflow_ref` on another ref than the run, and a tag workflow are refused before the run is read. An unknown run id, a run a person dispatched, a run of another event and a run without a Manki title are refused. A refusal from the coordinator is passed on, and the coordinator named by the run title gets the run id, delivery id, file and ref. No refused request mints a review or memory token.
+  - Coordinator test with a real dispatch: the dispatched run gets a token. Another workflow file on main, the same file on a branch, an unknown run id, and the run after it ended are refused. A dispatch answered with 204 is matched by its delivery id and its run id recorded.
+  - Mutation check: dropping the workflow file check fails the coordinator test.
+
+  Part of manki-review/manki#1036
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`refuseWorkflow` returns a refusal string for any failed `run_check` mint, ignoring `mint.refused`, and for any non-ok read of the run, and the `/token` handler answers every refusal with `403` and a `token_refused` log line. A 5xx, a 429 or a rate-limited 403 from GitHub during the run check therefore refuses Manki's own dispatched run, which falls back to `github-actions[bot]` without the memory token, instead of getting a retryable error. `isRefusal` in `src/github.ts` already tells real refusals apart from transient failures."
+    locations: ["src/index.ts", "refuseWorkflow", "isRefusal", "mintRepositoryToken"]
+    fix: "37f3e79d97b3a3d647fed655266c462c7c95370c"
+nice_to_have: []

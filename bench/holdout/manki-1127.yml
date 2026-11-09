@@ -1,0 +1,33 @@
+id: manki-1127
+repo: manki-review/manki
+source: manki PR 1127, round 1
+base: ef8fd5c8bf2a19c5a7f863b79a8cae29d18bec17
+head: 76aa81d24c20267cf172146025db01290df3243e
+title: "fix: validate model ids before passing them to CLIs"
+body: |
+  ## Summary
+
+  A model id from `.manki.yml` such as `gemini/--yolo` reached the Gemini CLI as `--model --yolo`, which yargs reads as the `--yolo` flag, so every built-in tool ran without confirmation. Model ids are now validated when the config loads, and every CLI client passes the id as `--model=<id>`, so no value can be read as a separate flag.
+
+  ## Changes
+
+  - `parseModelSpec` refuses a model id that does not start with a letter or digit, or holds a character outside `._:@/-`, and names the bad value.
+  - Config load runs `parseModelSpec` on every `models` key and every `review.groups.*.reviewers[].model` other than `@reviewer` and `@reviewer_pair`. An id with an unknown prefix now fails at load too, instead of later as "Invalid model config".
+  - The Claude, Codex and Gemini clients pass `--model=<id>`.
+
+  ## What changes for users
+
+  A `.manki.yml` with a malformed or unknown model id fails to load with an error naming the key and the value. Valid ids behave as before.
+
+  ## Testing
+
+  - `model-registry.test.ts`: `gemini/--yolo`, `claude/-x`, `anthropic/-x`, `-x`, ids with spaces and shell characters are rejected.
+  - `config.test.ts`: the same ids in `models.*` and in a group reviewer fail config load with the key named.
+  - Provider tests check `--model=<id>` in the Claude, Codex and Gemini argv.
+  - Ran the config, providers, index, routing and review suites locally. CI runs the rest.
+
+  Closes #1100
+  Part of #1116
+key_version: 1
+must_catch: []
+nice_to_have: []

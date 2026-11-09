@@ -1,0 +1,42 @@
+id: manki-1121
+repo: manki-review/manki
+source: manki PR 1121, round 1
+base: 1a85b45210b9f69c226986a80c70602ee2bf9c18
+head: ea5b7b1c2e405593210bc7009b593ad36de2cae4
+title: "fix: block hidden code in suggestions and diffs"
+body: |
+  ## Summary
+
+  A `suggestion` fence inside a finding's description became a second, unlimited "Commit suggestion" button under Manki's name, and nothing checked suggested code or the diff for hidden Unicode. Manki now turns every suggestion fence in prose into a plain code block, never offers a suggestion whose code holds control or format characters, and raises a fixed tool alert for such characters on added lines.
+
+  ## Changes
+
+  - `sanitizeMarkdown` rewrites any `suggestion` fence (backtick or tilde, indented or quoted, any case) to a plain fence. Thread replies get this too once #1113 runs them through `sanitizeMarkdown`.
+  - A fenced fix whose language is `suggestion` is rendered with the file's extension.
+  - `formatSuggestedFix` uses a `suggestion` block only when the code holds no hidden characters: `Cc` other than tab and newline, and `Cf`, which covers zero-width and bidi controls. A new `hiddenCharacters` helper in `utils.ts` lists them as `U+XXXX`.
+  - `collectStaticSignals` always adds a `hidden-characters` alert from Manki, one per changed file whose added lines hold such characters, in every changed file whatever `static_analysis` or `exclude_paths` says. A bidi embedding, override or isolate (U+202A to U+202E, U+2066 to U+2069) makes it an error, which the judge triages as a blocker. Any other hidden character makes it a warning, since zero-width joiners and soft hyphens have honest uses in text. A trailing carriage return is ignored.
+  - Docs: the fixed alert in `docs/how-reviews-work.md`.
+
+  What changes for users: no more commit buttons from text in a finding's description, no commit button for a fix with hidden characters, and a new Manki alert on PRs that add hidden characters.
+
+  ## Testing
+
+  - `src/github.test.ts`: a description with backtick and quoted tilde suggestion fences posts no suggestion, a fix fenced as `suggestion` renders as plain `ts`, fixes with U+202E, U+2066, U+200B or U+0007 post no suggestion, and a fix with a tab still does.
+  - `src/static-signals.test.ts`: a diff adding U+202E, U+2066 and U+200B gets one error alert, one adding U+00AD in an excluded file gets a warning alert, context lines and a trailing CR do not count, and the alerts become tool alert candidates with all config sources off.
+  - Ran the touched suites and `npm run typecheck` locally. Full suite left to CI.
+
+  Closes #1107
+  Part of #1116
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`renderFixParts` tests `/^suggestion\\b/i` on the raw fence language `p.lang` and only afterwards strips characters outside `[\\w+#.-]`. A fix fenced as `sugg!estion` or `sugg estion` passes the test and is then written out as a `suggestion` fence, and a file named `x.suggestion` gives the same result through its `extension`. Fixes that `formatSuggestedFix` refused as a suggestion, such as ones holding hidden characters, then get a commit button anyway."
+    locations: ["src/github.ts", "renderFixParts", "formatSuggestedFix"]
+    fix: "eae18463569a86dcfd65d05b598f0cfabb421664"
+  - id: K2
+    severity: warning
+    mechanism: "`HIDDEN_CHARACTER` matches only the `Cc` and `Cf` categories. Invisible letters such as the Hangul fillers U+3164 and U+115F (category `Lo`) and the variation selectors (category `Mn`) do not match, so `hiddenCharacters` returns nothing for code that hides them. Such a fix still posts as a `suggestion` block, and the diff alert stays silent."
+    locations: ["src/utils.ts", "HIDDEN_CHARACTER", "hiddenCharacters"]
+    fix: "c331db99a1bc67aa189800750f7b76abfa7140fd"
+nice_to_have: []

@@ -1,0 +1,36 @@
+id: cli-13249
+repo: cli/cli
+source: cli upstream PR 13249
+base: 49d4747a81425418dd2e7bee7e33541b7c644ca9
+head: 1160943af343d9904356db0d9f4bb2f5b5a9b651
+title: "fix(skills): match skills by install name in preview command"
+body: |
+  ## Summary
+
+  Fixes upstream issue 13248
+
+  After `gh skill install`, the output suggests a `gh skill preview` command using the skill's `InstallName()` (e.g., `aws-common/aws-mcp-setup` for plugins-convention skills). However, the preview command's `selectSkill` function only matched against `DisplayName()` and `Name`, neither of which matched:
+
+  - `DisplayName()` for plugins = `[plugins] aws-common/aws-mcp-setup`
+  - `Name` = `aws-mcp-setup`
+  - `InstallName()` = `aws-common/aws-mcp-setup` (what the install hint outputs)
+
+  ## Changes
+
+  - **`pkg/cmd/skills/preview/preview.go`**: Added `s.InstallName()` as an additional match criterion in `selectSkill`, so namespaced skill identifiers from the install hint are accepted.
+  - **`pkg/cmd/skills/preview/preview_test.go`**: Added test case for plugins-convention skills matched by install name.
+
+  ## Testing
+
+  All existing tests pass, plus the new test verifies the fix:
+  ```
+  go test ./pkg/cmd/skills/... ./internal/skills/... -count=1
+  ```
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`selectSkill` checks `DisplayName()`, `Name` and `InstallName()` in one pass and returns the first skill that matches any of them. `previewRun` sorts the skills by `DisplayName()`, and `[plugins] aws-common/aws-mcp-setup` sorts before `aws-common/aws-mcp-setup`, so when a repository holds both a plugins skill and a namespaced skill with that identifier, the plugins skill wins through its `InstallName()` over the exact `DisplayName()` match and the wrong skill is previewed."
+    locations: ["pkg/cmd/skills/preview/preview.go", "selectSkill", "InstallName"]
+    fix: "6fcc9c24df4e0307a89be32d6ebaa0002d4545e3"
+nice_to_have: []

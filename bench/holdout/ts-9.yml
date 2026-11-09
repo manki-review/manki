@@ -1,0 +1,79 @@
+id: ts-9
+repo: manki-review/token-service
+source: token-service PR 9, round 1 (the first head Manki reviewed)
+base: 85951890a884b06547ee57fe5366c16012f950bd
+head: 26e6425b110ecec76ebf24b2eb9a04634191c349
+title: "feat: redeliver failures and catch up missed heads"
+body: |
+  Fourth step of Manki's webhook mode (design and owner decisions in manki issue 970, decision 5). A cron every 5 minutes redelivers recent failed App deliveries and queues opted-in PRs whose head has no Manki review.
+
+  ## What changes
+
+  - **`Reconciler`** (`src/reconciler.ts`): a singleton Durable Object (`getByName('global')`) on the SQLite backend. The Worker's `scheduled` handler runs one `reconcile()` pass on it for each trigger.
+  - **Opt-in registry.** Each time a `PrCoordinator` reads the workflows (on a cache miss, at most every 5 minutes), it reports the result with `recordOptIn`.
+    - The first report that sees `manki-dispatch.yml` records the repository and its `opted_in_at`. Later reports keep that time.
+    - A report that finds the repository not opted in removes it, so opting in again starts a new timestamp.
+    - A refused token mint is not reported, since it says nothing about the workflow files. A failure to reach the registry is logged and never blocks the coordinator.
+    - The timestamp is per repository, because the deliveries API names the repository of a delivery, not its PR.
+  - **Redelivery.** It lists `GET /app/hook/deliveries` with the App JWT, newest first, at most 3 pages, and stops paging once a page reaches past the window. A GUID is redelivered with `POST /app/hook/deliveries/{id}/attempts` (the id of its latest attempt) only when all of these hold:
+    - no attempt of it succeeded,
+    - its first attempt (the entry with `redelivery: false`) is under **1 hour** old,
+    - its event is one the Worker handles, including `pull_request_review_thread`,
+    - its repository is in the registry and the first attempt came **at or after `opted_in_at`**,
+    - it has been redelivered fewer than 2 times, counted in the object's own table, so a delivery that breaks the Worker cannot loop.
+
+    Failed deliveries from before `/webhook` was deployed, or from before a repository opted in, therefore stay failed.
+  - **Catch-up.** For each repository in the registry it mints a `pull_requests: read` token for that repository and lists open PRs sorted by update time. It keeps the ones updated in the last 24 hours that are not drafts and not from forks. A PR goes to its coordinator only when the coordinator reports the head as new (`needsCatchUp`: not the last pushed head and not already under review), and GraphQL shows no review by `manki-review` on that commit. Checked heads are remembered for a day, so a reviewed PR costs one query, not one per pass.
+  - **`PrCoordinator.catchUp`** queues the head as a `pull_request.synchronize` review, merged with any queued review like a real push. Its `delivery_id` is `catch-up-<12 hex>`, which Manki's adapter accepts. The coordinator records `last_seen_head` again on pushes, which it reads here.
+  - **Budget.** A pass makes at most 40 GitHub calls, under the Free plan's 50 subrequests per invocation. Repositories are visited in turn from a stored cursor, so the next pass resumes where the last one stopped, and remembered heads guarantee progress.
+  - `wrangler.toml` gains the `RECONCILER` binding, migration `v2` with `new_sqlite_classes = ["Reconciler"]`, and `[triggers] crons = ["*/5 * * * *"]`.
+
+  ## Second review round
+
+  - **Bot pushes.** A push by a bot, which Manki skips, now routes to `seen`. The coordinator records the head with `markSeen`, queues no work, and sets the usual cleanup alarm. The catch-up then sees the head as known and never reviews it.
+  - **Storage.** A catch-up is stored as a delivery (`catch-up-<12 hex>`), so a coordinator created by the catch-up keeps `last_seen_head` for the 7 day retention. `needsCatchUp` writes nothing, so a PR that needs no catch-up gets no coordinator state.
+  - **Per-repository errors.** An error in one repository is logged and the cursor moves past it, so it cannot block the others.
+  - **Uninstalled repositories.** A mint refused with 404 (installation gone) or 422 (repository no longer in the installation) removes the repository from the registry.
+  - **Fair redelivery.** Deliveries not retried yet go before second attempts, so a small budget never starves them.
+
+  ## Tests
+
+  `test/reconciler.test.ts`:
+  - **Redelivery.** One table covers a recent failure, a failure later fixed by a redelivery, a success, another repository, no repository, an unhandled event, a delivery from before the opt-in, and a GUID with only redelivery attempts. Separate cases cover the 1 hour cutoff for a repository opted in long before, the opt-in cutoff for a delivery 1 minute before the opt-in, at most 2 redeliveries over 4 passes, and paging that stops at the window.
+  - **Opt-in time.** The registry keeps the first time, forgets an opt-out and starts a new time after it. An end-to-end case shows a coordinator's alarm recording the time on its first sighting of the dispatch file and removing it once an event-driven workflow appears.
+  - **Catch-up.** A PR without a Manki review is queued (state lane, `pull_request.synchronize`, the head, the `catch-up-` delivery, alarm set). Drafts, forks, PRs not updated for a day and reviewed heads are skipped. A head the coordinator received or the reconciler checked is not queried again. The first pass after an opt-in reviews no PR whose head has a Manki review, a bot push is skipped without a query, a failing repository is passed over and one whose installation is gone is dropped.
+  - **Budget.** Three repositories with 61 candidate PRs: the first pass makes exactly 40 calls, and the second reaches the remaining repositories.
+  - **Cron.** `scheduled` runs one pass, through `createScheduledController`.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`catchUpRepository` inserts the head into `checked_heads` before it calls `coordinator.catchUp`. When that call throws, `catchUp` only logs `reconciler_catch_up_error`, and every later pass skips the head for `CATCH_UP_WINDOW_MS`, so the head that was missed is never queued for review."
+    locations: ["src/reconciler.ts", "catchUpRepository", "checked_heads"]
+    fix: "41c8d7a65ba58fcbdf79e27da25fa45f8b4aabd4"
+  - id: K2
+    severity: warning
+    mechanism: "`PrCoordinator.receive` only refuses a delivery id it has seen, so a late redelivery of a push is accepted after `catchUp` already queued a review of the same head under a `catch-up-` delivery id. When that review is already dispatching or running, `enqueue` finds no queued review to merge into and inserts a second review of the same head, so Manki reviews it twice."
+    locations: ["src/coordinator.ts", "receive", "catchUp", "enqueue", "last_seen_head"]
+    fix: "41c8d7a65ba58fcbdf79e27da25fa45f8b4aabd4"
+  - id: K3
+    severity: warning
+    mechanism: "`redeliver` raises `attempts` in the `redeliveries` table after every `POST /app/hook/deliveries/{id}/attempts`, whatever the response status. Two passes that meet a 5xx, a 429 or a rate limit use up `MAX_REDELIVERIES`, and the failed delivery is never redelivered."
+    locations: ["src/reconciler.ts", "redeliver", "MAX_REDELIVERIES"]
+    fix: "bfa7d05bf966b042636e82cb61543f7f2e3bea11"
+  - id: K4
+    severity: warning
+    mechanism: "The catch-up in `catchUpRepository` filters only drafts, forks and stale PRs, and never reads the PR author. A PR a bot opened, whose `pull_request` delivery never reached `markSeen` because it failed past the redelivery window or came before the opt-in, has no Manki review and gets queued for a review that routing deliberately refuses."
+    locations: ["src/reconciler.ts", "catchUpRepository", "PullSummary", "markSeen"]
+    fix: "1e187c4538890810e1d5b97ffe04a8abe7f296d8"
+  - id: K5
+    severity: suggestion
+    mechanism: "When `needsCatchUp` returns false, the normal case, `catchUpRepository` neither records the head in `checked_heads` nor takes from the `Budget`. Every 5 minute pass therefore calls the coordinator again for every recent open PR, up to 30 per repository, outside `SUBREQUEST_BUDGET`."
+    locations: ["src/reconciler.ts", "catchUpRepository", "needsCatchUp", "SUBREQUEST_BUDGET"]
+    fix: "41c8d7a65ba58fcbdf79e27da25fa45f8b4aabd4"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "Nothing stops a new `reconcile()` from starting while the previous pass still waits on GitHub, since a Durable Object takes the next call during outgoing I/O. Two overlapping passes read the same failures and each redelivers them, using up `MAX_REDELIVERIES` at once."
+    locations: ["src/reconciler.ts", "reconcile"]
+    fix: "1c5ac1e317d5c074f1c60ae17d2b251e32f11b74"

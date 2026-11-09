@@ -1,0 +1,52 @@
+id: manki-1200
+repo: manki-review/manki
+source: manki PR 1200, round 1
+base: 5858e5e084b2e9387246031e6845bc5eb498c663
+head: cf834a111452a8ad141369462dea699915317eb8
+title: "feat: offer the issue box in the review body too"
+body: |
+  ## Summary
+
+  #1196 put a `Create an issue for this` box on every non-security finding thread. Findings listed in the review body get the same box now: the smaller fixes, previously missed, nitpicks, the Pre-existing section, and blockers that have no thread. A writer's tick files the finding as an issue and replaces only that box line, so the rest of the review body and its round record stay as they were.
+
+  ## Changes
+
+  - `formatFindingFold` and `formatFindingBlock` (`src/github.ts`) end with the box when `postReview` lists the finding in the body. That includes the blockers it adds after GitHub refused their threads. A security finding and a verdict reader blocker get none, through the shared `issueBoxFor`.
+  - `run` (`src/index.ts`) handles a `pull_request_review.edited` that ticks an issue box in Manki's own review, after the editor's write check. The bot check no longer drops an edit of Manki's review, since a person made it.
+  - `restoreDispatchedEvent` (`src/dispatch.ts`) names the review's last editor as the sender of an edited review. GitHub sends the review's author, Manki.
+  - `handleReviewBoxTick` (`src/issue-tick.ts`) reads each ticked finding's title and text from its fold or block, and takes the file and line from the box id. It files the finding or links the open issue, and replaces only that box line through `updateReview`. A security fold someone added a box to is skipped. The comment and review handlers share `fileOrLink`.
+  - Docs: `docs/how-reviews-work.md`, and the `edited` action in the events table of `docs/getting-started.md`.
+
+  Needs manki-review/token-service#62 deployed, which routes the review-body tick.
+
+  ## What changes for users
+
+  Every non-security finding in the review body ends with a `Create an issue for this` box, as in its thread. A writer's tick files it as an issue and puts "Issue #N created by login" in place of the box.
+
+  ## Testing
+
+  - `src/issue-tick.test.ts`: ticked boxes on a listed fold and on a body blocker file one issue each, with the title and text read from the body and the permalink from the box id. Only those box lines change. A security fold with a box added by hand files nothing.
+  - `src/index.test.ts`: a writer's tick in Manki's review reaches the handler. A non-writer's tick, an untouched box and a box in someone else's review do not, and none of them runs the auto-approve check.
+  - `src/dispatch.test.ts`: an edited review is dispatched as its last editor.
+  - `src/github.test.ts`: the box at the end of listed folds and of a refused blocker.
+  - `npm run typecheck`. The full suite runs in CI.
+
+  Closes #1173
+key_version: 1
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "`formatFindingFold` puts the issue box after `checksSection`, which holds its own `<details>` fold when a finding has several checks. `bodyFinding` takes the nearest `<details>` before the box as the finding's fold and gives up on it when a `</details>` sits between, which the nested checks fold always puts there. It then falls back to the last `**Blocker`/`**Warning` block header before the box, so ticking the box files nothing or files an earlier blocker instead of the ticked finding."
+    locations: ["src/issue-tick.ts", "bodyFinding", "src/github.ts", "formatFindingFold"]
+    fix: "da4fcab7453e7056810059c4d2270a83bff1f841"
+  - id: K2
+    severity: warning
+    mechanism: "`bodyFinding` searches the raw body for `<details>`, `</details>` and block headers, including text inside a fenced suggested fix. A fix that contains one of these tags or a line starting with `**Blocker` moves the boundaries, so the tick reads the wrong fold or the wrong block and files the wrong finding."
+    locations: ["src/issue-tick.ts", "bodyFinding"]
+    fix: "0f41cc203e5ae85eb3eb2e1de28952b0b454de24"
+  - id: K3
+    severity: warning
+    mechanism: "For a blocker block, `bodyFinding` splits on `'\\n'` and matches the title line against `/^\\*\\*(.+)\\*\\*$/`. In a review body saved with CRLF line endings the title line ends in `\\r`, which `.` does not match, so no title is found and the ticked box is skipped with only a log warning."
+    locations: ["src/issue-tick.ts", "bodyFinding", "handleReviewBoxTick"]
+    fix: "c8ee105368aa97e531f2d657b0548d945e23a25c"
+nice_to_have: []
