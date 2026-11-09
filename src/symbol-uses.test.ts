@@ -338,14 +338,47 @@ ${body}	return true
     expect(siblings.implementations).toEqual([]);
   });
 
-  it('asks about at most 50 method groups per changed file', async () => {
-    // 50 changed dunder methods give 100 group keys, so the cap leaves out the later half, and with it the one group that has a sibling.
-    const many = (value: number) => `class Many(Base):\n${Array.from({ length: 50 }, (_, i) => `    def __x${i}__(self):\n        return ${value}\n`).join('')}`;
-    const { siblings } = await usesFor(
-      { 'src/many/many.py': many(1), 'src/many/other.py': 'class Other(Base):\n    def __x49__(self):\n        return 2\n' },
+  it('asks about a sibling group past any number of changed methods without one, and drops a group only when one asked group holds all its members', async () => {
+    const summary = (siblings: UsesOutsideDiff['siblings']) => siblings.implementations.map(q => [q.name, q.members.map(m => `${m.owner}${m.changed ? '*' : ''}`)]);
+    // 60 changed methods without a sibling, in Python with two group keys each, come before the one that has a sibling.
+    const many = (value: number) => `class Many(Base):\n${Array.from({ length: 60 }, (_, i) => `    def __x${i}__(self):\n        return ${value}\n`).join('')}`;
+    const python = await usesFor(
+      { 'src/many/many.py': many(1), 'src/many/other.py': 'class Other(Base):\n    def __x59__(self):\n        return 2\n' },
       { 'src/many/many.py': many(3) },
     );
-    expect(siblings.implementations).toEqual([]);
+    expect(summary(python.siblings)).toEqual([['__x59__', ['Many*', 'Other']]]);
+    const steps = (value: number) => `package many\n\n${Array.from({ length: 60 }, (_, i) => `func (m Many) Step${i}() int { return ${value} }`).join('\n')}\n`;
+    const go = await usesFor(
+      { 'many/many.go': steps(1), 'many/other.go': 'package many\n\nfunc (o Other) Step59() int { return 2 }\n' },
+      { 'many/many.go': steps(3) },
+    );
+    expect(summary(go.siblings)).toEqual([['Step59', ['Many*', 'Other']]]);
+
+    // Each pair of three classes shares one base, so each group's members sit in two other groups but in no one group.
+    const eq = (name: string, bases: string, field: string) => `class ${name}(${bases}):\n    def __eq__(self, other):\n        return self.${field} == other.${field}\n`;
+    const pairs = await usesFor(
+      { 'src/pairs/square.py': eq('Square', 'Shape, Named', 'side'), 'src/pairs/circle.py': eq('Circle', 'Shape, Stored', 'radius'), 'src/pairs/label.py': eq('Label', 'Named, Stored', 'text') },
+      { 'src/pairs/square.py': eq('Square', 'Shape, Named', 'width'), 'src/pairs/circle.py': eq('Circle', 'Shape, Stored', 'diameter') },
+    );
+    expect(summary(pairs.siblings)).toEqual([['__eq__', ['Circle*', 'Square*']], ['__eq__', ['Circle*', 'Label']], ['__eq__', ['Square*', 'Label']]]);
+    const view = (name: string, bases: string, text: string) => `export class ${name} implements ${bases} {\n  toString() {\n    return '${text}';\n  }\n}\n`;
+    const views = await usesFor(
+      { 'src/pairs/square.ts': view('Square', 'Shape, Named', 'square'), 'src/pairs/circle.ts': view('Circle', 'Shape, Stored', 'circle'), 'src/pairs/label.ts': view('Label', 'Named, Stored', 'label') },
+      { 'src/pairs/square.ts': view('Square', 'Shape, Named', 'box'), 'src/pairs/circle.ts': view('Circle', 'Shape, Stored', 'disc') },
+    );
+    expect(summary(views.siblings)).toEqual([['toString', ['Circle*', 'Square*']], ['toString', ['Circle*', 'Label']], ['toString', ['Square*', 'Label']]]);
+    // A round reads at most 2 MB of bodies, so a third body this long counts as different and the group is asked.
+    const long = (name: string, end: string) => `export class ${name} {\n  area() {\n    const s = '${'x'.repeat(900_000)}';\n    // one\n    // two\n    // three\n    return ${end};\n  }\n}\n`;
+    const longs = await usesFor(
+      { 'src/long/a.ts': long('A', 's + 1'), 'src/long/b.ts': long('B', 's'), 'src/long/c.ts': long('C', 's') },
+      { 'src/long/a.ts': long('A', 's') },
+    );
+    expect(summary(longs.siblings)).toEqual([['area', ['A*', 'B', 'C']]]);
+
+    // Methods that share a line are each a member of their own group.
+    const row = (name: string, value: number) => `export class ${name} { first() { return ${value}; } second() { return ${value}; } third() { return ${value}; } }\n`;
+    const rows = await usesFor({ 'src/rows/a.ts': row('A', 1), 'src/rows/b.ts': row('B', 2) }, { 'src/rows/a.ts': row('A', 3) });
+    expect(summary(rows.siblings)).toEqual([['first', ['A*', 'B']], ['second', ['A*', 'B']], ['third', ['A*', 'B']]]);
   });
 
   it('compares the functions of one name or trait method on sibling types in the changed files and beside them, in Rust, Python, Go and TypeScript, most touched first, leaving out nested functions, untouched neighbours of removed code, excluded files, types no plain path names, standard traits and protocol methods of types that share no base', async () => {
@@ -403,9 +436,10 @@ ${body}	return true
 
     expect(siblings.implementations.map(q => [q.trait, q.name, q.members.map(m => `${m.owner}${m.changed ? '*' : ''}`)])).toEqual([
       ['FromWire', 'from_wire', ['ImagePart*', 'TextPart*', 'AudioPart']],
+      // Tied with `size` on touched members and lines, so the larger group comes first.
+      [undefined, '__eq__', ['Wallet*', 'Account', 'Voucher']],
       [undefined, 'size', ['ImagePart*', 'TextPart']],
       [undefined, 'refund', ['CardPayment*', 'BankPayment']],
-      [undefined, '__eq__', ['Wallet*', 'Account', 'Voucher']],
       [undefined, 'Area', ['Circle*', 'Square']],
       [undefined, 'constructor', ['Alpha*', 'Beta']],
       [undefined, 'toString', ['Alpha*', 'Beta']],
@@ -472,6 +506,21 @@ ${body}	return true
     // Four files of 20,000 methods each take longer to parse, so this bound is wider. Copying the group per member took over 30 seconds.
     expect(Date.now() - started).toBeLessThan(20_000);
 
+    // A changed file of many methods, each with a sibling beside it: every one is a group, and only the questions asked are quoted.
+    const mirrored = (owner: string, value: number) => `package gen\n\n${Array.from({ length: 5_000 }, (_, i) => `func (m ${owner}) S${i}() int { return ${value} }`).join('\n')}\n`;
+    started = Date.now();
+    const steps = await usesFor({ 'gen/a.go': mirrored('A', 1), 'gen/b.go': mirrored('B', 2) }, { 'gen/a.go': mirrored('A', 3) });
+    expect(steps.siblings.implementations).toHaveLength(20);
+    expect(Date.now() - started).toBeLessThan(10_000);
+
+    // The same methods on one line of a changed class: each method is a member of its own groups, however many share its line.
+    const inline = (value: number) => `export class A { ${Array.from({ length: 5_000 }, (_, i) => `m${i}() { return ${value}; }`).join(' ')} }\n`;
+    const lined = `export class B {\n${Array.from({ length: 5_000 }, (_, i) => `  m${i}() { return 2; }`).join('\n')}\n}\n`;
+    started = Date.now();
+    const oneLine = await usesFor({ 'src/gen/a.ts': inline(1), 'src/gen/b.ts': lined }, { 'src/gen/a.ts': inline(3) });
+    expect(oneLine.siblings.implementations).toHaveLength(20);
+    expect(Date.now() - started).toBeLessThan(10_000);
+
     // One class with many bases and many dunder methods: its bases are read once, and only the first few key its groups.
     const based = (body: string) => `class Wide(${Array.from({ length: 40_000 }, (_, i) => `B${i}`).join(', ')}):\n${Array.from({ length: 5_000 }, (_, i) => `    def __m${i}__(self):\n        return ${i === 0 ? body : '1'}\n`).join('')}`;
     started = Date.now();
@@ -492,7 +541,7 @@ ${body}	return true
     const { section } = await usesFor(files(1), files(2));
     expect(section).toContain('The limit of 200 parsed files or 16 MB per round left 10 more files unparsed, so types, fields and lookups in them are not listed.');
     expect(core.info).toHaveBeenCalledWith('Uses outside the diff: the parse limit left 10 files unparsed');
-  });
+  }, 30_000);
 
   const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };
 
