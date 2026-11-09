@@ -5,7 +5,7 @@ import * as path from 'path';
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AuthResult, createAuthenticatedOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
-import { changedKeys, loadConfig, resolveFallbackModel, resolveModel, resolvePairModel } from './config';
+import { changedKeys, loadConfig, resolveModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
@@ -18,7 +18,8 @@ import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
-import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
+import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
+import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
@@ -833,48 +834,6 @@ async function loadRecap(
 }
 
 /** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
-function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs): { clients: ReviewClients; models: ReviewModels } {
-  const models: ReviewModels = {
-    planner: resolveModel(config, 'planner'),
-    reviewer: resolveModel(config, 'reviewer'),
-    reviewerPair: resolvePairModel(config),
-    judge: resolveModel(config, 'judge'),
-    dedup: resolveModel(config, 'dedup'),
-  };
-  core.info(`Models — planner: ${models.planner}, reviewer: ${models.reviewer}, reviewer pair: ${models.reviewerPair}, judge: ${models.judge}, dedup: ${models.dedup}`);
-
-  const buildClient = (model: string) => {
-    const spec = parseModelSpec(model);
-    const auth = buildAuthForProvider(spec.provider, providerInputs);
-    return createLLMClient(spec.provider, spec.model, auth);
-  };
-  const reviewer = buildClient(models.reviewer);
-  const reviewerByModel = new Map<string, LLMClient>([[models.reviewer, reviewer]]);
-  for (const model of teamModels(config)) {
-    if (!reviewerByModel.has(model)) reviewerByModel.set(model, buildClient(model));
-  }
-  const judge = buildClient(models.judge);
-  const planner = config.planner?.enabled !== false ? buildClient(models.planner) : undefined;
-  const dedup = buildClient(models.dedup);
-  const fallbackClients = new Map<string, LLMClient>([...reviewerByModel, [models.judge, judge]]);
-  const fallbackFor = (stageModel: string) => {
-    const model = resolveFallbackModel(config, stageModel);
-    if (!model) return undefined;
-    if (!fallbackClients.has(model)) fallbackClients.set(model, buildClient(model));
-    return { model, client: fallbackClients.get(model)! };
-  };
-  const fallbacks: NonNullable<ReviewClients['fallbacks']> = {
-    ...(planner && { planner: fallbackFor(models.planner) }),
-    reviewerByModel: new Map([...reviewerByModel.keys()].flatMap((model) => {
-      const fallback = fallbackFor(model);
-      return fallback ? [[model, fallback] as const] : [];
-    })),
-    judge: fallbackFor(models.judge),
-    dedup: fallbackFor(models.dedup),
-  };
-  return { clients: { reviewer, reviewerByModel, judge, planner, dedup, fallbacks }, models };
-}
-
 async function collectDiff(target: RunTarget, config: ReviewConfig) {
   const { octokit, owner, repo, prNumber } = target;
   const fullDiff = parsePRDiff(await fetchPRDiff(octokit, owner, repo, prNumber));
@@ -932,40 +891,6 @@ async function postUnreviewedRound(
   await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: metadata.timing.totalMs }, metadata, progressSettings(target, progress, 'up to date', { reviewed: true }));
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
   return { conclusion: 'action_required', title: 'Not reviewed', summary };
-}
-
-/**
- * Eagerly install any provider CLI before the planner timer starts. The
- * fallback `npm install -g` inside `ensureCLI` takes around 30s on a
- * cold runner and would otherwise race the planner's own 30s timeout.
- * Warming up once here pays the cost before any per-call deadline runs.
- * Deduplicate by client instance so roles that share a client don't
- * serialize redundant install retries on failure.
- */
-function fallbackClientsOf({ fallbacks }: ReviewClients): LLMClient[] {
-  if (!fallbacks) return [];
-  return [fallbacks.planner, ...(fallbacks.reviewerByModel?.values() ?? []), fallbacks.judge, fallbacks.dedup].flatMap(f => f ? [f.client] : []);
-}
-
-async function warmUpClients(clients: ReviewClients): Promise<void> {
-  const warmupTargets = new Set<LLMClient>(
-    [clients.planner, ...(clients.reviewerByModel?.values() ?? []), clients.judge, clients.dedup, ...fallbackClientsOf(clients)].filter(
-      (c): c is LLMClient => !!c,
-    ),
-  );
-  await Promise.allSettled(
-    [...warmupTargets].map((c) =>
-      c.warmupCLI
-        ? c.warmupCLI().catch((error) =>
-            core.warning(
-              sanitizeLogOutput(
-                `Provider CLI warmup failed (${c.constructor.name}): ${error instanceof Error ? error.message : error}`,
-              ),
-            ),
-          )
-        : Promise.resolve(),
-    ),
-  );
 }
 
 async function loadRunMemory(
