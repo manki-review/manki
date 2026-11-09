@@ -2394,7 +2394,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: 1, totalDeletions: 1, binarySkipped: [] });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: [{ path: 'Cargo.lock', matchedPattern: '*.lock' }] });
     jest.mocked(staticSignalsModule.fetchLockfiles).mockResolvedValueOnce(new Map([['Cargo.lock', head]]));
-    jest.mocked(ghUtils.fetchFileContents).mockResolvedValueOnce(new Map([['Cargo.lock', head]]));
+    const fetched = async (...[, , , , paths]: Parameters<typeof ghUtils.fetchFileContents>) => new Map(paths.filter(p => p === 'Cargo.lock').map(p => [p, head]));
+    jest.mocked(ghUtils.fetchFileContents).mockImplementationOnce(fetched).mockImplementationOnce(fetched);
     jest.mocked(recapModule.fetchRecapState).mockResolvedValueOnce({
       previousFindings: [{ title: 'Unexplained bump', file: 'Cargo.lock', line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_lock' }],
       priorRounds: [],
@@ -2405,6 +2406,8 @@ describe('runFullReview orchestration', () => {
     // A thread on the lockfile still gets its code window, but no prompt gets the whole lockfile.
     const { openThreads, fileContents } = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     expect([openThreads?.[0].currentCode, fileContents?.has('Cargo.lock')]).toEqual([expect.stringContaining('>>> 5: version = "0.4.3"'), false]);
+    // The lockfile is read outside the size budget the prompts' files share, so it can't push a code file out.
+    expect(jest.mocked(ghUtils.fetchFileContents).mock.calls.map(c => [c[4], c[6]])).toEqual([[[], undefined], [['Cargo.lock'], Infinity]]);
     const lockfiles = [{ path: 'Cargo.lock', file, changes: [expect.objectContaining({ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', line: 5 })] }];
     expect(reviewModule.runReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockfiles, excludedPaths: ['Cargo.lock'] }));
     expect(jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0][1].lockfiles).toEqual([expect.objectContaining({ path: 'Cargo.lock' })]);
