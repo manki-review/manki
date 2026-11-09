@@ -5,7 +5,7 @@ import { dirname, join } from 'path';
 
 import * as core from '@actions/core';
 
-import { reviewLocal } from './local-review';
+import { overlayConfig, reviewLocal } from './local-review';
 import { runReview } from './review';
 import type { Finding, ReviewResult, RoundOutcome } from './types';
 
@@ -162,6 +162,26 @@ describe('reviewLocal', () => {
 
     expect(jest.mocked(runReview).mock.calls[0][1].config.exclude_paths).toEqual(jest.requireActual('./config').DEFAULT_CONFIG.exclude_paths);
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not load .manki.yml on the base branch, reviewing with the defaults'));
+    await expect(reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', configOverrides: { review_passes: 2 }, providerInputs: inputs }))
+      .rejects.toThrow('Invalid YAML in .manki.yml');
+  });
+
+  it('sets config overrides on top of the base config, and refuses overrides that make it invalid before any model call', async () => {
+    jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+
+    await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', configOverrides: { models: { reviewer: 'claude-opus-5-5' } }, providerInputs: inputs });
+    await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', configOverrides: { exclude_paths: ['vendor/**'] }, providerInputs: inputs });
+
+    const [kept, replaced] = jest.mocked(runReview).mock.calls.map(call => call[1]);
+    expect(kept.config.models?.reviewer).toBe('claude-opus-5-5');
+    expect(kept.config.exclude_paths).toContain('docs/**');
+    expect(replaced.config.exclude_paths).toContain('vendor/**');
+    expect(replaced.config.exclude_paths).not.toContain('docs/**');
+    expect(replaced.rawDiff).toContain('docs/x.md');
+    jest.mocked(runReview).mockClear();
+    await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', configOverrides: { review_passes: 9 }, providerInputs: inputs }))
+      .rejects.toThrow('Invalid config in .manki.yml with the overrides');
+    expect(runReview).not.toHaveBeenCalled();
   });
 
   it('refuses a change with no reviewable files before any model call', async () => {
@@ -170,5 +190,14 @@ describe('reviewLocal', () => {
 
     await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'docs-only', providerInputs: inputs })).rejects.toThrow('no reviewable files');
     expect(runReview).not.toHaveBeenCalled();
+  });
+});
+
+describe('overlayConfig', () => {
+  it('merges mappings key by key and replaces every other value', () => {
+    expect(overlayConfig(
+      { models: { reviewer: 'a', judge: 'b' }, exclude_paths: ['x'], review: { routing: { wallet: 'pair' } } },
+      { models: { reviewer: 'c' }, exclude_paths: ['y'], review: { routing: { consensus: 'pair' } }, auto_review: false },
+    )).toEqual({ models: { reviewer: 'c', judge: 'b' }, exclude_paths: ['y'], review: { routing: { wallet: 'pair', consensus: 'pair' } }, auto_review: false });
   });
 });

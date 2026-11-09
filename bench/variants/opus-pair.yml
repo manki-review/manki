@@ -1,0 +1,3 @@
+models:
+  reviewer: claude-opus-5-5
+  reviewer_pair: claude-opus-5-5
