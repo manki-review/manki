@@ -146,7 +146,10 @@ describe('parseFindings', () => {
       proof: ['src/api.ts:42', 'src/api.ts:40-42', 'Makefile:3', 'app/views.py:12', 'app/views.py:40-42'],
       emptySearch: 'grep `page === 0` under src: no match',
     });
-    expect(parseProof([`src/a.ts:${Array.from({ length: 50 }, (_, i) => i + 1).join(',')}`])).toHaveLength(10);
+    // At most ten locations, and an entry that lists many lines keeps the first line of every later entry.
+    const many = parseProof([`src/a.ts:${Array.from({ length: 50 }, (_, i) => i + 1).join(',')}`, 'src/b.ts:42']);
+    expect(many).toHaveLength(10);
+    expect(many.slice(0, 3)).toEqual(['src/a.ts:1', 'src/b.ts:42', 'src/a.ts:2']);
     expect(checked.notChecked).toBeUndefined();
     expect([checked.preExisting, unchecked.preExisting]).toEqual(['The division predates this PR.', undefined]);
     expect([unchecked.evidence, unchecked.notChecked]).toEqual([{ checks: [], proof: [], emptySearch: '' }, true]);
