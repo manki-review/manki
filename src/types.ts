@@ -330,8 +330,11 @@ export interface RoundComparison {
   reviewer: string;
   /** The changed lookup, or each function compared, as `file:line`. */
   at: string[];
-  /** `failed` when the call failed or its reply did not parse twice, `cut` when the round's cap left it out. */
-  status: 'answered' | 'failed' | 'cut';
+  /**
+   * `failed` when the call failed or its reply did not parse twice, `cut` when the round's cap left it out, and
+   * `timed_out` when it was still unanswered once the grace after the finders ran out.
+   */
+  status: 'answered' | 'failed' | 'cut' | 'timed_out';
   findings?: number;
 }
 

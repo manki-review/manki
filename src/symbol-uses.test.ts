@@ -201,6 +201,8 @@ pub struct Account {
     balance: u64,
     labels: Vec<String>,
     cache: Option<Utxo>,
+    hash: [u8; 32],
+    prev_hash: [u8; 32],
 }
 `;
   const SETTLE = (body: string) => `pub fn settle(account: &mut Account, outpoint: OutPoint) {
@@ -214,7 +216,7 @@ mod tests {
 }
 `;
 
-  it('asks whether a sibling collection field of the same item type can hold what a changed line looks up, the same type first, and cuts long lines', async () => {
+  it('asks whether a sibling collection field of the same item type can hold what a changed line looks up, the same type first, never a fixed-size array, and cuts long lines', async () => {
     const { siblings } = await usesFor(
       { 'src/account.rs': ACCOUNT, 'src/settle.rs': SETTLE('') },
       {
@@ -224,6 +226,7 @@ mod tests {
     let held = account.utxos.remove(&outpoint);
     account.cache.take();
     account.spent.contains(&key_of("\`"));
+    let first = account.hash[0];
 `),
         'src/queue.ts': `export class Queue {\n  pending: Set<string>;\n  done: Set<string>;\n  count: number;\n\n  start(id: string) {\n${'    this.count++;\n'.repeat(150)}    if (this.pending.has(id)) return;\n${'    this.count--;\n'.repeat(100)}  }\n}\n`,
       },
@@ -244,7 +247,7 @@ mod tests {
     expect(first.definition.code).toContain('6:      /// Ours, but spent before the funding arrived, so never in `utxos`.\n7:      pub(crate) spent_before_funded: BTreeMap<OutPoint, Utxo>,');
     expect(first.definition.code).toContain(`10:      /// ${'x'.repeat(292)} ...\n11:      balance: u64,`);
     expect(first.hunks).toHaveLength(1);
-    expect(first.hunks[0]).toMatch(/^diff --git a\/src\/settle\.rs b\/src\/settle\.rs\n[\s\S]*\n@@ -1,4 \+1,10 @@\n[\s\S]*\n\+ {4}let held = account\.utxos\.remove\(&outpoint\);/);
+    expect(first.hunks[0]).toMatch(/^diff --git a\/src\/settle\.rs b\/src\/settle\.rs\n[\s\S]*\n@@ -1,4 \+1,11 @@\n[\s\S]*\n\+ {4}let held = account\.utxos\.remove\(&outpoint\);/);
     const queueHunk = siblings.fields[0].hunks[0].split('\n');
     expect(queueHunk[3]).toBe('@@ -0,0 +97,120 @@');
     expect(queueHunk.slice(4)).toHaveLength(120);

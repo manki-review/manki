@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 
 import { fenceText } from './github';
 import { LLMClient, SendMessageOptions } from './providers';
-import { parseFindings } from './review';
+import { CLAIMS_MISSING_RULE, parseFindings, PRE_EXISTING_RULE } from './review';
 import { CodeExcerpt, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
 import { EffortLevel, Finding, RoundComparison } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
@@ -26,7 +26,9 @@ Respond with ONLY a JSON array (no markdown fences, no explanation), one entry p
 - **warning**: a real case that fails, but not catastrophically.
 - **suggestion**: an inconsistency that works today.
 - Put each defect on the line that needs the fix, in the changed code where you can.
-- When the answer is no, or the code already handles the case, respond with [].${tools ? `
+- When the answer is no, or the code already handles the case, respond with [].
+- ${CLAIMS_MISSING_RULE}
+- ${PRE_EXISTING_RULE}${tools ? `
 - You can read the repository with read-only tools. Check the code your answer rests on before you report it.` : ''}
 - ${UNTRUSTED_CONTENT_RULE}
 
@@ -111,16 +113,18 @@ export interface ComparisonOptions {
   effort?: EffortLevel;
   /** The checked-out PR head, which a client with `repoTools` reads with read-only tools. */
   workspace?: string;
+  /** Stops the questions still running or not yet asked, which are then recorded as `timed_out`. */
+  signal?: AbortSignal;
 }
 
 /**
  * Asks one call per sibling question, at most `MAX_FIELD_QUESTIONS` field and `MAX_IMPLEMENTATION_QUESTIONS`
  * implementation questions, `MAX_PARALLEL_QUESTIONS` at a time, each on the client `clientFor` returns for its reviewer
  * name. Returns their findings, which carry that name, and a record of every question, the ones past the caps as `cut`.
- * A call that fails is recorded as `failed` and never throws.
+ * A call that fails is recorded as `failed`, and one `signal` stopped as `timed_out`. It never throws.
  */
 export async function runComparisons(
-  clientFor: (reviewer: string) => LLMClient, siblings: SiblingQuestions, { effort, workspace }: ComparisonOptions = {},
+  clientFor: (reviewer: string) => LLMClient, siblings: SiblingQuestions, { effort, workspace, signal }: ComparisonOptions = {},
 ): Promise<{ findings: Finding[]; comparisons: RoundComparison[] }> {
   const questions = questionsOf(siblings);
   const fields = questions.filter(q => q.kind === 'field');
@@ -131,11 +135,13 @@ export async function runComparisons(
   const answers = await mapWithConcurrency(asked, MAX_PARALLEL_QUESTIONS, async (q): Promise<{ record: RoundComparison; findings: Finding[] }> => {
     const client = clientFor(q.reviewer);
     const tools = !!workspace && !!client.repoTools;
+    const record = { kind: q.kind, reviewer: q.reviewer, at: q.at };
+    if (signal?.aborted) return { record: { ...record, status: 'timed_out' }, findings: [] };
     const options: SendMessageOptions = {
       ...(effort && { effort }),
+      ...(signal && { signal }),
       ...(tools && { repoTools: { root: workspace!, steps: COMPARE_STEPS }, timeoutMs: COMPARE_TIMEOUT_MS }),
     };
-    const record = { kind: q.kind, reviewer: q.reviewer, at: q.at };
     try {
       const findings = await sendWithParseRetry(
         q.message(tools),
@@ -150,6 +156,10 @@ export async function runComparisons(
       core.info(`${q.reviewer}: ${findings.length} finding(s)`);
       return { record: { ...record, status: 'answered', findings: findings.length }, findings };
     } catch (error) {
+      if (signal?.aborted) {
+        core.warning(`${q.reviewer} was still running when the round stopped waiting, so its question goes unanswered this round`);
+        return { record: { ...record, status: 'timed_out' }, findings: [] };
+      }
       core.warning(`${q.reviewer} failed, so its question goes unanswered this round: ${error}`);
       return { record: { ...record, status: 'failed' }, findings: [] };
     }

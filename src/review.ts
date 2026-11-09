@@ -103,7 +103,9 @@ function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: R
 }
 
 /** Tells a finder when to mark a finding pre-existing. */
-const PRE_EXISTING_RULE = 'When the defect sits on code this PR did not change and exists without this PR\'s change, set `"preExisting": true` and say in `preExistingReason`, in one line, why the code before this PR already had it. Never set it when this PR causes or exposes the defect, such as an unchanged caller that breaks because the PR changed what a function returns or takes. A pre-existing finding never blocks unless it is a security defect.';
+export const CLAIMS_MISSING_RULE = 'When a finding says something is missing or handled nowhere, set `"claimsMissing": true` and put the search that came back empty in `emptySearch`, such as "grep `close(` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.';
+
+export const PRE_EXISTING_RULE = 'When the defect sits on code this PR did not change and exists without this PR\'s change, set `"preExisting": true` and say in `preExistingReason`, in one line, why the code before this PR already had it. Never set it when this PR causes or exposes the defect, such as an unchanged caller that breaks because the PR changed what a function returns or takes. A pre-existing finding never blocks unless it is a security defect.';
 
 const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   READY: 'APPROVE',
@@ -131,6 +133,8 @@ const FINDER_STEPS = 30;
 const RISKY_FINDER_STEPS = 40;
 // A safety net for a finder with tools. The step budget is what normally ends its call.
 export const FINDER_TOOLS_TIMEOUT_MS = 900_000;
+/** How long the round still waits for the sibling comparisons once the finders are done. */
+const COMPARISON_GRACE_MS = 60_000;
 
 /** A finder reply that is not the JSON array of findings, which a retry with `parseRetryNote` can correct. */
 class FinderReplyError extends Error {}
@@ -685,7 +689,10 @@ export async function runReview(
   // Asked alongside the finders on the reviewer model, at the effort of its finder. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonModel = resolveReviewerModel(config, undefined);
   const comparisonEffort = (team.finders.find(f => f.model === comparisonModel) ?? team.finders[0]).effort;
-  const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, { effort: comparisonEffort, workspace });
+  const comparisonDeadline = new AbortController();
+  const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
+    effort: comparisonEffort, workspace, signal: comparisonDeadline.signal,
+  });
   const references = await listReferenceUses(related && uses.referenceNames ? await fetchReferenceRepos(related) : [], uses.referenceNames ?? []);
   const usesOutsideDiff = uses.section + references.section;
   const usesRecord = uses.record || references.record ? { ...uses.record, ...references.record } : undefined;
@@ -1042,7 +1049,10 @@ export async function runReview(
     }
   }
 
+  // A slow comparison must not hold the round long after the finders are done, so it gets a short grace and is then cut.
+  const comparisonGrace = setTimeout(() => comparisonDeadline.abort(), COMPARISON_GRACE_MS);
   const { findings: comparisonFindings, comparisons } = await comparisonsPromise;
+  clearTimeout(comparisonGrace);
   allFindings.push(...comparisonFindings);
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
   // Every configured related repo is recorded: fetched, failed, unused, or skipped when no finder could read it.
@@ -1670,7 +1680,7 @@ Example of one finding:
 
 - In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each. Start each line with its \`file:line\` and quote the key code it refers to in backticks, such as "src/sync.ts:42 passes \`fh_bound\` to \`truncate_above\`". When the quoted code holds a backtick itself, wrap it in double backticks with a space inside, as in \`\` a \`b\` \`\`.
 - A \`blocker\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most.
-- When a finding says something is missing or handled nowhere, set \`"claimsMissing": true\` and put the search that came back empty in \`emptySearch\`, such as "grep \`close(\` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.
+- ${CLAIMS_MISSING_RULE}
 - ${PRE_EXISTING_RULE}${tools ? `
 - When Manki tells you to wrap up, report what you have. Set \`"notChecked": true\` on a finding you could not finish checking.
 - Report each suspicion you were still checking as an open lead: an entry with \`"lead": true\`, the \`severity\` it would have, the suspicion as \`title\` and \`description\`, its \`file\` and \`line\`, what you \`checked\` so far and what is \`left\`. The judge settles a lead you would grade \`blocker\` or \`warning\`. Other leads are listed as not finished, never posted.` : ''}
