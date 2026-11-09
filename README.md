@@ -61,6 +61,19 @@ See [How reviews work](docs/how-reviews-work.md#review-pipeline) for the full wa
 
 You can also use `@manki` as the command prefix. A reply to a review comment gets one short answer that starts with Fixed, Withdrawn, Agreed, Kept or Unverified. With the Claude or Codex CLI, Manki checks the reply against the PR head with the same read-only tools its reviewers use. It answers Withdrawn only when the code proves the finding wrong, Agreed when you defer the finding to later work, Kept only with new lines that show the problem still happens, and Unverified when the reply rests on facts it can't check from the code, so a maintainer should confirm them and resolve the thread. For Fixed, Withdrawn and Agreed, Manki resolves the thread when the PR author or a collaborator wrote the reply. A blocker or a security finding is resolved only for a collaborator other than the PR author. When a collaborator's reply gets a finding withdrawn and memory is on, Manki saves a learning for that file and says how to remove it with `/manki forget`. A security finding never leaves a learning. Once Manki has answered a thread, a later review that finds the same problem again never opens a new thread for it. It replies in that thread only when the code there got worse, and reopens the thread when it was closed. The next review bodies list the findings Manki agreed to leave for later under a collapsed "follow-ups" section. Tip: edit a comment to add `/manki` if you forgot to include it.
 
+## Review locally
+
+`manki review` runs the same review on your branch before you push: the planner, the finders, dedup, the judge and the verdict reader. It reviews the change from the merge base with the base branch to `HEAD`, as the pull request would show it, reads `.manki.yml` and the instruction files from the base, and writes nothing to GitHub. Memory, earlier rounds and CI results stay out, since they live on GitHub.
+
+```sh
+export CLAUDE_CODE_OAUTH_TOKEN=...      # or any key the Action takes, as an environment variable
+npx github:manki-review/manki#v7 review               # current branch against the remote's default branch
+npx github:manki-review/manki#v7 review main..topic   # a range
+npx github:manki-review/manki#v7 review --json --record round.json
+```
+
+The findings print as Markdown, or as JSON with `--json`. `--record` writes the round record a pull request round would post. The exit code is 0 when nothing blocks, 1 when something does, and 2 when the review is incomplete or failed. Run `manki review --help` for every option.
+
 ## Configure
 
 Create `.manki.yml` in your repo root:

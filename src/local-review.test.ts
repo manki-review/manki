@@ -1,0 +1,119 @@
+import { execFileSync } from 'child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { dirname, join } from 'path';
+
+import { reviewLocal } from './local-review';
+import { runReview } from './review';
+import type { Finding, ReviewResult, RoundOutcome } from './types';
+
+jest.mock('@actions/core');
+jest.mock('./providers', () => ({
+  ...jest.requireActual('./providers'),
+  createLLMClient: jest.fn(() => ({ repoTools: true, sendMessage: jest.fn() })),
+}));
+jest.mock('./review', () => ({
+  ...jest.requireActual('./review'),
+  runReview: jest.fn(),
+}));
+
+const finding: Finding = {
+  severity: 'blocker', title: 'Off by one', file: 'src/a.ts', line: 2, description: 'Reads past the end.', reviewers: ['reviewer'],
+};
+
+function git(dir: string, ...args: string[]): string {
+  const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+  return execFileSync('git', args, { cwd: dir, env, encoding: 'utf-8' }).trim();
+}
+
+function commit(dir: string, message: string, files: Record<string, string>): string {
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), content);
+  }
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '-q', '-m', message);
+  return git(dir, 'rev-parse', 'HEAD');
+}
+
+describe('reviewLocal', () => {
+  let repo: string;
+  let base: string;
+  let head: string;
+  let later: string;
+  const inputs = { anthropicOauthToken: 'token', anthropicApiKey: '', openaiOauthToken: '', openaiApiKey: '', geminiOauthToken: '', geminiApiKey: '' };
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'manki-local-'));
+    git(repo, 'init', '-q', '-b', 'main');
+    base = commit(repo, 'base', {
+      '.manki.yml': 'exclude_paths:\n  - "docs/**"\n',
+      'AGENTS.md': 'Use tabs.\n',
+      'src/a.ts': 'const a = 1;\nconst b = 2;\n',
+    });
+    git(repo, 'checkout', '-q', '-b', 'feature');
+    head = commit(repo, 'Change a', { 'src/a.ts': 'const a = 1;\nconst b = 3;\n', 'docs/x.md': 'notes\n' });
+    later = commit(repo, 'Fix a later', { 'src/a.ts': 'const a = 1;\nconst b = 4;\n' });
+    git(repo, 'checkout', '-q', 'main');
+    commit(repo, 'Base moves on', { 'README.md': 'readme\n' });
+    jest.mocked(runReview).mockReset();
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('reviews the change from the merge base on a workspace holding only the head, and records the round', async () => {
+    let workspaceSeen: { content: string; log: string } | undefined;
+    jest.mocked(runReview).mockImplementation(async (_clients, options) => {
+      workspaceSeen = {
+        content: readFileSync(join(options.workspace!, 'src/a.ts'), 'utf-8'),
+        log: git(options.workspace!, 'log', '--format=%H'),
+      };
+      return { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as RoundOutcome, summary: 'One blocker', findings: [{ ...finding }], highlights: [], reviewComplete: true, agentNames: ['reviewer'] } as ReviewResult & { outcome: RoundOutcome };
+    });
+
+    const review = await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', providerInputs: inputs });
+
+    const options = jest.mocked(runReview).mock.calls[0][1];
+    expect(options.rawDiff).toContain('+const b = 3;');
+    expect(options.rawDiff).not.toContain('docs/x.md');
+    expect(options.excludedPaths).toEqual(['docs/x.md']);
+    expect(options.config.exclude_paths).toContain('docs/**');
+    expect(options.repoContext).toContain('Use tabs.');
+    expect(options.prContext).toEqual({ title: 'Change a', body: '', baseBranch: 'main' });
+    expect(options.headSha).toBe(head);
+    expect(workspaceSeen?.content).toBe('const a = 1;\nconst b = 3;\n');
+    expect(workspaceSeen?.log).not.toContain(later);
+    expect(existsSync(options.workspace!)).toBe(false);
+    expect(review.base).toBe(base);
+    expect(review.head).toBe(head);
+    expect(review.result.findings[0].codeContext).toContain('const b = 3;');
+    expect(review.context.meta).toMatchObject({ prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, outcome: 'ADDRESS_FIRST' });
+  });
+
+  it('reviews a patch on the checkout with the given config, title and body', async () => {
+    jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    const patch = git(repo, 'diff', 'main', 'feature');
+
+    const review = await reviewLocal({
+      repoRoot: repo, base: 'main', head: 'HEAD', patch, config: { ...jest.requireActual('./config').DEFAULT_CONFIG, exclude_paths: [] },
+      title: 'My change', body: 'Why it changes', providerInputs: inputs,
+    });
+
+    const options = jest.mocked(runReview).mock.calls[0][1];
+    expect(options.workspace).toBe(repo);
+    expect(options.rawDiff).toContain('docs/x.md');
+    expect(options.prContext).toEqual({ title: 'My change', body: 'Why it changes', baseBranch: 'main' });
+    expect(existsSync(repo)).toBe(true);
+    expect(review.base).toBe(review.head);
+  });
+
+  it('refuses a change with no reviewable files before any model call', async () => {
+    git(repo, 'checkout', '-q', '-b', 'docs-only', base);
+    commit(repo, 'Docs', { 'docs/y.md': 'more\n' });
+
+    await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'docs-only', providerInputs: inputs })).rejects.toThrow('no reviewable files');
+    expect(runReview).not.toHaveBeenCalled();
+  });
+});

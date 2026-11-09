@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import * as path from 'path';
@@ -6,6 +7,7 @@ import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AuthResult, createAuthenticatedOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
 import { changedKeys, loadConfig, resolveModel } from './config';
+import { REVIEW_COMMAND, runReviewCommand } from './cli';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
@@ -2031,6 +2033,7 @@ async function main(): Promise<void> {
 if (process.env.NODE_ENV !== 'test') {
   if (process.argv[2] === MCP_SERVER_COMMAND) runMcpServer(process.argv.slice(3));
   else if (process.argv[2] === STEP_HOOK_COMMAND) runStepHook(process.argv[3], process.argv[4]);
+  else if (process.argv[2] === REVIEW_COMMAND) runReviewCommand(process.argv.slice(3)).then((code) => { process.exitCode = code; });
   else main();
 }
 
