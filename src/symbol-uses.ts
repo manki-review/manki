@@ -125,6 +125,8 @@ interface FamilyRules {
   fieldName?: (node: SgNode) => SgNode | undefined;
   /** The type a field holds when no type is written, such as `set` for a Python field assigned `set()`. */
   valueType?: (node: SgNode) => string | undefined;
+  /** The names a declaration node declares when it can declare several, such as Go's `a, b int`. */
+  names?: (node: SgNode) => SgNode[];
   /** Whether a node is a module of tests, whose code is never compared. */
   testModule?: (node: SgNode) => boolean;
 }
@@ -192,14 +194,19 @@ const RULES: Record<Family, FamilyRules> = {
     access: { kind: 'selector_expression', field: 'field' },
     call: 'call_expression',
     leading: ['comment'],
-    fieldLine: name => new RegExp(`^\\s*${escapeRegExp(name)}\\s+[^\\s=:,(]`),
+    fieldLine: name => new RegExp(`^\\s*(?:\\w+, *)*${escapeRegExp(name)}(?:, *\\w+)*\\s+[^\\s=:,(]`),
     object: 'operand',
     index: 'index_expression',
     owners: {},
-    receiver: node => node.field('receiver')?.children().find(c => c.kind() === 'parameter_declaration')?.field('type')?.text()
-      .replace(/^\*/, '').replace(/\[[\s\S]*\]$/, ''),
+    receiver: node => typeName(node.field('receiver')?.children().find(c => c.kind() === 'parameter_declaration')?.field('type')?.text() ?? ''),
+    names: node => node.kind() === 'field_declaration' ? node.children().filter(c => c.kind() === 'field_identifier') : [],
   },
 };
+
+/** Returns the name a type is written with, without a pointer star or generic arguments, such as `Queue` for `*Queue[T]` or `Cache<K, V>`. */
+function typeName(text: string): string {
+  return text.replace(/^\*/, '').split(/[<[]/)[0].trim();
+}
 
 /** Returns the name of the field a Python assignment declares: a name assigned in a class body, or `self.name` in `__init__`. */
 function pythonFieldName(node: SgNode): SgNode | undefined {
@@ -505,7 +512,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     .filter(([name]) => !isGeneric(name))
     .sort(([a, x], [b, y]) => y.code - x.code || y.count - x.count || a.localeCompare(b))
     .slice(0, MAX_REFERENCED_FIELDS);
-  const lookupFields = [...new Set(lookups.map(l => l.field))].filter(name => !isGeneric(name)).slice(0, MAX_LOOKUP_FIELDS);
+  const lookupFields = [...new Set(lookups.map(l => l.field))].slice(0, MAX_LOOKUP_FIELDS);
   const names = [...new Set([...searched.map(s => s.name), ...referenced.map(([name]) => name)])];
   const referenceNames = [...new Set([
     // A name a comment quotes, often from the reference itself, points most directly at its counterpart there.
@@ -720,27 +727,33 @@ class ParsedFile {
       .flatMap(n => n.field('body')?.children().filter(c => c.kind() === 'property_identifier') ?? []);
     const fields = new Set<string>();
     // A Python field is assigned on any number of lines, and the first one declares it.
-    this.declarations = [...nodes, ...members].flatMap(node => this.declaration(node) ?? [])
+    this.declarations = [...nodes, ...members].flatMap(node => {
+      const names = this.rules.names?.(node) ?? [];
+      return names.length > 1 ? names.flatMap(name => this.declaration(node, name) ?? []) : this.declaration(node) ?? [];
+    })
       .filter(d => d.kind !== 'field' || !this.rules.fieldName || (!fields.has(`${d.container}:${d.name}`) && !!fields.add(`${d.container}:${d.name}`)));
   }
 
-  private declaration(node: SgNode): Declaration | undefined {
+  /** `named` picks one of the names of a node that declares several. */
+  private declaration(node: SgNode, named?: SgNode): Declaration | undefined {
     const kind = node.kind() === 'property_identifier' ? 'variant' : this.rules.declarations[node.kind()];
-    const name = (node.kind() === 'property_identifier' ? node : this.rules.fieldName?.(node) ?? node.field('name'))?.text();
+    const name = (named ?? (node.kind() === 'property_identifier' ? node : this.rules.fieldName?.(node) ?? node.field('name')))?.text();
     if (!kind || !name || !IDENTIFIER.test(name)) return undefined;
     if (node.kind() === 'variable_declarator' && !isTopLevelConstant(node)) return undefined;
     const body = node.field('body') ?? node.field('value');
     const end = node.range().end.line + 1;
     const container = node.ancestors().find(a => this.rules.declarations[a.kind()] === 'type' || a.kind() === 'enum_variant');
     return {
-      node, name, kind, start: this.leadingStart(node), headerEnd: body ? lineOf(body) : end, end, key: nodeKey(node),
+      node, name, kind, start: this.leadingStart(node), headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),
       shape: this.rules.shapes.includes(String(node.kind())), ...(container && { container: nodeKey(container) }),
     };
   }
 
   private leadingStart(node: SgNode): number {
     let anchor = node;
-    for (let parent = node.parent(); parent && WRAPPERS.includes(String(parent.kind())); parent = parent.parent()) anchor = parent;
+    // A grouped declaration such as Go's `const ( ... )` wraps several, so the comments above it belong to none of them.
+    const wraps = (parent: SgNode) => WRAPPERS.includes(String(parent.kind())) && parent.children().filter(c => c.kind() === anchor.kind()).length === 1;
+    for (let parent = node.parent(); parent && wraps(parent); parent = parent.parent()) anchor = parent;
     let start = lineOf(anchor);
     for (let prev = anchor.prev(); prev && this.rules.leading.includes(String(prev.kind())) && prev.range().end.line + 1 >= start - 1; prev = prev.prev()) {
       start = lineOf(prev);
@@ -837,9 +850,9 @@ class ParsedFile {
     const scope = node.ancestors().find(a => this.rules.owners[a.kind()] || this.rules.declarations[a.kind()] === 'function');
     const fields = scope && this.rules.owners[scope.kind()];
     if (!scope || !fields) return {};
-    const owner = scope.field(fields.type)?.text().replace(/<[\s\S]*>/, '').trim();
-    const trait = fields.trait ? scope.field(fields.trait)?.text().replace(/<[\s\S]*>/, '').trim() : undefined;
-    return { owner, trait };
+    const owner = typeName(scope.field(fields.type)?.text() ?? '');
+    const traitText = fields.trait && scope.field(fields.trait)?.text();
+    return { owner, trait: traitText ? typeName(traitText) : undefined };
   }
 
   /** Returns the lines of `decl` with their numbers, marking the lines in `added`, each cut after `MAX_EXCERPT_LINE_CHARS` and all after `MAX_EXCERPT_LINES`. */
