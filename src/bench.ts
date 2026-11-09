@@ -659,7 +659,8 @@ Options:
   --out <file>                   Report path (default bench/results/<time>.json).
   --help                         Print this message.
 
-Exits 0 when every variant completed at least one review, and 2 when one did not or the bench could not start.`;
+Exits 0 when every variant completed at least one review of each set, and 2 when one did not or the bench could
+not start.`;
 
 export function parseBenchArgs(argv: string[]): BenchArgs {
   const args: BenchArgs = {
@@ -751,7 +752,7 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     writeJson(outPath, report);
     out(formatBenchSummary(report));
     out(`Report: ${outPath}\n`);
-    // A variant with no completed review leaves the comparison without one of its columns.
-    return report.variants.some(v => v.summary.incompleteRuns === v.summary.runs) ? 2 : 0;
+    // A set with no completed review leaves the comparison without one of its columns.
+    return report.variants.some(v => Object.values(v.sets).some(s => s.incompleteRuns === s.runs)) ? 2 : 0;
   });
 }
