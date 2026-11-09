@@ -24,7 +24,14 @@ concurrency:
 
 jobs:
   verify:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # `workflow_run` matches by name only, so a fork PR could add its own `Release`.
+    if: >-
+      github.event_name == 'workflow_dispatch' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.path == '.github/workflows/release.yml'
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
