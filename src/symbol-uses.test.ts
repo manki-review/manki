@@ -128,6 +128,14 @@ describe('listUsesOutsideDiff', () => {
     expect(section).toContain('### `ReviewConfig` (type)');
     expect(section).toContain('### `noise_level` (field of the changed `ReviewConfig`)\n\n```\ndeclared at src/config.ts:3\nsrc/review.test.ts:1:');
     expect(section).toContain('src/config.ts:1: interface ReviewConfig { slice_lines, noise_level }');
+
+    // A field name repeated in two inline object types is a field of each.
+    const retry = (delay: string) => `export interface RetryConfig {\n  reads: { retry_delay: number };\n  writes: { retry_delay: ${delay} };\n}\n`;
+    const nested = await usesFor(
+      { 'src/retry.ts': retry('number'), 'src/client.ts': 'export const wait = (c: RetryConfig) => c.writes.retry_delay;\n' },
+      { 'src/retry.ts': retry('number | null') },
+    );
+    expect(nested.section).toContain('### `retry_delay` (field of `RetryConfig`)\n\n```\ndeclared at src/retry.ts:3\nsrc/client.ts:1:');
   });
 
   it('finds keyword declarations and config keys in files without a grammar, and skips excluded paths', async () => {
@@ -349,22 +357,28 @@ ${body}            return null;
 }
 `;
     const { siblings } = await usesFor(
-      { 'src/SessionStore.java': store(''), 'src/TokenCache.cs': cache(''), 'scripts/run.sh': 'echo start\n' },
       {
-        'src/SessionStore.java': store('        if (!this.live.containsKey(id)) {\n            return false;\n        }\n        local.remove(id);\n'),
+        'src/SessionStore.java': store(''), 'src/TokenCache.cs': cache(''), 'scripts/run.sh': 'echo start\n',
+        'src/feed.ts': 'export interface Feed {\n  live: Set<string>;\n  muted: Set<string>;\n}\n',
+      },
+      {
+        'src/feed.ts': 'export interface Feed {\n  live: Set<string>;\n  muted: Set<string>;\n  // Both hold user ids.\n}\n',
+        // A line too long to scan is skipped, so its spaces cannot make the lookup pattern backtrack.
+        'src/SessionStore.java': store(`        if (!this.live.containsKey(id)) {\n            return false;\n        }\n        local.remove(id);\n        live.get(${' '.repeat(20_000)};\n`),
         'src/TokenCache.cs': cache('            if (_fresh.TryGetValue(key, out var token)) return token;\n            _ = _fresh[key];\n'),
         'scripts/run.sh': 'echo start\necho "${args[0]}"\n',
       },
     );
 
     // A local variable inside a method is no field, and a map of other types is no sibling without a syntax tree to rank it.
+    // Nor is a field of the same name on a parsed TypeScript type.
     expect(siblings.fields.map(q => `${q.struct}.${q.field} -> ${q.sibling} (${q.item})`)).toEqual([
       'SessionStore.live -> closed (id)',
       'TokenCache._fresh -> _stale (key)',
     ]);
     expect(siblings.fields[0].lookups).toEqual([{ file: 'src/SessionStore.java', line: 11, text: 'if (!this.live.containsKey(id)) {' }]);
     expect(siblings.fields[0].definition).toMatchObject({ file: 'src/SessionStore.java', line: 3 });
-    expect(siblings.fields[0].definition.code).toMatch(/^3: {2}public class SessionStore \{\n4: {6}private final Map<String, Session> live[\s\S]*\n17: {2}\}$/);
+    expect(siblings.fields[0].definition.code).toMatch(/^3: {2}public class SessionStore \{\n4: {6}private final Map<String, Session> live[\s\S]*\n18: {2}\}$/);
     expect(siblings.fields[1].lookups.map(l => l.line)).toEqual([11, 12]);
     expect(siblings.fields[1].definition).toMatchObject({ file: 'src/TokenCache.cs', line: 3 });
   });

@@ -50,6 +50,8 @@ const MAX_EXCERPT_LINES = 120;
 const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
 const MAX_ITEM_CHARS = 60;
+/** A line longer than this is skipped by the scans that read lines without a syntax tree, so a crafted line cannot slow their patterns. */
+const MAX_SCANNED_LINE_CHARS = 500;
 
 // Names so common across codebases that their uses say nothing about the change.
 const GENERIC_NAMES = new Set([
@@ -230,7 +232,9 @@ const CLASS_KEYWORDS = new Set(['class', 'struct', 'record', 'object']);
 // A field declaration line, `Type name;`, `Type name = value;` or `name: Type`, for languages without a grammar here.
 const FIELD_DECLARATION_LINE = /^(\s*)(?:(?:public|private|protected|internal|static|final|readonly|const|volatile|transient|mutable|val|var|lateinit)\s+)*(?:([A-Za-z_][\w.:<>[\], ?*&]*?)\s+([A-Za-z_]\w*)|([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w.:<>[\], ?*&]*?))\s*(?:[=;]|$)/;
 // A lookup on a line without a grammar here, such as `jobs.get(id)`, `this.jobs.containsKey(id)` or `jobs_[id]`.
-const LINE_LOOKUP = /(?<![\w$])([A-Za-z_]\w*)\s*(?:\.\s*([A-Za-z_]\w*)\s*\(\s*([^()`,;]+?)\s*[,)]|\[\s*([^[\]`]+?)\s*\])/g;
+const LINE_LOOKUP = /(?<![\w$])([A-Za-z_]\w*)[ \t]*(?:\.[ \t]*([A-Za-z_]\w*)[ \t]*\(([^()`,;]+)[,)]|\[([^[\]`]+)\])/g;
+// The files whose fields the line fallback can read: languages that declare a field with its type.
+const TYPED_FIELD_FILE = /\.(?:java|kt|kts|scala|cs|c|cc|cpp|cxx|h|hh|hpp|hxx|swift|dart)$/i;
 const CONFIG_FILE = /\.(?:ya?ml|toml|json)$/i;
 // Only keys with an underscore, such as `slice_lines`, are distinct enough to search for.
 const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*_[\w-]*)"?\s*[:=]/;
@@ -503,7 +507,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
       if (!TEST_PATH.test(file.path)) lookups.push(...parsed.collectionLookups(lines).map(l => ({ ...l, file: file.path })));
     } else {
       for (const symbol of keywordDeclarations(file)) addSymbol(symbols, symbol);
-      if (!TEST_PATH.test(file.path) && !CONFIG_FILE.test(file.path) && !DOC_FILE.test(file.path)) lineFound.push(...lineLookups(file));
+      if (!TEST_PATH.test(file.path) && TYPED_FIELD_FILE.test(file.path)) lineFound.push(...lineLookups(file));
     }
   }
   lookups.push(...lineFound);
@@ -519,7 +523,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     .filter(([name]) => !isGeneric(name))
     .sort(([a, x], [b, y]) => y.code - x.code || y.count - x.count || a.localeCompare(b))
     .slice(0, MAX_REFERENCED_FIELDS);
-  const lookupFields = [...new Set(lookups.map(l => l.field))].slice(0, MAX_LOOKUP_FIELDS);
+  const lookupFields = [...new Set(lookups.map(l => l.field))].filter(name => !isGeneric(name)).slice(0, MAX_LOOKUP_FIELDS);
   const names = [...new Set([...searched.map(s => s.name), ...referenced.map(([name]) => name)])];
   const referenceNames = [...new Set([
     // A name a comment quotes, often from the reference itself, points most directly at its counterpart there.
@@ -690,8 +694,9 @@ function keywordDeclarations(file: DiffFile): ChangedSymbol[] {
 
 /** Returns each lookup of an item in a collection on an added line of `file`, for a file without a grammar here. */
 function lineLookups(file: DiffFile): Array<Lookup & { file: string }> {
-  return [...addedLines(file)].flatMap(([line, text]) => [...text.replace(COMMENT, '').matchAll(LINE_LOOKUP)].flatMap(([, field, method, argument, key]) => {
-    const item = (argument ?? key).replace(/^&\s*/, '').replace(/\s+/g, ' ');
+  const lines = [...addedLines(file)].filter(([, text]) => text.length <= MAX_SCANNED_LINE_CHARS);
+  return lines.flatMap(([line, text]) => [...text.replace(COMMENT, '').matchAll(LINE_LOOKUP)].flatMap(([, field, method, argument, key]) => {
+    const item = (argument ?? key).trim().replace(/^&\s*/, '').replace(/\s+/g, ' ');
     if ((method !== undefined && !LOOKUP_METHODS.has(method)) || !item || item.length > MAX_ITEM_CHARS) return [];
     return [{ field, item, line, text: text.trim().slice(0, MAX_LINE_CHARS), file: file.path }];
   }));
@@ -759,7 +764,7 @@ class ParsedFile {
     const fields = new Set<string>();
     // A Python field is assigned on any number of lines, and the first one declares it.
     this.declarations = [...nodes, ...members].flatMap(node => this.declaration(node) ?? [])
-      .filter(d => d.kind !== 'field' || (!fields.has(`${d.container}:${d.name}`) && !!fields.add(`${d.container}:${d.name}`)));
+      .filter(d => d.kind !== 'field' || !this.rules.fieldName || (!fields.has(`${d.container}:${d.name}`) && !!fields.add(`${d.container}:${d.name}`)));
   }
 
   private declaration(node: SgNode): Declaration | undefined {
@@ -1195,10 +1200,11 @@ function siblingFields(
 ): SiblingFieldQuestion[] {
   const ranked = fields.flatMap((field, order) => {
     const uses = lookups.filter(l => l.field === field);
-    const struct = structsDeclaringField(parser, field, hits, new Set(uses.map(u => u.file)), packages)[0];
+    // A lookup in a file without a grammar never takes the type of a namesake field from a parsed language.
+    const struct = languageOf(uses[0].file) ? structsDeclaringField(parser, field, hits, new Set(uses.map(u => u.file)), packages)[0] : undefined;
     const parsed = struct && parser.parse(struct.file);
-    const decl = parsed?.declarations.find(d => d.key === struct.key);
-    const found = parsed && decl
+    const decl = struct && parsed?.declarations.find(d => d.key === struct.key);
+    const found = struct && parsed && decl
       ? { name: decl.name, declared: parsed.structFields(struct.key), definition: parsed.excerpt(decl, struct.file, added.get(struct.file) ?? new Set()) }
       : classOnLines(parser, field, uses, hits, added);
     const own = found?.declared.find(f => f.name === field);
@@ -1225,7 +1231,7 @@ const indentOf = (line: string): number => /^\s*/.exec(line)![0].length;
 
 /** Returns the field a line declares with its indent and the text of its type, for a language without a grammar here. */
 function fieldOnLine(line: string): { name: string; type: string; indent: number } | undefined {
-  const match = FIELD_DECLARATION_LINE.exec(line);
+  const match = line.length <= MAX_SCANNED_LINE_CHARS ? FIELD_DECLARATION_LINE.exec(line) : null;
   const name = match && (match[3] ?? match[4]);
   return match && name ? { name, type: (match[2] ?? match[5]).trim(), indent: match[1].length } : undefined;
 }
