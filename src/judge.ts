@@ -274,7 +274,7 @@ export interface JudgeInput {
    * the head, and the client tries to refute each blocker, open lead, finding lowered for want of proof and finding
    * with a `gradeIfConfirmed`.
    */
-  refutation?: { client: LLMClient; workspace: string };
+  refutation?: { client: LLMClient; workspace: string; pair?: LLMClient };
   /** The section `listUsesOutsideDiff` builds, shown to the judge and the refuter. */
   usesOutsideDiff?: string;
 }
@@ -1274,7 +1274,7 @@ export async function runJudgeAgent(
   const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds), staysPreExisting), staysPreExisting);
   const suppression = applyCrossRoundSuppression(mapped, priorRounds, crossRoundOptions);
   const { findings: suppressed, count: inPrCount } = applyInPrSuppression(suppression.findings, inPrSuppressions);
-  const checked = refutation ? await refuteBlockers(refutation.client, suppressed, { workspace: refutation.workspace, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input }) : suppressed;
+  const checked = refutation ? await refuteBlockers(refutation.client, suppressed, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input }) : suppressed;
 
   return {
     findings: checked,

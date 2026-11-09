@@ -98,7 +98,7 @@ const IGNORED_KEYS = new Set(['review_level', 'review_thresholds', 'stats']);
 
 const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
 
-export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', 'reviewer_pair', 'judge', 'dedup', 'fallback']);
+export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', 'reviewer_pair', 'judge', 'refuter_pair', 'dedup', 'fallback']);
 export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'outside_input', 'examples']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus', 'role']);
 const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'max', 'auto']);
@@ -215,6 +215,9 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
       }
       if ('judge' in models && typeof models.judge !== 'string') {
         errors.push('`models.judge` must be a string');
+      }
+      if ('refuter_pair' in models && (typeof models.refuter_pair !== 'string' || models.refuter_pair === '')) {
+        errors.push('`models.refuter_pair` must be a non-empty string');
       }
       if ('dedup' in models && typeof models.dedup !== 'string') {
         errors.push('`models.dedup` must be a string');

@@ -509,8 +509,8 @@ models:
       expect(core.error).toHaveBeenCalledWith('`models.reviewer` must be a string');
     });
 
-    it.each(['reviewer_pair', 'fallback'])('accepts `models.%s` and rejects a non-string or empty one', (key) => {
-      expect(loadConfigFromContent(`models:\n  ${key}: gpt-5.5\n`).models?.[key as 'reviewer_pair' | 'fallback']).toBe('gpt-5.5');
+    it.each(['reviewer_pair', 'refuter_pair', 'fallback'])('accepts `models.%s` and rejects a non-string or empty one', (key) => {
+      expect(loadConfigFromContent(`models:\n  ${key}: gpt-5.5\n`).models?.[key as 'reviewer_pair' | 'refuter_pair' | 'fallback']).toBe('gpt-5.5');
       for (const value of ['123', '""']) {
         expect(() => loadConfigFromContent(`models:\n  ${key}: ${value}\n`)).toThrow('Invalid config');
         expect(core.error).toHaveBeenCalledWith(`\`models.${key}\` must be a non-empty string`);

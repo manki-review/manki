@@ -21,6 +21,7 @@ import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
+import { disproof } from './refute';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
@@ -1434,7 +1435,10 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
 
   // Kept findings are copies of the judged ones, so the count goes by size, less the listed leads among the judged.
   const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size - allJudgedForDashboard.filter(f => listed.has(f)).length;
-  const disproved = allJudgedForDashboard.flatMap(({ title, file, line, severity, refutation }) => refutation?.outcome === 'disproved' && severity === 'ignore' ? [{ title, file, line, reason: refutation.reason }] : []);
+  const disproved = allJudgedForDashboard.flatMap(f => {
+    const by = f.severity === 'ignore' && disproof(f);
+    return by ? [{ title: f.title, file: f.file, line: f.line, reason: by.reason }] : [];
+  });
   const completeDashboard: DashboardData = {
     ...dashboard,
     phase: 'complete',

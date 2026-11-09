@@ -16,7 +16,7 @@ import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
-import { refuteBlockers } from './refute';
+import { disproof, refuteBlockers } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
@@ -319,6 +319,8 @@ export interface ReviewClients {
   /** Clients keyed by finder model. A finder whose model is missing runs on `reviewer`. */
   reviewerByModel?: ReadonlyMap<string, LLMClient>;
   judge: LLMClient;
+  /** The second refuter, on `models.refuter_pair`. */
+  refuterPair?: LLMClient;
   planner?: LLMClient;
   dedup?: LLMClient;
   /** Where each stage moves when a safety filter refuses it. The verdict reader uses `judge`'s. */
@@ -1164,7 +1166,9 @@ export async function runReview(
   const refutation = workspace && clients.judge.repoTools ? {
     client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge?.client.repoTools ? clients.fallbacks.judge : undefined }, 'judge', 'refute'),
     workspace,
+    ...(clients.refuterPair?.repoTools && { pair: withFallback({ client: clients.refuterPair }, 'judge', 'refute_pair') }),
   } : undefined;
+  if (clients.refuterPair && !refutation?.pair) core.warning('No second refuter runs, since `models.refuter_pair` needs the PR head checked out and repository tools on both its model and the judge\'s');
   try {
     core.info(`Running judge on ${findingsForJudge.length} findings...`);
     const judgeInput: JudgeInput = {
@@ -1335,7 +1339,7 @@ export async function runReview(
       // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found. It drops a
       // claimed build failure that was posted as a warning.
       const refuted = (refutation
-        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff, usesOutsideDiff, outsideInput: config.review?.outside_input })
+        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff, usesOutsideDiff, outsideInput: config.review?.outside_input })
         : readerBlockers).filter(f => f.severity !== 'ignore');
       const folded = foldIntoReaderBlockers(finalFindings, refuted);
       const readerFindings = folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
@@ -1911,9 +1915,9 @@ function recordLeads(leads: Finding[], listed: Finding[], judged: Finding[], pos
     // A disproof never lowers a blocker, so a disproved blocker lead keeps its grade and its `lead` flag.
     const outcome: LeadOutcome = listed.includes(l) ? 'not_checked'
       : !verdict ? 'dropped'
-      : verdict.refutation?.outcome === 'disproved' ? 'disproved'
+      : disproof(verdict) ? 'disproved'
       : verdict.severity === 'ignore' ? 'dropped'
-      : verdict.lead ? (verdict.refutation ? 'unsettled' : 'not_checked') : 'confirmed';
+      : verdict.lead ? (verdict.refutation ?? verdict.pairRefutation ? 'unsettled' : 'not_checked') : 'confirmed';
     return {
       title: l.title, file: l.file, line: l.line, severity: l.severity, reviewers: l.reviewers, description: l.description, lead: l.lead!,
       outcome, since: l.leadSince ?? round, ...(posted.some(p => sameLead(p, l)) && { posted: true as const }),

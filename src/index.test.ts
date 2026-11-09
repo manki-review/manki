@@ -3728,7 +3728,11 @@ describe('runFullReview orchestration', () => {
         usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] },
         memoryLoaded: { learnings: 4, suppressions: 2 },
         memorySuppressed: [hidden],
-        allJudgedFindings: [{ ...hidden, severity: 'ignore', gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }] }],
+        allJudgedFindings: [{
+          ...hidden, severity: 'ignore', gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }],
+          refutation: { outcome: 'unsettled', reason: 'Could not tell.', files: ['src/app.ts'], codeDigest: 'a' },
+          pairRefutation: { outcome: 'disproved', reason: 'r', proof: ['src/app.ts:9'], files: ['src/app.ts'], codeDigest: 'a' },
+        }],
         slicing: { files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] },
         changedSinceLastRoundCount: 2,
         fixClaimedThreadIds: ['T1'],
@@ -3753,7 +3757,12 @@ describe('runFullReview orchestration', () => {
         suppressed: [{ title: 'Rename the helper', file: 'src/app.ts', line: 9, severity: 'suggestion', suppressionId: 'sup-1' }],
       });
       expect(rc.tokenService).toEqual(tokenService);
-      expect(rc.judge.dropped).toEqual([expect.objectContaining({ gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }] })]);
+      expect(rc.judge.dropped).toEqual([expect.objectContaining({
+        gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }],
+        refutation: expect.objectContaining({ outcome: 'unsettled' }), pairRefutation: expect.objectContaining({ outcome: 'disproved' }),
+      })]);
+      // The second refuter's disproof drops it while the first abstains, so its reason is the one listed.
+      expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4].disproved).toEqual([{ title: 'Rename the helper', file: 'src/app.ts', line: 9, reason: 'r' }]);
       expect(rc.slicing).toEqual({ files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] });
       // Each related repo carries the reads of every call of the round, a failed one too, and each call its own.
       expect(rc.relatedRepos).toEqual([{ repo: 'o/r', status: 'fetched', durationMs: 900, reads: 6 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }]);
@@ -6348,6 +6357,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('reviewer pair: claude-opus-5-5'));
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('refuter pair: off'));
     });
 
     it('builds a client for the pair model from `resolvePairModel` and fails the run when it cannot be built', async () => {
@@ -6371,6 +6381,23 @@ describe('runFullReview orchestration', () => {
       expect(clientsArg.reviewerByModel?.get('claude-opus-5-5')).toBe(pairClient);
       expect(clientsArg.fallbacks?.reviewerByModel?.get('claude-opus-5-5')?.model).toBe('claude-sonnet-5-5');
       expect(clientsArg.fallbacks?.judge?.client).toBe(clientsArg.fallbacks?.reviewerByModel?.get('claude-opus-5-5')?.client);
+      expect(clientsArg.refuterPair).toBeUndefined();
+
+      // `models.refuter_pair` gets a client of its own, for the second refuter.
+      const refuterClient = { sendMessage: jest.fn() };
+      jest.mocked(createLLMClient).mockImplementation((_p: unknown, model: unknown) => (model === 'gpt-5.5' ? refuterClient : { sendMessage: jest.fn() }));
+      jest.mocked(reviewModule.runReview).mockClear();
+      jest.mocked(configModule.loadConfig).mockReturnValue({ ...baseConfig, models: { reviewer: 'claude-sonnet-5-5', refuter_pair: 'gpt-5.5' } });
+      await callRunFullReview();
+      // The round records the model only when the second refuter checked a finding.
+      expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[7]?.models).not.toHaveProperty('refuterPair');
+      const refuteCall = { stage: 'judge', agent: 'refute_pair', attempt: 1, promptDigest: 'd', durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0 };
+      const reviewed = await jest.mocked(reviewModule.runReview).mock.results[0].value;
+      jest.mocked(reviewModule.runReview).mockResolvedValueOnce({ ...reviewed, llmCalls: [refuteCall] });
+      await callRunFullReview();
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][0].refuterPair).toBe(refuterClient);
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('refuter pair: gpt-5.5'));
+      expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[7]?.models.refuterPair).toBe('gpt-5.5');
 
       jest.mocked(reviewModule.runReview).mockClear();
       jest.mocked(configModule.loadConfig).mockReturnValue({

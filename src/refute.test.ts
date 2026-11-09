@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { LLMClient, SendMessageOptions } from './providers';
-import { refuteBlockers } from './refute';
+import { disproof, refuteBlockers } from './refute';
 import { Finding, ParsedDiff, RoundContext } from './types';
 
 jest.mock('@actions/core');
@@ -147,6 +147,101 @@ describe('refuteBlockers', () => {
     expect(client.calls.every(([, , user]) => user.endsWith('\n\n## Uses Outside the Diff\n\nsrc/api.ts:9 checks both inputs.'))).toBe(true);
   });
 
+  it('runs a second refuter beside the first on each finding, and lets an agreed outcome grade it while a split keeps the grade', async () => {
+    const lead = { checked: 'read src/math.ts:2', left: 'find the callers' };
+    const confirmed = (proof: string) => ({ outcome: 'confirmed', reason: `It overflows at ${proof}.`, proof: [proof] });
+    const disproved = (reason: string) => ({ outcome: 'disproved', reason, proof: ['src/api.ts:9'] });
+    const unsettled = { outcome: 'unsettled', reason: 'Could not tell.' };
+    const client = fakeClient({
+      'Both confirm': confirmed('src/math.ts:2'),
+      'Both disprove': disproved('Both inputs are checked.'),
+      'Security both disprove': disproved('A comment says it is intended.'),
+      'Confirm and disprove': confirmed('src/math.ts:2'),
+      'Disprove and abstain': disproved('Both inputs are checked.'),
+      'Lead split': disproved('Both inputs are checked.'),
+      'Lead abstain and disprove': unsettled,
+      'Unproven confirm and abstain': confirmed('src/math.ts:2'),
+      'Unseen confirm and abstain': confirmed('src/math.ts:2'),
+      'Unseen split': confirmed('src/math.ts:2'),
+      'First fails': new Error('CLI crashed'),
+    });
+    const pair = fakeClient({
+      'Both confirm': confirmed('src/api.ts:4'),
+      'Both disprove': disproved('Only checked inputs reach it.'),
+      'Security both disprove': disproved('Only checked inputs reach it.'),
+      'Confirm and disprove': disproved('Both inputs are checked.'),
+      'Disprove and abstain': unsettled,
+      'Lead split': confirmed('src/math.ts:2'),
+      'Lead abstain and disprove': disproved('Both inputs are checked.'),
+      'Unproven confirm and abstain': unsettled,
+      'Unseen confirm and abstain': unsettled,
+      'Unseen split': disproved('Both inputs are checked.'),
+      'First fails': disproved('Both inputs are checked.'),
+    });
+    const findings = [
+      finding('Both confirm'),
+      finding('Both disprove'),
+      finding('Security both disprove', { tags: ['security'] }),
+      finding('Confirm and disprove'),
+      finding('Disprove and abstain'),
+      finding('Lead split', { severity: 'warning', notChecked: true, lead }),
+      finding('Lead abstain and disprove', { severity: 'warning', notChecked: true, lead }),
+      finding('Unproven confirm and abstain', { severity: 'warning', tags: ['unproven-blocker'] }),
+      finding('Unseen confirm and abstain', { severity: 'warning', gradeIfConfirmed: 'blocker' }),
+      finding('Unseen split', { severity: 'warning', gradeIfConfirmed: 'blocker' }),
+      finding('First fails'),
+    ];
+
+    const result = await refuteBlockers(client, findings, { workspace, effort: 'high', diff, pair });
+
+    expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.pairRefutation?.outcome, disproof(f)?.reason])).toEqual([
+      ['Both confirm', 'blocker', 'confirmed', 'confirmed', undefined],
+      // Two disproofs on different models still leave a blocker blocking, since PR content could steer both.
+      ['Both disprove', 'blocker', 'disproved', 'disproved', 'Both inputs are checked.'],
+      // Only a confirmation changes a security finding, however many refuters disprove it.
+      ['Security both disprove', 'blocker', 'disproved', 'disproved', 'A comment says it is intended.'],
+      // A split never lowers a blocker, and the finding keeps both reasons.
+      ['Confirm and disprove', 'blocker', 'confirmed', 'disproved', undefined],
+      // An unsettled check abstains, and a single disproof never lowers a blocker.
+      ['Disprove and abstain', 'blocker', 'disproved', 'unsettled', 'Both inputs are checked.'],
+      // A split keeps a lead's grade, where one disproof alone would drop it.
+      ['Lead split', 'warning', 'disproved', 'confirmed', undefined],
+      ['Lead abstain and disprove', 'ignore', 'unsettled', 'disproved', 'Both inputs are checked.'],
+      ['Unproven confirm and abstain', 'blocker', 'confirmed', 'unsettled', undefined],
+      // A finding the judge left to the tools rises on one confirmation with no disproof, and a split keeps the judge's grade.
+      ['Unseen confirm and abstain', 'blocker', 'confirmed', 'unsettled', undefined],
+      ['Unseen split', 'warning', 'confirmed', 'disproved', undefined],
+      // A failed call leaves the grade to the other refuter.
+      ['First fails', 'blocker', undefined, 'disproved', 'Both inputs are checked.'],
+    ]);
+    expect(result[0].evidence?.proof).toEqual(['src/math.ts:2', 'src/api.ts:4']);
+    expect(result[1].gradePath).toBeUndefined();
+    expect(result[1].judgeNotes).toBe('Refutation disproved: Both inputs are checked.\nPair refutation disproved: Only checked inputs reach it.');
+    expect(result[3].judgeNotes).toBe('Refutation confirmed: It overflows at src/math.ts:2.\nPair refutation disproved: Both inputs are checked.');
+    expect(result[6].gradePath).toEqual([{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'Both inputs are checked.' }]);
+    // Both refuters get the same question with the same budget.
+    expect(pair.calls.map(([title]) => title).sort()).toEqual(client.calls.map(([title]) => title).sort());
+    expect(pair.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15 }, timeoutMs: 600_000 });
+  });
+
+  it('asks both refuters at the same time', async () => {
+    let inFlight = 0;
+    let most = 0;
+    const slow = (outcome: string): LLMClient => ({
+      repoTools: true,
+      async sendMessage() {
+        most = Math.max(most, ++inFlight);
+        await new Promise(resolve => setImmediate(resolve));
+        inFlight--;
+        return { content: JSON.stringify({ outcome, reason: 'Checked.', proof: ['src/math.ts:2'] }) };
+      },
+    });
+
+    await refuteBlockers(slow('confirmed'), [finding('Sum overflows')], { workspace, pair: slow('confirmed') });
+
+    expect(most).toBe(2);
+  });
+
   it('checks a finding the judge could not settle without tools or an unconfirmed build claim, and a confirmation gives back only what reading can confirm', async () => {
     const byJudge = (to: Finding['severity'], gradeIfConfirmed: Finding['severity'], from: Finding['severity'] = to) => ({
       severity: to, gradeIfConfirmed, ...(from !== to && { gradePath: [{ from, to, by: 'judge' as const }] }),
@@ -249,6 +344,13 @@ describe('refuteBlockers', () => {
     expect(first.refutation?.files).toEqual(['src/api.ts', 'src/math.ts']);
     const [again] = await refuteBlockers(client, [finding('Sum overflows', { line: 3 })], { workspace, priorRounds, diff });
     expect([client.calls.length, again.severity, again.refutation]).toEqual([1, 'blocker', first.refutation]);
+
+    // A second refuter reuses its own stored outcome the same way, and is asked when none is stored.
+    const pair = fakeClient({ 'Sum overflows': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] } });
+    const [paired] = await refuteBlockers(client, [finding('Sum overflows')], { workspace, priorRounds, diff, pair });
+    const pairedRounds = [{ findings: { entries: [{ title: 'Sum overflows', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation: first.refutation, pairRefutation: paired.pairRefutation }] }, judge: {} }] as unknown as RoundContext[];
+    await refuteBlockers(client, [finding('Sum overflows')], { workspace, priorRounds: pairedRounds, diff, pair });
+    expect([client.calls.length, pair.calls.length, paired.pairRefutation?.outcome]).toEqual([1, 1, 'confirmed']);
 
     // A change to the file that holds the check the outcome cites forces a new check, like a change to the finding's file.
     writeFileSync(join(workspace, 'src', 'api.ts'), '// the check is gone\n');

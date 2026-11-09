@@ -212,6 +212,8 @@ export interface Finding {
   gradeIfConfirmed?: FindingSeverity;
   /** How the judge's attempt to refute the finding with tools came out. Set on blockers, open leads, findings lowered for want of proof and findings with a `gradeIfConfirmed`. */
   refutation?: Refutation;
+  /** How the second refuter, on `models.refuter_pair`, came out. Set beside `refutation` when that model checked the finding. */
+  pairRefutation?: Refutation;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;
   /** Why the defect exists without this PR's change, when the reviewer says so. The judge must keep it, or it is cleared. */
@@ -708,6 +710,8 @@ export interface ReviewConfig {
     /** Model of the second finder. Unset means the other Claude tier of `reviewer`. */
     reviewer_pair?: string;
     judge?: string;
+    /** Model of a second refuter that checks each blocker beside the judge's. Unset means no second refuter. */
+    refuter_pair?: string;
     dedup?: string;
     /** Model a stage moves to when a safety filter refuses it. Unset means `reviewer`. */
     fallback?: string;
@@ -1242,6 +1246,8 @@ export interface ReviewModels {
   reviewer: string;
   reviewerPair: string;
   judge: string;
+  /** Model of the second refuter, when `models.refuter_pair` is set. */
+  refuterPair?: string;
   dedup: string;
 }
 
@@ -1313,6 +1319,8 @@ export interface RoundModels {
   /** Model of the second finder, on rounds where one ran. */
   reviewerPair?: string;
   judge: string;
+  /** Model of the second refuter, on rounds where it checked a finding. */
+  refuterPair?: string;
   dedup?: string;
   /** Stages a safety filter refused that ran again on a fallback model, in the order they ran. */
   fallbacks?: RoundModelFallback[];
@@ -1422,6 +1430,7 @@ export interface RoundJudgeDrop {
   judgeConfidence?: 'high' | 'medium' | 'low';
   judgeNotes?: string;
   refutation?: Refutation;
+  pairRefutation?: Refutation;
   /** How the finding's severity changed until it was dropped. */
   gradePath?: GradeStep[];
 }
@@ -1703,6 +1712,8 @@ export interface FindingFingerprintEntry {
   notChecked?: boolean;
   /** Mirrors `Finding.refutation`. */
   refutation?: Refutation;
+  /** Mirrors `Finding.pairRefutation`. */
+  pairRefutation?: Refutation;
   /** Mirrors `Finding.gradePath`. */
   gradePath?: GradeStep[];
   /** The reviewer's pre-existing claim kept by the judge, and how it was checked against the diff. */
