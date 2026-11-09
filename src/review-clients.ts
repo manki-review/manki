@@ -6,6 +6,12 @@ import type { LLMClient, ProviderInputs } from './providers';
 import { ReviewClients, teamModels } from './review';
 import type { ReviewConfig, ReviewModels } from './types';
 
+/** Builds the client for `model` with the credentials its provider takes. Throws when they are missing. */
+export function buildLLMClient(model: string, providerInputs: ProviderInputs): LLMClient {
+  const spec = parseModelSpec(model);
+  return createLLMClient(spec.provider, spec.model, buildAuthForProvider(spec.provider, providerInputs));
+}
+
 export function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs): { clients: ReviewClients; models: ReviewModels } {
   const models: ReviewModels = {
     planner: resolveModel(config, 'planner'),
@@ -16,11 +22,7 @@ export function buildReviewClients(config: ReviewConfig, providerInputs: Provide
   };
   core.info(`Models — planner: ${models.planner}, reviewer: ${models.reviewer}, reviewer pair: ${models.reviewerPair}, judge: ${models.judge}, dedup: ${models.dedup}`);
 
-  const buildClient = (model: string) => {
-    const spec = parseModelSpec(model);
-    const auth = buildAuthForProvider(spec.provider, providerInputs);
-    return createLLMClient(spec.provider, spec.model, auth);
-  };
+  const buildClient = (model: string) => buildLLMClient(model, providerInputs);
   const reviewer = buildClient(models.reviewer);
   const reviewerByModel = new Map<string, LLMClient>([[models.reviewer, reviewer]]);
   for (const model of teamModels(config)) {

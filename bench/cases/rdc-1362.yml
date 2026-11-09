@@ -1,0 +1,98 @@
+id: rdc-1362
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1362, replayed as fork PR xdustinface/rust-dashcore#187
+base: 3c71c8e8f301a41d77048c224335c747e67e77e0
+head: b89b2bf698f3f62bb76f8a7e6ee5ac4a780b2300
+title: "fix(dash)!: decode lengths and message size to Dash Core's bounds"
+body: |
+  `dashcore` decodes several lengths to different bounds than Dash Core does. Core references are to Dash Core's `develop` branch at 7c7e91a4e40.
+
+  - **Lengths above `MAX_SIZE` decode.** Core reads vector and string lengths with `ReadCompactSize`, which errors on any value above `MAX_SIZE` (0x02000000, 32 MiB) before it reads data (`src/serialize.h:43`, `:400`). `dashcore` read these lengths as a plain `VarInt` with no range. Core reads the `headers` and `headers2` counts the same way before its 2000-header limit (`src/net_processing.cpp:5417`); `dashcore` applied only the 2000 limit.
+  - **The streaming decode stops below `MAX_SIZE`.** `consensus_decode` wraps the reader in a 4,000,000 byte `MAX_VEC_SIZE` budget, so `Vec<u8>`, `Vec<T>`, `Box<[u8]>`, `String` and `Cow<str>` fail through that entry point on data Core reads (`src/serialize.h:1217` for byte vectors, `:883` for other vectors, `:1129` for strings). `String` failed above 4,000,000 bytes through both entry points.
+  - **CbTx `bestCLHeightDiff` above `MAX_SIZE` decodes.** Core reads it with `COMPACTSIZE` (`src/evo/cbtx.h:61`), which applies the same range check.
+  - **`MAX_MSG_SIZE` is 5,000,000 bytes and is not checked at the header.** Core's limit is `MAX_PROTOCOL_MESSAGE_LENGTH`, 3 MiB (`src/net.h:80`). Core checks it against the header's length field before it reads the payload (`src/net.cpp:754`).
+
+  ## What changes
+
+  - `consensus::encode::MAX_COMPACT_SIZE` (new, public) is Core's `MAX_SIZE`. A crate-internal `read_compact_size_len` reads a length with Core's range check and returns `OversizedVectorAllocation` above it. It is used by `impl_vec!` vectors, `Vec<u8>` (and so `Box<[u8]>`, `String`, `Cow<str>`), the `headers` count and the `headers2` count. The range check runs before the existing 2000-header batch limits, as in Core.
+  - `Vec<T>`, `Vec<u8>`, `Box<[u8]>`, `String` and `Cow<str>` override `consensus_decode` to read without the `MAX_VEC_SIZE` budget. Both entry points now decode any length up to `MAX_COMPACT_SIZE`.
+  - `CoinbasePayload` refuses a `bestCLHeightDiff` above `MAX_COMPACT_SIZE`.
+  - `network::message::MAX_MSG_SIZE` is 3 MiB (`3 * 1024 * 1024`). `RawNetworkMessage` reads the payload with `CheckedData::decode_limited`, which returns `OversizedVectorAllocation` on the header's length field before it reads any payload byte. The streaming `RawNetworkMessage::consensus_decode` takes the 24-byte header plus `MAX_MSG_SIZE`, so a payload of exactly the limit is read. `RawNetworkMessageCodec` and the dash-spv v2 packet bound already derive from `MAX_MSG_SIZE`. The v2 bound becomes 1 + 12 + 3 MiB of contents, the same as Core's `MAX_CONTENTS_LEN` (`src/net.cpp:1315`); its doc comment no longer compares it with bip324's `decrypt_to_vec` cap, which it is now below. The codec uses the shared 24-byte header constant.
+  - Other length reads are unchanged, for example the `net_info` counts, `bip152` indexes and DYNBITSET sizes.
+
+  ### What bounds allocation now that the `MAX_VEC_SIZE` budget is gone from vectors
+
+  The `MAX_VEC_SIZE` reader budget is removed only from the five vector and string types above. Their buffers grow with the data read:
+
+  - **`Vec<u8>`** (and `Box<[u8]>`, `String`, `Cow<str>`) is read by `read_bytes_from_finite_reader` in 128 KiB chunks. The buffer is extended by one chunk only after the previous chunk has been read, so its size follows the bytes read (`Vec` may reserve up to twice that as it grows). Core reads byte vectors the same way in 5,000,000-byte blocks (`src/serialize.h:1222-1229`).
+  - **`impl_vec!` vectors** reserve at most `MAX_VEC_SIZE / 4` bytes of elements up front, then grow by `push` as each element decodes. Core reserves in 5,000,000-byte batches (`src/serialize.h:883-899`).
+  - **Every length** is now at most `MAX_COMPACT_SIZE`. Before, a length could be as large as `u64::MAX`.
+  - **Messages** are not chunked: once the header's length passes the 3 MiB check, `CheckedData::decode_limited`, `RawNetworkMessageCodec` and the dash-spv v2 decoder reserve the announced payload at once, as before. That reservation is now at most 3 MiB, down from 5,000,000 bytes.
+
+  `MAX_VEC_SIZE` stays the default `consensus_decode` budget for other types and the reserve cap above. Its doc comment now says so.
+
+  The `byte_vectors_and_strings_are_read_to_the_core_range` test covers this: a `MAX_COMPACT_SIZE` length followed by 3 bytes fails with an `Io` error once the data runs out, through both entry points. The test it replaces, `limit_read_test`, asserted that the streaming budget refused two 3,999,999-byte vectors. It becomes `streaming_read_has_no_budget_below_the_core_range`, which reads them, because each length is within `MAX_SIZE`.
+
+  ## Tests
+
+  The new tests sit next to the code they cover. Each one fails on `dev` (c7ab5f8e9):
+
+  | Test | Failure on `dev` |
+  |---|---|
+  | `encode::tests::a_length_above_max_size_is_refused_without_reading_data` | `Vec<u8> length 33554433` (no size error) |
+  | `encode::tests::byte_vectors_and_strings_are_read_to_the_core_range` | `Io(UnexpectedEof)` on a 4,000,001-byte streamed `Vec<u8>` |
+  | `encode::tests::other_vectors_are_read_to_the_core_range` | `Io(UnexpectedEof)` on 1,000,001 streamed `u32`s |
+  | `encode::tests::streaming_read_has_no_budget_below_the_core_range` | `Io(UnexpectedEof)` |
+  | `message::test::headers_count_is_read_with_the_core_range` | `ParseFailed("headers message has too many headers")` |
+  | `message_headers2::tests::headers2_count_is_read_with_the_core_range` | `ParseFailed("headers2 message has too many headers")` |
+  | `coinbase::tests::best_cl_height_diff_over_max_size_fails_to_decode` | `decode(payload(0x0200_0001)).is_err()` is false |
+  | `message::test::a_message_payload_above_the_limit_is_refused_at_the_header` | `Io(UnexpectedEof)` instead of the size error |
+  | `message::test::a_streamed_message_of_exactly_the_limit_is_read` | `Io(UnexpectedEof)` |
+  | `message::codec_tests::a_payload_over_the_protocol_limit_is_refused_at_the_header` (`tokio`) | a 3 MiB + 1 header is not refused |
+
+  To get these failures, the tests were run on `dev` with only two constants added so they compile: `MAX_COMPACT_SIZE` and a 24-byte header size. `MAX_MSG_SIZE` kept its `dev` value.
+
+  Checks run:
+
+  - `cargo test -p dashcore` (621 unit tests plus the integration tests and doctests)
+  - `cargo test -p dashcore --all-features --lib -- codec_tests`
+  - `cargo test -p dash-spv --lib` (643 tests)
+  - `cargo clippy --all-targets -- -D warnings` for `dashcore` and `dash-spv`, with and without `--all-features`
+  - `RUSTDOCFLAGS='-D warnings' cargo doc -p dashcore --all-features --no-deps`
+  - `cargo fmt --all -- --check`
+  - `typos` on the changed files
+
+  ## Breaking changes
+
+  - `MAX_MSG_SIZE` is 3 MiB (was 5,000,000 bytes): a message of 3 MiB to 5,000,000 bytes that decoded before is now refused at its header.
+  - A vector or string length above 32 MiB is now a decode error (`OversizedVectorAllocation`), and `bestCLHeightDiff` above 32 MiB fails to decode.
+  - A `headers` or `headers2` count above 32 MiB fails with `OversizedVectorAllocation` instead of `ParseFailed`. Counts from 2001 up to 32 MiB still fail with `ParseFailed`, as before.
+  - `consensus_decode` on `Vec<T>`, `Vec<u8>`, `Box<[u8]>`, `String` and `Cow<str>` reads any length up to `MAX_COMPACT_SIZE` and no longer stops at `MAX_VEC_SIZE` (4,000,000 bytes). A caller streaming these types from a reader gets the whole item instead of `Io(UnexpectedEof)` at that budget.
+
+  ## Changelog
+
+  - **Changed:** `dashcore` decodes vector and string lengths, and the `headers` and `headers2` counts, with Dash Core's `ReadCompactSize` range: above `MAX_COMPACT_SIZE` (32 MiB, new constant) is an error. Below it, `Vec<T>`, `Vec<u8>`, `Box<[u8]>`, `String` and `Cow<str>` decode through `consensus_decode` as well as `deserialize`.
+  - **Changed:** `MAX_MSG_SIZE` is Dash Core's `MAX_PROTOCOL_MESSAGE_LENGTH`, 3 MiB (was 5,000,000 bytes). A message whose header announces a longer payload is refused on the length field.
+  - **Fixed:** a CbTx with `bestCLHeightDiff` above `MAX_SIZE` fails to decode, as in Dash Core.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "Removing the `MAX_VEC_SIZE` `Take` from the streaming `Vec<T>` decode unbinds memory from bytes read for types larger in memory than on the wire: a `Vec<Vec<u8>>` of empty vectors costs 1 byte on the wire and 24 in memory, about 768 MB from an unbounded reader. Upstream restored a bytes-read budget."
+    locations: ["dash/src/consensus/encode.rs", "MAX_VEC_SIZE", "consensus_decode"]
+    fix: "3d9b037b7"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "In the `dash-spv` v2 transport, with `MAX_PACKET_LEN` now below bip324's `decrypt_to_vec` cap, the custom `decrypt` buffer is unnecessary. Upstream switched to `decrypt_to_vec`."
+    locations: ["dash-spv/src/network/transport/v2.rs", "decrypt_to_vec", "MAX_PACKET_LEN"]
+    fix: "3d9b037b7"
+  - id: N2
+    severity: suggestion
+    mechanism: "A new test redefines the message size limit instead of using `MAX_MSG_SIZE`, and its `header` closure duplicates the existing `message_bytes` helper."
+    locations: ["dash/src/network/message.rs", "MAX_MSG_SIZE", "message_bytes"]
+    fix: "3d9b037b7"
+  - id: N3
+    severity: nitpick
+    mechanism: "Repository conventions in `AGENTS.md`: Core `file:line` and commit references in comments, fully qualified paths instead of imports, a `use` inside a function, and numeric literal type suffixes."
+    locations: ["dash/src/consensus/encode.rs", "dash/src/network/message.rs", "dash/src/network/message_headers2.rs", "dash/src/blockdata/transaction/special_transaction/coinbase.rs"]
