@@ -285,14 +285,17 @@ describe('buildJudgeSystemPrompt', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     const section = prompt.slice(prompt.indexOf('## Code You Cannot See'), prompt.indexOf('## Grade Stability'));
     expect(section).toContain('Code you cannot see is no evidence against a finding, so on its own it never drops a finding, and never lowers a `blocker` or a `warning` below `warning`.');
-    expect(section).toContain('Set `unseen` to true on such a finding, and false on all others.');
+    expect(section).toContain('Set `gradeIfConfirmed` on such a finding to the grade these rules give it if that code is as the finding says, and to "" on all others.');
     expect(section).not.toContain('Manki then reads that code with tools');
-    expect(prompt).toContain('"unseen": false');
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki then reads that code with tools. A confirmation gives the finding back the grade its finder gave, and a disproof drops it.');
+    expect(prompt).toContain('"gradeIfConfirmed": ""');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki then reads that code with tools. A confirmation gives the finding that grade, and a disproof drops it.');
   });
 
   it('blocks on a claimed build, type or test failure only when CI confirms it', () => {
-    expect(buildJudgeSystemPrompt(makeConfig(), 5)).toContain('A claim that the code fails to compile, type-check or pass its tests is a `blocker` only when its tool evidence is **confirmed**, since reading code is not compiling it. Otherwise grade it `warning` at most and say in `reasoning` that the author should check that it builds.');
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    expect(prompt).toContain('Set `buildClaim` to true on a finding whose claim is that the code fails to compile, type-check or pass its tests, and false on all others. A failure at run time is no such claim');
+    expect(prompt).toContain('A build claim is a `blocker` only when its tool evidence is **confirmed**, since reading code is not compiling it. Otherwise grade it `warning` at most and say in `reasoning` that the author should check that it builds.');
+    expect(prompt).toContain('"buildClaim": false');
   });
 
   it('gives four to six worked examples on each side, across several languages', () => {
@@ -1447,26 +1450,30 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].tags).toBeUndefined();
   });
 
-  it('shows the code a finding cites outside the diff, and sends a finding it lowered for unseen code to the refuter, which can give back its grade', async () => {
+  it('shows the code a finding cites outside the diff, and sends a finding that rests on unseen code to the refuter, which can give it the grade the judge would give', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
-    fs.writeFileSync(path.join(workspace, 'src', 'lock.ts'), Array.from({ length: 40 }, (_, i) => (i === 29 ? 'const guard = lock.acquire();' : `// ${i + 1}`)).join('\n'));
+    const lockLine = (i: number) => (i === 29 ? 'const guard = lock.acquire();' : i === 30 ? `const table = '${'x'.repeat(400)}';` : `// ${i + 1}`);
+    fs.writeFileSync(path.join(workspace, 'src', 'lock.ts'), Array.from({ length: 200 }, (_, i) => lockLine(i)).join('\n'));
+    fs.writeFileSync(path.join(workspace, 'src', 'bundle.js'), `${'a'.repeat(1024 * 1024)}\nsecond line`);
     const findings = [
-      makeFinding({ title: 'Deadlock on stop', severity: 'blocker', evidence: { checks: [], proof: ['src/index.ts:10', 'src/lock.ts:30'] } }),
-      makeFinding({ title: 'Missing bound', severity: 'warning', line: 5, evidence: { checks: [], proof: ['src/index.ts:5'] } }),
+      makeFinding({ title: 'Deadlock on stop', severity: 'warning', evidence: { checks: [], proof: ['src/index.ts:10', 'src/lock.ts:30', 'src/lock.ts:100', 'src/lock.ts:150'] } }),
+      makeFinding({ title: 'Missing bound', severity: 'warning', line: 5, evidence: { checks: [], proof: ['src/index.ts:5', 'src/bundle.js:2'] } }),
       makeFinding({ title: 'Slow path', severity: 'blocker', line: 6, evidence: { checks: [], proof: ['src/index.ts:6'] } }),
       makeFinding({ title: 'Unseen kept', severity: 'warning', line: 7 }),
       makeFinding({ title: 'Unseen dropped', severity: 'warning', line: 8 }),
+      makeFinding({ title: 'Unknown grade', severity: 'warning', line: 9 }),
     ];
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's',
       findings: [
-        { id: 1, title: 'Deadlock on stop', severity: 'warning', unseen: true, reasoning: 'warning. The second lock path sits outside the code shown.', confidence: 'medium' },
-        { id: 2, title: 'Missing bound', severity: 'suggestion', unseen: true, reasoning: 'r', confidence: 'medium' },
-        { id: 3, title: 'Slow path', severity: 'warning', unseen: false, reasoning: 'Performance never blocks.', confidence: 'high' },
-        { id: 4, title: 'Unseen kept', severity: 'warning', unseen: true, reasoning: 'r', confidence: 'medium' },
-        { id: 5, title: 'Unseen dropped', severity: 'ignore', unseen: true, reasoning: 'r', confidence: 'medium' },
+        { id: 1, title: 'Deadlock on stop', severity: 'warning', gradeIfConfirmed: 'blocker', reasoning: 'warning. The second lock path sits outside the code shown.', confidence: 'medium' },
+        { id: 2, title: 'Missing bound', severity: 'suggestion', gradeIfConfirmed: 'warning', reasoning: 'r', confidence: 'medium' },
+        { id: 3, title: 'Slow path', severity: 'warning', gradeIfConfirmed: '', reasoning: 'Performance never blocks.', confidence: 'high' },
+        { id: 4, title: 'Unseen kept', severity: 'warning', gradeIfConfirmed: 'warning', reasoning: 'r', confidence: 'medium' },
+        { id: 5, title: 'Unseen dropped', severity: 'ignore', gradeIfConfirmed: 'blocker', reasoning: 'r', confidence: 'medium' },
+        { id: 6, title: 'Unknown grade', severity: 'suggestion', gradeIfConfirmed: 'severe', reasoning: 'r', confidence: 'medium' },
       ],
     }) });
     const refuterMessages: string[] = [];
@@ -1489,22 +1496,29 @@ describe('runJudgeAgent', () => {
       });
 
       expect(result.findings.map(f => [f.title, f.severity])).toEqual([
-        // The refuter confirmed it, so it gets back the grade its finder gave.
+        // The refuter confirmed it, so it gets the grade the judge would give if the unseen code holds, above its finder's.
         ['Deadlock on stop', 'blocker'],
         ['Missing bound', 'ignore'],
         // Lowered for another reason than unseen code, so the refuter never sees it.
         ['Slow path', 'warning'],
-        // Kept at its finder's grade or dropped, so there is no grade to give back.
+        // A conditional grade no higher than the judge's, one on a dropped finding, or one that is no grade is never checked.
         ['Unseen kept', 'warning'],
         ['Unseen dropped', 'ignore'],
+        ['Unknown grade', 'suggestion'],
       ]);
       expect(refuterMessages).toHaveLength(2);
-      expect(result.findings[0].gradePath?.map(step => step.by)).toEqual(['judge', 'refutation']);
+      expect(result.findings[0].gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'Both paths take the lock.' }]);
+      expect(result.findings[0].gradeIfConfirmed).toBeUndefined();
       const [, userMessage] = mockSendMessage.mock.calls[0];
       expect(userMessage).toContain("- **Cited code outside the diff** (src/lock.ts:30), at the PR's head.");
       expect(userMessage).toContain('>>> 30: const guard = lock.acquire();');
-      // A cited line inside the diff is already shown in the diff.
+      expect(userMessage).toMatch(/ {4}31: const table = 'x+ \.\.\. \(line cut\)\n/);
+      expect(userMessage).not.toContain('x'.repeat(300));
+      // A cited line inside the diff is already shown in the diff, a finding gets two windows at most, and a large file is never read.
       expect(userMessage).not.toContain('(src/index.ts:10)');
+      expect(userMessage).toContain('(src/lock.ts:100)');
+      expect(userMessage).not.toContain('(src/lock.ts:150)');
+      expect(userMessage).not.toContain('(src/bundle.js:2)');
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -3266,10 +3280,15 @@ describe('mapJudgedToFindings', () => {
       makeFinding({ title: 'Warning without proof', severity: 'warning', evidence: undefined }),
       blocker('Unconfirmed build claim', { checks: [], proof: ['src/a.ts:1'] }, { description: 'This should fail to compile with E0599.', toolEvidence: { status: 'none', note: '' } }),
       blocker('Build claim CI reports', { checks: [], proof: ['src/a.ts:1'] }, { description: 'This does not compile.', toolEvidence: { status: 'confirmed', note: 'rustc' } }),
+      blocker('Security build claim', { checks: [], proof: ['src/a.ts:1'] }, { description: 'The token check does not compile, so every request passes.' }),
+      blocker('Runtime compile failure', { checks: [], proof: ['src/a.ts:1'] }, { description: 'The pattern fails to compile when the server starts.' }),
     ];
+    const buildClaims = ['Unconfirmed build claim', 'Build claim CI reports', 'Security build claim'];
     const judged: JudgedFinding[] = originals.map((f, i) => ({
       id: i + 1, title: f.title, severity: f.severity, reasoning: 'Real.', confidence: 'high',
       ...(f.title === 'Judge proof' && { proof: ['src/index.ts:12'] }),
+      ...(buildClaims.includes(f.title) && { buildClaim: true }),
+      ...(f.title === 'Security build claim' && { security: true }),
     }));
 
     const result = mapJudgedToFindings(originals, judged);
@@ -3284,6 +3303,9 @@ describe('mapJudgedToFindings', () => {
       ['Warning without proof', 'warning'],
       ['Unconfirmed build claim', 'warning'],
       ['Build claim CI reports', 'blocker'],
+      // A security defect always blocks, and only the judge's mark makes a finding a build claim, never its wording.
+      ['Security build claim', 'blocker'],
+      ['Runtime compile failure', 'blocker'],
     ]);
     expect(result[1].judgeNotes).toBe('Real.\nPosted as a warning, since it cites no lines that prove the failure.');
     expect([result[7].tags, result[7].judgeNotes]).toEqual([

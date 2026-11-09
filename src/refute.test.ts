@@ -148,7 +148,9 @@ describe('refuteBlockers', () => {
   });
 
   it('checks a finding lowered for unseen code or an unconfirmed build claim, and a confirmation gives back only what reading can confirm', async () => {
-    const byJudge = (from: Finding['severity'], to: Finding['severity']) => ({ severity: to, reviewerSeverity: from, gradePath: [{ from, to, by: 'judge' as const }], tags: ['unseen-code'] });
+    const byJudge = (to: Finding['severity'], gradeIfConfirmed: Finding['severity'], from: Finding['severity'] = to) => ({
+      severity: to, gradeIfConfirmed, ...(from !== to && { gradePath: [{ from, to, by: 'judge' as const }] }),
+    });
     const none = { status: 'none' as const, note: '' };
     const client = fakeClient({
       'Unseen confirmed': { outcome: 'confirmed', reason: 'The lock is held at src/api.ts:4.', proof: ['src/api.ts:4'] },
@@ -159,31 +161,33 @@ describe('refuteBlockers', () => {
       'Unbuilt confirmed': { outcome: 'confirmed', reason: 'No import.', proof: ['src/math.ts:2'] },
     });
     const findings = [
-      finding('Unseen confirmed', { ...byJudge('blocker', 'warning'), judgeNotes: 'warning. The lock path sits outside the diff.' }),
+      // The finder graded it a warning too, and the judge would grade it a blocker if the code it could not see holds.
+      finding('Unseen confirmed', { ...byJudge('warning', 'blocker'), judgeNotes: 'warning. The lock path sits outside the diff.' }),
       finding('Unseen and contradicted', {
-        ...byJudge('warning', 'suggestion'), severity: 'nitpick',
+        ...byJudge('suggestion', 'warning', 'warning'), severity: 'nitpick',
         gradePath: [{ from: 'warning', to: 'suggestion', by: 'judge' }, { from: 'suggestion', to: 'nitpick', by: 'contradiction' }],
       }),
-      finding('Unseen disproved', byJudge('warning', 'suggestion')),
-      finding('Unseen unsettled', byJudge('blocker', 'warning')),
-      finding('Unseen build claim', { ...byJudge('blocker', 'warning'), description: 'This does not compile.', toolEvidence: none }),
-      finding('Unbuilt confirmed', { severity: 'warning', description: 'This does not compile.', toolEvidence: none, tags: ['unconfirmed-build-claim'] }),
+      finding('Unseen disproved', byJudge('suggestion', 'warning', 'warning')),
+      finding('Unseen unsettled', byJudge('warning', 'blocker', 'blocker')),
+      finding('Unseen build claim', { ...byJudge('warning', 'blocker', 'blocker'), buildClaim: true, toolEvidence: none }),
+      finding('Unbuilt confirmed', { severity: 'warning', buildClaim: true, toolEvidence: none, tags: ['unconfirmed-build-claim'] }),
     ];
 
     const result = await refuteBlockers(client, findings, { workspace, diff });
 
-    expect(result.map(f => [f.title, f.severity, f.tags])).toEqual([
-      // A confirmation gives back the grade the finder gave, which the judge lowered for code it could not see.
-      ['Unseen confirmed', 'blocker', []],
+    expect(result.map(f => [f.title, f.severity, f.gradeIfConfirmed])).toEqual([
+      // A confirmation gives the grade the judge would give if the code it could not see holds, above the finder's.
+      ['Unseen confirmed', 'blocker', undefined],
       // A later step lowered it further, so the confirmation does not lift it.
-      ['Unseen and contradicted', 'nitpick', []],
-      ['Unseen disproved', 'ignore', ['unseen-code']],
-      ['Unseen unsettled', 'warning', ['unseen-code']],
+      ['Unseen and contradicted', 'nitpick', undefined],
+      ['Unseen disproved', 'ignore', 'warning'],
+      ['Unseen unsettled', 'warning', 'blocker'],
       // Reading code never confirms a build failure, so such a claim stays a warning at most.
-      ['Unseen build claim', 'warning', []],
-      ['Unbuilt confirmed', 'warning', ['unconfirmed-build-claim']],
+      ['Unseen build claim', 'warning', undefined],
+      ['Unbuilt confirmed', 'warning', undefined],
     ]);
-    expect(result[0].gradePath).toEqual([{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation', reason: 'The lock is held at src/api.ts:4.' }]);
+    expect(result[5].tags).toEqual(['unconfirmed-build-claim']);
+    expect(result[0].gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'The lock is held at src/api.ts:4.' }]);
     expect(client.calls).toHaveLength(6);
     const [, unseenMessage] = client.messages.find(([, user]) => user.includes(': Unseen confirmed\n'))!;
     expect(unseenMessage).toContain('## Finding that rests on code outside the diff: Unseen confirmed');
@@ -202,7 +206,7 @@ describe('refuteBlockers', () => {
       },
     });
     const claim = finding('Trait Encode not in scope', {
-      severity: 'warning', file: 'src/encode.rs', line: 3, tags: ['unconfirmed-build-claim'], toolEvidence: { status: 'none', note: '' },
+      severity: 'warning', file: 'src/encode.rs', line: 3, tags: ['unconfirmed-build-claim'], buildClaim: true, toolEvidence: { status: 'none', note: '' },
       description: '`self.version.encode(e)` runs without `use bincode::Encode`, so it should fail to compile with E0599.', evidence: { checks: [], proof: ['src/encode.rs:3'] },
     });
 

@@ -69,8 +69,6 @@ export const SECURITY_TAG = 'security' as const;
 export const PRE_EXISTING_TAG = 'pre-existing' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
 export const UNPROVEN_TAG = 'unproven-blocker' as const;
-/** Marks a finding the judge graded below its finder because it rests on code the judge could not see. A confirmation gives back the finder's grade. */
-export const UNSEEN_TAG = 'unseen-code' as const;
 /** Marks a blocker posted as a warning because it claims a build, type or test failure that no CI result on the commit reports. */
 export const UNBUILT_TAG = 'unconfirmed-build-claim' as const;
 
@@ -187,6 +185,8 @@ export interface Finding {
   toolSource?: string;
   /** What the deterministic claim checks and CI results say about the finding. */
   toolEvidence?: ToolEvidence;
+  /** Whether the judge or the verdict reader says the finding claims the code fails to compile, type-check or pass its tests. */
+  buildClaim?: boolean;
   /** Earlier finding this one resembles, whose fix the judge of an earlier round confirmed. */
   resemblesFixed?: { title: string; file: string; line: number };
   /** The Manki thread that already answered the developer about this problem, and that answer. The judge keeps the finding only when the code there got worse. */
@@ -205,7 +205,12 @@ export interface Finding {
   lead?: OpenLead;
   /** The round an open lead first came up in, when an earlier round left it unsettled. */
   leadSince?: number;
-  /** How the judge's attempt to refute the finding with tools came out. Set on blockers, open leads and findings the judge lowered for want of proof or for code it could not see. */
+  /**
+   * The grade the judge would give if code it could not see is as the finding says, when that is above the grade it
+   * gave. The refuter checks the finding, and a confirmation gives it this grade.
+   */
+  gradeIfConfirmed?: FindingSeverity;
+  /** How the judge's attempt to refute the finding with tools came out. Set on blockers, open leads, findings lowered for want of proof and findings with a `gradeIfConfirmed`. */
   refutation?: Refutation;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;

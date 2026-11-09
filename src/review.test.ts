@@ -1817,6 +1817,7 @@ jest.mock('./judge', () => ({
   computeProvenanceMap: jest.fn().mockReturnValue([]),
   collectPriorBlockers: jest.requireActual('./judge').collectPriorBlockers,
   foldInto: jest.requireActual('./judge').foldInto,
+  capUnconfirmedBuildClaim: jest.requireActual('./judge').capUnconfirmedBuildClaim,
 }));
 
 jest.mock('./memory', () => ({
@@ -2242,6 +2243,43 @@ describe('runReview', () => {
       const comment = formatFindingComment(refuted.findings[0], TEST_LINKS);
       expect(comment).toMatch(/<summary>How this was checked: 1 place read, doubt found<\/summary>\n\n\*\*Doubt found:\*\* [^\n]*Every write clears the cache first\./);
       expect(comment).toContain('On the commented line: Builds the cache');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('posts a verdict reader blocker that claims a build failure no CI result reports as a warning, and leaves the change ready when nothing else blocks', async () => {
+    const diff = diffChanging('src/a.ts', 'a.ts');
+    const compileClaim = { file: 'a.ts', line: 1, title: 'Trait Encode not in scope', description: 'This should fail to compile with E0599.', proof: ['a.ts:1'], buildClaim: true };
+    const reader = (blockers: unknown[]) => JSON.stringify({ verdict: 'ADDRESS_FIRST', summary: 'One defect.', whatThisDoes: 'Adds a cache.', whatToTest: 'Load twice.', blockers });
+
+    const clients = makeClients();
+    jest.mocked(clients.judge.sendMessage).mockResolvedValue({ content: reader([compileClaim]) });
+    const alone = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '' });
+    expect([alone.outcome, alone.verdictReason]).toEqual(['READY', 'only_nit_or_suggestion']);
+    expect(alone.findings).toEqual([expect.objectContaining({
+      severity: 'warning', title: 'Trait Encode not in scope', tags: ['unconfirmed-build-claim', 'follow-up'], toolEvidence: expect.objectContaining({ status: 'none' }),
+    })]);
+
+    // A blocker the reader does not mark as a build claim keeps blocking, whatever its wording.
+    const runtime = { file: 'src/a.ts', line: 3, title: 'The pattern fails to compile at startup', description: 'Every request then fails.', proof: ['src/a.ts:3'] };
+    jest.mocked(clients.judge.sendMessage).mockResolvedValue({ content: reader([compileClaim, runtime]) });
+    const withReal = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '' });
+    expect([withReal.outcome, withReal.verdictReason]).toEqual(['ADDRESS_FIRST', 'verdict_reader']);
+    expect(withReal.findings.map(f => [f.title, f.severity])).toEqual([['Trait Encode not in scope', 'warning'], [runtime.title, 'blocker']]);
+    expect(withReal.verdictTrace?.survivingBlockers.map(e => e.title)).toEqual([runtime.title]);
+
+    // With the PR head checked out, a refuter disproof drops the claim, since it no longer blocks.
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-reader-build-'));
+    try {
+      writeFileSync(join(workspace, 'a.ts'), 'impl Encode for Payload { fn encode(&self) { self.v.encode() } }\n');
+      const refuting = makeClients();
+      Object.assign(refuting.judge, { repoTools: true });
+      jest.mocked(refuting.judge.sendMessage).mockImplementation(async (_system, _message, options) => ({
+        content: options?.repoTools ? JSON.stringify({ outcome: 'disproved', reason: 'The trait is in scope inside its own impl.', proof: ['a.ts:1'] }) : reader([compileClaim]),
+      }));
+      const disproved = await runReview(refuting, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace });
+      expect([disproved.outcome, disproved.findings]).toEqual(['READY', []]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

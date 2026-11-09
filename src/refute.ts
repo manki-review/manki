@@ -10,7 +10,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, titlesMatch } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { Finding, FindingSeverity, gradeStep, ParsedDiff, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG, UNSEEN_TAG } from './types';
+import { Finding, FindingSeverity, gradeStep, ParsedDiff, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
 
 const REFUTE_STEPS = 15;
@@ -22,8 +22,8 @@ const MAX_PARALLEL_REFUTATIONS = 3;
 const OUTCOMES: readonly RefutationOutcome[] = ['disproved', 'confirmed', 'unsettled'];
 // How far a finding may move between rounds and still count as the same one.
 const LINE_TOLERANCE = 5;
-// Findings below blocker that the judge lowered for want of proof it had no tools to find.
-const CHECKED_TAGS: readonly string[] = [UNPROVEN_TAG, UNSEEN_TAG, UNBUILT_TAG];
+// Blockers posted as warnings for want of proof a tool could find.
+const CHECKED_TAGS: readonly string[] = [UNPROVEN_TAG, UNBUILT_TAG];
 
 const REFUTE_SYSTEM_PROMPT = `You check one finding a code review raised on a pull request, using read-only tools on the PR's head commit.
 
@@ -114,7 +114,7 @@ function priorRefutation(finding: Finding, workspace: string, priorRounds: Round
 
 function findingKind(finding: Finding): string {
   if (finding.lead) return 'Open lead';
-  if (finding.tags?.includes(UNSEEN_TAG)) return 'Finding that rests on code outside the diff';
+  if (finding.gradeIfConfirmed) return 'Finding that rests on code outside the diff';
   if (finding.tags?.includes(UNBUILT_TAG)) return 'Claimed build failure';
   return 'Blocker';
 }
@@ -128,7 +128,7 @@ function buildRefuteMessage(finding: Finding, usesOutsideDiff = ''): string {
     ...(finding.evidence?.checks.length ? [`- **Reviewer evidence**: ${finding.evidence.checks.map(sanitizeForPromptEmbed).join(' | ')}`] : []),
     ...(finding.evidence?.proof.length ? [`- **Proving lines cited**: ${finding.evidence.proof.map(sanitizeForPromptEmbed).join(', ')}`] : []),
     ...(finding.lead ? [`- **Checked so far**: ${sanitizeForPromptEmbed(finding.lead.checked)}`, `- **Left to check**: ${sanitizeForPromptEmbed(finding.lead.left)}`] : []),
-    ...(finding.tags?.includes(UNSEEN_TAG) && finding.judgeNotes ? [`- **Judge's reasoning**: ${sanitizeForPromptEmbed(finding.judgeNotes.slice(0, MAX_JUDGE_NOTES_CHARS))}`] : []),
+    ...(finding.gradeIfConfirmed && finding.judgeNotes ? [`- **Judge's reasoning**: ${sanitizeForPromptEmbed(finding.judgeNotes.slice(0, MAX_JUDGE_NOTES_CHARS))}`] : []),
   ];
   return usesOutsideDiff ? `${lines.join('\n')}\n\n${usesOutsideDiff.trimEnd()}` : lines.join('\n');
 }
@@ -147,13 +147,13 @@ function parseRefutation(text: string, workspace: string, file: string, diff?: P
 }
 
 /**
- * Returns the grade a confirmation gives back, while nothing lowered the finding further since: the blocker an unproven
- * cap lowered, or the finder's grade the judge lowered for code it could not see. Reading code never confirms a build
- * failure, so such a claim stays a warning at most.
+ * Returns the grade a confirmation gives, while nothing lowered the finding further since the judge: the blocker an
+ * unproven cap lowered, or the grade the judge would give if the code it could not see holds. Reading code never
+ * confirms a build failure, so such a claim stays a warning at most.
  */
 function confirmedGrade(finding: Finding): FindingSeverity | undefined {
   const grade = finding.tags?.includes(UNPROVEN_TAG) && finding.severity === 'warning' ? 'blocker'
-    : finding.tags?.includes(UNSEEN_TAG) && finding.gradePath?.at(-1)?.by === 'judge' ? finding.reviewerSeverity : undefined;
+    : (finding.gradePath?.at(-1)?.by ?? 'judge') === 'judge' ? finding.gradeIfConfirmed : undefined;
   const capped = grade === 'blocker' && isUnconfirmedBuildClaim(finding) ? 'warning' : grade;
   return capped && SEVERITY_ORDER.indexOf(capped) < SEVERITY_ORDER.indexOf(finding.severity) ? capped : undefined;
 }
@@ -170,9 +170,9 @@ function applyRefutation(finding: Finding, refutation: Refutation): Finding {
   if (refutation.outcome === 'disproved') return finding.severity === 'blocker' ? graded : { ...graded, ...gradeStep(finding, 'ignore', 'refutation', refutation.reason) };
   if (refutation.outcome === 'confirmed') {
     const proof = [...new Set([...(finding.evidence?.proof ?? []), ...(refutation.proof ?? [])])];
-    const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
+    const { lead: _lead, notChecked: _notChecked, gradeIfConfirmed: _gradeIfConfirmed, ...confirmed } = graded;
     const restored = confirmedGrade(finding);
-    const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG && tag !== UNSEEN_TAG);
+    const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
     return {
       ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', refutation.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
       ...(tags && { tags }),
@@ -192,15 +192,15 @@ export interface RefuteOptions {
 }
 
 /**
- * Tries to refute each blocker, open lead and finding the judge lowered for want of proof in `findings` with read-only
- * tools on the workspace, at most
- * `MAX_PARALLEL_REFUTATIONS` at a time, and grades it by the outcome. An earlier round's outcome for the same finding is
+ * Tries to refute each blocker, open lead, finding lowered for want of proof and finding with a `gradeIfConfirmed` in
+ * `findings` with read-only tools on the workspace, at most `MAX_PARALLEL_REFUTATIONS` at a time, and grades it by the
+ * outcome. An earlier round's outcome for the same finding is
  * reused without a new check while the files it rests on are unchanged. A call that fails leaves the judge's grade.
  */
 export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff }: RefuteOptions): Promise<Finding[]> {
   return mapWithConcurrency(findings, MAX_PARALLEL_REFUTATIONS, async finding => {
     // A finding the judge or a suppression dropped stays dropped, even when it was a lead.
-    if (finding.severity === 'ignore' || (finding.severity !== 'blocker' && !finding.lead && !finding.tags?.some(tag => CHECKED_TAGS.includes(tag)))) return finding;
+    if (finding.severity === 'ignore' || (finding.severity !== 'blocker' && !finding.lead && !finding.gradeIfConfirmed && !finding.tags?.some(tag => CHECKED_TAGS.includes(tag)))) return finding;
     if (!codeDigest(workspace, [finding.file])) return finding;
     const prior = priorRefutation(finding, workspace, priorRounds, diff);
     if (prior) {

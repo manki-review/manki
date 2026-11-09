@@ -5,7 +5,7 @@ import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveReviewerModel } from './config';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { mapWithConcurrency, parseRetryNote } from './utils';
-import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
+import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
@@ -1332,19 +1332,24 @@ export async function runReview(
     if (verdictReport.verdict === 'ADDRESS_FIRST') {
       const readerBlockers = verdictReport.blockers.map(f => {
         const sameAs = matchPriorBlocker(f, priorBlockers);
-        return sameAs ? { ...f, sameAs } : f;
+        const checked = capUnconfirmedBuildClaim(f.file ? { ...f, toolEvidence: checkFindingClaims(f, claimSources) } : f);
+        return sameAs ? { ...checked, sameAs } : checked;
       });
-      // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found.
-      const refuted = refutation
+      // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found. It drops a
+      // claimed build failure that was posted as a warning.
+      const refuted = (refutation
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff, usesOutsideDiff })
-        : readerBlockers;
+        : readerBlockers).filter(f => f.severity !== 'ignore');
       const folded = foldIntoReaderBlockers(finalFindings, refuted);
-      const readerFindings = folded.blockers;
+      const readerFindings = folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
       finalFindings = [...folded.findings, ...readerFindings];
       threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
-      outcome = 'ADDRESS_FIRST';
-      verdictReason = 'verdict_reader';
-      verdictTrace = { survivingBlockers: readerFindings.map(findingToTraceEntry), unresolvedPriors: [] };
+      // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
+      if (readerFindings.some(f => f.severity === 'blocker')) {
+        outcome = 'ADDRESS_FIRST';
+        verdictReason = 'verdict_reader';
+        verdictTrace = { survivingBlockers: readerFindings.filter(f => f.severity === 'blocker').map(findingToTraceEntry), unresolvedPriors: [] };
+      }
     }
   }
 
