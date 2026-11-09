@@ -146,6 +146,7 @@ export interface ThreadResolutionOverrides {
 export interface FindingMetadata {
   description?: string;
   suggestedFix?: string;
+  howToFix?: string;
 }
 
 /**
@@ -167,6 +168,8 @@ export interface Finding {
   line: number;
   description: string;
   suggestedFix?: string;
+  /** The change that fixes the finding, in words. `suggestedFix` holds only code that replaces the flagged line. */
+  howToFix?: string;
   reviewers: string[];
   codeContext?: string;
   judgeNotes?: string;
@@ -1484,9 +1487,10 @@ export interface RoundRawFinding {
   line: number;
   severity: FindingSeverity;
   reviewers: string[];
-  /** Left out, as are `suggestedFix`, `evidence`, `notChecked` and `lead`, when the record was compacted to fit the review. */
+  /** Left out, as are `suggestedFix`, `howToFix`, `evidence`, `notChecked` and `lead`, when the record was compacted to fit the review. */
   description?: string;
   suggestedFix?: string;
+  howToFix?: string;
   evidence?: FindingEvidence;
   notChecked?: boolean;
   lead?: OpenLead;

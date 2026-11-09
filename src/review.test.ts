@@ -102,12 +102,17 @@ describe('parseFindings', () => {
         file: 'src/index.ts',
         line: 10,
         description: 'There is a bug here.',
+        howToFix: '  Check the bound first.  ',
         suggestedFix: 'Fix it like this.',
       },
+      { severity: 'warning', title: 'No fix', file: 'main.go', line: 3, description: 'd', howToFix: '   ' },
     ]);
 
     const findings = parseFindings(json, 'TestReviewer');
-    expect(findings).toHaveLength(1);
+    expect(findings).toHaveLength(2);
+    expect(findings[0].howToFix).toBe('Check the bound first.');
+    // A blank fix in words is no fix, so the finding keeps the layout of one without it.
+    expect(findings[1]).not.toHaveProperty('howToFix');
     expect(findings[0].severity).toBe('blocker');
     expect(findings[0].title).toBe('Bug found');
     expect(findings[0].file).toBe('src/index.ts');
@@ -911,10 +916,11 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('splitting into a separate PR');
   });
 
-  it('limits `suggestedFix` to code that applies as is and keeps caveats in the description', () => {
+  it('limits `suggestedFix` to code that applies as is and keeps the fix in words and its caveats in `howToFix`', () => {
     const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
     expect(prompt).toContain('Put in it only code that applies as is: no prose, no markdown fences');
-    expect(prompt).toContain('List any known caveats of the fix in the `description`');
+    expect(prompt).toContain('"howToFix": "The change that fixes it, in one or two sentences"');
+    expect(prompt).toContain('List any known caveats of the fix in `howToFix`');
     expect(prompt).toContain(WRITING_RULES);
     expect(prompt).not.toMatch(/[\u2014\u2013]| -- /);
   });
@@ -2382,7 +2388,7 @@ describe('runReview', () => {
     ]);
 
     // With the PR head checked out, the judge's client tries to refute each reader blocker. A disproof keeps it a
-    // blocker, and its reason shows under "How this was checked".
+    // blocker, and its reason closes the fold under the finding, after the fix and the checks.
     const workspace = mkdtempSync(join(tmpdir(), 'manki-reader-refute-'));
     try {
       writeFileSync(join(workspace, 'a.ts'), 'const cache = new Map();\nexport function put(k, v) { cache.clear(); cache.set(k, v); }\n');
@@ -2394,7 +2400,7 @@ describe('runReview', () => {
             ? JSON.stringify({ outcome: 'disproved', reason: 'Every write clears the cache first.', proof: ['a.ts:2'] })
             : JSON.stringify({
               verdict: 'ADDRESS_FIRST', summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y',
-              blockers: [{ file: 'a.ts', line: 1, title: 'The cache is never invalidated.', evidence: ['a.ts:1 builds the cache'], proof: ['a.ts:1'] }],
+              blockers: [{ file: 'a.ts', line: 1, title: 'The cache is never invalidated.', howToFix: 'Clear the cache on every write.', evidence: ['a.ts:1 builds the cache'], proof: ['a.ts:1'] }],
             }),
         }));
         return clients;
@@ -2405,12 +2411,11 @@ describe('runReview', () => {
       expect(refuted.verdictReason).toBe('verdict_reader');
       expect(jest.mocked(refuting.judge.sendMessage).mock.calls.map(call => call[2]?.repoTools?.root)).toEqual([undefined, workspace]);
       expect(refuted.findings).toEqual([expect.objectContaining({
-        severity: 'blocker', file: 'a.ts', line: 1, refutation: expect.objectContaining({ outcome: 'disproved', reason: 'Every write clears the cache first.' }),
+        severity: 'blocker', file: 'a.ts', line: 1, howToFix: 'Clear the cache on every write.', refutation: expect.objectContaining({ outcome: 'disproved', reason: 'Every write clears the cache first.' }),
       })]);
       expect(refuted.verdictTrace?.survivingBlockers).toEqual([expect.objectContaining({ file: 'a.ts', title: 'The cache is never invalidated.' })]);
       const comment = formatFindingComment(refuted.findings[0], TEST_LINKS);
-      expect(comment).toMatch(/<summary>How this was checked: 1 place read, doubt found<\/summary>\n\n\*\*Doubt found:\*\* [^\n]*Every write clears the cache first\./);
-      expect(comment).toContain('On the commented line: Builds the cache');
+      expect(comment).toMatch(/<summary>How to fix it and 1 place read · doubt found<\/summary>\n\n\*\*How to fix it\*\*\nClear the cache on every write\.\n\n\*\*Checked in the code\*\*\nOn the commented line: Builds the cache\n\n\*\*Doubt found\*\*\n[^\n]*Every write clears the cache first\./);
 
       // A second refuter on another model checks it too. Two disproofs still leave it blocking, posted with both reasons.
       const refuterPair = { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ outcome: 'disproved', reason: 'Only tests read the cache.', proof: ['a.ts:2'] }) }) };
@@ -2420,7 +2425,7 @@ describe('runReview', () => {
         severity: 'blocker', file: 'a.ts', pairRefutation: expect.objectContaining({ outcome: 'disproved', reason: 'Only tests read the cache.' }),
       })]);
       expect(refuterPair.sendMessage.mock.calls.map(call => call[2]?.repoTools?.root)).toEqual([workspace]);
-      expect(formatFindingComment(twice.findings[0], TEST_LINKS)).toMatch(/\*\*Doubt found:\*\* [^\n]*Every write clears the cache first\.[^\n]*\n\n\*\*Second check, on another model:\*\* doubt found\. Only tests read the cache\./);
+      expect(formatFindingComment(twice.findings[0], TEST_LINKS)).toMatch(/\*\*Doubt found\*\*\n[^\n]*Every write clears the cache first\.[^\n]*\n\n\*\*Second check, on another model\*\*\nDoubt found\. Only tests read the cache\./);
       expect(twice.llmCalls?.filter(c => c.agent?.startsWith('refute')).map(c => c.agent).sort()).toEqual(['refute', 'refute_pair']);
       // A judge without tools runs no refuter, so the second one cannot run either, and the log says so.
       const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});

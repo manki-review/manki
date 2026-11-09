@@ -2014,6 +2014,7 @@ describe('runJudgeAgent', () => {
         severity: 'warning',
         description: 'Error enum lacks variant for missing rotation chainlock sigs.',
         suggestedFix: 'Add `MissingRotationChainLockSigs(QuorumHash)`.',
+        howToFix: 'Add the missing variant to the error enum.',
         currentCode: '   25: pub enum QuorumVerificationError {\n   26:     MissingMember(QuorumHash),\n>>> 27:     MissingRotationChainLockSigs(QuorumHash),\n   28: }',
       }],
       priorRounds: priorRounds.map(roundContextFromLegacy),
@@ -2032,6 +2033,7 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('rotation chainlock sigs');
     expect(userMessage).toContain('**Original suggested fix**');
     expect(userMessage).toContain('MissingRotationChainLockSigs(QuorumHash)');
+    expect(userMessage).toContain('- **Original fix**: Add the missing variant to the error enum.');
   });
 
   it('returns not_addressed when current code still shows the concern and diff misses the file (PMPa negative case)', async () => {
@@ -3419,10 +3421,10 @@ describe('mapJudgedToFindings', () => {
     expect(result[2].evidence).toEqual({ checks: ['read it'], proof: ['src/index.ts:12'] });
   });
 
-  it('gives the kept finding the proving lines of a duplicate folded into it', () => {
+  it('gives the kept finding the proving lines and the fix in words of a duplicate folded into it', () => {
     const originals = [
       makeFinding({ title: 'Overflow in sum', severity: 'blocker', evidence: undefined }),
-      makeFinding({ title: 'Sum overflows', severity: 'blocker', evidence: { checks: ['read src/math.ts:2'], proof: ['src/math.ts:2'] } }),
+      makeFinding({ title: 'Sum overflows', severity: 'blocker', evidence: { checks: ['read src/math.ts:2'], proof: ['src/math.ts:2'] }, howToFix: 'Use checked addition.' }),
     ];
     const judged: JudgedFinding[] = [
       { id: 1, title: 'Overflow in sum', severity: 'blocker', reasoning: 'Real.', confidence: 'high' },
@@ -3433,6 +3435,9 @@ describe('mapJudgedToFindings', () => {
 
     expect(rest).toEqual([]);
     expect([kept.severity, kept.evidence]).toEqual(['blocker', { checks: ['read src/math.ts:2'], proof: ['src/math.ts:2'] }]);
+    // A fix in words the kept finding lacks comes from the duplicate, and its own fix is never replaced.
+    expect(kept.howToFix).toBe('Use checked addition.');
+    expect(mapJudgedToFindings([{ ...originals[0], howToFix: 'Widen the sum to 64 bits.' }, originals[1]], judged)[0].howToFix).toBe('Widen the sum to 64 bits.');
 
     // Only the kept finding decides whether it claims something is missing, and a duplicate's search can back that claim.
     const fold = (survivor: Finding['evidence'], duplicate: Finding['evidence']) => mapJudgedToFindings(

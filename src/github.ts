@@ -1154,11 +1154,11 @@ const FIX_LABEL = '**Fix:**';
 /** The most of a fix the review body shows, so one long line cannot crowd out the rest of the review. */
 const MAX_BODY_FIX_CHARS = 600;
 
-/** Renders a fix for the body: prose after the label, or the label above text and fenced code blocks. */
+/** Renders a code fix for the body: prose on one line, or text and fenced code blocks. */
 function formatBodyFix(fix: string, file: string): string {
   const parts = splitFix(safeTruncate(fix, MAX_BODY_FIX_CHARS), file);
-  if (parts.every(p => p.kind === 'prose')) return `${FIX_LABEL} ${sanitizeMarkdown(parts.map(p => p.lines.join(' ')).join(' '))}`;
-  return `${FIX_LABEL}\n\n${renderFixParts(parts, file)}`;
+  if (parts.every(p => p.kind === 'prose')) return sanitizeMarkdown(parts.map(p => p.lines.join(' ')).join(' '));
+  return renderFixParts(parts, file);
 }
 
 /**
@@ -1192,15 +1192,30 @@ function labelDescription(finding: Finding, description: string): string {
   return `${label}${/^(?:[-*+]\s|#{1,6}\s|>|\d+[.)]\s)/.test(description) ? '\n\n' : ' '}${description}`;
 }
 
-/** Returns what goes wrong and the fix, as listed under a finding in the review body. `fixDiff` replaces the fix's own rendering. */
-function formatFindingDetail(finding: Finding, fixDiff?: string): string[] {
+/** Returns the low confidence note and what goes wrong, as listed under a finding in the review body. */
+function formatFindingDescription(finding: Finding): string[] {
   const lines = finding.judgeConfidence === 'low' ? [LOW_CONFIDENCE_NOTE] : [];
-  // A fix the reviewer could not give as code is described at the end, so the whole description shows.
   const description = sanitizeMarkdown(finding.description).trim();
   if (description) lines.push(labelDescription(finding, description));
-  if (fixDiff) lines.push(fixDiff);
-  else if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
   return lines;
+}
+
+/** One part of the fold under a finding. `open` is how the part shows when it is the only one. */
+interface FoldPart { label: string; text: string; open?: string }
+
+const HOW_TO_FIX_LABEL = 'How to fix it';
+
+/** Returns the fix of `finding`: its `howToFix`, then `code`, a rendering of its `suggestedFix`. */
+function fixPart(finding: Finding, code?: string): FoldPart | undefined {
+  const text = [finding.howToFix?.trim() && sanitizeMarkdown(finding.howToFix.trim()), code].filter(Boolean).join('\n\n');
+  if (!text) return undefined;
+  return { label: HOW_TO_FIX_LABEL, text, open: `${FIX_LABEL}${text.includes('\n') ? '\n\n' : ' '}${text}` };
+}
+
+/** Returns the fix of a finding listed in the review body: a diff against the flagged line when it fits, or the code as written. */
+function bodyFixPart(finding: Finding, files: ReadonlyMap<string, readonly string[]>): FoldPart | undefined {
+  const code = finding.suggestedFix?.trim() ? formatFixDiff(finding, files) ?? formatBodyFix(finding.suggestedFix, finding.file) : undefined;
+  return fixPart(finding, code);
 }
 
 /** Changed lines up to which a code fix in the review body shows as a diff against the flagged line. */
@@ -1218,14 +1233,15 @@ function formatFixDiff(finding: Finding, files: ReadonlyMap<string, readonly str
   const fix = parts[0].lines;
   const diff = [`-${original}`, ...fix.map(line => `+${line}`)].join('\n');
   if (fix.length + 1 > MAX_DIFF_FIX_LINES || diff.length > MAX_BODY_FIX_CHARS || PLACEMENT_COMMENT_RE.test(fix[0])) return undefined;
-  return `${FIX_LABEL}\n\n${fenceText(diff, 'diff')}`;
+  return fenceText(diff, 'diff');
 }
 
-/** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
+/** Renders a finding listed in the review body: title, link to the line, what goes wrong, then its fold. */
 function formatFindingBlock(finding: Finding, links: CodeLinks, offerIssue = false): string {
   const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
   if (finding.file) lines.push(`[${inlineCode(findingLocation(finding))}](${links.linkTo(finding.file, finding.line)})`);
-  const block = [...lines, ...formatFindingDetail(finding, formatFixDiff(finding, links.files)), ...checksSection(finding, links, 'flagged')].join('\n');
+  const fold = formatFold(bodyFixPart(finding, links.files), '', checksSection(finding, links, 'flagged'));
+  const block = [...lines, ...formatFindingDescription(finding), ...(fold ? [fold] : [])].join('\n');
   return offerIssue ? `${block}\n\n${issueBoxFor(finding)}` : block;
 }
 
@@ -1248,20 +1264,21 @@ const PREVIEW_CONTEXT = 2;
 
 /**
  * Renders a finding listed in the review body as a closed fold. Its summary holds the title, the header line and
- * the location. Inside are what goes wrong, the fix, and a permalink to the flagged lines, which GitHub shows as code.
- * The file's lines keep the permalink inside it, since GitHub shows a range past the end as a bare link.
+ * the location. Inside are what goes wrong, a permalink to the flagged lines, which GitHub shows as code, then the
+ * parts of `formatFold` under their labels. The file's lines keep the permalink inside it, since GitHub shows a range
+ * past the end as a bare link.
  */
 function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = false): string {
   const { linkTo, files } = links;
   const location = finding.file ? ` · <a href="${linkTo(finding.file, finding.line)}"><code>${inlineHtml(findingLocation(finding))}</code></a>` : '';
   const summary = `<summary>${SEVERITY_EMOJI[finding.severity]} <b>${inlineHtml(sanitizeMarkdown(finding.title))}</b><br><sub>${inlineHtml(formatFindingHeader(finding))}${location}</sub></summary>`;
-  const fixDiff = formatFixDiff(finding, files);
   const last = files.get(finding.file)?.length;
   // A diff already shows the flagged line, so the fold previews it only without one.
-  const preview = !fixDiff && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
+  const preview = !formatFixDiff(finding, files) && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
     ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))]
     : [];
-  const fold = `<details>\n${summary}\n\n${[...formatFindingDetail(finding, fixDiff), ...preview, ...checksSection(finding, links, 'flagged')].join('\n\n')}\n\n</details>`;
+  const parts = [bodyFixPart(finding, files), ...checksSection(finding, links, 'flagged').parts].filter(p => p !== undefined);
+  const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding), ...preview, ...parts.map(labelledPart)].join('\n\n')}\n\n</details>`;
   // The box goes right under the fold, so it shows without opening it.
   return offerIssue ? `${fold}\n\n${issueBoxFor(finding)}` : fold;
 }
@@ -1334,17 +1351,19 @@ const AGREED_ANSWER_RE = /^\**Agreed\./;
 function agreedFollowUps(threads: PreviousFinding[]): Finding[] {
   return threads.flatMap(t => (t.answer && AGREED_ANSWER_RE.test(t.answer) && t.severity !== 'unknown' && !t.fixed
     && (t.status === 'resolved' || t.status === 'auto-resolved')
-    ? [{ severity: t.severity, title: t.title, file: t.file, line: t.line, description: t.description ?? '', ...(t.suggestedFix && { suggestedFix: t.suggestedFix }), reviewers: [] }]
+    ? [{ severity: t.severity, title: t.title, file: t.file, line: t.line, description: t.description ?? '', ...(t.suggestedFix && { suggestedFix: t.suggestedFix }), ...(t.howToFix && { howToFix: t.howToFix }), reviewers: [] }]
     : []));
 }
 
 /** Returns Manki's reply in an answered thread when the problem came back and the code there got worse. */
 export function formatFoundAgainReply(finding: Finding): string {
+  const fix = fixPart(finding, finding.suggestedFix?.trim() ? formatBodyFix(finding.suggestedFix, finding.file) : undefined);
   return [
     'This came up again, and the code here is worse than when this thread was answered.',
     `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}`,
     `**${sanitizeMarkdown(finding.title)}**`,
-    ...formatFindingDetail(finding),
+    ...formatFindingDescription(finding),
+    ...(fix?.open ? [fix.open] : []),
   ].join('\n\n');
 }
 
@@ -2110,23 +2129,17 @@ function renderFixParts(parts: FixPart[], file: string): string {
 }
 
 /**
- * Renders a suggested fix. Only code that replaces the flagged line as is goes in a
- * `suggestion` block, because committing it writes the block verbatim into the file.
- * Code with hidden characters never does, since a reader cannot see what would be committed.
- * Anything else is shown as text and plain code blocks.
+ * Returns a suggested fix as a `suggestion` block, or nothing when it is not one. Only short code that replaces the
+ * flagged line as is goes in one, because committing it writes the block verbatim into the file. Code with hidden
+ * characters never does, since a reader cannot see what would be committed.
  */
-function formatSuggestedFix(fix: string, file: string): string {
-  const parts = splitFix(fix, file);
-  const code = parts.filter(p => p.kind === 'code').map(p => p.lines.join('\n'));
-  const isShort = code.every(c => c.split('\n').length <= SUGGESTION_MAX_LINES && c.length <= SUGGESTION_MAX_LENGTH);
-  if (parts.length === 1 && code.length === 1 && isShort && !PLACEMENT_COMMENT_RE.test(code[0].split('\n')[0]) && hiddenCharacters(code[0]).length === 0) {
-    const fence = dynamicFence(code[0]);
-    return `${fence}suggestion\n${code[0]}\n${fence}`;
-  }
-  const rendered = renderFixParts(parts, file);
-  if (!isShort) return `<details>\n<summary>Suggested fix</summary>\n\n${rendered}\n</details>`;
-  // A fix that is only code needs no label, since GitHub labels a suggestion and the code shows what it is.
-  return parts[0]?.kind === 'prose' ? `${FIX_LABEL} ${rendered}` : rendered;
+function suggestionBlock(parts: FixPart[]): string | undefined {
+  const [only] = parts;
+  if (parts.length !== 1 || only.kind !== 'code') return undefined;
+  const code = only.lines.join('\n');
+  if (only.lines.length > SUGGESTION_MAX_LINES || code.length > SUGGESTION_MAX_LENGTH || PLACEMENT_COMMENT_RE.test(only.lines[0]) || hiddenCharacters(code).length > 0) return undefined;
+  const fence = dynamicFence(code);
+  return `${fence}suggestion\n${code}\n${fence}`;
 }
 
 /** Returns the line a finding opens with: severity, the reporting tool if any, category and effort. */
@@ -2160,15 +2173,15 @@ const CLOSES_CODE_RE = /^$|^[\s.,;:!?)\]}"']/;
 // A repository path made only of characters that cannot end a Markdown link or start another URL.
 const LINKABLE_PATH_RE = /^[\w@+.-]+(?:\/[\w@+.-]+)*$/;
 
-const REFUTATION_LINE: Record<RefutationOutcome, string> = {
-  confirmed: '**Double-checked:** Manki tried to disprove this by reading the code and could not.',
-  unsettled: '**Not settled:** Manki tried to disprove this by reading the code and could not decide.',
+const REFUTATION_PART: Record<RefutationOutcome, { label: string; text: string }> = {
+  confirmed: { label: 'Double-checked', text: 'Manki tried to disprove this by reading the code and could not.' },
+  unsettled: { label: 'Not settled', text: 'Manki tried to disprove this by reading the code and could not decide.' },
   // A posted disproved finding is a blocker, a security finding or one a second check confirmed, since a disproof drops any other.
-  disproved: '**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself.',
+  disproved: { label: 'Doubt found', text: 'Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself.' },
 };
-const PAIR_REFUTATION_LABEL = '**Second check, on another model:**';
+const PAIR_REFUTATION_LABEL = 'Second check, on another model';
 
-/** Opens the checks under a finding comment, so reading the comment back stops its description there. */
+/** Opens the fold under a finding comment, so reading the comment back stops its description there. */
 const CHECKS_MARKER = '<!-- manki-checks -->';
 
 const REFUTATION_SUMMARY: Record<RefutationOutcome, string> = { confirmed: 'double-checked', unsettled: 'not settled', disproved: 'doubt found' };
@@ -2404,34 +2417,44 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
   return `[${inlineCode(rangeLabel(range))}](${linkTo(range.file, range.start, range.end)})`;
 }
 
-function refutationLine(label: string, { outcome, reason, proof }: Refutation, linkTo: LineLink, known: readonly string[]): string {
+function refutationPart(label: string, lead: string, { outcome, reason, proof }: Refutation, linkTo: LineLink, known: readonly string[]): FoldPart {
   const cited = outcome === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p, known)?.at ?? []);
-  return [label, reason ? oneLine(reason) : '', cited.length ? `See ${cited.map(r => linkedRange(r, linkTo)).join(', ')}.` : '']
+  const text = [lead, reason ? oneLine(reason) : '', cited.length ? `See ${cited.map(r => linkedRange(r, linkTo)).join(', ')}.` : '']
     .filter(Boolean).join(' ');
+  return { label, text, open: `**${label}:** ${text}` };
 }
 
-/** Returns a line for each refuter that checked `finding`. */
-function refutationLines({ refutation, pairRefutation }: Finding, linkTo: LineLink, known: readonly string[]): string[] {
+/** Returns a part for each refuter that checked `finding`. */
+function refutationParts({ refutation, pairRefutation }: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
+  const pairLead = pairRefutation && REFUTATION_SUMMARY[pairRefutation.outcome];
   return [
-    ...(refutation ? [refutationLine(REFUTATION_LINE[refutation.outcome], refutation, linkTo, known)] : []),
-    ...(pairRefutation ? [refutationLine(`${PAIR_REFUTATION_LABEL} ${REFUTATION_SUMMARY[pairRefutation.outcome]}.`, pairRefutation, linkTo, known)] : []),
+    ...(refutation ? [refutationPart(REFUTATION_PART[refutation.outcome].label, REFUTATION_PART[refutation.outcome].text, refutation, linkTo, known)] : []),
+    ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`, pairRefutation, linkTo, known)] : []),
   ];
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+/** The parts of a finding's fold that say how it was checked, with the counts and outcomes its summary names. */
+interface FindingChecks { parts: FoldPart[]; reads: string[]; outcomes: string[] }
+
+const NOT_CHECKED: FindingChecks = {
+  parts: [{ label: 'Not checked against the code', text: 'Nothing was cited to back it.', open: '**Not checked against the code.** Nothing was cited to back it.' }],
+  reads: [],
+  outcomes: ['not checked against the code'],
+};
+
 /**
- * Returns the collapsed "How this was checked" section of `finding`. Its summary counts the places read and names
- * each refuter's outcome. Inside are those outcomes, the check on the finding's own line, a code preview with a sentence
- * for up to `MAX_CHECK_PREVIEWS` other places, and the rest as links. A finding that cites nothing gets an open line
- * that says so, unless a tool reported it or it is an earlier round's finding.
+ * Returns how `finding` was checked: the check on its own line, a code preview with a sentence for up to
+ * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome. A finding that cites nothing
+ * says so, unless a tool reported it or it is an earlier round's finding.
  */
-function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLinks, ownLine: string): string[] {
+function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLinks, ownLine: string): FindingChecks {
   const known = [...changed, ...files.keys()];
   const checks = findingChecks(finding, known);
-  const refutations = refutationLines(finding, linkTo, known);
+  const refutations = refutationParts(finding, linkTo, known);
   if (checks.length === 0 && refutations.length === 0) {
-    return finding.toolSource || finding.reviewers.length === 0 ? [] : [`${CHECKS_MARKER}\n**Not checked against the code.** Nothing was cited to back it.`];
+    return finding.toolSource || finding.reviewers.length === 0 ? { parts: [], reads: [], outcomes: [] } : NOT_CHECKED;
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
   const ownChecks = checks.filter(isOwn);
@@ -2447,8 +2470,7 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
     const said = text || codeLine(files.get(at.file)?.[at.start - 1] ?? '');
     return `- ${linkedRange(at, linkTo)}${said ? `: ${said}` : ''}`;
   };
-  const parts = [
-    ...refutations,
+  const lines = [
     ...(own.length ? [`On the ${ownLine} line: ${own.map(c => c.text).join(' ')}`] : []),
     ...shown.map(({ range, checks: shared }) => {
       // The preview shows the code, so a bare location in it adds no line of its own.
@@ -2459,15 +2481,45 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
     }),
     ...(listed.length ? [listed.map(listItem).join('\n')] : []),
   ];
-  // A fold never holds a single line, so a lone one shows open.
-  if (parts.length === 1 && shown.length === 0 && !parts[0].includes('\n')) {
-    return [`${CHECKS_MARKER}\n${parts[0].startsWith('- ') ? `**Checked:** ${parts[0].slice(2)}` : parts[0]}`];
-  }
+  const lone = lines.length === 1 && shown.length === 0 && !lines[0].includes('\n');
+  const checked: FoldPart[] = lines.length === 0 ? [] : [{
+    label: 'Checked in the code',
+    text: lines.join('\n\n'),
+    ...(lone && { open: lines[0].startsWith('- ') ? `**Checked:** ${lines[0].slice(2)}` : lines[0] }),
+  }];
   const read = checks.filter(c => c.at).length;
   const other = checks.length - read;
-  const counts = [read && `${read} ${read === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check'),
-    finding.refutation && REFUTATION_SUMMARY[finding.refutation.outcome], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[finding.pairRefutation.outcome]}`].filter(Boolean);
-  return [`${CHECKS_MARKER}\n<details>\n<summary>How this was checked: ${counts.join(', ')}</summary>\n\n${parts.join('\n\n')}\n\n</details>`];
+  return {
+    parts: [...checked, ...refutations],
+    reads: [read && `${read} ${read === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
+    outcomes: [finding.refutation && REFUTATION_SUMMARY[finding.refutation.outcome], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[finding.pairRefutation.outcome]}`].filter(o => typeof o === 'string'),
+  };
+}
+
+function labelledPart({ label, text }: FoldPart): string {
+  return `**${label}**\n${text}`;
+}
+
+/**
+ * Returns the fold under a finding: the fix, then why it matters, then how it was checked, each under its label, with
+ * the refuters' outcomes last. Its summary names what it holds. A part alone that fits on one line shows open instead,
+ * since a fold never holds a single line.
+ */
+function formatFold(fix: FoldPart | undefined, why: string, checks: FindingChecks): string {
+  const parts = [...(fix ? [fix] : []), ...(why ? [{ label: 'Why it matters', text: why }] : []), ...checks.parts];
+  if (parts.length === 0) return '';
+  const [first] = parts;
+  if (parts.length === 1 && first.open && !first.open.includes('\n')) return `${CHECKS_MARKER}\n${first.open}`;
+  const topics = [...(fix ? [HOW_TO_FIX_LABEL] : []), ...(why ? [fix ? 'why' : 'Why it matters'] : [])];
+  let summary = `How this was checked: ${[...checks.reads, ...checks.outcomes].join(', ')}`;
+  if (topics.length > 0) {
+    const items = [...topics, ...checks.reads];
+    const list = items.length === 1 ? items[0] : `${items.slice(0, -1).join(', ')}${items.length > 2 ? ',' : ''} and ${items[items.length - 1]}`;
+    summary = `${list}${checks.outcomes.length ? ` · ${checks.outcomes.join(', ')}` : ''}`;
+  }
+  // The summary names a lone part, so it needs no label of its own.
+  const body = parts.length === 1 ? first.text : parts.map(labelledPart).join('\n\n');
+  return `${CHECKS_MARKER}\n<details>\n<summary>${summary}</summary>\n\n${body}\n\n</details>`;
 }
 
 /**
@@ -2484,20 +2536,22 @@ function issueBoxFor(finding: Finding): string {
 function formatFindingComment(finding: Finding, links: CodeLinks): string {
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
   if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
-  const fix = finding.suggestedFix?.trim() ? `\n\n${formatSuggestedFix(finding.suggestedFix, finding.file)}` : '';
+  // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold.
+  const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
+  const suggestion = suggestionBlock(fixParts);
+  const fix = fixPart(finding, suggestion || fixParts.length === 0 ? undefined : renderFixParts(fixParts, finding.file));
   const checks = checksSection(finding, links, 'commented');
   const label = labelDescription(finding, '');
-  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - label.length - visibleLength(fix) - visibleLength(checks.join('\n\n')));
+  const open = `${suggestion ? `\n\n${suggestion}` : ''}\n\n${formatFold(fix, '', checks)}`;
+  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - label.length - visibleLength(open));
   const description = sanitizeMarkdown(finding.description);
   const { lead, rest } = splitLead(description, 3, room);
   // A fold never holds a single sentence, so one sentence past the lead shows with it, unless the lead was cut short.
   const folds = rest.includes('\n') || rest.split(/(?<=[.!?])\s+/).length > 1 || !description.trim().startsWith(lead);
   const shown = folds ? lead : description.trim();
-  comment += `${shown ? labelDescription(finding, shown) : ''}${fix}`;
-  if (folds) {
-    comment += `\n\n<details>\n<summary>Details</summary>\n\n${rest}\n\n</details>`;
-  }
-  for (const section of checks) comment += `\n\n${section}`;
+  comment += `${shown ? labelDescription(finding, shown) : ''}${suggestion ? `\n\n${suggestion}` : ''}`;
+  const fold = formatFold(fix, folds ? rest : '', checks);
+  if (fold) comment += `\n\n${fold}`;
   comment += `\n\n${issueBoxFor(finding)}`;
 
   const data: Record<string, unknown> = {
@@ -2508,6 +2562,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
     flaggedBy: finding.reviewers,
     title: finding.title,
     ...(finding.suggestedFix && { fix: finding.suggestedFix.slice(0, 200) }),
+    ...(finding.howToFix && { howToFix: finding.howToFix.slice(0, 300) }),
     ...(finding.tags && finding.tags.length > 0 && { tags: finding.tags }),
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
   };

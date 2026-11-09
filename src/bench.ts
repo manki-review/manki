@@ -152,7 +152,7 @@ export type Matcher = (item: KeyItem, findings: Finding[]) => Promise<MatchDecis
 export function candidateFindings(item: KeyItem, findings: Finding[]): number[] {
   if (item.locations.length === 0) return findings.map((_, i) => i);
   return findings.flatMap((f, i) => {
-    const text = `${f.file}\n${f.title}\n${f.description}\n${f.suggestedFix ?? ''}`;
+    const text = `${f.file}\n${f.title}\n${f.description}\n${f.howToFix ?? ''}\n${f.suggestedFix ?? ''}`;
     const named = item.locations.some(loc => f.file === loc || f.file.endsWith(`/${loc}`) || text.includes(loc));
     return named ? [i] : [];
   });
@@ -175,13 +175,14 @@ function matcherMessage(item: KeyItem, findings: Finding[]): string {
   const listed = findings.map((f, i) => [
     `${i + 1}. [${f.severity}] ${f.file}${f.line > 0 ? `:${f.line}` : ''}: ${f.title}`,
     f.description.slice(0, MAX_MATCHER_DESCRIPTION),
+    ...(f.howToFix ? [`How to fix it: ${f.howToFix.slice(0, MAX_MATCHER_DESCRIPTION)}`] : []),
     ...(f.suggestedFix ? [`Fix: ${f.suggestedFix.slice(0, MAX_MATCHER_DESCRIPTION)}`] : []),
   ].join('\n'));
   return `Key item (${item.severity}): ${item.mechanism}\nLocations: ${item.locations.join(', ') || 'not given'}\n\nFindings:\n\n${listed.join('\n\n')}`;
 }
 
 function matcherKey(model: string, item: KeyItem, findings: Finding[]): string {
-  const shown = findings.map(f => [f.severity, f.file, f.line, f.title, f.description, f.suggestedFix ?? '']);
+  const shown = findings.map(f => [f.severity, f.file, f.line, f.title, f.description, f.howToFix ?? '', f.suggestedFix ?? '']);
   return createHash('sha256').update(JSON.stringify([model, MATCHER_SYSTEM_PROMPT, item.severity, item.mechanism, item.locations, shown])).digest('hex');
 }
 
