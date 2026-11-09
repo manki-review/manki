@@ -2309,11 +2309,11 @@ function lineRange(file: string, lines: string): CodeRange | undefined {
 }
 
 function parseCheck(entry: string, known: readonly string[]): Check | undefined {
-  // The path is model output that PR content can steer, so only a plain repository path becomes a link.
   const match = entry.match(CHECK_LOCATION_RE);
   const [cited, line, last, more] = match ? [1, 5, 9].map(i => match.slice(i, i + 4)).find(group => group[0] !== undefined)! : [];
-  const path = match && LINKABLE_PATH_RE.test(cited) && !cited.split('/').some(segment => segment === '.' || segment === '..')
-    ? knownPath(sanitizeFilePath(cited), known) : undefined;
+  const resolved = match ? knownPath(sanitizeFilePath(cited), known) : undefined;
+  // The cited path and the file names it resolves against are both PR content, so only a plain repository path becomes a link.
+  const path = resolved && LINKABLE_PATH_RE.test(resolved) && !resolved.split('/').some(segment => segment === '.' || segment === '..') ? resolved : undefined;
   const at = path ? lineRange(path, last ? `${line}-${last}` : line) : undefined;
   const rest = oneLine(at ? entry.slice(match![0].length) : entry);
   // A sentence starts with a capital, but a text that opens with a path or a name stays as written.

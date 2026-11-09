@@ -260,6 +260,11 @@ describe('formatFindingComment', () => {
     expect(steered).not.toMatch(/\]\(https:\/\/github\.com\/o\/r\/blob\/sha\/(?:a\)|\.\.)/);
     expect(steered).not.toContain('https://www.evil.com');
     expect(steered).toContain('<summary>How this was checked: 2 other checks</summary>');
+    // A file name resolves to a changed path, which is PR content too, so one that could end the link stays plain text.
+    const renamed = formatFindingComment({ ...baseFinding, evidence: { checks: ['cache.go:3 is safe', 'run.py:4 is fine'], proof: [] } },
+      { ...links, changed: ['a)www.evil.com/cache.go', 'x/../../other/repo/blob/main/run.py'] });
+    expect(renamed).not.toMatch(/\]\(https:\/\/github\.com\/o\/r\/blob\/sha\/(?:a\)|x\/\.\.)/);
+    expect(renamed).toContain('- cache.go:3 is safe\n- run.py:4 is fine');
 
     // Reviewers who flag one problem cite one place in their own words, and each such check shows once.
     const merged = render({ ...baseFinding, evidence: { proof: [], checks: [
