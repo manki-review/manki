@@ -4,7 +4,7 @@ import { LLMClient } from './providers';
 import { extractJSON } from './json';
 import { parseEvidence } from './review';
 import { Finding, TestGuide, VERDICT_READER_NAME, VerdictReport } from './types';
-import { safeTruncate, sendWithParseRetry } from './utils';
+import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_BLOCKER_TITLE_LENGTH = 100;
@@ -144,10 +144,13 @@ function summaryBlocker(summary: string): Finding {
   };
 }
 
-/** Runs the verdict reader once on `userMessage`. Throws when the call fails or its output is truncated or unparseable. */
+/**
+ * Runs the verdict reader once on `userMessage`. Throws when the call fails or its output is truncated or unparseable.
+ * The message ends with the reply format, since a long diff pushes the system prompt's format far behind it.
+ */
 export async function runVerdictReader(client: LLMClient, userMessage: string): Promise<VerdictReport> {
   return sendWithParseRetry(
-    userMessage,
+    `${userMessage}\n\n${jsonOnlyReply()}`,
     message => client.sendMessage(VERDICT_READER_SYSTEM_PROMPT, message, { effort: 'high', timeoutMs: VERDICT_TIMEOUT_MS }),
     (response) => {
       if (response.truncated) {
