@@ -156,6 +156,8 @@ describe('readLockfileChanges', () => {
       expect.objectContaining({ line: 35, message: expect.stringMatching(/^updated untrusted 0\.9\.0 -> 0\.7\.1: downgrade\. /) }),
       expect.objectContaining({ line: 42, message: expect.stringContaining(': source changed. ') }),
     ]);
+    // A patch is read against the content before it, which gives the same list.
+    expect(readLockfileChanges(diffOf('Cargo.lock', CARGO_BASE, CARGO_HEAD), new Map([['Cargo.lock', CARGO_BASE]]), 'base')).toEqual(lockfiles);
   });
 
   it('flags a downgrade when a package keeps fewer or more versions than before', () => {
@@ -454,6 +456,7 @@ ${scheduler ? '\n  scheduler@0.23.2:\n    dependencies:\n      loose-envify: 1.4
   it.each([
     ['the head cannot be read', 'Cargo.lock', CARGO_BASE, CARGO_HEAD, new Map<string, string>()],
     ['the head does not match the diff', 'Cargo.lock', CARGO_BASE, CARGO_HEAD, new Map([['Cargo.lock', CARGO_HEAD.replace('bls', 'blz')]])],
+    ['the base does not match the diff', 'Cargo.lock', CARGO_BASE, CARGO_HEAD, new Map([['Cargo.lock', CARGO_BASE.replace('hex', 'hez')]]), 'base' as const],
     ['a Cargo.lock holds a table Manki does not read', 'Cargo.lock', 'version = 4\n', 'version = 4\n\n[metadata]\n"checksum hex 0.4.3" = "7f24"\n', undefined],
     ['a Cargo.lock value is an inline table', 'Cargo.lock', 'version = 4\n', 'version = 4\nsource = { git = "x" }\n', undefined],
     ['the legacy `dependencies` map of an npm lockfile names another artifact than `packages`', 'package-lock.json',
@@ -463,8 +466,8 @@ ${scheduler ? '\n  scheduler@0.23.2:\n    dependencies:\n      loose-envify: 1.4
     ['a Yarn 1 line is not a key and value', 'yarn.lock', 'a@^1:\n  version "1.0.0"\n', 'a@^1:\n  version "1.0.0"\n  evil\n', undefined],
     ['a pnpm snapshot has no package', 'pnpm-lock.yaml', "lockfileVersion: '9.0'\n", "lockfileVersion: '9.0'\nsnapshots:\n  a@1.0.0: {}\n", undefined],
     ['a YAML lockfile uses an alias', 'pnpm-lock.yaml', "lockfileVersion: '9.0'\n", "lockfileVersion: '9.0'\nsettings: &s {a: 1}\nother: *s\n", undefined],
-  ])('leaves a lockfile unread when %s', (_label, path, base, head, heads) => {
-    expect(readLockfileChanges(diffOf(path, base, head), heads ?? new Map([[path, head]]))).toEqual([]);
+  ])('leaves a lockfile unread when %s', (_label, path, base, head, heads, side: 'head' | 'base' = 'head') => {
+    expect(readLockfileChanges(diffOf(path, base, head), heads ?? new Map([[path, head]]), side)).toEqual([]);
   });
 
   it('leaves the lockfiles past the size budget unread, and reads the ones before it', () => {

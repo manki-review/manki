@@ -66,20 +66,23 @@ export function isParsedLockfile(path: string): boolean {
 }
 
 /**
- * Returns the package changes of each changed lockfile Manki parses. `heads` holds each lockfile at the PR head, and
- * the content before the PR is rebuilt from it by undoing the diff. A lockfile that is missing from `heads`, does not
- * match its diff, does not parse, or whose list runs past `MAX_LIST_CHARS` is left out, so it stays unread.
+ * Returns the package changes of each changed lockfile Manki parses. `contents` holds each lockfile on one `side` of the
+ * diff, the PR head by default, and the other side is rebuilt from it by replaying the diff. A lockfile that is missing
+ * from `contents`, does not match its diff, does not parse, or whose list runs past `MAX_LIST_CHARS` is left out, so it
+ * stays unread.
  */
-export function readLockfileChanges(fullDiff: ParsedDiff, heads: ReadonlyMap<string, string>): LockfileDiff[] {
+export function readLockfileChanges(fullDiff: ParsedDiff, contents: ReadonlyMap<string, string>, side: 'head' | 'base' = 'head'): LockfileDiff[] {
   const parsed: LockfileDiff[] = [];
   let chars = 0;
   for (const file of fullDiff.files.filter(f => isParsedLockfile(f.path))) {
     try {
-      const head = file.changeType === 'deleted' ? '' : heads.get(file.path);
-      if (head === undefined) throw new Error('it could not be read at the PR head');
+      const absent = side === 'head' ? file.changeType === 'deleted' : file.changeType === 'added';
+      const known = absent ? '' : contents.get(side === 'head' ? file.path : file.oldPath ?? file.path);
+      if (known === undefined) throw new Error(`it could not be read at the ${side === 'head' ? 'PR head' : 'base'}`);
+      const other = replayDiff(known, file, side === 'head' ? 'undo' : 'apply');
       const parse = PARSERS[posix.basename(file.path)];
-      const before = parseContent(parse, undoDiff(head, file));
-      const after = parseContent(parse, head);
+      const before = parseContent(parse, side === 'head' ? other : known);
+      const after = parseContent(parse, side === 'head' ? known : other);
       const lockfile = { path: file.path, file, changes: diffEntries(before, after, file) };
       const size = formatLockfile(lockfile).length;
       if (chars + size > MAX_LIST_CHARS) throw new Error(`the package lists would pass ${MAX_LIST_CHARS} characters`);
@@ -151,29 +154,31 @@ function parseContent(parse: Parser, text: string): LockEntry[] {
   return text.trim() ? parse(text) : [];
 }
 
-/** Rebuilds a file before `file`'s change from its content after it. Throws when `head` does not match the diff. */
-function undoDiff(head: string, file: DiffFile): string {
-  const headLines = head.split('\n');
+/** Rebuilds the other side of `file`'s change from `text`: undoing it from the head, or applying it to the base. Throws when `text` does not match the diff. */
+function replayDiff(text: string, file: DiffFile, direction: 'undo' | 'apply'): string {
+  const [dropped, kept] = direction === 'undo' ? ['+', '-'] : ['-', '+'];
+  const lines = text.split('\n');
   const out: string[] = [];
   let cursor = 0;
   for (const hunk of file.hunks) {
-    // A hunk that adds no line starts after line `newStart`, any other one at it.
-    const start = hunk.newLines === 0 ? hunk.newStart : hunk.newStart - 1;
-    if (start < cursor || start > headLines.length) throw new Error('its diff does not match the file at the PR head');
-    for (; cursor < start; cursor++) out.push(headLines[cursor]);
+    const [first, count] = direction === 'undo' ? [hunk.newStart, hunk.newLines] : [hunk.oldStart, hunk.oldLines];
+    // A hunk with no line on this side starts after line `first`, any other one at it.
+    const start = count === 0 ? first : first - 1;
+    if (start < cursor || start > lines.length) throw new Error('its diff does not match the file');
+    for (; cursor < start; cursor++) out.push(lines[cursor]);
     for (const line of hunk.content.split('\n')) {
       if (line.startsWith('\\')) continue;
-      const text = line.slice(1);
-      if (line.startsWith('-')) {
-        out.push(text);
+      const content = line.slice(1);
+      if (line.startsWith(kept)) {
+        out.push(content);
         continue;
       }
-      if (headLines[cursor] !== text) throw new Error('its diff does not match the file at the PR head');
-      if (!line.startsWith('+')) out.push(text);
+      if (lines[cursor] !== content) throw new Error('its diff does not match the file');
+      if (!line.startsWith(dropped)) out.push(content);
       cursor++;
     }
   }
-  for (; cursor < headLines.length; cursor++) out.push(headLines[cursor]);
+  for (; cursor < lines.length; cursor++) out.push(lines[cursor]);
   return out.join('\n');
 }
 
