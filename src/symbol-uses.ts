@@ -760,25 +760,29 @@ function limitsOn(text: string): Array<{ name: string; value: string; number: nu
  * moves or raises is left out.
  */
 function changedLimits(files: DiffFile[], diff: ParsedDiff): LimitQuestion[] {
-  const removed = new Map<string, { value: string; number: number }>();
-  for (const row of diff.files.flatMap(f => f.hunks.flatMap(h => h.content.split('\n')))) {
-    if (!row.startsWith('-')) continue;
-    for (const limit of limitsOn(row.slice(1))) if (!removed.has(limit.name)) removed.set(limit.name, limit);
-  }
-  const asked = new Set<string>();
+  type Limit = { value: string; number: number };
+  const byName = (limits: Array<Limit & { name: string }>) => new Map([...limits].reverse().map(({ name, ...limit }) => [name, limit]));
+  const removed = byName(diff.files.flatMap(f => f.hunks.flatMap(h => h.content.split('\n'))).filter(row => row.startsWith('-')).flatMap(row => limitsOn(row.slice(1))));
   // Every added line of a run shares the run's removed lines, so each run is scanned once.
-  const runs = new Map<string[], Array<{ name: string; value: string; number: number }>>();
-  const limitsIn = (run: string[]) => runs.get(run) ?? runs.set(run, run.flatMap(limitsOn)).get(run)!;
-  return files.filter(f => !TEST_PATH.test(f.path) && !DOC_FILE.test(f.path)).flatMap(file => {
+  const runs = new Map<string[], Map<string, Limit>>();
+  const limitsIn = (run: string[]) => runs.get(run) ?? runs.set(run, byName(run.flatMap(limitsOn))).get(run)!;
+  const questions: LimitQuestion[] = [];
+  const asked = new Set<string>();
+  for (const file of files.filter(f => !TEST_PATH.test(f.path) && !DOC_FILE.test(f.path))) {
     const replaced = replacedLines(file);
-    return [...addedLines(file)].flatMap(([line, text]) => limitsOn(text).flatMap(limit => {
-      const before = limitsIn(replaced.get(line) ?? []).find(l => l.name === limit.name) ?? removed.get(limit.name);
-      const hunk = hunkAround(file, line);
-      if (asked.has(limit.name) || (before && before.number <= limit.number) || !hunk) return [];
-      asked.add(limit.name);
-      return [{ name: limit.name, value: limit.value, ...(before && { previous: before.value }), file: file.path, line, text: text.trim().slice(0, MAX_LINE_CHARS), hunk }];
-    }));
-  }).slice(0, MAX_QUESTIONS);
+    for (const [line, text] of addedLines(file)) {
+      for (const limit of limitsOn(text)) {
+        const before = limitsIn(replaced.get(line) ?? []).get(limit.name) ?? removed.get(limit.name);
+        if (asked.has(limit.name) || (before && before.number <= limit.number)) continue;
+        const hunk = hunkAround(file, line);
+        if (!hunk) continue;
+        asked.add(limit.name);
+        questions.push({ name: limit.name, value: limit.value, ...(before && { previous: before.value }), file: file.path, line, text: text.trim().slice(0, MAX_LINE_CHARS), hunk });
+        if (questions.length >= MAX_QUESTIONS) return questions;
+      }
+    }
+  }
+  return questions;
 }
 
 /** Returns the names the diff's added lines declare, without the generic ones, in diff order. */
