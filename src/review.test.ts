@@ -1054,6 +1054,18 @@ describe('buildReviewerUserMessage', () => {
     expect(buildReviewerUserMessage('diff content', 'repo', { changedSinceLastRound: [] })).toBe(buildReviewerUserMessage('diff content', 'repo'));
   });
 
+  it('asks for other routes to the outcome of each fixed blocker, after the files changed since the last round', () => {
+    const earlierBlockers = [
+      { title: 'Expired token\nstill passes `verify`', file: 'src/auth.ts', line: 42 },
+      { title: 'Unread file is approved', file: 'src/index.ts', line: 0 },
+    ];
+    const message = buildReviewerUserMessage('diff content', 'repo', { changedSinceLastRound: ['src/auth.ts'], earlierBlockers });
+    expect(message).toMatch(/^## Changed Since the Last Review\n[\s\S]*\n## Fixed Blockers\n\n.*check the other routes to the same outcome/);
+    expect(message).toContain('```\nsrc/auth.ts:42: Expired token still passes `verify`\nsrc/index.ts: Unread file is approved\n```');
+    expect(message.indexOf('## Pull Request Diff')).toBeGreaterThan(message.indexOf('## Fixed Blockers'));
+    expect(buildReviewerUserMessage('diff content', 'repo', { earlierBlockers: [] })).toBe(buildReviewerUserMessage('diff content', 'repo'));
+  });
+
   it('includes repo context when provided', () => {
     const message = buildReviewerUserMessage('diff content', 'This is a TypeScript project.');
     expect(message).toContain('Repository Context');
@@ -4289,6 +4301,27 @@ describe('runReview', () => {
     // The verdict reader also gets the list ahead of the whole diff.
     const [[, readerMessage]] = (round2Clients.judge.sendMessage as jest.Mock).mock.calls as [string, string][];
     expect(readerMessage).toMatch(/^## Changed Since the Last Review\n[\s\S]*```\nsrc\/x\.ts\n```[\s\S]*## Pull Request Diff/);
+
+    // Each finder gets the blockers a judge confirmed fixed, and the open ones on a file the push changed.
+    const blocker = { severity: 'blocker' as const, threadId: 'T2' };
+    const blockerClients = makeClients();
+    await runReview(blockerClients, {
+      config, diff, rawDiff: 'raw diff', repoContext: 'repo context', fileContents, isFollowUp: true, interRoundDiff: delta,
+      priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ title: priorTitle })])],
+      previousFindings: [
+        { ...blocker, title: 'Open blocker on the changed file', file: 'src/x.ts', line: 3, status: 'replied' },
+        { ...blocker, title: 'Open blocker on an unchanged file', file: 'src/y.ts', line: 4, status: 'open' },
+        { ...blocker, title: 'Fixed blocker whose code moved', file: 'src/y.ts', line: 0, originalLine: 7, status: 'resolved', fixed: true },
+        { ...blocker, title: 'Blocker the author resolved', file: 'src/x.ts', line: 9, status: 'resolved' },
+        { title: priorTitle, file: 'src/x.ts', line: 10, severity: 'warning', status: 'open', threadId: 'T1' },
+      ],
+    });
+    for (const [, userMessage] of (blockerClients.reviewer.sendMessage as jest.Mock).mock.calls as [string, string][]) {
+      expect(userMessage).toContain('## Fixed Blockers');
+      expect(userMessage).toContain('```\nsrc/x.ts:3: Open blocker on the changed file\nsrc/y.ts:7: Fixed blocker whose code moved\n```');
+      expect(userMessage).not.toContain('unchanged file');
+      expect(userMessage).not.toContain('the author resolved');
+    }
 
     // An unknown change since the last round lists nothing.
     const unknownClients = makeClients();

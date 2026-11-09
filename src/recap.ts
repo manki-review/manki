@@ -954,6 +954,16 @@ function deduplicateFindings(
   return { unique, duplicates };
 }
 
+/**
+ * Returns the earlier blockers a judge confirmed fixed, and the open ones on a file in `changedSinceLastRound`, which the
+ * author may have just fixed. Each sits on the line its finding names now.
+ */
+function blockersToRecheck(previousFindings: PreviousFinding[], changedSinceLastRound: string[] | undefined): Array<{ title: string; file: string; line: number }> {
+  return withPostedLine(previousFindings)
+    .filter(f => f.severity === 'blocker' && f.title && (f.fixed || ((f.status === 'open' || f.status === 'replied') && changedSinceLastRound?.includes(f.file))))
+    .map(f => ({ title: f.title, file: f.file, line: currentFindingLine(f) }));
+}
+
 /** Returns `previousFindings` with each outdated thread, whose `line` is 0, on the line it was posted on. */
 function withPostedLine(previousFindings: PreviousFinding[]): PreviousFinding[] {
   return previousFindings.map(f => (f.line ? f : { ...f, line: f.originalLine ?? 0 }));
@@ -1112,4 +1122,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { currentFindingLine, DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
