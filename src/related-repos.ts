@@ -4,7 +4,7 @@ import { devNull, tmpdir } from 'os';
 import { dirname, join, resolve, sep } from 'path';
 
 import { runTool } from './binary-analyzers';
-import { RelatedRepo, RelatedRepoTools, RoundRelatedRepo } from './types';
+import { ReferenceCheckout, RelatedRepo, RelatedRepoTools, RoundRelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
 // A tool call that runs for the fetch and the wait after it must end before the CLI's 90 second stale limit.
@@ -104,6 +104,16 @@ function isHolderAlive(lock: string): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+/**
+ * Fetches each `reference` repo of `related` the way a tool call does, so the round's tool servers reuse the checkout,
+ * and returns those fetched. One that fails is left out, and the round record says why.
+ */
+export async function fetchReferenceRepos(related: RelatedRepoTools, options: RelatedRepoLoaderOptions = {}): Promise<ReferenceCheckout[]> {
+  const load = relatedRepoLoader(related, { log: message => core.info(message), ...options });
+  const fetched = await Promise.allSettled(related.repos.filter(r => r.kind === 'reference').map(async ({ repo }) => ({ repo, dir: await load(repo) })));
+  return fetched.flatMap(result => (result.status === 'fulfilled' ? [result.value] : []));
 }
 
 /** Returns the checkout directory of each related repo a tool server of the round in `stateDir` fetched, by `owner/name`. */

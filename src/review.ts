@@ -11,7 +11,7 @@ import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } f
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
 import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
-import { fetchedRelatedRepos, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
+import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
@@ -20,7 +20,7 @@ import { disproof, refuteBlockers } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
-import { listUsesOutsideDiff } from './symbol-uses';
+import { listReferenceUses, listUsesOutsideDiff } from './symbol-uses';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
@@ -673,7 +673,10 @@ export async function runReview(
     : undefined;
   const changedSinceLastRound = filesChangedSinceLastRound(diff, priorRounds, interRoundDiff);
   const earlierBlockers = blockersToRecheck(previousFindings ?? [], changedSinceLastRound);
-  const { section: usesOutsideDiff, record: usesRecord } = await usesPromise;
+  const uses = await usesPromise;
+  const references = await listReferenceUses(related && uses.referenceNames ? await fetchReferenceRepos(related) : [], uses.referenceNames ?? []);
+  const usesOutsideDiff = uses.section + references.section;
+  const usesRecord = uses.record || references.record ? { ...uses.record, ...references.record } : undefined;
   // Only a retry passes `retryNote`, the note of the reply it corrects, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
     effort: finder.effort, language: plannerResult?.language, workspace, related, changedSinceLastRound, earlierBlockers, usesOutsideDiff,

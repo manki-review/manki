@@ -28,6 +28,7 @@ import {
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG } from './config';
 import { filterRawDiff, MAX_SLICE_CHARS, parsePRDiff } from './diff';
+import * as relatedRepos from './related-repos';
 import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
@@ -1428,12 +1429,15 @@ describe('selectTeam', () => {
       'Sibling symmetry: compare each changed function with its counterpart, such as encode and decode',
       'Reference claims: when the PR title, description or changed code says the change matches another implementation, a spec or a standard',
       'Read it in a **reference** related repo when one is listed. Report each difference the PR does not call out, citing both sides.',
+      'what this code sends against what the reference accepts, and what this code accepts against what the reference sends.',
+      'For a changed size or count limit, find what the reference actually sends, not only the limit it checks on receive.',
+      'For a changed decoder or encoder, compare the field order, field types and version bounds with the reference\'s serializer.',
       'Reuse: for each constant, helper, type or loop the change adds, search for an existing one that does the same, and cite its `file:line`.',
       'Repository rules: check each added line against the rules in the repository context, such as `AGENTS.md`, `CLAUDE.md` or `CONTRIBUTING.md`, and quote the rule it breaks.',
       'Report a reuse finding only with the existing code\'s `file:line`, and a rule finding only with the rule quoted.',
     ]) expect(focus).toContain(check);
     // Reuse and repository rules come right after tests.
-    expect(focus).toMatch(/\n6\. Tests: [^\n]*\n7\. Reuse: [^\n]*\n8\. Repository rules: [^\n]*\n9\. Contract breaks: /);
+    expect(focus).toMatch(/\n7\. Tests: [^\n]*\n8\. Reuse: [^\n]*\n9\. Repository rules: [^\n]*\n10\. Contract breaks: /);
     expect({ focus }).toMatchSnapshot();
   });
 
@@ -1953,25 +1957,36 @@ describe('runReview', () => {
     }
   });
 
-  it('hands every finder and the judge the uses outside the diff from the PR head, and records where they are', async () => {
+  it('hands every finder and the judge the uses outside the diff from the PR head and the reference lines, and records where they are', async () => {
     const { root, diff } = gitWorkspace(
       { 'cmd/fee.go': 'package main\n\nfunc main() {}\n', 'cmd/use.go': 'package main\n\nvar fee = ComputeFee(2)\n' },
       { 'cmd/fee.go': 'package main\n\nfunc main() {}\n\nfunc ComputeFee(n int) int { return n }\n' },
     );
+    const reference = mkdtempSync(join(tmpdir(), 'manki-reference-'));
+    writeFileSync(join(reference, 'fee.cpp'), 'CAmount ComputeFee(int n) { return n; }\n');
+    const fetchSpy = jest.spyOn(relatedRepos, 'fetchReferenceRepos').mockResolvedValue([{ repo: 'o/ref', dir: reference }]);
     const clients = makeClients();
+    Object.assign(clients.reviewer, { repoTools: true });
     let result: Awaited<ReturnType<typeof runReview>>;
     try {
-      result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+      result = await runReview(clients, { config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
     } finally {
+      fetchSpy.mockRestore();
       rmSync(root, { recursive: true, force: true });
+      rmSync(reference, { recursive: true, force: true });
     }
 
     const uses = mockedRunJudgeAgent.mock.calls[0][2].usesOutsideDiff;
     expect(uses).toContain('### `ComputeFee` (function)\n\n```\ndeclared at cmd/fee.go:5\ncmd/use.go:3: var fee = ComputeFee(2)\n```');
+    expect(uses).toContain('## In the Reference Repos');
+    expect(uses).toContain('### `ComputeFee`\n\n```\no/ref:fee.cpp:1: CAmount ComputeFee(int n) { return n; }\n```');
     const finderMessages = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[1]);
     expect(finderMessages.length).toBeGreaterThan(0);
     for (const message of finderMessages) expect(message).toContain(uses);
-    expect(result.usesOutsideDiff).toEqual({ symbols: [{ name: 'ComputeFee', declared: 'cmd/fee.go:5', uses: ['cmd/use.go:3'] }] });
+    expect(result.usesOutsideDiff).toEqual({
+      symbols: [{ name: 'ComputeFee', declared: 'cmd/fee.go:5', uses: ['cmd/use.go:3'] }],
+      reference: [{ name: 'ComputeFee', lines: ['o/ref:fee.cpp:1'] }],
+    });
   });
 
   it('runs a single-pass review and returns approved result with no findings', async () => {
