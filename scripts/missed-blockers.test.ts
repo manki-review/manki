@@ -51,6 +51,14 @@ describe('plainReferences', () => {
   });
 });
 
+describe('plainReferences with the drafted repository owner', () => {
+  it('writes a bare owner/name of that owner as the name, and leaves paths and other text alone', () => {
+    expect(plainReferences('Compare with dashpay/dash and `dashpay/dips`, not src/dashpay/x.rs or mydashpay/y.', 'dashpay'))
+      .toBe('Compare with dash and `dips`, not src/dashpay/x.rs or mydashpay/y.');
+    expect(plainReferences('See xdustinface/rust-dashcore and manki-review/manki.', 'xdustinface')).toBe('See xdustinface/rust-dashcore and manki-review/manki.');
+  });
+});
+
 describe('draftCase', () => {
   const miss = { missedBy: 1, foundIn: [2, 3], head: 'b'.repeat(40), blockers: [entry('Deadlock in stop', { file: 'src/a.rs', judgeNotes: 'Both take the lock, see dashpay/dash#9.' })] };
 
@@ -68,8 +76,12 @@ describe('draftCase', () => {
     });
   });
 
-  it('names a pull request of another owner in plain text', () => {
-    const { text } = draftCase('dashpay/rust-dashcore', { number: 1295, title: 'fix', body: null }, miss, 'a'.repeat(40));
-    expect(parseCase(text, 'x.yml')).toMatchObject({ id: 'rust-dashcore-1295-r1', source: 'rust-dashcore upstream PR 1295: round 2, 3 raised blockers on code round 1 had reviewed', body: '' });
+  it('names a pull request of another owner in plain text, and falls back to the slug for a finding without a title', () => {
+    const untitled = { ...miss, blockers: [entry('Lock order', { file: 'src/b.rs', title: undefined, judgeNotes: undefined })] };
+    const { text } = draftCase('dashpay/rust-dashcore', { number: 1295, title: 'fix', body: 'Matches dashpay/dash.' }, untitled, 'a'.repeat(40));
+    expect(parseCase(text, 'x.yml')).toMatchObject({
+      id: 'rust-dashcore-1295-r1', source: 'rust-dashcore upstream PR 1295: round 2, 3 raised blockers on code round 1 had reviewed', body: 'Matches dash.',
+      mustCatch: [{ id: 'K1', severity: 'blocker', mechanism: untitled.blockers[0].fingerprint.slug, locations: ['src/b.rs'] }],
+    });
   });
 });
