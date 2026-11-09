@@ -138,6 +138,16 @@ describe('listUsesOutsideDiff', () => {
     expect(nested.section).toContain('### `retry_delay` (field of `RetryConfig`)\n\n```\ndeclared at src/retry.ts:3\nsrc/client.ts:1:');
   });
 
+  it('lists the uses of a changed Go constant in a grouped block without its untouched neighbours', async () => {
+    const limits = (delay: string) => `package limits\n\nconst (\n\t// RetryDelay is in seconds.\n\tRetryDelay = ${delay}\n\tMaxRetries = 3\n)\n`;
+    const { section } = await usesFor(
+      { 'limits/limits.go': limits('5'), 'client/client.go': 'package client\n\nvar d = RetryDelay\nvar n = MaxRetries\n' },
+      { 'limits/limits.go': limits('10') },
+    );
+    expect(section).toContain('### `RetryDelay` (constant)\n\n```\ndeclared at limits/limits.go:5\nclient/client.go:3: var d = RetryDelay\nlimits/limits.go:4: // RetryDelay is in seconds.\n```');
+    expect(section).not.toContain('`MaxRetries` (');
+  });
+
   it('finds keyword declarations and config keys in files without a grammar, and skips excluded paths', async () => {
     const { section } = await usesFor({
       'cmd/main.swift': 'import Foundation\n\nfunc main() {}\n',
@@ -238,10 +248,10 @@ mod tests {
     def __init__(self):
         # Workers that never started, so never in \`idle\`.
         self.retired: set[str] = set()
-        self.busy = {}
+        self.ids = {}
         self.leases = {}
         self.names = []
-        self.busy = None
+        self.ids = None
 
     def claim(self, worker_id):
 ${body}        return None
@@ -250,9 +260,8 @@ ${body}        return None
 
 // Registry tracks sessions.
 type Registry struct {
-	active  map[string]*Session
-	// Sessions closed before they were registered, so never in active.
-	expired map[string]*Session
+	// Sessions closed before they were registered are in expired, never in active.
+	active, expired map[string]*Session
 	owners  map[int]string
 	digest  [32]byte
 	backup  [32]byte
@@ -279,7 +288,7 @@ ${body}	return true
 `),
         'src/pool.py': POOL(`        if worker_id in self.idle:
             self.idle.discard(worker_id)
-            return self.busy.get(worker_id)
+            return self.ids.get(worker_id)
 `),
         'src/registry.go': REGISTRY(`	if _, ok := r.active[id]; !ok {
 		return false
@@ -292,11 +301,12 @@ ${body}	return true
     );
 
     // A Python field typed only by its first value, such as `{}`, is compared only with a field holding the same kind of value.
+    // Go fields declared on one line are each a field, and a short name such as `ids` is still asked about.
     expect(siblings.fields.map(q => `${q.struct}.${q.field} -> ${q.sibling} (${q.item})`)).toEqual([
       'Scheduler.queued -> cancelled_early (job_id)',
       'Scheduler.pending_roots -> done_roots (root)',
       'WorkerPool.idle -> retired (worker_id)',
-      'WorkerPool.busy -> leases (worker_id)',
+      'WorkerPool.ids -> leases (worker_id)',
       'Queue.pending -> done (id)',
       'Registry.active -> expired (id)',
       'Scheduler.queued -> running (job_id)',
@@ -341,7 +351,7 @@ ${body}	return true
       'src/parts/macro.rs': decode('part_type!(Macro)', '        let _macro = 1;\n'),
       'src/payments/card.py': refund('CardPayment', ''),
       'src/payments/bank.py': refund('BankPayment', '        if amount <= 0:\n            raise ValueError(amount)\n'),
-      'src/shapes/circle.go': area('c *Circle', '\treturn 3 * c.r * c.r\n'),
+      'src/shapes/circle.go': area('c *Circle[T]', '\treturn 3 * c.r * c.r\n'),
       'src/shapes/square.go': area('s Square', '\tif s.side < 0 {\n\t\treturn 0\n\t}\n\treturn s.side * s.side\n'),
     };
     const { siblings } = await usesFor(base, {
