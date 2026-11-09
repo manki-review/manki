@@ -404,7 +404,7 @@ A finding is a \`blocker\` only when it passes all five tests:
 2. **The failure can be named.** You can say "when X happens, Y goes wrong" and follow a real path through the code from X to Y.
 3. **The damage is serious.** The failure is in one of the serious categories below.
 4. **The code proves it.** \`reasoning\` cites the lines, as \`file:line\`, that show the failure.
-5. **The author would fix it.** The code is not a declared placeholder, and no TODO with a tracking issue covers it. When one does, grade the finding \`suggestion\` at most and name the TODO, unless it is a security defect.
+5. **The author would fix it.** The code is not a declared placeholder, a stub that does nothing yet and that no path reaches, and no TODO with a tracking issue covers it. When one does, grade the finding \`suggestion\` at most and name the TODO, unless it is a security defect.
 
 Serious damage is one of:
 - wrong behaviour in normal use, or triggered by outside input
@@ -1086,7 +1086,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       };
     });
     const ungraded = judged.filter(f => !f.gradeIfConfirmed).length;
-    if (ungraded > 0) core.warning(`The judge gave no \`gradeIfConfirmed\` for ${ungraded} of ${judged.length} findings, so no refuter checks a doubt it had about them`);
+    if (ungraded > 0) core.warning(`The judge gave no \`gradeIfConfirmed\` for ${ungraded} of ${judged.length} findings`);
     return judged;
   };
 

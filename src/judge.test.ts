@@ -243,6 +243,7 @@ describe('buildJudgeSystemPrompt', () => {
       expect(prompt).toContain(`**${test}**`);
     }
     expect(prompt).toContain('cites the lines, as `file:line`, that show the failure');
+    expect(prompt).toContain('The code is not a declared placeholder, a stub that does nothing yet and that no path reaches, and no TODO with a tracking issue covers it.');
     expect(prompt).toContain('lines this PR adds, changes or removes, in any of its commits, or those changes cause it. A defect in lines this PR adds is its own, even when the bad state those lines mishandle existed before, so it is never "not a regression". Removing a check, a lock or a guard causes the defect it let through.');
     expect(prompt).toContain('only when the diff shows this PR neither causes nor exposes the defect. A defect in lines this PR adds is never pre-existing.');
     expect(prompt).toContain('## Grade Stability');
@@ -996,7 +997,7 @@ describe('parseJudgeResponse', () => {
     expect(result.findings.map(f => [f.category, f.effort])).toEqual([['concurrency', 'larger'], [undefined, undefined], [undefined, undefined]]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned category "Bug", which is not one of correctness, security'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned effort "huge"'));
-    expect(warnSpy).toHaveBeenCalledWith('The judge gave no `gradeIfConfirmed` for 2 of 3 findings, so no refuter checks a doubt it had about them');
+    expect(warnSpy).toHaveBeenCalledWith('The judge gave no `gradeIfConfirmed` for 2 of 3 findings');
     warnSpy.mockRestore();
   });
 
