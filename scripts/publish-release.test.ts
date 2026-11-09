@@ -179,7 +179,10 @@ describe('publish-release.sh --dry-run', () => {
     fx.git('push', '-q', 'origin', 'refs/tags/v1.3.0');
     const result = publish(fx, 'v1.2.3', 'draft');
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('dry-run: gh release edit v1.2.3 -R manki-review/manki --draft=false --latest=false');
+    expect(result.stdout).toMatch(
+      /dry-run: gh release edit v1\.2\.3 -R manki-review\/manki --draft=false --title v1\.2\.3 --notes-file \S+ --latest=false\n/,
+    );
+    expect(result.stdout).toContain('- Notes for 1.2.3.');
     expect(result.stdout).toContain('v1 stays where it is');
     expect(result.stdout).not.toContain('refs/tags/v1\n');
   });

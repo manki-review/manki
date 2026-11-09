@@ -177,15 +177,14 @@ newest_in_major=$(newest_tag "$MAJOR.*")
 major_commit=$(remote_tag_commit "$MAJOR")
 latest=false
 [ "$newest" = "$TAG" ] && latest=true
+if $DRY_RUN && [ "$state" != published ]; then
+  echo "release notes:"
+  cat "$NOTES"
+fi
+# A token without push access sees a draft as absent, so both paths publish the same notes.
 case "$state" in
-  absent)
-    if $DRY_RUN; then
-      echo "release notes:"
-      cat "$NOTES"
-    fi
-    run gh release create "$TAG" -R "$REPO" --verify-tag --title "$TAG" --notes-file "$NOTES" --latest="$latest"
-    ;;
-  draft) run gh release edit "$TAG" -R "$REPO" --draft=false --latest="$latest" ;;
+  absent) run gh release create "$TAG" -R "$REPO" --verify-tag --title "$TAG" --notes-file "$NOTES" --latest="$latest" ;;
+  draft) run gh release edit "$TAG" -R "$REPO" --draft=false --title "$TAG" --notes-file "$NOTES" --latest="$latest" ;;
   published) echo "release $TAG is already published" ;;
 esac
 
