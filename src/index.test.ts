@@ -2838,7 +2838,6 @@ describe('runFullReview orchestration', () => {
         judgeEffort: 'high',
         prType: 'feat',
         language: 'typescript',
-        context: 'GitHub Actions bot',
         defaultedFields: ['subtle'],
       },
       plannerSource: 'planner',
@@ -2865,7 +2864,6 @@ describe('runFullReview orchestration', () => {
       judgeEffort: 'high',
       prType: 'feat',
       language: 'typescript',
-      context: 'GitHub Actions bot',
     }));
     expect(ctx!.models.reviewerPair).toBeDefined();
   });

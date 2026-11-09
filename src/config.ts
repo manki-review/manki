@@ -23,6 +23,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   slice_lines: 1500,
   reviewers: [],
   instructions: '',
+  project: '',
   models: {
     planner: HAIKU_MODEL,
     reviewer: SONNET_MODEL,
@@ -74,6 +75,7 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'slice_lines',
   'reviewers',
   'instructions',
+  'project',
   'review_level',
   'review_thresholds',
   'memory',
@@ -146,8 +148,10 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     errors.push('`auto_approve` must be a boolean');
   }
 
-  if ('instructions' in config && typeof config.instructions !== 'string') {
-    errors.push('`instructions` must be a string');
+  for (const key of ['instructions', 'project']) {
+    if (key in config && typeof config[key] !== 'string') {
+      errors.push(`\`${key}\` must be a string`);
+    }
   }
 
   for (const key of SKIP_KEYS) {

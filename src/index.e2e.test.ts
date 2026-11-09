@@ -349,7 +349,7 @@ function text(data: string): Response {
 type Stage = 'planner' | 'reviewer' | 'judge' | 'refute' | 'verdict' | 'dedup';
 
 const READY_REPLIES: Record<Stage, string> = {
-  planner: JSON.stringify({ trivial: false, subtle: true, paired: false, judgeEffort: 'low', prType: 'refactor', language: 'typescript', context: 'math library' }),
+  planner: JSON.stringify({ trivial: false, subtle: true, paired: false, judgeEffort: 'low', prType: 'refactor', language: 'typescript' }),
   reviewer: '[]',
   judge: JSON.stringify({ summary: 'Nothing blocks merge.', findings: [] }),
   verdict: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'Ready to merge.', whatThisDoes: 'Keeps the sum in a variable before returning it.', whatToTest: { steps: ['Call `add(1, 2)`. Expect 3.'] } }),

@@ -303,6 +303,13 @@ max_diff_lines: 5000
       expect(config.exclude_paths).toEqual(DEFAULT_CONFIG.exclude_paths);
     });
 
+    it('reads `project` and `instructions` as strings, empty by default', () => {
+      expect(loadConfigFromContent('').project).toBe('');
+      expect(loadConfigFromContent('project: blockchain consensus library\n').project).toBe('blockchain consensus library');
+      expect(() => loadConfigFromContent('project: [a, b]\n')).toThrow(/`project` must be a string/);
+      expect(() => loadConfigFromContent('instructions: 5\n')).toThrow(/`instructions` must be a string/);
+    });
+
     it('replaces reviewers array entirely', () => {
       const yaml = `
 reviewers:
