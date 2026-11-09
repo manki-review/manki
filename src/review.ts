@@ -1932,13 +1932,15 @@ function textLines(value: unknown): string[] {
 
 /**
  * Returns the `file:line` locations at the start of each entry of a `proof` list, one for each line or range the entry
- * lists, and drops entries without one. It returns at most `MAX_EVIDENCE_LINES`, however many lines an entry lists.
+ * lists, and drops entries without one. It returns at most `MAX_EVIDENCE_LINES`, and the first location of every entry
+ * comes before any further one, so an entry that lists many lines cannot push another entry out.
  */
 export function parseProof(value: unknown): string[] {
-  return textLines(value).flatMap(entry => {
+  const listed = textLines(value).flatMap(entry => {
     const [, file, lines] = entry.replace(/`/g, '').match(PROOF_LOCATION) ?? [];
-    return file ? lines.split(/, ?/).map(range => `${file}:${range}`) : [];
-  }).slice(0, MAX_EVIDENCE_LINES);
+    return file ? [lines.split(/, ?/).map(range => `${file}:${range}`)] : [];
+  });
+  return [...listed.map(([first]) => first), ...listed.flatMap(([, ...more]) => more)].slice(0, MAX_EVIDENCE_LINES);
 }
 
 /** Reads a reviewer entry's `evidence`, `proof` and `claimsMissing` with `emptySearch`, or returns `undefined` when it cites none. */
