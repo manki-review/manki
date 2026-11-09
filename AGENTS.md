@@ -37,6 +37,7 @@ At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 - Before adding a new `test()`/`it()`, search for an existing test that fits the context and extend it with a new case.
 - Before creating a test helper, search for existing utilities — test helpers typically live next to the code they exercise in `src/*.test.ts`.
 - Never ignore or skip failing tests. Fix the root cause. If the fix is genuinely out of scope, open an issue first and link it from the skip.
+- Never open, search or quote the benchmark's hold-out cases in `bench/holdout/` while working on Manki. Exclude that directory from every search. Develop and debug against `bench/cases` only, since the hold-out score decides releases.
 
 ## Architecture quick reference
 
