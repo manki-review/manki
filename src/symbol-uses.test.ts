@@ -414,6 +414,10 @@ ${body}	return true
       'web/src/limits.ts:3 UPLOAD_LIMIT_BYTES: new -> 5_000_000',
     ]);
     expect(siblings.limits[0].text).toBe('timeout-minutes: 10 # a full run takes 12');
+
+    // The scan stops at 20 limits, so a hunk full of them cannot keep it busy.
+    const many = await usesFor({ 'src/parts.rs': '' }, { 'src/parts.rs': Array.from({ length: 25 }, (_, i) => `pub const MAX_PART_${i}: usize = ${i + 1};\n`).join('') });
+    expect(many.siblings.limits.map(q => q.name)).toEqual(Array.from({ length: 20 }, (_, i) => `MAX_PART_${i}`));
     expect(siblings.limits[0].hunk).toMatch(/^diff --git a\/\.github\/workflows\/ci\.yml b\/\.github\/workflows\/ci\.yml\n[\s\S]*\n- {4}timeout-minutes: 30\n\+ {4}timeout-minutes: 10 # a full run takes 12$/);
   });
 
