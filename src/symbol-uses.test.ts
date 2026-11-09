@@ -145,14 +145,19 @@ describe('listUsesOutsideDiff', () => {
     for (let file = 0; file < 6; file++) {
       callers[`src/caller_${file}.rs`] = `fn caller() {\n    new(); len(); id();\n    compute_total();\n    ${fns.map(f => `${f}();`).join(' ')}\n}\n`;
     }
-    for (let file = 0; file < 90; file++) callers[`src/common_${file}.rs`] = 'fn common(s: &Shares) -> u8 {\n    shared_helper();\n    s.shared_count\n}\n';
+    for (let file = 0; file < 90; file++) callers[`src/common_${file}.rs`] = 'fn common(s: &Shares) -> u8 {\n    shared_helper(); s.shared_total;\n    s.shared_count\n}\n';
     callers['src/a_method.rs'] = 'fn count(t: &Other) -> u8 {\n    t.shared_count()\n}\n';
-    const lib = (body: string, doc: string) => [
+    const lib = (body: string, doc: string, added = '', fresh = '') => [
       ...['new', 'len', 'id', 'compute_total', 'shared_helper', ...fns].map(name => `pub fn ${name}() {\n    ${body}\n}\n`),
-      `pub struct Shares {\n    ${doc}\n    pub shared_count: u8,\n}\n`,
+      fresh,
+      `pub struct Shares {\n    ${doc}\n    pub shared_count: u8,${added}\n}\n`,
     ].join('\n');
 
-    const { section, record } = await usesFor({ ...callers, 'src/lib.rs': lib('todo!()', '/// Shares held.') }, { 'src/lib.rs': lib('unimplemented!()', '/// Shares held, zero once settled.') });
+    const { section, record } = await usesFor(
+      { ...callers, 'src/lib.rs': lib('todo!()', '/// Shares held.') },
+      // A new type declaring the same field name comes first, and must not hide the redefined field.
+      { 'src/lib.rs': lib('unimplemented!()', '/// Shares held, zero once settled.', '\n    pub shared_total: u8,', 'pub struct Fresh {\n    pub shared_count: u8,\n}\n') },
+    );
 
     expect(section).not.toMatch(/### `(?:new|len|id)`/);
     expect(section).toContain('### `compute_total` (function)');
@@ -160,10 +165,11 @@ describe('listUsesOutsideDiff', () => {
     expect(section).toContain('2 more uses not shown.');
     expect(section.match(/^src\/(?:caller|common)_\d+\.rs:\d+: /gm)).toHaveLength(60);
     expect(section).toMatch(/The cap of 60 lines left out every use of: `compute_part_\d+` \(6 uses\)/);
-    expect(section).toContain('Too common to list, so search for them yourself if they matter: `shared_helper` (90 uses), `Shares` (90 uses).');
+    // A new field has no readers yet, so its many matches are namesakes and stay unlisted.
+    expect(section).toContain('Too common to list, so search for them yourself if they matter: `shared_total` (90 uses), `shared_helper` (90 uses), `Shares` (90 uses).');
     // The field's doc changed, so its readers are listed however many there are, and a namesake method call comes last.
-    expect(section).toMatch(/### `shared_count` \(field\)\n\n```\ndeclared at src\/lib\.rs:\d+\n(?:src\/common_\d+\.rs:3: s\.shared_count\n){4}```\n\n87 more uses not shown\./);
-    expect(record?.common).toEqual(['shared_helper', 'Shares']);
+    expect(section).toMatch(/### `shared_count` \(field\)\n\n```\ndeclared at src\/lib\.rs:\d+\n(?:src\/common_\d+\.rs:3: s\.shared_count\n){4}```\n\n88 more uses not shown\./);
+    expect(record?.common).toEqual(['shared_total', 'shared_helper', 'Shares']);
     expect(record?.capped).toEqual(expect.arrayContaining([expect.stringMatching(/^compute_part_\d+$/)]));
     expect(record?.symbols?.flatMap(s => s.uses)).toHaveLength(60);
   });
@@ -255,7 +261,7 @@ describe('listReferenceUses', () => {
         referenceMissing: ['MAX_COMPACT_SIZE'],
       });
       expect(await listReferenceUses([], ['MAX_SIZE'])).toEqual({ section: '' });
-      expect(await listReferenceUses([{ repo: 'dashpay/dash', dir }], ['NOT_THERE'])).toEqual({ section: '' });
+      expect(await listReferenceUses([{ repo: 'dashpay/dash', dir }], ['NOT_THERE'])).toEqual({ section: '', record: { referenceMissing: ['NOT_THERE'] } });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
