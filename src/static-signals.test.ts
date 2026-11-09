@@ -11,7 +11,7 @@ import * as napi from '@ast-grep/napi';
 import { filterDiff, parsePRDiff } from './diff';
 import * as githubModule from './github';
 import { buildReviewerUserMessage } from './review';
-import { checkFindingClaims, collectStaticSignals, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
+import { checkFindingClaims, collectStaticSignals, isUnconfirmedBuildClaim, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
 import { Finding, StaticSignal } from './types';
 import { paginateSinglePage } from './test-utils';
 
@@ -766,6 +766,28 @@ describe('checkFindingClaims', () => {
     expect(checkFindingClaims(claim, { ...sources, signals: [signal({ tool: 'build', ruleId: 'TS18048', line: 3, message: 'b is possibly undefined' })] }))
       .toEqual({ status: 'confirmed', note: 'build reports an error on line 3: b is possibly undefined' });
     expect(checkFindingClaims(claim, { ...sources, signals: [signal({ tool: 'pylint', ruleId: 'E1101', line: 3 })] })).toEqual(unchecked);
+
+    // A Rust error code or "should fail to compile" claims a build failure too.
+    const traitClaim = finding({ title: 'Trait `Encode` not in scope', description: 'The call should fail to compile with E0599.' });
+    expect(checkFindingClaims(traitClaim, sources).note).toContain('no CI annotation reports the claimed error');
+    expect(checkFindingClaims(traitClaim, { ...sources, signals: [rustc] }).status).toBe('confirmed');
+    // A test runner can annotate any line, so any CI error near the line confirms a claimed test failure.
+    const testClaim = finding({ description: 'The existing test will fail, since the default changed.' });
+    expect(checkFindingClaims(testClaim, sources).note).toContain('no CI annotation reports the claimed error');
+    expect(checkFindingClaims(testClaim, { ...sources, signals: [signal({ tool: 'jest', ruleId: 'failed', line: 3 })] }).status).toBe('confirmed');
+  });
+
+  it('tells a build, type or test failure claim that no CI result confirms', () => {
+    const none = { status: 'none' as const, note: '' };
+    expect([
+      finding({ description: 'This does not compile.', toolEvidence: none }),
+      finding({ title: 'Trait not in scope (E0599)', toolEvidence: none }),
+      finding({ description: 'This change breaks the existing tests.' }),
+      finding({ description: 'This does not compile.', toolEvidence: { status: 'confirmed', note: 'rustc' } }),
+      finding({ description: 'This does not compile.', toolSource: 'rustc' }),
+      finding({ description: 'The new test fails to catch a revert.' }),
+      finding({}),
+    ].map(isUnconfirmedBuildClaim)).toEqual([true, true, true, false, false, false, false]);
   });
 
   it('checks each cited line of a related repo in its fetched checkout, and nowhere outside it', () => {

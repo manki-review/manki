@@ -32,7 +32,8 @@ const MAX_LOCKFILES_TOTAL_BYTES = 40 * 1024 * 1024;
 
 const SECURITY_RULE = /\b(?:security|injection|xss|csrf|ssrf|cwe|cve|secrets?|traversal|format-string|vulnerab\w*)\b/i;
 const STYLE_RULE = /\b(?:prettier|[a-z]*(?:fmt|style)|stylistic|format(?:ting|ter)?|whitespace|indent(?:ation)?|spacing|quotes|semi|trailing[-_ ]?(?:spaces|comma)|max[-_ ]?len|line[-_ ]?length|eol[-_ ]?last|camel[-_ ]?case|naming[-_ ]?convention)\b/i;
-const TYPE_ERROR_CLAIM = /\b(?:type error|type mismatch|(?:compile|compiler|compilation|build) error|(?:does not|doesn't|won't|fails to) compile|not assignable|TS\d{4,5})\b/i;
+const TYPE_ERROR_CLAIM = /\b(?:type error|type mismatch|(?:compile|compiler|compilation|build) error|(?:does not|doesn't|won't|will not|would not|wouldn't|cannot|can't|fails? to) (?:compile|build)|not assignable|TS\d{4,5}|E0\d{3})\b/i;
+const TEST_FAILURE_CLAIM = /\b(?:tests? (?:will |would )?fail(?:s|ed)?(?! to)|(?:breaks|fails) (?:(?:the|its|this|these|existing) )*tests?)\b/i;
 const TYPE_CHECKER_RULE = /^(?:TS\d{4,5}|E0\d{3})$/;
 const TYPE_CHECKER_TOOL = /\b(?:tsc|type-?check(?:er|ing)?|mypy|pyright|pyre|flow|rustc|cargo (?:check|build)|go (?:vet|build)|javac|kotlinc|scalac|swiftc|compile|compiler)\b/i;
 const BACKTICKED = /`([^`\n]+)`/g;
@@ -428,7 +429,8 @@ export interface ClaimSources {
 /**
  * Checks the concrete parts of a reviewer finding without running the PR's code. Only a file outside the diff or a line
  * past the end of the file contradicts it. A backticked symbol missing from the file and the diff is only noted, since it
- * can live elsewhere. An error from a type checker or compiler near the line confirms a claimed type or compile error.
+ * can live elsewhere. An error from a type checker or compiler near the line confirms a claimed type or compile error, and
+ * any CI error near the line confirms a claimed test failure.
  */
 export function checkFindingClaims(finding: Finding, sources: ClaimSources): ToolEvidence {
   const { diff, rawDiff, fileContents, signals, related } = sources;
@@ -450,14 +452,25 @@ export function checkFindingClaims(finding: Finding, sources: ClaimSources): Too
     checked.push(found ? `\`${symbol}\` occurs` : `\`${symbol}\` not found in ${content !== undefined ? `${finding.file} or ` : ''}the diff`);
   }
   if (related) checked.push(...checkRelatedCitations(`${finding.title}\n${finding.description}`, related));
-  if (TYPE_ERROR_CLAIM.test(`${finding.title} ${finding.description}`)) {
-    const annotation = signals.find(s => s.source === 'checks' && s.severity === 'error' && isTypeChecker(s) && s.file === finding.file && Math.abs(s.line - finding.line) <= ERROR_LINE_WINDOW);
+  const claimText = `${finding.title} ${finding.description}`;
+  const reports = TYPE_ERROR_CLAIM.test(claimText) ? isTypeChecker : TEST_FAILURE_CLAIM.test(claimText) ? () => true : undefined;
+  if (reports) {
+    const annotation = signals.find(s => s.source === 'checks' && s.severity === 'error' && reports(s) && s.file === finding.file && Math.abs(s.line - finding.line) <= ERROR_LINE_WINDOW);
     if (annotation) {
       return { status: 'confirmed', note: `${annotation.tool} reports an error on line ${annotation.line}: ${annotation.message}` };
     }
     checked.push('no CI annotation reports the claimed error');
   }
   return { status: 'none', note: `Checked: ${checked.join(', ')}.` };
+}
+
+/**
+ * Whether a reviewer finding claims the code fails to compile, type-check or pass its tests while no CI result on the
+ * commit reports it. Reading the code cannot settle such a claim, so it never blocks.
+ */
+export function isUnconfirmedBuildClaim(finding: Finding): boolean {
+  const text = `${finding.title} ${finding.description}`;
+  return !finding.toolSource && finding.toolEvidence?.status !== 'confirmed' && (TYPE_ERROR_CLAIM.test(text) || TEST_FAILURE_CLAIM.test(text));
 }
 
 /**

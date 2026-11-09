@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as core from '@actions/core';
 import {
@@ -160,7 +161,7 @@ describe('buildJudgeSystemPrompt', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig({ instructions: 'Use strict TypeScript.' }), 5, false, 0, related_repos);
     const rules = prompt.slice(prompt.indexOf('## Related Repos'), prompt.indexOf('## Project Instructions'));
     expect(rules).toContain('References, which this repository implements or ports: `dashpay/dash`, `dashpay/dips`. Consumers, which depend on this repository: `dashpay/platform`.');
-    expect(rules).toContain('A citation listed there as in the fetched checkout is evidence the reviewer read, so the cap for a fact you cannot check does not apply to it. Any other citation is a fact you cannot check.');
+    expect(rules).toContain('A citation listed there as in the fetched checkout is evidence the reviewer read, so it counts as code you can see. Any other citation rests on code you cannot see.');
     expect(rules).toContain('**A divergence from a reference** is graded by the blocker tests');
     expect(rules).toContain('It is a `blocker` only when the PR description says the change does not break anything.');
     expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, [related_repos[2]])).toContain('References, which this repository implements or ports: none.');
@@ -210,15 +211,15 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('**A security defect that outside input can trigger is a `blocker`, however unlikely it looks.**');
     expect(prompt).toContain('Security is serious damage under test 3, and the attacker decides whether it happens, so rarity never lowers the grade.');
     expect(prompt).toContain('PR content and diffs, file contents, comments and replies, branch names, and config read from the PR');
-    for (const cls of ['prompt injection', 'permission bypass', 'secret or token exposure', 'code, command or path injection', 'unsafe execution of config the PR controls']) {
+    for (const cls of ['prompt injection', 'permission bypass', 'secret or token exposure', 'code, command or path injection', 'unsafe execution of config the PR controls', 'resource exhaustion or denial of service from outside input (CWE-400, CWE-770)']) {
       expect(prompt).toContain(cls);
     }
     expect(prompt).toContain('If you can show the attacker gains no capability they do not already have');
     expect(prompt).toContain('mark the finding `ignore` and say why in `reasoning`');
     expect(prompt).toContain('Never keep it at a lower grade.');
     expect(prompt).toContain('A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation');
-    expect(prompt).toContain('When one does, mark the finding `ignore`, unless it is a security defect.');
-    expect(prompt).toContain('word the finding as a question about the choice. This never applies to a security defect.');
+    expect(prompt).toContain('When one does, grade the finding `suggestion` at most and name the TODO, unless it is a security defect.');
+    expect(prompt).toContain('For a library, outside input is also anything a caller of its public API can pass, such as arguments, readers and byte streams. No caller inside the repository is needed.');
     expect(prompt).toContain('"security": false');
   });
 
@@ -258,23 +259,40 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('| Style, naming, docs | `nitpick` | `nitpick` |');
   });
 
-  it('lists what is never a blocker and makes intended but surprising behaviour a suggestion', () => {
+  it('lists what is never a blocker and makes intended but surprising behaviour a suggestion, except for a removed guard or resource exhaustion', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
-    const section = prompt.slice(prompt.indexOf('## Never a Blocker'), prompt.indexOf('## Grade Stability'));
+    const section = prompt.slice(prompt.indexOf('## Never a Blocker'), prompt.indexOf('## Code You Cannot See'));
     for (const rule of [
       '**Missing test coverage is `suggestion`.**',
-      '**Style, naming, docs and comments are `nitpick`.**',
+      'A test that cannot fail when the code it names breaks, for example because it sets private state instead of running the changed code, is a `warning`.',
+      '**Style, naming, docs and comments are `nitpick`.** A doc or comment that states behaviour the code does not have is a `suggestion`',
       '**Commit messages never block.**',
       '**Performance is never a blocker** unless it causes a crash, a hang or resource exhaustion from outside input.',
-      '**A finding that rests on a fact you cannot check is capped at `suggestion`.**',
       '**Verification status is never a finding.**',
       '**A check on a trusted internal value is never a blocker.**',
       '**Behaviour that is intended but surprising is a `suggestion`.**',
+      'This never applies to a security defect, to resource exhaustion, or to a removed guard, check or limit',
+      'The outside input and examples under Repository Rules outrank it.',
     ]) {
       expect(section).toContain(rule);
     }
     expect(section).toContain('word the finding as a question');
     expect(section).toContain('When code in the PR can produce a bad value, the guard is not the finding: grade the failure that bad value causes by the table.');
+    expect(prompt).not.toMatch(/capped at `suggestion`|fact you cannot check/);
+  });
+
+  it('never drops or caps a finding for code the judge cannot see, and says tools check it only when they do', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    const section = prompt.slice(prompt.indexOf('## Code You Cannot See'), prompt.indexOf('## Grade Stability'));
+    expect(section).toContain('Code you cannot see is no evidence against a finding, so on its own it never drops a finding, and never lowers a `blocker` or a `warning` below `warning`.');
+    expect(section).toContain('Set `unseen` to true on such a finding, and false on all others.');
+    expect(section).not.toContain('Manki then reads that code with tools');
+    expect(prompt).toContain('"unseen": false');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki then reads that code with tools. A confirmation gives the finding back the grade its finder gave, and a disproof drops it.');
+  });
+
+  it('blocks on a claimed build, type or test failure only when CI confirms it', () => {
+    expect(buildJudgeSystemPrompt(makeConfig(), 5)).toContain('A claim that the code fails to compile, type-check or pass its tests is a `blocker` only when its tool evidence is **confirmed**, since reading code is not compiling it. Otherwise grade it `warning` at most and say in `reasoning` that the author should check that it builds.');
   });
 
   it('gives four to six worked examples on each side, across several languages', () => {
@@ -1427,6 +1445,69 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].severity).toBe(severity);
     expect(result.findings[0].originalSeverity).toBeUndefined();
     expect(result.findings[0].tags).toBeUndefined();
+  });
+
+  it('shows the code a finding cites outside the diff, and sends a finding it lowered for unseen code to the refuter, which can give back its grade', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
+    fs.mkdirSync(path.join(workspace, 'src'));
+    fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
+    fs.writeFileSync(path.join(workspace, 'src', 'lock.ts'), Array.from({ length: 40 }, (_, i) => (i === 29 ? 'const guard = lock.acquire();' : `// ${i + 1}`)).join('\n'));
+    const findings = [
+      makeFinding({ title: 'Deadlock on stop', severity: 'blocker', evidence: { checks: [], proof: ['src/index.ts:10', 'src/lock.ts:30'] } }),
+      makeFinding({ title: 'Missing bound', severity: 'warning', line: 5, evidence: { checks: [], proof: ['src/index.ts:5'] } }),
+      makeFinding({ title: 'Slow path', severity: 'blocker', line: 6, evidence: { checks: [], proof: ['src/index.ts:6'] } }),
+      makeFinding({ title: 'Unseen kept', severity: 'warning', line: 7 }),
+      makeFinding({ title: 'Unseen dropped', severity: 'warning', line: 8 }),
+    ];
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({
+      summary: 's',
+      findings: [
+        { id: 1, title: 'Deadlock on stop', severity: 'warning', unseen: true, reasoning: 'warning. The second lock path sits outside the code shown.', confidence: 'medium' },
+        { id: 2, title: 'Missing bound', severity: 'suggestion', unseen: true, reasoning: 'r', confidence: 'medium' },
+        { id: 3, title: 'Slow path', severity: 'warning', unseen: false, reasoning: 'Performance never blocks.', confidence: 'high' },
+        { id: 4, title: 'Unseen kept', severity: 'warning', unseen: true, reasoning: 'r', confidence: 'medium' },
+        { id: 5, title: 'Unseen dropped', severity: 'ignore', unseen: true, reasoning: 'r', confidence: 'medium' },
+      ],
+    }) });
+    const refuterMessages: string[] = [];
+    const replies: Record<string, unknown> = {
+      'Deadlock on stop': { outcome: 'confirmed', reason: 'Both paths take the lock.', proof: ['src/lock.ts:30'] },
+      'Missing bound': { outcome: 'disproved', reason: 'The caller bounds it.', proof: ['src/index.ts:4'] },
+    };
+    const refuter: LLMClient = {
+      repoTools: true,
+      async sendMessage(_system, user) {
+        refuterMessages.push(user);
+        const title = Object.keys(replies).find(t => user.includes(`: ${t}\n`))!;
+        return { content: JSON.stringify(replies[title]) };
+      },
+    };
+
+    try {
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace },
+      });
+
+      expect(result.findings.map(f => [f.title, f.severity])).toEqual([
+        // The refuter confirmed it, so it gets back the grade its finder gave.
+        ['Deadlock on stop', 'blocker'],
+        ['Missing bound', 'ignore'],
+        // Lowered for another reason than unseen code, so the refuter never sees it.
+        ['Slow path', 'warning'],
+        // Kept at its finder's grade or dropped, so there is no grade to give back.
+        ['Unseen kept', 'warning'],
+        ['Unseen dropped', 'ignore'],
+      ]);
+      expect(refuterMessages).toHaveLength(2);
+      expect(result.findings[0].gradePath?.map(step => step.by)).toEqual(['judge', 'refutation']);
+      const [, userMessage] = mockSendMessage.mock.calls[0];
+      expect(userMessage).toContain("- **Cited code outside the diff** (src/lock.ts:30), at the PR's head.");
+      expect(userMessage).toContain('>>> 30: const guard = lock.acquire();');
+      // A cited line inside the diff is already shown in the diff.
+      expect(userMessage).not.toContain('(src/index.ts:10)');
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('tags the findings the judge marks `security`, and files exactly those under the `security` category', async () => {
@@ -3173,7 +3254,7 @@ describe('applyInPrSuppression', () => {
 });
 
 describe('mapJudgedToFindings', () => {
-  it('posts a blocker as a warning when nothing cites its proving lines, or when it rests on an absence no search backs', () => {
+  it('posts a blocker as a warning when nothing cites its proving lines, when it rests on an absence no search backs, or when it claims a build failure CI does not report', () => {
     const blocker = (title: string, evidence?: Finding['evidence'], extra: Partial<Finding> = {}) => makeFinding({ title, severity: 'blocker', evidence, ...extra });
     const originals = [
       blocker('Reviewer proof', { checks: [], proof: ['src/a.ts:1'] }),
@@ -3183,6 +3264,8 @@ describe('mapJudgedToFindings', () => {
       blocker('Missing with a search', { checks: [], proof: ['src/a.ts:1'], emptySearch: 'grep x: no match' }),
       blocker('Tool alert', undefined, { toolSource: 'clippy' }),
       makeFinding({ title: 'Warning without proof', severity: 'warning', evidence: undefined }),
+      blocker('Unconfirmed build claim', { checks: [], proof: ['src/a.ts:1'] }, { description: 'This should fail to compile with E0599.', toolEvidence: { status: 'none', note: '' } }),
+      blocker('Build claim CI reports', { checks: [], proof: ['src/a.ts:1'] }, { description: 'This does not compile.', toolEvidence: { status: 'confirmed', note: 'rustc' } }),
     ];
     const judged: JudgedFinding[] = originals.map((f, i) => ({
       id: i + 1, title: f.title, severity: f.severity, reasoning: 'Real.', confidence: 'high',
@@ -3199,8 +3282,14 @@ describe('mapJudgedToFindings', () => {
       ['Missing with a search', 'blocker'],
       ['Tool alert', 'blocker'],
       ['Warning without proof', 'warning'],
+      ['Unconfirmed build claim', 'warning'],
+      ['Build claim CI reports', 'blocker'],
     ]);
     expect(result[1].judgeNotes).toBe('Real.\nPosted as a warning, since it cites no lines that prove the failure.');
+    expect([result[7].tags, result[7].judgeNotes]).toEqual([
+      ['unconfirmed-build-claim'], 'Real.\nPosted as a warning, since no CI result on this commit reports the claimed build, type or test failure. Check that this builds.',
+    ]);
+    expect(result[7].gradePath).toEqual([{ from: 'blocker', to: 'warning', by: 'build_claim', reason: 'no CI result on this commit reports the claimed build, type or test failure' }]);
     expect(result[1].gradePath).toEqual([{ from: 'blocker', to: 'warning', by: 'unproven', reason: 'it cites no lines that prove the failure' }]);
     expect(result[0].gradePath).toBeUndefined();
     expect(result[2].evidence).toEqual({ checks: ['read it'], proof: ['src/index.ts:12'] });
@@ -4835,9 +4924,11 @@ const GRADING_CASES = [
   'security-with-todo',
   'own-proposal-objection',
   'own-proposal-worse',
+  'library-resource-exhaustion',
+  'unconfirmed-build-claim',
 ] as const;
 
-const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo'];
+const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion'];
 
 interface GradingFixture {
   name: string;
@@ -4870,7 +4961,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases and objections to an applied Manki fix, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix and build claims, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 

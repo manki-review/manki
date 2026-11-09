@@ -69,6 +69,10 @@ export const SECURITY_TAG = 'security' as const;
 export const PRE_EXISTING_TAG = 'pre-existing' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
 export const UNPROVEN_TAG = 'unproven-blocker' as const;
+/** Marks a finding the judge graded below its finder because it rests on code the judge could not see. A confirmation gives back the finder's grade. */
+export const UNSEEN_TAG = 'unseen-code' as const;
+/** Marks a blocker posted as a warning because it claims a build, type or test failure that no CI result on the commit reports. */
+export const UNBUILT_TAG = 'unconfirmed-build-claim' as const;
 
 export interface InterRoundDiffEmptyOverride {
   applied: boolean;
@@ -201,7 +205,7 @@ export interface Finding {
   lead?: OpenLead;
   /** The round an open lead first came up in, when an earlier round left it unsettled. */
   leadSince?: number;
-  /** How the judge's attempt to refute the finding with tools came out. Set on blockers and open leads only. */
+  /** How the judge's attempt to refute the finding with tools came out. Set on blockers, open leads and findings the judge lowered for want of proof or for code it could not see. */
   refutation?: Refutation;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;
@@ -244,8 +248,8 @@ export interface RoundSlicing {
 
 /** What changed a finding's severity. */
 export type GradeChange =
-  | 'judge' | 'unproven' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'contradiction' | 'ratchet' | 'resolved_thread'
-  | 'pre_existing';
+  | 'judge' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'contradiction' | 'ratchet'
+  | 'resolved_thread' | 'pre_existing';
 
 /** One change of a finding's severity. */
 export interface GradeStep {
@@ -270,11 +274,13 @@ export function gradeStep(finding: Finding, to: FindingSeverity, by: GradeChange
 
 export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
 
-/** The outcome of the judge's attempt to refute a blocker or an open lead. */
+/** The outcome of the judge's attempt to refute a finding with tools. */
 export interface Refutation {
   outcome: RefutationOutcome;
   /** What decided it, in one or two sentences. */
   reason: string;
+  /** The general rule of the language, a library or a protocol that the finding relies on, as the refuter named it. */
+  rule?: string;
   /** The `file:line` locations the judge cites: the failure for `confirmed`, the reason it cannot happen for `disproved`. */
   proof?: string[];
   /** The finding's own file and the files the outcome cites. */

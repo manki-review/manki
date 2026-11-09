@@ -23,7 +23,7 @@ import {
   Learning,
   RepoMemory,
 } from './memory';
-import { Finding, UNPROVEN_TAG } from './types';
+import { Finding, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 import { registerSecret } from './utils';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
@@ -107,6 +107,7 @@ describe('applySuppressions', () => {
       makeFinding({ severity: 'warning', title: 'Unused variable leaks the token', tags: ['security'] }),
       makeFinding({ severity: 'warning', title: 'no-unused-vars: Unused variable', toolSource: 'ESLint' }),
       makeFinding({ severity: 'warning', title: 'Unused variable skips the check', tags: [UNPROVEN_TAG] }),
+      makeFinding({ severity: 'warning', title: 'Unused variable does not compile', tags: [UNBUILT_TAG] }),
       makeFinding({ severity: 'warning', title: 'Unused variable hides the error', refutation: { outcome: 'unsettled', reason: 'r', files: [], codeDigest: 'd' } }),
     ];
     const suppressions = [makeSuppression({ pattern: 'unused variable' })];

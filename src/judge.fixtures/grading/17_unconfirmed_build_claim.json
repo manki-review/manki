@@ -1,0 +1,33 @@
+{
+  "name": "unconfirmed-build-claim",
+  "case": "unconfirmed-build-claim",
+  "allowed": [
+    "warning",
+    "suggestion",
+    "nitpick",
+    "ignore"
+  ],
+  "finding": {
+    "title": "`Encode` trait is not in scope in the hand-written impl",
+    "file": "src/payload.rs",
+    "line": 12,
+    "description": "The new `impl bincode::Encode for ServicePayload` calls `self.version.encode(encoder)`, but the file has no `use bincode::Encode`, unlike the `Decode` impl, which imports `bincode::Decode`. This should fail to compile with E0599. I read the code and did not compile it.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "evidence": {
+      "checks": [
+        "src/payload.rs has no `use bincode::Encode`"
+      ],
+      "proof": [
+        "src/payload.rs:12"
+      ]
+    },
+    "toolEvidence": {
+      "status": "none",
+      "note": "Checked: the file is in the diff, the line is in the file, no CI annotation reports the claimed error."
+    }
+  },
+  "prDiff": "diff --git a/src/payload.rs b/src/payload.rs\nindex 1111111..2222222 100644\n--- a/src/payload.rs\n+++ b/src/payload.rs\n@@ -8,2 +8,16 @@\n \n #[cfg(feature = \"bincode\")]\n+impl bincode::Encode for ServicePayload {\n+    fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {\n+        self.version.encode(encoder)?;\n+        self.pro_tx_hash.encode(encoder)\n+    }\n+}\n+\n+#[cfg(feature = \"bincode\")]\n+impl<C> bincode::Decode<C> for ServicePayload {\n+    fn decode<D: bincode::de::Decoder<Context = C>>(decoder: &mut D) -> Result<Self, bincode::error::DecodeError> {\n+        use bincode::Decode;\n+        Ok(Self { version: Decode::decode(decoder)?, pro_tx_hash: Decode::decode(decoder)? })\n+    }\n+}\n"
+}
