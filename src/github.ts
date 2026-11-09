@@ -2312,12 +2312,13 @@ interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly stri
 
 /**
  * Returns `path` as the repository path it names. A file name with no directories gets those of the one known file
- * with that name, is kept as written when none has it, and returns nothing when several have it.
+ * with that name, and returns nothing when several have it. When none has it, `atRoot` keeps it as a file at the
+ * repository root, and otherwise it returns nothing, since the file can sit in any directory.
  */
-function knownPath(path: string, known: readonly string[]): string | undefined {
+function knownPath(path: string, known: readonly string[], atRoot = false): string | undefined {
   if (path.includes('/') || known.includes(path)) return path;
   const matches = [...new Set(known.filter(file => file.endsWith(`/${path}`)))];
-  return matches.length <= 1 ? matches[0] ?? path : undefined;
+  return matches.length === 1 ? matches[0] : matches.length === 0 && atRoot ? path : undefined;
 }
 
 /** Returns the range `line` or `start-end` names in `file`, if it is a valid one. */
@@ -2326,10 +2327,10 @@ function lineRange(file: string, lines: string): CodeRange | undefined {
   return start > 0 && end >= start ? { file, start, end } : undefined;
 }
 
-function parseCheck(entry: string, known: readonly string[]): Check | undefined {
+function parseCheck(entry: string, known: readonly string[], atRoot = false): Check | undefined {
   const match = entry.match(CHECK_LOCATION_RE);
   const [cited, line, last, more] = match ? [1, 5, 9].map(i => match.slice(i, i + 4)).find(group => group[0] !== undefined)! : [];
-  const resolved = match ? knownPath(sanitizeFilePath(cited), known) : undefined;
+  const resolved = match ? knownPath(sanitizeFilePath(cited), known, atRoot) : undefined;
   // The cited path and the file names it resolves against are both PR content, so only a plain repository path becomes a link.
   const path = resolved && LINKABLE_PATH_RE.test(resolved) && !resolved.split('/').some(segment => segment === '.' || segment === '..') ? resolved : undefined;
   const at = path ? lineRange(path, last ? `${line}-${last}` : line) : undefined;
@@ -2369,10 +2370,10 @@ function sameCheck(a: Check, b: Check): boolean {
  * Returns the reviewer's checks, each once, then each further line they list and each proving line that no check cites,
  * then the search that came back empty. `known` holds the repository paths a cited file name is resolved against.
  */
-function findingChecks({ evidence }: Finding, known: readonly string[]): Check[] {
-  const parsed = (evidence?.checks ?? []).flatMap(entry => parseCheck(entry, known) ?? []);
+function findingChecks({ evidence }: Finding, known: readonly string[], atRoot = false): Check[] {
+  const parsed = (evidence?.checks ?? []).flatMap(entry => parseCheck(entry, known, atRoot) ?? []);
   const checks = parsed.reduce<Check[]>((kept, check) => (kept.some(k => sameCheck(k, check)) ? kept : [...kept, check]), []);
-  const proven = (evidence?.proof ?? []).flatMap(proof => parseCheck(proof, known)?.at ?? []);
+  const proven = (evidence?.proof ?? []).flatMap(proof => parseCheck(proof, known, atRoot)?.at ?? []);
   for (const at of [...parsed.flatMap(c => c.also ?? []), ...proven]) {
     if (!checks.some(c => c.at && overlaps(c.at, at))) checks.push({ text: '', at });
   }
@@ -2383,9 +2384,12 @@ function findingChecks({ evidence }: Finding, known: readonly string[]): Check[]
 /** Cited files whose lines are fetched. A preview in any other file covers only its cited lines. */
 const MAX_CITED_FILES = 20;
 
-/** Returns the files a finding's checks cite, whose lines keep its previews inside them, with names resolved against `changed`. */
+/**
+ * Returns the files a finding's checks cite, whose lines keep its previews inside them, with names resolved against
+ * `changed`. A name no changed file has is tried at the repository root, and links only when it is read there.
+ */
 function citedFiles(finding: Finding, changed: readonly string[]): string[] {
-  return findingChecks(finding, changed).flatMap(c => c.at?.file ?? []);
+  return findingChecks(finding, changed, true).flatMap(c => c.at?.file ?? []);
 }
 
 /** The lines a preview of `at` shows: from the line above it, at most `CHECK_PREVIEW_LINES`, inside the file. */
@@ -2423,7 +2427,8 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
 }
 
 function refutationPart(label: string, lead: string, { outcome, reason, proof }: Refutation, linkTo: LineLink, known: readonly string[]): FoldPart {
-  const cited = outcome === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p, known)?.at ?? []);
+  // The refuter keeps only proof locations that exist in the workspace, so a bare file name there is a root file.
+  const cited = outcome === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p, known, true)?.at ?? []);
   const text = [lead, reason ? oneLine(reason) : '', cited.length ? `See ${cited.map(r => linkedRange(r, linkTo)).join(', ')}.` : '']
     .filter(Boolean).join(' ');
   return { label, text, open: `**${label}:** ${text}` };
@@ -2455,7 +2460,7 @@ const NOT_CHECKED: FindingChecks = {
  * says so, unless a tool reported it or it is an earlier round's finding.
  */
 function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLinks, ownLine: string): FindingChecks {
-  const known = [...changed, ...files.keys()];
+  const known = [...changed, ...files.keys(), ...(finding.file ? [finding.file] : [])];
   const checks = findingChecks(finding, known);
   const refutations = refutationParts(finding, linkTo, known);
   if (checks.length === 0 && refutations.length === 0) {
@@ -2566,8 +2571,8 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
     ...(finding.judgeConfidence && { confidence: finding.judgeConfidence }),
     flaggedBy: finding.reviewers,
     title: finding.title,
-    ...(finding.suggestedFix && { fix: finding.suggestedFix.slice(0, 200) }),
-    ...(finding.howToFix && { howToFix: finding.howToFix.slice(0, 300) }),
+    ...(finding.suggestedFix && { fix: safeTruncate(finding.suggestedFix, 200) }),
+    ...(finding.howToFix && { howToFix: safeTruncate(finding.howToFix, 300) }),
     ...(finding.tags && finding.tags.length > 0 && { tags: finding.tags }),
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
   };

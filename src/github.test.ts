@@ -341,7 +341,7 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, evidence: { proof: [], checks: ['src/legacy/parser.py', 'src/legacy/parser.py swallows ValueError'] } }))
       .toContain('- src/legacy/parser.py\n- src/legacy/parser.py swallows ValueError');
 
-    // A file cited by name alone gets the directories of the one changed or read file it names, and stays text when it names several.
+    // A file cited by name alone gets the directories of the one changed or read file it names, and stays text when it names several or none.
     // A path that opens a check keeps its case, and every line a location lists is cited, with none left in the text.
     const named = formatFindingComment({ ...baseFinding, evidence: { proof: [], checks: [
       'cache.go:17-20 holds the lock while it calls `load`',
@@ -350,9 +350,10 @@ describe('formatFindingComment', () => {
       'src/legacy/parser.py `parse()` swallows `ValueError`',
       'src/util.ts:3,25: `retries` and `timeout` are public fields',
       'app/routes.ts:8 is the other copy',
+      'retry.rb:9 retries forever',
     ] } }, { ...links, changed: ['pkg/store/cache.go', 'lib/a/config.py', 'lib/b/config.py', 'packages/web/app/routes.ts'] });
     expect(named).toContain([
-      '<summary>How this was checked: 5 places read, 2 other checks</summary>',
+      '<summary>How this was checked: 5 places read, 3 other checks</summary>',
       '',
       'Holds the lock while it calls `load`',
       link('pkg/store/cache.go', 16, 20),
@@ -369,6 +370,7 @@ describe('formatFindingComment', () => {
       `- [\`src/util.ts:25\`](${link('src/util.ts', 25)}): \`line 25\``,
       '- config.py:5 reads the environment',
       '- src/legacy/parser.py `parse()` swallows `ValueError`',
+      '- retry.rb:9 retries forever',
     ].join('\n'));
 
     // A finding that cites nothing says so, unless a tool reported it or it is an earlier round's.
@@ -382,11 +384,11 @@ describe('formatFindingComment', () => {
     // A disproof keeps a security warning, so its line names security findings, not only blockers, and links its proof.
     const disprovedFinding: Finding = {
       ...baseFinding, severity: 'warning', tags: ['security'], evidence: { checks: [], proof: ['src/main.ts:42'] },
-      refutation: { outcome: 'disproved', reason: 'A comment says it is intended.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc' },
+      refutation: { outcome: 'disproved', reason: 'A comment says it is intended.', proof: ['src/main.ts:40', 'Makefile:7'], files: ['src/main.ts'], codeDigest: 'abc' },
     };
     const disproved = render(disprovedFinding);
     expect(render({ ...disprovedFinding, evidence: { checks: ['src/util.ts:3 marks it intended'], proof: [] } })).toContain('<summary>How this was checked: 1 place read, doubt found</summary>');
-    expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}).`);
+    expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
 
@@ -477,6 +479,7 @@ describe('formatFindingComment', () => {
       reviewers: ['Security', 'Testing'],
       judgeConfidence: 'high',
       suggestedFix: 'a'.repeat(250),
+      howToFix: 'b'.repeat(301),
       tags: ['own-proposal-followup'],
       originalSeverity: 'blocker',
     };
@@ -489,7 +492,9 @@ describe('formatFindingComment', () => {
       confidence: 'high',
       flaggedBy: ['Security', 'Testing'],
       title: 'Null pointer dereference',
-      fix: 'a'.repeat(200),
+      // A cut fix ends in an ellipsis, so a follow-up that shows it never passes a cut sentence off as the whole fix.
+      fix: `${'a'.repeat(200)}...`,
+      howToFix: `${'b'.repeat(300)}...`,
       tags: ['own-proposal-followup'],
       originalSeverity: 'blocker',
     });
@@ -4159,15 +4164,28 @@ describe('postReview non-blocking findings', () => {
   });
 
   it('previews the code each check cites inside its file, also in an inline comment', async () => {
-    const { octokit, createReview, getContent } = makeOctokit({ 'src/b.ts': 'one\ntwo\nthree\n' });
+    const { octokit, createReview, getContent } = makeOctokit({ 'src/b.ts': 'one\ntwo\nthree\n', 'Makefile': 'all:\n\tbuild\n' });
 
+    // A file name no changed file has is read at the repository root, and stays text when no file is there.
     await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([
-      nonBlocking('suggestion', 'Extract helper', 5, { evidence: { checks: ['src/b.ts:3 ends the helper'], proof: [] } }),
+      nonBlocking('suggestion', 'Extract helper', 5, { evidence: { checks: ['src/b.ts:3 ends the helper', 'Makefile:2 runs the build', 'helpers.py:9 retries forever'], proof: [] } }),
     ]), diff);
 
     expect(getContent).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/b.ts', ref: 'abc1234' }));
-    expect(createReview.mock.calls[0][0].comments[0].body).toContain(
-      '<summary>How this was checked: 1 place read</summary>\n\nEnds the helper\nhttps://github.com/owner/repo/blob/abc1234/src/b.ts#L2-L3\n\n</details>');
+    expect(getContent).toHaveBeenCalledWith(expect.objectContaining({ path: 'helpers.py', ref: 'abc1234' }));
+    expect(createReview.mock.calls[0][0].comments[0].body).toContain([
+      '<summary>How this was checked: 2 places read, 1 other check</summary>',
+      '',
+      'Ends the helper',
+      'https://github.com/owner/repo/blob/abc1234/src/b.ts#L2-L3',
+      '',
+      'Runs the build',
+      'https://github.com/owner/repo/blob/abc1234/Makefile#L1-L2',
+      '',
+      '- helpers.py:9 retries forever',
+      '',
+      '</details>',
+    ].join('\n'));
 
     // Evidence can cite many paths, so only the first 20 get their length looked up, besides the finding's own file.
     getContent.mockClear();

@@ -150,6 +150,8 @@ describe('parseFindings', () => {
     const many = parseProof([`src/a.ts:${Array.from({ length: 50 }, (_, i) => i + 1).join(',')}`, 'src/b.ts:42']);
     expect(many).toHaveLength(10);
     expect(many.slice(0, 3)).toEqual(['src/a.ts:1', 'src/b.ts:42', 'src/a.ts:2']);
+    // Entries without a location never push a later location out.
+    expect(parseProof([...Array.from({ length: 10 }, (_, i) => `the caller ${i}`), 'lib/parser.go:7'])).toEqual(['lib/parser.go:7']);
     expect(checked.notChecked).toBeUndefined();
     expect([checked.preExisting, unchecked.preExisting]).toEqual(['The division predates this PR.', undefined]);
     expect([unchecked.evidence, unchecked.notChecked]).toEqual([{ checks: [], proof: [], emptySearch: '' }, true]);
