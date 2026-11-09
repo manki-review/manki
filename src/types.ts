@@ -206,8 +206,8 @@ export interface Finding {
   /** The round an open lead first came up in, when an earlier round left it unsettled. */
   leadSince?: number;
   /**
-   * The grade the judge would give if code it could not see is as the finding says, when that is above the grade it
-   * gave. The refuter checks the finding, and a confirmation gives it this grade.
+   * The grade the judge would give if every premise it doubts holds, when that is above the grade it gave. The refuter
+   * checks the finding, and a confirmation gives it this grade.
    */
   gradeIfConfirmed?: FindingSeverity;
   /** How the judge's attempt to refute the finding with tools came out. Set on blockers, open leads, findings lowered for want of proof and findings with a `gradeIfConfirmed`. */

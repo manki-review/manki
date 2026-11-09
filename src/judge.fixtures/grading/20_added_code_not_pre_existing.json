@@ -1,0 +1,30 @@
+{
+  "name": "added-code-not-pre-existing",
+  "case": "added-code-not-pre-existing",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "Invalidate leaves the old price in the category index",
+    "file": "internal/catalog/prices.go",
+    "line": 40,
+    "description": "The new `Invalidate` deletes the SKU from `bySKU` but not from `byCategory`. After a price change, `ForCategory` keeps returning the old price, so every category listing shows a price the store no longer charges.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "preExisting": "`byCategory` was never pruned before this PR either.",
+    "evidence": {
+      "checks": [
+        "internal/catalog/prices.go:40 deletes from `bySKU` only",
+        "internal/catalog/prices.go:33 `ForCategory` reads `byCategory`"
+      ],
+      "proof": [
+        "internal/catalog/prices.go:40",
+        "internal/catalog/prices.go:33"
+      ]
+    },
+    "suggestedFix": "Delete the SKU from its category map in `byCategory` as well."
+  },
+  "prDiff": "diff --git a/internal/catalog/prices.go b/internal/catalog/prices.go\nindex 1111111..2222222 100644\n--- a/internal/catalog/prices.go\n+++ b/internal/catalog/prices.go\n@@ -30,6 +30,12 @@\n func (c *PriceCache) ForCategory(cat string) map[string]Price {\n \tc.mu.Lock()\n \tdefer c.mu.Unlock()\n \treturn c.byCategory[cat]\n }\n \n+// Invalidate drops a SKU after its price changes, so the next read loads the new price.\n+func (c *PriceCache) Invalidate(sku string) {\n+\tc.mu.Lock()\n+\tdefer c.mu.Unlock()\n+\tdelete(c.bySKU, sku)\n+}\n"
+}
