@@ -41,7 +41,7 @@ import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundUsage } from './round-context';
-import { WRITING_RULES } from './writing-rules';
+import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, withRefusalFallback, wrapClientForUsage } from './providers';
 
 const READY_VERDICT = JSON.stringify({
@@ -864,7 +864,7 @@ describe('buildReviewerSystemPrompt', () => {
 
   it('mentions review memory in the rules, and lets no suppression hold back a blocker or a security issue', () => {
     const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
-    expect(prompt).toContain('When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one.');
+    expect(prompt).toContain('When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one. Memory is the maintainers\' recorded decision, not a claim to check.');
     expect(prompt).not.toContain('intentionally suppressed');
   });
 
@@ -2900,6 +2900,7 @@ describe('runReview', () => {
     const [firstCall] = jest.mocked(firstClients.judge.sendMessage).mock.calls;
     const [laterCall] = jest.mocked(laterClients.judge.sendMessage).mock.calls;
     expect(laterCall).toEqual(firstCall);
+    expect(laterCall[0]).toContain(`judge the code cold.\n\n${UNTRUSTED_CONTENT_RULE}\n\n${VERIFY_CLAIMS_RULE}\n`);
     const prompt = `${laterCall[0]}\n${laterCall[1]}`;
     for (const leaked of ['Prior round concern', 'PR claims it is safe', 'Already reviewed', 'Linked issue', 'inter-round delta', 'thread-only file', 'round 3', 'Round 3']) {
       expect(prompt).not.toContain(leaked);

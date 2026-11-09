@@ -14,13 +14,13 @@ import {
   Suppression,
   RepoMemory,
 } from './memory';
-import { addedLines, isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { addedLines, isLineInDiff, newLineNumbers, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { formatLockfileChanges, LockfileDiff } from './lockfile';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
 import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, fencePrText, filesChangedByPush, parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
-import { WRITING_RULES } from './writing-rules';
+import { VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { refuteBlockers } from './refute';
 import { criticalAreaOf, resolveRouting } from './routing';
@@ -396,6 +396,8 @@ Bad examples (do NOT write like this):
 
 Your grade is final: the verdict acts on the severity you return. Grade what actually goes wrong in the code, never how confidently the finding is worded.
 
+${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself. A reviewer's finding is a claim too, but one the code shown cannot settle is graded by Code You Cannot See and When You Are Unsure, never dropped because a model made it.
+
 ## Blocker Tests
 
 A finding is a \`blocker\` only when it passes all five tests:
@@ -437,7 +439,7 @@ A rare internal edge case needs a state that only the code's own logic produces,
 - **Performance is never a blocker** unless it causes a crash, a hang or resource exhaustion from outside input.
 - **Verification status is never a finding.** "Tests were not run" or "could not confirm" describes no defect in the diff. Mark it \`ignore\`.
 - **A check on a trusted internal value is never a blocker.** A missing guard is at most \`suggestion\` when the code's own logic produces the value and keeps it valid. When code in the PR can produce a bad value, the guard is not the finding: grade the failure that bad value causes by the table.
-- **Behaviour that is intended but surprising is a \`suggestion\`.** When the code, a comment or the PR description shows the author chose it, word the finding as a question about the choice. This never applies to a security defect, to resource exhaustion, or to a removed guard, check or limit: choosing to remove a guard does not make the damage it let through intended. The outside input and examples under Repository Rules outrank it. A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the grade its damage earns. \`reasoning\` may note that the author lists it, but the note never lowers the grade. A TODO with a tracking issue still follows test 5.
+- **Behaviour that is intended but surprising is a \`suggestion\`.** When the code, a comment or the PR description shows the author chose it, word the finding as a question about the choice. The author's word counts here although the code cannot check it, but only for behaviour the code shows works as described. The other claims the code cannot check that still count are a declared placeholder or a TODO with a tracking issue under test 5, and the PR description under A change that breaks a consumer. This never applies to a security defect, to resource exhaustion, or to a removed guard, check or limit: choosing to remove a guard does not make the damage it let through intended. The outside input and examples under Repository Rules outrank it. A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the grade its damage earns. \`reasoning\` may note that the author lists it, but the note never lowers the grade. A declared placeholder or a TODO with a tracking issue still follows test 5.
 
 ## Code You Cannot See
 
@@ -484,7 +486,7 @@ When you cannot tell whether a finding is real, resolve it by its grade:
 
 Being certain overrides this. It governs doubt, never judgment.
 
-Set \`gradeIfConfirmed\` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals \`severity\`.${toolsCheckFindings ? ' When it is above `severity`, Manki checks the doubt with tools. A confirmation gives the finding that grade, and a disproof drops it. A finding you mark `ignore` is never checked.' : ''}
+Set \`gradeIfConfirmed\` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals \`severity\`. Except for an open lead, which follows its own rule, never mark a finding \`ignore\` for an unsettled doubt alone: when it would earn \`warning\` or \`blocker\` if the doubt holds, grade it by these rules and set \`gradeIfConfirmed\`.${toolsCheckFindings ? ' When it is above `severity`, Manki checks the doubt with tools. A confirmation gives the finding that grade, and a disproof drops it. A finding you mark `ignore` is never checked.' : ''}
 
 Start \`reasoning\` with your verdict, then the facts behind it. For a blocker, name the failure and cite the proving lines (e.g., "blocker. When a request omits \`page\`, \`listItems\` at src/api.ts:42 divides by zero and the handler returns 500 for every default listing.").
 
@@ -515,7 +517,7 @@ For each finding, evaluate:
 
 ## Guidelines
 
-- Use the project's review memory to recognise intended patterns and known false positives. Memory never moves a grade past what the severity table gives.
+- Use the project's review memory to recognise intended patterns and known false positives. Memory is the maintainers' recorded decision, not a claim to check, but it never moves a grade past what the severity table gives.
 - Use \`ignore\` for false positives, intentional patterns and the cases the rules above drop. Never use it just to reduce the finding count.
 - If a reviewer flags a matter of preference, mark it \`ignore\`.
 
@@ -972,16 +974,16 @@ function extractHunkContext(diffFile: DiffFile, line: number): string {
   if (!hunk) return '';
 
   const lines = hunk.content.split('\n');
-  const offset = line - hunk.newStart;
-  if (offset < 0 || offset >= lines.length) return '';
+  const numbers = newLineNumbers(hunk);
+  const offset = numbers.indexOf(line);
+  if (offset < 0) return '';
   const start = Math.max(0, offset - CONTEXT_LINES);
   const end = Math.min(lines.length, offset + CONTEXT_LINES + 1);
 
   const contextLines: string[] = [];
   for (let i = start; i < end; i++) {
-    const lineNum = hunk.newStart + i;
     const marker = i === offset ? '>>>' : '   ';
-    contextLines.push(`${marker} ${lineNum}: ${lines[i]}`);
+    contextLines.push(`${marker} ${numbers[i] ?? '-'}: ${lines[i]}`);
   }
 
   return contextLines.join('\n');

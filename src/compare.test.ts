@@ -1,5 +1,6 @@
 import { runComparisons } from './compare';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE } from './review';
+import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 import { LLMClient, SendMessageOptions } from './providers';
 import { SiblingFieldQuestion, SiblingImplementationQuestion } from './symbol-uses';
 
@@ -66,6 +67,7 @@ describe('runComparisons', () => {
     expect(field.options).toEqual({ effort: 'high', repoTools: { root: '/repo', steps: 12 }, timeoutMs: 600_000 });
     expect(field.system).toContain('You can read the repository with read-only tools.');
     expect(field.system).toContain(`- ${CLAIMS_MISSING_RULE}\n- ${PRE_EXISTING_RULE}`);
+    expect(field.system).toContain(`- ${UNTRUSTED_CONTENT_RULE}\n- ${VERIFY_CLAIMS_RULE}`);
     expect(field.user).toContain('The change looks up `outpoint` in `utxos` of `Account`, on the first line below. Can `outpoint` be held in `spent_before_funded` instead? If so, does the change handle it? Read where `spent_before_funded` is written before you answer.');
     expect(field.user).toContain('The changed lines that use `utxos`:\n\n```\nsrc/settle.rs:2: if account.utxos.contains_key(&outpoint) {\nsrc/settle.rs:5: let held = account.utxos.remove(&outpoint);\n```');
     expect(field.user).toContain('## `Account`\n\n');

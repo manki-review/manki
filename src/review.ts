@@ -19,7 +19,7 @@ import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { disproof, refuteBlockers } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
-import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
+import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listReferenceUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
@@ -1736,10 +1736,11 @@ These rules hold in every round. A later round searches the whole PR as fully as
 - Be precise with line numbers. They must correspond to lines in the NEW version of the file.
 - Don't flag TODO comments, or intentional patterns such as known workarounds in code the PR does not add. When the PR's own text calls code it adds intended or a known workaround, that is a claim to check, never a reason to skip it.
 - ${UNTRUSTED_CONTENT_RULE}
+- ${VERIFY_CLAIMS_RULE}
 - Keep descriptions concrete and actionable. Never write "consider as a follow-up": a problem in this PR's own code is fixed in this PR.
 - If you find NO issues, respond with an empty array: []
 - When full file contents are provided, use them to follow the paths the change affects: variable definitions, imports, callers and surrounding logic.
-- When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one.
+- When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one. Memory is the maintainers' recorded decision, not a claim to check.
 - If you notice changes in the diff that appear unrelated to the PR's stated purpose (title and description), flag them as a "suggestion" severity finding titled "Unrelated change: [brief description]". Recommend splitting into a separate PR. Only flag changes that are clearly out of scope. Don't flag shared config, imports, or test files that naturally accompany the main changes.
 
 ${WRITING_RULES}`;
