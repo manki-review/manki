@@ -1894,7 +1894,7 @@ function formatRelatedWork(work: RelatedWork | undefined, owner: string, repo: s
     .sort((a, b) => labels.indexOf(a.relation) - labels.indexOf(b.relation));
   if (related.length === 0) return null;
   const lines = related.map(item => {
-    const url = `${github.context.serverUrl}/${owner}/${repo}/${item.kind === 'pr' ? 'pull' : 'issues'}/${item.number}`;
+    const url = `${repoUrl(github.context.serverUrl, owner, repo)}/${item.kind === 'pr' ? 'pull' : 'issues'}/${item.number}`;
     const draft = item.draft ? ' (draft)' : '';
     return `- ${RELATION_LABEL[item.relation]} · [#${item.number} ${linkText(item.title)}](${url})${draft}`;
   });
