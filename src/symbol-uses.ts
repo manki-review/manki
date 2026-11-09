@@ -904,8 +904,8 @@ class ParsedFile {
   /** Each field a type declares itself, as `Type.field`, and the `key` of each such field. */
   private readonly ownFields = new Set<string>();
   private readonly ownFieldKeys = new Set<string>();
-  /** The types and enum variants this file declares, the first of each name. */
-  private readonly typesByName = new Map<string, Declaration>();
+  /** The types and enum variants this file declares by name, `undefined` for a name it declares more than once. */
+  private readonly typesByName = new Map<string, Declaration | undefined>();
   /** The methods that name their receiver, by first line, their first lines, and the index of the one around each. */
   private readonly selfMethods: Method[];
   private readonly selfStarts: number[];
@@ -938,7 +938,7 @@ class ParsedFile {
         this.ownFields.add(`${this.byKey.get(decl.container)?.name}.${decl.name}`);
         this.ownFieldKeys.add(decl.key);
       }
-      if ((decl.kind === 'type' || decl.kind === 'variant') && !this.typesByName.has(decl.name)) this.typesByName.set(decl.name, decl);
+      if (decl.kind === 'type' || decl.kind === 'variant') this.typesByName.set(decl.name, this.typesByName.has(decl.name) ? undefined : decl);
     }
     this.methods = this.findMethods();
     this.selfMethods = this.methods.filter(m => m.self).sort((a, b) => a.decl.start - b.decl.start);
@@ -1168,8 +1168,8 @@ class ParsedFile {
 
   /**
    * Whether type `name` is `owner` or may derive from it. It follows the bases of the types this file declares, at most
-   * `MAX_LINEAGE` of them. A base declared in another file may derive from `owner`, and so may a type whose bases
-   * `allBases` cannot read. A standard base such as `Exception` is followed no further.
+   * `MAX_LINEAGE` of them. A base declared in another file, or more than once in this one, may derive from `owner`, and so
+   * may a type whose bases `allBases` cannot read. A standard base such as `Exception` is followed no further.
    */
   mayDeriveFrom(name: string, owner: string): boolean {
     const lineage = [name];
