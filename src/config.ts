@@ -103,6 +103,12 @@ export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'group
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus', 'role']);
 const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
+const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
+const PLANNER_KEYS: ReadonlySet<string> = new Set(['enabled', 'paired']);
+const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'wait_timeout_seconds', 'analyzers']);
+const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'test_path_patterns', 'suppress_resolved_threads']);
+const METRICS_KEYS: ReadonlySet<string> = new Set(['fix_rate']);
+const MEMORY_KEYS: ReadonlySet<string> = new Set(['enabled', 'repo']);
 
 const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
@@ -188,6 +194,7 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
         if (!reviewer || typeof reviewer !== 'object') {
           errors.push(`\`reviewers[${i}]\` must be an object`);
         } else {
+          warnUnknownKeys(reviewer, REVIEWER_AGENT_KEYS, `reviewers[${i}]`, warnings);
           if (typeof reviewer.name !== 'string' || !reviewer.name) {
             errors.push(`\`reviewers[${i}].name\` must be a non-empty string`);
           }
@@ -237,6 +244,7 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
     if (!planner || typeof planner !== 'object' || Array.isArray(planner)) {
       errors.push('`planner` must be an object');
     } else {
+      warnUnknownKeys(planner, PLANNER_KEYS, 'planner', warnings);
       if ('enabled' in planner && typeof planner.enabled !== 'boolean') {
         errors.push('`planner.enabled` must be a boolean');
       }
@@ -258,6 +266,7 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
     if (!staticAnalysis || typeof staticAnalysis !== 'object' || Array.isArray(staticAnalysis)) {
       errors.push('`static_analysis` must be an object');
     } else {
+      warnUnknownKeys(staticAnalysis, STATIC_ANALYSIS_KEYS, 'static_analysis', warnings);
       for (const key of ['checks', 'code_scanning', 'dependency_review']) {
         if (key in staticAnalysis && typeof staticAnalysis[key] !== 'boolean') {
           errors.push(`\`static_analysis.${key}\` must be a boolean`);
@@ -329,6 +338,7 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
     if (!convergence || typeof convergence !== 'object' || Array.isArray(convergence)) {
       errors.push('`convergence` must be an object');
     } else {
+      warnUnknownKeys(convergence, CONVERGENCE_KEYS, 'convergence', warnings);
       if ('max_auto_rounds' in convergence) {
         if (
           typeof convergence.max_auto_rounds !== 'number' ||
@@ -360,8 +370,9 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
     const metrics = config.metrics as Record<string, unknown>;
     if (!metrics || typeof metrics !== 'object' || Array.isArray(metrics)) {
       errors.push('`metrics` must be an object');
-    } else if ('fix_rate' in metrics && typeof metrics.fix_rate !== 'boolean') {
-      errors.push('`metrics.fix_rate` must be a boolean');
+    } else {
+      warnUnknownKeys(metrics, METRICS_KEYS, 'metrics', warnings);
+      if ('fix_rate' in metrics && typeof metrics.fix_rate !== 'boolean') errors.push('`metrics.fix_rate` must be a boolean');
     }
   }
 
@@ -370,6 +381,7 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
     if (!memory || typeof memory !== 'object' || Array.isArray(memory)) {
       errors.push('`memory` must be an object');
     } else {
+      warnUnknownKeys(memory, MEMORY_KEYS, 'memory', warnings);
       if ('enabled' in memory && typeof memory.enabled !== 'boolean') {
         errors.push('`memory.enabled` must be a boolean');
       }
@@ -385,6 +397,13 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
 }
 
 const MODEL_REFS: ReadonlySet<string> = new Set(['@reviewer', '@reviewer_pair']);
+
+/** Warns about each key of `block` that is not in `known`, named by its path under `prefix`. */
+function warnUnknownKeys(block: Record<string, unknown>, known: ReadonlySet<string>, prefix: string, warnings: string[]): void {
+  for (const key of Object.keys(block)) {
+    if (!known.has(key)) warnings.push(`Unknown config key: "${prefix}.${key}"`);
+  }
+}
 
 /** Adds an error when `model` is no model spec Manki can run, so a bad id never reaches a CLI. */
 function pushModelError(errors: string[], key: string, model: string): void {

@@ -359,6 +359,26 @@ another_unknown: 123
       expect(core.warning).toHaveBeenCalledWith('Unknown config key: "another_unknown"');
     });
 
+    it('warns on unknown keys inside each block that takes an object, and not on the keys it knows', () => {
+      loadConfigFromContent(`
+reviewers: [{ name: a, focus: b, fokus: c }]
+planner: { enabled: true, enabeld: false }
+static_analysis: { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [ci], wait_timeout_seconds: 60, analyzers: all, check: false }
+convergence: { max_auto_rounds: 3, test_path_patterns: ['**/*.test.ts'], suppress_resolved_threads: true, max_rounds: 2 }
+metrics: { fix_rate: true, fixrate: false }
+memory: { enabled: false, repo: '', repository: x/y }
+`);
+      const unknown = jest.mocked(core.warning).mock.calls.map(c => String(c[0])).filter(m => m.startsWith('Unknown config key'));
+      expect(unknown).toEqual([
+        'Unknown config key: "reviewers[0].fokus"',
+        'Unknown config key: "planner.enabeld"',
+        'Unknown config key: "static_analysis.check"',
+        'Unknown config key: "convergence.max_rounds"',
+        'Unknown config key: "metrics.fixrate"',
+        'Unknown config key: "memory.repository"',
+      ]);
+    });
+
     it('throws on invalid max_diff_lines', () => {
       const yaml = 'max_diff_lines: -5';
       expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
