@@ -223,8 +223,8 @@ export const MAX_INTER_ROUND_DIFF_CHARS = 20000;
 const JUDGE_TIMEOUT_MS = 300_000;
 
 /** How many lines cited outside the diff the judge sees the code around, per finding and per round. */
-const MAX_CITED_WINDOWS_PER_FINDING = 2;
-const MAX_CITED_WINDOWS = 10;
+const MAX_CITED_WINDOWS_PER_FINDING = 5;
+const MAX_CITED_WINDOWS = 40;
 /** A cited file larger than this is not read, and a line of a window is cut at `MAX_CITED_LINE_CHARS`. */
 const MAX_CITED_FILE_BYTES = 1024 * 1024;
 const MAX_CITED_LINE_CHARS = 300;

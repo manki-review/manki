@@ -1459,7 +1459,7 @@ describe('runJudgeAgent', () => {
     fs.writeFileSync(path.join(workspace, 'src', 'lock.ts'), Array.from({ length: 200 }, (_, i) => lockLine(i)).join('\n'));
     fs.writeFileSync(path.join(workspace, 'src', 'bundle.js'), `${'a'.repeat(1024 * 1024)}\nsecond line`);
     const findings = [
-      makeFinding({ title: 'Deadlock on stop', severity: 'warning', evidence: { checks: [], proof: ['src/index.ts:10', 'src/lock.ts:30', 'src/lock.ts:100', 'src/lock.ts:150'] } }),
+      makeFinding({ title: 'Deadlock on stop', severity: 'warning', evidence: { checks: [], proof: ['src/index.ts:10', 'src/lock.ts:30', 'src/lock.ts:60', 'src/lock.ts:90', 'src/lock.ts:120', 'src/lock.ts:150', 'src/lock.ts:180'] } }),
       makeFinding({ title: 'Missing bound', severity: 'warning', line: 5, evidence: { checks: [], proof: ['src/index.ts:5', 'src/bundle.js:2'] } }),
       makeFinding({ title: 'Slow path', severity: 'blocker', line: 6, evidence: { checks: [], proof: ['src/index.ts:6'] } }),
       makeFinding({ title: 'Unseen kept', severity: 'warning', line: 7 }),
@@ -1515,10 +1515,10 @@ describe('runJudgeAgent', () => {
       expect(userMessage).toContain('>>> 30: const guard = lock.acquire();');
       expect(userMessage).toMatch(/ {4}31: const table = 'x+ \.\.\. \(line cut\)\n/);
       expect(userMessage).not.toContain('x'.repeat(300));
-      // A cited line inside the diff is already shown in the diff, a finding gets two windows at most, and a large file is never read.
+      // A cited line inside the diff is already shown in the diff, a finding gets five windows at most, and a large file is never read.
       expect(userMessage).not.toContain('(src/index.ts:10)');
-      expect(userMessage).toContain('(src/lock.ts:100)');
-      expect(userMessage).not.toContain('(src/lock.ts:150)');
+      expect(userMessage).toContain('(src/lock.ts:150)');
+      expect(userMessage).not.toContain('(src/lock.ts:180)');
       expect(userMessage).not.toContain('(src/bundle.js:2)');
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
