@@ -1,0 +1,49 @@
+id: manki-1258
+repo: manki-review/manki
+source: manki PR 1258, round 1
+base: 82c79c221a911469e114a93bfa6760ed072e894e
+head: de85396be9efe6737613bc42978d6959d9ba4f83
+title: "feat: review lockfile changes as a package list"
+body: |
+  ## Summary
+
+  Since #1126, every dependency bump needs a person's approval, because no model reads an excluded lockfile. Manki now parses a changed `Cargo.lock`, `package-lock.json` (or `npm-shrinkwrap.json`), `yarn.lock` (Yarn 1 and Yarn 2 or later) or `pnpm-lock.yaml` into a package list that the finders and the verdict reader read. Such a lockfile no longer holds the approval, and suspicious package changes become alerts the judge triages. A lockfile Manki cannot read or parse keeps the hold.
+
+  ## Changes
+
+  - `src/lockfile.ts` (new): reads each supported lockfile at the PR head and rebuilds the version before the PR by undoing the diff. A diff that does not match the file leaves the lockfile unread. Small hand-written parsers handle `Cargo.lock` and Yarn 1. The `yaml` dependency already in `package.json` handles pnpm and Yarn 2+, and `JSON.parse` handles npm. Every field outside name, version, source and checksum is kept and diffed, so no change goes unlisted. Unknown syntax, a missing `packages` map (npm 6) and YAML aliases throw, which leaves the lockfile unread.
+  - Flags, raised as `lockfile-change` warnings through the static signals path: a source that moved to another registry or repository, a git source, a path source, a checksum change without a version change, a downgrade, and a tarball URL that does not name the package and version.
+  - `index.ts`: a PR whose only reviewable change is a parsed lockfile gets a full round instead of the "Not reviewed" notice. Parsed lockfiles are dropped from the approval hold's unread list.
+  - `review.ts`: a fenced `## Lockfile Changes` section in the finder and verdict reader prompts, labelled as untrusted PR content.
+  - `static-signals.ts`: `fetchLockfiles` is exported with a path filter (separate refactor commit). The lockfile alerts get their own cap next to the hidden-character alerts.
+  - Docs: `how-reviews-work.md`, the `exclude_paths` reference and the troubleshooting row.
+
+  Restriction removed: the approval hold on lockfiles. It went because it applied whether or not a model could read the change, so every ordinary bump needed a person. The hold stays for any lockfile Manki cannot parse or verify against its diff, and for package lists over 40,000 characters in all.
+
+  ## What changes for users
+
+  A PR that only bumps dependencies in a supported lockfile can be approved by Manki again. The reviewers see each added, removed and updated package, and get a warning for a changed source, a git or path source, a checksum change without a version change, a downgrade, or a tarball URL that names another package. Other lockfile formats (such as `poetry.lock` or `go.sum`) still need a person's approval.
+
+  ## Testing
+
+  - `lockfile.test.ts` (new): real snippets of each format, diffed with `git diff --no-index`. Covers the full list and every flag, a git dependency's new commit, added and deleted lockfiles, comment-only changes, one-line cleaning of PR values, every unread case (unreadable head, diff mismatch, unsupported syntax, npm 6 format, a pnpm snapshot with no package, YAML aliases) and the size budget.
+  - `index.test.ts`: a lockfile-only PR that parses runs a round with the package list and holds no approval. The existing case where an unparsed lockfile gets "Not reviewed" still passes.
+  - `static-signals.test.ts`: the lockfile alerts go next to the hidden-character alerts and become judge candidates.
+  - `review.test.ts`: the finders and the verdict reader both get the list, and the section is fenced (snapshot updated).
+  - Ran these four suites, plus `setup-docs`, locally. CI runs the rest.
+
+  Closes #1141
+  Part of #1242
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`lockfileSignals` gives every flagged change `line: c.line ?? 1` and the same `ruleId` `lockfile-change`, and `toolAlertFindings` dedups on `file:line:ruleId`. When a lockfile has no per-package line numbers, such as a compact one-line `package-lock.json`, every flagged change sits on line 1 and only the first becomes a finding, so the other suspicious packages get no alert."
+    locations: ["src/lockfile.ts", "lockfileSignals", "src/static-signals.ts", "toolAlertFindings"]
+    fix: "a625b8b2859fddc1c252d1e2aaa0038c352b587c"
+  - id: K2
+    severity: warning
+    mechanism: "`diffEntries` pairs removed and added entries of one name only when both sides hold the same number of versions, and only paired entries go through `changeFlags`, which raises `downgrade`. When the count differs, for example `syn 2.0.60` becoming `syn 1.0.109` and `syn 2.0.10`, the entries are listed as plain removals and additions and the downgrade is never flagged."
+    locations: ["src/lockfile.ts", "diffEntries", "changeFlags"]
+    fix: "29bb4ec602fe95c11018282be9152fd6dc5aa111"
+nice_to_have: []

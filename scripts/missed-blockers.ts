@@ -118,7 +118,7 @@ export function draftCase(repo: string, pr: DraftPr, miss: Miss, base: string): 
   const header = [
     `# Draft from Manki's round records: round ${rounds} found these blockers on code round ${miss.missedBy} reviewed at ${miss.head}.`,
     '# The body is the pull request body as it is now. Check each item, its severity and locations, then set key_version',
-    '# to 1 and move the file to bench/cases.',
+    '# to 1 and move the file to bench/cases or bench/holdout.',
   ].join('\n');
   return { id, text: `${header}\n${stringifyYaml(doc, { lineWidth: 0 })}` };
 }

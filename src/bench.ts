@@ -19,6 +19,10 @@ const KEY_SEVERITIES = ['blocker', 'warning', 'suggestion', 'nitpick'] as const;
 type KeySeverity = typeof KEY_SEVERITIES[number];
 const SEVERITY_WEIGHT: Record<KeySeverity, number> = { blocker: 3, warning: 2, suggestion: 1, nitpick: 1 };
 const DEFAULT_RUNS = 3;
+const HOLDOUT_DIR = 'bench/holdout';
+const CASE_SETS = ['tuning', 'holdout'] as const;
+/** Tuning cases are what changes are developed against. Hold-out cases are run only before a release. */
+type CaseSet = typeof CASE_SETS[number];
 const DEFAULT_MATCHER_MODEL = 'claude-sonnet-5-5';
 const MAX_MATCHER_DESCRIPTION = 2000;
 
@@ -38,6 +42,7 @@ export interface KeyItem {
 
 export interface BenchCase {
   id: string;
+  set: CaseSet;
   /** `owner/name` of the repository holding `base` and `head`. */
   repo: string;
   /** Where the case comes from, in plain text. */
@@ -88,7 +93,7 @@ function parseItems(raw: unknown, field: string, file: string): KeyItem[] {
 }
 
 /** Parses and checks one case file. Throws an error naming the file and the field that is wrong. */
-export function parseCase(text: string, file: string): BenchCase {
+export function parseCase(text: string, file: string, set: CaseSet = 'tuning'): BenchCase {
   const raw = parseYaml(text) as unknown;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw caseError(file, 'a case must be a mapping');
   const doc = raw as Record<string, unknown>;
@@ -107,16 +112,27 @@ export function parseCase(text: string, file: string): BenchCase {
   const repeated = ids.find((id, i) => ids.indexOf(id) !== i);
   if (repeated) throw caseError(file, `item id ${repeated} is used twice`);
   return {
-    id: requireString(doc, 'id', file), repo, source: requireString(doc, 'source', file), base, head,
+    id: requireString(doc, 'id', file), set, repo, source: requireString(doc, 'source', file), base, head,
     title: requireString(doc, 'title', file), body: typeof doc.body === 'string' ? doc.body : '', keyVersion: doc.key_version, mustCatch, niceToHave,
   };
 }
 
-/** Loads every `.yml` case in `dir`, or only those whose id is in `only`. */
-export function loadCases(dir: string, only: string[] = []): BenchCase[] {
-  const cases = readdirSync(dir).filter(f => f.endsWith('.yml')).sort().map(f => parseCase(readFileSync(join(dir, f), 'utf-8'), join(dir, f)));
+/**
+ * Loads every `.yml` case in the directory of each set given, or only those whose id is in `only`. Throws when a
+ * directory holds no case, so a set never drops out of the scores unnoticed.
+ */
+export function loadCases(dirs: Partial<Record<CaseSet, string>>, only: string[] = []): BenchCase[] {
+  const cases = CASE_SETS.flatMap((set) => {
+    const dir = dirs[set];
+    if (!dir) return [];
+    const files = readdirSync(dir).filter(f => f.endsWith('.yml')).sort();
+    if (files.length === 0) throw new Error(`No case files in ${dir}`);
+    return files.map(f => parseCase(readFileSync(join(dir, f), 'utf-8'), join(dir, f), set));
+  });
+  const repeated = cases.find((c, i) => cases.findIndex(other => other.id === c.id) !== i);
+  if (repeated) throw new Error(`Case id ${repeated.id} is used twice`);
   const unknown = only.filter(id => !cases.some(c => c.id === id));
-  if (unknown.length > 0) throw new Error(`No case with id ${unknown.join(', ')} in ${dir}`);
+  if (unknown.length > 0) throw new Error(`No case with id ${unknown.join(', ')} in ${Object.values(dirs).join(' or ')}`);
   return only.length > 0 ? cases.filter(c => only.includes(c.id)) : cases;
 }
 
@@ -340,6 +356,7 @@ interface ItemReport {
 
 interface CaseReport {
   id: string;
+  set: CaseSet;
   source: string;
   keyVersion: number;
   items: ItemReport[];
@@ -380,6 +397,8 @@ interface Variant {
 
 interface VariantReport extends Variant {
   summary: VariantSummary;
+  /** The summary of each set's cases, so a gap between tuning and hold-out scores shows. */
+  sets: Partial<Record<CaseSet, VariantSummary>>;
   cases: CaseReport[];
 }
 
@@ -408,11 +427,20 @@ function buildVariantReport(variant: Variant, results: CaseResults): VariantRepo
       return { id: item.id, tier, severity: item.severity, caught: verdicts.filter(v => v === 'MATCH').length, partial: verdicts.filter(v => v === 'PARTIAL').length, runs: complete.length };
     };
     return {
-      id: benchCase.id, source: benchCase.source, keyVersion: benchCase.keyVersion,
+      id: benchCase.id, set: benchCase.set, source: benchCase.source, keyVersion: benchCase.keyVersion,
       items: [...benchCase.mustCatch.map(item => report(item, 'must_catch')), ...benchCase.niceToHave.map(item => report(item, 'nice_to_have'))],
       runs,
     };
   });
+  return {
+    ...variant,
+    summary: summarize(cases),
+    sets: Object.fromEntries(CASE_SETS.filter(set => cases.some(c => c.set === set)).map(set => [set, summarize(cases.filter(c => c.set === set))])),
+    cases,
+  };
+}
+
+function summarize(cases: CaseReport[]): VariantSummary {
   const runs = cases.flatMap(c => c.runs);
   const bySeverity: VariantSummary['bySeverity'] = {};
   for (const item of cases.flatMap(c => c.items).filter(i => i.tier === 'must_catch')) {
@@ -424,22 +452,18 @@ function buildVariantReport(variant: Variant, results: CaseResults): VariantRepo
   const verdicts = runs.map(r => r.verdictCorrect).filter((v): v is boolean => v !== null);
   const reviewed = runs.filter(r => r.outcome !== 'FAILED');
   return {
-    ...variant,
-    summary: {
-      runs: runs.length,
-      incompleteRuns: runs.filter(r => !r.complete).length,
-      mustCatchRecall: mean(runs.map(r => r.mustCatchRecall)),
-      weightedRecall: mean(runs.map(r => r.weightedRecall)),
-      verdictAccuracy: verdicts.length > 0 ? verdicts.filter(Boolean).length / verdicts.length : null,
-      bySeverity,
-      falseBlockers: runs.reduce((sum, r) => sum + r.falseBlockers, 0),
-      extraFindings: runs.reduce((sum, r) => sum + r.extraFindings, 0),
-      duplicates: runs.reduce((sum, r) => sum + r.duplicates, 0),
-      costUsd: runs.reduce((sum, r) => sum + r.costUsd, 0),
-      costPerRunUsd: mean(reviewed.map(r => r.costUsd)),
-      wallTimePerRunMs: mean(reviewed.map(r => r.durationMs)),
-    },
-    cases,
+    runs: runs.length,
+    incompleteRuns: runs.filter(r => !r.complete).length,
+    mustCatchRecall: mean(runs.map(r => r.mustCatchRecall)),
+    weightedRecall: mean(runs.map(r => r.weightedRecall)),
+    verdictAccuracy: verdicts.length > 0 ? verdicts.filter(Boolean).length / verdicts.length : null,
+    bySeverity,
+    falseBlockers: runs.reduce((sum, r) => sum + r.falseBlockers, 0),
+    extraFindings: runs.reduce((sum, r) => sum + r.extraFindings, 0),
+    duplicates: runs.reduce((sum, r) => sum + r.duplicates, 0),
+    costUsd: runs.reduce((sum, r) => sum + r.costUsd, 0),
+    costPerRunUsd: mean(reviewed.map(r => r.costUsd)),
+    wallTimePerRunMs: mean(reviewed.map(r => r.durationMs)),
   };
 }
 
@@ -457,14 +481,25 @@ function minutes(ms: number | null): string {
   return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
 }
 
-/** Returns a Markdown table with one column per variant: the summary figures, then each key item's catch rate. */
+/** Names each set's summary by its set, unless every case is a tuning case. */
+function setSummaries(variant: VariantReport): Array<{ label: string; set: CaseSet; summary: VariantSummary }> {
+  const sets = Object.entries(variant.sets) as Array<[CaseSet, VariantSummary]>;
+  const named = sets.some(([set]) => set !== 'tuning');
+  return sets.map(([set, summary]) => ({ label: named ? set : '', set, summary }));
+}
+
+/**
+ * Returns a Markdown table with one column per variant and set: the summary figures, then each key item's catch rate
+ * in the column of its case's set.
+ */
 function formatComparison(variants: VariantReport[]): string {
+  const columns = variants.flatMap(v => setSummaries(v).map(({ label, set, summary }) => ({ name: label ? `${v.name} ${label}` : v.name, summary, cases: v.cases.filter(c => c.set === set) })));
   const row = (label: string, cells: string[]) => `| ${[label, ...cells].join(' | ')} |`;
-  const figure = (label: string, value: (s: VariantSummary) => string) => row(label, variants.map(v => value(v.summary)));
+  const figure = (label: string, value: (s: VariantSummary) => string) => row(label, columns.map(c => value(c.summary)));
   const items = variants[0]?.cases.flatMap(c => c.items.map(item => ({ caseId: c.id, item }))) ?? [];
   return [
-    row('Metric', variants.map(v => v.name)),
-    row('---', variants.map(() => '---')),
+    row('Metric', columns.map(c => c.name)),
+    row('---', columns.map(() => '---')),
     figure('Must-catch recall', s => percent(s.mustCatchRecall)),
     figure('Weighted recall', s => percent(s.weightedRecall)),
     figure('Verdict accuracy', s => percent(s.verdictAccuracy)),
@@ -474,16 +509,16 @@ function formatComparison(variants: VariantReport[]): string {
     figure('Incomplete runs', s => `${s.incompleteRuns} of ${s.runs}`),
     figure('Cost per run', s => (s.costPerRunUsd === null ? 'n/a' : `$${s.costPerRunUsd.toFixed(2)}`)),
     figure('Wall time per run', s => minutes(s.wallTimePerRunMs)),
-    ...items.map(({ caseId, item }) => row(`${caseId} ${item.id} (${item.tier === 'must_catch' ? 'must' : 'nice'} ${item.severity})`, variants.map((v) => {
-      const found = v.cases.find(c => c.id === caseId)?.items.find(i => i.id === item.id);
-      return found ? `${found.caught}/${found.runs}${found.partial ? `, ${found.partial} partial` : ''}` : 'n/a';
+    ...items.map(({ caseId, item }) => row(`${caseId} ${item.id} (${item.tier === 'must_catch' ? 'must' : 'nice'} ${item.severity})`, columns.map((column) => {
+      const found = column.cases.find(c => c.id === caseId)?.items.find(i => i.id === item.id);
+      return found ? `${found.caught}/${found.runs}${found.partial ? `, ${found.partial} partial` : ''}` : '';
     }))),
   ].join('\n');
 }
 
 /**
  * Returns the report as plain text: per variant and case, each key item's catch rate and the run totals, then the
- * variant's summary, and last a Markdown table that sets the variants side by side.
+ * summary of each set, and last a Markdown table that sets the variants and sets side by side.
  */
 export function formatBenchSummary(report: BenchReport): string {
   const lines: string[] = [];
@@ -501,10 +536,12 @@ export function formatBenchSummary(report: BenchReport): string {
           : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${run.extraFindings} extra, ${run.duplicates} duplicates, files read ${reads}, $${run.costUsd.toFixed(2)}`);
       }
     }
-    const s = variant.summary;
-    const severities = KEY_SEVERITIES.flatMap(sev => (s.bySeverity[sev] ? [`${sev} ${s.bySeverity[sev]!.caught}/${s.bySeverity[sev]!.total}`] : []));
-    lines.push(`${s.runs} runs (${s.incompleteRuns} incomplete). Must-catch recall ${percent(s.mustCatchRecall)}, weighted ${percent(s.weightedRecall)}, verdicts ${percent(s.verdictAccuracy)}.`);
-    lines.push(`By severity: ${severities.join(', ') || 'n/a'}. False blockers ${s.falseBlockers}, extra findings ${s.extraFindings}, duplicates ${s.duplicates}, cost $${s.costUsd.toFixed(2)}.`, '');
+    for (const { label, summary: s } of setSummaries(variant)) {
+      const severities = KEY_SEVERITIES.flatMap(sev => (s.bySeverity[sev] ? [`${sev} ${s.bySeverity[sev]!.caught}/${s.bySeverity[sev]!.total}`] : []));
+      lines.push(`${label ? `${label}: ` : ''}${s.runs} runs (${s.incompleteRuns} incomplete). Must-catch recall ${percent(s.mustCatchRecall)}, weighted ${percent(s.weightedRecall)}, verdicts ${percent(s.verdictAccuracy)}.`);
+      lines.push(`By severity: ${severities.join(', ') || 'n/a'}. False blockers ${s.falseBlockers}, extra findings ${s.extraFindings}, duplicates ${s.duplicates}, cost $${s.costUsd.toFixed(2)}.`);
+    }
+    lines.push('');
   }
   lines.push(formatComparison(report.variants));
   return `${lines.join('\n')}\n`;
@@ -593,6 +630,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
 
 interface BenchArgs {
   cases: string;
+  holdout: boolean;
   only: string[];
   runs: number;
   checkouts: Map<string, string>;
@@ -613,7 +651,9 @@ key with an LLM, prints recall per item and severity, and writes a JSON report.
 
 Options:
   --checkout <owner/name>=<dir>  Local clone of a case repo. Repeat for each repo.
-  --cases <dir>                  Case files (default bench/cases).
+  --cases <dir>                  Tuning case files (default bench/cases).
+  --holdout                      Also run the hold-out cases in ${HOLDOUT_DIR}, scored apart from the
+                                 tuning cases. Only before a release.
   --case <id>                    Run only this case. Repeatable.
   --runs <n>                     Reviews per case (default ${DEFAULT_RUNS}).
   --variant <name>[=<file>]      Score a setup: the YAML file's config is set on top of each case's base
@@ -625,11 +665,12 @@ Options:
   --out <file>                   Report path (default bench/results/<time>.json).
   --help                         Print this message.
 
-Exits 0 when every variant completed at least one review, and 2 when one did not or the bench could not start.`;
+Exits 0 when every variant completed at least one review of each set, and 2 when one did not or the bench could
+not start.`;
 
 export function parseBenchArgs(argv: string[]): BenchArgs {
   const args: BenchArgs = {
-    cases: 'bench/cases', only: [], runs: DEFAULT_RUNS, checkouts: new Map(), variants: [], sets: [], matcherModel: DEFAULT_MATCHER_MODEL,
+    cases: 'bench/cases', holdout: false, only: [], runs: DEFAULT_RUNS, checkouts: new Map(), variants: [], sets: [], matcherModel: DEFAULT_MATCHER_MODEL,
     cache: 'bench/.matcher-cache.json', help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -640,6 +681,7 @@ export function parseBenchArgs(argv: string[]): BenchArgs {
       return next;
     };
     if (arg === '--cases') args.cases = value();
+    else if (arg === '--holdout') args.holdout = true;
     else if (arg === '--case') args.only.push(value());
     else if (arg === '--runs') {
       const runs = Number(value());
@@ -696,7 +738,7 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     }
     const providerInputs = readProviderInputsFromEnv();
     if (!hasAnyProviderCredentials(providerInputs)) throw new Error(`No credentials set.\n\n${USAGE}`);
-    const cases = loadCases(args.cases, args.only);
+    const cases = loadCases({ tuning: args.cases, ...(args.holdout && { holdout: HOLDOUT_DIR }) }, args.only);
     const cache = loadMatcherCache(args.cache);
     const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
     const variants = resolveVariants(args);
@@ -716,7 +758,7 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     writeJson(outPath, report);
     out(formatBenchSummary(report));
     out(`Report: ${outPath}\n`);
-    // A variant with no completed review leaves the comparison without one of its columns.
-    return report.variants.some(v => v.summary.incompleteRuns === v.summary.runs) ? 2 : 0;
+    // A set with no completed review leaves the comparison without one of its columns.
+    return report.variants.some(v => Object.values(v.sets).some(s => s.incompleteRuns === s.runs)) ? 2 : 0;
   });
 }

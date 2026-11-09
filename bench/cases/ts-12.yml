@@ -1,0 +1,28 @@
+id: ts-12
+repo: manki-review/token-service
+source: token-service PR 12, round 1
+base: 50fc4b757b5b969443b9b71551fc0657aed5f867
+head: e259ade7ff9b669f324b10faaefbdb81afe69239
+title: "fix: only store state for allowlisted repos"
+body: |
+  ## Problem
+
+  Every routed delivery from every installation created Durable Object storage (`handleWebhook` calls `getByName` and `receive` for any repository). That is about 12 rows written per delivery. The Free plan allows 100k rows written per day for the whole account, so any installer could use it up by scripting comment edits. That takes down webhook mode and `/token` for everyone.
+
+  ## Changes
+
+  - `WEBHOOK_REPOS` in `wrangler.toml` `[vars]` lists the numeric repository ids allowed to reach a coordinator: `manki-review/manki` (1190216666), `manki-review/token-service` (1202459902) and `manki-review/review-memory` (1202454534). The Worker checks it after routing and before `getByName`. Any other repository is logged with `repository <id> is not in WEBHOOK_REPOS` and answered `202`, with no Durable Object call. An unset or empty list allows none.
+  - `workflow_run` deliveries are dropped first unless `sender.login` is `manki-review[bot]`. The existing check that the run is a `workflow_dispatch` run of `manki-dispatch.yml` stays, so a run must pass both.
+  - The 25 MiB body limit is enforced while the body streams. A chunked body without `Content-Length` used to be read in full.
+
+  ## Tests
+
+  - A repository missing from the list, an empty list and an unset list each answer `202` for a push and a run end, with a `PR_COORDINATOR` stub that throws on any call.
+  - A listed repository with surrounding whitespace in the list still queues work.
+  - A streamed body over 25 MiB is refused with `413` before the stream is drained. A small streamed body is still accepted.
+  - Routing ignores dispatch runs sent by a person, by another App, or with no sender.
+
+  Each test fails with its fix reverted.
+key_version: 1
+must_catch: []
+nice_to_have: []

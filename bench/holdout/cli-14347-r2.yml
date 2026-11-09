@@ -1,0 +1,61 @@
+id: cli-14347-r2
+repo: cli/cli
+source: cli upstream PR 14347, round 2
+base: 400c0844954c8f42507b1d967c5bdcb1ee958a77
+head: 3e3eb860c20a2ffc5e7ac0c1b984ad014d1f0e85
+title: "Fix and validate Go bump workflow"
+body: |
+  A failed upstream workflow job of the Bump Go workflow is linked here.
+
+  ### Description
+
+  The Bump Go workflow used the version already recorded in `go.mod` when setting up Go. `actions/setup-go` exports `GOTOOLCHAIN=local`, so when the bump script advanced the `go` directive from 1.26 to 1.27, `go mod tidy` still ran with Go 1.26 and failed.
+
+  This configures `actions/setup-go` to install its supported `stable` alias before running the bump script. The script now applies `go fix`, runs the full test suite and linter, and only creates a pull request when those checks succeed. It stages tracked source migrations produced by `go fix` along with the module changes.
+
+  The bump job installs the latest golangci-lint release so a future Go major does not immediately outgrow a linter binary built with the previous Go version. The script records the resolved linter version in `.github/workflows/lint.yml`, so the generated bump PR keeps regular CI reproducibly pinned rather than making every lint run track `latest`. The current pin moves to v2.13.2 because v2.12.2 was built with Go 1.26 and refuses to analyze Go 1.27 code.
+
+  Any source migrations or compatibility failures found during the Go update remain owned by the generated bump rather than being included preemptively in this workflow change.
+
+  ### How did you test this change?
+
+  I ran the updated bump script in an isolated worktree with the exact Go 1.27.1 toolchain. It advanced the repository from Go 1.26 to Go 1.27.1, applied the Go 1.27 source migrations, and reached the new validation gates. Without pre-applied source compatibility, the tests rejected a migration incompatibility before the script could commit or open a pull request, demonstrating the intended fail-safe behavior.
+
+  For the successful path, I prepared an isolated validation base with the known source compatibility and an older v2.12.2 lint pin, then ran the script with golangci-lint v2.13.2. The tests and linter completed, and the generated commit updated `.github/workflows/lint.yml` from v2.12.2 to the exact v2.13.2 version used for validation.
+
+  I also ran the current repository's full test suite and golangci-lint v2.13.2 against the focused workflow changes before committing them.
+
+  ### Key points
+
+  This preserves `GOTOOLCHAIN=local`, so workflow commands remain pinned to the toolchain selected by `actions/setup-go`. The script runs tests and lint even if one fails, then stops before committing or opening a pull request when either check is unsuccessful.
+
+  Only the scheduled bump job follows the latest linter release. Regular pull request and trunk lint runs remain on the exact version recorded in `.github/workflows/lint.yml`.
+
+  `go fix` can update tracked Go source during a major-version bump, so the script now stages all tracked modifications rather than only `go.mod` and `go.sum`. This PR deliberately does not pre-apply those source migrations.
+
+  ### Notes for reviewers
+
+  Start with `.github/workflows/scripts/bump-go.sh`, then review the setup and linter configuration in `.github/workflows/bump-go.yml` and `.github/workflows/lint.yml`. The failed job above shows the original Go 1.26 toolchain rejecting the new Go 1.27 directive.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`bump-go.sh` rewrites the golangci-lint pin in `lint.yml` on every run, and the bump job installs `version: latest`. When a new linter release ships and Go is unchanged, the `git diff --quiet` check no longer exits, so the daily job commits and opens a PR titled `Bump Go to <current version>` whose body says Go was updated."
+    locations: [".github/workflows/scripts/bump-go.sh", ".github/workflows/bump-go.yml", "LINTER_VERSION", "LINT_WORKFLOW"]
+    fix: "05dee02976774b246ce3373dbbb62c01f780e1d6"
+  - id: K2
+    severity: warning
+    mechanism: "`git add -u` stages every tracked edit, including changes the caller had before running the script. In a local dry run that commit lands on the temporary branch, and the `cleanup` trap then runs `git checkout -` and `git branch -D`, so the caller's own uncommitted edits disappear from the working tree."
+    locations: [".github/workflows/scripts/bump-go.sh", "cleanup", "git add -u"]
+    fix: "05dee02976774b246ce3373dbbb62c01f780e1d6"
+  - id: K3
+    severity: warning
+    mechanism: "When `go mod tidy`, `go fix`, the tests or golangci-lint fail, the script exits with the `go.mod`, `go.sum`, `lint.yml` and `go fix` edits still uncommitted. The `cleanup` trap runs `git checkout -` without resetting them, so git carries the edits onto the original branch and the caller's worktree is left dirty."
+    locations: [".github/workflows/scripts/bump-go.sh", "cleanup"]
+    fix: "6232ed14d69f74cae5c74dfa9f9d804932780f6f"
+  - id: K4
+    severity: warning
+    mechanism: "`bump-go.yml` installs Go through setup-go's `stable` alias, which resolves from the actions/go-versions manifest, while `bump-go.sh` picks the target from go.dev. During a release rollout the two can disagree, so the job runs the old toolchain under `GOTOOLCHAIN=local` against a `go.mod` that requires the new one and `go mod tidy` fails again."
+    locations: [".github/workflows/bump-go.yml", ".github/workflows/scripts/bump-go.sh", "TOOLCHAIN_VERSION"]
+    fix: "6232ed14d69f74cae5c74dfa9f9d804932780f6f"
+nice_to_have: []

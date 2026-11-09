@@ -1,0 +1,32 @@
+id: cli-12787
+repo: cli/cli
+source: cli upstream PR 12787
+base: cf862d65df7f8ff528015e235c8cccd48cea286f
+head: d21544c085f1661bb9cbe197517f8c26f7a259fb
+title: "fix: `gh project item-edit` error when editing Draft Issue with only one (title/body) flag"
+body: |
+  ## Description
+
+  This PR fixes incorrect behavior when editing a Draft Issue with only `--title` or only `--body`:
+
+  1. **`gh project item-edit --project-id 1 --id ID_**** --title "new title"`**
+     Previously this updated the title but **set the body to an empty string**.
+     Now the existing body is preserved and only the title is updated.
+
+  2. **`gh project item-edit --project-id 1 --id ID_**** --body "new body"`**
+     Previously this caused a **GraphQL error: "Title can't be empty"**.
+     Now the existing title is preserved and only the body is updated.
+
+  The GitHub API's `updateProjectV2DraftIssue` mutation requires both `title` and `body` in the input. When the user passes only one flag, we now fetch the current draft issue, keep the other field unchanged, and send a partial update.
+
+  Fixes upstream issue 12726
+
+  ## Changes
+
+  - **Flag tracking**: Introduced `titleChanged` and `bodyChanged` (using `cmd.Flags().Changed(...)`) so we distinguish "user passed `--title`" from "user passed `--body`" and from "user passed both". This allows correct partial updates and avoids overwriting the other field with an empty string.
+  - **Draft issue fetch**: When only one of `--title` or `--body` is passed, we fetch the current draft issue via a `node(id)` query and use its title/body in mutation for the field that wasn't available.
+  - **queries package**: Exposed `Query` on the shared client so item-edit can run the draft-issue fetch query.
+  - **Tests**: Added tests according to the changes
+key_version: 1
+must_catch: []
+nice_to_have: []

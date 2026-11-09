@@ -1,0 +1,46 @@
+id: manki-1172
+repo: manki-review/manki
+source: manki PR 1172, round 1
+base: 2f02e93f3371bebf3eb7c45ce38ed861b2d6affe
+head: 6ff2d7d1a848c013363600b574c9ca16171e7835
+title: "feat: preview the code behind each check of a finding"
+body: |
+  The "How this was checked" fold under a finding read like tool output. It was a list of proving lines, then the reviewer's raw evidence lines, with the path in a code span and the line range outside it. A verdict reader blocker also got a "Details" fold that held one leftover sentence.
+
+  This implements variation 1b of the `design-variations/finding-checks` round, with the owner's changes.
+
+  **The fold**
+
+  - The summary counts the places read and names the refuter's outcome, for example "How this was checked: 3 places read, double-checked". The other outcomes read "not settled" and "doubt found".
+  - Inside, the refuter's outcome and reason come first. A doubt links the lines the refuter cited.
+  - Next comes the check on the commented line, as "On the commented line: ...", with no preview.
+  - Then up to three GitHub code previews follow, each under the sentence that says what it shows.
+    - A preview starts one line above the cited line and shows five lines, kept inside the file.
+    - Checks close together in one file share one preview of up to eight lines, under a short list of their sentences.
+  - Further checks, checks with no location and an empty search are linked lines at the end.
+
+  **No fold holds a single sentence**
+
+  - A lone check shows open, as "**Checked:** ...".
+  - The inline comment shows one sentence past the lead with the lead, instead of folding it under "Details".
+  - A reviewed finding that cites nothing says "**Not checked against the code.**". Tool findings and earlier rounds' follow-ups are exempt.
+
+  **Where it applies**
+
+  - Inline comments and findings listed in the review body get the same section. The body says "On the flagged line".
+  - `postReview` fetches line counts for every cited file and passes them into `formatFindingComment` with `buildLineLink`.
+  - Evidence is still strings. A leading `file:line` is parsed into a location and a claim.
+
+  **Prompts**
+
+  Finders and the verdict reader start each evidence line with its `file:line` and quote the code that shows it in backticks. A long line is cut off in a preview, so the quote keeps the point readable.
+
+  The round is recorded in `design/taste.md`.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`parseCheck` turns the path at the start of a model's evidence line into a link target with `CHECK_LOCATION_RE`, whose `[^\\s`:]+` keeps `)`, `(` and `..`. `buildLineLink` encodes each segment with `encodeURIComponent`, which leaves `)` and `.` alone, and `linkedRange` writes `[label](url)`. A cited path such as `a)www.evil.com/b.ts:3` closes the Markdown link early and leaves a clickable outside link in Manki's comment, and `../` segments point the link at another repository."
+    locations: ["src/github.ts", "parseCheck", "CHECK_LOCATION_RE", "linkedRange", "buildLineLink"]
+    fix: "7749ac0175da4a13caa0d93b55941d5ac17e5e99"
+nice_to_have: []

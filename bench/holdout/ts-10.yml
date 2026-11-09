@@ -1,0 +1,27 @@
+id: ts-10
+repo: manki-review/token-service
+source: token-service PR 10, round 1
+base: 79f3f2feeffc76fbba51c30e48d58b338554aa85
+head: 0a9b064bf0929a97e624e912ecab818fc80ca19a
+title: "ci: review pull requests with Manki"
+body: |
+  Adds the Manki v6 workflow (pinned to the v6.0.1 commit, same SHA-pinning style as `ci.yml`) and a `.manki.yml` for this repo.
+
+  - Everything under `src/` and `wrangler.toml` is in the security class, so every code PR gets two finders on two models, and security findings block at every round.
+  - The instructions point the reviewers at OIDC validation, token scope, webhook signatures, installation scoping, Durable Object alarms and storage, and secrets in logs.
+  - gitleaks checks added lines for secrets, and OSV-Scanner checks `package-lock.json` changes.
+
+  Needs the `CLAUDE_CODE_OAUTH_TOKEN` repository secret before the first run. Once webhook mode ships in 6.1, this repo can switch to the dispatch workflow.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "The fork guard `!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository` in the `review` job's `if` passes for every `issue_comment` event, because that payload has no `pull_request`, and nothing checks `github.event.comment.author_association`. Any commenter who mentions Manki or writes `/manki` on an issue or on a fork PR starts the job, which holds `CLAUDE_CODE_OAUTH_TOKEN`, `id-token: write` and `pull-requests: write`. The author of a fork PR, whom Manki itself admits as the PR author, gets a review of untrusted code on the owner's credentials although the guard exists to keep fork PRs out."
+    locations: [".github/workflows/manki.yml", "issue_comment", "author_association", "github.event.pull_request"]
+    fix: "607e8db5eec9a301f1a5f1782e8b7f5976c017a4"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "The `security` class in `.manki.yml` matches only `src/**` and `wrangler.toml`, so a change to `.github/workflows/**`, `package.json` or `package-lock.json`, which can leak secrets or change what ships, gets the lighter review."
+    locations: [".manki.yml", "paths_any"]
+    fix: "607e8db5eec9a301f1a5f1782e8b7f5976c017a4"

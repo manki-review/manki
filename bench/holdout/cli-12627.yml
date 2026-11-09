@@ -1,0 +1,56 @@
+id: cli-12627
+repo: cli/cli
+source: cli upstream PR 12627, first review round
+base: 4e656374719659ab60d096afec12afac9acab463
+head: c187b882a06fa798e19970478c28d3193fe09879
+title: "`gh pr create`: login-based reviewer requests and search-based interactive selection"
+body: |
+  ## Description
+
+  Brings the same reviewer performance improvements from `gh pr edit` (upstream PR 12567) to `gh pr create`. On supported hosts (github.com), reviewers are now requested via the `requestReviewsByLogin` GraphQL mutation using logins/slugs directly, eliminating the expensive paginated fetch of all assignable users and teams to resolve IDs. Interactive mode gains search-based reviewer selection via `MultiSelectWithSearch`. GHES falls back to the existing ID-resolution path.
+
+  Fixes upstream issue 11501
+
+  ## Key changes
+
+  - **Login-based reviewer requests on github.com**: `CreatePullRequest` branches on whether `userReviewerLogins`/`teamReviewerSlugs` are present (github.com) vs `userReviewerIds`/`teamReviewerIds` (GHES), calling `RequestReviewsByLogin` directly in the former case.
+  - **`SuggestedReviewerActorsForRepo`**: New query that fetches reviewer candidates (collaborators + org teams) for a repo without an existing PR, using a cascading quota (5 base per source, unfilled quota rolls over). Also surfaces Copilot availability by inspecting an open PR's `suggestedReviewerActors`.
+  - **Search-based interactive selection**: When `ActorIsAssignable` is detected, `MetadataSurvey` uses `MultiSelectWithSearch` backed by `SuggestedReviewerActorsForRepo` instead of pre-fetching all reviewers into a static list.
+  - **`ActorReviewers` flag on `IssueMetadataState`**: Controls whether `AddMetadataToIssueParams` passes logins or resolves IDs, and skips the `RepositoryAssignableUsers`/`OrganizationTeamList` fetches when IDs aren't needed.
+  - **Extracted helpers**: `extractTeamSlugs` and `toGitHubV4Strings` deduplicate slug parsing and `githubv4.String` slice conversion.
+  - **Test split**: `Test_createRun` now uses `EnabledDetectorMock` (github.com path); GHES-specific tests (dry-run with all opts, org team fetching, ID-based mutations) moved to `Test_createRun_GHES` with `DisabledDetectorMock`.
+
+  ## Notes for reviewers
+
+  - The Copilot detection in `SuggestedReviewerActorsForRepo` piggybacks on `pullRequests(first: 1, states: [OPEN])` — it requires at least one open PR to detect Copilot availability. This is a pragmatic tradeoff; there's no repo-level API to check Copilot reviewer eligibility without a PR context.
+  - The organization query gracefully handles personal repos by checking for the `"Could not resolve to an Organization"` error and continuing with partial data.
+  - Dry-run tests with `--reviewer` that previously ran under the github.com path now live in `Test_createRun_GHES` since they test the legacy ID-resolution flow. The github.com path test (`"request reviewers by login"`) validates the new `RequestReviewsByLogin` mutation directly.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "In the `ActorReviewers` branch, `AddMetadataToIssueParams` strips the org from each `org/slug` team reviewer and passes the bare slug as `teamReviewerSlugs`. The `requestReviewsByLogin` mutation expects `teamSlugs` in `org/team-slug` format, as the `RequestReviewsByLogin` doc and `gh pr edit` already do, so on github.com every team review request made by `gh pr create` fails after the PR is created."
+    locations: ["pkg/cmd/pr/shared/params.go", "AddMetadataToIssueParams", "teamReviewerSlugs", "RequestReviewsByLogin"]
+    fix: "db167d31164bc3c18d39a45f2261f79eb047a03a"
+  - id: K2
+    severity: warning
+    mechanism: "The login path treats every reviewer without a `/` as a user, and `CreatePullRequest` calls `RequestReviewsByLogin` with `nil` bot logins. `SuggestedReviewerActorsForRepo` offers Copilot as `copilot-pull-request-reviewer`, so picking it (or passing that login with `--reviewer`) sends a bot as a user login and the review request fails. `gh pr edit` splits bots out with `partitionReviewersByType`."
+    locations: ["pkg/cmd/pr/shared/params.go", "api/queries_pr.go", "AddMetadataToIssueParams", "CreatePullRequest", "RequestReviewsByLogin"]
+    fix: "1209b24e69fe07a8ae4f291325d20a5c790c6b76"
+  - id: K3
+    severity: warning
+    mechanism: "`SuggestedReviewerActorsForRepo` does not exclude the current user from the collaborator candidates, so the interactive reviewer search offers the PR author as a reviewer, and requesting a review from the author fails."
+    locations: ["api/queries_pr.go", "SuggestedReviewerActorsForRepo"]
+    fix: "90bfa624c2c4b66053188f6d9382d7f413be258e"
+    source: "author's own later commit"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "`createRun` discards the error from `opts.Detector.IssueFeatures()`, so a failed feature detection silently falls back to the ID-based reviewer path instead of being reported."
+    locations: ["pkg/cmd/pr/create/create.go", "createRun", "IssueFeatures"]
+    fix: "dd9ab7152b8a628eb43cf36e49d3398b7fe96215"
+  - id: N2
+    severity: suggestion
+    mechanism: "When `reviewerSearchFunc` is set, `MetadataSurvey` still sets `Reviewers` and `TeamReviewers` in `RepoMetadataInput`, so the expensive assignable users and teams fetch the PR means to remove still runs and its result goes unused."
+    locations: ["pkg/cmd/pr/shared/survey.go", "MetadataSurvey", "RepoMetadataInput"]
+    fix: "e361335e5c1f67154216c80bfaeccdce29966321"
