@@ -1428,12 +1428,15 @@ describe('selectTeam', () => {
       'Sibling symmetry: compare each changed function with its counterpart, such as encode and decode',
       'Reference claims: when the PR title, description or changed code says the change matches another implementation, a spec or a standard',
       'Read it in a **reference** related repo when one is listed. Report each difference the PR does not call out, citing both sides.',
+      'what this code sends against what the reference accepts, and what this code accepts against what the reference sends.',
+      'For a changed size or count limit, find what the reference actually sends, not only the limit it checks on receive.',
+      'For a changed decoder or encoder, compare the field order, field types and version bounds with the reference\'s serializer.',
       'Reuse: for each constant, helper, type or loop the change adds, search for an existing one that does the same, and cite its `file:line`.',
       'Repository rules: check each added line against the rules in the repository context, such as `AGENTS.md`, `CLAUDE.md` or `CONTRIBUTING.md`, and quote the rule it breaks.',
       'Report a reuse finding only with the existing code\'s `file:line`, and a rule finding only with the rule quoted.',
     ]) expect(focus).toContain(check);
     // Reuse and repository rules come right after tests.
-    expect(focus).toMatch(/\n6\. Tests: [^\n]*\n7\. Reuse: [^\n]*\n8\. Repository rules: [^\n]*\n9\. Contract breaks: /);
+    expect(focus).toMatch(/\n7\. Tests: [^\n]*\n8\. Reuse: [^\n]*\n9\. Repository rules: [^\n]*\n10\. Contract breaks: /);
     expect({ focus }).toMatchSnapshot();
   });
 
