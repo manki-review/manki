@@ -1,0 +1,87 @@
+id: dash-8035
+repo: xdustinface/dash
+source: dash upstream PR 8035
+base: bf9a6cb3dc473dbbb6f72d69ea0bca25a5fd080b
+head: 8d1800ee44c7aff542d149c78a302b36aef4d7a3
+title: "fix(qt): don't strand coins reserved for a shared masternode session"
+body: |
+  ## Issue being fixed or feature implemented
+
+  Coins reserved for a session in the Qt shared-masternode wizard can get stranded. They stay locked across restarts (the lock is written to the wallet), and there is no normal GUI way to release them. The Send tab then says "The amount exceeds your balance" while showing the full balance. No funds are lost, but users can't spend their own coins. GUI QA on develop found five causes:
+
+  1. **Other participants' coins get locked.** `lockKnownContributedCoins()` locks every session input that `wallet().getCoins()` knows. That call returns any output of any transaction in the wallet, with no IsMine filter. Repro: bob pays alice, and bob then funds his share with the change from that payment. When alice absorbs bob's details, her wallet locks bob's coin. Coin Control shows "(2 locked)" with one locked row, and the other lock can't be released from the GUI.
+  2. **Closing skips the keep/discard prompt while coins are still locked.** This happens in two places. Cancel on a session opened from a file closes silently, because an unchanged session isn't "dirty". "Close" on a participant's "Waiting for …" broadcast page accepts the dialog outright. Either way the coins stay reserved with no prompt and, for a participant, no saved file. The coordinator also has no "Release my coins" action on the Approvals or Signatures pages, which is where a refused broadcast leaves them.
+  3. **"Release my coins" is silently undone.** Opening or pasting any further message of the same session re-locks the coins. "Release my coins" comes back, and the status line still says "Released — these coins can be spent again."
+  4. **"Start Over" appears without a reason.** When a reserved coin of this wallet has been spent, the primary button becomes "Start Over", but the reason line is blank. `enterPage()` clears the error after `replaceSession()` has shown it.
+  5. **The coordinator can still edit their own row after reserving coins for it.** Changing their own amount (400 → 350) leaves change sized for 400, so the extra 50 becomes fee; only the "unusually large fee" warning catches it. Renaming or removing the row detaches the reservation, which is recorded under the row's name.
+
+  ## What was done?
+
+  One commit per cause, each with its own regression test:
+
+  1. `fix(qt): reserve only this wallet's own coins for a shared masternode session`
+     - Lock only session inputs this wallet can spend.
+     - Count only those in `hasLockedContributedCoins()`, skipping spent coins.
+     - A lock an earlier build left on someone else's coin is deliberately not removed on import. Unlocking on the strength of an imported message alone could release a coin the user locked on purpose. The wizard's existing release actions still clear it.
+  2. `fix(qt): ask before closing a shared masternode session that still reserves coins`
+     - `reject()` offers the existing "Keep this session for later?" choice (Save and Close / Discard and Release Coins / Cancel) whenever this wallet still has coins locked for the session, not only when the session has changed.
+     - "Close" on the waiting-for-broadcast page goes through the same prompt while coins are locked.
+     - `saveSession()` now reports whether it saved, so a cancelled "Save and Close" keeps the dialog open.
+     - The existing "Release my coins" action is shown on the Approvals and Signatures pages while coins are locked.
+  3. `fix(qt): keep shared masternode coins released after "Release my coins"`
+     - The release holds for the rest of the dialog.
+     - Coins are locked again only when the user commits them again: Reserve Coins, Start Over, or signing their own coins into the registration.
+  4. `fix(qt): say why a shared masternode session has to start over`
+     - `enterPage()` re-shows the reason, as it already does for a funding transaction this wallet refuses to sign.
+     - Showing it exposed a wrong verdict: a participant who reopened the fully signed session after the coordinator broadcast it saw their own coin as "spent". A fully signed session whose registration transaction this wallet already holds, and which is neither conflicted nor abandoned, is not dead.
+  5. `fix(qt): keep the coordinator's own share row fixed while its coins are reserved`
+     - While this wallet's coins are reserved, its own row's amount is disabled, its name is read-only, and Remove refuses to delete it, as the "Me" radio already does.
+     - Releasing the coins on the contribution page frees the row. Other rows stay editable.
+
+  Approval semantics are unchanged:
+  - Nothing is auto-signed, auto-approved or broadcast.
+  - Every new release is a user click.
+  - `checkOwnFunding()` and its allowance are untouched.
+  - No imported message can widen what this wallet signs or releases.
+
+  Not included:
+  - Detecting a coin spent only in the mempool (optional in the QA report).
+  - Releasing a reservation that was persisted by an earlier build.
+
+  ## How Has This Been Tested?
+
+  - **Regression tests:** new scenario `SharedMnWizardTests::signedSessionReservation` (commits 1–4), plus extra checks in `participantsPageGating` (commit 5).
+    - For each commit, its test file was built against the parent commit's dialog code and fails there; at the commit itself, the whole `test_dash-qt` passes (160/160).
+    - Failures on the parent:
+      - Commit 1: the other participant's coin gets locked.
+      - Commit 2: no prompt on Close or Cancel.
+      - Commit 3: the coin is locked again after the reopen.
+      - Commit 4: "Start Over" after a successful broadcast, and no reason line.
+      - Commit 5: the own amount is still editable.
+    - The commit-3 re-lock-after-signing case runs the real `signOwnFundingInputs()`. The fixture's coin isn't in the chainstate, so the wallet adds no signature, but the post-sign path runs.
+  - **Full suite:** `QT_QPA_PLATFORM=minimal src/qt/test/test_dash-qt` at the head: all suites pass.
+  - **Lint and format:** `test/lint/lint-whitespace.py` is clean. `clang-format-diff.py` (clang-format 18.1.8) reports no changes.
+  - **Manual GUI before/after:** on regtest with two wallets, the exact base `bf9a6cb3dc4` and this head ran the same steps for causes 1, 2 and 3. At the base, another participant's coin was locked, Cancel closed a session opened from its file with no prompt, and reopening a released session locked the coin again. At the head, only the wallet's own coin was locked, Cancel showed the "Keep this session for later?" prompt, and the coins stayed released after the reopen. Items 4 and 5, and the participant's Close on the waiting-for-broadcast page, are covered by the regression tests only.
+
+  ## Breaking Changes
+
+  None. The GUI behaviour changes are:
+  - The keep/discard prompt now also appears when closing an unchanged session that still holds reserved coins.
+  - The own row on the Participants page is read-only while coins are reserved for it.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "After the coordinator clicks the new \"Release my coins\" button on the Approvals page, `m_coins_released` is set, but an imported final approval still makes `absorbSession` call `runCombineAndSign` with no user action. `signOwnFundingInputs` then signs the released coins into the registration, clears `m_coins_released` and locks the coins again through `refreshContributedCoinLocks`, so the release is silently undone."
+    locations: ["src/qt/sharedmncreatedialog.cpp", "absorbSession", "runCombineAndSign", "signOwnFundingInputs", "m_coins_released"]
+    fix: "97ac5d9eb289284002bafffa6672ee2f26c1bfcb"
+  - id: K2
+    severity: warning
+    mechanism: "The contribution page's `releaseCoins` removes and unlocks this wallet's contribution but never sets `m_coins_released`. A participant reply made from the earlier invitation still carries that contribution, `MnShareSession::absorbDraftReply` adds it back, and `absorbSession` then calls `refreshContributedCoinLocks`, which locks the released coins again."
+    locations: ["src/qt/sharedmncreatedialog.cpp", "releaseCoins", "absorbSession", "refreshContributedCoinLocks", "m_coins_released"]
+    fix: "618fc3158b69827945807dd17032246081e0b409"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "`saveSession` now reports success to `reject`, but it returns true without checking that `file.write` wrote the whole session or that the file was flushed. On a write error, Save and Close closes the dialog with an incomplete session file while the coins stay reserved."
+    locations: ["src/qt/sharedmncreatedialog.cpp", "saveSession", "reject"]

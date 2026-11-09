@@ -1,0 +1,33 @@
+id: kotlinx-coroutines-4616
+repo: Kotlin/kotlinx.coroutines
+source: kotlinx.coroutines upstream PR 4616
+base: 0c576778d5709ee9d108a269de1f56f2ed8eb7eb
+head: ca0913f2d895ba3e75c1a7c0c0df8446ffe2f17c
+title: "Fix a memory leak in RxScheduler implementations"
+body: |
+  From the RxJava docs on `Scheduler.Worker`:
+
+  > Disposing the Scheduler.Worker should cancel all outstanding work
+  > and allows resource cleanup.
+
+  and
+
+  > [schedule]'s implementation is encouraged to track the individual
+  > Runnable tasks while they are waiting to be executed
+  > (with or without delay) so that dispose() can prevent their
+  > execution or potentially interrupt them if they are currently
+  > running.
+
+  Fixes upstream issue 4615
+key_version: 1
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "For every delayed task, `scheduleTask` registers `ctx.job.disposeOnCompletion(it)` on the long-lived worker or scheduler `Job`, and only the user-visible `Disposable` removes that handler again. A task that fires and finishes normally is never disposed, so its completion handler, and through it the timeout handle and the task closure, stays on `workerJob` or `schedulerJob` until the worker is disposed or the scheduler shut down. A never-cancelled worker or a `DispatcherScheduler` used for delayed `scheduleDirect` calls therefore grows without bound, a new memory leak in a change meant to fix one."
+    locations: ["reactive/kotlinx-coroutines-rx3/src/RxScheduler.kt", "reactive/kotlinx-coroutines-rx2/src/RxScheduler.kt", "scheduleTask", "disposeOnCompletion"]
+    fix: "28b3e34728d35f480d308dbdd9ac484c550393f0"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "The `Disposables.fromRunnable` (rx2) and `Disposable.fromRunnable` (rx3) allocation in `scheduleTask` is redundant when the delay is zero or negative and can be replaced by an empty disposable."
+    locations: ["reactive/kotlinx-coroutines-rx3/src/RxScheduler.kt", "reactive/kotlinx-coroutines-rx2/src/RxScheduler.kt", "scheduleTask"]

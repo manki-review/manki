@@ -1,0 +1,26 @@
+id: commons-lang-1807
+repo: apache/commons-lang
+source: commons-lang upstream PR 1807
+base: 29624cdb50ecd794207d561345b2fc9ca3a9d326
+head: e90b50c8b09066e19ecdfdf62e03be9eaf1b3fd5
+title: "Default unbounded WildcardType upper bound to Object in TypeUtils"
+body: |
+  `TypeUtils.wildcardType().build()` (a wildcard with no explicit upper bound, and likewise a `withLowerBounds`-only wildcard) stores an empty upper-bounds array, so `getUpperBounds()` returns `[]`. The `java.lang.reflect.WildcardType.getUpperBounds()` contract says the implicit upper bound is `Object` when none is declared, which is what the JDK's own `?` and this class's `getImplicitUpperBounds` both report. Because of the mismatch `equals` is asymmetric across implementations: `built.equals(jdkWildcard)` is `true` (our `equals` normalises the empty array to `Object`) while `jdkWildcard.equals(built)` is `false` (the JDK compares the raw bounds arrays), and `built.hashCode()` disagrees with `WILDCARD_ALL.hashCode()` although the two are equal.
+
+  Default the stored upper bounds to `Object` in the `WildcardTypeImpl` constructor so `getUpperBounds()`, `equals()` and `hashCode()` all line up with the JDK. Keeping it in the constructor is what makes the three agree from one place; explicitly bounded wildcards and `WILDCARD_ALL` are untouched, and `toString()` still renders `?` because the formatter already treats an `Object` upper bound as unbounded.
+
+  Repro:
+
+      WildcardType built = TypeUtils.wildcardType().build();
+      WildcardType jdk   = /* the ? taken from a List<?> field via reflection */;
+
+  Expected: `built.getUpperBounds()` is `[Object.class]`; `jdk.equals(built)` is `true`
+  Actual (before): `built.getUpperBounds()` is `[]`; `jdk.equals(built)` is `false`
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "With the upper bound defaulted to `Object`, a built wildcard and the JDK's `?` are now equal in both directions, but `WildcardTypeImpl.hashCode()` still uses its own shift and OR formula over the raw bound arrays while the JDK hashes `Arrays.hashCode(lowerBounds) ^ Arrays.hashCode(upperBounds)`. Two equal wildcards get different hash codes, which breaks the `equals`/`hashCode` contract the PR says it lines up, so a `HashMap` or `HashSet` keyed by `Type` misses a lookup when JDK and built wildcards are mixed."
+    locations: ["src/main/java/org/apache/commons/lang3/reflect/TypeUtils.java", "WildcardTypeImpl", "hashCode"]
+    fix: "2a9ef8e4d166cb6f52c73b9270057b37b1e9e40c"
+nice_to_have: []
