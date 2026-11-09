@@ -12,10 +12,10 @@ const SUMMARY_PROTECTED_RE = /<code>[\s\S]*?<\/code>|<[^>]*>/g;
 
 /**
  * Whether a token looks like code rather than a word: snake_case, dotted, or camelCase and PascalCase with an inner
- * capital followed by a lowercase letter or digit. Units and names such as `MiB` or `macOS` end on a capital, so they stay words.
+ * capital. Units and names such as `MiB` or `macOS` end in their only capitals, so they stay words.
  */
 function isCodeLike(token: string): boolean {
-  return token.length >= 3 && (/_/.test(token) || /[a-z\d][A-Z][a-z\d]/.test(token) || /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(token));
+  return token.length >= 3 && (/_/.test(token) || /[a-z\d][A-Z](?![A-Z]*$)/.test(token) || /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(token));
 }
 
 /** Collects the identifiers on the diff's added lines and the changed file paths, for `highlightCode`. */

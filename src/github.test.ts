@@ -319,13 +319,15 @@ describe('formatFindingComment', () => {
     const longCheck = 'src/util.ts:20 The new test `streaming_read_has_no_budget_below_the_core_range` shows 8 MB being read through `Vec::<Vec<u8>>::consensus_decode`, where the old `limit_read_test` failed';
     const cut = highlightCode(render({
       ...baseFinding,
-      evidence: { checks: [longCheck, `${'a'.repeat(156)} \`xyz_long\` is past the cut`], proof: [] },
+      evidence: { checks: [longCheck, `${'a'.repeat(156)} \`xyz_long\` is past the cut`, `${'a'.repeat(150)} \`xxxxx\`\` y\` and more words here`], proof: [] },
       refutation: { outcome: 'confirmed', reason, files: [], codeDigest: 'abc' },
     }), new Set(['consensus_decode', 'streaming_read_has_no_budget_below_the_core_range']));
     expect(cut).toContain('could not. The overrides of `Vec<T>::consensus_decode` and `Vec<u8>::consensus_decode` now call the finite-reader decode on the caller\'s reader. They drop the `take(MAX_…`\n');
     expect(cut).toContain('The new test `streaming_read_has_no_budget_below_the_core_range` shows 8 MB being read through `Vec::<Vec<u8>>::consensus_decode`, where the old `limit_read_t…`\n');
     // A span with none of its code before the cut is left out.
     expect(cut).toContain(`- A${'a'.repeat(155)}…\n`);
+    // A longer run inside the span that the cut splits is dropped, so what is left of it cannot close the span early.
+    expect(cut).toContain(`- A${'a'.repeat(149)} \`xxxxx…\`\n`);
     expect(cut).not.toContain('\\`');
     expect(cut.split('\n').filter(line => !pairs(line))).toEqual([]);
   });

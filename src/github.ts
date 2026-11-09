@@ -2175,7 +2175,8 @@ function shortenLine(line: string): string {
     }
     if (open) {
       const [fence] = open;
-      const code = line.slice(open.index! + fence.length, keep - fence.length).trimEnd();
+      // A longer backtick run inside the span can be cut down to the fence's length, so a run at the cut is dropped.
+      const code = line.slice(open.index! + fence.length, keep - fence.length).replace(/`+$/, '').trimEnd();
       if (code.trim()) return `${line.slice(0, open.index! + fence.length)}${code}…${fence}`;
       stop = open.index!;
     } else {

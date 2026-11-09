@@ -11,7 +11,7 @@ const diff: ParsedDiff = {
         '-const oldName = 1;',
         '+const { data } = await octokit.rest.pulls.get({ owner, repo });',
         '+if (excludePaths.length) return createReview(review_body);',
-        '+const MAX_COMPACT_SIZE = 32; // MiB, not KiB, GiB or MB, on macOS and iOS, read by readBytes',
+        '+const MAX_COMPACT_SIZE = 32; // MiB, not KiB, GiB or MB, on macOS and iOS, read by readBytes and fetchPRDiff, not toJSON',
         ' const ReviewResult = unchanged_context;',
       ].join('\n'),
     }],
@@ -24,7 +24,7 @@ describe('codeTokensFromDiff', () => {
   it('collects code-like identifiers from added lines and the changed file paths, but not units or mixed-case names', () => {
     const tokens = codeTokensFromDiff(diff);
     expect([...tokens].sort()).toEqual([
-      'MAX_COMPACT_SIZE', 'createReview', 'excludePaths', 'excludePaths.length', 'github.ts', 'octokit.rest.pulls.get', 'readBytes', 'review_body', 'src/github.ts',
+      'MAX_COMPACT_SIZE', 'createReview', 'excludePaths', 'excludePaths.length', 'fetchPRDiff', 'github.ts', 'octokit.rest.pulls.get', 'readBytes', 'review_body', 'src/github.ts',
     ]);
   });
 });
