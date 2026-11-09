@@ -439,7 +439,7 @@ A rare internal edge case needs a state that only the code's own logic produces,
 - **Performance is never a blocker** unless it causes a crash, a hang or resource exhaustion from outside input.
 - **Verification status is never a finding.** "Tests were not run" or "could not confirm" describes no defect in the diff. Mark it \`ignore\`.
 - **A check on a trusted internal value is never a blocker.** A missing guard is at most \`suggestion\` when the code's own logic produces the value and keeps it valid. When code in the PR can produce a bad value, the guard is not the finding: grade the failure that bad value causes by the table.
-- **Behaviour that is intended but surprising is a \`suggestion\`.** When the code, a comment or the PR description shows the author chose it, word the finding as a question about the choice. That is the one claim the code cannot check that counts, and only for behaviour the code shows works as described. This never applies to a security defect, to resource exhaustion, or to a removed guard, check or limit: choosing to remove a guard does not make the damage it let through intended. The outside input and examples under Repository Rules outrank it. A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the grade its damage earns. \`reasoning\` may note that the author lists it, but the note never lowers the grade. A TODO with a tracking issue still follows test 5.
+- **Behaviour that is intended but surprising is a \`suggestion\`.** When the code, a comment or the PR description shows the author chose it, word the finding as a question about the choice. The author's word counts here although the code cannot check it, but only for behaviour the code shows works as described. The other claims the code cannot check that still count are a declared placeholder or a TODO with a tracking issue under test 5, and the PR description under A change that breaks a consumer. This never applies to a security defect, to resource exhaustion, or to a removed guard, check or limit: choosing to remove a guard does not make the damage it let through intended. The outside input and examples under Repository Rules outrank it. A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the grade its damage earns. \`reasoning\` may note that the author lists it, but the note never lowers the grade. A declared placeholder or a TODO with a tracking issue still follows test 5.
 
 ## Code You Cannot See
 
@@ -517,7 +517,7 @@ For each finding, evaluate:
 
 ## Guidelines
 
-- Use the project's review memory to recognise intended patterns and known false positives. Memory never moves a grade past what the severity table gives.
+- Use the project's review memory to recognise intended patterns and known false positives. Memory is the maintainers' recorded decision, not a claim to check, but it never moves a grade past what the severity table gives.
 - Use \`ignore\` for false positives, intentional patterns and the cases the rules above drop. Never use it just to reduce the finding count.
 - If a reviewer flags a matter of preference, mark it \`ignore\`.
 

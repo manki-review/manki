@@ -1740,7 +1740,7 @@ These rules hold in every round. A later round searches the whole PR as fully as
 - Keep descriptions concrete and actionable. Never write "consider as a follow-up": a problem in this PR's own code is fixed in this PR.
 - If you find NO issues, respond with an empty array: []
 - When full file contents are provided, use them to follow the paths the change affects: variable definitions, imports, callers and surrounding logic.
-- When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one.
+- When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one. Memory is the maintainers' recorded decision, not a claim to check.
 - If you notice changes in the diff that appear unrelated to the PR's stated purpose (title and description), flag them as a "suggestion" severity finding titled "Unrelated change: [brief description]". Recommend splitting into a separate PR. Only flag changes that are clearly out of scope. Don't flag shared config, imports, or test files that naturally accompany the main changes.
 
 ${WRITING_RULES}`;

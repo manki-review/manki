@@ -5,26 +5,26 @@
     "blocker"
   ],
   "finding": {
-    "title": "The fee estimate leaves the payout list out of a version 3 payload",
-    "file": "src/builder.rs",
-    "line": 32,
-    "description": "The new v3 arm sizes the payload without `p.payouts`, which `Payload::encode` now writes in place of `script` for version 3. `fee` prices the transaction from this estimate at the minimum relay rate, so a transaction carrying a v3 payload pays for fewer bytes than it has and relays reject it. The builder's own `new()` only creates v2 payloads, but `set_payload` is public and accepts any version.",
+    "title": "Days are converted to seconds, not milliseconds",
+    "file": "src/duration.ts",
+    "line": 22,
+    "description": "The new `d` branch returns `value * 86_400`, the number of seconds in a day, while every other unit returns milliseconds. `parseDuration('1d')` gives 86.4 seconds, so a cache TTL or timeout set in days expires about a thousand times too early. The package's own callers only pass `s` and `m`, but `parseDuration` is exported from the entry point and accepts any of the units its regular expression allows.",
     "severity": "blocker",
     "reviewers": [
       "Correctness"
     ],
     "evidence": {
       "checks": [
-        "src/builder.rs:21 `pub fn set_payload` accepts any `Payload`",
-        "src/builder.rs:26 `fee` multiplies the estimate by `MIN_RELAY_FEE_PER_BYTE`",
-        "src/payload.rs:43 `3 => self.payouts.encode(w)?` writes the payout list for version 3"
+        "src/duration.ts:22 returns `value * 86_400` for `d`",
+        "src/duration.ts:21 returns `value * 3_600_000` for `h`, in milliseconds",
+        "src/duration.ts:12 says the function is exported from the package entry point"
       ],
       "proof": [
-        "src/builder.rs:32",
-        "src/builder.rs:26",
-        "src/payload.rs:43"
+        "src/duration.ts:22",
+        "src/duration.ts:21"
       ]
-    }
+    },
+    "suggestedFix": "    case 'd': return value * 86_400_000;"
   },
-  "prDiff": "diff --git a/src/builder.rs b/src/builder.rs\nindex 1111111..2222222 100644\n--- a/src/builder.rs\n+++ b/src/builder.rs\n@@ -20,14 +20,15 @@\n     /// Replaces the special payload. Any version is accepted.\n     pub fn set_payload(&mut self, payload: Payload) {\n         self.payload = Some(payload);\n     }\n \n     fn fee(&self, p: &Payload) -> u64 {\n         (self.base_size() + self.estimated_payload_size(p)) as u64 * MIN_RELAY_FEE_PER_BYTE\n     }\n \n     fn estimated_payload_size(&self, p: &Payload) -> usize {\n         match p.version {\n             1 | 2 => 2 + 32 + 48 + varint_size(p.script.len()) + p.script.len(),\n+            3 => 2 + 32 + 48,\n             _ => 0,\n         }\ndiff --git a/src/payload.rs b/src/payload.rs\nindex 3333333..4444444 100644\n--- a/src/payload.rs\n+++ b/src/payload.rs\n@@ -40,5 +40,8 @@\n     pub fn encode<W: Write>(&self, w: &mut W) -> io::Result<usize> {\n         let mut len = self.version.encode(w)? + self.pro_tx_hash.encode(w)? + self.key.encode(w)?;\n-        len += self.script.encode(w)?;\n+        len += match self.version {\n+            3 => self.payouts.encode(w)?,\n+            _ => self.script.encode(w)?,\n+        };\n         Ok(len)\n     }\n"
+  "prDiff": "diff --git a/src/duration.ts b/src/duration.ts\nindex 1111111..2222222 100644\n--- a/src/duration.ts\n+++ b/src/duration.ts\n@@ -10,15 +10,16 @@\n /**\n  * Parses a duration such as `90s`, `15m` or `2h` into milliseconds.\n  * Exported from the package entry point.\n  */\n export function parseDuration(input: string): number {\n-  const match = /^(\\d+)([smh])$/.exec(input.trim());\n+  const match = /^(\\d+)([smhd])$/.exec(input.trim());\n   if (!match) throw new RangeError(`Invalid duration: ${input}`);\n   const value = Number(match[1]);\n   switch (match[2]) {\n     case 's': return value * 1000;\n     case 'm': return value * 60_000;\n     case 'h': return value * 3_600_000;\n+    case 'd': return value * 86_400;\n   }\n   throw new RangeError(`Invalid duration unit: ${input}`);\n }\n"
 }

@@ -864,7 +864,7 @@ describe('buildReviewerSystemPrompt', () => {
 
   it('mentions review memory in the rules, and lets no suppression hold back a blocker or a security issue', () => {
     const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
-    expect(prompt).toContain('When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one.');
+    expect(prompt).toContain('When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one. Memory is the maintainers\' recorded decision, not a claim to check.');
     expect(prompt).not.toContain('intentionally suppressed');
   });
 

@@ -239,6 +239,7 @@ describe('buildJudgeSystemPrompt', () => {
   it('requires all five blocker tests and keeps a grade until the code or the evidence changes', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('A finding is a `blocker` only when it passes all five tests:');
+    expect(prompt).toContain('Memory is the maintainers\' recorded decision, not a claim to check, but it never moves a grade past what the severity table gives.');
     expect(prompt).toContain(`never how confidently the finding is worded.\n\n${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself.\n`);
     for (const test of ['The PR causes it.', 'The failure can be named.', 'The damage is serious.', 'The code proves it.', 'The author would fix it.']) {
       expect(prompt).toContain(`**${test}**`);
@@ -276,9 +277,9 @@ describe('buildJudgeSystemPrompt', () => {
       '**Behaviour that is intended but surprising is a `suggestion`.**',
       'This never applies to a security defect, to resource exhaustion, or to a removed guard, check or limit',
       'The outside input and examples under Repository Rules outrank it.',
-      'That is the one claim the code cannot check that counts, and only for behaviour the code shows works as described.',
+      'The author\'s word counts here although the code cannot check it, but only for behaviour the code shows works as described. The other claims the code cannot check that still count are a declared placeholder or a TODO with a tracking issue under test 5, and the PR description under A change that breaks a consumer.',
       'A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the grade its damage earns.',
-      '`reasoning` may note that the author lists it, but the note never lowers the grade. A TODO with a tracking issue still follows test 5.',
+      '`reasoning` may note that the author lists it, but the note never lowers the grade. A declared placeholder or a TODO with a tracking issue still follows test 5.',
     ]) {
       expect(section).toContain(rule);
     }
