@@ -2570,6 +2570,11 @@ export interface LinkedIssue {
 const MAX_ISSUE_BODY_LENGTH = 2000;
 const MAX_LINKED_ISSUES = 5;
 
+/** Returns the issue numbers the PR body links with a closing keyword or "part of". */
+export function linkedIssueNumbers(prBody: string): Set<number> {
+  return new Set([...prBody.matchAll(/(?:closes?|fixes?|resolves?|part\s+of)\s+#(\d+)/gi)].map(match => parseInt(match[1], 10)));
+}
+
 /**
  * Parse PR body for issue references and fetch their details.
  */
@@ -2581,12 +2586,7 @@ export async function fetchLinkedIssues(
 ): Promise<LinkedIssue[]> {
   if (!prBody) return [];
 
-  const regex = /(?:closes?|fixes?|resolves?|part\s+of)\s+#(\d+)/gi;
-  const issueNumbers = new Set<number>();
-  for (const match of prBody.matchAll(regex)) {
-    issueNumbers.add(parseInt(match[1], 10));
-  }
-
+  const issueNumbers = linkedIssueNumbers(prBody);
   if (issueNumbers.size === 0) return [];
 
   const results: LinkedIssue[] = [];
