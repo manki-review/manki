@@ -105,9 +105,9 @@ export interface ToolStep {
 
 /** One LLM call, as the round and reply records keep it. Token counts follow `LLMUsage`. */
 export interface LLMCall extends LLMUsage {
-  /** Pipeline stage that made the call: `planner`, `reviewer`, `judge`, `dedup`, `verdict`, `related` or `reply`. */
+  /** Pipeline stage that made the call: `planner`, `reviewer`, `compare`, `judge`, `dedup`, `verdict`, `related` or `reply`. */
   stage: string;
-  /** Finder that made the call, on the `reviewer` stage. */
+  /** Finder that made the call, on the `reviewer` stage, or the comparison, on the `compare` stage. */
   agent?: string;
   /** Model that answered. Unknown for a call that failed. */
   model?: string;
