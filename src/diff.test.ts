@@ -1,4 +1,5 @@
 import {
+  addCodeContext,
   changeDigest,
   parsePRDiff,
   filterDiff,
@@ -556,6 +557,23 @@ describe('rebuildRawDiff', () => {
     expect(raw).toContain('diff --git a/src/new-file.ts b/src/new-file.ts\n--- /dev/null\n+++ b/src/new-file.ts\n');
     expect(raw).toContain('diff --git a/src/old-file.ts b/src/old-file.ts\n--- a/src/old-file.ts\n+++ /dev/null\n');
     expect(raw).toContain('diff --git a/src/old-name.ts b/src/new-name.ts\n--- a/src/old-name.ts\n+++ b/src/new-name.ts\n');
+  });
+});
+
+describe('addCodeContext', () => {
+  it('sets the hunk lines around a finding, counting only lines of the new file, and skips a line outside every hunk', () => {
+    const removed = Array.from({ length: 10 }, (_, i) => `-old ${i}`);
+    const kept = Array.from({ length: 20 }, (_, i) => ` new ${i + 1}`);
+    const diff: ParsedDiff = {
+      files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 30, newStart: 1, newLines: 20, content: [...removed, ...kept].join('\n') }] }],
+      totalAdditions: 0, totalDeletions: 10,
+    };
+    const below = { file: 'src/a.ts', line: 1 } as Finding;
+    const outside = { file: 'src/a.ts', line: 25 } as Finding;
+    addCodeContext([below, outside], diff);
+    // Line 1 sits after ten removed lines, so the window is centred on ` new 1`, not on the first removed line.
+    expect(below.codeContext).toBe([...removed.slice(5), ...kept.slice(0, 10)].join('\n'));
+    expect(outside.codeContext).toBeUndefined();
   });
 });
 

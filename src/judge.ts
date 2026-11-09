@@ -14,7 +14,7 @@ import {
   Suppression,
   RepoMemory,
 } from './memory';
-import { addedLines, isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
+import { addedLines, isLineInDiff, newLineNumbers, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { formatLockfileChanges, LockfileDiff } from './lockfile';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate, sendWithParseRetry } from './utils';
@@ -974,9 +974,7 @@ function extractHunkContext(diffFile: DiffFile, line: number): string {
   if (!hunk) return '';
 
   const lines = hunk.content.split('\n');
-  // A removed line, or a "\ No newline" note, has no number in the new file.
-  let next = hunk.newStart;
-  const numbers = lines.map(l => (l.startsWith('-') || l.startsWith('\\') ? undefined : next++));
+  const numbers = newLineNumbers(hunk);
   const offset = numbers.indexOf(line);
   if (offset < 0) return '';
   const start = Math.max(0, offset - CONTEXT_LINES);
