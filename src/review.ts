@@ -1334,7 +1334,7 @@ export async function runReview(
       // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found. It drops a
       // claimed build failure that was posted as a warning.
       const refuted = (refutation
-        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff, usesOutsideDiff })
+        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff, usesOutsideDiff, outsideInput: config.review?.outside_input })
         : readerBlockers).filter(f => f.severity !== 'ignore');
       const folded = foldIntoReaderBlockers(finalFindings, refuted);
       const readerFindings = folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);

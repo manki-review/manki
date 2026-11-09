@@ -288,6 +288,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(section).toContain('A finding that cites a line listed under Uses Outside the Diff rests on code shown, so grade it on its merits like any finding.');
     expect(section).toContain('A doubt that the failure is reached is the same kind of gap: no caller in the code shown passes the value that triggers it, the path looks latent, or a real input may never take it.');
     expect(section).toContain("A path through a library's public API is reached, since any caller of that API can pass a value it accepts, with no caller inside the repository.");
+    expect(section).toContain("The rare internal edge case column and the rule on a check of a trusted internal value still apply when the code shown proves that the code's own logic keeps the value valid: that is evidence, not a doubt. Only a doubt the code shown does not settle counts here.");
     expect(section).toContain('Set `gradeIfConfirmed` on such a finding to the grade these rules give it if that code is as the finding says and the path exists, and to "" on all others.');
     expect(section).not.toContain('Manki then reads that code');
     expect(prompt).toContain('"gradeIfConfirmed": ""');
@@ -1494,7 +1495,7 @@ describe('runJudgeAgent', () => {
     };
 
     try {
-      const result = await runJudgeAgent(mockClient, makeConfig(), {
+      const result = await runJudgeAgent(mockClient, makeConfig({ review: { outside_input: 'Callers of the public API.' } }), {
         findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace },
       });
 
@@ -1510,6 +1511,7 @@ describe('runJudgeAgent', () => {
         ['Unknown grade', 'suggestion'],
       ]);
       expect(refuterMessages).toHaveLength(2);
+      expect(refuterMessages.every(m => m.includes('- **Outside input in this repository, as its maintainers define it**: Callers of the public API.'))).toBe(true);
       expect(result.findings[0].gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'Both paths take the lock.' }]);
       expect(result.findings[0].gradeIfConfirmed).toBeUndefined();
       const [, userMessage] = mockSendMessage.mock.calls[0];

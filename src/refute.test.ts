@@ -176,7 +176,8 @@ describe('refuteBlockers', () => {
       finding('Reached through the public API', { ...byJudge('warning', 'blocker', 'suggestion'), judgeNotes: 'warning. The builder itself only creates v2 payloads through `new()`.' }),
     ];
 
-    const result = await refuteBlockers(client, findings, { workspace, diff });
+    const outsideInput = 'Anything a caller of the public `TransactionBuilder` API passes.';
+    const result = await refuteBlockers(client, findings, { workspace, diff, outsideInput });
 
     expect(result.map(f => [f.title, f.severity, f.gradeIfConfirmed])).toEqual([
       // A confirmation gives the grade the judge would give if the code it could not see holds, above the finder's.
@@ -198,6 +199,8 @@ describe('refuteBlockers', () => {
     const reachMessage = client.messages.find(([, user]) => user.includes(': Reached through the public API\n'))![1];
     expect(reachMessage).toContain('## Finding the judge could not settle without tools: Reached through the public API');
     expect(reachMessage).toContain("- **Judge's reasoning**: warning. The builder itself only creates v2 payloads through 'new()'.");
+    // The repository's outside input tells the refuter which APIs count as entry points.
+    expect(reachMessage).toContain("- **Outside input in this repository, as its maintainers define it**: Anything a caller of the public 'TransactionBuilder' API passes.");
     expect(unseenMessage).toContain("- **Judge's reasoning**: warning. The lock path sits outside the diff.");
     expect(client.messages.find(([, user]) => user.includes(': Unbuilt confirmed\n'))![1]).toContain('## Claimed build failure: Unbuilt confirmed');
   });
@@ -223,7 +226,9 @@ describe('refuteBlockers', () => {
     expect(system).toContain('Name the general rule the finding relies on');
     expect(system).toContain('one counterexample disproves the finding');
     expect(system).toContain('whether that reason holds here');
-    expect(system).toContain('A public function, method, constructor or field of a library is an entry point');
+    expect(system).toContain('A public function, method, constructor or field is an entry point when the repository is a library, as its manifest shows, or when the outside input in the message names that API');
+    expect(system).toContain('In an application, an exported function is no entry point on its own and needs a caller.');
+    expect(client.messages[0][1]).not.toContain('Outside input');
     expect(system).toContain('disprove only when every path checks the value or cannot carry it');
     expect(system).toContain('Reading code cannot confirm that it fails to compile or that a test fails.');
     expect(system).not.toContain('an intent the code states');
