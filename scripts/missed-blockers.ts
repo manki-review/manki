@@ -67,9 +67,12 @@ export function collectMisses(rounds: RoundContext[]): Miss[] {
   return [...byHead.values()];
 }
 
-/** Rewrites references to issues, pull requests and people of other owners as plain text, so a case file links to none. */
-export function plainReferences(text: string): string {
-  return text
+/**
+ * Rewrites references to issues, pull requests and people of other owners as plain text, so a case file links to none.
+ * A bare `owner/name` of `owner`, the owner of the drafted repository, becomes just the name.
+ */
+export function plainReferences(text: string, owner?: string): string {
+  const plain = text
     .replace(/(?:https?:\/\/)?github\.com\/([\w.-]+)\/([\w.-]+)(?:\/(pull|issues)\/(\d+))?[^\s)\]>]*/g, (url, owner: string, name: string, kind?: string, n?: string) => {
       if (LINKABLE_OWNERS.has(owner)) return url;
       // Punctuation right after a link ends the sentence, not the link.
@@ -78,6 +81,8 @@ export function plainReferences(text: string): string {
     })
     .replace(/\b([\w.-]+)\/([\w.-]+)#(\d+)/g, (ref, owner: string, name: string, n: string) => (LINKABLE_OWNERS.has(owner) ? ref : `${name} upstream PR ${n}`))
     .replace(/(^|[^\w`/])@([A-Za-z0-9][\w-]*)/g, '$1$2');
+  if (!owner || LINKABLE_OWNERS.has(owner)) return plain;
+  return plain.split(/(?<![\w./-])/).map(part => (part.startsWith(`${owner}/`) ? part.slice(owner.length + 1) : part)).join('');
 }
 
 /** What a draft needs from the pull request. */
@@ -96,16 +101,16 @@ export function draftCase(repo: string, pr: DraftPr, miss: Miss, base: string): 
   const doc = {
     id,
     repo,
-    source: plainReferences(`${where}: round ${rounds} raised blockers on code round ${miss.missedBy} had reviewed`),
+    source: plainReferences(`${where}: round ${rounds} raised blockers on code round ${miss.missedBy} had reviewed`, owner),
     base,
     head: miss.head,
-    title: plainReferences(pr.title),
-    body: plainReferences(pr.body ?? ''),
+    title: plainReferences(pr.title, owner),
+    body: plainReferences(pr.body ?? '', owner),
     key_version: 0,
     must_catch: miss.blockers.map((entry, i) => ({
       id: `K${i + 1}`,
       severity: 'blocker',
-      mechanism: plainReferences([entry.title, entry.judgeNotes].filter(Boolean).join('. ')).slice(0, MAX_MECHANISM_CHARS),
+      mechanism: plainReferences([entry.title ?? entry.fingerprint.slug, entry.judgeNotes].filter(Boolean).join('. '), owner).slice(0, MAX_MECHANISM_CHARS),
       locations: [entry.fingerprint.file],
     })),
     nice_to_have: [],
@@ -143,7 +148,8 @@ async function main(args: string[]): Promise<number> {
     for (const miss of collectMisses(rounds)) {
       let base: string;
       try {
-        const { data } = await octokit.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${pr.base.ref}...${miss.head}`, per_page: 1 });
+        // The base commit the PR recorded at merge, since the branch now holds the PR's own commits after a merge commit.
+        const { data } = await octokit.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${pr.base.sha}...${miss.head}`, per_page: 1 });
         base = data.merge_base_commit.sha;
       } catch (error) {
         console.error(`PR ${pr.number}: skipped round ${miss.missedBy}, the merge base of ${miss.head} is not found: ${error instanceof Error ? error.message : error}`);
