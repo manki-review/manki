@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { posix } from 'path';
 import { isMap, isScalar, LineCounter, parseDocument } from 'yaml';
 
-import { addedLines } from './diff';
+import { addedLines, parsePRDiff, rebuildRawDiff } from './diff';
 import { DiffFile, ParsedDiff, StaticSignal } from './types';
 
 /** The most characters the package lists of one PR take. A lockfile past it stays unread, so a person reviews it. */
@@ -109,6 +109,14 @@ export function lockfileSignals(lockfiles: LockfileDiff[]): StaticSignal[] {
 /** Returns `diff` with the files of `lockfiles` it leaves out, so a parsed lockfile counts as changed. */
 export function withLockfiles(diff: ParsedDiff, lockfiles: LockfileDiff[]): ParsedDiff {
   return { ...diff, files: [...diff.files, ...lockfiles.map(l => l.file).filter(f => !diff.files.some(d => d.path === f.path))] };
+}
+
+/** Moves the files of `lockfiles` to the end of a raw diff, so a cut that keeps the start of it keeps the code. */
+export function lockfilesLast(rawDiff: string, lockfiles: LockfileDiff[]): string {
+  if (lockfiles.length === 0) return rawDiff;
+  const paths = new Set(lockfiles.map(l => l.path));
+  const diff = parsePRDiff(rawDiff);
+  return rebuildRawDiff({ ...diff, files: [...diff.files.filter(f => !paths.has(f.path)), ...diff.files.filter(f => paths.has(f.path))] });
 }
 
 function formatLockfile({ path, changes }: Pick<LockfileDiff, 'path' | 'changes'>): string {

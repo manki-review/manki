@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
 import { parsePRDiff } from './diff';
-import { formatLockfileChanges, isParsedLockfile, lockfileSignals, readLockfileChanges } from './lockfile';
+import { formatLockfileChanges, isParsedLockfile, lockfilesLast, lockfileSignals, readLockfileChanges } from './lockfile';
 import { ParsedDiff } from './types';
 
 /** Diffs two versions of a lockfile with git, as a PR diff shows them. `null` stands for a missing file. */
@@ -119,6 +119,19 @@ describe('isParsedLockfile', () => {
     ['web/yarn.lock', true], ['pnpm-lock.yaml', true], ['poetry.lock', false], ['.github/workflows/actions.lock', false], ['Cargo.toml', false],
   ])('%s: %s', (path, parsed) => {
     expect(isParsedLockfile(path)).toBe(parsed);
+  });
+});
+
+describe('lockfilesLast', () => {
+  it('moves the parsed lockfiles after the code, and leaves a diff without them as it is', () => {
+    const raw = [
+      'diff --git a/Cargo.lock b/Cargo.lock', '--- a/Cargo.lock', '+++ b/Cargo.lock', '@@ -1 +1 @@', '-a', '+b',
+      'diff --git a/src/main.rs b/src/main.rs', '--- a/src/main.rs', '+++ b/src/main.rs', '@@ -1 +1 @@', '-x', '+y',
+    ].join('\n');
+    const lockfile = { path: 'Cargo.lock', file: parsePRDiff(raw).files[0], changes: [] };
+
+    expect(parsePRDiff(lockfilesLast(raw, [lockfile])).files.map(f => f.path)).toEqual(['src/main.rs', 'Cargo.lock']);
+    expect(lockfilesLast(raw, [])).toBe(raw);
   });
 });
 
