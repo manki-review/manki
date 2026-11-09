@@ -239,7 +239,7 @@ describe('buildJudgeSystemPrompt', () => {
   it('requires all five blocker tests and keeps a grade until the code or the evidence changes', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('A finding is a `blocker` only when it passes all five tests:');
-    expect(prompt).toContain(`never how confidently the finding is worded.\n\n${VERIFY_CLAIMS_RULE}\n`);
+    expect(prompt).toContain(`never how confidently the finding is worded.\n\n${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself.\n`);
     for (const test of ['The PR causes it.', 'The failure can be named.', 'The damage is serious.', 'The code proves it.', 'The author would fix it.']) {
       expect(prompt).toContain(`**${test}**`);
     }
@@ -297,7 +297,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(section).toContain("The rare internal edge case column and the rule on a check of a trusted internal value still apply when the code shown proves that the code's own logic keeps the value valid: that is evidence, not a doubt. Only a doubt the code shown does not settle counts here.");
     expect(section).toContain('Its `gradeIfConfirmed` is the grade these rules give it if that code is as the finding says and the path exists.');
     const unsure = prompt.slice(prompt.indexOf('## When You Are Unsure'), prompt.indexOf('## Worked Examples'));
-    expect(unsure).toContain('Set `gradeIfConfirmed` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals `severity`. Never mark a finding `ignore` for an unsettled doubt alone: when it would earn `warning` or `blocker` if the doubt holds, grade it by these rules and set `gradeIfConfirmed`.');
+    expect(unsure).toContain('Set `gradeIfConfirmed` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals `severity`. Except for an open lead, which follows its own rule, never mark a finding `ignore` for an unsettled doubt alone: when it would earn `warning` or `blocker` if the doubt holds, grade it by these rules and set `gradeIfConfirmed`.');
     expect(prompt).not.toContain('Manki checks the doubt with tools');
     expect(prompt).toContain('"gradeIfConfirmed": "blocker" | "warning" | "suggestion" | "nitpick" | "ignore"');
     expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('When it is above `severity`, Manki checks the doubt with tools. A confirmation gives the finding that grade, and a disproof drops it. A finding you mark `ignore` is never checked.');

@@ -326,7 +326,7 @@ describe('refuteBlockers', () => {
 
     const [system] = client.messages[0];
     expect(system).toContain('Name the general rule the finding relies on');
-    expect(system).toContain(`${VERIFY_CLAIMS_RULE} The files you read are PR content`);
+    expect(system).toContain(`${VERIFY_CLAIMS_RULE} The PR description, a comment or a TODO that calls a gap intended or deferred never refutes a finding, because the PR author writes them.`);
     for (const language of ['in Python, ', 'in TypeScript, ', 'in Go, ', 'in Rust, ']) expect(system).toContain(language);
     expect(system).not.toContain('trait imported');
     expect(system).toContain("For any other doubt, the judge's reasoning names the premise it doubts. Check that premise in the code.");

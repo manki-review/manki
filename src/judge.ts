@@ -396,7 +396,7 @@ Bad examples (do NOT write like this):
 
 Your grade is final: the verdict acts on the severity you return. Grade what actually goes wrong in the code, never how confidently the finding is worded.
 
-${VERIFY_CLAIMS_RULE}
+${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself.
 
 ## Blocker Tests
 
@@ -486,7 +486,7 @@ When you cannot tell whether a finding is real, resolve it by its grade:
 
 Being certain overrides this. It governs doubt, never judgment.
 
-Set \`gradeIfConfirmed\` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals \`severity\`. Never mark a finding \`ignore\` for an unsettled doubt alone: when it would earn \`warning\` or \`blocker\` if the doubt holds, grade it by these rules and set \`gradeIfConfirmed\`.${toolsCheckFindings ? ' When it is above `severity`, Manki checks the doubt with tools. A confirmation gives the finding that grade, and a disproof drops it. A finding you mark `ignore` is never checked.' : ''}
+Set \`gradeIfConfirmed\` on every finding to the grade it earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. When you doubt nothing, it equals \`severity\`. Except for an open lead, which follows its own rule, never mark a finding \`ignore\` for an unsettled doubt alone: when it would earn \`warning\` or \`blocker\` if the doubt holds, grade it by these rules and set \`gradeIfConfirmed\`.${toolsCheckFindings ? ' When it is above `severity`, Manki checks the doubt with tools. A confirmation gives the finding that grade, and a disproof drops it. A finding you mark `ignore` is never checked.' : ''}
 
 Start \`reasoning\` with your verdict, then the facts behind it. For a blocker, name the failure and cite the proving lines (e.g., "blocker. When a request omits \`page\`, \`listItems\` at src/api.ts:42 divides by zero and the handler returns 500 for every default listing.").
 
