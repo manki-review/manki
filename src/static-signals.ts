@@ -8,7 +8,7 @@ import { loadStaticAnalysisConfig } from './config';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { resolveInRoot } from './mcp-server';
-import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
+import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, SECURITY_TAG, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { escapeRegExp, hiddenCharacters, safeTruncate } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -32,7 +32,7 @@ const MAX_LOCKFILES_TOTAL_BYTES = 40 * 1024 * 1024;
 
 const SECURITY_RULE = /\b(?:security|injection|xss|csrf|ssrf|cwe|cve|secrets?|traversal|format-string|vulnerab\w*)\b/i;
 const STYLE_RULE = /\b(?:prettier|[a-z]*(?:fmt|style)|stylistic|format(?:ting|ter)?|whitespace|indent(?:ation)?|spacing|quotes|semi|trailing[-_ ]?(?:spaces|comma)|max[-_ ]?len|line[-_ ]?length|eol[-_ ]?last|camel[-_ ]?case|naming[-_ ]?convention)\b/i;
-const TYPE_ERROR_CLAIM = /\b(?:type error|type mismatch|(?:compile|compiler|compilation|build) error|(?:does not|doesn't|won't|fails to) compile|not assignable|TS\d{4,5})\b/i;
+const TYPE_ERROR_CLAIM = /\b(?:type error|type mismatch|(?:compile|compiler|compilation|build) error|(?:does not|doesn't|won't|will not|would not|wouldn't|cannot|can't|fails? to) compile|not assignable|TS\d{4,5}|E0\d{3})\b/i;
 const TYPE_CHECKER_RULE = /^(?:TS\d{4,5}|E0\d{3})$/;
 const TYPE_CHECKER_TOOL = /\b(?:tsc|type-?check(?:er|ing)?|mypy|pyright|pyre|flow|rustc|cargo (?:check|build)|go (?:vet|build)|javac|kotlinc|scalac|swiftc|compile|compiler)\b/i;
 const BACKTICKED = /`([^`\n]+)`/g;
@@ -458,6 +458,14 @@ export function checkFindingClaims(finding: Finding, sources: ClaimSources): Too
     checked.push('no CI annotation reports the claimed error');
   }
   return { status: 'none', note: `Checked: ${checked.join(', ')}.` };
+}
+
+/**
+ * Whether a finding marked `buildClaim` claims a build, type or test failure that no CI result on the commit reports.
+ * Reading the code cannot settle such a claim, so it never blocks. A security finding is exempt, since it always blocks.
+ */
+export function isUnconfirmedBuildClaim(finding: Finding): boolean {
+  return !!finding.buildClaim && !finding.toolSource && !finding.tags?.includes(SECURITY_TAG) && finding.toolEvidence?.status !== 'confirmed';
 }
 
 /**

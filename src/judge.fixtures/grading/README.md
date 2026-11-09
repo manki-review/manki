@@ -23,3 +23,5 @@ Each `*.json` file holds one reviewer finding, which claims a `blocker` in all b
 | `13_security_with_todo.json` | `blocker` | A shell injection from a branch name, covered by a TODO with a tracking issue. A TODO never clears a security defect. |
 | `14_own_proposal_objection.json` | `ignore` | The finding objects to a timeout floor that an earlier round asked for. Manki does not object to a change it asked for. |
 | `15_own_proposal_worse.json` | `warning` or `blocker` | Applying an earlier round's fix dropped a default, so a request without `limit` returns nothing. The new code is worse, so the finding stays. |
+| `16_library_resource_exhaustion.json` | `blocker` | A library's `Vec` decode drops the cap on the bytes read, so a length prefix sizes the allocation. Any caller of the public API can pass the stream, so no caller in the repository is needed, and a doc comment calling it intended does not lower a removed guard. |
+| `17_unconfirmed_build_claim.json` | not `blocker` | The finding claims a missing trait import fails to compile, and no CI result reports it. Reading code is not compiling it, so it is posted as a warning at most. |

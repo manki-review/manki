@@ -14,14 +14,17 @@ const finding = (title: string, overrides: Partial<Finding> = {}): Finding => ({
 });
 
 /** A client with tools that answers each finding, picked by its title in the user message, with a canned reply. */
-function fakeClient(replies: Record<string, unknown>): LLMClient & { calls: [string, SendMessageOptions | undefined, string][] } {
+function fakeClient(replies: Record<string, unknown>): LLMClient & { calls: [string, SendMessageOptions | undefined, string][]; messages: [string, string][] } {
   const calls: [string, SendMessageOptions | undefined, string][] = [];
+  const messages: [string, string][] = [];
   return {
     repoTools: true,
     calls,
-    async sendMessage(_system, user, options) {
+    messages,
+    async sendMessage(system, user, options) {
       const title = Object.keys(replies).find(t => user.includes(`: ${t}\n`))!;
       calls.push([title, options, user]);
+      messages.push([system, user]);
       const reply = replies[title];
       if (reply instanceof Error) throw reply;
       return { content: typeof reply === 'string' ? reply : JSON.stringify(reply) };
@@ -142,6 +145,81 @@ describe('refuteBlockers', () => {
     expect(client.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15 }, timeoutMs: 600_000 });
     // Every refuter sees the same list of uses the finders and the judge saw, after the finding.
     expect(client.calls.every(([, , user]) => user.endsWith('\n\n## Uses Outside the Diff\n\nsrc/api.ts:9 checks both inputs.'))).toBe(true);
+  });
+
+  it('checks a finding lowered for unseen code or an unconfirmed build claim, and a confirmation gives back only what reading can confirm', async () => {
+    const byJudge = (to: Finding['severity'], gradeIfConfirmed: Finding['severity'], from: Finding['severity'] = to) => ({
+      severity: to, gradeIfConfirmed, ...(from !== to && { gradePath: [{ from, to, by: 'judge' as const }] }),
+    });
+    const none = { status: 'none' as const, note: '' };
+    const client = fakeClient({
+      'Unseen confirmed': { outcome: 'confirmed', reason: 'The lock is held at src/api.ts:4.', proof: ['src/api.ts:4'] },
+      'Unseen and contradicted': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
+      'Unseen disproved': { outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] },
+      'Unseen unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
+      'Unseen build claim': { outcome: 'confirmed', reason: 'No import.', proof: ['src/math.ts:2'] },
+      'Unbuilt confirmed': { outcome: 'confirmed', reason: 'No import.', proof: ['src/math.ts:2'] },
+    });
+    const findings = [
+      // The finder graded it a warning too, and the judge would grade it a blocker if the code it could not see holds.
+      finding('Unseen confirmed', { ...byJudge('warning', 'blocker'), judgeNotes: 'warning. The lock path sits outside the diff.' }),
+      finding('Unseen and contradicted', {
+        ...byJudge('suggestion', 'warning', 'warning'), severity: 'nitpick',
+        gradePath: [{ from: 'warning', to: 'suggestion', by: 'judge' }, { from: 'suggestion', to: 'nitpick', by: 'contradiction' }],
+      }),
+      finding('Unseen disproved', byJudge('suggestion', 'warning', 'warning')),
+      finding('Unseen unsettled', byJudge('warning', 'blocker', 'blocker')),
+      finding('Unseen build claim', { ...byJudge('warning', 'blocker', 'blocker'), buildClaim: true, toolEvidence: none }),
+      finding('Unbuilt confirmed', { severity: 'warning', buildClaim: true, toolEvidence: none, tags: ['unconfirmed-build-claim'] }),
+    ];
+
+    const result = await refuteBlockers(client, findings, { workspace, diff });
+
+    expect(result.map(f => [f.title, f.severity, f.gradeIfConfirmed])).toEqual([
+      // A confirmation gives the grade the judge would give if the code it could not see holds, above the finder's.
+      ['Unseen confirmed', 'blocker', undefined],
+      // A later step lowered it further, so the confirmation does not lift it.
+      ['Unseen and contradicted', 'nitpick', undefined],
+      ['Unseen disproved', 'ignore', 'warning'],
+      ['Unseen unsettled', 'warning', 'blocker'],
+      // Reading code never confirms a build failure, so such a claim stays a warning at most.
+      ['Unseen build claim', 'warning', undefined],
+      ['Unbuilt confirmed', 'warning', undefined],
+    ]);
+    expect(result[5].tags).toEqual(['unconfirmed-build-claim']);
+    expect(result[0].gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'The lock is held at src/api.ts:4.' }]);
+    expect(client.calls).toHaveLength(6);
+    const [, unseenMessage] = client.messages.find(([, user]) => user.includes(': Unseen confirmed\n'))!;
+    expect(unseenMessage).toContain('## Finding that rests on code outside the diff: Unseen confirmed');
+    expect(unseenMessage).toContain("- **Judge's reasoning**: warning. The lock path sits outside the diff.");
+    expect(client.messages.find(([, user]) => user.includes(': Unbuilt confirmed\n'))![1]).toContain('## Claimed build failure: Unbuilt confirmed');
+  });
+
+  it('asks for the general rule a finding relies on, and drops a build claim that unchanged code relying on the same rule disproves', async () => {
+    writeFileSync(join(workspace, 'src', 'encode.rs'), 'impl bincode::Encode for Payload {\n    fn encode<E: Encoder>(&self, e: &mut E) -> Result<(), EncodeError> {\n        self.version.encode(e)\n    }\n}\n');
+    writeFileSync(join(workspace, 'src', 'address.rs'), 'impl bincode::Encode for Address {\n    fn encode<E: Encoder>(&self, e: &mut E) -> Result<(), EncodeError> {\n        self.to_string().encode(e)\n    }\n}\n');
+    const rule = 'Inside `impl Trait for X`, the trait is in scope for method calls on any type.';
+    const client = fakeClient({
+      'Trait Encode not in scope': {
+        outcome: 'disproved', rule, reason: 'src/address.rs:3 calls `encode` inside `impl bincode::Encode for Address` with no import, and it builds.',
+        proof: ['src/address.rs:3', 'src/encode.rs:3'],
+      },
+    });
+    const claim = finding('Trait Encode not in scope', {
+      severity: 'warning', file: 'src/encode.rs', line: 3, tags: ['unconfirmed-build-claim'], buildClaim: true, toolEvidence: { status: 'none', note: '' },
+      description: '`self.version.encode(e)` runs without `use bincode::Encode`, so it should fail to compile with E0599.', evidence: { checks: [], proof: ['src/encode.rs:3'] },
+    });
+
+    const [result] = await refuteBlockers(client, [claim], { workspace, diff });
+
+    const [system] = client.messages[0];
+    expect(system).toContain('Name the general rule the finding relies on');
+    expect(system).toContain('one counterexample disproves the finding');
+    expect(system).toContain('whether that reason holds here');
+    expect(system).toContain('Reading code cannot confirm that it fails to compile or that a test fails.');
+    expect(system).not.toContain('an intent the code states');
+    expect([result.severity, result.refutation?.outcome, result.refutation?.rule]).toEqual(['ignore', 'disproved', rule]);
+    expect(result.judgeNotes).toBe(`Refutation disproved: src/address.rs:3 calls \`encode\` inside \`impl bincode::Encode for Address\` with no import, and it builds. Rule checked: ${rule}`);
   });
 
   it('reuses the outcome an earlier round stored for the same finding while every file it rests on is unchanged', async () => {

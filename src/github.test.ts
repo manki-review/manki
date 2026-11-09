@@ -1264,6 +1264,9 @@ describe('postReview body lead', () => {
     const offDiff: Finding = { severity: 'suggestion', title: 'Rename cache', file: 'src/b.ts', line: 3, description: 'Unclear.', reviewers: [] };
     const { body } = await postedBody({ ...ready, verdictReport: { ...verdictReport, whatThisDoes: 'Adds a cache. It halves requests. It also logs hits.' }, findings: [offDiff] });
     expect(body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 suggestion, which doesn't block\.\n\n\*\*What this does:\*\* Adds a cache\. It halves requests\.\n\n---\n\n### Findings · 1 suggestion\n\n<details>\n<summary>/u);
+    // A reader that asked for changes, whose blockers were all lowered, can leave both blank, so neither part shows.
+    const { body: blank } = await postedBody({ ...ready, verdictReport: { ...verdictReport, verdict: 'ADDRESS_FIRST', whatThisDoes: ' ', whatToTest: { steps: [] } }, findings: [offDiff] });
+    expect(blank).not.toMatch(/What this does|What to test/);
     // Several findings, of one kind or of mixed kinds, read as plural.
     const several = (severities: Finding['severity'][]) => severities.map((severity, i) => ({ ...offDiff, severity, title: `Finding ${i}`, line: 3 + i }));
     for (const [severities, line] of [

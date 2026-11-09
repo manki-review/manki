@@ -11,7 +11,7 @@ import * as napi from '@ast-grep/napi';
 import { filterDiff, parsePRDiff } from './diff';
 import * as githubModule from './github';
 import { buildReviewerUserMessage } from './review';
-import { checkFindingClaims, collectStaticSignals, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
+import { checkFindingClaims, collectStaticSignals, isUnconfirmedBuildClaim, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
 import { Finding, StaticSignal } from './types';
 import { paginateSinglePage } from './test-utils';
 
@@ -766,6 +766,23 @@ describe('checkFindingClaims', () => {
     expect(checkFindingClaims(claim, { ...sources, signals: [signal({ tool: 'build', ruleId: 'TS18048', line: 3, message: 'b is possibly undefined' })] }))
       .toEqual({ status: 'confirmed', note: 'build reports an error on line 3: b is possibly undefined' });
     expect(checkFindingClaims(claim, { ...sources, signals: [signal({ tool: 'pylint', ruleId: 'E1101', line: 3 })] })).toEqual(unchecked);
+
+    // A Rust error code or "should fail to compile" claims a compile error too.
+    const traitClaim = finding({ title: 'Trait `Encode` not in scope', description: 'The call should fail to compile with E0599.' });
+    expect(checkFindingClaims(traitClaim, sources).note).toContain('no CI annotation reports the claimed error');
+    expect(checkFindingClaims(traitClaim, { ...sources, signals: [rustc] }).status).toBe('confirmed');
+  });
+
+  it('tells a finding marked as a build claim that no CI result confirms, and never a security finding', () => {
+    expect([
+      finding({ buildClaim: true }),
+      finding({ buildClaim: true, toolEvidence: { status: 'none', note: '' } }),
+      finding({ buildClaim: true, toolEvidence: { status: 'confirmed', note: 'rustc' } }),
+      finding({ buildClaim: true, toolSource: 'rustc' }),
+      finding({ buildClaim: true, tags: ['security'] }),
+      // Only the mark counts, never the wording, which can describe a failure at run time.
+      finding({ description: 'The pattern fails to compile when the program starts.' }),
+    ].map(isUnconfirmedBuildClaim)).toEqual([true, true, false, false, false, false]);
   });
 
   it('checks each cited line of a related repo in its fetched checkout, and nowhere outside it', () => {

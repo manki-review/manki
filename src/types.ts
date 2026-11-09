@@ -69,6 +69,8 @@ export const SECURITY_TAG = 'security' as const;
 export const PRE_EXISTING_TAG = 'pre-existing' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
 export const UNPROVEN_TAG = 'unproven-blocker' as const;
+/** Marks a blocker posted as a warning because it claims a build, type or test failure that no CI result on the commit reports. */
+export const UNBUILT_TAG = 'unconfirmed-build-claim' as const;
 
 export interface InterRoundDiffEmptyOverride {
   applied: boolean;
@@ -183,6 +185,8 @@ export interface Finding {
   toolSource?: string;
   /** What the deterministic claim checks and CI results say about the finding. */
   toolEvidence?: ToolEvidence;
+  /** Whether the judge or the verdict reader says the finding claims the code fails to compile, type-check or pass its tests. */
+  buildClaim?: boolean;
   /** Earlier finding this one resembles, whose fix the judge of an earlier round confirmed. */
   resemblesFixed?: { title: string; file: string; line: number };
   /** The Manki thread that already answered the developer about this problem, and that answer. The judge keeps the finding only when the code there got worse. */
@@ -201,7 +205,12 @@ export interface Finding {
   lead?: OpenLead;
   /** The round an open lead first came up in, when an earlier round left it unsettled. */
   leadSince?: number;
-  /** How the judge's attempt to refute the finding with tools came out. Set on blockers and open leads only. */
+  /**
+   * The grade the judge would give if code it could not see is as the finding says, when that is above the grade it
+   * gave. The refuter checks the finding, and a confirmation gives it this grade.
+   */
+  gradeIfConfirmed?: FindingSeverity;
+  /** How the judge's attempt to refute the finding with tools came out. Set on blockers, open leads, findings lowered for want of proof and findings with a `gradeIfConfirmed`. */
   refutation?: Refutation;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;
@@ -244,8 +253,8 @@ export interface RoundSlicing {
 
 /** What changed a finding's severity. */
 export type GradeChange =
-  | 'judge' | 'unproven' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'contradiction' | 'ratchet' | 'resolved_thread'
-  | 'pre_existing';
+  | 'judge' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'contradiction' | 'ratchet'
+  | 'resolved_thread' | 'pre_existing';
 
 /** One change of a finding's severity. */
 export interface GradeStep {
@@ -270,11 +279,13 @@ export function gradeStep(finding: Finding, to: FindingSeverity, by: GradeChange
 
 export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
 
-/** The outcome of the judge's attempt to refute a blocker or an open lead. */
+/** The outcome of the judge's attempt to refute a finding with tools. */
 export interface Refutation {
   outcome: RefutationOutcome;
   /** What decided it, in one or two sentences. */
   reason: string;
+  /** The general rule of the language, a library or a protocol that the finding relies on, as the refuter named it. */
+  rule?: string;
   /** The `file:line` locations the judge cites: the failure for `confirmed`, the reason it cannot happen for `disproved`. */
   proof?: string[];
   /** The finding's own file and the files the outcome cites. */

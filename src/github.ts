@@ -1490,7 +1490,7 @@ export async function postReview(
       head += `\n\n**Memory skipped:** ${memorySkip}`;
     }
     const readyReport = formatReadyReport(result);
-    if (readyReport) {
+    if (readyReport?.whatThisDoes) {
       head += `\n\n${readyReport.whatThisDoes}`;
     }
     const blockingThreads = formatBlockingPriorThreads(result);
@@ -1912,13 +1912,16 @@ function formatTestGuide(guide: TestGuide): string {
   return `${TEST_GUIDE_NOTE}\n\n${guide.setup ? `**Setup:** ${oneLine(guide.setup)}\n\n${steps}` : steps}`;
 }
 
-/** Returns what an approved change does, in at most two sentences, and the collapsed steps to test it, or none. */
-function formatReadyReport(result: ReviewResult): { whatThisDoes: string; whatToTest: string } | null {
+/**
+ * Returns what an approved change does, in at most two sentences, and the collapsed steps to test it, or none. Either part
+ * is left out when the reader left it blank, as a reader that asked for changes may.
+ */
+function formatReadyReport(result: ReviewResult): { whatThisDoes?: string; whatToTest?: string } | null {
   if (result.outcome !== 'READY' || !result.verdictReport) return null;
   const { whatThisDoes, whatToTest } = result.verdictReport;
   return {
-    whatThisDoes: formatLabelled('What this does', splitLead(whatThisDoes, 2, 400).lead),
-    whatToTest: `<details>\n<summary>What to test</summary>\n\n${formatTestGuide(whatToTest)}\n\n</details>`,
+    ...(whatThisDoes.trim() && { whatThisDoes: formatLabelled('What this does', splitLead(whatThisDoes, 2, 400).lead) }),
+    ...(whatToTest.steps.length > 0 && { whatToTest: `<details>\n<summary>What to test</summary>\n\n${formatTestGuide(whatToTest)}\n\n</details>` }),
   };
 }
 

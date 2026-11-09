@@ -1,0 +1,19 @@
+{
+  "name": "library-resource-exhaustion",
+  "case": "library-resource-exhaustion",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "Decoding a `Vec` no longer bounds memory by the bytes read",
+    "file": "src/consensus/encode.rs",
+    "line": 44,
+    "description": "The PR removes `Take::new(r, MAX_VEC_SIZE)` from `Vec<T>::consensus_decode`, so `Vec::with_capacity(len)` trusts the length prefix of the stream. An element larger in memory than on the wire, such as an empty `Vec<u8>` (1 byte on the wire, 24 in memory), lets a 32 MB stream allocate about 768 MB. The new doc comment says callers bound the reader themselves, and no caller in the repository decodes untrusted bytes.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Keep the `Take` budget on the reader, or cap `with_capacity` by the bytes left."
+  },
+  "prDiff": "diff --git a/src/consensus/encode.rs b/src/consensus/encode.rs\nindex 1111111..2222222 100644\n--- a/src/consensus/encode.rs\n+++ b/src/consensus/encode.rs\n@@ -40,9 +40,9 @@\n impl<T: Decodable> Decodable for Vec<T> {\n+    /// Trusts the length prefix: callers bound the reader themselves.\n     fn consensus_decode<R: io::Read + ?Sized>(r: &mut R) -> Result<Self, Error> {\n-        let mut r = Take::new(r, MAX_VEC_SIZE as u64);\n-        let len = VarInt::consensus_decode(&mut r)?.0;\n+        let len = VarInt::consensus_decode(r)?.0;\n         let mut ret = Vec::with_capacity(len as usize);\n         for _ in 0..len {\n-            ret.push(Decodable::consensus_decode(&mut r)?);\n+            ret.push(Decodable::consensus_decode(r)?);\n         }\n         Ok(ret)\n"
+}
