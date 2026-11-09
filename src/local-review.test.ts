@@ -90,6 +90,7 @@ describe('reviewLocal', () => {
     expect(existsSync(options.workspace!)).toBe(false);
     expect(review.base).toBe(base);
     expect(review.head).toBe(head);
+    expect(review.approvalHeld).toBe(false);
     expect(review.result.findings[0].codeContext).toContain('const b = 3;');
     expect(review.context.meta).toMatchObject({ prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, outcome: 'ADDRESS_FIRST' });
   });
@@ -130,7 +131,9 @@ describe('reviewLocal', () => {
     git(repo, 'checkout', '-q', '-b', 'fix');
     commit(repo, 'Fix config', { '.manki.yml': 'exclude_paths: []\n', 'src/a.ts': 'const a = 2;\n' });
 
-    await reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', providerInputs: inputs });
+    const review = await reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', providerInputs: inputs });
+
+    expect(review.approvalHeld).toBe('config');
 
     expect(jest.mocked(runReview).mock.calls[0][1].config.exclude_paths).toEqual(jest.requireActual('./config').DEFAULT_CONFIG.exclude_paths);
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not load .manki.yml on the base branch, reviewing with the defaults'));

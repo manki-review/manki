@@ -1,10 +1,11 @@
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, rmSync, writeFileSync } from 'fs';
 
 import { outcomeReport } from './check-run';
 import { loadConfig } from './config';
 import { CHECKS_MARKER, formatFindingBlock } from './github';
 import { LocalReview, reviewLocal } from './local-review';
 import { hasAnyProviderCredentials, readProviderInputsFromEnv, removeSeededAuthFiles } from './providers';
+import { makeScratchDir } from './tool-install';
 import { runGit } from './workspace';
 
 export const REVIEW_COMMAND = 'review';
@@ -27,7 +28,8 @@ Options:
 Credentials come from CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, OPENAI_OAUTH_TOKEN,
 OPENAI_API_KEY, GEMINI_OAUTH_TOKEN or GEMINI_API_KEY.
 
-Exit codes: 0 nothing blocks, 1 something blocks, 2 the review is incomplete or failed.`;
+Exit codes: 0 nothing blocks, 1 something blocks or the base config did not load,
+2 the review is incomplete or failed.`;
 
 interface ReviewArgs {
   base?: string;
@@ -71,10 +73,10 @@ export function parseReviewArgs(argv: string[]): ReviewArgs {
   return args;
 }
 
-/** Exit code for a review: 0 when nothing blocks, 1 when something does, 2 when the review is incomplete. */
-export function exitCodeOf({ result }: LocalReview): number {
+/** Exit code for a review: 0 when a pull request round would approve, 1 when it would not, 2 when the review is incomplete. */
+export function exitCodeOf({ result, approvalHeld }: LocalReview): number {
   if (result.outcome === 'INCOMPLETE') return 2;
-  return outcomeReport(result.outcome, result.summary).conclusion === 'success' ? 0 : 1;
+  return outcomeReport(result.outcome, result.summary, approvalHeld).conclusion === 'success' ? 0 : 1;
 }
 
 /** Returns the outcome, summary and findings as JSON. Parsing it gives back the same values. */
@@ -82,14 +84,17 @@ export function formatReviewJson({ result, base, head }: LocalReview): string {
   return `${JSON.stringify({ outcome: result.outcome, verdict: result.verdict, summary: result.summary, base, head, findings: result.findings }, null, 2)}\n`;
 }
 
-/** Returns the review as Markdown: the outcome and summary, then each finding as the review body lists it. */
-export function formatReviewText({ result, base, head }: LocalReview): string {
+/**
+ * Returns the review as Markdown: the outcome and summary, then each finding as the review body lists it. Control
+ * characters are dropped, since model text the reviewed code can steer would otherwise reach the terminal as escapes.
+ */
+export function formatReviewText({ result, base, head, approvalHeld }: LocalReview): string {
   const links = { linkTo: (file: string, line: number, end?: number) => `${file}:${line}${end && end !== line ? `-${end}` : ''}`, files: new Map() };
-  const title = outcomeReport(result.outcome, result.summary).title;
+  const title = outcomeReport(result.outcome, result.summary, approvalHeld).title;
   const blocks = result.findings.map(f => formatFindingBlock(f, links));
   const lead = [`## ${title}: ${base.slice(0, 7)}..${head.slice(0, 7)}`, result.summary].filter(Boolean).join('\n\n');
   const text = [lead, ...blocks].join('\n\n---\n\n');
-  return `${text.split(`${CHECKS_MARKER}\n`).join('')}\n`;
+  return `${text.split(`${CHECKS_MARKER}\n`).join('').replace(/(?![\t\n])\p{Cc}/gu, '')}\n`;
 }
 
 async function defaultBase(root: string): Promise<string> {
@@ -103,11 +108,26 @@ async function defaultBase(root: string): Promise<string> {
 export async function runCliCommand(name: string, body: (out: (text: string) => void, signal: AbortSignal) => Promise<number>): Promise<number> {
   const write = process.stdout.write;
   const out = write.bind(process.stdout);
-  // `@actions/core` logs to stdout, which here carries only the result.
-  process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
+  const log = process.stderr.write.bind(process.stderr) as (...args: unknown[]) => boolean;
+  // `@actions/core` logs to stdout, which here carries only the result. Its `::add-mask::` lines hold secret values,
+  // which only an Actions runner hides, so they are dropped.
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => (typeof chunk === 'string' && chunk.startsWith('::add-mask::') ? true : log(chunk, ...rest))) as typeof process.stdout.write;
+  // Codex reads its config and MCP servers from `CODEX_HOME`, so the command gives it an empty one, not the user's.
+  const codexHome = process.env.CODEX_HOME ? undefined : makeScratchDir('codex-home');
+  if (codexHome) process.env.CODEX_HOME = codexHome;
+  const cleanUp = (): void => {
+    removeSeededAuthFiles();
+    if (!codexHome) return;
+    rmSync(codexHome, { recursive: true, force: true });
+    delete process.env.CODEX_HOME;
+  };
   const cancel = new AbortController();
   // The first Ctrl-C stops the command at its next step. A second one exits at once.
-  const onSignal = (): void => (cancel.signal.aborted ? process.exit(130) : cancel.abort(new Error('Interrupted')));
+  const onSignal = (): void => {
+    if (!cancel.signal.aborted) return cancel.abort(new Error('Interrupted'));
+    cleanUp();
+    process.exit(130);
+  };
   process.on('SIGINT', onSignal);
   try {
     return await body(text => out(text), cancel.signal);
@@ -116,7 +136,7 @@ export async function runCliCommand(name: string, body: (out: (text: string) => 
     return 2;
   } finally {
     process.off('SIGINT', onSignal);
-    removeSeededAuthFiles();
+    cleanUp();
     process.stdout.write = write;
   }
 }
@@ -143,8 +163,8 @@ export function runReviewCommand(argv: string[]): Promise<number> {
       providerInputs,
       signal,
     });
-    if (args.record) writeFileSync(args.record, `${JSON.stringify(review.context, null, 2)}\n`);
     out(args.json ? formatReviewJson(review) : formatReviewText(review));
+    if (args.record) writeFileSync(args.record, `${JSON.stringify(review.context, null, 2)}\n`);
     return exitCodeOf(review);
   });
 }

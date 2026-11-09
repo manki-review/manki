@@ -1,4 +1,7 @@
-import { exitCodeOf, formatReviewJson, formatReviewText, parseReviewArgs, runReviewCommand } from './cli';
+import { existsSync, readdirSync } from 'fs';
+
+import { exitCodeOf, formatReviewJson, formatReviewText, parseReviewArgs, runCliCommand, runReviewCommand } from './cli';
+import type { ApprovalHeld } from './github';
 import type { LocalReview } from './local-review';
 import type { Finding, RoundContext, RoundOutcome } from './types';
 
@@ -7,12 +10,13 @@ const finding: Finding = {
   reviewers: ['reviewer'], evidence: { checks: ['src/a.ts:2 reads `items[len]`'], proof: ['src/a.ts:2'] },
 };
 
-function review(outcome: RoundOutcome, findings: Finding[] = []): LocalReview {
+function review(outcome: RoundOutcome, findings: Finding[] = [], approvalHeld: ApprovalHeld = false): LocalReview {
   return {
     result: { verdict: outcome === 'READY' ? 'APPROVE' : 'REQUEST_CHANGES', outcome, summary: 'Summary of the round', findings, highlights: [], reviewComplete: outcome !== 'INCOMPLETE', agentNames: ['reviewer'] },
     context: {} as RoundContext,
     base: 'a'.repeat(40),
     head: 'b'.repeat(40),
+    approvalHeld,
   };
 }
 
@@ -49,6 +53,10 @@ describe('exitCodeOf', () => {
   ] as const)('exits %s with %i', (outcome, code) => {
     expect(exitCodeOf(review(outcome))).toBe(code);
   });
+
+  it('exits 1 for a ready review whose base config did not load, since a pull request round holds its approval', () => {
+    expect(exitCodeOf(review('READY', [], 'config'))).toBe(1);
+  });
 });
 
 describe('formatReviewJson', () => {
@@ -72,8 +80,16 @@ describe('formatReviewText', () => {
     expect(text).not.toContain('manki-checks');
   });
 
-  it('shows only the outcome and summary when nothing was found', () => {
+  it('shows only the outcome and summary when nothing was found, and a held approval as the round would', () => {
     expect(formatReviewText(review('READY'))).toBe('## Approved: aaaaaaa..bbbbbbb\n\nSummary of the round\n');
+    expect(formatReviewText(review('READY', [], 'config'))).toMatch(/^## Approval held: the base branch config did not load: /);
+  });
+
+  it('drops control characters a model wrote, keeping tabs and line breaks', () => {
+    const text = formatReviewText(review('ADDRESS_FIRST', [{ ...finding, title: 'Off \u001b]52;c;aGk=\u0007by one', description: 'Line\tone\u009b2J' }]));
+    expect(text).toContain('**Off ]52;c;aGk=by one**');
+    expect(text).toContain('Line\tone2J');
+    expect(text).not.toMatch(/(?![\t\n])\p{Cc}/u);
   });
 });
 
@@ -107,5 +123,32 @@ describe('runReviewCommand', () => {
     expect(stderr).toHaveBeenCalledWith('manki review: Unknown option --bogus\n');
     expect(stdout).not.toHaveBeenCalled();
     expect(process.stdout.write).toBe(write);
+  });
+});
+
+describe('runCliCommand', () => {
+  it('drops the secret mask lines core logs, and gives the command an empty Codex home it removes afterwards', async () => {
+    const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const saved = process.env.CODEX_HOME;
+    delete process.env.CODEX_HOME;
+    let home: string | undefined;
+    try {
+      const code = await runCliCommand('test', async (out) => {
+        process.stdout.write('::add-mask::secret-token\n');
+        process.stdout.write('a log line\n');
+        home = process.env.CODEX_HOME;
+        expect(home && readdirSync(home)).toEqual([]);
+        out('');
+        return 0;
+      });
+      expect(code).toBe(0);
+      expect(stderr).toHaveBeenCalledWith('a log line\n');
+      expect(stderr).not.toHaveBeenCalledWith(expect.stringContaining('secret-token'));
+      expect(existsSync(home!)).toBe(false);
+      expect(process.env.CODEX_HOME).toBeUndefined();
+    } finally {
+      stderr.mockRestore();
+      if (saved !== undefined) process.env.CODEX_HOME = saved;
+    }
   });
 });

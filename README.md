@@ -72,7 +72,7 @@ npx github:manki-review/manki#v7 review main..topic   # a range
 npx github:manki-review/manki#v7 review --json --record round.json
 ```
 
-The findings print as Markdown, or as JSON with `--json`. `--record` writes the round record a pull request round would post. The exit code is 0 when nothing blocks, 1 when something does, and 2 when the review is incomplete or failed. Run `manki review --help` for every option.
+The findings print as Markdown, or as JSON with `--json`. `--record` writes the round record a pull request round would post. The exit code is 0 when a pull request round would approve, 1 when something blocks or the base config did not load, and 2 when the review is incomplete or failed. Run `manki review --help` for every option.
 
 ## Configure
 

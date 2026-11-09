@@ -5,7 +5,7 @@ import { pathToFileURL } from 'url';
 
 import { changedKeys, loadConfig } from './config';
 import { addCodeContext, changeDigest, reviewableDiff, tagFindingOrigins } from './diff';
-import { buildRepoContext, loadBaseConfig, RepoFiles } from './github';
+import { ApprovalHeld, buildRepoContext, configFailed, loadBaseConfig, RepoFiles } from './github';
 import type { ProviderInputs } from './providers';
 import { ReviewProgress, runReview } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
@@ -46,6 +46,8 @@ export interface LocalReview {
   /** The commit the change starts from: the merge base, or `head` for a patch. */
   base: string;
   head: string;
+  /** Set to `config` when the base config did not load, which holds a pull request round's approval. */
+  approvalHeld: ApprovalHeld;
 }
 
 /** Reads the files of `commit` in the repository at `root`. */
@@ -140,7 +142,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       models, plannerEnabled: !!clients.planner, recap: { previousFindings: [], priorRounds: [] }, priorRoundCount: 0, maxAutoRounds: 0,
       diff, changeDigest: changeDigest(fullDiff), excludedFiles, openThreads: [], memoryLoadStatus: 'disabled',
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
-    return { result, context, base, head };
+    return { result, context, base, head, approvalHeld: configFailed(loaded.source) ? 'config' : false };
   } finally {
     if (workspace) rmSync(workspace, { recursive: true, force: true });
   }
