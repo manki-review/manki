@@ -272,11 +272,9 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
   const { mustCatch } = benchCase;
   const totalWeight = mustCatch.reduce((sum, item) => sum + SEVERITY_WEIGHT[item.severity], 0);
   const expected = mustCatch.some(item => item.severity === 'blocker') ? 'block' : mustCatch.length === 0 ? 'approve' : undefined;
-  const usage = review.context.usage ?? {};
   return {
-    outcome,
+    ...reviewFacts(review),
     complete: reviewComplete,
-    findings: findings.map(({ severity, title, file, line }) => ({ severity, title, file, line })),
     matches,
     mustCatchRecall: mustCatch.length > 0 && reviewComplete ? mustCatch.filter(strict).length / mustCatch.length : null,
     weightedRecall: mustCatch.length > 0 && reviewComplete ? mustCatch.reduce((sum, item) => sum + SEVERITY_WEIGHT[item.severity] * severityCredit(strict(item)?.severity, item.severity), 0) / totalWeight : null,
@@ -284,6 +282,15 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
     falseBlockers: findings.filter((f, i) => f.severity === 'blocker' && !matched.has(i)).length,
     extraFindings: findings.filter((_, i) => !matched.has(i)).length,
     duplicates: matches.reduce((sum, m) => sum + Math.max(0, m.findings.length - 1), 0),
+  };
+}
+
+/** What a run records about its review whether or not the findings could be matched. */
+function reviewFacts(review: LocalReview): Pick<RunScore, 'outcome' | 'findings' | 'finders' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+  const usage = review.context.usage ?? {};
+  return {
+    outcome: review.result.outcome,
+    findings: review.result.findings.map(({ severity, title, file, line }) => ({ severity, title, file, line })),
     finders: finderSteps(review),
     costUsd: usage.estimatedCostUsd ?? 0,
     inputTokens: usage.inputTokens ?? 0,
@@ -427,12 +434,16 @@ export interface BenchOptions {
   onCase?: (results: Array<{ benchCase: BenchCase; runs: RunScore[] }>) => void;
 }
 
-/** A run whose review or matching failed. It counts in no recall, verdict or catch rate. */
-function failedRun(error: unknown): RunScore {
+/**
+ * A run whose review or matching failed. It counts in no recall, verdict or catch rate. When only the matching failed,
+ * it keeps the review's findings and cost.
+ */
+function failedRun(error: unknown, review?: LocalReview): RunScore {
   return {
-    outcome: 'FAILED', complete: false, error: error instanceof Error ? error.message : String(error), findings: [], matches: [],
-    mustCatchRecall: null, weightedRecall: null, verdictCorrect: null, falseBlockers: 0, extraFindings: 0, duplicates: 0, finders: [],
-    costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0,
+    outcome: 'FAILED', findings: [], finders: [], costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0,
+    ...(review && reviewFacts(review)),
+    complete: false, error: error instanceof Error ? error.message : String(error), matches: [],
+    mustCatchRecall: null, weightedRecall: null, verdictCorrect: null, falseBlockers: 0, extraFindings: 0, duplicates: 0,
   };
 }
 
@@ -446,8 +457,8 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
     const checkout = checkouts.get(c.repo);
     if (!checkout) throw new Error(`No checkout for ${c.repo}, which case ${c.id} needs. Pass --checkout ${c.repo}=<dir>.`);
     for (const sha of [c.base, c.head]) {
-      await runGit(checkout, ['cat-file', '-e', `${sha}^{commit}`]).catch(() => {
-        throw new Error(`Commit ${sha} of case ${c.id} is not in ${checkout}. Fetch it from ${c.repo} first.`);
+      await runGit(checkout, ['cat-file', '-e', `${sha}^{commit}`]).catch((error: Error) => {
+        throw new Error(`Commit ${sha} of case ${c.id} is not in ${checkout}. Fetch it from ${c.repo} first. Git said: ${error.message.trim()}`);
       });
     }
   }
@@ -455,15 +466,18 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
   for (const benchCase of cases) {
     const runs: RunScore[] = [];
     for (let i = 0; i < options.runs; i++) {
+      let local: LocalReview | undefined;
       try {
-        const local = await review({
+        local = await review({
           repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
           providerInputs: options.providerInputs, signal: options.signal, ...(options.config && { config: options.config }),
         });
-        runs.push(await scoreRun(benchCase, local, options.matcher));
+        const reviewed = local;
+        // The matcher is tried twice before a finished review is given up, and the cache keeps what it already decided.
+        runs.push(await scoreRun(benchCase, reviewed, options.matcher).catch(() => scoreRun(benchCase, reviewed, options.matcher)));
       } catch (error) {
         options.signal?.throwIfAborted();
-        runs.push(failedRun(error));
+        runs.push(failedRun(error, local));
       }
     }
     results.push({ benchCase, runs });
@@ -498,7 +512,9 @@ Options:
   --matcher-model <model>        Model that matches findings to key items (default ${DEFAULT_MATCHER_MODEL}).
   --cache <file>                 Matcher decisions kept between runs (default bench/.matcher-cache.json).
   --out <file>                   Report path (default bench/results/<time>.json).
-  --help                         Print this message.`;
+  --help                         Print this message.
+
+Exits 0 when at least one review completed, and 2 when none did or the bench could not start.`;
 
 export function parseBenchArgs(argv: string[]): BenchArgs {
   const args: BenchArgs = { cases: 'bench/cases', only: [], runs: DEFAULT_RUNS, checkouts: new Map(), matcherModel: DEFAULT_MATCHER_MODEL, cache: 'bench/.matcher-cache.json', help: false };
@@ -563,6 +579,6 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     writeJson(outPath, report);
     out(formatBenchSummary(report));
     out(`Report: ${outPath}\n`);
-    return 0;
+    return report.summary.incompleteRuns === report.summary.runs ? 2 : 0;
   });
 }

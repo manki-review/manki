@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'f
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { BenchCase, buildReport, candidateFindings, formatBenchSummary, KeyItem, llmMatcher, loadCases, MatchDecision, Matcher, parseBenchArgs, parseCase, runBench, scoreRun } from './bench';
+import { BenchCase, buildReport, candidateFindings, formatBenchSummary, KeyItem, llmMatcher, loadCases, MatchDecision, Matcher, parseBenchArgs, parseCase, runBench, runBenchCommand, scoreRun } from './bench';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
 import type { Finding, RoundContext, RoundOutcome } from './types';
@@ -284,6 +284,28 @@ describe('runBench and buildReport', () => {
     expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, extra findings 0, duplicates 0, cost $5.00.');
   });
 
+  it('tries the matcher again before giving up a finished review, and keeps its findings and cost when it gives up', async () => {
+    const review = jest.fn(async () => makeReview('ADDRESS_FIRST', [blocker]));
+    let calls = 0;
+    const flaky: Matcher = async () => {
+      if (calls++ === 0) throw new Error('bad reply');
+      return { verdict: 'NONE', findings: [], reason: 'none' };
+    };
+    const broken: Matcher = async () => {
+      throw new Error('no such model');
+    };
+    const options = { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, review };
+
+    const [retried] = await runBench([benchCase], { ...options, matcher: flaky });
+    expect(retried.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: true });
+    expect(retried.runs[0].error).toBeUndefined();
+
+    const [failed] = await runBench([benchCase], { ...options, matcher: broken });
+    expect(failed.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: false, error: 'no such model', costUsd: 1.25, mustCatchRecall: null });
+    expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1 }]);
+    expect(review).toHaveBeenCalledTimes(2);
+  });
+
   it('stops on an abort instead of recording the run as failed', async () => {
     const cancel = new AbortController();
     const review = jest.fn(async () => {
@@ -298,7 +320,7 @@ describe('runBench and buildReport', () => {
     const review = jest.fn();
     const options = { runs: 1, providerInputs: inputs, matcher: jest.fn(), review };
     await expect(runBench([benchCase], { ...options, checkouts: new Map() })).rejects.toThrow('No checkout for owner/demo');
-    await expect(runBench([{ ...benchCase, head: 'c'.repeat(40) }], { ...options, checkouts: new Map([['owner/demo', checkout]]) })).rejects.toThrow(`Commit ${'c'.repeat(40)} of case demo-1 is not in`);
+    await expect(runBench([{ ...benchCase, head: 'c'.repeat(40) }], { ...options, checkouts: new Map([['owner/demo', checkout]]) })).rejects.toThrow(new RegExp(`Commit ${'c'.repeat(40)} of case demo-1 is not in .*Git said: `));
     expect(review).not.toHaveBeenCalled();
   });
 });
@@ -318,5 +340,43 @@ describe('parseBenchArgs', () => {
     [['--bogus'], 'Unknown argument --bogus'],
   ])('refuses %j', (argv, message) => {
     expect(() => parseBenchArgs(argv)).toThrow(message);
+  });
+});
+
+describe('runBenchCommand', () => {
+  const savedEnv = process.env;
+  let stdout: jest.SpyInstance;
+  let stderr: jest.SpyInstance;
+
+  beforeEach(() => {
+    stdout = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    stdout.mockRestore();
+    stderr.mockRestore();
+    process.env = savedEnv;
+  });
+
+  it('prints the usage for --help', async () => {
+    expect(await runBenchCommand(['--help'])).toBe(0);
+    expect(stdout).toHaveBeenCalledWith(expect.stringContaining('Usage: manki bench'));
+  });
+
+  it('exits 2 before any model call without credentials, or without a checkout for a case', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'manki-bench-cmd-'));
+    try {
+      writeFileSync(join(dir, 'demo.yml'), CASE_YAML);
+      process.env = {};
+      expect(await runBenchCommand(['--cases', dir])).toBe(2);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('manki bench: No credentials set.'));
+      process.env = { PATH: savedEnv.PATH, ANTHROPIC_API_KEY: 'sk-test' };
+      expect(await runBenchCommand(['--cases', dir, '--cache', join(dir, 'cache.json')])).toBe(2);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('manki bench: No checkout for owner/demo'));
+      expect(stdout).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
