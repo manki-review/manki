@@ -95,6 +95,14 @@ const STANDARD_TRAITS = new Set([
   'Display', 'Debug', 'Clone', 'Copy', 'Default', 'From', 'Into', 'TryFrom', 'TryInto', 'FromStr', 'PartialEq', 'Eq', 'PartialOrd',
   'Ord', 'Hash', 'Drop', 'Deref', 'DerefMut', 'AsRef', 'AsMut', 'Borrow', 'Iterator', 'IntoIterator', 'Serialize', 'Deserialize',
 ]);
+// Standard bases unrelated classes name, such as Python's `Generic` or `Exception` and TypeScript's `Error`, which like
+// the standard Rust traits do not make two classes siblings.
+const STANDARD_BASES = new Set([
+  'object', 'Generic', 'Protocol', 'ABC', 'Enum', 'IntEnum', 'StrEnum', 'Flag', 'IntFlag', 'NamedTuple', 'TypedDict', 'Exception',
+  'BaseException', 'Error', 'Object',
+]);
+// A base named by a plain path such as `models.Model` or `ns.Base`.
+const BASE_PATH = /^[A-Za-z_]\w*(?:(?:\.|::)[A-Za-z_]\w*)*$/;
 // Functions that take a collection first and an item second, such as Go's `delete(m, k)`.
 const LOOKUP_FUNCTIONS = new Set(['delete', 'append', 'slices.Contains', 'slices.Index']);
 const MAX_LOOKUP_FUNCTION_CHARS = Math.max(...[...LOOKUP_FUNCTIONS].map(name => name.length));
@@ -888,6 +896,7 @@ class ParsedFile {
     this.tree.release();
     this.groups.clear();
     this.marked.clear();
+    this.bases.clear();
   }
 
   /** `named` picks one of the names of a node that declares several. */
@@ -1023,9 +1032,18 @@ class ParsedFile {
     if (!scope || !fields) return {};
     const owner = typeName(scope.field(fields.type)?.text() ?? '');
     const traitText = fields.trait && scope.field(fields.trait)?.text();
-    const bases = (this.rules.bases?.(scope) ?? []).filter(base => base.range().end.index - base.range().start.index <= MAX_ITEM_CHARS)
-      .map(base => typeName(base.text())).filter(base => TYPE_PATH.test(base) && base !== 'object');
-    return { owner, trait: traitText ? typeName(traitText) : undefined, bases };
+    return { owner, trait: traitText ? typeName(traitText) : undefined, bases: this.basesOf(scope) };
+  }
+
+  private readonly bases = new Map<number, string[]>();
+
+  /** Returns the bases `scope` names, read once per class however many methods it holds. */
+  private basesOf(scope: SgNode): string[] {
+    if (!this.bases.has(scope.id())) {
+      const named = (this.rules.bases?.(scope) ?? []).filter(base => base.range().end.index - base.range().start.index <= MAX_ITEM_CHARS);
+      this.bases.set(scope.id(), named.map(base => typeName(base.text())).filter(base => BASE_PATH.test(base) && !STANDARD_BASES.has(base.split(/\.|::/).at(-1)!)));
+    }
+    return this.bases.get(scope.id())!;
   }
 
   /** Returns the lines of `decl` with their numbers, marking the lines in `added`, each cut after `MAX_EXCERPT_LINE_CHARS` and all after `MAX_EXCERPT_LINES`. */
@@ -1437,12 +1455,15 @@ function siblingImplementations(
       for (const key of keysOf(m).filter(k => wanted.has(k))) appendTo(groups, key, { ...m, file, parsed: parsed!, changed: changedLines(m, file) });
     }
   }
+  // Classes that share two bases put a protocol method in two groups with the same members, which is asked about once.
+  const asked = new Set<string>();
   const ranked = [...groups.values()].flatMap((all, order) => {
     const owners = new Set<string>();
     const members = [...all].sort((a, b) => Number(b.changed > 0) - Number(a.changed > 0))
       .filter(m => !owners.has(m.owner) && !!owners.add(m.owner)).slice(0, MAX_GROUP_MEMBERS);
     const bodies = new Set(members.map(m => (m.decl.node.field('body') ?? m.decl.node).text().replace(/\s+/g, ' ')));
-    if (members.length < 2 || bodies.size < 2) return [];
+    const same = `${members[0]?.trait ?? ''}::${members[0]?.name}:${members.map(m => `${m.file}:${m.decl.start}`).sort().join(',')}`;
+    if (members.length < 2 || bodies.size < 2 || asked.has(same) || !asked.add(same)) return [];
     const question: SiblingImplementationQuestion = {
       name: members[0].name, ...(members[0].trait && { trait: members[0].trait }),
       members: members.map(m => ({ ...m.parsed.excerpt(m.decl, m.file, added.get(m.file) ?? new Set()), owner: m.owner, changed: m.changed > 0 })),

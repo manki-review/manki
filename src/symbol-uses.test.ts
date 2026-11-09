@@ -343,12 +343,14 @@ ${body}	return true
     const methods = (type: string, size: string, before = '') => `impl ${type} {\n    fn is_new(&self) -> bool {\n        self.version >= 3\n    }\n\n${before}    pub fn size(&self) -> usize {\n        ${size}\n    }\n}\n`;
     const refund = (type: string, check: string) => `class ${type}:\n    def refund(self, amount):\n${check}        return self.gateway.send(-amount)\n`;
     const area = (receiver: string, body: string) => `package shapes\n\nfunc (${receiver}) Area() float64 {\n${body}}\n`;
-    // Methods every type has, on types that share no base, and standard trait impls: none of them makes two types siblings.
-    const display = (type: string, text: string) => `\nimpl fmt::Display for ${type} {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        write!(f, "${text}")\n    }\n}\n\nimpl ${type} {\n    fn new() -> Self {\n        Self { version: ${text.length} }\n    }\n}\n`;
+    // Methods every type has, on types that share no base or only a standard one such as `Generic`, and standard trait
+    // impls: none of them makes two types siblings. Two shared bases ask about a method once.
+    const display = (type: string, text: string) => `\nimpl fmt::Display for ${type} {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        write!(f, "${text}")\n    }\n}\n\nimpl ${type} {\n    fn new() -> Self {\n        Self { name: "${text}" }\n    }\n}\n`;
     const dunders = (value: string) => `\n    def __init__(self):\n        self.limit = ${value}\n\n    def __repr__(self):\n        return "${value}"\n`;
     const stringer = (receiver: string, text: string) => `\nfunc (${receiver}) String() string {\n\treturn "${text}"\n}\n`;
     const view = (name: string, heritage: string, value: string) => `export class ${name}${heritage} {\n  constructor() {\n    super(${value});\n  }\n\n  toString() {\n    return '${value}';\n  }\n}\n`;
-    const equal = (name: string, key: string) => `class ${name}(Account):\n    def __eq__(self, other):\n        return self.${key} == other.${key}\n`;
+    const equal = (name: string, key: string) => `class ${name}(models.Account, Mixin, Generic[T]):\n    def __eq__(self, other):\n        return self.${key} == other.${key}\n`;
+    const typed = (name: string, value: string) => `class ${name}(Generic[T], ABC):\n    def __init__(self):\n        self.size = ${value}\n`;
     const base = {
       'src/parts/text.rs': decode('TextPart', '') + methods('TextPart', '2', '    fn legacy(&self) {}\n\n') + display('TextPart', 'text'),
       'src/parts/image.rs': decode('ImagePart', '        let _legacy = 0;\n') + methods('ImagePart', '2') + `\n#[cfg(test)]\nmod tests {\n${decode('FakePart', '')}}\n` + display('ImagePart', 'image'),
@@ -361,22 +363,25 @@ ${body}	return true
       'src/payments/bank.py': refund('BankPayment', '        if amount <= 0:\n            raise ValueError(amount)\n') + dunders('2'),
       'src/payments/wallet.py': equal('Wallet', 'id'),
       'src/payments/voucher.py': equal('Voucher', 'code'),
+      'src/payments/repo.py': typed('Repo', '1'),
+      'src/payments/cache.py': typed('Cache', '2'),
       'src/shapes/circle.go': area('c *Circle[T]', '\treturn 3 * c.r * c.r\n') + stringer('c *Circle[T]', 'circle'),
       'src/shapes/square.go': area('s Square', '\tif s.side < 0 {\n\t\treturn 0\n\t}\n\treturn s.side * s.side\n') + stringer('s Square', 'square'),
-      'src/views/alpha.ts': view('Alpha', ' extends View', '1'),
-      'src/views/beta.ts': view('Beta', ' extends View', '2'),
+      'src/views/alpha.ts': view('Alpha', ' extends ui.View', '1'),
+      'src/views/beta.ts': view('Beta', ' extends ui.View', '2'),
       'src/views/gamma.ts': view('Gamma', '', '3'),
       'src/views/delta.ts': view('Delta', '', '4'),
     };
     const { siblings } = await usesFor(base, {
-      'src/parts/text.rs': (decode('TextPart', '        if version > 3 {\n            return Err(Error::Version);\n        }\n') + methods('TextPart', '2') + display('TextPart', 'TEXT'))
+      'src/parts/text.rs': (decode('TextPart', '        if version > 3 {\n            return Err(Error::Version);\n        }\n') + methods('TextPart', '2') + display('TextPart', 'TEXTS'))
         .replace('>= 3', '>= 3 && self.version < 9'),
       'src/parts/image.rs': base['src/parts/image.rs'].replace('let version = u16::from_wire(r)?;', 'let version = u16::from_wire(r)?; // v3')
         .replace('        let _legacy = 0;\n', '').replace('        2\n', '        4\n').replace('>= 3', '>= 3 && self.version < 9'),
       'src/payments/card.py': (refund('CardPayment', '') + dunders('10')).replace('send(-amount)', 'send(-abs(amount))'),
       'src/payments/wallet.py': equal('Wallet', 'uid'),
+      'src/payments/repo.py': typed('Repo', '10'),
       'src/shapes/circle.go': (area('c *Circle[T]', '\treturn 3 * c.r * c.r\n') + stringer('c *Circle[T]', 'disc')).replace('3 * c.r', '3.14 * c.r'),
-      'src/views/alpha.ts': view('Alpha', ' extends View', '10'),
+      'src/views/alpha.ts': view('Alpha', ' extends ui.View', '10'),
       'src/views/gamma.ts': view('Gamma', '', '30'),
     }, ['*.generated.*']);
 
@@ -450,6 +455,12 @@ ${body}	return true
     expect(grouped.siblings.implementations.map(q => [q.name, q.members.length])).toEqual([['Area', 4]]);
     // Four files of 20,000 methods each take longer to parse, so this bound is wider. Copying the group per member took over 30 seconds.
     expect(Date.now() - started).toBeLessThan(20_000);
+
+    // One class with many bases and many methods: its bases are read once, not once per method.
+    const based = (body: string) => `class Wide(${Array.from({ length: 20_000 }, (_, i) => `B${i}`).join(', ')}):\n${Array.from({ length: 2_000 }, (_, i) => `    def m${i}(self):\n        return ${i === 0 ? body : '1'}\n`).join('')}`;
+    started = Date.now();
+    await usesFor({ 'src/wide.py': based('1') }, { 'src/wide.py': based('2') });
+    expect(Date.now() - started).toBeLessThan(10_000);
 
     // A flat file of many top-level functions, one changed: each declaration has thousands of siblings.
     const flat = (body: string) => `package gen\n\n${Array.from({ length: 55_000 }, (_, i) => `func F${i}(){${i === 54_999 ? body : '1'}}`).join('\n')}\n`;
