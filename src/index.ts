@@ -18,7 +18,7 @@ import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedE
 import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
-import { formatLockfileChanges, isParsedLockfile, LockfileDiff, readLockfileChanges } from './lockfile';
+import { isParsedLockfile, LockfileDiff, readLockfileChanges } from './lockfile';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
@@ -1694,7 +1694,7 @@ async function runFullReview(
       workspace,
       deeper: options.deeper,
       excludedPaths: excludedFiles.map(f => f.path),
-      lockfileChanges: formatLockfileChanges(lockfiles),
+      lockfiles,
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.
     stop.signal.throwIfAborted();

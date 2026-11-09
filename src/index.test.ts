@@ -2395,8 +2395,8 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    const list = 'Cargo.lock\n  updated hex 0.4.2 -> 0.4.3 (line 5)';
-    expect(reviewModule.runReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockfileChanges: list, excludedPaths: ['Cargo.lock'] }));
+    const lockfiles = [{ path: 'Cargo.lock', file, changes: [expect.objectContaining({ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', line: 5 })] }];
+    expect(reviewModule.runReview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockfiles, excludedPaths: ['Cargo.lock'] }));
     expect(jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0][1].lockfiles).toEqual([expect.objectContaining({ path: 'Cargo.lock' })]);
     expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.skipped).toEqual({ excluded: [], binary: [] });
   });

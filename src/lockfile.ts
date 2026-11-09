@@ -6,7 +6,7 @@ import { addedLines } from './diff';
 import { DiffFile, ParsedDiff, StaticSignal } from './types';
 
 /** The most characters the package lists of one PR take. A lockfile past it stays unread, so a person reviews it. */
-const MAX_LIST_CHARS = 40_000;
+const MAX_LIST_CHARS = 100_000;
 
 /**
  * One entry of a lockfile: a package, or something only listed, such as a workspace project or the file's settings.
@@ -55,6 +55,8 @@ export interface PackageChange {
 /** The package changes Manki read from one lockfile's diff. */
 export interface LockfileDiff {
   path: string;
+  /** The lockfile's own diff, which `exclude_paths` can leave out of the reviewed one. */
+  file: DiffFile;
   changes: PackageChange[];
 }
 
@@ -78,7 +80,7 @@ export function readLockfileChanges(fullDiff: ParsedDiff, heads: ReadonlyMap<str
       const parse = PARSERS[posix.basename(file.path)];
       const before = parseContent(parse, undoDiff(head, file));
       const after = parseContent(parse, head);
-      const lockfile = { path: file.path, changes: diffEntries(before, after, file) };
+      const lockfile = { path: file.path, file, changes: diffEntries(before, after, file) };
       const size = formatLockfile(lockfile).length;
       if (chars + size > MAX_LIST_CHARS) throw new Error(`the package lists would pass ${MAX_LIST_CHARS} characters`);
       chars += size;
@@ -104,7 +106,7 @@ export function lockfileSignals(lockfiles: LockfileDiff[]): StaticSignal[] {
   })));
 }
 
-function formatLockfile({ path, changes }: LockfileDiff): string {
+function formatLockfile({ path, changes }: Pick<LockfileDiff, 'path' | 'changes'>): string {
   if (changes.length === 0) return `${clean(path)}\n  no package changes`;
   const lines = changes.flatMap(c => [
     `  ${describeChange(c)}${c.line ? ` (line ${c.line})` : ''}${c.flags.length > 0 ? ` [${c.flags.join(', ')}]` : ''}`,
@@ -115,7 +117,7 @@ function formatLockfile({ path, changes }: LockfileDiff): string {
 
 function describeChange(c: PackageChange): string {
   const words = (...parts: Array<string | undefined>) => parts.filter(Boolean).map(p => clean(p!)).join(' ');
-  if (c.kind === 'added') return words('added', c.name, c.newVersion, showSource(c) ? `from ${c.newSource ?? 'no source'}` : undefined);
+  if (c.kind === 'added') return words('added', c.name, c.newVersion, c.newSource && `from ${c.newSource}`);
   if (c.kind === 'removed') return words('removed', c.name, c.oldVersion);
   const versions = c.kind === 'updated' ? `${c.oldVersion} -> ${c.newVersion}` : c.newVersion;
   const source = showSource(c) ? `, source ${clean(c.oldSource ?? 'none')} -> ${clean(c.newSource ?? 'none')}` : '';
@@ -190,7 +192,7 @@ function diffEntries(before: LockEntry[], after: LockEntry[], file: DiffFile): P
   const changes: PackageChange[] = [
     ...pairs.map(([b, a]) => changeOf(b, a, lineIn(a))),
     ...unpaired.added.map((a): PackageChange => ({
-      kind: 'added', name: a.name, newVersion: a.version, newSource: a.source, fields: [], flags: a.isPackage ? sourceFlags(a) : [], line: lineIn(a),
+      kind: 'added', name: a.name, newVersion: a.version, newSource: a.source, fields: fieldChanges(new Map(), a.fields), flags: a.isPackage ? sourceFlags(a) : [], line: lineIn(a),
     })),
     ...unpaired.removed.map((b): PackageChange => ({ kind: 'removed', name: b.name, oldVersion: b.version, oldSource: b.source, fields: [], flags: [] })),
   ];
@@ -414,7 +416,8 @@ function tomlValue(key: string, raw: string): Array<[string, string]> {
 function parseNpmLock(text: string): LockEntry[] {
   const lock: unknown = JSON.parse(text);
   if (!isObject(lock) || !isObject(lock.packages)) throw new Error('it has no `packages` map, which npm 7 and later write');
-  const { packages, ...rest } = lock;
+  // npm 7 and later ignore the legacy `dependencies` map when `packages` is there, and only keep it in step with it.
+  const { packages, dependencies: _legacy, ...rest } = lock;
   const lines = npmPackageLines(text);
   return [settingsEntry(flatten(rest)), ...Object.entries(packages).map(([key, value]): LockEntry => {
     if (!isObject(value)) throw new Error(`${key} is not an object`);

@@ -154,7 +154,7 @@ describe('readLockfileChanges', () => {
     expect(lockfileSignals(read('Cargo.lock', git('aaaa', ' "hex",\n'), git('aaaa', ' "hex",\n "serde",\n')))).toEqual([]);
   });
 
-  it('lists a package-lock.json, and flags a tarball from another host whose checksum changed', () => {
+  it('lists a package-lock.json with the source of each added package, and flags a tarball from another host whose checksum changed', () => {
     const lock = (packages: string, deps: string) => `{
   "name": "app",
   "version": "1.0.0",
@@ -186,22 +186,42 @@ ${packages}
       leftPad('https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz', 'sha512-XI5MPzVNApjAyhQzphX8BkmKsKUxD4LdyK24iZeQEDl7rLmmHT4Ii4kZ0f'),
       lodash('4.17.20', 'sha512-PlhdFcillOINfeV7Ni6oF1TAEayyZBoZ8bcshTHqOYJYlrqzRK5hagpagky5o4HfCzzd1TRkXPMFq6cKk9rGmA=='),
     ].join('\n'), '        "left-pad": "^1.3.0",\n        "lodash": "^4.17.20"');
+    const isOdd = `    "node_modules/is-odd": {
+      "version": "3.0.1",
+      "resolved": "https://npm.example.net/is-odd/-/is-odd-3.0.1.tgz",
+      "integrity": "sha512-CQpnWPrDwmP1+SMHXZhtLtJv90yiyVfluGsX5iNCVkrhQtU3TQHsUWPG9wkdk9Lgd5yNpAg9jQEo90CBaXgWMA==",
+      "license": "MIT"
+    },`;
     const head = lock([
+      isOdd,
       leftPad('https://evil.example.com/left-pad-1.3.0.tgz', 'sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
       lodash('4.17.21', 'sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg=='),
-    ].join('\n'), '        "left-pad": "^1.3.0",\n        "lodash": "^4.17.21"');
+    ].join('\n'), '        "is-odd": "^3.0.1",\n        "left-pad": "^1.3.0",\n        "lodash": "^4.17.21"');
 
     const lockfiles = read('package-lock.json', base, head);
 
     expect(formatLockfileChanges(lockfiles)).toBe([
       'package-lock.json',
-      '  changed app 1.0.0 (line 12)',
+      '  changed app 1.0.0 (line 11)',
+      '    added dependencies.is-odd = ^3.0.1',
       '    changed dependencies.lodash: ^4.17.20 -> ^4.17.21',
-      '  changed left-pad 1.3.0, source https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz -> https://evil.example.com/left-pad-1.3.0.tgz, checksum changed (line 17)'
+      '  added is-odd 3.0.1 from https://npm.example.net/is-odd/-/is-odd-3.0.1.tgz (line 16)',
+      '    added license = MIT',
+      '  changed left-pad 1.3.0, source https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz -> https://evil.example.com/left-pad-1.3.0.tgz, checksum changed (line 24)'
         + ' [source changed, source does not name this package and version, checksum changed without a version change]',
-      '  updated lodash 4.17.20 -> 4.17.21 (line 21)',
+      '  updated lodash 4.17.20 -> 4.17.21 (line 28)',
     ].join('\n'));
-    expect(lockfileSignals(lockfiles).map(s => [s.file, s.line])).toEqual([['package-lock.json', 17]]);
+    expect(lockfileSignals(lockfiles).map(s => [s.file, s.line])).toEqual([['package-lock.json', 24]]);
+  });
+
+  it('lists a bump in an npm lockfile version 2 once, without its legacy `dependencies` map', () => {
+    const lock = (version: string) => JSON.stringify({
+      name: 'app', lockfileVersion: 2, requires: true,
+      packages: { 'node_modules/lodash': { version, resolved: `https://registry.npmjs.org/lodash/-/lodash-${version}.tgz`, integrity: `sha512-${version}` } },
+      dependencies: { lodash: { version, resolved: `https://registry.npmjs.org/lodash/-/lodash-${version}.tgz`, integrity: `sha512-${version}` } },
+    }, null, 2);
+
+    expect(formatLockfileChanges(read('package-lock.json', lock('4.17.20'), lock('4.17.21')))).toBe('package-lock.json\n  updated lodash 4.17.20 -> 4.17.21 (line 7)');
   });
 
   it('lists a Yarn 1 lockfile with scoped packages, and flags a downgrade', () => {
@@ -271,6 +291,9 @@ ${extra}
       '  changed app 0.0.0-use.local (line 12)',
       '    added dependencies.left-pad = https://github.com/example/left-pad.git',
       '  added left-pad 1.3.0 from https://github.com/example/left-pad.git#commit=4f3c2b1a (line 17) [git source]',
+      '    added languageName = node',
+      '    added linkType = hard',
+      '    added requested = left-pad@https://github.com/example/left-pad.git#commit=4f3c2b1a',
     ].join('\n'));
   });
 
@@ -331,14 +354,15 @@ ${scheduler ? '\n  scheduler@0.23.2:\n    dependencies:\n      loose-envify: 1.4
       '  changed loose-envify 1.4.0, checksum changed (line 18) [checksum changed without a version change]',
       '  updated react-dom 18.2.0 -> 18.3.1 (line 21)',
       '    added snapshot(react@18.2.0).dependencies.scheduler = 0.23.2',
-      '  added scheduler 0.23.2 (line 30)',
+      '  added scheduler 0.23.2 from registry (line 30)',
+      '    added snapshot.dependencies.loose-envify = 1.4.0',
     ].join('\n'));
   });
 
   it('lists every package of an added lockfile and of a deleted one', () => {
     const lock = `version = 4\n\n[[package]]\nname = "hex"\nversion = "0.4.3"\nsource = "${CRATES_IO}"\nchecksum = "7f24"\n`;
 
-    expect(formatLockfileChanges(read('Cargo.lock', null, lock))).toBe('Cargo.lock\n  added hex 0.4.3 (line 3)\n  added lockfile settings');
+    expect(formatLockfileChanges(read('Cargo.lock', null, lock))).toBe(`Cargo.lock\n  added hex 0.4.3 from ${CRATES_IO} (line 3)\n  added lockfile settings\n    added version = 4`);
     expect(formatLockfileChanges(read('Cargo.lock', lock, null))).toBe('Cargo.lock\n  removed hex 0.4.3\n  removed lockfile settings');
   });
 

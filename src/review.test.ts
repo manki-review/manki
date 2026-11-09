@@ -36,6 +36,7 @@ import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
 import { Finding, FindingSeverity, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
 import { fingerprintEntriesFromLegacy, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
+import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
@@ -2796,9 +2797,10 @@ describe('runReview', () => {
       totalDeletions: 5,
     });
     const fileContents = new Map([['src/a.ts', 'export const a = 1;'], ['src/x.ts', 'thread-only file']]);
+    const lockfiles: LockfileDiff[] = [{ path: 'Cargo.lock', file: { path: 'Cargo.lock', changeType: 'modified', hunks: [] }, changes: [{ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', fields: [], flags: [], line: 5 }] }];
     const lockfileChanges = 'Cargo.lock\n  updated hex 0.4.2 -> 0.4.3 (line 5)';
     const firstClients = makeClients();
-    await runReview(firstClients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', memory: null, fileContents, lockfileChanges });
+    await runReview(firstClients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', memory: null, fileContents, lockfiles });
 
     const laterClients = makeClients();
     const prior = makePriorWarningFinding({ severity: 'suggestion', title: 'Prior round concern' });
@@ -2818,7 +2820,7 @@ describe('runReview', () => {
         priorRounds: [buildPriorRound(1, [prior]), buildPriorRound(2, [prior])],
         prAuthorLogin: 'author',
         interRoundDiff: 'inter-round delta',
-        lockfileChanges,
+        lockfiles,
       },
     );
 
@@ -3838,6 +3840,28 @@ describe('runReview', () => {
       expect(call[2]).toEqual({ effort: 'medium' });
     }
     expect(mockedRunJudgeAgent.mock.calls[0][2].effort).toBe('low');
+  });
+
+  it('routes a PR that changes only an excluded lockfile on the supply-chain floor, and checks findings on the lockfile', async () => {
+    const finding = { severity: 'warning', title: 'Unexplained bump', file: 'Cargo.lock', line: 5, description: 'The PR does not say why `hex` moves.' };
+    const clients: ReviewClients = {
+      ...makeClients(JSON.stringify([finding])),
+      planner: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'chore' }) }) } as unknown as import('./providers').LLMClient,
+    };
+    const onProgress = jest.fn();
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+    const lockfiles: LockfileDiff[] = [{
+      path: 'Cargo.lock',
+      file: { path: 'Cargo.lock', changeType: 'modified', hunks: [{ oldStart: 5, oldLines: 1, newStart: 5, newLines: 1, content: '-version = "0.4.2"\n+version = "0.4.3"' }] },
+      changes: [{ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', fields: [], flags: [], line: 5 }],
+    }];
+
+    const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ files: [] }), rawDiff: '', repoContext: '', lockfiles, excludedPaths: ['Cargo.lock'], onProgress });
+
+    expect((clients.planner!.sendMessage as jest.Mock).mock.calls[0][1]).toContain('Cargo.lock');
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: 'planning', routing: expect.objectContaining({ class: 'supply_chain', floor: 'supply_chain' }) }));
+    expect(result.agentNames).toHaveLength(2);
+    expect(mockedRunJudgeAgent.mock.calls[0][2].findings[0].toolEvidence).toEqual(expect.objectContaining({ status: 'none' }));
   });
 
   it('uses default judgeEffort of high when planner is absent', async () => {

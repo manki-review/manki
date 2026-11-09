@@ -23,6 +23,7 @@ import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listReferenceUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
+import { formatLockfileChanges, LockfileDiff } from './lockfile';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
@@ -597,8 +598,8 @@ export interface ReviewOptions {
   excludedPaths?: string[];
   /** Open PRs and issues that may relate to the PR. The dedup model classifies them for a note in the review body. */
   relatedWork?: RelatedWork;
-  /** The package lists of the changed lockfiles, from `formatLockfileChanges`. */
-  lockfileChanges?: string;
+  /** The changed lockfiles Manki parsed into package lists. `exclude_paths` can leave their files out of `diff`. */
+  lockfiles?: LockfileDiff[];
 }
 
 export async function runReview(
@@ -607,7 +608,7 @@ export async function runReview(
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const {
     config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal,
-    isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff, workspace, lockfileChanges,
+    isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff, workspace, lockfiles = [],
   } = options;
   const overlong = overlongChangedLines(diff);
   if (overlong.length > 0) {
@@ -615,6 +616,9 @@ export async function runReview(
     return { verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary: overlongSummary(overlong), findings: [], highlights: [], reviewComplete: false, agentNames: [] };
   }
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
+  const lockfileChanges = formatLockfileChanges(lockfiles);
+  // The planner, the routing and the claim checks see a parsed lockfile even when `exclude_paths` leaves it out of `diff`.
+  const diffWithLockfiles = { ...diff, files: [...diff.files, ...lockfiles.map(l => l.file).filter(f => !diff.files.some(d => d.path === f.path))] };
   // Searched while the planner runs, since no model call depends on it before the finders.
   const usesPromise = listUsesOutsideDiff(workspace, diff, { excludePaths: config.exclude_paths });
   const modelFallbacks: RoundModelFallback[] = [];
@@ -644,14 +648,14 @@ export async function runReview(
     const plannerStart = Date.now();
     const plannerWrap = wrapClientForUsage(withFallback({ client: clients.planner, fallback: clients.fallbacks?.planner }, 'planner'));
     const outcome: PlannerOutcomeSink = {};
-    plannerResult = await runPlanner(plannerWrap.client, diff, outcome);
+    plannerResult = await runPlanner(plannerWrap.client, diffWithLockfiles, outcome);
     plannerUsage = plannerWrap.getTotals().usage;
     logOutputTokens('Planner', plannerUsage);
     plannerDurationMs = Date.now() - plannerStart;
     plannerSource = plannerResult ? 'planner' : 'heuristic_fallback';
     plannerFallbackReason = outcome.fallbackReason;
   }
-  const team = selectTeam(diff, config, plannerResult ?? undefined, options.deeper);
+  const team = selectTeam(diffWithLockfiles, config, plannerResult ?? undefined, options.deeper);
   const judgeEffort = plannerResult?.judgeEffort ?? 'high';
   const { trivial, subtle, paired } = team.triage;
   core.info(`Triage (${plannerSource}): trivial=${trivial}, subtle=${subtle}, paired=${paired}${team.sensitivePaths ? ', security-sensitive paths' : ''}${team.ciOrDependencyPaths ? ', CI or dependency paths' : ''}${team.trivialOverridden ? ', planner trivial answer overridden by the changed files' : ''}`);
@@ -1086,7 +1090,7 @@ export async function runReview(
 
   const staticSignals = prContext?.staticSignals ?? [];
   const claimSources: ClaimSources = {
-    diff, rawDiff, fileContents, signals: staticSignals,
+    diff: diffWithLockfiles, rawDiff, fileContents, signals: staticSignals,
     ...(related && { related: { names: related.repos.map(r => r.repo), checkouts: fetchedRelatedRepos(related.stateDir) } }),
   };
   const round = (priorRounds?.length ?? 0) + 1;
