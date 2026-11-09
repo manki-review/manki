@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.3.0] - 2026-11-09
+
+Manki 7.3 gives the finders more to compare against. Every finder runs the same checklist, the reference repos are searched before the finders start, and small targeted calls compare sibling fields and implementations while the finders run. The judge reads the PR description and can send a doubt about whether a path is reached to the refuter. A second refuter on another model and a judge with repository tools are new opt-in settings. A PR that only bumps dependencies in a supported lockfile can be approved again.
+
+### Upgrading
+
+1. Every finder runs one checklist of 13 checks, which now includes reuse of existing code, the repository's own rules and claims that the change matches a reference. Finders in a group differ only by their model. The pair lens from 7.2 is gone, and there is no setting for it. Round records drop the primary and pair counts (`keptPrimaryOnly`, `keptPairOnly`, `keptBoth`, `keptOnlyBy`, `keptByMany` and `models.reviewerPair`) and keep `keptOnly` and `keptShared` on each finder's entry instead ([#1250](https://github.com/manki-review/manki/pull/1250)).
+2. A round does more, so it costs somewhat more. Up to 12 small calls on `models.reviewer` compare sibling fields and implementations alongside the finders. The `reference` related repos are fetched and searched before the finders start, which adds up to a minute, or seconds with the cache, and gives the finders an "In the Reference Repos" list. A note on related open PRs and issues costs one GraphQL query, one issue search and one cheap call on the dedup model ([#1254](https://github.com/manki-review/manki/pull/1254), [#1257](https://github.com/manki-review/manki/pull/1257), [#1268](https://github.com/manki-review/manki/pull/1268)).
+3. Two new optional settings. `models.refuter_pair` adds a second refuter on another model, which never lowers a blocker. `judge.tool_steps` gives the judge read-only repository tools with that many steps, and is 0, off, by default. Both need the Claude or Codex CLI ([#1255](https://github.com/manki-review/manki/pull/1255), [#1259](https://github.com/manki-review/manki/pull/1259)).
+4. A PR that only changes dependencies in a `Cargo.lock`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` or `pnpm-lock.yaml` that Manki can parse can be approved again. Other lockfile formats, such as `poetry.lock` or `go.sum`, still hold the approval for a person. `manki review` and the benchmark read changed lockfiles the same way, so a local change that only bumps a lockfile is reviewed instead of stopping with "Nothing to review" ([#1258](https://github.com/manki-review/manki/pull/1258), [#1277](https://github.com/manki-review/manki/pull/1277)).
+5. A mistyped key inside `planner`, `static_analysis`, `convergence`, `metrics`, `memory` or a `reviewers` entry now shows a warning with its full path, such as `Unknown config key: "planner.enabeld"`. Nothing that loaded before fails now ([#1269](https://github.com/manki-review/manki/pull/1269)).
+6. The review body no longer lists the findings that have their own thread. The verdict line still counts them, and every finding without a thread is still listed ([#1266](https://github.com/manki-review/manki/pull/1266)).
+7. Releases can be published from GitHub: the `Publish release` workflow shows what it will write and waits for an approval. It needs a one-time release App setup, described in `RELEASE.md`, and `scripts/publish-release.sh` stays the fallback ([#1252](https://github.com/manki-review/manki/pull/1252)).
+
+### How finders search
+
+- When the PR title, description or changed code says the change matches another implementation, a spec or a standard, finders open what it names, in a `reference` related repo when one is listed, and report each difference the PR does not call out, citing both sides. For protocol, consensus, network or serialization code that a reference implements, they compare both directions: what this code sends against what the reference accepts, and the reverse ([#1253](https://github.com/manki-review/manki/pull/1253), [#1268](https://github.com/manki-review/manki/pull/1268)).
+- Before the finders run, Manki searches each `reference` related repo for the names the diff changes or reads and the names its added comments mention, ignoring case and underscores, so `script_payout` also finds `scriptPayout`. The matches go to the finders, the judge and the refuter as "In the Reference Repos", up to 4 lines per name and 40 in all ([#1268](https://github.com/manki-review/manki/pull/1268), [#1274](https://github.com/manki-review/manki/pull/1274)).
+- Sibling comparisons ask targeted questions while the finders run. When a changed line looks an item up in one collection field, a call asks whether the item can sit in another field of the same type and whether the change handles it. When the change touches a function that sibling types also implement, a call puts them side by side and lists each check one has and another lacks. Their findings are named `Sibling field: ...` or `Sibling code: ...` and go through dedup and the judge like any other. The round waits at most one minute for them after the finders finish ([#1257](https://github.com/manki-review/manki/pull/1257), [#1276](https://github.com/manki-review/manki/pull/1276)).
+- After a blocker is fixed, or while its file changes, the next round's finders get a "Fixed Blockers" section that asks them to check other callers, inputs, variants and sibling code for the same outcome ([#1256](https://github.com/manki-review/manki/pull/1256)).
+- Finders read the root `CONTRIBUTING.md` and the Markdown files the instruction files link to, and see up to 20,000 characters of the PR description instead of 2,000 ([#1253](https://github.com/manki-review/manki/pull/1253)).
+- The uses list never cuts a field or variant whose own declaration changes as too common, since its readers are what the change can break, and it shows up to 60 lines instead of 40 ([#1268](https://github.com/manki-review/manki/pull/1268), [#1274](https://github.com/manki-review/manki/pull/1274)).
+
+### Review loop and verdicts
+
+- The judge reads the PR title and description, fenced and labelled as untrusted author text, and checks what the author claims against the code ([#1273](https://github.com/manki-review/manki/pull/1273)).
+- A doubt that a failure is ever reached no longer holds a finding down unchecked. The judge states the grade the finding earns if the path exists, and the refuter searches for that path with tools. In a library, a path through the public API counts as reached without a caller in the repository ([#1249](https://github.com/manki-review/manki/pull/1249)).
+- With `models.refuter_pair`, a second refuter on that model checks every finding the first refuter checks, at the same time and with the same prompt. A confirmation against a disproof keeps the judge's grade and shows both reasons. A blocker both refuters disprove still blocks, posted with both reasons ([#1255](https://github.com/manki-review/manki/pull/1255)).
+- With `judge.tool_steps` above 0, the judge reads the code a finding rests on before grading, and gets the finders' 15-minute timeout. A tool call that fails grades once more without tools instead of failing the round ([#1259](https://github.com/manki-review/manki/pull/1259)).
+- The judge reads each parsed lockfile's package list instead of its raw hunks, which keeps its prompt small on a large dependency update ([#1277](https://github.com/manki-review/manki/pull/1277)).
+- Dedup catches a reworded repeat of an earlier finding more often. The dedup model reads each finding's description and the line it names, and matches only within the same file. A resolved thread whose code moved is matched on the line it was posted on ([#1256](https://github.com/manki-review/manki/pull/1256), [#1265](https://github.com/manki-review/manki/pull/1265)).
+
+### Review format
+
+- A review body can end with a "Related work" note listing open PRs that change the same files and open issues the PR may fix without linking them, as a duplicate, an overlap or a fix. The note never blocks, never opens a thread and never changes the verdict. The review waits at most 15 seconds for the lookup, and a rate-limited search is skipped ([#1254](https://github.com/manki-review/manki/pull/1254), [#1275](https://github.com/manki-review/manki/pull/1275)).
+- Check lines in "How this was checked" keep their code spans whole when shortened, a cited location without an explanation shows its link and code line instead of "Shows the failure.", and units such as `MiB` are no longer shown as code ([#1241](https://github.com/manki-review/manki/pull/1241), [#1261](https://github.com/manki-review/manki/pull/1261)).
+- The progress comment's planner line shows only the judge effort, since each finder's line shows its own ([#1263](https://github.com/manki-review/manki/pull/1263)).
+
+### Static analysis
+
+- A changed `Cargo.lock`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` or `pnpm-lock.yaml` is parsed into a list of added, removed and updated packages that the finders and the verdict reader read. A source moved to another registry or repository, an added package from a registry no other package uses, a git or path source, a checksum change without a version change, a downgrade and a tarball URL that names another package each raise a `lockfile-change` alert, and so does a package in a new lockfile from another registry than most of its packages (`unfamiliar registry`). Past the alert cap, the most telling flags come first and one summary alert names the rest. A lockfile alert counts as a repeat of an earlier one only when its title matches exactly, so a waived alert on a nearby package no longer hides it. A lockfile-only PR gets two finders ([#1258](https://github.com/manki-review/manki/pull/1258), [#1277](https://github.com/manki-review/manki/pull/1277)).
+
+### Review records and statistics
+
+- The round record keeps the uses list and the reference matches (`usesOutsideDiff`), each sibling comparison (`comparisons`, under the new `compare` stage), the related work candidates (`relatedWork`) and the second refuter's answers (`pairRefutation`, `models.refuterPair`). It no longer keeps `planner.reviewerEffort` ([#1253](https://github.com/manki-review/manki/pull/1253), [#1254](https://github.com/manki-review/manki/pull/1254), [#1255](https://github.com/manki-review/manki/pull/1255), [#1257](https://github.com/manki-review/manki/pull/1257), [#1263](https://github.com/manki-review/manki/pull/1263), [#1268](https://github.com/manki-review/manki/pull/1268), [#1274](https://github.com/manki-review/manki/pull/1274)).
+- `review-stats` reports the second refuter's cost and how often it agreed with the first, split from it or changed the outcome, and the refutation table also counts the findings a disproof dropped ([#1262](https://github.com/manki-review/manki/pull/1262)).
+
+### Docs
+
+- `docs/security.md` gives the current finder budgets and time limit, and says which content each stage gets ([#1263](https://github.com/manki-review/manki/pull/1263), [#1273](https://github.com/manki-review/manki/pull/1273)).
+
+### Internal
+
+- The recall benchmark compares config variants side by side with `--variant` and `--set`, and `npm run missed-blockers` drafts benchmark cases from blockers an earlier round missed. Two seed cases gain must-catch blockers ([#1251](https://github.com/manki-review/manki/pull/1251), [#1260](https://github.com/manki-review/manki/pull/1260), [#1270](https://github.com/manki-review/manki/pull/1270)).
+
 ## [7.2.0] - 2026-11-09
 
 Manki 7.2 makes each round find more. Finders work through a wider list of checks with more steps and more of the changed code in front of them, the second finder of a pair looks from its own angle, and every finder, the judge and the refuter get a list of where the changed symbols are used outside the diff. The judge no longer lowers a finding because it rests on code it cannot see, and sends it to the refuter instead. `manki review` runs the same review on a local branch.
