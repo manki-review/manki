@@ -367,6 +367,10 @@ ${body}	return true
       { 'src/pairs/square.ts': view('Square', 'Shape, Named', 'box'), 'src/pairs/circle.ts': view('Circle', 'Shape, Stored', 'disc') },
     );
     expect(summary(views.siblings)).toEqual([['toString', ['Circle*', 'Square*']], ['toString', ['Circle*', 'Label']], ['toString', ['Square*', 'Label']]]);
+    // Methods that share a line are each a member of their own group.
+    const row = (name: string, value: number) => `export class ${name} { first() { return ${value}; } second() { return ${value}; } third() { return ${value}; } }\n`;
+    const rows = await usesFor({ 'src/rows/a.ts': row('A', 1), 'src/rows/b.ts': row('B', 2) }, { 'src/rows/a.ts': row('A', 3) });
+    expect(summary(rows.siblings)).toEqual([['first', ['A*', 'B']], ['second', ['A*', 'B']], ['third', ['A*', 'B']]]);
   });
 
   it('compares the functions of one name or trait method on sibling types in the changed files and beside them, in Rust, Python, Go and TypeScript, most touched first, leaving out nested functions, untouched neighbours of removed code, excluded files, types no plain path names, standard traits and protocol methods of types that share no base', async () => {
@@ -499,6 +503,14 @@ ${body}	return true
     started = Date.now();
     const steps = await usesFor({ 'gen/a.go': mirrored('A', 1), 'gen/b.go': mirrored('B', 2) }, { 'gen/a.go': mirrored('A', 3) });
     expect(steps.siblings.implementations).toHaveLength(20);
+    expect(Date.now() - started).toBeLessThan(10_000);
+
+    // The same methods on one line of a changed class: each method is a member of its own groups, however many share its line.
+    const inline = (value: number) => `export class A { ${Array.from({ length: 5_000 }, (_, i) => `m${i}() { return ${value}; }`).join(' ')} }\n`;
+    const lined = `export class B {\n${Array.from({ length: 5_000 }, (_, i) => `  m${i}() { return 2; }`).join('\n')}\n}\n`;
+    started = Date.now();
+    const oneLine = await usesFor({ 'src/gen/a.ts': inline(1), 'src/gen/b.ts': lined }, { 'src/gen/a.ts': inline(3) });
+    expect(oneLine.siblings.implementations).toHaveLength(20);
     expect(Date.now() - started).toBeLessThan(10_000);
 
     // One class with many bases and many dunder methods: its bases are read once, and only the first few key its groups.

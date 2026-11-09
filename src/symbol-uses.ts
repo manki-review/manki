@@ -1469,7 +1469,7 @@ function siblingImplementations(
     if (members.length < 2 || bodies.size < 2) return [];
     const touchedMembers = members.filter(m => m.changed > 0);
     const lines = touchedMembers.reduce((sum, m) => sum + m.changed, 0);
-    return [{ members, order, ids: members.map(m => `${m.file}:${m.decl.start}`), touchedCount: touchedMembers.length, lines }];
+    return [{ members, order, ids: members.map(m => `${m.file}:${m.decl.key}`), touchedCount: touchedMembers.length, lines }];
   }).sort((a, b) => b.touchedCount - a.touchedCount || Number(!a.members[0].trait) - Number(!b.members[0].trait) || b.lines - a.lines
     || b.ids.length - a.ids.length || a.order - b.order);
   // Classes that share a base or two put a protocol method in nested groups. A group whose members all sit in one group
