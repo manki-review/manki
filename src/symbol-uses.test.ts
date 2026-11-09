@@ -400,8 +400,8 @@ ${body}	return true
       '.github/workflows/ci.yml': 'jobs:\n  test:\n    timeout-minutes: 10 # a full run takes 12\n',
       'include/config.h': '#define MAX_CLIENTS 0x20 // per worker\n',
       'web/src/old.ts': 'export const other = 1;\n',
-      // A line too long to scan is skipped, so its spaces cannot make the limit pattern backtrack.
-      'web/src/limits.ts': `export const other = 2;\nexport const RATE_LIMIT_PER_MINUTE = 60;\nexport const UPLOAD_LIMIT_BYTES = 5_000_000;\nexport const retries = 3;\nexport const MAX_SPACED = 1${' '.repeat(20_000)}x;\n`,
+      // A line too long to scan is skipped, so no crafted line can make the limit pattern backtrack. A one-word call computes a value.
+      'web/src/limits.ts': `export const other = 2;\nexport const RATE_LIMIT_PER_MINUTE = 60;\nexport const UPLOAD_LIMIT_BYTES = 5_000_000;\nexport const retries = 3;\nexport const MAX_LONG_LINE = 1; // ${'x'.repeat(600)}\nexport const width = Math.max(1, other) + max(2, other);\n`,
       'web/src/limits.test.ts': 'export const other = 3;\nconst MAX_ITEMS = 1;\n',
       'docs/limits.md': 'Default:\nmax_items: 10\n',
     });

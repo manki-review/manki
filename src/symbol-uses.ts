@@ -235,7 +235,7 @@ const LIMIT_WORDS = new Set(['max', 'maximum', 'limit', 'cap', 'capacity', 'time
 // Words that make a name of two words or more a limit, such as `BATCH_SIZE` or `page_size`.
 const BOUND_WORDS = new Set(['size', 'length', 'len', 'count', 'bytes']);
 // A name set to what may be a number: `NAME = 4`, `NAME: u32 = 4`, `self.name = 4`, `name: 4`, `name := 4`, `name=4` in a call, or `Name(4 << 20)`.
-const LIMIT_ASSIGNMENT = /(?<![\w$-])([A-Za-z_][\w-]*)[ \t]*(?::[\w:<>&[\] \t]+(?==))?(?::=|=(?!=)|:|\()[ \t]*([\d(][\w \t+\-*/<>().]*?)(?=[;,)}\]]|\/\/|\/\*|#|$)/g;
+const LIMIT_ASSIGNMENT = /(?<![\w$-])([A-Za-z_][\w-]*)[ \t]*(?::[\w:<>&[\] \t]+(?==))?(:=|=(?!=)|:|\()[ \t]*([\d(][\w \t+\-*/<>().]*?)(?=[;,)}\]]|\/\/|\/\*|#|$)/g;
 const DEFINE_LINE = /^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)[ \t]+([\d(][^/]*?)(?:\/\/|\/\*|$)/;
 // A type suffix on a number literal, such as `30u64`, `100usize` or `5L`.
 const NUMBER_SUFFIX = /(?<=\d)(?:[ui](?:8|16|32|64|128|size)|ul?|l)\b/gi;
@@ -734,9 +734,11 @@ function numericValue(text: string): number | undefined {
 }
 
 /** Whether `name` names an upper limit, such as `MAX_BODY_BYTES`, `timeout-minutes`, `maxRecvMsgSize` or `BATCH_SIZE`. */
-function isLimitName(name: string): boolean {
+function isLimitName(name: string, call: boolean): boolean {
   const words = name.split(/[_-]+|(?<=[a-z\d])(?=[A-Z])/).filter(Boolean).map(word => word.toLowerCase());
   if (words.includes('min') || words.includes('minimum')) return false;
+  // A call named by one word, such as `Math.max(1, x)` or Go's `cap(s)`, computes a value rather than setting a limit.
+  if (call && words.length < 2) return false;
   return words.some(word => LIMIT_WORDS.has(word)) || (words.length > 1 && words.some(word => BOUND_WORDS.has(word)));
 }
 
@@ -744,10 +746,11 @@ function isLimitName(name: string): boolean {
 function limitsOn(text: string): Array<{ name: string; value: string; number: number }> {
   if (text.length > MAX_SCANNED_LINE_CHARS) return [];
   const define = DEFINE_LINE.exec(text);
-  const matches = define ? [define] : [...text.replace(COMMENT, '').matchAll(LIMIT_ASSIGNMENT)];
-  return matches.flatMap(([, name, value]) => {
+  const matches = define ? [{ name: define[1], operator: '', value: define[2] }]
+    : [...text.replace(COMMENT, '').matchAll(LIMIT_ASSIGNMENT)].map(([, name, operator, value]) => ({ name, operator, value }));
+  return matches.flatMap(({ name, operator, value }) => {
     const number = numericValue(value);
-    return number !== undefined && isLimitName(name) ? [{ name, value: value.trim(), number }] : [];
+    return number !== undefined && isLimitName(name, operator === '(') ? [{ name, value: value.trim(), number }] : [];
   });
 }
 
@@ -763,10 +766,13 @@ function changedLimits(files: DiffFile[], diff: ParsedDiff): LimitQuestion[] {
     for (const limit of limitsOn(row.slice(1))) if (!removed.has(limit.name)) removed.set(limit.name, limit);
   }
   const asked = new Set<string>();
+  // Every added line of a run shares the run's removed lines, so each run is scanned once.
+  const runs = new Map<string[], Array<{ name: string; value: string; number: number }>>();
+  const limitsIn = (run: string[]) => runs.get(run) ?? runs.set(run, run.flatMap(limitsOn)).get(run)!;
   return files.filter(f => !TEST_PATH.test(f.path) && !DOC_FILE.test(f.path)).flatMap(file => {
     const replaced = replacedLines(file);
     return [...addedLines(file)].flatMap(([line, text]) => limitsOn(text).flatMap(limit => {
-      const before = (replaced.get(line) ?? []).flatMap(limitsOn).find(l => l.name === limit.name) ?? removed.get(limit.name);
+      const before = limitsIn(replaced.get(line) ?? []).find(l => l.name === limit.name) ?? removed.get(limit.name);
       const hunk = hunkAround(file, line);
       if (asked.has(limit.name) || (before && before.number <= limit.number) || !hunk) return [];
       asked.add(limit.name);
