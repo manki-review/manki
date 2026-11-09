@@ -195,8 +195,9 @@ describe('refuteBlockers', () => {
     expect(client.calls).toHaveLength(7);
     const [, unseenMessage] = client.messages.find(([, user]) => user.includes(': Unseen confirmed\n'))!;
     expect(unseenMessage).toContain('## Finding the judge could not settle without tools: Unseen confirmed');
-    expect(client.messages.find(([, user]) => user.includes(': Reached through the public API\n'))![1])
-      .toContain("- **Judge's reasoning**: warning. The builder itself only creates v2 payloads through 'new()'.");
+    const reachMessage = client.messages.find(([, user]) => user.includes(': Reached through the public API\n'))![1];
+    expect(reachMessage).toContain('## Finding the judge could not settle without tools: Reached through the public API');
+    expect(reachMessage).toContain("- **Judge's reasoning**: warning. The builder itself only creates v2 payloads through 'new()'.");
     expect(unseenMessage).toContain("- **Judge's reasoning**: warning. The lock path sits outside the diff.");
     expect(client.messages.find(([, user]) => user.includes(': Unbuilt confirmed\n'))![1]).toContain('## Claimed build failure: Unbuilt confirmed');
   });
