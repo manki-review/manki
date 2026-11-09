@@ -7,11 +7,12 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { changedKeys, loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, reviewableDiff, tagFindingOrigins } from './diff';
 import { ApprovalHeld, buildRepoContext, configFailed, loadBaseConfig, RepoFiles } from './github';
+import { isParsedLockfile, LockfileDiff, readLockfileChanges, withLockfiles } from './lockfile';
 import type { ProviderInputs } from './providers';
 import { ReviewProgress, runReview } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
-import type { ConfigSource, ReviewConfig, ReviewResult, RoundContext, RoundOutcome } from './types';
+import type { ConfigSource, ParsedDiff, ReviewConfig, ReviewResult, RoundContext, RoundOutcome } from './types';
 import { fetchWorkspace, runGit } from './workspace';
 
 const DEFAULT_CONFIG_PATH = '.manki.yml';
@@ -143,6 +144,17 @@ async function applyPatch(dir: string, patch: string, head: string): Promise<voi
   });
 }
 
+/** Reads the changed lockfiles Manki parses from `rev`, which holds their `side` of `fullDiff`. One git cannot show stays unread. */
+async function readLocalLockfiles(repoRoot: string, rev: string, fullDiff: ParsedDiff, side: 'head' | 'base'): Promise<LockfileDiff[]> {
+  const contents = new Map<string, string>();
+  for (const file of fullDiff.files.filter(f => isParsedLockfile(f.path))) {
+    const path = side === 'head' ? file.path : file.oldPath ?? file.path;
+    const content = await runGit(repoRoot, ['show', `${rev}:${path}`]).catch(() => undefined);
+    if (content !== undefined) contents.set(path, content);
+  }
+  return readLockfileChanges(fullDiff, contents, side);
+}
+
 /**
  * Runs the review pipeline a pull request round runs on a local change, and returns the result with the round record.
  * Memory, prior rounds, linked issues and static signals stay off, since they all come from GitHub.
@@ -156,7 +168,9 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
   const { config } = loaded;
   const raw = patch ?? await runGit(repoRoot, ['diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', base, head]);
   const { fullDiff, diff, excludedFiles, rawDiff } = reviewableDiff(raw, config.exclude_paths);
-  if (diff.files.length === 0) throw new Error('Nothing to review: the change has no reviewable files');
+  // A patch applies to `head`, so its lockfiles are read before the change, and a commit range's after it.
+  const lockfiles = await readLocalLockfiles(repoRoot, head, fullDiff, patch === undefined ? 'head' : 'base');
+  if (diff.files.length === 0 && lockfiles.length === 0) throw new Error('Nothing to review: the change has no reviewable files');
 
   const { clients, models } = buildReviewClients(config, providerInputs);
   await warmUpClients(clients);
@@ -186,6 +200,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       workspace,
       headSha: head,
       excludedPaths: excludedFiles.map(f => f.path),
+      lockfiles,
       signal,
       onProgress: (event) => {
         if (event.plannerDurationMs !== undefined) plannerDurationMs = event.plannerDurationMs;
@@ -194,8 +209,8 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       },
     });
     if (result.reviewComplete) {
-      addCodeContext(result.findings, diff);
-      tagFindingOrigins(result.findings, diff, undefined);
+      addCodeContext(result.findings, withLockfiles(diff, lockfiles));
+      tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), undefined);
     }
     const context = buildRoundContext({
       prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: loaded.source,
