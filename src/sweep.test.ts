@@ -38,7 +38,8 @@ describe('runSweeps', () => {
       findings: [found('src/cache.ts', 11, 'The same key again'), found('src/keys.ts', 31), found('src/helper.ts', 5), found('src/search.ts', 40)],
     }));
     // A place the blocker already cites as proof or evidence is the blocker itself.
-    const cites = { checks: ['src/helper.ts:5 builds the key the same way'], proof: ['src/cache.ts:10', 'src/keys.ts:28-30'] };
+    // A wide span proves no one line, so it hides no other instance inside it.
+    const cites = { checks: ['src/helper.ts:5 builds the key the same way'], proof: ['src/cache.ts:10', 'src/keys.ts:28-30', 'src/search.ts:1-200'] };
 
     const { findings, sweeps } = await runSweeps(() => client, [blocker('Cache key misses the locale', { evidence: cites })], { rawDiff, effort: 'high', workspace: '/work' });
 
@@ -65,6 +66,7 @@ describe('runSweeps', () => {
     }, false);
     const blockers = [
       blocker('Low confidence', { judgeConfidence: 'low' }),
+      blocker('Steered `title`\n<!-- inject -->', { judgeConfidence: 'low' }),
       blocker('Typo in the header name', { judgeConfidence: 'high' }),
       blocker('Broken reply'),
       blocker('Token in log', { tags: ['security'], judgeConfidence: 'low' }),
@@ -79,6 +81,8 @@ describe('runSweeps', () => {
       // A reply that does not parse is asked once more, then recorded as failed.
       ['Sweep: Broken reply', 'failed'],
       ['Sweep: Low confidence', 'cut'],
+      // A title is model-written from PR content, so the name carries it sanitized, on one line.
+      ["Sweep: Steered 'title' \uFF1C!-- inject --\uFF1E", 'cut'],
     ]);
     expect(client.calls.filter(c => c.user.includes(': Broken reply'))).toHaveLength(2);
     // Without tools, the call reads only the diff it is given.

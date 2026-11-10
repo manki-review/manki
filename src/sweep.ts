@@ -87,10 +87,13 @@ function parseSweep(text: string, reviewer: string): { general: boolean; defectC
   return { general, defectClass, findings };
 }
 
-/** Whether `f` sits on the blocker's own line or near any line the blocker cites in its proof or evidence. */
+/**
+ * Whether `f` sits on the blocker's own line or near a line the blocker cites in its proof or evidence. A cited span
+ * wider than a few lines proves no one line, so it hides no other instance inside it.
+ */
 function citedByBlocker(blocker: Finding, f: Finding): boolean {
   const cited = [`${blocker.file}:${blocker.line}`, ...(blocker.evidence?.proof ?? []), ...(blocker.evidence?.checks ?? []).map(c => c.match(/^\S+?:\d+(?:-\d+)?/)?.[0] ?? '')]
-    .flatMap(at => parseLocation(at) ?? []);
+    .flatMap(at => parseLocation(at) ?? []).filter(at => at.end - at.start <= OWN_LINE_TOLERANCE * 2);
   return cited.some(at => at.file === f.file && at.start - OWN_LINE_TOLERANCE <= f.line && f.line <= at.end + OWN_LINE_TOLERANCE);
 }
 
@@ -112,7 +115,8 @@ export async function runSweeps(
   clientFor: (reviewer: string) => LLMClient, blockers: readonly Finding[], { rawDiff, effort, workspace }: SweepOptions,
 ): Promise<{ findings: Finding[]; sweeps: RoundSweep[] }> {
   const ordered = byPriority(blockers);
-  const names = uniqueNames(ordered.map(b => `Sweep: ${b.title}`.slice(0, 120)));
+  // The title is model-written from PR content, so the name carries it sanitized, on one line.
+  const names = uniqueNames(ordered.map(b => `Sweep: ${sanitizeForPromptEmbed(b.title).replace(/\s+/g, ' ').trim()}`.slice(0, 120)));
   const asked = ordered.slice(0, MAX_SWEEPS).map((blocker, i) => ({ blocker, reviewer: names[i] }));
   const at = (b: Finding): string => `${b.file}:${b.line}`;
   if (asked.length > 0) core.info(`Sweeping the diff for ${asked.length} blocker class(es)${ordered.length > asked.length ? `, ${ordered.length - asked.length} cut by the cap` : ''}`);

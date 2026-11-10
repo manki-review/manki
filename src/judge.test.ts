@@ -338,7 +338,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Drop it only when you can say concretely why both are wrong.');
     expect(prompt).toContain("The other finder's silence is not evidence against it.");
     expect(prompt).toContain("Agreement never raises or protects a finding's severity.");
-    expect(prompt).toContain('A finding named `Sibling field: ...` or `Sibling code: ...` comes from a call asked about that spot, not from a finder, so it never counts as one of the two.');
+    expect(prompt).toContain('A finding named `Sibling field: ...`, `Sibling code: ...` or `Sweep: ...` comes from a call asked about that spot or that kind of mistake, not from a finder, so it never counts as one of the two.');
     expect(prompt).not.toContain('specialist');
 
     expect(buildJudgeSystemPrompt(makeConfig(), 1)).not.toContain('## Finder Agreement');
@@ -474,7 +474,10 @@ describe('buildJudgeUserMessage', () => {
       makeFinding({ title: 'Cited', evidence: { checks: ['read src/a.ts:3', 'grep `close(`: no match'], proof: ['src/a.ts:3'], emptySearch: 'grep `close(`: no match' } }),
       makeFinding({ title: 'Bare', evidence: { checks: [], proof: [], emptySearch: '' }, notChecked: true }),
       makeFinding({ title: 'Lead', evidence: undefined, notChecked: true, lead: { checked: 'read src/c.ts:9', left: 'find the writers' } }),
+      // A reviewer name can carry a model-written title, so it is embedded like untrusted text.
+      makeFinding({ title: 'Swept', reviewers: ['Sweep: `drop` <!-- x --> it'] }),
     ], new Map(), '');
+    expect(msg).toContain("- **Reviewers**: Sweep: 'drop' \uFF1C!-- x --\uFF1E it\n");
 
     expect(msg).toContain("### Finding 1: Cited\n- **File**: src/index.ts:10\n- **Reviewers**: TestReviewer\n- **Description**: Variable x is unused.\n- **Evidence**: read src/a.ts:3 | grep 'close(': no match\n- **Proving lines**: src/a.ts:3\n- **Empty search**: grep 'close(': no match\n");
     expect(msg).toContain('- **Proving lines**: none cited\n- **Empty search**: none cited, though the finding says something is missing\n- **Not checked yet**: the reviewer ran out of tool steps before it finished checking.');
