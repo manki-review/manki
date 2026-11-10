@@ -2,7 +2,8 @@ import {
   addCodeContext,
   changeDigest,
   citedRanges,
-  earliestCommitTouching,
+  onlyCommitAdding,
+  onlyCommitChanging,
   parsePRDiff,
   filterDiff,
   filterFilesWithAttribution,
@@ -640,58 +641,99 @@ describe('isLineInDiff', () => {
   });
 });
 
-describe('earliestCommitTouching', () => {
+describe('onlyCommitAdding', () => {
   // A hunk from its start lines and its lines, each led by ' ', '+' or '-'.
   const hunk = (oldStart: number, newStart: number, lines: string[]) => ({
     oldStart, newStart, content: lines.join('\n'),
     oldLines: lines.filter(l => !l.startsWith('+')).length, newLines: lines.filter(l => !l.startsWith('-')).length,
   });
   const commit = (sha: string, ...files: DiffFile[]) => ({ sha, diff: { files, totalAdditions: 0, totalDeletions: 0 } });
-  // The first commit replaces line 1 of `src/retry.ts` and adds its lines 12-13 between context lines, replaces line 5 of
-  // `src/old.ts` and line 4 of `src/gate.ts`, and adds `src/fresh.ts`. The second adds lines 2-6 of `src/retry.ts`, renames `src/old.ts`, and
-  // adds line 21 of `src/fresh.ts` and line 5 of `src/gate.ts`.
+  // The first commit replaces line 1 of `src/retry.ts` and adds its lines 12-13, replaces line 5 of `src/old.ts` and line
+  // 4 of `src/gate.ts`, and adds `src/fresh.ts`. The second adds lines 2-6 of `src/retry.ts`, renames `src/old.ts` and
+  // replaces its line 41, and adds line 21 of `src/fresh.ts` and line 5 of `src/gate.ts`. Each changes one `index.ts`.
   const commits = [
     commit('c1',
       { path: 'src/retry.ts', changeType: 'modified', hunks: [hunk(1, 1, ['-z', '+Z', ' p']), hunk(10, 10, [' a', ' b', '+x', '+y', ' c', ' d', ' e'])] },
       { path: 'src/old.ts', changeType: 'modified', hunks: [hunk(4, 4, [' a', '-b', '+B', ' c'])] },
       { path: 'src/fresh.ts', changeType: 'added', hunks: [hunk(0, 1, Array.from({ length: 30 }, (_, i) => `+${i}`))] },
-      { path: 'src/gate.ts', changeType: 'modified', hunks: [hunk(3, 3, [' a', '-b', '+B', ' c'])] }),
+      { path: 'src/gate.ts', changeType: 'modified', hunks: [hunk(3, 3, [' a', '-b', '+B', ' c'])] },
+      { path: 'src/a/index.ts', changeType: 'modified', hunks: [hunk(1, 1, ['-k', '+K'])] }),
     commit('c2',
       { path: 'src/retry.ts', changeType: 'modified', hunks: [hunk(1, 1, [' p', '+1', '+2', '+3', '+4', '+5', ' q', ' r'])] },
       { path: 'src/new.ts', oldPath: 'src/old.ts', changeType: 'renamed', hunks: [hunk(40, 40, [' x', '-y', '+Y'])] },
       { path: 'src/fresh.ts', changeType: 'modified', hunks: [hunk(20, 20, [' a', '+n', ' b', ' c'])] },
-      { path: 'src/gate.ts', changeType: 'modified', hunks: [hunk(3, 3, [' a', ' B', '+check', ' c'])] }),
+      { path: 'src/gate.ts', changeType: 'modified', hunks: [hunk(3, 3, [' a', ' B', '+check', ' c'])] },
+      { path: 'src/b/index.ts', changeType: 'modified', hunks: [hunk(1, 1, ['-m', '+M'])] }),
   ];
   const at = (file: string, start: number, end = start) => ({ file, start, end });
 
-  it('finds the earliest commit whose change touches a cited line, carried back through the lines later commits added', () => {
+  it('names the one commit that wrote the cited lines, carried back through the lines later commits added', () => {
     // Line 17 now was line 12 before the second commit added five lines above it.
-    expect(earliestCommitTouching(commits, [at('src/retry.ts', 17)])).toBe('c1');
-    expect(earliestCommitTouching(commits, [at('src/retry.ts', 3)])).toBe('c2');
-    expect(earliestCommitTouching(commits, [at('src/retry.ts', 3), at('src/retry.ts', 15, 18)])).toBe('c1');
-    // Only the lines next to a change count, not the other context lines of a hunk. Line 15 was line 10, two lines above
-    // what the first commit added.
-    expect(earliestCommitTouching(commits, [at('src/retry.ts', 15)])).toBeUndefined();
-    // A removal touches the lines on both sides of it, here the context line above it.
-    expect(earliestCommitTouching(commits, [at('src/new.ts', 40)])).toBe('c2');
-    expect(earliestCommitTouching(commits, [at('src/new.ts', 39)])).toBeUndefined();
-    // A path suffix names the file, a renamed file is followed to its old path, and an added file ends the walk.
-    expect(earliestCommitTouching(commits, [at('retry.ts', 17)])).toBe('c1');
-    expect(earliestCommitTouching(commits, [at('src/new.ts', 5)])).toBe('c1');
-    expect(earliestCommitTouching(commits, [at('src/fresh.ts', 25)])).toBe('c1');
-    // A line a commit added was not there before, so an earlier change right above it does not count.
-    expect(earliestCommitTouching(commits, [at('src/gate.ts', 5)])).toBe('c2');
-    expect(earliestCommitTouching(commits, [at('src/fresh.ts', 21)])).toBe('c2');
-    // A range whose first line a later commit added keeps the rest: lines 6-12 now were lines 2-7 before the second commit.
-    expect(earliestCommitTouching(commits, [at('src/retry.ts', 6, 12)])).toBe('c1');
-    // A range over the whole file finds the earliest commit that changed the file at all. Asked for the only one, it finds
-    // none when two commits changed the file.
-    expect(earliestCommitTouching(commits, [at('src/gate.ts', 1, Number.MAX_SAFE_INTEGER)])).toBe('c1');
-    expect(earliestCommitTouching(commits, [at('src/gate.ts', 1, Number.MAX_SAFE_INTEGER)], true)).toBeUndefined();
-    expect(earliestCommitTouching(commits, [at('src/new.ts', 1, Number.MAX_SAFE_INTEGER)], true)).toBeUndefined();
-    expect(earliestCommitTouching([commits[0]], [at('src/gate.ts', 1, Number.MAX_SAFE_INTEGER)], true)).toBe('c1');
-    expect(earliestCommitTouching(commits, [at('src/retry.ts', 60), at('src/other.ts', 1)])).toBeUndefined();
-    expect(earliestCommitTouching(commits, [])).toBeUndefined();
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 17)])).toBe('c1');
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 3)])).toBe('c2');
+    // Lines the two commits wrote between them name neither.
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 3), at('src/retry.ts', 15, 18)])).toBeUndefined();
+    // A line next to a change does not count: the second commit inserted line 5 of `src/gate.ts` right under the line
+    // the first commit changed, and the context line above a removal is not written by the removal either.
+    expect(onlyCommitAdding(commits, [at('src/gate.ts', 5)])).toBe('c2');
+    expect(onlyCommitAdding(commits, [at('src/gate.ts', 4)])).toBe('c1');
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 15)])).toBeUndefined();
+    expect(onlyCommitAdding(commits, [at('src/new.ts', 40)])).toBeUndefined();
+    expect(onlyCommitAdding(commits, [at('src/new.ts', 41)])).toBe('c2');
+    // A line a later commit wrote counts for that commit alone, and the rest of a range still counts.
+    expect(onlyCommitAdding(commits, [at('src/fresh.ts', 21)])).toBe('c2');
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 6, 12)])).toBe('c2');
+    // A renamed file is followed to its old path, and an added file ends the walk.
+    expect(onlyCommitAdding(commits, [at('src/new.ts', 5)])).toBe('c1');
+    expect(onlyCommitAdding(commits, [at('src/fresh.ts', 25)])).toBe('c1');
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 60), at('src/other.ts', 1)])).toBeUndefined();
+    expect(onlyCommitAdding(commits, [])).toBeUndefined();
+    // A range too wide to name one place, a line past the safe integers, or a cited file no commit changed is never
+    // certain, even beside lines one commit wrote.
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 17, 400)])).toBeUndefined();
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 2 ** 60)])).toBeUndefined();
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 17), at('src/unchanged.ts', 3)])).toBeUndefined();
+  });
+
+  it('counts a removal between two cited lines as writing them, but not one above the first', () => {
+    // The first commit deletes the early return between lines 49 and 50, and the second rewrites line 51.
+    const deleting = [
+      commit('d1', { path: 'src/x.ts', changeType: 'modified', hunks: [hunk(49, 49, [' a', '-return;', ' b', ' c'])] }),
+      commit('d2', { path: 'src/x.ts', changeType: 'modified', hunks: [hunk(51, 51, ['-c', '+C'])] }),
+    ];
+    expect(onlyCommitAdding(deleting, [at('src/x.ts', 48, 51)])).toBeUndefined();
+    expect(onlyCommitAdding(deleting, [at('src/x.ts', 49, 50)])).toBe('d1');
+    expect(onlyCommitAdding(deleting, [at('src/x.ts', 50)])).toBeUndefined();
+  });
+
+  it('reads a path suffix as the one changed file that ends with it, or the thread\'s own path among several', () => {
+    expect(onlyCommitAdding(commits, [at('retry.ts', 17)])).toBe('c1');
+    expect(onlyCommitAdding(commits, [at('index.ts', 1)], 'src/b/index.ts')).toBe('c2');
+    expect(onlyCommitAdding(commits, [at('index.ts', 1)])).toBeUndefined();
+    // The thread's own file wins when it ends with the name, even if only another changed file does.
+    expect(onlyCommitAdding(commits, [at('index.ts', 1)], 'src/c/index.ts')).toBeUndefined();
+    expect(onlyCommitAdding([commits[1]], [at('index.ts', 1)], 'src/a/index.ts')).toBeUndefined();
+    expect(onlyCommitAdding([commits[1]], [at('index.ts', 1)])).toBe('c2');
+    // A thread on a root file keeps a bare name to itself, even when only a deeper file with that name changed.
+    expect(onlyCommitAdding([commits[1]], [at('index.ts', 1)], 'index.ts')).toBeUndefined();
+    // A path with a directory is taken as it is, never as the end of a longer changed path.
+    expect(onlyCommitAdding(commits, [at('a/index.ts', 1)])).toBeUndefined();
+  });
+
+  it('names a commit for a whole file only when it is the only one that changed the file', () => {
+    expect(onlyCommitChanging(commits, 'src/gate.ts')).toBeUndefined();
+    expect(onlyCommitChanging(commits, 'src/new.ts')).toBeUndefined();
+    // A thread keeps the path it was posted on, so a rename is followed forward to the commits after it.
+    expect(onlyCommitChanging(commits, 'src/old.ts')).toBeUndefined();
+    const renamed = [
+      commit('e1', { path: 'src/new.ts', oldPath: 'src/old.ts', changeType: 'renamed', hunks: [hunk(1, 1, ['-a', '+A'])] }),
+      commit('e2', { path: 'src/new.ts', changeType: 'modified', hunks: [hunk(5, 5, ['-b', '+B'])] }),
+    ];
+    expect(onlyCommitChanging(renamed, 'src/old.ts')).toBeUndefined();
+    expect(onlyCommitChanging([renamed[0]], 'src/old.ts')).toBe('e1');
+    expect(onlyCommitChanging(commits, 'src/a/index.ts')).toBe('c1');
+    expect(onlyCommitChanging([commits[0]], 'src/gate.ts')).toBe('c1');
+    expect(onlyCommitChanging(commits, 'src/other.ts')).toBeUndefined();
   });
 
   it('reads the `path:line` and `path:start-end` locations a text cites', () => {

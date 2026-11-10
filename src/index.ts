@@ -15,7 +15,7 @@ import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, 
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
-import { addCodeContext, changeDigest, citedRanges, earliestCommitTouching, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
+import { addCodeContext, changeDigest, citedRanges, onlyCommitAdding, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { findingKey, isEmptyInterRoundDiff } from './judge';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
@@ -1370,9 +1370,10 @@ async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Pr
 }
 
 /**
- * Returns a lookup of the commit since the last reviewed head that fixed a thread: the earliest whose change touches the
- * lines the resolution `reason` cites, or the thread's own line when it cites none. A lone commit made every change
- * since that head. It finds none after a rebase or a merge, or past `MAX_FIXING_COMMITS` commits.
+ * Returns a lookup of the commit since the last reviewed head that certainly fixed a thread: the only one that wrote the
+ * lines the resolution `reason` cites, or when it cites none and the thread is outdated, the only one that changed the
+ * thread's file. A lone commit made every change since that head. It finds none when it is not certain, after a rebase
+ * or a merge, or past `MAX_FIXING_COMMITS` commits.
  */
 async function findFixingCommit(run: ReviewRun): Promise<(thread: OpenThread, reason: string) => string | undefined> {
   const { octokit, owner, repo, commitSha } = run;
@@ -1384,10 +1385,9 @@ async function findFixingCommit(run: ReviewRun): Promise<(thread: OpenThread, re
     const commits = await Promise.all(shas.map(async sha => ({ sha, diff: parsePRDiff(await fetchCommitDiff(octokit, owner, repo, sha)) })));
     return (thread, reason) => {
       const cited = citedRanges(reason);
-      if (cited.length > 0) return earliestCommitTouching(commits, cited);
-      if (thread.line > 0) return earliestCommitTouching(commits, [{ file: thread.file, start: thread.line, end: thread.line }]);
-      // An outdated thread has line 0, since a commit changed its line. Its file names the fix only when one commit changed it.
-      return thread.file ? earliestCommitTouching(commits, [{ file: thread.file, start: 1, end: Number.MAX_SAFE_INTEGER }], true) : undefined;
+      if (cited.length > 0) return onlyCommitAdding(commits, cited, thread.file);
+      // Without a cited line, only an outdated thread, whose line a commit changed, shows which file the fix went into.
+      return thread.line === 0 && thread.file ? onlyCommitChanging(commits, thread.file) : undefined;
     };
   } catch (error) {
     core.warning(`Could not read the commits since the last review, so each fix reply names the range: ${error}`);

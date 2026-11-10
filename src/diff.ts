@@ -216,74 +216,108 @@ export function citedRanges(text: string): LineRange[] {
   return [...text.matchAll(TEXT_LOCATION_RE)].map(([, file, start, end]) => ({ file, start: Number(start), end: Number(end ?? start) }));
 }
 
+/** A commit with its own diff against its parent. */
+type CommitDiff = { sha: string; diff: ParsedDiff };
+
+/** A cited range wider than this names no one place, so no commit is certain for it. */
+const MAX_CERTAIN_SPAN = 200;
+
 /**
- * Returns the sha of the earliest of `commits`, oldest first each with its own diff, whose change touches a line of
- * `ranges`. The ranges count lines at the newest commit, so each is carried back through the hunks of later commits. A
- * range may name its file by a path suffix, such as `retry.ts` for `src/retry.ts`. With `onlyOne`, it returns a commit
- * only when no other commit touches the ranges.
+ * Returns the sha of the only one of `commits`, oldest first, that added a line of `ranges` as the lines stand at the
+ * newest commit. Each line keeps the commit that last added it, since no earlier commit wrote that line. A line next to
+ * a change does not count, nor a removal right above the first line, but a removal between two cited lines does. Returns none when no commit or several did, when a range names a file no
+ * commit changed or a line past the safe integers, or when it is wider than `MAX_CERTAIN_SPAN`. A range may name its
+ * file without its directory, such as `retry.ts`. Such a name means `ownPath` when that is or ends with it, else the one
+ * changed file that does, and no commit is certain when several do.
  */
-export function earliestCommitTouching(commits: Array<{ sha: string; diff: ParsedDiff }>, ranges: LineRange[], onlyOne = false): string | undefined {
-  const touching = new Set<number>();
+export function onlyCommitAdding(commits: CommitDiff[], ranges: LineRange[], ownPath?: string): string | undefined {
+  const paths = new Set(commits.flatMap(c => c.diff.files.map(f => f.path)));
+  const adding = new Set<string>();
   for (const range of ranges) {
-    let at: LineRange | undefined = range;
-    for (let i = commits.length - 1; i >= 0 && at; i--) {
-      const { file: name, start, end }: LineRange = at;
-      const file: DiffFile | undefined = commits[i].diff.files.find(f => f.path === name || f.path.endsWith(`/${name}`));
-      if (!file) continue;
-      if ([...touchedLines(file)].some(line => start <= line && line <= end)) touching.add(i);
-      const first = lineBefore(file.hunks, start, 'start');
-      const last = lineBefore(file.hunks, end, 'end');
-      // Lines this commit added did not exist before it, so a range of only such lines ends the walk.
-      at = file.changeType === 'added' || first > last ? undefined : { file: file.oldPath ?? file.path, start: first, end: last };
+    const path = resolvePath(range.file, paths, ownPath);
+    // A line number past the safe integers would stall the walk, and a cited file no commit changed leaves the fix open.
+    if (path === undefined || !paths.has(path) || !Number.isSafeInteger(range.end) || range.end - range.start >= MAX_CERTAIN_SPAN) return undefined;
+    for (let line = range.start; line <= range.end; line++) {
+      for (const sha of commitsWriting(commits, path, line, line > range.start)) adding.add(sha);
     }
   }
-  return touching.size === 0 || (onlyOne && touching.size > 1) ? undefined : commits[Math.min(...touching)].sha;
+  return adding.size === 1 ? [...adding][0] : undefined;
 }
 
 /**
- * Returns the new-file lines the change to `file` touches: each added line and the lines right next to it, and the lines
- * on both sides of each removal. The other context lines of a hunk are not touched.
+ * Returns the path `name` names: itself when it has a directory or is among `paths`, else `ownPath` when it is or ends
+ * with `name`, else the one of `paths` ending with it. Returns none when several end with it.
  */
-function touchedLines(file: DiffFile): Set<number> {
-  const touched = new Set<number>();
-  for (const hunk of file.hunks) {
-    let line = hunk.newStart;
-    for (const content of hunk.content.split('\n')) {
-      if (content.startsWith('\\')) continue;
-      if (content.startsWith('-')) {
-        touched.add(line - 1).add(line);
-        continue;
-      }
-      if (content.startsWith('+')) touched.add(line - 1).add(line).add(line + 1);
-      line++;
-    }
-  }
-  return touched;
+function resolvePath(name: string, paths: ReadonlySet<string>, ownPath: string | undefined): string | undefined {
+  if (paths.has(name) || name.includes('/')) return name;
+  if (ownPath === name || ownPath?.endsWith(`/${name}`)) return ownPath;
+  const matches = [...paths].filter(p => p.endsWith(`/${name}`));
+  if (matches.length <= 1) return matches[0] ?? name;
+  return ownPath && matches.includes(ownPath) ? ownPath : undefined;
 }
 
 /**
- * Returns the line `line` of a file sat on before the change `hunks` made. A line the change added had none, so as the
- * `start` of a range it maps to the line after where it went in, and as its `end` to the line before.
+ * Returns the shas of the commits that wrote line `line` of `path`, counted at the newest commit: the latest that added
+ * it, and when `inside` a cited range, each later one that removed lines right above it.
  */
-function lineBefore(hunks: DiffHunk[], line: number, side: 'start' | 'end'): number {
+function commitsWriting(commits: CommitDiff[], path: string, line: number, inside: boolean): string[] {
+  const writing: string[] = [];
+  let at: { path: string; line: number } | undefined = { path, line };
+  for (let i = commits.length - 1; i >= 0 && at; i--) {
+    const { path: name, line: current }: { path: string; line: number } = at;
+    const file: DiffFile | undefined = commits[i].diff.files.find(f => f.path === name);
+    if (!file) continue;
+    const { before, removedAbove } = lineBefore(file.hunks, current);
+    if (inside && removedAbove) writing.push(commits[i].sha);
+    if (before === undefined) return [...writing, commits[i].sha];
+    at = file.changeType === 'added' ? undefined : { path: file.oldPath ?? file.path, line: before };
+  }
+  return writing;
+}
+
+/**
+ * Returns the sha of the only one of `commits`, oldest first, that changed the file at `path` at all. `path` is the
+ * file's name before the first commit, as a thread posted earlier keeps it, so a rename is followed forward.
+ */
+export function onlyCommitChanging(commits: CommitDiff[], path: string): string | undefined {
+  const changing: string[] = [];
+  let name = path;
+  for (const commit of commits) {
+    const file = commit.diff.files.find(f => (f.oldPath ?? f.path) === name);
+    if (!file) continue;
+    changing.push(commit.sha);
+    name = file.path;
+  }
+  return changing.length === 1 ? changing[0] : undefined;
+}
+
+/**
+ * Returns the line `line` of a file sat on before the change `hunks` made, as `before`, or none for a line the change
+ * added, and whether the change removed lines right above it.
+ */
+function lineBefore(hunks: DiffHunk[], line: number): { before: number | undefined; removedAbove: boolean } {
   let shift = 0;
   for (const hunk of [...hunks].sort((a, b) => a.newStart - b.newStart)) {
     if (line < hunk.newStart) break;
     let oldLine = hunk.oldStart;
     let newLine = hunk.newStart;
+    let removed = false;
     for (const content of hunk.content.split('\n')) {
       if (content.startsWith('\\')) continue;
       if (content.startsWith('-')) {
         oldLine++;
+        removed = true;
         continue;
       }
-      if (newLine === line) return content.startsWith('+') && side === 'end' ? oldLine - 1 : oldLine;
+      if (newLine === line) return { before: content.startsWith('+') ? undefined : oldLine, removedAbove: removed };
+      removed = false;
       if (!content.startsWith('+')) oldLine++;
       newLine++;
     }
+    if (newLine === line) return { before: oldLine, removedAbove: removed };
     shift = oldLine - newLine;
   }
-  return line + shift;
+  return { before: line + shift, removedAbove: false };
 }
 
 /**
