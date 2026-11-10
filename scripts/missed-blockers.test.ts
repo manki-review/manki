@@ -182,14 +182,24 @@ describe('bodyAt', () => {
 describe('reviewStart', () => {
   it('dates a round at the start of its review, or at its record without a wall-clock time', () => {
     expect(reviewStart(makeRoundContext(2, { usage: { wallClockMs: 300_000 } }))).toBe('2025-01-01T23:55:00.000Z');
-    expect(reviewStart(makeRoundContext(2))).toBe('2025-01-02T00:00:00.000Z');
+    expect(reviewStart(makeRoundContext(2, { usage: { wallClockMs: 0 } }))).toBe('2025-01-02T00:00:00.000Z');
   });
 
-  it('gives no start for a record without usage or a readable time, so the body reads as not recovered', () => {
-    const noUsage = { ...makeRoundContext(2), usage: undefined } as unknown as RoundContext;
-    const badTime = makeRoundContext(2, { meta: { ...makeRoundContext(2).meta, timestamp: 'not a time' } });
-    expect([reviewStart(noUsage), reviewStart(badTime)]).toEqual([undefined, undefined]);
-    expect(bodyAt('Now.', [{ editedAt: '2025-01-01T00:00:00Z', diff: 'First.' }], reviewStart(badTime))).toEqual({ body: 'Now.', known: false });
+  it.each([
+    ['no usage', { usage: undefined }],
+    ['no wall-clock time', { usage: {} }],
+    ['a wall-clock time that is not a number', { usage: { wallClockMs: '300000' } }],
+    ['a NaN wall-clock time', { usage: { wallClockMs: NaN } }],
+    ['an infinite wall-clock time', { usage: { wallClockMs: Infinity } }],
+    ['a negative wall-clock time', { usage: { wallClockMs: -1 } }],
+    ['a wall-clock time past the dates JavaScript holds', { usage: { wallClockMs: 1e300 } }],
+    ['no timestamp', { usage: { wallClockMs: 0 }, meta: { round: 2 } }],
+    ['an unreadable timestamp', { usage: { wallClockMs: 0 }, meta: { round: 2, timestamp: 'not a time' } }],
+    ['a timestamp that is not a string', { usage: { wallClockMs: 0 }, meta: { round: 2, timestamp: 1735776000000 } }],
+  ])('gives no start, and never throws, for a record with %s, so the body reads as not recovered', (_, fields) => {
+    const record = { ...makeRoundContext(2), ...fields } as unknown as RoundContext;
+    expect(reviewStart(record)).toBeUndefined();
+    expect(bodyAt('Now.', [{ editedAt: '2025-01-01T00:00:00Z', diff: 'First.' }], reviewStart(record))).toEqual({ body: 'Now.', known: false });
   });
 });
 
