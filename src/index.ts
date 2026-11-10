@@ -1846,6 +1846,8 @@ async function runFullReview(
     });
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+    // A round record that could not be read may hold a raise, so the round does not approve while a Manki thread is open.
+    if (recap.priorRoundsIncomplete) blockOnOpenThreads(result, run.openThreads.map(t => ({ ...t, recordedGrade: 'blocker' as const })));
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
     const resolved = await resolveAddressedThreads(run, result);
     const replies = await replyInOpenThreads(run, result);

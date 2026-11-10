@@ -1663,6 +1663,8 @@ describe('fetchRecapState', () => {
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(3);
+      // A skipped record could hold a thread's grade, so the recap says the rounds are incomplete.
+      expect(state.priorRoundsIncomplete).toBe(true);
       expect(core.warning).toHaveBeenCalledWith(
         expect.stringContaining('https://github.com/owner/repo/pull/1#pullrequestreview-500'),
       );

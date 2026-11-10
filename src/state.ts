@@ -131,7 +131,7 @@ async function fetchBotReviewThreads(
   // The round records hold each thread's grade, which also decides who may clear a resolved thread.
   const records = botThreads.length > 0 ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : { priorRounds: [] };
   const grades = recordedThreadGrades(records.priorRounds);
-  if ('failed' in records) core.warning('Without the round records, every Manki thread counts as blocking');
+  if ('priorRoundsIncomplete' in records) core.warning('Without every round record, every Manki thread counts as blocking');
   return botThreads
     .map(thread => {
       const body = thread.comments.nodes[0]?.body ?? '';
@@ -139,7 +139,7 @@ async function fetchBotReviewThreads(
       const isSecurity = isSecurityThread(body);
       const recorded = grades.get(thread.id)?.grade;
       // An unreadable record could hide a raise, so the thread blocks rather than let auto-approve pass it.
-      const isBlocking = 'failed' in records || threadBlocks({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity });
+      const isBlocking = 'priorRoundsIncomplete' in records || threadBlocks({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity });
       // The marker's slug turned every other character into a hyphen, so the finding data keeps the real title.
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
       const findingTitle = parseFindingData(body)?.title?.trim() || (titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown');

@@ -5554,9 +5554,10 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     const partly = (threadId: string, remaining: string) => ({ threadId, status: 'partly_addressed' as const, reason: 'r', remaining, grade: 'warning' as const });
-    const run = async (lastReviewed: string) => {
+    const run = async (lastReviewed: string, priorRoundsIncomplete?: true) => {
       mockGraphql.mockClear();
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+        ...(priorRoundsIncomplete && { priorRoundsIncomplete }),
         previousFindings: [
           { title: 'Upload', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
           { title: 'Log', file: 'src/app.ts', line: 2, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_def', recordedGrade: 'warning' as const },
@@ -5602,6 +5603,11 @@ describe('runFullReview orchestration', () => {
     mockGraphql.mockImplementation(answer);
     expect(jest.mocked(ghUtils.postReview).mock.calls.length).toBe(posts + 1);
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Failed to reply on partly fixed thread PRRT_jkl'));
+    // With a round record unread, a raise could hide, so the round does not approve while a thread is open.
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5].verdict).toBe('APPROVE');
+    await run('abc123', true);
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5]).toMatchObject({ verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' });
+
     // When the change since the last round cannot be read, every partly fixed thread gets its reply.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed'));
     expect((await run('old456')).map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
