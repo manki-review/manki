@@ -178,13 +178,13 @@ describe('config', () => {
   });
 
   describe('review config', () => {
-    const deep = 'review:\n  groups:\n    deep:\n      reviewers:\n        - { model: claude-opus-5-5, effort: high }\n        - { model: gpt-5.5, effort: high }\n';
+    const deep = 'review:\n  groups:\n    deep:\n      reviewers:\n        - { model: claude-opus-5-5, effort: high }\n        - { model: gpt-5.5, effort: xhigh }\n';
 
     it('loads groups, classes and routing as written and leaves the built-ins when unset', () => {
       expect(loadConfigFromContent('').review).toBeUndefined();
       const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n  critical_paths: ["src/consensus/**", "@security_paths"]\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n`);
       expect(config.review).toEqual({
-        groups: { deep: { reviewers: [{ model: 'claude-opus-5-5', effort: 'high' }, { model: 'gpt-5.5', effort: 'high' }] } },
+        groups: { deep: { reviewers: [{ model: 'claude-opus-5-5', effort: 'high' }, { model: 'gpt-5.5', effort: 'xhigh' }] } },
         classes: {
           security: { match: { paths_any: ['src/billing/**'] } },
           hot_path: { rank: 85, match: { paths_any: ['src/net/**'], triage: { subtle: true } } },
@@ -201,7 +201,7 @@ describe('config', () => {
     it.each([
       ['a non-object block', 'review: true\n', '`review` must be an object'],
       ['an empty group', 'review:\n  groups:\n    empty: { reviewers: [] }\n', '`review.groups.empty.reviewers` must be a non-empty array'],
-      ['an unknown effort', 'review:\n  groups:\n    g: { reviewers: [{ effort: extreme }] }\n', '`review.groups.g.reviewers[0].effort` must be one of'],
+      ['an unknown effort', 'review:\n  groups:\n    g: { reviewers: [{ effort: extreme }] }\n', '`review.groups.g.reviewers[0].effort` must be one of: low, medium, high, xhigh, max, auto'],
       ['an unknown role', 'review:\n  groups:\n    g: { reviewers: [{ role: judge }] }\n', '`review.groups.g.reviewers[0].role` must be one of'],
       ['a route to an unknown group', 'review:\n  routing:\n    security: deep\n', '`review.routing.security` names unknown group `deep`'],
       ['a route for an unknown class', 'review:\n  routing:\n    hot_path: pair\n', '`review.routing.hot_path` routes an unknown class'],

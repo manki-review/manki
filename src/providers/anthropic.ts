@@ -167,9 +167,20 @@ function readAnthropicUsage(u: Record<string, unknown>): LLMUsage {
 
 // The 4.5 generation rejects adaptive thinking and needs `budget_tokens`. Every later model rejects `budget_tokens`.
 const BUDGET_THINKING_MODELS = ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+// `xhigh` arrived with Opus 4.7, so the 4.5 and 4.6 generations reject it.
+const NO_XHIGH_MODELS = [...BUDGET_THINKING_MODELS, 'claude-opus-4-6', 'claude-sonnet-4-6'];
+
+function isModelOf(model: string, ids: readonly string[]): boolean {
+  return ids.some((id) => model === id || model.startsWith(`${id}-`));
+}
 
 function usesBudgetThinking(model: string): boolean {
-  return BUDGET_THINKING_MODELS.some((id) => model === id || model.startsWith(`${id}-`));
+  return isModelOf(model, BUDGET_THINKING_MODELS);
+}
+
+/** Returns `effort` as `model` takes it. A model without `xhigh` gets `high`, so the call never costs more than asked. */
+function claudeEffort(model: string, effort: NonNullable<SendMessageOptions['effort']>): NonNullable<SendMessageOptions['effort']> {
+  return effort === 'xhigh' && isModelOf(model, NO_XHIGH_MODELS) ? 'high' : effort;
 }
 
 const MAX_TOKENS = 16384;
@@ -261,7 +272,7 @@ export function claudeCliArgs(model: string, systemPromptPath: string, { effort,
     // Without tools the reply is a single turn. With them, the CLI's `result` keeps only the last message.
     args.push('--tools', '');
   }
-  if (effort) args.push('--effort', effort);
+  if (effort) args.push('--effort', claudeEffort(model, effort));
   return args;
 }
 
@@ -468,7 +479,7 @@ export class AnthropicClient implements LLMClient {
     const effort = options?.effort;
     const budgetThinking = usesBudgetThinking(this.model);
     const useThinking = effort !== undefined && !(budgetThinking && effort === 'low');
-    const budgetMap: Record<string, number> = { medium: 5000, high: 10000, max: 16000 };
+    const budgetMap: Record<string, number> = { medium: 5000, high: 10000, xhigh: 13000, max: 16000 };
 
     const params: Anthropic.MessageStreamParams = {
       model: this.model,
@@ -481,7 +492,7 @@ export class AnthropicClient implements LLMClient {
       params.thinking = { type: 'enabled', budget_tokens: budgetMap[effort!] };
     } else if (useThinking) {
       params.thinking = { type: 'adaptive' };
-      params.output_config = { effort };
+      params.output_config = { effort: claudeEffort(this.model, effort!) };
     }
 
     const startTime = Date.now();

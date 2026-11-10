@@ -55,7 +55,7 @@ export const SETTINGS: Setting[] = [
   { key: 'review', type: 'map', default: 'the built-in groups', description: 'Review groups and how PR classes route to them. Read from the base branch, so a PR cannot weaken its own review. See [Review groups](' + REVIEWS + '#review-groups).' },
   { key: 'review.groups', type: 'map of groups', default: '`trivial`, `solo` and `pair`', description: 'Each group lists its `reviewers`. A group with a built-in name replaces it.' },
   { key: 'review.groups.<name>.reviewers[].model', type: 'model id', default: '`@reviewer`', description: 'A model id, `provider/model`, or `@reviewer` or `@reviewer_pair`, which resolve through `models`.' },
-  { key: 'review.groups.<name>.reviewers[].effort', type: '`low`, `medium`, `high`, `max` or `auto`', default: '`auto`', description: '`auto` is high when the planner answers `subtle: true`, otherwise medium.' },
+  { key: 'review.groups.<name>.reviewers[].effort', type: '`low`, `medium`, `high`, `xhigh`, `max` or `auto`', default: '`auto`', description: '`auto` is high when the planner answers `subtle: true`, otherwise medium.' },
   { key: 'review.groups.<name>.reviewers[].focus', type: 'string', default: 'none', description: 'A line added to this finder\'s prompt.' },
   { key: 'review.groups.<name>.reviewers[].role', type: '`finder` or `verifier`', default: '`finder`', description: '`verifier` is the quick check of a trivial change.' },
   { key: 'review.classes', type: 'map of classes', default: 'the built-in classes', description: 'Classes of your own, each with a unique `rank` and a `match` on `paths_any`, `triage` or both. On `security`, `supply_chain` and `data_contract`, `match.paths_any` adds paths to the built-in rule.' },

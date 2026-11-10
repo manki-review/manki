@@ -81,7 +81,7 @@ review:
     internal: solo
 ```
 
-- **`groups`**: each group lists its `reviewers`. A reviewer takes `model` (a model id, `provider/model`, or `@reviewer` and `@reviewer_pair`, which resolve through `models`; unset means `@reviewer`), `effort` (`low`, `medium`, `high`, `max` or `auto`, the default), an optional `focus` line added to that finder's prompt, and `role` (`finder`, the default, or `verifier` for the quick check). A group with the name of a built-in replaces it.
+- **`groups`**: each group lists its `reviewers`. A reviewer takes `model` (a model id, `provider/model`, or `@reviewer` and `@reviewer_pair`, which resolve through `models`; unset means `@reviewer`), `effort` (`low`, `medium`, `high`, `xhigh`, `max` or `auto`, the default), an optional `focus` line added to that finder's prompt, and `role` (`finder`, the default, or `verifier` for the quick check). A group with the name of a built-in replaces it.
 - **`classes`**: a new class needs a `rank` no other class has, and a `match` with `paths_any` (globs, or the `@security_paths`, `@ci_dependency_paths` and `@data_contract_paths` aliases), `triage` (`trivial`, `subtle` or `paired` set to true or false), or both. Every condition must hold. On `security`, `supply_chain` and `data_contract`, `match.paths_any` adds paths to the built-in rule. The other built-in classes cannot be changed.
 - **`routing`**: the group per class. Classes you leave out keep their built-in group. When you set `groups` but no `routing`, every class goes to `default_group`, and the floors still apply.
 - **`default_group`**: the group for a class with no route (default `pair`).

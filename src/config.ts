@@ -107,7 +107,7 @@ const MAX_JUDGE_TOOL_STEPS = 100;
 export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', 'reviewer_pair', 'judge', 'refuter_pair', 'dedup', 'fallback']);
 export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'critical_paths', 'outside_input', 'examples']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus', 'role']);
-const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'max', 'auto']);
+const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
 const PLANNER_KEYS: ReadonlySet<string> = new Set(['enabled', 'paired']);
@@ -524,7 +524,7 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
           }
           if ('model' in reviewer && (typeof reviewer.model !== 'string' || reviewer.model === '')) errors.push(`${at}.model\` must be a non-empty string`);
           else if (typeof reviewer.model === 'string' && !MODEL_REFS.has(reviewer.model)) pushModelError(errors, `review.groups.${name}.reviewers[${i}].model`, reviewer.model);
-          if ('effort' in reviewer && !REVIEWER_EFFORTS.has(reviewer.effort as string)) errors.push(`${at}.effort\` must be one of: low, medium, high, max, auto`);
+          if ('effort' in reviewer && !REVIEWER_EFFORTS.has(reviewer.effort as string)) errors.push(`${at}.effort\` must be one of: low, medium, high, xhigh, max, auto`);
           if ('focus' in reviewer && (typeof reviewer.focus !== 'string' || reviewer.focus === '')) errors.push(`${at}.focus\` must be a non-empty string`);
           if ('role' in reviewer && reviewer.role !== 'finder' && reviewer.role !== 'verifier') errors.push(`${at}.role\` must be one of: finder, verifier`);
         });

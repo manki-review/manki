@@ -43,7 +43,7 @@ export function geminiThinkingConfig(model: string, effort: SendMessageOptions['
   if (!effort || !version) return undefined;
   const [major, minor] = version;
   if (major >= 3) {
-    const levels = { low: ThinkingLevel.LOW, medium: ThinkingLevel.MEDIUM, high: ThinkingLevel.HIGH, max: ThinkingLevel.HIGH };
+    const levels = { low: ThinkingLevel.LOW, medium: ThinkingLevel.MEDIUM, high: ThinkingLevel.HIGH, xhigh: ThinkingLevel.HIGH, max: ThinkingLevel.HIGH };
     return { thinkingLevel: levels[effort] };
   }
   if (major < 2 || minor < 5 || effort === 'low') return undefined;

@@ -24,7 +24,7 @@ import {
 
 interface SmokeArgs {
   model: string;
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  effort?: SendMessageOptions['effort'];
   prompt: string;
 }
 
@@ -38,7 +38,7 @@ Arguments:
   --model    Required. Any model ID recognised by parseModelSpec.
              Examples: claude-haiku-5-5, gpt-6-luna, gpt-6.1-sol, gemini-3.5-flash-lite.
              Or use provider/model syntax: anthropic/claude-..., openai/gpt-..., gemini/gemini-...
-  --effort   Optional. low | medium | high | max. Provider behaviour varies.
+  --effort   Optional. low | medium | high | xhigh | max. Provider behaviour varies.
              OpenAI models that reject reasoning effort (gpt-4o, gpt-4.1, ...)
              ignore --effort. The Codex CLI (OAuth path) then applies its own
              default effort and the API path omits reasoning_effort. A warning
@@ -70,8 +70,8 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): SmokeArgs {
     } else if (arg === '--effort') {
       const val = argv[++i];
       if (!val) throw new Error('--effort requires a value.');
-      if (val !== 'low' && val !== 'medium' && val !== 'high' && val !== 'max') {
-        throw new Error(`Invalid --effort "${val}". Use: low | medium | high | max.`);
+      if (val !== 'low' && val !== 'medium' && val !== 'high' && val !== 'xhigh' && val !== 'max') {
+        throw new Error(`Invalid --effort "${val}". Use: low | medium | high | xhigh | max.`);
       }
       effort = val;
     } else if (arg === '--prompt') {

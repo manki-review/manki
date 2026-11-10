@@ -635,7 +635,7 @@ function validPrTypeOrNull(prType: string): string | null {
   return VALID_PR_TYPES.has(prType) ? prType : null;
 }
 
-const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'max']);
+const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
 function sanitizeEffort(v: string): string {
   return VALID_EFFORTS.has(v) ? v : 'unknown';
