@@ -2342,7 +2342,8 @@ export function blockerThreadStaysOpen(thread: OpenThread, pushChangedFiles: Rea
 /**
  * Returns the grade `evaluation` leaves its thread at when a partial fix sets or changes it, never above the highest
  * grade the thread had: its own, or a blocker an earlier round carried on it. A partly fixed thread takes the judge's
- * grade for what remains, but drops below the grade it carries only after a push to its file, and never on a security
+ * grade for what remains, but drops below the grade it carries only after a push to its file, or for an outdated thread
+ * once its code changed since it was posted, and never on a security
  * thread or one whose blocker this round names again. A thread an earlier partial fix lowered gets its highest grade
  * back when this round names its blocker again, or finds it not fixed after a push to its file.
  */

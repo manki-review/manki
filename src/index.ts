@@ -1086,7 +1086,8 @@ async function collectOpenThreads(
     if (!posted || old === undefined || current === undefined || posted.line > old.split('\n').length) {
       return { ...t, currentCode: extractCurrentCodeWindow(contents, t.file, t.line) };
     }
-    const now = locatePostedLine(old, posted.line, current);
+    // An unchanged file holds the code where it was, however few of its lines could vote.
+    const now = old === current ? posted.line : locatePostedLine(old, posted.line, current);
     // Where the code is not found, the head's code near the same line still shows what the fix left there.
     const near = now ?? Math.min(posted.line, current.split('\n').length);
     return {
@@ -1095,7 +1096,7 @@ async function collectOpenThreads(
       postedCode: extractCurrentCodeWindow(new Map([[t.file, old]]), t.file, posted.line),
       postedCommit: posted.commit,
       ...(now === undefined && { postedCodeGone: true }),
-      ...(postedCodeChanged(old, posted.line, current, now) && { changedSincePosted: true }),
+      ...(old !== current && postedCodeChanged(old, posted.line, current, now) && { changedSincePosted: true }),
       currentCode: extractCurrentCodeWindow(contents, t.file, near),
     };
   });

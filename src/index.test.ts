@@ -4912,6 +4912,7 @@ describe('runFullReview orchestration', () => {
       ['src/app.ts', ref === 'c0ffee' ? posted : moved], ['src/gone.ts', ref === 'c0ffee' ? posted : rewritten],
       // The head's copy of this file is not read, as when it is over the size limit.
       ...(ref === 'c0ffee' ? [['src/unread.ts', posted] as const] : []),
+      ['src/small.ts', 'exit(1);'],
     ]));
     const outdated = { severity: 'blocker' as const, status: 'open' as const, line: 0, originalLine: 2, originalCommit: 'c0ffee' };
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
@@ -4921,13 +4922,17 @@ describe('runFullReview orchestration', () => {
         { ...outdated, title: 'Unread', file: 'src/unread.ts', threadId: 'PRRT_unread' },
         // A posted line past the end of the posted file says nothing about the code either.
         { ...outdated, title: 'Past the end', file: 'src/app.ts', threadId: 'PRRT_past', originalLine: 99 },
+        // A small file that did not change at all holds the code where it was, though too few of its lines can vote.
+        { ...outdated, title: 'Untouched', file: 'src/small.ts', threadId: 'PRRT_small', originalLine: 1 },
       ],
       priorRounds: [],
     });
 
     await callRunFullReview();
 
-    const [found, gone, unread, past] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
+    const [found, gone, unread, past, small] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
+    expect(small).toMatchObject({ line: 1, postedCode: '>>> 1: exit(1);', currentCode: '>>> 1: exit(1);' });
+    expect([small.postedCodeGone, small.changedSincePosted]).toEqual([undefined, undefined]);
     expect([past.postedCode, past.changedSincePosted]).toEqual([undefined, undefined]);
     // Without the head's copy, nothing is said about where the code went, and the thread keeps its guard.
     expect(unread).toMatchObject({ line: 0, currentCode: '' });
@@ -4940,7 +4945,7 @@ describe('runFullReview orchestration', () => {
     // Rewritten code is not found, so the judge sees the head's code near the same line, and the thread counts as changed.
     expect(gone).toMatchObject({ line: 2, postedCodeGone: true, changedSincePosted: true });
     expect(gone.currentCode).toContain('>>> 2:   postReply(thread);');
-    expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'c0ffee', ['src/app.ts', 'src/gone.ts', 'src/unread.ts']);
+    expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'c0ffee', ['src/app.ts', 'src/gone.ts', 'src/unread.ts', 'src/small.ts']);
   });
 
   it('deduplicates open-thread file paths against changed files when fetching contents', async () => {
