@@ -82,7 +82,7 @@ describe('collectFollowUps', () => {
       mustResolve: ['P1'], mustKeepOpen: ['P2'], mustNotRepeat: ['P3', 'P5'],
     });
     expect(followUps.get(3)).toMatchObject({ priorHead: 'sha2', mustResolve: [], mustKeepOpen: [], mustNotRepeat: ['P5'] });
-    expect(followUps.get(3)!.findings.map(f => [f.id, f.thread])).toEqual([['P1', 'resolved'], ['P2', 'resolved'], ['P3', undefined], ['P4', 'resolved'], ['P5', 'open']]);
+    expect(followUps.get(3)!.findings.map(f => [f.id, f.thread])).toEqual([['P1', 'fixed'], ['P2', 'fixed'], ['P3', undefined], ['P4', 'resolved'], ['P5', 'open']]);
   });
 
   it('drafts a follow-up case that parses with the earlier round and its follow-up lists', () => {

@@ -109,12 +109,14 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
     const { timestamp, commitSha } = round.meta;
     const next = sorted[i + 1]?.meta.timestamp ?? '\uffff';
     const followUp: FollowUp = { priorHead: sorted[i - 1].meta.commitSha, findings: [], mustResolve: [], mustKeepOpen: [], mustNotRepeat: [] };
+    const fixedByRound = sorted.slice(0, i).map(r => fixedMarker(r.meta.commitSha));
     for (const [n, entry] of [...latest.values()].entries()) {
       const id = `P${n + 1}`;
       const title = entry.title ?? entry.fingerprint.slug;
       const thread = threads.find(t => t.file === entry.fingerprint.file && t.title.slice(0, 200) === title && before(t.root, timestamp));
       const last = thread?.replies.filter(c => before(c, timestamp)).at(-1)?.body ?? '';
       const open = !!thread && !replyOutcome(last.trim());
+      const fixed = !open && !!thread?.replies.some(c => before(c, timestamp) && fixedByRound.some(marker => c.body!.includes(marker)));
       const meta = thread ? parseFindingFromComment(thread.root.body!) : {};
       followUp.findings.push({
         // A file-level finding has line 0, and a case line starts at 1.
@@ -122,7 +124,7 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
         ...(entry.gradeIfConfirmed && { gradeIfConfirmed: entry.gradeIfConfirmed }),
         ...(meta.description && { description: meta.description }), ...(meta.howToFix && { howToFix: meta.howToFix }),
         ...((meta.suggestedFix ?? entry.suggestedFix) && { suggestedFix: meta.suggestedFix ?? entry.suggestedFix }),
-        ...(thread && isSecurityThread(thread.root.body!) && { security: true }), ...(thread && { thread: open ? 'open' : 'resolved' }),
+        ...(thread && isSecurityThread(thread.root.body!) && { security: true }), ...(thread && { thread: open ? 'open' : fixed ? 'fixed' : 'resolved' }),
       });
       if (open) {
         const resolved = thread.replies.some(c => !before(c, timestamp) && before(c, next) && c.body!.includes(fixedMarker(commitSha)));

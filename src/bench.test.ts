@@ -146,7 +146,7 @@ describe('parseCase', () => {
     ['must_resolve: [P1]', 'must_resolve: [P9]', '`must_resolve` names P9, which is no earlier finding'],
     ['must_not_repeat: [P3]', 'must_not_repeat: [P1]', 'earlier finding P1 is in more than one follow-up list'],
     ['    - id: P3', '    - id: K1', 'item id K1 is used twice'],
-    ['      posted: body', '      posted: body\n      state: open', '`state` must be open or resolved for a thread, and unset for a body finding'],
+    ['      posted: body', '      posted: body\n      state: open', '`state` must be open, resolved or fixed for a thread, and unset for a body finding'],
     ['      posted: body', '      posted: review', '`posted` must be thread or body'],
     ['      line: 70', '      line: 0', 'prior_round.findings[2]: `line` must be a positive integer'],
     [`  head: ${SHA_C}`, '  head: abc', '`prior_round.head` must be a full commit SHA'],

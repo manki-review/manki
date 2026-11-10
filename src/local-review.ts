@@ -69,8 +69,11 @@ export interface EarlierFinding {
   howToFix?: string;
   suggestedFix?: string;
   security?: boolean;
-  /** How its review thread stands before the round. Unset for a finding posted only in the review body. */
-  thread?: 'open' | 'resolved';
+  /**
+   * How its review thread stands before the round: `fixed` when an earlier round resolved it as fixed, and `resolved`
+   * when a person resolved it. Unset for a finding posted only in the review body.
+   */
+  thread?: 'open' | 'resolved' | 'fixed';
 }
 
 /** The round before the one under review: the commit it reviewed and what it posted. */
@@ -213,7 +216,7 @@ async function followUpInputs(
 
   const threads = earlier.findings.filter(f => f.thread);
   const previousFindings: PreviousFinding[] = threads.map(f => ({
-    title: f.title, file: f.file, line: f.line, severity: f.severity, status: f.thread === 'open' ? 'open' : 'resolved', threadId: f.id,
+    title: f.title, file: f.file, line: f.line, severity: f.severity, status: f.thread === 'open' ? 'open' : 'resolved', ...(f.thread === 'fixed' && { fixed: true }), threadId: f.id,
     markerSlug: titleToSlug(f.title), description: f.description, suggestedFix: f.suggestedFix, howToFix: f.howToFix, ...(f.security && { isSecurity: true }),
   }));
   const open = threads.filter(f => f.thread === 'open');
@@ -234,7 +237,12 @@ async function followUpInputs(
     ...(f.security && { tags: [SECURITY_TAG] }), ...(f.thread && { threadId: f.id }),
   }));
   const blocks = posted.some(f => f.severity === 'blocker');
-  const result: ReviewResult = { verdict: blocks ? 'REQUEST_CHANGES' : 'APPROVE', outcome: blocks ? 'ADDRESS_FIRST' : 'READY', summary: '', findings: posted, highlights: [], reviewComplete: true, agentNames: [] };
+  // A pull request round reads a thread as fixed from the earlier judge's `addressed` evaluation.
+  const threadEvaluations = threads.filter(f => f.thread === 'fixed').map(f => ({ threadId: f.id, status: 'addressed' as const, reason: 'Fixed by an earlier push.' }));
+  const result: ReviewResult = {
+    verdict: blocks ? 'REQUEST_CHANGES' : 'APPROVE', outcome: blocks ? 'ADDRESS_FIRST' : 'READY', summary: '', findings: posted, highlights: [], reviewComplete: true, agentNames: [],
+    ...(threadEvaluations.length > 0 && { threadEvaluations }),
+  };
   const record = buildRoundContext({
     prNumber: 0, commitSha: earlierHead, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: 'base', models, plannerEnabled: false,
     recap: { previousFindings: [], priorRounds: [] }, priorRoundCount: 0, maxAutoRounds: 0, diff: priorChange, changeDigest: changeDigest(priorChange), excludedFiles: [],

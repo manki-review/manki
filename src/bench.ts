@@ -117,7 +117,9 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
     }
     if (!Number.isInteger(f.line) || (f.line as number) < 1) throw caseError(where, '`line` must be a positive integer');
     if (f.posted !== 'thread' && f.posted !== 'body') throw caseError(where, '`posted` must be thread or body');
-    if (f.posted === 'thread' ? f.state !== 'open' && f.state !== 'resolved' : f.state !== undefined) throw caseError(where, '`state` must be open or resolved for a thread, and unset for a body finding');
+    if (f.posted === 'thread' ? !['open', 'resolved', 'fixed'].includes(f.state as string) : f.state !== undefined) {
+      throw caseError(where, '`state` must be open, resolved or fixed for a thread, and unset for a body finding');
+    }
     if (f.security !== undefined && typeof f.security !== 'boolean') throw caseError(where, '`security` must be true or false');
     const [description, howToFix, suggestedFix] = PRIOR_FIELDS.map((field) => {
       if (f[field] !== undefined && typeof f[field] !== 'string') throw caseError(where, `\`${field}\` must be a string`);
@@ -127,7 +129,7 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
       id: requireString(f, 'id', where), severity: f.severity as KeySeverity, title: requireString(f, 'title', where), file: requireString(f, 'file', where), line: f.line as number,
       ...(f.grade_if_confirmed !== undefined && { gradeIfConfirmed: f.grade_if_confirmed as KeySeverity }),
       ...(description && { description }), ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), ...(f.security === true && { security: true }),
-      ...(f.posted === 'thread' && { thread: f.state as 'open' | 'resolved' }),
+      ...(f.posted === 'thread' && { thread: f.state as EarlierFinding['thread'] }),
     };
   });
   return { head, findings };
