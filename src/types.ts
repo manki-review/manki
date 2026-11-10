@@ -837,6 +837,8 @@ export interface ReviewConfig {
   judge?: {
     /** Read-only repository tool calls the judge may make while it grades. 0 gives it none. */
     tool_steps?: number;
+    /** The judge's effort, which its code check follows. `auto` takes the planner's pick, or `high` without one. */
+    effort?: EffortLevel | 'auto';
   };
   /** Review groups and how PR classes route to them. Always read from the base branch, so a PR cannot weaken its own review. */
   review?: ReviewRoutingConfig;

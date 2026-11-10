@@ -4217,6 +4217,23 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent.mock.calls[0][2].effort).toBe('high');
   });
 
+  it('runs the judge at a set `judge.effort` in place of the planner pick, and reports that level as the pick', async () => {
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+    const review = (effort: NonNullable<ReviewConfig['judge']>['effort'], planner: boolean) => runReview(
+      { ...makeClients(), ...(planner && { planner: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: false, subtle: false, paired: false, judgeEffort: 'low', prType: 'feat' }) }) } as unknown as import('./providers').LLMClient }) },
+      { config: makeConfig({ judge: { tool_steps: 0, effort } }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' },
+    );
+
+    const fixed = await review('max', true);
+    expect(mockedRunJudgeAgent.mock.calls[0][2].effort).toBe('max');
+    expect(fixed.plannerResult?.judgeEffort).toBe('max');
+    await review('xhigh', false);
+    expect(mockedRunJudgeAgent.mock.calls[1][2].effort).toBe('xhigh');
+    const auto = await review('auto', true);
+    expect(mockedRunJudgeAgent.mock.calls[2][2].effort).toBe('low');
+    expect(auto.plannerResult?.judgeEffort).toBe('low');
+  });
+
   it('triages each round fresh, without prior-round agents or outcomes', async () => {
     const plannerResponse = JSON.stringify({ trivial: false, subtle: true, paired: false, judgeEffort: 'medium', prType: 'fix' });
     const plannerSpy = jest.fn().mockResolvedValue({ content: plannerResponse });

@@ -653,6 +653,8 @@ export async function runReview(
     const plannerWrap = wrapClientForUsage(withFallback({ client: clients.planner, fallback: clients.fallbacks?.planner }, 'planner'));
     const outcome: PlannerOutcomeSink = {};
     plannerResult = await runPlanner(plannerWrap.client, diffWithLockfiles, outcome);
+    // A set `judge.effort` replaces the planner's pick, so the progress comment and the round record show the level that runs.
+    if (plannerResult && config.judge?.effort && config.judge.effort !== 'auto') plannerResult = { ...plannerResult, judgeEffort: config.judge.effort };
     plannerUsage = plannerWrap.getTotals().usage;
     logOutputTokens('Planner', plannerUsage);
     plannerDurationMs = Date.now() - plannerStart;
@@ -660,7 +662,8 @@ export async function runReview(
     plannerFallbackReason = outcome.fallbackReason;
   }
   const team = selectTeam(diffWithLockfiles, config, plannerResult ?? undefined, options.deeper);
-  const judgeEffort = plannerResult?.judgeEffort ?? 'high';
+  const setEffort = config.judge?.effort;
+  const judgeEffort = setEffort && setEffort !== 'auto' ? setEffort : plannerResult?.judgeEffort ?? 'high';
   const { trivial, subtle, paired } = team.triage;
   core.info(`Triage (${plannerSource}): trivial=${trivial}, subtle=${subtle}, paired=${paired}${team.sensitivePaths ? ', security-sensitive paths' : ''}${team.ciOrDependencyPaths ? ', CI or dependency paths' : ''}${team.trivialOverridden ? ', planner trivial answer overridden by the changed files' : ''}`);
   const { routing } = team;
@@ -1213,7 +1216,7 @@ export async function runReview(
       openThreads: openThreads ?? undefined,
       priorRounds,
       inPrSuppressions,
-      effort: judgeEffort as 'low' | 'medium' | 'high',
+      effort: judgeEffort,
       provenanceMap,
       interRoundDiff,
       resolvedThreadIds,
@@ -1375,7 +1378,7 @@ export async function runReview(
       // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found. It drops a
       // claimed build failure that was posted as a warning.
       const refuted = (refutation
-        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
+        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
         : readerBlockers).filter(f => f.severity !== 'ignore');
       const restated = (await foldIntoEarlierFindings(refuted, earlier, earlierWrap?.client)).map(guard);
       const foldWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));

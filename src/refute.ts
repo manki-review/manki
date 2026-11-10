@@ -11,7 +11,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { Doubt, Finding, FindingSeverity, gradeStep, ParsedDiff, PremiseCheck, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
+import { Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, ParsedDiff, PremiseCheck, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -296,7 +296,7 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
 export interface RefuteOptions {
   workspace: string;
   priorRounds?: RoundContext[];
-  effort?: 'low' | 'medium' | 'high';
+  effort?: EffortLevel;
   /** The PR's diff, whose lines a disproof may cite besides the finding's own file. A refuter checking a doubt the judge named sees its change to the files the finding cites. */
   diff?: ParsedDiff;
   /** The section `listUsesOutsideDiff` builds. */
