@@ -5,7 +5,7 @@ import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveReviewerModel } from './config';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { mapWithConcurrency, parseRetryNote } from './utils';
-import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
+import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
@@ -23,7 +23,7 @@ import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './wri
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listReferenceUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
-import { formatLockfileChanges, LockfileDiff, withLockfiles } from './lockfile';
+import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
@@ -1319,6 +1319,9 @@ export async function runReview(
   const pushChangedFiles = filesChangedByPush(interRoundDiff);
   const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
   let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+  const earlierWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
+  finalFindings = await foldIntoEarlierFindings(finalFindings, earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations), earlierWrap?.client);
+  if (earlierWrap?.getTotals().calls) logOutputTokens('LLM dedup against earlier findings', earlierWrap.getTotals().usage);
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
@@ -2201,7 +2204,7 @@ function readyReason(findings: Finding[]): VerdictReason {
  * A claim is a thread ID in `fixClaimed`. A prior blocker last raised on `headSha` saw no push since, so it is left out.
  * A blocker named again while its thread is still open and unanswered is still open, not repeated.
  */
-function findRepeatedBlockers(findings: Finding[], priorBlockers: PriorBlocker[], headSha: string | undefined, fixClaimed: Set<string>): PriorBlocker[] {
+function findRepeatedBlockers(findings: Finding[], priorBlockers: PriorFinding[], headSha: string | undefined, fixClaimed: Set<string>): PriorFinding[] {
   if (!headSha) return [];
   const named = new Set(findings.filter(f => f.severity === 'blocker' && f.sameAs).map(f => f.sameAs));
   return priorBlockers.filter(p => p.commitSha !== headSha && !!p.entry.threadId && fixClaimed.has(p.entry.threadId)
@@ -2227,12 +2230,12 @@ function fixClaimedThreadIds(previousFindings: PreviousFinding[] | undefined, op
 }
 
 /** Returns the prior blocker that `finding` names through `sameAs`. */
-function priorBlockerNamedBy(finding: Finding, priorBlockers: PriorBlocker[]): PriorBlocker | undefined {
+function priorBlockerNamedBy(finding: Finding, priorBlockers: PriorFinding[]): PriorFinding | undefined {
   return finding.sameAs ? priorBlockers.find(p => stringifyFindingFingerprint(p.entry.fingerprint) === finding.sameAs) : undefined;
 }
 
 /** Returns the thread IDs of the prior blockers that a blocker in `findings` names again. */
-function namedPriorThreadIds(findings: Finding[], priorBlockers: PriorBlocker[]): Set<string> {
+function namedPriorThreadIds(findings: Finding[], priorBlockers: PriorFinding[]): Set<string> {
   const ids = findings.filter(f => f.severity === 'blocker').map(f => priorBlockerNamedBy(f, priorBlockers)?.entry.threadId);
   return new Set(ids.filter((id): id is string => !!id));
 }
@@ -2320,12 +2323,85 @@ async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], 
   return { findings: kept, blockers: merged };
 }
 
+/** An earlier finding still present, which a finding of this round can restate. */
+interface EarlierFinding {
+  finding: Located & { description?: string };
+  /** Fingerprint keys of the round entries that recorded it, which the judge's `sameAs` and `variantOf` name. */
+  keys: Set<string>;
+  /** The open thread that carries it. Without one, an earlier round listed it in its review body. */
+  threadId?: string;
+  /** The round that first listed it in its review body. */
+  raisedIn?: number;
+}
+
+/**
+ * Returns the earlier findings a finding of this round can restate: each of `openThreads` the round leaves open, and
+ * each finding an earlier round listed only in its review body.
+ */
+function earlierFindings(priorRounds: RoundContext[], openThreads: OpenThread[], threadEvaluations: ThreadEvaluation[] | undefined): EarlierFinding[] {
+  const addressed = new Set((threadEvaluations ?? []).filter(e => e.status === 'addressed').map(e => e.threadId));
+  const entries = priorRounds.flatMap(r => (r.findings.entries ?? []).map(entry => ({ entry, key: stringifyFindingFingerprint(entry.fingerprint), round: entry.raisedIn ?? r.meta.round })));
+  const threads = openThreads.filter(t => !addressed.has(t.threadId)).map(t => ({
+    finding: { title: t.title, file: t.file, line: t.line, description: t.description },
+    keys: new Set(entries.filter(e => e.entry.threadId === t.threadId).map(e => e.key)),
+    threadId: t.threadId,
+  }));
+  const listed = new Map<string, EarlierFinding & { raisedIn: number }>();
+  for (const { entry, key, round } of entries) {
+    if (entry.threadId || !entry.title || entry.severity === 'ignore') continue;
+    const known = listed.get(key);
+    if (known) known.raisedIn = Math.min(known.raisedIn, round);
+    else listed.set(key, { finding: { title: entry.title, file: entry.fingerprint.file, line: entry.fingerprint.lineStart, evidence: entry.evidence }, keys: new Set([key]), raisedIn: round });
+  }
+  return [...threads, ...listed.values()];
+}
+
+/**
+ * Points each finding that restates one of the `earlier` findings at it, so the review posts no second copy. A finding
+ * restating an open thread takes its `threadId`, and one restating a finding listed in an earlier review body takes
+ * `raisedIn`. The judge's `sameAs` counts first. A finding the judge left unlinked is matched by `sameProblem`, then by
+ * the `dedup` model for nearby pairs, asked in one call for the whole round. A finding the judge calls a variant of an
+ * open thread's finding goes to that thread too, and keeps `variantOf` so it is posted there as a reply.
+ */
+async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFinding[], dedup: LLMClient | undefined): Promise<Finding[]> {
+  if (earlier.length === 0) return findings;
+  const named = (key: string | undefined) => key ? earlier.find(e => e.keys.has(key)) : undefined;
+  // A lockfile alert names its package and change, so only the open thread with its exact title carries it.
+  const unlinked = (f: Finding) => !f.threadId && !f.answeredIn && !f.sameAs && !f.variantOf && !isLockfileAlert(f.title);
+  const links = findings.map(f => {
+    if (f.threadId || f.answeredIn) return undefined;
+    const restated = named(f.sameAs) ?? (unlinked(f) ? earlier.find(e => sameProblem(e.finding, f)) : undefined);
+    if (restated) return { earlier: restated, variant: false };
+    const varied = named(f.variantOf);
+    return varied && { earlier: varied, variant: true };
+  });
+  const pairs = findings.flatMap((f, i) => !links[i] && unlinked(f) ? earlier.flatMap(e => nearEachOther(e.finding, f) ? [{ i, e }] : []) : []);
+  if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} findings near an earlier finding stay apart unchecked, since the round has no dedup model`);
+  const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, e }) => [e.finding, findings[i]]), dedup) : [];
+  pairs.forEach(({ i, e }, k) => {
+    if (answers[k] && !links[i]) links[i] = { earlier: e, variant: false };
+  });
+  return findings.map((f, i) => {
+    const link = links[i];
+    if (link?.earlier.threadId) {
+      core.info(`"${f.title}" ${link.variant ? 'is another instance of' : 'restates'} the open thread ${link.earlier.threadId}`);
+      return { ...f, threadId: link.earlier.threadId };
+    }
+    if (!link || link.variant) return f;
+    core.info(`"${f.title}" restates "${link.earlier.finding.title}", which round ${link.earlier.raisedIn} listed`);
+    return { ...f, raisedIn: link.earlier.raisedIn };
+  });
+}
+
+/** What the same-problem checks read of a finding. */
+type Located = Pick<Finding, 'title' | 'file' | 'line' | 'evidence'>;
+
 /**
  * Whether the findings `a` and `b` in one file name one problem. A few lines apart with a proof line in common is enough,
  * whatever the titles say. When one title contains the other, a few lines apart or one citing the other's line is
  * enough. Titles that only share words, which short titles do by chance, must both cite the other's line.
  */
-function sameProblem(a: Finding, b: Finding): boolean {
+function sameProblem(a: Located, b: Located): boolean {
   if (a.file !== b.file) return false;
   const near = Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
   if (near && sharesProofLine(a, b)) return true;
@@ -2336,15 +2412,15 @@ function sameProblem(a: Finding, b: Finding): boolean {
 }
 
 /** Whether `a` and `b` sit in one file, and their lines or the narrow proof lines they cite there are at most `DISMISSED_LINE_TOLERANCE` apart. */
-function nearEachOther(a: Finding, b: Finding): boolean {
+function nearEachOther(a: Located, b: Located): boolean {
   if (!a.file || a.file !== b.file) return false;
-  const lines = (f: Finding) => [{ start: f.line, end: f.line }, ...narrowProof(f).filter(at => at.file === a.file)];
+  const lines = (f: Located) => [{ start: f.line, end: f.line }, ...narrowProof(f).filter(at => at.file === a.file)];
   const other = lines(b);
   return lines(a).some(x => other.some(y => x.start - DISMISSED_LINE_TOLERANCE <= y.end && y.start - DISMISSED_LINE_TOLERANCE <= x.end));
 }
 
 /** Returns the locations `f` cites as proof in spans no wider than `DISMISSED_LINE_TOLERANCE`. A wider span proves no one line. */
-function narrowProof(f: Finding): Array<{ file: string; start: number; end: number }> {
+function narrowProof(f: Located): Array<{ file: string; start: number; end: number }> {
   return (f.evidence?.proof ?? []).flatMap(at => {
     const location = parseLocation(at);
     return location && location.end - location.start <= DISMISSED_LINE_TOLERANCE ? [location] : [];
@@ -2352,7 +2428,7 @@ function narrowProof(f: Finding): Array<{ file: string; start: number; end: numb
 }
 
 /** Whether `a` cites the line of `b` as proof. */
-function citesLineOf(a: Finding, b: Finding): boolean {
+function citesLineOf(a: Located, b: Located): boolean {
   return narrowProof(a).some(at => at.file === b.file && at.start <= b.line && b.line <= at.end);
 }
 
@@ -2360,9 +2436,9 @@ function citesLineOf(a: Finding, b: Finding): boolean {
  * Whether `a` and `b` cite a common proof line in their own file, within `DISMISSED_LINE_TOLERANCE` of both. A line
  * elsewhere, such as a helper both call, can back two different defects.
  */
-function sharesProofLine(a: Finding, b: Finding): boolean {
-  const near = (f: Finding) => ({ start: f.line - DISMISSED_LINE_TOLERANCE, end: f.line + DISMISSED_LINE_TOLERANCE });
-  const spans = (f: Finding) => narrowProof(f).filter(at => at.file === a.file);
+function sharesProofLine(a: Located, b: Located): boolean {
+  const near = (f: Located) => ({ start: f.line - DISMISSED_LINE_TOLERANCE, end: f.line + DISMISSED_LINE_TOLERANCE });
+  const spans = (f: Located) => narrowProof(f).filter(at => at.file === a.file);
   const cited = spans(b);
   return spans(a).some(x => cited.some(y => {
     const ranges = [x, y, near(a), near(b)];
@@ -2374,7 +2450,7 @@ function sharesProofLine(a: Finding, b: Finding): boolean {
  * Returns the key of the prior blocker on the same file and nearby line whose title overlaps the finding's.
  * The verdict reader runs after the judge, so its blockers are matched here instead of by the judge.
  */
-function matchPriorBlocker(finding: Finding, priorBlockers: PriorBlocker[]): string | undefined {
+function matchPriorBlocker(finding: Finding, priorBlockers: PriorFinding[]): string | undefined {
   const match = priorBlockers.find(({ entry }) =>
     entry.fingerprint.file === finding.file
     && Math.abs(entry.fingerprint.lineStart - finding.line) <= DISMISSED_LINE_TOLERANCE

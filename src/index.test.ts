@@ -211,6 +211,7 @@ jest.mock('./github', () => ({
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
   postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false }),
   formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
+  formatVariantReply: jest.fn().mockReturnValue('Another instance.'),
   formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
@@ -5377,15 +5378,20 @@ describe('runFullReview orchestration', () => {
       [
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
         { title: 'Bug B', file: 'src/app.ts', line: 5, severity: 'warning' as const, status: 'auto-resolved' as const, threadId: 'PRRT_def', answer: 'Withdrawn. Fine.' },
+        { title: 'Bug C', file: 'src/app.ts', line: 8, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
       ],
     );
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
     const worse = { severity: 'blocker' as const, title: 'Bug B', file: 'src/app.ts', line: 5, description: 'Worse now.', reviewers: [], answeredIn: { threadId: 'PRRT_def', answer: 'Withdrawn. Fine.' } };
+    // The variants of an open thread's finding go there in one reply, and a restatement adds none.
+    const variant = { severity: 'warning' as const, title: 'Bug C in another field', file: 'src/app.ts', line: 9, description: 'Same miss.', reviewers: [], threadId: 'PRRT_ghi', variantOf: 'src/app.ts:8:8:Bug-C' };
+    const variants = [variant, { ...variant, severity: 'blocker' as const, title: 'Bug C in a third field' }];
+    const restated = { ...variant, title: 'Bug C again', variantOf: undefined };
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse],
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse, ...variants, restated],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [
@@ -5428,9 +5434,11 @@ describe('runFullReview orchestration', () => {
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars)).toEqual(posted ? [
       { threadId: 'PRRT_abc', body: 'Fixed in abc123.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->' },
       { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->' },
+      { threadId: 'PRRT_ghi', body: 'Another instance.\n\n<!-- manki -->\n<!-- manki-found-again-blocker -->' },
     ] : []);
     if (posted) expect(jest.mocked(ghUtils.formatFoundAgainReply)).toHaveBeenCalledWith(worse);
-    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def']);
+    if (posted) expect(jest.mocked(ghUtils.formatVariantReply)).toHaveBeenCalledWith(variants);
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi']);
   });
 
   it('resolves only threads with status addressed', async () => {

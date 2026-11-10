@@ -867,7 +867,7 @@ describe('runFullReview end to end', () => {
       reviewer: JSON.stringify([reworded]),
       judge: JSON.stringify({
         summary: 'The range check is still missing.',
-        findings: [{ id: 1, title: reworded.title, severity: 'blocker', reasoning: 'Still reachable.', confidence: 'high', sameAs: 'B1' }],
+        findings: [{ id: 1, title: reworded.title, severity: 'blocker', reasoning: 'Still reachable.', confidence: 'high', sameAs: 'P1' }],
         threadEvaluations: [{ threadId: 'PRRT_1', status: 'not_addressed', reason: 'No range check yet.' }],
       }),
     });

@@ -63,7 +63,7 @@ const REOPENED_MARKER = '<!-- manki-reopened -->';
 /** Marks Manki's reply in an answered thread that the problem came back and the code there got worse. */
 const FOUND_AGAIN_MARKER = '<!-- manki-found-again -->';
 
-/** Added to a found-again reply whose finding is a blocker. The thread blocks from then on, whatever its first comment says. */
+/** Added to a reply in a thread whose finding is a blocker. The thread blocks from then on, whatever its first comment says. */
 const FOUND_AGAIN_BLOCKER_MARKER = '<!-- manki-found-again-blocker -->';
 
 /** Whether a Manki reply in `comments` says the problem came back as a blocker. */
@@ -1131,7 +1131,7 @@ async function llmDeduplicateFindings(
  * Asks `client` whether the two findings of each pair describe the same defect, and returns one answer per pair. Only an
  * explicit yes counts, so a failed call or a reply that does not parse answers no for every pair.
  */
-async function llmSameDefects(pairs: Array<[Finding, Finding]>, client: LLMClient): Promise<boolean[]> {
+async function llmSameDefects(pairs: Array<[DedupItem, DedupItem]>, client: LLMClient): Promise<boolean[]> {
   const list = pairs.map(([a, b], i) => `${i + 1}.\n   A: ${describeForDedup(a)}\n   B: ${describeForDedup(b)}`).join('\n');
   try {
     const response = await client.sendMessage(

@@ -293,8 +293,9 @@ function changedSincePrior(current: ParsedDiff, prior: ParsedDiff, interRound: P
 }
 
 /**
- * Sets each finding's `origin`: `new` when it sits within a few lines of code the PR changed since
- * the change `prior` recorded, `reviewed` otherwise. Without `prior`, every finding is new.
+ * Sets each finding's `origin`: `earlier` when it restates a finding an earlier round listed (`raisedIn`), whatever code
+ * it sits on. Otherwise `new` when it sits within a few lines of code the PR changed since the change `prior` recorded,
+ * `reviewed` when it does not. Without `prior`, every finding that restates none is new.
  */
 export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: ParsedDiff | undefined, interRound?: ParsedDiff): void {
   const fresh = prior && changedSincePrior(diff, prior, interRound);
@@ -302,7 +303,7 @@ export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: 
     const lines = fresh?.get(finding.file) ?? [];
     const isNew = !fresh || !finding.file
       || (finding.line > 0 ? lines.some(line => Math.abs(line - finding.line) <= NEW_CODE_WINDOW) : lines.length > 0);
-    finding.origin = isNew ? 'new' : 'reviewed';
+    finding.origin = finding.raisedIn ? 'earlier' : isNew ? 'new' : 'reviewed';
   }
 }
 

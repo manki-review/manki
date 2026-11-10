@@ -478,6 +478,10 @@ describe('tagFindingOrigins', () => {
     expect(tag([
       finding('src/a.ts', 16), finding('src/a.ts', 18), finding('src/a.ts', 10), finding('src/a.ts', 0), finding('src/new.ts', 2), finding('src/new.ts', 0),
     ], current, prior)).toEqual(['new', 'reviewed', 'new', 'new', 'reviewed', 'reviewed']);
+    // A finding that restates one an earlier review body listed is from that round, on new code too and without a prior change.
+    const restated = { ...finding('src/a.ts', 13), raisedIn: 1 };
+    expect(tag([restated, { ...finding('src/a.ts', 18), raisedIn: 2 }], current, prior)).toEqual(['earlier', 'earlier']);
+    expect(tag([restated], current)).toEqual(['earlier']);
   });
 
   it('tags a finding new near code removed or restored since: a base line the PR removed or put back, or a line it added before and dropped or moved', () => {

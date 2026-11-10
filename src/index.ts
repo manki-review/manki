@@ -33,7 +33,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases } from './types';
+import { ConfigSource, DashboardData, Finding, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -46,6 +46,7 @@ import {
   MAX_CONTENT_API_BYTES,
   fetchInterRoundDiff,
   formatFoundAgainReply,
+  formatVariantReply,
   fetchHeadSha,
   assertHeadUnchanged,
   SupersededError,
@@ -1324,29 +1325,34 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
 }
 
 /**
- * Reopens each closed answered thread where the judge kept a finding that repeats its problem, and replies there.
- * A thread gets one reply per round, and a blocker's reply makes the thread block.
+ * Replies in the threads this round's findings go to, once per thread. A closed answered thread where the judge kept a
+ * finding that repeats its problem is reopened first. An open thread gets the variants of its finding listed. A reply
+ * with a blocker in it makes the thread block.
  */
-async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
-  const replied = new Set<string>();
+async function replyInThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+  const byThread = new Map<string, Finding[]>();
   for (const f of result.findings) {
-    const threadId = f.answeredIn?.threadId;
-    if (!threadId || replied.has(threadId)) continue;
-    replied.add(threadId);
+    const threadId = f.answeredIn?.threadId ?? (f.variantOf ? f.threadId : undefined);
+    if (threadId) byThread.set(threadId, [...(byThread.get(threadId) ?? []), f]);
+  }
+  for (const [threadId, findings] of byThread) {
+    const answered = findings.find(f => f.answeredIn);
+    const variants = findings.filter(f => !f.answeredIn);
     const thread = run.recap.previousFindings.find(t => t.threadId === threadId);
     // Reopened first, so the thread a blocker was listed under stays open even when the reply fails.
-    if (thread && thread.status !== 'open' && thread.status !== 'replied') {
+    if (answered && thread && thread.status !== 'open' && thread.status !== 'replied') {
       try {
         await unresolveReviewThread(run.octokit, threadId);
       } catch (error) {
         core.warning(`Failed to reopen answered thread ${threadId}: ${error}`);
       }
     }
-    const markers = f.severity === 'blocker' ? [FOUND_AGAIN_MARKER, FOUND_AGAIN_BLOCKER_MARKER] : [FOUND_AGAIN_MARKER];
+    const body = [answered && formatFoundAgainReply(answered), variants.length > 0 && formatVariantReply(variants)].filter(part => !!part).join('\n\n---\n\n');
+    const markers = [...(answered ? [FOUND_AGAIN_MARKER] : []), ...(findings.some(f => f.severity === 'blocker') ? [FOUND_AGAIN_BLOCKER_MARKER] : [])];
     try {
-      await replyToReviewThread(run.octokit, threadId, formatFoundAgainReply(f), ...markers);
+      await replyToReviewThread(run.octokit, threadId, body, ...markers);
     } catch (error) {
-      core.warning(`Failed to reply on answered thread ${threadId}: ${error}`);
+      core.warning(`Failed to reply in thread ${threadId}: ${error}`);
     }
   }
 }
@@ -1745,7 +1751,7 @@ async function runFullReview(
       pause: pauseReport(pauseAfter),
     });
     await replyFixedThreads(run, resolved);
-    await replyAnsweredThreads(run, result);
+    await replyInThreads(run, result);
     await completeProgressComment(run, stage, reviewTimeMs);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
     setReviewOutputs(posted.id, context, result);
