@@ -666,6 +666,11 @@ export async function runReview(
   const team = selectTeam(diffWithLockfiles, config, plannerResult ?? undefined, options.deeper);
   const setEffort = config.judge?.effort;
   const judgeEffort = setEffort && setEffort !== 'auto' ? setEffort : plannerResult?.judgeEffort ?? 'high';
+  // What the round has produced so far. A round that ends incomplete keeps it all in its record.
+  const recorded: Partial<ReviewResult> = {
+    plannerResult: plannerResult ?? undefined, judgeEffort, ...(plannerDurationMs != null && { plannerDurationMs }),
+    ...(memory && { memoryLoaded: { learnings: memory.learnings.length, suppressions: memory.suppressions.length } }),
+  };
   const { trivial, subtle, paired } = team.triage;
   core.info(`Triage (${plannerSource}): trivial=${trivial}, subtle=${subtle}, paired=${paired}${team.sensitivePaths ? ', security-sensitive paths' : ''}${team.ciOrDependencyPaths ? ', CI or dependency paths' : ''}${team.trivialOverridden ? ', planner trivial answer overridden by the changed files' : ''}`);
   const { routing } = team;
@@ -696,6 +701,7 @@ export async function runReview(
     ? { repos: config.related_repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related') }
     : undefined;
   const changedSinceLastRound = filesChangedSinceLastRound(diffWithLockfiles, priorRounds, interRoundDiff);
+  if (changedSinceLastRound) recorded.changedSinceLastRoundCount = changedSinceLastRound.length;
   const earlierBlockers = blockersToRecheck(previousFindings ?? [], changedSinceLastRound);
   const uses = await usesPromise;
   // Asked alongside the finders on the reviewer model, at the effort of its finder. An unanswered question leaves the round complete, since the finders read the whole change.
@@ -724,6 +730,7 @@ export async function runReview(
   const agentDurationMs = new Map<string, number>();
   const agentRetryCount = new Map<string, number>();
   const agentFailureReasons = new Map<string, string>();
+  Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount });
   // A finder whose provider reported a used-up limit is not retried: it would fail the same way.
   const quotaErrors = new Map<string, QuotaError>();
   // The note each finder's next retry gets: one that names the parse error when its last reply did not parse.
@@ -1075,6 +1082,16 @@ export async function runReview(
       reason: workspace ? 'no finder has repository tools' : 'the PR head was not checked out for the tools',
     }));
   const finderContext = { ...(relatedRepos?.length && { relatedRepos }), ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }) };
+  const incomplete = async (summary: string, extra: Partial<ReviewResult> = {}): Promise<ReviewResult & { outcome: RoundOutcome }> => {
+    const relatedWork = await relatedWorkPromise;
+    return {
+      verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
+      agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
+      ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
+      ...(modelFallbacks.length > 0 && { modelFallbacks }), llmCalls, ...finderContext, ...(relatedWork && { relatedWork }),
+      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
+    };
+  };
 
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
@@ -1083,20 +1100,7 @@ export async function runReview(
       : failedAgents.length === team.finders.length
         ? `All reviewers failed. ${RETRY_HINT}`
         : `${failedAgents.join(', ')} failed after retries. ${RETRY_HINT}`;
-    return {
-      verdict: OUTCOME_VERDICT.INCOMPLETE,
-      outcome: 'INCOMPLETE',
-      summary,
-      findings: [],
-      highlights: [],
-      reviewComplete: false,
-      agentNames: team.finders.map(a => a.name),
-      failedAgents,
-      ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-      llmCalls,
-      ...finderContext,
-      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
-    };
+    return incomplete(summary, { failedAgents });
   }
 
   await checkpoint?.();
@@ -1120,6 +1124,7 @@ export async function runReview(
   const finderFindings: Finding[] = checkedFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
   // Alerts go first, so a reviewer finding that repeats one folds into the alert and keeps its source label.
   const toolAlerts = toolAlertFindings(staticSignals);
+  Object.assign(recorded, { rawFindingCount: checkedFindings.length, ...(toolAlerts.length > 0 && { toolAlertCount: toolAlerts.length }) });
   let findingsForJudge = [...toolAlerts, ...finderFindings];
 
   let staticDedupCount = 0;
@@ -1156,6 +1161,9 @@ export async function runReview(
       dedupDurationMs = Date.now() - dedupStart;
     }
   }
+  Object.assign(recorded, {
+    staticDedupCount, llmDedupCount, ...(duplicateMatches.length > 0 && { duplicateMatches }), ...(dedupDurationMs != null && { dedupDurationMs }),
+  });
 
   if (onProgress) {
     onProgress({
@@ -1253,20 +1261,15 @@ export async function runReview(
   } catch (error) {
     core.warning(`Judge failed: ${error}`);
     logOutputTokens('Judge', judgeWrap.getTotals().usage);
-    return {
-      verdict: OUTCOME_VERDICT.INCOMPLETE,
-      outcome: 'INCOMPLETE',
-      summary: error instanceof QuotaError ? quotaSummary(error) : `The judge failed. ${RETRY_HINT}`,
-      findings: [],
-      highlights: [],
-      reviewComplete: false,
-      agentNames: team.finders.map(a => a.name),
-      judgeEffort,
-      llmCalls,
-      ...finderContext,
-      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
-    };
+    return incomplete(error instanceof QuotaError ? quotaSummary(error) : `The judge failed. ${RETRY_HINT}`, {
+      judgeRetryCount: Math.max(0, judgeWrap.getTotals().calls - 1), ...(openLeads.length > 0 && { openLeads }),
+    });
   }
+  Object.assign(recorded, {
+    allJudgedFindings, ...(judgeDurationMs != null && { judgeDurationMs }), judgeRetryCount,
+    crossRoundSuppressed: judgeCrossRoundSuppressed, crossRoundDemoted: judgeCrossRoundDemoted,
+    ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }), ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
+  });
   await checkpoint?.();
 
   // Memory suppressions apply after the judge, so the judge's severity and security tag decide what they may hide.
@@ -1341,6 +1344,11 @@ export async function runReview(
   let verdictUsage: LLMUsage | undefined;
   const roundSlices = diffSlices(rawDiff, config);
   const slicing: RoundSlicing | undefined = roundSlices.length > 1 ? { files: roundSlices.map(s => s.paths?.size ?? 0) } : undefined;
+  Object.assign(recorded, {
+    threadEvaluations, ...(slicing && { slicing }), ...(suppressionCount > 0 && { suppressionCount }), ...(memorySuppressed.length > 0 && { memorySuppressed }),
+    ...(unpostedPreExisting.length > 0 && { unpostedPreExisting }), ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
+    ...(staticSignalMatches.length > 0 && { staticSignalMatches }), ...(openLeads.length > 0 && { openLeads }),
+  });
   if (outcome === 'READY') {
     const verdictWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict'));
     const readerFiles = fileContents && new Map([...fileContents].filter(([path]) => changedFiles.has(path)));
@@ -1357,19 +1365,7 @@ export async function runReview(
     } catch (error) {
       core.warning(`Verdict reader failed: ${error}`);
       logOutputTokens('Verdict reader', verdictWrap.getTotals().usage);
-      return {
-        verdict: OUTCOME_VERDICT.INCOMPLETE,
-        outcome: 'INCOMPLETE',
-        summary: error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${RETRY_HINT}`,
-        findings: [],
-        highlights: [],
-        reviewComplete: false,
-        agentNames: team.finders.map(a => a.name),
-        judgeEffort,
-        llmCalls,
-        ...finderContext,
-        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
-      };
+      return incomplete(error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${RETRY_HINT}`);
     }
     verdictUsage = verdictWrap.getTotals().usage;
     logOutputTokens('Verdict reader', verdictUsage);

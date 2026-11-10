@@ -295,7 +295,7 @@ function parseArgs(args: string[]): { owner: string; repo: string; last: number;
  * review is left out. Returns `undefined` when the record lacks either value or holds one that dates nothing.
  */
 export function reviewStart(round: RoundContext): string | undefined {
-  // A record without a readable time or wall-clock time cannot date the review, so the draft says its body is not recovered.
+  // A record without a readable time or wall-clock time cannot date the review, so an edited body reads as not recovered.
   const timestamp: unknown = round.meta?.timestamp;
   const wall: unknown = round.usage?.wallClockMs;
   if (typeof timestamp !== 'string' || typeof wall !== 'number' || !Number.isFinite(wall) || wall < 0) return undefined;

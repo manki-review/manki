@@ -3065,7 +3065,7 @@ describe('runReview', () => {
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.verdict).toBe('COMMENT');
     expect(result.summary).toContain('verdict reader failed');
-    expect(result.judgeEffort).toBe('high');
+    expect(result).toMatchObject({ judgeEffort: 'high', judgeRetryCount: 0, allJudgedFindings: expect.any(Array), threadEvaluations: undefined, staticDedupCount: 0, rawFindingCount: 0 });
     expect(result.findings).toEqual([]);
     expect(infoSpy).toHaveBeenCalledWith('Verdict reader: 65536 output tokens');
     infoSpy.mockRestore();
@@ -3816,7 +3816,10 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(false);
     expect(result.verdict).toBe('COMMENT');
     expect(result.summary).toContain('judge failed');
-    expect(result.judgeEffort).toBe('high');
+    expect(result).toMatchObject({
+      judgeEffort: 'high', rawFindingCount: 2, staticDedupCount: 0, llmDedupCount: 0, judgeRetryCount: 0, agentDurationMs: expect.any(Map),
+      rawFindings: [expect.objectContaining({ title: 'Some code improvement' }), expect.objectContaining({ title: 'Some code improvement' })],
+    });
 
     mockedRunJudgeAgent.mockRejectedValueOnce(new QuotaError('429', 'Anthropic API rate limit reached', undefined, 'key'));
     const limited = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
@@ -4663,6 +4666,11 @@ describe('runReview', () => {
     expect(result.failedAgents).toEqual(failed);
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
     expect((clients.reviewer.sendMessage as jest.Mock).mock.calls.length).toBe(MAX_AGENT_RETRIES + 1);
+    // An incomplete round keeps what it already produced for its record.
+    expect(result).toMatchObject({ judgeEffort: clients.planner ? 'low' : 'high', rawFindings: [], llmCalls: expect.any(Array) });
+    expect(result.agentRetryCount?.get(failed[0])).toBe(MAX_AGENT_RETRIES);
+    expect(result.agentFailureReasons?.[failed[0]]).toBeDefined();
+    if (clients.planner) expect(result).toMatchObject({ plannerResult: expect.objectContaining({ prType: 'docs' }), plannerDurationMs: expect.any(Number) });
   });
 
   it.each([1, 2])('ends INCOMPLETE without retrying a finder whose subscription limit is used up, with %i passes', async passes => {
