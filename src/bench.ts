@@ -6,7 +6,7 @@ import { parse as parseYaml } from 'yaml';
 import { runCliCommand } from './cli';
 import { MANKI_VERSION } from './github';
 import { extractJSON } from './json';
-import { ConfigOverrides, loadConfigWithOverrides, LocalReview, LocalReviewInput, overlayConfig, reviewLocal } from './local-review';
+import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides, LocalReview, LocalReviewInput, overlayConfig, reviewLocal } from './local-review';
 import { hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { buildLLMClient } from './review-clients';
@@ -56,6 +56,14 @@ export interface BenchCase {
   mustCatch: KeyItem[];
   /** Design, test, reuse and convention points a good review reports. They count in no recall. */
   niceToHave: KeyItem[];
+  /** Makes the case a follow-up round: the earlier round, whose findings the items below name by id. */
+  priorRound?: EarlierRound;
+  /** Earlier open threads the push fixes, which the round should resolve. */
+  mustResolve: string[];
+  /** Earlier open threads the push fixes only in part. `severity` is the grade the leftover keeps, `mechanism` what is left. */
+  mustKeepOpen: KeyItem[];
+  /** Earlier findings still in the code, which the round must not post again. */
+  mustNotRepeat: string[];
 }
 
 function caseError(file: string, message: string): Error {
@@ -92,6 +100,71 @@ function parseItems(raw: unknown, field: string, file: string): KeyItem[] {
   });
 }
 
+const PRIOR_FIELDS = ['description', 'how_to_fix', 'suggested_fix'] as const;
+
+function parsePriorRound(raw: unknown, file: string): EarlierRound {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw caseError(file, '`prior_round` must be a mapping');
+  const doc = raw as Record<string, unknown>;
+  const head = requireString(doc, 'head', file);
+  if (!/^[0-9a-f]{40}$/.test(head)) throw caseError(file, '`prior_round.head` must be a full commit SHA');
+  if (!Array.isArray(doc.findings) || doc.findings.length === 0) throw caseError(file, '`prior_round.findings` must be a non-empty list');
+  const findings = doc.findings.map((entry, i): EarlierFinding => {
+    const where = `${file} prior_round.findings[${i}]`;
+    if (!entry || typeof entry !== 'object') throw caseError(file, `prior_round.findings[${i}] must be a mapping`);
+    const f = entry as Record<string, unknown>;
+    for (const field of ['severity', 'grade_if_confirmed'] as const) {
+      if ((field === 'severity' || f[field] !== undefined) && !KEY_SEVERITIES.includes(f[field] as KeySeverity)) throw caseError(where, `\`${field}\` must be one of ${KEY_SEVERITIES.join(', ')}`);
+    }
+    if (!Number.isInteger(f.line) || (f.line as number) < 1) throw caseError(where, '`line` must be a positive integer');
+    if (f.posted !== 'thread' && f.posted !== 'body') throw caseError(where, '`posted` must be thread or body');
+    if (f.posted === 'thread' ? f.state !== 'open' && f.state !== 'resolved' : f.state !== undefined) throw caseError(where, '`state` must be open or resolved for a thread, and unset for a body finding');
+    if (f.security !== undefined && typeof f.security !== 'boolean') throw caseError(where, '`security` must be true or false');
+    const [description, howToFix, suggestedFix] = PRIOR_FIELDS.map((field) => {
+      if (f[field] !== undefined && typeof f[field] !== 'string') throw caseError(where, `\`${field}\` must be a string`);
+      return f[field] as string | undefined;
+    });
+    return {
+      id: requireString(f, 'id', where), severity: f.severity as KeySeverity, title: requireString(f, 'title', where), file: requireString(f, 'file', where), line: f.line as number,
+      ...(f.grade_if_confirmed !== undefined && { gradeIfConfirmed: f.grade_if_confirmed as KeySeverity }),
+      ...(description && { description }), ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), ...(f.security === true && { security: true }),
+      ...(f.posted === 'thread' && { thread: f.state as 'open' | 'resolved' }),
+    };
+  });
+  return { head, findings };
+}
+
+function parseIds(raw: unknown, field: string, file: string): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.some(id => typeof id !== 'string' || !id.trim())) throw caseError(file, `\`${field}\` must be a list of earlier finding ids`);
+  return raw as string[];
+}
+
+/** Checks that every follow-up item names an earlier finding it fits, in one list only, and gives a keep-open item the finding's file. */
+function checkFollowUp(
+  priorRound: EarlierRound | undefined, lists: { mustResolve: string[]; mustKeepOpen: KeyItem[]; mustNotRepeat: string[] }, keyIds: string[], file: string,
+): KeyItem[] {
+  const { mustResolve, mustKeepOpen, mustNotRepeat } = lists;
+  const named = [...mustResolve, ...mustKeepOpen.map(item => item.id), ...mustNotRepeat];
+  if (!priorRound) {
+    if (named.length > 0) throw caseError(file, '`must_resolve`, `must_keep_open` and `must_not_repeat` need a `prior_round`');
+    return mustKeepOpen;
+  }
+  const ids = priorRound.findings.map(f => f.id);
+  const reused = [...ids, ...keyIds].find((id, i, all) => all.indexOf(id) !== i);
+  if (reused) throw caseError(file, `item id ${reused} is used twice`);
+  const twice = named.find((id, i) => named.indexOf(id) !== i);
+  if (twice) throw caseError(file, `earlier finding ${twice} is in more than one follow-up list`);
+  const find = (id: string, field: string) => {
+    const finding = priorRound.findings.find(f => f.id === id);
+    if (!finding) throw caseError(file, `\`${field}\` names ${id}, which is no earlier finding`);
+    if (field !== 'must_not_repeat' && finding.thread !== 'open') throw caseError(file, `\`${field}\` names ${id}, which is no open earlier thread`);
+    return finding;
+  };
+  mustResolve.forEach(id => find(id, 'must_resolve'));
+  mustNotRepeat.forEach(id => find(id, 'must_not_repeat'));
+  return mustKeepOpen.map(item => (item.locations.length > 0 ? item : { ...item, locations: [find(item.id, 'must_keep_open').file] }));
+}
+
 /** Parses and checks one case file. Throws an error naming the file and the field that is wrong. */
 export function parseCase(text: string, file: string, set: CaseSet = 'tuning'): BenchCase {
   const raw = parseYaml(text) as unknown;
@@ -111,9 +184,14 @@ export function parseCase(text: string, file: string, set: CaseSet = 'tuning'): 
   const ids = [...mustCatch, ...niceToHave].map(item => item.id);
   const repeated = ids.find((id, i) => ids.indexOf(id) !== i);
   if (repeated) throw caseError(file, `item id ${repeated} is used twice`);
+  const priorRound = doc.prior_round === undefined ? undefined : parsePriorRound(doc.prior_round, file);
+  const mustResolve = parseIds(doc.must_resolve, 'must_resolve', file);
+  const mustNotRepeat = parseIds(doc.must_not_repeat, 'must_not_repeat', file);
+  const mustKeepOpen = checkFollowUp(priorRound, { mustResolve, mustKeepOpen: parseItems(doc.must_keep_open, 'must_keep_open', file), mustNotRepeat }, ids, file);
   return {
     id: requireString(doc, 'id', file), set, repo, source: requireString(doc, 'source', file), base, head,
     title: requireString(doc, 'title', file), body: typeof doc.body === 'string' ? doc.body : '', keyVersion: doc.key_version, mustCatch, niceToHave,
+    ...(priorRound && { priorRound }), mustResolve, mustKeepOpen, mustNotRepeat,
   };
 }
 
@@ -268,6 +346,14 @@ interface RunScore {
   extraFindings: number;
   /** Findings past the first that name a key item another finding already names. */
   duplicates: number;
+  /** On a follow-up case, the earlier open threads the round resolved. */
+  resolved?: string[];
+  /** Earlier threads the round resolved that the key says the push fixes. `null` for a first round and an incomplete run. */
+  resolvedRight: number | null;
+  /** Earlier threads the round resolved that the key says stay open. */
+  resolvedWrong: number | null;
+  /** Findings that restate an earlier finding the key says the round must not post again. */
+  repeats: number | null;
   finders: FinderSteps[];
   costUsd: number;
   inputTokens: number;
@@ -295,11 +381,26 @@ function finderSteps(review: LocalReview): FinderSteps[] {
   return [...byName].map(([name, { model, toolSteps, files }]) => ({ name, ...(model && { model }), toolSteps, filesRead: files.size }));
 }
 
+/** The key items a restatement of an earlier finding is matched against: what is left of each kept-open thread, and each earlier finding still present. */
+function repeatItems(benchCase: BenchCase): KeyItem[] {
+  const earlier = benchCase.priorRound?.findings ?? [];
+  return [...benchCase.mustKeepOpen, ...benchCase.mustNotRepeat.map((id) => {
+    const f = earlier.find(e => e.id === id)!;
+    return { id, severity: f.severity as KeySeverity, mechanism: [f.title, f.description].filter(Boolean).join('. '), locations: [f.file] };
+  })];
+}
+
+/** Whether the run matched `item` at its grade or above. */
+function foundAtGrade(item: Pick<KeyItem, 'id' | 'severity'>, run: Pick<RunScore, 'matches'>): boolean {
+  return run.matches.some(m => m.item === item.id && m.verdict === 'MATCH' && severityCredit(m.severity, item.severity) === 1);
+}
+
 /** Matches the findings of one review to the case's key and scores it. */
 export async function scoreRun(benchCase: BenchCase, review: LocalReview, matcher: Matcher): Promise<RunScore> {
   const { findings, outcome, reviewComplete } = review.result;
   const matches: ItemMatch[] = [];
-  for (const item of [...benchCase.mustCatch, ...benchCase.niceToHave]) {
+  const repeats = repeatItems(benchCase);
+  for (const item of [...benchCase.mustCatch, ...benchCase.niceToHave, ...repeats]) {
     const candidates = candidateFindings(item, findings);
     if (candidates.length === 0) {
       matches.push({ item: item.id, verdict: 'NONE', findings: [], reason: 'No finding names its files or symbols.' });
@@ -312,9 +413,11 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
   }
   const matched = new Set(matches.flatMap(m => m.findings));
   const strict = (item: KeyItem) => matches.find(m => m.item === item.id && m.verdict === 'MATCH');
-  const { mustCatch } = benchCase;
+  const { mustCatch, priorRound } = benchCase;
   const totalWeight = mustCatch.reduce((sum, item) => sum + SEVERITY_WEIGHT[item.severity], 0);
-  const expected = mustCatch.some(item => item.severity === 'blocker') ? 'block' : mustCatch.length === 0 ? 'approve' : undefined;
+  const expected = expectedVerdict(benchCase);
+  const keyMatches = matches.filter(m => !repeats.some(item => item.id === m.item));
+  const resolved = priorRound && reviewComplete ? resolvedThreads(benchCase, review) : undefined;
   return {
     ...reviewFacts(review),
     complete: reviewComplete,
@@ -325,8 +428,31 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
     verdictCorrect: expected && reviewComplete ? (outcome !== 'READY') === (expected === 'block') : null,
     falseBlockers: findings.filter((f, i) => f.severity === 'blocker' && !matched.has(i)).length,
     extraFindings: findings.filter((_, i) => !matched.has(i)).length,
-    duplicates: matches.reduce((sum, m) => sum + Math.max(0, m.findings.length - 1), 0),
+    duplicates: keyMatches.reduce((sum, m) => sum + Math.max(0, m.findings.length - 1), 0),
+    ...(resolved && { resolved }),
+    resolvedRight: resolved ? resolved.filter(id => benchCase.mustResolve.includes(id)).length : null,
+    resolvedWrong: resolved ? resolved.filter(id => !benchCase.mustResolve.includes(id)).length : null,
+    repeats: priorRound && reviewComplete
+      ? new Set(matches.filter(m => m.verdict === 'MATCH' && repeats.some(item => item.id === m.item)).flatMap(m => m.findings)).size
+      : null,
   };
+}
+
+/**
+ * The verdict a review of the case should reach: block on a must-catch blocker or an earlier blocker still in the code,
+ * approve when nothing is left to fix, and none otherwise.
+ */
+function expectedVerdict(benchCase: BenchCase): 'block' | 'approve' | undefined {
+  const { mustCatch, mustKeepOpen, mustNotRepeat, priorRound } = benchCase;
+  const stillThere = [...mustCatch, ...mustKeepOpen, ...mustNotRepeat.map(id => priorRound!.findings.find(f => f.id === id)!)];
+  if (stillThere.some(item => item.severity === 'blocker')) return 'block';
+  return mustCatch.length === 0 && mustKeepOpen.length === 0 ? 'approve' : undefined;
+}
+
+/** The earlier open threads the round marked addressed, as a pull request round resolves them. */
+function resolvedThreads(benchCase: BenchCase, review: LocalReview): string[] {
+  const open = new Set(benchCase.priorRound!.findings.filter(f => f.thread === 'open').map(f => f.id));
+  return [...new Set((review.result.threadEvaluations ?? []).filter(e => e.status === 'addressed' && open.has(e.threadId)).map(e => e.threadId))];
 }
 
 /** What a run records about its review whether or not the findings could be matched. */
@@ -343,11 +469,16 @@ function reviewFacts(review: LocalReview): Pick<RunScore, 'outcome' | 'findings'
   };
 }
 
+const TIER_LABELS = { must_catch: 'must', nice_to_have: 'nice', must_resolve: 'resolve', must_keep_open: 'keep open', must_not_repeat: 'no repeat' } as const;
+
 interface ItemReport {
   id: string;
-  tier: 'must_catch' | 'nice_to_have';
+  tier: keyof typeof TIER_LABELS;
   severity: KeySeverity;
-  /** Complete runs with a `MATCH`. */
+  /**
+   * Complete runs that got the item right: a must-catch or nice-to-have item with a `MATCH`, an earlier thread resolved or
+   * kept open as the key says, and an earlier finding not posted again.
+   */
   caught: number;
   /** Complete runs with a `PARTIAL`. */
   partial: number;
@@ -376,6 +507,8 @@ interface VariantSummary {
   /** Mean over the complete runs of cases with must-catch items. */
   mustCatchRecall: number | null;
   weightedRecall: number | null;
+  /** Must-catch items matched at the key's grade or above, over all must-catch items, as a mean over the complete runs. */
+  atGradeRecall: number | null;
   /** Correct verdicts over the runs that have an expected verdict. */
   verdictAccuracy: number | null;
   /** Must-catch catches per key severity, over the complete runs. */
@@ -383,6 +516,10 @@ interface VariantSummary {
   falseBlockers: number;
   extraFindings: number;
   duplicates: number;
+  /** Sums over the complete runs of follow-up cases. `null` without one. */
+  resolvedRight: number | null;
+  resolvedWrong: number | null;
+  repeats: number | null;
   costUsd: number;
   /** Mean cost of the runs that got a review. */
   costPerRunUsd: number | null;
@@ -425,13 +562,23 @@ function mean(values: Array<number | null>): number | null {
 
 function caseReport(benchCase: BenchCase, runs: RunScore[]): CaseReport {
   const complete = runs.filter(run => run.complete);
-  const report = (item: KeyItem, tier: ItemReport['tier']): ItemReport => {
-    const verdicts = complete.map(run => run.matches.find(m => m.item === item.id)?.verdict);
-    return { id: item.id, tier, severity: item.severity, caught: verdicts.filter(v => v === 'MATCH').length, partial: verdicts.filter(v => v === 'PARTIAL').length, runs: complete.length };
-  };
+  const verdict = (run: RunScore, id: string) => run.matches.find(m => m.item === id)?.verdict;
+  const report = (item: Pick<KeyItem, 'id' | 'severity'>, tier: ItemReport['tier'], right: (run: RunScore) => boolean): ItemReport => ({
+    id: item.id, tier, severity: item.severity, caught: complete.filter(right).length,
+    partial: tier === 'must_catch' || tier === 'nice_to_have' ? complete.filter(run => verdict(run, item.id) === 'PARTIAL').length : 0, runs: complete.length,
+  });
+  const caught = (item: KeyItem) => (run: RunScore) => verdict(run, item.id) === 'MATCH';
+  const resolved = (id: string, run: RunScore) => !!run.resolved?.includes(id);
+  const earlier = (id: string) => benchCase.priorRound!.findings.find(f => f.id === id)! as Pick<KeyItem, 'id' | 'severity'>;
   return {
     id: benchCase.id, set: benchCase.set, source: benchCase.source, keyVersion: benchCase.keyVersion,
-    items: [...benchCase.mustCatch.map(item => report(item, 'must_catch')), ...benchCase.niceToHave.map(item => report(item, 'nice_to_have'))],
+    items: [
+      ...benchCase.mustCatch.map(item => report(item, 'must_catch', caught(item))),
+      ...benchCase.niceToHave.map(item => report(item, 'nice_to_have', caught(item))),
+      ...benchCase.mustResolve.map(id => report(earlier(id), 'must_resolve', run => resolved(id, run))),
+      ...benchCase.mustKeepOpen.map(item => report(item, 'must_keep_open', run => !resolved(item.id, run) && verdict(run, item.id) !== 'MATCH')),
+      ...benchCase.mustNotRepeat.map(id => report(earlier(id), 'must_not_repeat', run => !resolved(id, run) && verdict(run, id) !== 'MATCH')),
+    ],
     runs,
   };
 }
@@ -456,17 +603,28 @@ function summarize(cases: CaseReport[]): VariantSummary {
   }
   const verdicts = runs.map(r => r.verdictCorrect).filter((v): v is boolean => v !== null);
   const reviewed = runs.filter(r => r.outcome !== 'FAILED');
+  const sum = (value: (run: RunScore) => number | null) => {
+    const known = runs.map(value).filter((v): v is number => v !== null);
+    return known.length > 0 ? known.reduce((a, b) => a + b, 0) : null;
+  };
   return {
     runs: runs.length,
     incompleteRuns: runs.filter(r => !r.complete).length,
     mustCatchRecall: mean(runs.map(r => r.mustCatchRecall)),
     weightedRecall: mean(runs.map(r => r.weightedRecall)),
+    atGradeRecall: mean(cases.flatMap(c => c.runs.map((run) => {
+      const items = c.items.filter(item => item.tier === 'must_catch');
+      return run.complete && items.length > 0 ? items.filter(item => foundAtGrade(item, run)).length / items.length : null;
+    }))),
     verdictAccuracy: verdicts.length > 0 ? verdicts.filter(Boolean).length / verdicts.length : null,
     bySeverity,
-    falseBlockers: runs.reduce((sum, r) => sum + r.falseBlockers, 0),
-    extraFindings: runs.reduce((sum, r) => sum + r.extraFindings, 0),
-    duplicates: runs.reduce((sum, r) => sum + r.duplicates, 0),
-    costUsd: runs.reduce((sum, r) => sum + r.costUsd, 0),
+    falseBlockers: runs.reduce((total, r) => total + r.falseBlockers, 0),
+    extraFindings: runs.reduce((total, r) => total + r.extraFindings, 0),
+    duplicates: runs.reduce((total, r) => total + r.duplicates, 0),
+    resolvedRight: sum(r => r.resolvedRight),
+    resolvedWrong: sum(r => r.resolvedWrong),
+    repeats: sum(r => r.repeats),
+    costUsd: runs.reduce((total, r) => total + r.costUsd, 0),
     costPerRunUsd: mean(reviewed.map(r => r.costUsd)),
     wallTimePerRunMs: mean(reviewed.map(r => r.durationMs)),
   };
@@ -502,18 +660,36 @@ export function mergeReports(parts: BenchReport[], cases: BenchCase[], meta: Pic
   };
 }
 
-/** How far the found must-catch items may fall before a release fails. */
+/** How far a figure where more is better, such as the found must-catch items, may fall before a release fails. */
 const GATE_MARGIN = 1;
 const GATE_EPSILON = 1e-9;
 
+/** Each figure the gate compares, summed over the shared cases as a mean per run. */
 interface GateSide {
   /** Runs of each shared case over all reports of the side, the fewest of any case. */
   runs: number;
-  /** Must-catch items matched at the key's grade or above, summed over the shared cases, as a mean per run. */
+  /** Must-catch items matched at the key's grade or above. */
   found: number;
-  /** Blocker findings that match no key item, summed over the shared cases, as a mean per run. */
+  /** Earlier threads resolved that the key says the push fixes. */
+  resolvedRight: number;
+  /** Blocker findings that match no key item. */
   falseBlockers: number;
+  /** Earlier threads resolved that the key says stay open. */
+  resolvedWrong: number;
+  /** Findings that restate an earlier finding the key says must not be posted again. */
+  repeats: number;
 }
+
+type GateFigure = Exclude<keyof GateSide, 'runs'>;
+
+/** The figures where more is better, which may fall within `GATE_MARGIN`, and those where less is better, which may not rise. */
+const GATE_FIGURES: Array<{ key: GateFigure; label: string; row: string; better: 'more' | 'less' }> = [
+  { key: 'found', label: "Must-catch items found at the key's grade", row: 'Must-catch found at grade', better: 'more' },
+  { key: 'resolvedRight', label: 'Earlier threads resolved as the key says', row: 'Resolved right', better: 'more' },
+  { key: 'falseBlockers', label: 'False blockers', row: 'False blockers', better: 'less' },
+  { key: 'resolvedWrong', label: 'Earlier threads resolved that the key keeps open', row: 'Resolved wrong', better: 'less' },
+  { key: 'repeats', label: 'Earlier findings posted again', row: 'Repeats', better: 'less' },
+];
 
 export interface GateResult {
   variant: string;
@@ -531,10 +707,19 @@ function gateSide(variants: VariantReport[], shared: string[]): GateSide {
     perCase.reduce((sum, reports) => sum + (mean(reports.flatMap(c => c.runs.map(run => score(c, run)))) ?? 0), 0);
   return {
     runs: Math.min(...perCase.map(reports => reports.reduce((sum, c) => sum + c.runs.length, 0))),
-    found: meanPerRun((c, run) => c.items.filter(item => item.tier === 'must_catch'
-      && run.matches.some(m => m.item === item.id && m.verdict === 'MATCH' && severityCredit(m.severity, item.severity) === 1)).length),
+    found: meanPerRun((c, run) => c.items.filter(item => item.tier === 'must_catch' && foundAtGrade(item, run)).length),
+    resolvedRight: meanPerRun((_, run) => run.resolvedRight ?? 0),
     falseBlockers: meanPerRun((_, run) => run.falseBlockers),
+    resolvedWrong: meanPerRun((_, run) => run.resolvedWrong ?? 0),
+    repeats: meanPerRun((_, run) => run.repeats ?? 0),
   };
+}
+
+/** Joins the parts of one sentence: the first keeps its capital, and the others start lower case. */
+function listed(parts: string[], last = ' and '): string {
+  const [first, ...rest] = parts;
+  const others = rest.map(part => part[0].toLowerCase() + part.slice(1));
+  return others.length === 0 ? first : `${[first, ...others.slice(0, -1)].join(', ')}${last}${others.at(-1)}`;
 }
 
 function figure(value: number): string {
@@ -543,10 +728,10 @@ function figure(value: number): string {
 
 /**
  * Applies the release gate to each variant both sides scored, on the hold-out cases both scored with the same key
- * version. A side with an incomplete review decides nothing. More false blockers fail. Found must-catch items may fall
- * by at most `GATE_MARGIN`, and a fall within it on a single candidate run asks for a rerun, decided on the mean.
- * Throws when the candidate reports reviewed different commits, the baseline reviewed the candidate's commit, or the
- * reports were matched by different models.
+ * version. A side with an incomplete review decides nothing. A rise in a figure where less is better fails. A figure
+ * where more is better may fall by at most `GATE_MARGIN`, and a fall within it on a single candidate run asks for a
+ * rerun, decided on the mean. Throws when the candidate reports reviewed different commits, the baseline reviewed the
+ * candidate's commit, or the reports were matched by different models.
  */
 export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): GateResult[] {
   if (baseline.length === 0 || candidate.length === 0) throw new Error('The gate needs a baseline and a candidate report');
@@ -576,22 +761,25 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
       return { variant: name, verdict: 'NO DECISION', reason: `${listed.join(' ')} A run with incomplete reviews does not count, so run that side again.`, shared };
     }
     const [b, c] = [gateSide(base, shared), gateSide(cand, shared)];
-    const drop = b.found - c.found;
     const sides = { shared, baseline: b, candidate: c };
-    if (c.falseBlockers > b.falseBlockers + GATE_EPSILON) {
-      return { variant: name, verdict: 'FAIL', reason: `False blockers rose from ${figure(b.falseBlockers)} to ${figure(c.falseBlockers)} per run.`, ...sides };
+    const worse = GATE_FIGURES.map(f => ({ ...f, by: f.better === 'more' ? b[f.key] - c[f.key] : c[f.key] - b[f.key] })).filter(f => f.by > GATE_EPSILON);
+    const failed = worse.filter(f => f.better === 'less' || f.by > GATE_MARGIN + GATE_EPSILON);
+    if (failed.length > 0) {
+      const reasons = failed.map(f => (f.better === 'less'
+        ? `${f.label} rose from ${figure(b[f.key])} to ${figure(c[f.key])} per run.`
+        : `${f.label} fell by ${figure(f.by)}, more than ${GATE_MARGIN}.`));
+      return { variant: name, verdict: 'FAIL', reason: reasons.join(' '), ...sides };
     }
-    if (drop > GATE_MARGIN + GATE_EPSILON) {
-      return { variant: name, verdict: 'FAIL', reason: `Must-catch items found at the key's grade fell by ${figure(drop)}, more than ${GATE_MARGIN}.`, ...sides };
-    }
-    if (drop > GATE_EPSILON && c.runs < 2) {
+    const fell = worse.length > 0 ? listed(worse.map(f => `${f.label} fell by ${figure(f.by)}`), ', and ') : '';
+    if (fell && c.runs < 2) {
       return {
         variant: name, verdict: 'RERUN', ...sides,
-        reason: `Must-catch items found at the key's grade fell by ${figure(drop)}, within the margin of ${GATE_MARGIN}. Run the candidate once more and decide on the mean of both runs.`,
+        reason: `${fell}, within the margin of ${GATE_MARGIN}. Run the candidate once more and decide on the mean of both runs.`,
       };
     }
-    const change = drop > GATE_EPSILON ? `fell by ${figure(drop)} on the mean of ${c.runs} runs, within the margin of ${GATE_MARGIN}` : 'did not fall';
-    return { variant: name, verdict: 'PASS', reason: `False blockers did not rise, and must-catch items found at the key's grade ${change}.`, ...sides };
+    const labels = (better: 'more' | 'less') => listed(GATE_FIGURES.filter(f => f.better === better).map(f => f.label));
+    const more = fell ? `${fell} on the mean of ${c.runs} runs, within the margin of ${GATE_MARGIN}` : `${labels('more')} did not fall`;
+    return { variant: name, verdict: 'PASS', reason: `${labels('less')} did not rise. ${more}.`, ...sides };
   });
 }
 
@@ -600,8 +788,8 @@ export function formatGate(results: GateResult[]): string {
   return results.map((r) => {
     const lines = [`### Release gate, ${r.variant}: ${r.verdict}`, '', r.reason, ''];
     if (r.baseline && r.candidate) {
-      const row = (label: string, value: (side: GateSide) => number) => `| ${label} | ${figure(value(r.baseline!))} | ${figure(value(r.candidate!))} |`;
-      lines.push('| Figure | Baseline | Candidate |', '| --- | --- | --- |', row('Runs per case', s => s.runs), row('Must-catch found at grade', s => s.found), row('False blockers', s => s.falseBlockers), '');
+      const row = (label: string, key: keyof GateSide) => `| ${label} | ${figure(r.baseline![key])} | ${figure(r.candidate![key])} |`;
+      lines.push('| Figure | Baseline | Candidate |', '| --- | --- | --- |', row('Runs per case', 'runs'), ...GATE_FIGURES.map(f => row(f.row, f.key)), '');
     }
     lines.push(`Shared hold-out cases (${r.shared.length}): ${r.shared.join(', ') || 'none'}`, '');
     return lines.join('\n');
@@ -610,6 +798,10 @@ export function formatGate(results: GateResult[]): string {
 
 function percent(value: number | null): string {
   return value === null ? 'n/a' : `${Math.round(value * 100)}%`;
+}
+
+function count(value: number | null): string {
+  return value === null ? 'n/a' : String(value);
 }
 
 function minutes(ms: number | null): string {
@@ -639,14 +831,18 @@ export function formatComparison(variants: VariantReport[]): string {
     row('---', columns.map(() => '---')),
     figure('Must-catch recall', s => percent(s.mustCatchRecall)),
     figure('Weighted recall', s => percent(s.weightedRecall)),
+    figure('Must-catch at grade', s => percent(s.atGradeRecall)),
     figure('Verdict accuracy', s => percent(s.verdictAccuracy)),
     figure('False blockers', s => String(s.falseBlockers)),
     figure('Extra findings', s => String(s.extraFindings)),
     figure('Duplicates', s => String(s.duplicates)),
+    figure('Resolved right', s => count(s.resolvedRight)),
+    figure('Resolved wrong', s => count(s.resolvedWrong)),
+    figure('Repeats', s => count(s.repeats)),
     figure('Incomplete runs', s => `${s.incompleteRuns} of ${s.runs}`),
     figure('Cost per run', s => (s.costPerRunUsd === null ? 'n/a' : `$${s.costPerRunUsd.toFixed(2)}`)),
     figure('Wall time per run', s => minutes(s.wallTimePerRunMs)),
-    ...items.map(({ caseId, item }) => row(`${caseId} ${item.id} (${item.tier === 'must_catch' ? 'must' : 'nice'} ${item.severity})`, columns.map((column) => {
+    ...items.map(({ caseId, item }) => row(`${caseId} ${item.id} (${TIER_LABELS[item.tier]} ${item.severity})`, columns.map((column) => {
       const found = column.cases.find(c => c.id === caseId)?.items.find(i => i.id === item.id);
       return found ? `${found.caught}/${found.runs}${found.partial ? `, ${found.partial} partial` : ''}` : '';
     }))),
@@ -664,19 +860,20 @@ export function formatBenchSummary(report: BenchReport): string {
     for (const c of variant.cases) {
       lines.push(`${c.id} (${c.source})`);
       for (const item of c.items) {
-        lines.push(`  ${item.id} ${item.tier === 'must_catch' ? 'must' : 'nice'} ${item.severity}: ${item.caught}/${item.runs}${item.partial ? `, ${item.partial} partial` : ''}`);
+        lines.push(`  ${item.id} ${TIER_LABELS[item.tier]} ${item.severity}: ${item.caught}/${item.runs}${item.partial ? `, ${item.partial} partial` : ''}`);
       }
       for (const [i, run] of c.runs.entries()) {
         const reads = run.finders.map(f => `${f.name} ${f.filesRead}`).join(', ') || 'none';
         lines.push(run.error
           ? `  run ${i + 1}: ${run.outcome}: ${run.error}`
-          : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${run.extraFindings} extra, ${run.duplicates} duplicates, files read ${reads}, $${run.costUsd.toFixed(2)}`);
+          : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.repeats === null ? '' : `, resolved ${run.resolvedRight} right and ${run.resolvedWrong} wrong, ${run.repeats} repeats`}, files read ${reads}, $${run.costUsd.toFixed(2)}`);
       }
     }
     for (const { label, summary: s } of setSummaries(variant)) {
       const severities = KEY_SEVERITIES.flatMap(sev => (s.bySeverity[sev] ? [`${sev} ${s.bySeverity[sev]!.caught}/${s.bySeverity[sev]!.total}`] : []));
-      lines.push(`${label ? `${label}: ` : ''}${s.runs} runs (${s.incompleteRuns} incomplete). Must-catch recall ${percent(s.mustCatchRecall)}, weighted ${percent(s.weightedRecall)}, verdicts ${percent(s.verdictAccuracy)}.`);
+      lines.push(`${label ? `${label}: ` : ''}${s.runs} runs (${s.incompleteRuns} incomplete). Must-catch recall ${percent(s.mustCatchRecall)}, weighted ${percent(s.weightedRecall)}, at grade ${percent(s.atGradeRecall)}, verdicts ${percent(s.verdictAccuracy)}.`);
       lines.push(`By severity: ${severities.join(', ') || 'n/a'}. False blockers ${s.falseBlockers}, extra findings ${s.extraFindings}, duplicates ${s.duplicates}, cost $${s.costUsd.toFixed(2)}.`);
+      if (s.repeats !== null) lines.push(`Follow-up rounds: resolved ${s.resolvedRight} right and ${s.resolvedWrong} wrong, ${s.repeats} repeats.`);
     }
     lines.push('');
   }
@@ -708,6 +905,7 @@ function failedRun(error: unknown, review?: LocalReview): RunScore {
     ...(review && reviewFacts(review)),
     complete: false, error: error instanceof Error ? error.message : String(error), matches: [],
     mustCatchRecall: null, weightedRecall: null, verdictCorrect: null, falseBlockers: 0, extraFindings: 0, duplicates: 0,
+    resolvedRight: null, resolvedWrong: null, repeats: null,
   };
 }
 
@@ -721,7 +919,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
   for (const c of cases) {
     const checkout = checkouts.get(c.repo);
     if (!checkout) throw new Error(`No checkout for ${c.repo}, which case ${c.id} needs. Pass --checkout ${c.repo}=<dir>.`);
-    for (const sha of [c.base, c.head]) {
+    for (const sha of [c.base, ...(c.priorRound ? [c.priorRound.head] : []), c.head]) {
       await runGit(checkout, ['cat-file', '-e', `${sha}^{commit}`]).catch((error: Error) => {
         throw new Error(`Commit ${sha} of case ${c.id} is not in ${checkout}. Fetch it from ${c.repo} first. Git said: ${error.message.trim()}`);
       });
@@ -745,7 +943,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
         try {
           local = await review({
             repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
-            providerInputs: options.providerInputs, signal: options.signal,
+            ...(benchCase.priorRound && { earlier: benchCase.priorRound }), providerInputs: options.providerInputs, signal: options.signal,
             // A variant without overrides reviews like a pull request round, falling back to the defaults on a broken base config.
             ...(Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
           });
