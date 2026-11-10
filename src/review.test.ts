@@ -2824,9 +2824,10 @@ describe('runReview', () => {
     expect(await gradeAfter(open, touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
     expect(await gradeAfter(open, elsewhere)).toEqual([undefined, 'READY']);
     expect(await gradeAfter(addressed, elsewhere, [repeat])).toEqual(['blocker', 'ADDRESS_FIRST']);
-    // A blocker that repeats the thread's answered problem raises it again the same way.
+    // A blocker that repeats the thread's answered problem, or that this round folds into the thread, raises it again the same way.
     const answeredRepeat: Finding = { ...repeat, sameAs: undefined, answeredIn: { threadId: 'T1', answer: 'Withdrawn. Fine.' } };
     expect(await gradeAfter(open, elsewhere, [answeredRepeat])).toEqual(['blocker', 'ADDRESS_FIRST']);
+    expect(await gradeAfter(open, elsewhere, [{ ...repeat, sameAs: undefined, threadId: 'T1' }])).toEqual(['blocker', 'ADDRESS_FIRST']);
   });
 
   it('points a finding that restates an earlier finding still open at it, and a variant at its open thread', async () => {
