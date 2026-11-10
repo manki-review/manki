@@ -5608,7 +5608,9 @@ describe('runFullReview orchestration', () => {
     // With a round record unread, a raise could hide, so the round does not approve while a thread is open.
     expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5].verdict).toBe('APPROVE');
     await run('abc123', true);
-    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5]).toMatchObject({ verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' });
+    const held = jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5];
+    expect(held).toMatchObject({ verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' });
+    expect(held.verdictTrace?.unresolvedPriors.map(p => p.threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl', 'PRRT_mno']);
 
     // When the change since the last round cannot be read, every partly fixed thread gets its reply.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed'));

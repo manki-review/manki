@@ -1656,11 +1656,17 @@ describe('fetchRecapState', () => {
     it('skips malformed JSON block but still loads subsequent valid blocks', async () => {
       const ctx3 = makeRoundContext(3);
       const malformed = '<!-- manki-context: {bad} -->';
-      const octokit = mockOctokit([], [
+      const resolvedByAuthor = makeThread({
+        id: 'tw', isResolved: true, resolvedBy: { login: 'author' },
+        comments: { nodes: [{ body: '<!-- manki:warning:Bug --> **Warning**: Bug found\n\nDesc.', author: { login: BOT_LOGIN } }] },
+      });
+      const octokit = mockOctokit([resolvedByAuthor], [
         { id: 500, body: malformed, user: { login: BOT_LOGIN } },
         { id: 501, body: htmlCommentBlock(ctx3), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author');
+      // The skipped record may have raised the thread, so the PR author's resolution does not clear it.
+      expect(state.previousFindings.map(f => [f.status, f.reopen])).toEqual([['open', true]]);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(3);
       // A skipped record could hold a thread's grade, so the recap says the rounds are incomplete.

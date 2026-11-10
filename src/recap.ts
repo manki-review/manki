@@ -129,8 +129,8 @@ function recordedSecurityOverride(
  * Whether only someone other than the PR author can clear the finding: a blocker, or a security finding of any severity.
  * A live thread says so with `isBlocking`, a parsed one by `threadBlocks` on its severity and partly-fixed grade.
  */
-function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity }): boolean {
-  return !!t.isSecurity || !!t.isBlocking || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.recordedGrade && { recordedGrade: t.recordedGrade }) }));
+function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity; gradeUnknown?: boolean }): boolean {
+  return !!t.isSecurity || !!t.isBlocking || !!t.gradeUnknown || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.recordedGrade && { recordedGrade: t.recordedGrade }) }));
 }
 
 interface OverrideCandidate {
@@ -519,7 +519,8 @@ async function fetchRecapState(
   const grades = recordedThreadGrades(priorRounds);
   const threads = fetched.map(t => {
     const grade = t.isBotThread ? grades.get(t.threadId) : undefined;
-    return grade ? { ...t, recordedGrade: grade.grade, peakGrade: grade.peak } : t;
+    // An unread record could hold a raise, so only someone other than the PR author may clear the thread meanwhile.
+    return { ...t, ...(grade && { recordedGrade: grade.grade, peakGrade: grade.peak }), ...(t.isBotThread && priorRoundsIncomplete && { gradeUnknown: true }) };
   });
   const botThreads = threads.filter(t => t.isBotThread);
   const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isOverrideCandidate(t, prAuthorLogin))
@@ -746,6 +747,8 @@ interface ReviewThread extends FindingMetadata {
   severity: FindingSeverity | 'unknown';
   recordedGrade?: FindingSeverity;
   peakGrade?: FindingSeverity;
+  /** Set when a round record could not be read, so the grade it may hold is unknown. */
+  gradeUnknown?: boolean;
   authorReplyText?: string;
   authorReplyLogin?: string;
   authorReplyAssociation?: string;
