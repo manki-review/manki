@@ -560,6 +560,9 @@ describe('determineOutcome', () => {
       expect(partly(undefined, 'blocker', 'not_addressed')).toBe('prior_unaddressed');
       // This round's grade for what remains decides over an earlier one.
       expect(partly('blocker', 'warning')).toBe('prior_unaddressed');
+      // With the open threads unknown, a grade for a thread never lowers its blocker.
+      const evaluations: ThreadEvaluation[] = [{ threadId: 'T_BLOCKER', status: 'partly_addressed', reason: 'r', remaining: 'r', grade: 'warning' }];
+      expect(determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), null, undefined, evaluations).verdictReason).toBe('prior_unaddressed');
     });
 
     it('lists a thread once when two priors point at it', () => {
@@ -2828,6 +2831,12 @@ describe('runReview', () => {
     const answeredRepeat: Finding = { ...repeat, sameAs: undefined, answeredIn: { threadId: 'T1', answer: 'Withdrawn. Fine.' } };
     expect(await gradeAfter(open, elsewhere, [answeredRepeat])).toEqual(['blocker', 'ADDRESS_FIRST']);
     expect(await gradeAfter(open, elsewhere, [{ ...repeat, sameAs: undefined, threadId: 'T1' }])).toEqual(['blocker', 'ADDRESS_FIRST']);
+    // A blocker this round only links to the thread by folding it there after grading raises it too.
+    const restated: Finding = { severity: 'blocker', title: 'Old issue', file: 'src/x.ts', line: 10, description: 'd', reviewers: ['r'] };
+    expect(await gradeAfter(open, elsewhere, [restated])).toEqual(['blocker', 'ADDRESS_FIRST']);
+    // A grade the judge gives a thread that is not open is dropped, so it can never lower a blocker.
+    delete openThread.partlyFixedGrade;
+    expect(await gradeAfter({ ...partly('nitpick'), threadId: 'T9' }, touching)).toEqual([undefined, 'ADDRESS_FIRST']);
   });
 
   it('points a finding that restates an earlier finding still open at it, and a variant at its open thread', async () => {

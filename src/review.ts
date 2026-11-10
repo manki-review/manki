@@ -1322,6 +1322,8 @@ export async function runReview(
   const earlier = earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
   const earlierWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
   finalFindings = await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client);
+  // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
+  threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
@@ -1379,7 +1381,7 @@ export async function runReview(
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       const readerFindings = folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
       finalFindings = [...folded.findings, ...readerFindings];
-      threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+      threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
       // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
       if (readerFindings.some(f => f.severity === 'blocker')) {
         outcome = 'ADDRESS_FIRST';
@@ -2202,12 +2204,12 @@ export function determineOutcome(
  * else the grade an earlier round's partly-fixed reply gave it.
  */
 function remainderBlocks(p: FindingFingerprintEntry, openThreadIndex: Map<string, OpenThread>, evaluations: Map<string, ThreadEvaluation>): boolean {
-  if (!p.threadId) return true;
-  const grade = evaluations.get(p.threadId)?.grade;
+  const thread = p.threadId ? openThreadIndex.get(p.threadId) : undefined;
+  if (!thread) return true;
+  const grade = evaluations.get(thread.threadId)?.grade;
   if (grade) return grade === 'blocker';
-  const thread = openThreadIndex.get(p.threadId);
   // The prior is a blocker, so only the grade an earlier partial fix left can lower it.
-  return !thread || threadBlocks({ ...thread, severity: 'blocker' });
+  return threadBlocks({ ...thread, severity: 'blocker' });
 }
 
 /** Returns why a round where nothing blocks is `READY`: warnings among its findings, or only smaller ones. */
@@ -2310,7 +2312,9 @@ function confirmFixes(
     const thread = openThreadIndex.get(e.threadId);
     const confirmed = confirm(e, thread);
     const grade = partialFixGrade(confirmed, thread, namedThreadIds, pushChangedFiles);
-    return grade ? { ...confirmed, grade } : confirmed;
+    // Only a grade `partialFixGrade` bounds stays, so a judge grade for a thread that is not open is dropped.
+    const { grade: _judged, ...rest } = confirmed;
+    return grade ? { ...rest, grade } : rest;
   });
 }
 
