@@ -2985,6 +2985,17 @@ describe('runReview', () => {
     expect(named.findings[0]).toEqual(expect.objectContaining({ ownThread: true }));
     expect(named.findings[0]).not.toHaveProperty('sameAs');
     expect(named.verdictTrace?.unresolvedPriors).toEqual([expect.objectContaining({ threadId: 'T1' })]);
+    // It does so whichever thread the finding leaves, here a closed answered one.
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:10:10:retry-never-ends', answeredIn: { threadId: 'T9', answer: 'Agreed.' } })] });
+    const elsewhere = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, headSha: 'sha3',
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends', severity: 'blocker' })],
+      previousFindings: [{ title: 'Token logged', file: 'src/x.ts', line: 80, severity: 'warning', status: 'resolved', threadId: 'T9', answer: 'Agreed.' }],
+      priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker', title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } })])],
+    });
+    expect(elsewhere.findings[0]).not.toHaveProperty('sameAs');
+    expect(elsewhere.findings[0]).not.toHaveProperty('answeredIn');
+    expect(elsewhere.verdictTrace?.unresolvedPriors).toEqual([expect.objectContaining({ threadId: 'T1' })]);
     // With no earlier finding at all, a security finding is still posted on its own.
     const first = await runReview(makeClients(), { config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(first.findings[0]).toEqual(expect.objectContaining({ ownThread: true }));

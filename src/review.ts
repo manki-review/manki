@@ -2432,7 +2432,7 @@ function earlierFindings(priorRounds: RoundContext[], openThreads: OpenThread[],
  * joins only a security thread, and one no thread carries is marked `ownThread`.
  */
 async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFinding[], dedup: LLMClient | undefined): Promise<Finding[]> {
-  if (earlier.length === 0) return findings.map(postedOnItsOwn);
+  if (earlier.length === 0) return findings;
   // A security finding joins only a security thread, so it never loses its guard, and finds the one it opened before.
   const fits = (f: Finding) => (e: EarlierFinding) => !e.threadId || !!e.isSecurity || !isSecurityFinding(f.tags, f.reviewers);
   const named = (f: Finding, key: string | undefined) => key ? earlier.filter(fits(f)).find(e => e.keys.has(key)) : undefined;
@@ -2479,19 +2479,22 @@ function postedOnItsOwn(f: Finding): Finding {
 }
 
 /**
- * Returns `f` taken out of the thread that carries it, or that its `sameAs` names an open finding of, when `f` is a
- * security finding and that thread is not a security thread. A thread is a security thread by its first comment, so
- * another one would lose the finding's guard. `priorThreads` gives the thread of each earlier finding by its key.
+ * Returns the security finding `f` kept apart from threads that are not security threads. It leaves a plain thread
+ * that carries it, since a thread is a security thread by its first comment and another would lose the finding's guard.
+ * It drops a `sameAs` that names a finding of a plain open thread, which would leave that thread out of the open ones in
+ * the verdict. `priorThreads` gives the thread of each earlier finding by its key.
  */
 function withoutUnguardedThread(f: Finding, openThreadIndex: Map<string, OpenThread>, previousFindings: PreviousFinding[] | undefined, priorThreads: ReadonlyMap<string, string>): Finding {
   if (!isSecurityFinding(f.tags, f.reviewers)) return f;
   const named = f.sameAs ? priorThreads.get(f.sameAs) : undefined;
-  const carrier = f.threadId ?? f.answeredIn?.threadId ?? (named && openThreadIndex.has(named) ? named : undefined);
-  if (!carrier) return postedOnItsOwn(f);
-  if (openThreadIndex.get(carrier)?.isSecurity ?? previousFindings?.find(t => t.threadId === carrier)?.isSecurity) return f;
-  // A `sameAs` that names the thread's finding would leave that still open thread out of the verdict's open threads.
-  const { threadId: _thread, variantOf: _variant, answeredIn: _answered, sameAs: _same, ...own } = f;
-  return { ...own, ...(named !== carrier && f.sameAs && { sameAs: f.sameAs }), ownThread: true };
+  const namesPlain = !!named && openThreadIndex.has(named) && !openThreadIndex.get(named)?.isSecurity;
+  const carrier = f.threadId ?? f.answeredIn?.threadId;
+  const guarded = !!carrier && !!(openThreadIndex.get(carrier)?.isSecurity ?? previousFindings?.find(t => t.threadId === carrier)?.isSecurity);
+  const { sameAs: _same, ...unnamed } = f;
+  const kept = namesPlain ? unnamed : f;
+  if (!carrier || guarded) return postedOnItsOwn(kept);
+  const { threadId: _thread, variantOf: _variant, answeredIn: _answered, ...own } = kept;
+  return postedOnItsOwn(own);
 }
 
 /** What the same-problem checks read of a finding. */
