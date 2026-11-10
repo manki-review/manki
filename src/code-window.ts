@@ -29,3 +29,18 @@ export function extractCurrentCodeWindow(
   }
   return out.join('\n');
 }
+
+// A line shorter than this, such as `}` or `return;`, recurs too often to tell where the code went.
+const MIN_LOCATABLE_CHARS = 8;
+
+/**
+ * Returns where line `line` of `posted` sits in `current`: the line holding the same trimmed text, the one nearest
+ * `line` when several do, or `gone` when none does. A line too short to tell apart gives `unknown`.
+ */
+export function locatePostedLine(posted: string, line: number, current: string): number | 'gone' | 'unknown' {
+  const text = posted.split('\n')[line - 1]?.trim() ?? '';
+  if (text.length < MIN_LOCATABLE_CHARS) return 'unknown';
+  const matches = current.split('\n').flatMap((l, i) => (l.trim() === text ? [i + 1] : []));
+  if (matches.length === 0) return 'gone';
+  return matches.reduce((best, m) => (Math.abs(m - line) < Math.abs(best - line) ? m : best));
+}

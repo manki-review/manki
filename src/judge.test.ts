@@ -683,6 +683,20 @@ describe('buildJudgeUserMessage', () => {
     // The judge sees what an earlier round found still open after a partial fix, and the grade it gave that.
     expect(unpushed).toContain('- **Partly fixed in an earlier round, still open**: The upload still has no timeout. (graded suggestion)');
     expect(unpushed.match(/Partly fixed in an earlier round/g)).toHaveLength(1);
+
+    // An outdated thread shows the code it named when posted, and where that code is now or that it is gone, and the
+    // judge sees Manki's own answer in the thread.
+    const outdated = (gone: boolean): OpenThread => ({
+      threadId: 'PRRT_old', title: 'Reply reopens the thread', file: 'src/reply.ts', line: gone ? 0 : 40, severity: 'blocker',
+      postedCode: '>>> 12: reopen(thread);', postedCommit: 'abcdef1234', ...(gone ? { postedCodeGone: true, currentCode: '' } : { currentCode: '>>> 40: reopen(thread);' }),
+      answer: '**Fixed.** `reopen` now runs after the review posts, see src/reply.ts:40.',
+    });
+    const moved = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [outdated(false)], rounds, '');
+    expect(moved).toContain("- **Manki's answer in this thread**: **Fixed.** 'reopen' now runs after the review posts, see src/reply.ts:40.");
+    expect(moved).toContain('- **Outdated thread.** The code it named when it was posted, at `abcdef1`:\n```\n>>> 12: reopen(thread);\n```\n- **Now**: where that code sits at the head:\n```\n>>> 40: reopen(thread);\n```');
+    const gone = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [outdated(true)], rounds, '');
+    expect(gone).toContain('- **Now**: that line is no longer in the file.\n\n');
+    expect(gone).not.toContain('(no current code available)');
     expect(unpushed).toContain('"Null check missing" at src/foo.ts:10 (earlier blocker, stays open: the push did not change this file)');
     expect(unpushed).toMatch(/"Unused import" at src\/bar\.ts:20\n/);
     expect(unpushed).toMatch(/"Agreed later" at src\/baz\.ts:5\n/);
@@ -2128,6 +2142,7 @@ describe('runJudgeAgent', () => {
 
     const [systemPrompt, userMessage] = mockSendMessage.mock.calls[0];
     expect(systemPrompt).toContain('Either signal alone is sufficient');
+    expect(systemPrompt).toContain('An unchanged file, or no current code shown, is no evidence that the concern still holds. When a thread shows Manki\'s answer in it, such as a "Fixed." reply and the lines it cites, answer that evidence: confirm it, or say which part of it is wrong and cite the code, before you mark the thread `not_addressed`.');
     expect(systemPrompt).toContain('GitHub-anchored');
     expect(systemPrompt).not.toMatch(/Do not pick this when the inter-round diff is empty or contains no changes touching/);
     expect(userMessage).toContain('**Original concern**');

@@ -4900,6 +4900,33 @@ describe('runFullReview orchestration', () => {
     expect(openThreads![0].currentCode).toContain('   15: line 15');
   });
 
+  it('gives an outdated thread the code it named on the commit it was posted on, and where that code sits now or that it is gone', async () => {
+    const changedFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 20, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [changedFile], totalAdditions: 20, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [changedFile], excluded: [] });
+    const posted = ['function reply(thread) {', '  reopenThread(thread);', '  postReply(thread);', '}'].join('\n');
+    const now = ['// moved down', '', '', 'function reply(thread) {', '  postReply(thread);', '  reopenThread(thread);', '}'].join('\n');
+    jest.mocked(ghUtils.fetchFileContents).mockImplementation(async (_o, _ow, _r, ref) => new Map([['src/app.ts', ref === 'c0ffee' ? posted : now], ['src/gone.ts', ref === 'c0ffee' ? posted : 'nothing here']]));
+    const outdated = { severity: 'blocker' as const, status: 'open' as const, line: 0, originalLine: 2, originalCommit: 'c0ffee' };
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [
+        { ...outdated, title: 'Moved', file: 'src/app.ts', threadId: 'PRRT_moved', answer: '**Fixed.** It reopens after posting.' },
+        { ...outdated, title: 'Gone', file: 'src/gone.ts', threadId: 'PRRT_gone' },
+      ],
+      priorRounds: [],
+    });
+
+    await callRunFullReview();
+
+    const [moved, gone] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
+    expect(moved).toMatchObject({ line: 6, postedCommit: 'c0ffee', answer: '**Fixed.** It reopens after posting.' });
+    expect(moved.postedCode).toContain('>>> 2:   reopenThread(thread);');
+    expect(moved.currentCode).toContain('>>> 6:   reopenThread(thread);');
+    expect(moved.postedCodeGone).toBeUndefined();
+    expect(gone).toMatchObject({ line: 0, postedCodeGone: true, currentCode: '' });
+    expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'c0ffee', ['src/app.ts', 'src/gone.ts']);
+  });
+
   it('deduplicates open-thread file paths against changed files when fetching contents', async () => {
     const changedFile = {
       path: 'src/app.ts', changeType: 'modified' as const,

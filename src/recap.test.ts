@@ -764,6 +764,7 @@ describe('fetchRecapState', () => {
             {
               body: '<!-- manki:blocker:Bug --> \u{1F6AB} **Blocker**: Bug found\n\nDesc.',
               author: { login: 'manki-review[bot]' },
+              originalCommit: { oid: 'c0ffee' },
             },
             {
               body: 'Fixed, done.',
@@ -835,6 +836,8 @@ describe('fetchRecapState', () => {
 
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
+    // The commit a thread was posted on still holds the code it named after the thread goes outdated.
+    expect(state.previousFindings.map(f => f.originalCommit)).toEqual(['c0ffee', undefined, undefined, undefined, undefined, undefined]);
     expect(state.previousFindings.slice(0, 3).map(f => f.answer)).toEqual([undefined, '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
     // A severity comes from the first comment only, and no reply marker raises it, not even a pasted one.
     expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'warning', 'blocker', 'blocker', 'blocker']);

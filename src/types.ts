@@ -1050,6 +1050,15 @@ export interface OpenThread extends FindingMetadata {
    * exists at the head commit.
    */
   currentCode?: string;
+  /** Manki's latest answer to a developer in the thread, such as a "Fixed." reply with its evidence. */
+  answer?: string;
+  /**
+   * For an outdated thread, the code around its finding on the commit it was posted on, `postedCommit`. `currentCode`
+   * then shows where that code sits now, unless `postedCodeGone` says it is no longer in the file.
+   */
+  postedCode?: string;
+  postedCommit?: string;
+  postedCodeGone?: boolean;
 }
 
 /**

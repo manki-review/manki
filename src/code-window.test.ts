@@ -1,4 +1,4 @@
-import { extractCurrentCodeWindow } from './code-window';
+import { extractCurrentCodeWindow, locatePostedLine } from './code-window';
 
 describe('extractCurrentCodeWindow', () => {
   function makeFile(lineCount: number): string {
@@ -75,5 +75,20 @@ describe('extractCurrentCodeWindow', () => {
   it('returns empty string for empty file path', () => {
     const fileContents = new Map([['src/a.ts', makeFile(10)]]);
     expect(extractCurrentCodeWindow(fileContents, '', 5)).toBe('');
+  });
+});
+
+describe('locatePostedLine', () => {
+  const posted = ['function read(path) {', '  const data = fs.readFileSync(path);', '  return data;', '}'].join('\n');
+
+  it('finds the posted line where it moved, the nearest one when it appears twice, and says when it is gone', () => {
+    const moved = ['// header', '', 'function read(path) {', '  const data = fs.readFileSync(path);', '  return data;', '}'].join('\n');
+    expect(locatePostedLine(posted, 2, moved)).toBe(4);
+    const twice = [...Array(10).fill('  const data = fs.readFileSync(path);'), 'x'].join('\n');
+    expect(locatePostedLine(posted, 2, twice)).toBe(2);
+    expect(locatePostedLine(posted, 2, 'function read(path) {\n  return fs.promises.readFile(path);\n}')).toBe('gone');
+    // A line too short to tell apart, such as `}`, says nothing about where the code went.
+    expect(locatePostedLine(posted, 4, moved)).toBe('unknown');
+    expect(locatePostedLine(posted, 9, moved)).toBe('unknown');
   });
 });

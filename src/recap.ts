@@ -312,6 +312,8 @@ interface PreviousFinding extends FindingMetadata {
   markerSlug?: string;
   /** Line the thread was posted on. Stays set after the thread goes outdated, unlike `line`. */
   originalLine?: number;
+  /** The commit the thread was posted on, which still holds the code it names after the thread goes outdated. */
+  originalCommit?: string;
   /**
    * Line the finding named when it was posted, from the thread's hidden finding data. A finding on a line outside the
    * diff is posted on a fallback line, so only this line matches it to its round record. `currentFindingLine` gives
@@ -560,6 +562,7 @@ async function fetchRecapState(
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
       ...(t.originalLine && { originalLine: t.originalLine }),
+      ...(t.originalCommit && { originalCommit: t.originalCommit }),
       ...(t.findingLine && { findingLine: t.findingLine }),
       authorReplyText: t.authorReplyText,
       authorReplyLogin: t.authorReplyLogin,
@@ -747,6 +750,7 @@ interface ReviewThread extends FindingMetadata {
   threadUrl: string;
   markerSlug?: string;
   originalLine?: number;
+  originalCommit?: string;
   findingLine?: number;
   isBotThread: boolean;
   isResolved: boolean;
@@ -836,7 +840,7 @@ interface FetchReviewThreadsResult {
   state: OpenThreadsState;
 }
 
-const THREAD_COMMENT_FIELDS = 'body url authorAssociation author { login }';
+const THREAD_COMMENT_FIELDS = 'body url authorAssociation author { login } originalCommit { oid }';
 
 const THREAD_COMMENTS_QUERY = `
   query($threadId: ID!, $cursor: String) {
@@ -856,6 +860,7 @@ interface ThreadCommentNode {
   url?: string;
   authorAssociation?: string;
   author: { login: string } | null;
+  originalCommit?: { oid: string } | null;
 }
 
 interface ReviewThreadNode {
@@ -961,6 +966,7 @@ async function fetchReviewThreads(
         line,
         lineStart,
         ...(thread.originalLine && { originalLine: thread.originalLine }),
+        ...(firstComment?.originalCommit?.oid && { originalCommit: firstComment.originalCommit.oid }),
         ...(findingLine && { findingLine }),
         ...(markerSlug && { markerSlug }),
         severity,
