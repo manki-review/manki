@@ -344,7 +344,7 @@ describe('filterFilesWithAttribution', () => {
   });
 
   it('excludes package lockfiles by name by default, and reads any other `.lock` file', () => {
-    const lockfiles: DiffFile[] = ['Cargo.lock', 'api/poetry.lock', 'web/bun.lock', 'ios/Podfile.lock', 'deno.lock', '.github/workflows/actions.lock', 'flake.lock']
+    const lockfiles: DiffFile[] = ['Cargo.lock', 'api/poetry.lock', 'web/bun.lock', 'ios/Podfile.lock', 'deno.lock', 'Gopkg.lock', '.github/workflows/actions.lock', 'flake.lock']
       .map(path => ({ path, changeType: 'modified', hunks: [] }));
     const result = filterFilesWithAttribution(lockfiles, DEFAULT_CONFIG.exclude_paths);
     expect(result.included.map(f => f.path)).toEqual(['.github/workflows/actions.lock', 'flake.lock']);
@@ -354,6 +354,7 @@ describe('filterFilesWithAttribution', () => {
       { path: 'web/bun.lock', matchedPattern: 'bun.lock' },
       { path: 'ios/Podfile.lock', matchedPattern: 'Podfile.lock' },
       { path: 'deno.lock', matchedPattern: 'deno.lock' },
+      { path: 'Gopkg.lock', matchedPattern: 'Gopkg.lock' },
     ]);
   });
 

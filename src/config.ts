@@ -13,12 +13,13 @@ const SONNET_MODEL = 'claude-sonnet-5-5';
 const OPUS_MODEL = 'claude-opus-5-5';
 
 /**
- * The package lockfiles that end in `.lock`: those osv-scanner reads, and others it does not. They are excluded by name,
- * so any other `.lock` file, such as `.github/workflows/actions.lock`, is read as text.
+ * The known package lockfiles that end in `.lock`: those osv-scanner reads, and others it does not. They are excluded by
+ * name, so any other `.lock` file, such as `.github/workflows/actions.lock`, is read as text.
  */
 const PACKAGE_LOCKFILES = [...new Set([
   ...[...LOCKFILES].filter(name => name.endsWith('.lock')),
-  'Podfile.lock', 'deno.lock', 'pixi.lock', 'paket.lock', 'shard.lock', 'rebar.lock', 'Berksfile.lock', 'MODULE.bazel.lock',
+  'Podfile.lock', 'deno.lock', 'pixi.lock', 'paket.lock', 'shard.lock', 'rebar.lock', 'Berksfile.lock', 'Puppetfile.lock', 'MODULE.bazel.lock',
+  'Gopkg.lock', 'glide.lock', 'Chart.lock', 'stack.yaml.lock', 'requirements.lock', 'requirements-dev.lock', 'nimble.lock', 'spago.lock',
 ])];
 
 export const DEFAULT_CONFIG: ReviewConfig = {
