@@ -158,7 +158,7 @@ const MERGEABLE_ATTEMPTS = 3;
 const MERGEABLE_RETRY_MS = 1500;
 
 /** Why an approval was posted as a comment instead, or `false` when it was not held. */
-export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread';
+export type ApprovalHeld = false | 'conflict' | 'draft' | 'config' | 'unread' | 'records';
 
 /** The changed files no model reads: those `exclude_paths` drops, and those with no code to read, such as binaries. */
 export interface SkippedFiles {
@@ -168,9 +168,10 @@ export interface SkippedFiles {
 
 /**
  * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, the base branch's config did not
- * load, or no model read some of its files.
+ * load, no model read some of its files, or an earlier review's round record could not be read while a thread is open.
  */
-export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config' } | { reason: 'unread'; skipped: SkippedFiles };
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config' } | { reason: 'unread'; skipped: SkippedFiles }
+  | { reason: 'records'; reviews: string[] };
 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
@@ -199,6 +200,10 @@ export function approvalHoldLine(hold: ApprovalHold): string {
   if (hold.reason === 'draft') return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.';
   if (hold.reason === 'config') return '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.';
   if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
+  if (hold.reason === 'records') {
+    const named = hold.reviews.map((url, i) => `[review ${i + 1}](${url})`).join(', ');
+    return `**Approval held:** an earlier review record could not be read${named ? ` (${named})` : ''}, so Manki does not approve while a thread is open. A person can approve once they have checked the open threads.`;
+  }
   return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
 }
 
@@ -1452,8 +1457,10 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped, memorySkip, restart, onPosted }: {
+  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configFailed?: boolean; noVerdict?: boolean;
+    /** The reviews whose round record could not be read while a thread stays open, which holds an approval. */
+    unreadRecords?: string[];
     /** Why the round ran without memory, with the fix. */
     memorySkip?: string;
     /** What a review started by hand turns back on, for a round that pauses automatic review. */
@@ -1558,6 +1565,7 @@ export async function postReview(
   const earlier = carriedThreadIds.size + (result.verdictTrace?.unresolvedPriors.length ?? 0);
   const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (context?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configFailed ? { reason: 'config' }
+    : unreadRecords ? { reason: 'records', reviews: unreadRecords }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
   const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
@@ -1620,7 +1628,8 @@ export async function postReview(
   if (approvalHeld) {
     const why = hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}`
       : hold?.reason === 'config' ? 'The base branch config did not load'
-      : hold?.reason === 'unread' ? 'No model read some of the changed files' : 'The PR is a draft';
+      : hold?.reason === 'unread' ? 'No model read some of the changed files'
+      : hold?.reason === 'records' ? 'An earlier review record could not be read while a thread is open' : 'The PR is a draft';
     core.info(`${why}, so the approval is posted as a comment`);
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);

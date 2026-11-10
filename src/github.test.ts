@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
 import { ApprovalHeld, buildDashboard, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
+import { outcomeReport } from './check-run';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { highlightCode } from './highlight';
@@ -1533,6 +1534,17 @@ describe('postReview body lead', () => {
     expect(body.replace('\n\n<!-- manki-held-for-person -->', '')).toBe(`**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.\n\n${approved.body}`);
     expect(body).toContain('<!-- manki-held-for-person -->');
     expect(mockGet).not.toHaveBeenCalled();
+
+    // An unread earlier review record holds it the same way, and names the review it could not read.
+    const url = 'https://github.com/owner/repo/pull/1#pullrequestreview-7';
+    const records = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { unreadRecords: [url] });
+    const held = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
+    expect([held.event, records.approvalHeld]).toEqual(['COMMENT', 'records']);
+    expect(held.body.replace('\n\n<!-- manki-held-for-person -->', '')).toBe(`**Approval held:** an earlier review record could not be read ([review 1](${url})), so Manki does not approve while a thread is open. A person can approve once they have checked the open threads.\n\n${approved.body}`);
+    expect(outcomeReport('READY', 's', records.approvalHeld).title).toBe('Approval held: an earlier review record could not be read');
+    // When the reviews could not even be listed, the line names none.
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { unreadRecords: [] });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toContain('**Approval held:** an earlier review record could not be read, so Manki');
   });
 
   it('names why memory was skipped and the fix under the lead, and keeps the approval', async () => {

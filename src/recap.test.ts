@@ -1690,8 +1690,9 @@ describe('fetchRecapState', () => {
       expect(adminState.previousFindings.map(f => [f.status, !!f.reopen, f.securityOverride?.login])).toEqual([['resolved', false, 'author'], ['replied', false, undefined], ['resolved', false, undefined]]);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(3);
-      // A skipped record could hold a thread's grade, so the recap says the rounds are incomplete.
+      // A skipped record could hold a thread's grade, so the recap says the rounds are incomplete, and which review it skipped.
       expect(state.priorRoundsIncomplete).toBe(true);
+      expect(state.unreadRecords).toEqual(['https://github.com/owner/repo/pull/1#pullrequestreview-500']);
       expect(core.warning).toHaveBeenCalledWith(
         expect.stringContaining('https://github.com/owner/repo/pull/1#pullrequestreview-500'),
       );

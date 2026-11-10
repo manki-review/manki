@@ -5581,7 +5581,7 @@ describe('runFullReview orchestration', () => {
     const run = async (lastReviewed: string, priorRoundsIncomplete?: true, addressed: string[] = []) => {
       mockGraphql.mockClear();
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
-        ...(priorRoundsIncomplete && { priorRoundsIncomplete }),
+        ...(priorRoundsIncomplete && { priorRoundsIncomplete, unreadRecords: ['https://github.com/o/r/pull/1#pullrequestreview-7'] }),
         previousFindings: [
           { title: 'Upload', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
           { title: 'Log', file: 'src/app.ts', line: 2, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_def', recordedGrade: 'warning' as const },
@@ -5630,24 +5630,23 @@ describe('runFullReview orchestration', () => {
     mockGraphql.mockImplementation(answer);
     expect(jest.mocked(ghUtils.postReview).mock.calls.length).toBe(posts + 1);
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Failed to reply on partly fixed thread PRRT_jkl'));
-    // With a round record unread, a raise could hide, so the round does not approve while a thread is open.
-    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5].verdict).toBe('APPROVE');
+    // With a round record unread, a raise could hide, so the review holds its approval and names the unread review.
+    const holdOf = () => jest.mocked(ghUtils.postReview).mock.calls.at(-1)![9]?.unreadRecords;
+    expect(holdOf()).toBeUndefined();
     await run('abc123', true);
-    const held = jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5];
-    expect(held).toMatchObject({ verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' });
-    // A thread someone with write access agreed away is not held.
-    expect(held.verdictTrace?.unresolvedPriors.map(p => p.threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
+    expect(holdOf()).toEqual(['https://github.com/o/r/pull/1#pullrequestreview-7']);
 
     // When the change since the last round cannot be read, every partly fixed thread gets its reply.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed'));
     expect((await run('old456')).map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
 
-    // With a record unread, a thread the round resolves is left out of the hold, and with none left open the round approves.
+    // With a record unread, the hold lasts while a thread stays open. A thread the round resolves, or one someone with
+    // write access agreed away (PRRT_mno), leaves it, and with none left open nothing is held.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue('diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n');
-    await run('prior-sha', true, ['PRRT_ghi']);
-    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5].verdictTrace?.unresolvedPriors.map(p => p.threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_jkl']);
-    await run('prior-sha', true, ['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl', 'PRRT_mno']);
-    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5].verdict).toBe('APPROVE');
+    await run('prior-sha', true, ['PRRT_abc', 'PRRT_def', 'PRRT_ghi']);
+    expect(holdOf()).toEqual(['https://github.com/o/r/pull/1#pullrequestreview-7']);
+    await run('prior-sha', true, ['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
+    expect(holdOf()).toBeUndefined();
   });
 
   it('skips resolving threads not in the openThreads allowlist', async () => {

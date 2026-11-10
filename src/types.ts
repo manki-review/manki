@@ -1241,7 +1241,7 @@ export interface RoundContext {
    * Set on a round that approved: whether the approval was held, and why: a conflict with the base, a draft, a config
    * that failed to load, or files the review could not read.
    */
-  approval?: { held: false | 'conflict' | 'draft' | 'config' | 'unread' };
+  approval?: { held: false | 'conflict' | 'draft' | 'config' | 'unread' | 'records' };
   /**
    * Lengths of what the round composed, in characters. The record goes out with the review, so a comment
    * GitHub refuses afterwards, or a body rewritten to carry it, is not reflected.

@@ -411,6 +411,8 @@ interface RecapState {
   lastApprovalAt?: string;
   /** Set when a round record could not be read, so a grade it held is unknown. */
   priorRoundsIncomplete?: true;
+  /** The reviews whose round record could not be read, when the reviews themselves could be listed. */
+  unreadRecords?: string[];
   /** Three-way state of the open-thread fetch. Optional so legacy callers and test mocks omitting the field still typecheck; treated as `'fetched'` downstream. */
   openThreadsState?: OpenThreadsState;
   /** Count of fingerprints whose `authorReplyClass` flipped during `refreshAuthorReplyClass`. Optional so test mocks omitting the field still typecheck; defaults to 0. */
@@ -433,8 +435,8 @@ function parseContextBlocks(
   owner: string,
   repo: string,
   prNumber: number,
-): { rounds: RoundContext[]; skipped: boolean } {
-  let skipped = false;
+): { rounds: RoundContext[]; unread: string[] } {
+  const unread = new Set<string>();
   const byRound = new Map<number, { ctx: RoundContext; reviewId: number }>();
   const duplicateRounds = new Set<number>();
 
@@ -443,7 +445,7 @@ function parseContextBlocks(
     const { records: candidates, errors } = extractReviewRecords(review.body);
     for (const error of errors) {
       core.warning(`Skipping undecodable Manki context block at ${reviewUrl}: ${error}`);
-      skipped = true;
+      unread.add(reviewUrl);
     }
 
     for (const raw of candidates) {
@@ -453,37 +455,37 @@ function parseContextBlocks(
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         core.warning(`Skipping malformed Manki context block at ${reviewUrl}: ${msg}`);
-        skipped = true;
+        unread.add(reviewUrl);
         continue;
       }
 
       if (!parsed || typeof parsed !== 'object') {
         core.warning(`Skipping Manki context block at ${reviewUrl}: not an object`);
-        skipped = true;
+        unread.add(reviewUrl);
         continue;
       }
       const meta = (parsed as { meta?: unknown }).meta;
       if (!meta || typeof meta !== 'object') {
         core.warning(`Skipping Manki context block at ${reviewUrl}: missing meta`);
-        skipped = true;
+        unread.add(reviewUrl);
         continue;
       }
       const round = (meta as { round?: unknown }).round;
       const mankiVersion = (meta as { mankiVersion?: unknown }).mankiVersion;
       if (typeof round !== 'number') {
         core.warning(`Skipping Manki context block at ${reviewUrl}: missing or non-numeric meta.round`);
-        skipped = true;
+        unread.add(reviewUrl);
         continue;
       }
       if (typeof mankiVersion !== 'string') {
         core.warning(`Skipping Manki context block at ${reviewUrl}: missing meta.mankiVersion`);
-        skipped = true;
+        unread.add(reviewUrl);
         continue;
       }
       const missingKey = REQUIRED_ROUND_CONTEXT_KEYS.find(k => !(k in (parsed as object)));
       if (missingKey) {
         core.warning(`Skipping Manki context block at ${reviewUrl}: missing required field '${missingKey}'`);
-        skipped = true;
+        unread.add(reviewUrl);
         continue;
       }
 
@@ -508,7 +510,7 @@ function parseContextBlocks(
   const rounds = Array.from(byRound.values())
     .map(v => v.ctx)
     .sort((a, b) => a.meta.round - b.meta.round);
-  return { rounds, skipped };
+  return { rounds, unread: [...unread] };
 }
 
 /**
@@ -522,7 +524,7 @@ async function fetchRecapState(
   prNumber: number,
   prAuthorLogin?: string,
 ): Promise<RecapState> {
-  const [threadsResult, { priorRounds, lastApprovalAt, priorRoundsIncomplete }] = await Promise.all([
+  const [threadsResult, { priorRounds, lastApprovalAt, priorRoundsIncomplete, unreadRecords }] = await Promise.all([
     fetchReviewThreads(octokit, bot, owner, repo, prNumber),
     fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber),
   ]);
@@ -589,6 +591,7 @@ async function fetchRecapState(
     priorRounds: enrichedPriorRounds,
     ...(lastApprovalAt && { lastApprovalAt }),
     ...(priorRoundsIncomplete && { priorRoundsIncomplete }),
+    ...(unreadRecords && { unreadRecords }),
     openThreadsState,
     reclassifiedPriorCount,
     reclassifiedPriors,
@@ -717,7 +720,7 @@ async function fetchPriorRoundContexts(
   owner: string,
   repo: string,
   prNumber: number,
-): Promise<Pick<RecapState, 'priorRounds' | 'lastApprovalAt' | 'priorRoundsIncomplete'>> {
+): Promise<Pick<RecapState, 'priorRounds' | 'lastApprovalAt' | 'priorRoundsIncomplete' | 'unreadRecords'>> {
   try {
     const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
       owner,
@@ -731,8 +734,8 @@ async function fetchPriorRoundContexts(
     const lastApprovalAt = botReviews
       .filter(r => !hasReviewRecord(r.body) && r.body.startsWith(APPROVED_LINE) && r.body.includes(AUTO_APPROVE_MARKER))
       .at(-1)?.submitted_at;
-    const { rounds, skipped } = parseContextBlocks(candidates, owner, repo, prNumber);
-    return { priorRounds: rounds, ...(lastApprovalAt && { lastApprovalAt }), ...(skipped && { priorRoundsIncomplete: true as const }) };
+    const { rounds, unread } = parseContextBlocks(candidates, owner, repo, prNumber);
+    return { priorRounds: rounds, ...(lastApprovalAt && { lastApprovalAt }), ...(unread.length > 0 && { priorRoundsIncomplete: true as const, unreadRecords: unread }) };
   } catch (error) {
     core.warning(`Failed to fetch prior round contexts: ${error}`);
     return { priorRounds: [], priorRoundsIncomplete: true };
