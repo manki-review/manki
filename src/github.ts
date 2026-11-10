@@ -215,7 +215,7 @@ export function approvalHoldLine(hold: ApprovalHold): string {
   if (hold.reason === 'config') {
     return hold.file === 'base'
       ? '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'
-      : '**Approval held:** this PR changes the config file, and its copy does not load. Fix it, and Manki reviews it again.';
+      : '**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit.';
   }
   if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
   return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
@@ -1597,8 +1597,10 @@ export async function postReview(
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
   const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
+  // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
+  const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
   // An approval held for unread files says so in its verdict line, so only the other holds get a line of their own.
-  const heldLine = hold && hold.reason !== 'unread' && approvalHoldLine(hold);
+  const heldLine = lineHold && lineHold.reason !== 'unread' && approvalHoldLine(lineHold);
 
   const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
 

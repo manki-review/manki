@@ -1524,12 +1524,12 @@ describe('postReview body lead', () => {
     expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.\n\n${approved.body}`);
   });
 
-  it('holds the approval of a READY round as a COMMENT when the base branch config or the PR\'s own changed copy did not load, without reading the PR, and leads a request for changes with why when an earlier record could not be read', async () => {
+  it('holds the approval of a READY round as a COMMENT when the base branch config or the PR\'s own changed copy did not load, without reading the PR, names a config hold on a request for changes too, and leads a request for changes with why when an earlier record could not be read', async () => {
     const approved = await postedBody(ready);
     mockGet.mockClear();
     for (const [configHold, line] of [
       ['base', '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'],
-      ['head', '**Approval held:** this PR changes the config file, and its copy does not load. Fix it, and Manki reviews it again.'],
+      ['head', '**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit.'],
     ] as const) {
       const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { configHold });
       const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
@@ -1547,6 +1547,13 @@ describe('postReview body lead', () => {
       ...ready, verdict: 'REQUEST_CHANGES' as const, outcome: 'ADDRESS_FIRST' as const, verdictReason: 'prior_unaddressed' as const,
       summary: 'Nothing blocks merge.', verdictTrace: { survivingBlockers: [], unresolvedPriors: [open] },
     };
+    // A config hold also stops a later auto-approve, so a round that requests changes names it first.
+    const changes = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', withheld, diff, undefined, undefined, { configHold: 'head' });
+    const named = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
+    expect([named.event, changes.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
+    expect(named.body.startsWith('**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit.\n\n')).toBe(true);
+    expect(named.body).toContain('<!-- manki-held-for-person -->');
+
     const records = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', withheld, diff, undefined, undefined, { unreadRecords: [url] });
     const held = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([held.event, records.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
