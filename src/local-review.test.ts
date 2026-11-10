@@ -215,7 +215,7 @@ describe('reviewLocal', () => {
     expect(runReview).not.toHaveBeenCalled();
   });
 
-  it('reviews with the defaults when the base config does not load, and with the base config when the head\'s does not load, as a pull request round does', async () => {
+  it('reviews with the defaults when the base config does not load, and with the base config and no approval when the change breaks it, as a pull request round does', async () => {
     jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
     git(repo, 'checkout', '-q', '-b', 'broken', base);
     commit(repo, 'Break config', { '.manki.yml': 'exclude_paths: [\n' });
@@ -239,7 +239,8 @@ describe('reviewLocal', () => {
 
     const fromHead = await reviewLocal({ repoRoot: repo, base: 'fix', head: 'rebreak', providerInputs: inputs });
 
-    expect(fromHead.approvalHeld).toBe(false);
+    // The change breaks the file itself, so its approval is held.
+    expect(fromHead.approvalHeld).toBe('config');
     expect(jest.mocked(runReview).mock.calls[0][1].config.exclude_paths).toEqual([]);
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringMatching(/^Could not load \.manki\.yml at the head, this review uses the base's settings: Invalid YAML/));
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('This change edits'));

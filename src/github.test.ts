@@ -1524,14 +1524,19 @@ describe('postReview body lead', () => {
     expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.\n\n${approved.body}`);
   });
 
-  it('holds the approval of a READY round as a COMMENT when the base branch config did not load, without reading the PR, and leads a request for changes with why when an earlier record could not be read', async () => {
+  it('holds the approval of a READY round as a COMMENT when the base branch config or the PR\'s own changed copy did not load, without reading the PR, and leads a request for changes with why when an earlier record could not be read', async () => {
     const approved = await postedBody(ready);
     mockGet.mockClear();
-    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { configFailed: true });
-    const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
-    expect([event, approvalHeld]).toEqual(['COMMENT', 'config']);
-    expect(body.replace('\n\n<!-- manki-held-for-person -->', '')).toBe(`**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.\n\n${approved.body}`);
-    expect(body).toContain('<!-- manki-held-for-person -->');
+    for (const [configHold, line] of [
+      ['base', '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'],
+      ['head', '**Approval held:** this PR changes the config file, and its copy does not load. Fix it, and Manki reviews it again.'],
+    ] as const) {
+      const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { configHold });
+      const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
+      expect([event, approvalHeld]).toEqual(['COMMENT', 'config']);
+      expect(body.replace('\n\n<!-- manki-held-for-person -->', '')).toBe(`${line}\n\n${approved.body}`);
+      expect(body).toContain('<!-- manki-held-for-person -->');
+    }
     expect(mockGet).not.toHaveBeenCalled();
 
     // A round that requests changes over an unread earlier review record says so first, and names the review.

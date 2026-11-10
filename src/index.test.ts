@@ -198,7 +198,7 @@ jest.mock('./github', () => ({
   fetchConfigFile: jest.fn().mockResolvedValue(null),
   readConfigFile: jest.fn().mockResolvedValue(null),
   loadBaseConfig: jest.requireActual('./github').loadBaseConfig,
-  configFailed: jest.requireActual('./github').configFailed,
+  brokenConfig: jest.requireActual('./github').brokenConfig,
   fetchRepoContext: jest.fn().mockResolvedValue(''),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),
@@ -2074,23 +2074,28 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(reviewedConfig()).toEqual(actualLoadConfig(base));
-      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configFailed: false }));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: undefined }));
       expect(jest.mocked(core.info)).toHaveBeenCalledWith(
         'This PR changes `auto_review`, `auto_approve`, `exclude_paths`, `max_diff_lines`, `reviewers`, `instructions`, `memory`, `models`, `planner`, `review`, `static_analysis`, `related_repos`, `noise_level`, `drafts`, `review_passes`, `convergence`, `metrics` in .manki.yml. The change applies after merge: this round uses the base branch\'s settings.',
       );
     });
 
     it.each([
-      ['does not load', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5'],
-      ['is in a format this version no longer reads', 'review:\n  classes:\n    payments:\n      critical: true\n', '`review.classes.payments.critical`'],
-    ])('reviews with the base branch\'s settings and a warning when the PR\'s own config %s', async (_label, head, reason) => {
+      ['does not load', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5', false],
+      ['is in a format this version no longer reads', 'review:\n  classes:\n    payments:\n      critical: true\n', '`review.classes.payments.critical`', false],
+      ['does not load after the PR\'s own change to it', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5', true],
+    ])('reviews with the base branch\'s settings and a warning when the PR\'s own config %s', async (_label, head, reason, changesConfig) => {
       const base = 'review_passes: 2\n';
       configFiles(head, async () => base);
+      // Only a PR whose own diff changes the file holds its approval. One that merely predates the base's copy does not.
+      if (changesConfig) {
+        jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile, { path: '.manki.yml', changeType: 'modified' as const, hunks: [] }], totalAdditions: 2, totalDeletions: 0 });
+      }
 
       await callRunFullReview();
 
       expect(reviewedConfig()).toEqual(actualLoadConfig(base));
-      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configFailed: false }));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: changesConfig ? 'head' : undefined }));
       const warnings = jest.mocked(core.warning).mock.calls.map(([message]) => String(message)).filter(m => m.includes('.manki.yml'));
       expect(warnings).toEqual([expect.stringMatching(/^Could not load the PR's \.manki\.yml, this round uses the base branch's settings: .*/)]);
       expect(warnings[0]).toContain(reason);
@@ -2108,7 +2113,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(reviewedConfig()).toEqual(actualLoadConfig(undefined));
-      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configFailed: true }));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: 'base' }));
       expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining(warning));
       expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
     });
