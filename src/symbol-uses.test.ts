@@ -158,6 +158,20 @@ describe('listUsesOutsideDiff', () => {
       { 'src/account.rs': 'pub struct Account {\n    pub balance: i64,\n}\n' },
     );
     expect(alone.record?.symbols?.find(s => s.name === 'balance')?.uses).toEqual([2, 6, 10, 14, 18].map(line => `src/ledger.rs:${line}`));
+
+    // A file's uses are counted in rank order, so its field reads come before its calls of a method of the same name, even
+    // on later lines. A test file comes after production code that never names the type.
+    const calls = [0, 1, 2].map(i => `pub fn call_${i}(w: &Wallet) -> u64 {\n    w.balance()\n}\n`).join('\n');
+    const ordered = await usesFor({
+      'src/account.rs': 'pub struct Account {\n    pub balance: u64,\n}\n',
+      'src/ledger.rs': `${calls}\n${reads(i => `pub fn read_${i}(a: &Account) -> u64 {\n    a.balance\n}\n`)}`,
+      'src/report.rs': 'pub fn opened(e: &Event) -> u64 {\n    e.holder.balance\n}\n',
+      'tests/account.rs': 'fn made() -> u64 {\n    let a = Account { balance: 1 };\n    a.balance\n}\n',
+    }, { 'src/account.rs': 'pub struct Account {\n    pub balance: i64,\n}\n' });
+    expect(ordered.record?.symbols?.find(s => s.name === 'balance')?.uses).toEqual([
+      'src/ledger.rs:14', 'src/ledger.rs:18', 'src/ledger.rs:22', 'src/report.rs:2', 'src/ledger.rs:26', 'src/ledger.rs:30',
+      'src/ledger.rs:2', 'src/ledger.rs:6', 'src/ledger.rs:10', 'tests/account.rs:2', 'tests/account.rs:3',
+    ]);
   });
 
   it('lists the type behind a field the changed lines read with all its fields, skipping method calls and unreachable namesakes', async () => {
@@ -270,6 +284,16 @@ describe('listUsesOutsideDiff', () => {
     expect(record?.common).toEqual(['shared_total', 'shared_kept', 'shared_helper', 'Shares']);
     expect(record?.capped).toEqual(expect.arrayContaining([expect.stringMatching(/^compute_part_\d+$/)]));
     expect(record?.symbols?.flatMap(s => s.uses)).toHaveLength(60);
+
+    // A redefined field's production readers keep their slots before other symbols' uses fill the 60 lines, even in a file
+    // that never names its type.
+    const plain = Object.fromEntries(Object.entries(callers).filter(([file]) => file.startsWith('src/caller_')));
+    const reserved = await usesFor(
+      { ...plain, 'src/view.rs': 'fn shown(h: &Holder) -> u8 {\n    h.shares.shared_wide\n}\n', 'src/lib.rs': lib('todo!()', '/// Shares held.') },
+      { 'src/lib.rs': lib('unimplemented!()', '/// Shares held.', '', '', '', 'u16') },
+    );
+    expect(reserved.section).toMatch(/### `shared_wide` \(field of `Shares`\)\n\n```\ndeclared at src\/lib\.rs:\d+\nsrc\/view\.rs:2: h\.shares\.shared_wide\n```/);
+    expect(reserved.record?.symbols?.flatMap(s => s.uses)).toHaveLength(60);
   });
 
   it('names what the diff changes and reads and what its comments mention for the reference search, leaving out tests', async () => {
