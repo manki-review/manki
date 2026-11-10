@@ -1311,10 +1311,10 @@ function formatFindingSection(heading: string, folds: string[], intro?: string, 
 /**
  * Returns the findings listed in the review body in one section per origin, each headed by its counts per severity:
  * found this round (just "Findings" on a first round), still open from an earlier round's body, one section per round,
- * missed by an earlier review, and pre-existing.
+ * missed by an earlier review, and pre-existing, which a pre-existing finding stays in even when it restates one.
  */
 function formatOriginSections(findings: Finding[], links: CodeLinks, followUp: boolean): string[] {
-  const isEarlier = (f: Finding): f is Finding & { raisedIn: number } => f.origin === 'earlier' && f.raisedIn !== undefined;
+  const isEarlier = (f: Finding): f is Finding & { raisedIn: number } => f.origin === 'earlier' && f.raisedIn !== undefined && !isPreExisting(f);
   const earlier = findings.filter(isEarlier);
   const rest = findings.filter(f => !isEarlier(f));
   const missed = rest.filter(f => !isPreExisting(f) && f.origin === 'reviewed');
@@ -1385,9 +1385,9 @@ function agreedFollowUps(threads: PreviousFinding[]): Finding[] {
     : []));
 }
 
-/** Returns Manki's reply in an answered thread when the problem came back and the code there got worse. */
-export function formatFoundAgainReply(finding: Finding): string {
-  return ['This came up again, and the code here is worse than when this thread was answered.', ...formatReplyFinding(finding)].join('\n\n');
+/** Returns Manki's reply in an answered thread when the problem of `findings` came back and the code there got worse. */
+export function formatFoundAgainReply(findings: Finding[]): string {
+  return formatReplyListing('This came up again, and the code here is worse than when this thread was answered.', findings);
 }
 
 /** Returns Manki's reply in an open thread that lists `variants`, other instances of the problem the thread names. */
@@ -1395,9 +1395,11 @@ export function formatVariantReply(variants: Finding[]): string {
   return formatReplyListing(variants.length === 1 ? 'This round found another instance of this problem.' : `This round found ${variants.length} more instances of this problem.`, variants);
 }
 
-/** Returns Manki's reply in an open thread whose problem `blockers` raise again as a blocker, which makes the thread block. */
-export function formatBlockerReply(blockers: Finding[]): string {
-  return formatReplyListing('This round raises this problem again as a blocker, so this thread now blocks.', blockers);
+/** Returns Manki's reply in an open thread whose problem `raised` name again at a higher grade. A blocker makes the thread block. */
+export function formatRaisedReply(raised: Finding[]): string {
+  const grade = SEVERITY_ORDER.find(s => raised.some(f => f.severity === s)) ?? 'blocker';
+  const lead = grade === 'blocker' ? 'This round raises this problem again as a blocker, so this thread now blocks.' : `This round raises this problem again as a ${grade}.`;
+  return formatReplyListing(lead, raised);
 }
 
 /** Returns a reply that opens with `lead` and lists `findings`. */
@@ -1491,7 +1493,7 @@ export async function postReview(
         core.info(`Skipping "${f.title}" on ${f.file}: it goes as a reply in its answered thread ${f.answeredIn.threadId}`);
       } else if (f.threadId) {
         core.info(`Skipping "${f.title}" on ${f.file}: ${f.variantOf ? 'it goes as a reply in' : 'it restates'} the open thread ${f.threadId}`);
-      } else if (hasOpenThread(f, existingThreads)) {
+      } else if (!f.ownThread && hasOpenThread(f, existingThreads)) {
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
       } else if (isPreExisting(f) || f.origin === 'reviewed' || f.origin === 'earlier') {
         bodyFindings.push(f);
@@ -1528,7 +1530,7 @@ export async function postReview(
       lineThreads.add(f);
     } else if (!diffFile) {
       invalidComments.push(formatFindingBlock(f, links, true));
-    } else if (hasOpenThread(f, existingThreads)) {
+    } else if (!f.ownThread && hasOpenThread(f, existingThreads)) {
       core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: an open thread already carries it`);
     } else {
       fileComments.push({ path: f.file, body: commentBody, finding: f });

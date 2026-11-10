@@ -191,6 +191,11 @@ export interface Finding {
   threadId?: string;
   /** Round that listed this finding in its review body first, when the finding restates it. */
   raisedIn?: number;
+  /**
+   * Whether the finding is posted on its own even beside an open thread with its title: a security finding next to a
+   * thread without a security guard, or one whose reply in its thread failed.
+   */
+  ownThread?: boolean;
   /** Tool that reported the finding, when it comes from a CI or code-scanning result instead of a reviewer. */
   toolSource?: string;
   /** What the deterministic claim checks and CI results say about the finding. */

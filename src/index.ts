@@ -33,7 +33,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, Finding, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, ThreadEvaluation, roundContextToFlatAliases, threadBlocks } from './types';
+import { ConfigSource, DashboardData, Finding, FindingSeverity, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, ThreadEvaluation, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -49,7 +49,7 @@ import {
   fetchCommitsSince,
   formatFoundAgainReply,
   formatVariantReply,
-  formatBlockerReply,
+  formatRaisedReply,
   fetchHeadSha,
   assertHeadUnchanged,
   SupersededError,
@@ -1400,11 +1400,12 @@ async function findFixingCommit(run: ReviewRun): Promise<(thread: OpenThread, re
  * A thread gets one reply per round. The round record, not the reply, makes the thread block for a blocker.
  */
 async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
-  const replied = new Set<string>();
+  const byThread = new Map<string, Finding[]>();
   for (const f of result.findings) {
     const threadId = f.answeredIn?.threadId;
-    if (!threadId || replied.has(threadId)) continue;
-    replied.add(threadId);
+    if (threadId) byThread.set(threadId, [...(byThread.get(threadId) ?? []), f]);
+  }
+  for (const [threadId, findings] of byThread) {
     const thread = run.recap.previousFindings.find(t => t.threadId === threadId);
     // Reopened first, so the thread a blocker was listed under stays open even when the reply fails.
     if (thread && thread.status !== 'open' && thread.status !== 'replied') {
@@ -1415,7 +1416,7 @@ async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promi
       }
     }
     try {
-      await replyToReviewThread(run.octokit, threadId, formatFoundAgainReply(f), FOUND_AGAIN_MARKER);
+      await replyToReviewThread(run.octokit, threadId, formatFoundAgainReply(findings), FOUND_AGAIN_MARKER);
     } catch (error) {
       core.warning(`Failed to reply on answered thread ${threadId}: ${error}`);
     }
@@ -1424,26 +1425,31 @@ async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promi
 
 /**
  * Replies in each open thread that carries a finding of this round that adds to it: a variant of the thread's finding,
- * or a blocker that restates a thread that does not block yet. The round record, not the reply, makes the thread block. It
- * runs before the review posts, so a finding whose reply fails is taken out of its thread and the review posts it.
+ * or a restatement graded above the thread. The round record, not the reply, makes the thread block. It runs before the
+ * review posts, so a finding whose reply fails is taken out of its thread and the review posts it on its own.
  * Returns the node IDs of the replies, which `withdrawReplies` deletes when the review does not post.
  */
 async function replyInOpenThreads(run: ReviewRun, result: ReviewResult): Promise<string[]> {
   const replies: string[] = [];
   const threads = new Map(run.recap.previousFindings.flatMap(t => t.threadId ? [[t.threadId, t] as const] : []));
-  const blocks = (threadId: string): boolean => {
+  const rank = (grade: FindingSeverity | 'unknown'): number => grade === 'unknown' ? 0 : -SEVERITY_ORDER.indexOf(grade);
+  const entries = run.recap.priorRounds.flatMap(r => r.findings.entries ?? []);
+  const raises = (f: Finding, threadId: string): boolean => {
     const thread = threads.get(threadId);
-    return !thread || threadBlocks(thread);
+    if (!thread || threadBlocks(thread)) return false;
+    // An earlier round that carried a finding above the thread's own grade replied with that raise, so it counts too.
+    const raised = entries.filter(e => e.threadId === threadId && rank(e.severity) > rank(thread.severity)).map(e => e.severity);
+    return [thread.recordedGrade ?? thread.severity, ...raised].every(grade => rank(f.severity) > rank(grade));
   };
   const byThread = new Map<string, Finding[]>();
   for (const f of result.findings) {
-    if (f.answeredIn || !f.threadId || !(f.variantOf || (f.severity === 'blocker' && !blocks(f.threadId)))) continue;
+    if (f.answeredIn || !f.threadId || !(f.variantOf || raises(f, f.threadId))) continue;
     byThread.set(f.threadId, [...(byThread.get(f.threadId) ?? []), f]);
   }
   for (const [threadId, findings] of byThread) {
     const raised = findings.filter(f => !f.variantOf);
     const variants = findings.filter(f => f.variantOf);
-    const body = [raised.length > 0 && formatBlockerReply(raised), variants.length > 0 && formatVariantReply(variants)].filter(part => !!part).join('\n\n---\n\n');
+    const body = [raised.length > 0 && formatRaisedReply(raised), variants.length > 0 && formatVariantReply(variants)].filter(part => !!part).join('\n\n---\n\n');
     try {
       const reply = await replyToReviewThread(run.octokit, threadId, body);
       if (reply) replies.push(reply);
@@ -1452,6 +1458,7 @@ async function replyInOpenThreads(run: ReviewRun, result: ReviewResult): Promise
       for (const f of findings) {
         delete f.threadId;
         delete f.variantOf;
+        f.ownThread = true;
       }
     }
   }

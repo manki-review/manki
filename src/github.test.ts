@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatBlockerReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
+import { ApprovalHeld, buildDashboard, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { highlightCode } from './highlight';
@@ -4001,6 +4001,8 @@ describe('postReview fallback paths', () => {
       const findings: Finding[] = ['File thread', 'Nearby line thread', 'Resolved thread', 'Far line thread', 'Other file']
         .map(title => ({ ...offLineBlocker, title }));
       findings[4] = { ...findings[4], file: 'src/renamed.ts', line: 0 };
+      // A finding taken out of its thread is posted on its own, even beside an open thread with its title.
+      findings.push({ ...offLineBlocker, title: 'File thread', ownThread: true });
 
       await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, undefined, undefined, {
         existingThreads: [
@@ -4013,7 +4015,7 @@ describe('postReview fallback paths', () => {
       });
 
       const posted = createReviewComment.mock.calls.map(c => (c[0].body as string).match(/<!-- manki:blocker:(.+?) -->/)?.[1]);
-      expect(posted).toEqual(['Resolved-thread', 'Far-line-thread', 'Other-file']);
+      expect(posted).toEqual(['Resolved-thread', 'Far-line-thread', 'Other-file', 'File-thread']);
     });
 
     it('points a blocker linked to an open thread, or repeating an answered one, at that thread instead of posting a new one', async () => {
@@ -4404,7 +4406,7 @@ describe('postReview non-blocking findings', () => {
   });
 
   it('formats the reply to an answered thread whose problem came back worse', () => {
-    expect(formatFoundAgainReply(nonBlocking('warning', 'Retry has no `limit`', 11, { description: 'It retries forever.', suggestedFix: 'Cap it.' })).split('\n\n')).toEqual([
+    expect(formatFoundAgainReply([nonBlocking('warning', 'Retry has no `limit`', 11, { description: 'It retries forever.', suggestedFix: 'Cap it.' })]).split('\n\n')).toEqual([
       'This came up again, and the code here is worse than when this thread was answered.',
       expect.stringContaining('**Warning'),
       '**Retry has no `limit`**',
@@ -4431,11 +4433,13 @@ describe('postReview non-blocking findings', () => {
       '**What goes wrong:** A pending entry survives.',
     ]);
     // A blocker that restates a thread that does not block yet says the thread blocks now.
-    expect(formatBlockerReply([{ ...variant, severity: 'blocker' }]).split('\n\n').slice(0, 3)).toEqual([
+    expect(formatRaisedReply([variant, { ...variant, severity: 'blocker' }]).split('\n\n').slice(0, 3)).toEqual([
       'This round raises this problem again as a blocker, so this thread now blocks.',
-      expect.stringContaining('**Blocker'),
+      expect.stringContaining('**Warning'),
       '**The filter misses `pending`**',
     ]);
+    // Below blocker, it names the grade and says nothing about blocking.
+    expect(formatRaisedReply([variant]).split('\n\n')[0]).toBe('This round raises this problem again as a warning.');
   });
 
   it('lists smaller findings by where they sit, found this round, missed earlier or pre-existing, and keeps a blocker on reviewed code inline', async () => {
@@ -4475,6 +4479,7 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('suggestion', 'Listed in round 1', 11, { origin: 'earlier', raisedIn: 1 }),
       nonBlocking('warning', 'Also listed in round 1', 3, { origin: 'earlier', raisedIn: 1, tags: ['follow-up'] }),
       nonBlocking('suggestion', 'Listed in round 2', 3, { origin: 'earlier', raisedIn: 2 }),
+      nonBlocking('warning', 'Old race listed in round 1', 90, { origin: 'earlier', raisedIn: 1, tags: ['follow-up', 'pre-existing'] }),
       nonBlocking('warning', 'Restates an open thread', 11, { origin: 'new', threadId: 'T1', tags: ['follow-up'] }),
       nonBlocking('warning', 'Another field the check misses', 11, { origin: 'new', threadId: 'T1', variantOf: 'src/a.ts:11:11:x', tags: ['follow-up'] }),
     ]), diff, makeContext({ meta: { ...makeContext().meta, round: 3 } }));
@@ -4484,6 +4489,8 @@ describe('postReview non-blocking findings', () => {
     expect(third.body).toContain('### Still open from round 1 · 1 warning and 1 suggestion\n\nRound 1 listed these, and this round finds them again.\n\n<details>\n<summary>\u26A0\uFE0F <b>Also listed in round 1</b>');
     expect(third.body).toContain('### Still open from round 2 · 1 suggestion\n\nRound 2 listed it, and this round finds it again.');
     expect(third.body.indexOf('Still open from round 1')).toBeLessThan(third.body.indexOf('Still open from round 2'));
+    // A pre-existing finding stays under "Pre-existing", where its intro says it does not block.
+    expect(third.body).toContain('### Pre-existing · 1 warning\n\nIt sits on code this PR did not change');
     expect(third.body).not.toMatch(/Restates an open thread|Another field the check misses|Missed by an earlier review/);
     // A security finding on unchanged code still blocks, and its header says where it sits.
     expect(formatFindingComment(nonBlocking('blocker', 'Old SQL injection', 90, { tags: ['security', 'pre-existing'] }), TEST_LINKS).split('\n')[0]).toBe('\u{1F6AB} **Blocker** · Pre-existing');
