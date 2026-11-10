@@ -152,6 +152,31 @@ describe('listUsesOutsideDiff', () => {
     );
     expect(overridden.record?.symbols?.find(s => s.name === 'balance')).toEqual({ name: 'balance', declared: 'app/models.py:11', uses: ['app/models.py:3', 'app/models.py:6'] });
 
+    // A function inside a method that binds the receiver's name again reads another value through it: an object literal
+    // method or a `function` in TypeScript, a nested `def` or `lambda` with a `self` parameter in Python, and a func literal
+    // with a parameter of the receiver's name in Go. The method's own reads, and a closure's, still read the class's field.
+    const rebinding = [
+      {
+        changed: 'src/account.ts', before: 'export interface Account {\n  balance: number;\n}\n', after: 'export interface Account {\n  balance: bigint;\n}\n',
+        file: 'src/wrapper.ts', uses: [5, 6],
+        text: 'export class Wrapper {\n  balance = 0;\n\n  wrapped(a: Account) {\n    const view = { ...a, total() { return this.balance; } };\n    return function (this: Account) { return this.balance; };\n  }\n\n  shown() {\n    return [1].map(() => this.balance);\n  }\n}\n',
+      },
+      {
+        changed: 'app/account.py', before: 'class Account:\n    balance: int = 0\n', after: 'class Account:\n    balance: float = 0.0\n',
+        file: 'app/wrapper.py', uses: [7, 8],
+        text: 'class Wrapper:\n    def __init__(self):\n        self.balance = 0\n\n    def wrapped(self):\n        def total(self):\n            return self.balance\n        pick = lambda self: self.balance\n        def closure():\n            return self.balance\n        return total, pick, closure\n',
+      },
+      {
+        changed: 'bank/account.go', before: 'package bank\n\ntype Account struct {\n\tBalance int64\n}\n', after: 'package bank\n\ntype Account struct {\n\tBalance uint64\n}\n',
+        file: 'bank/wrapper.go', uses: [9],
+        text: 'package bank\n\ntype Wrapper struct {\n\tBalance int64\n}\n\nfunc (v *Wrapper) Wrapped() func(*Account) uint64 {\n\t_ = func() int64 { return v.Balance }\n\treturn func(v *Account) uint64 { return v.Balance }\n}\n',
+      },
+    ];
+    for (const { changed, before, after, file, text, uses } of rebinding) {
+      const { record } = await usesFor({ [changed]: before, [file]: text }, { [changed]: after });
+      expect(record?.symbols?.find(s => s.name.toLowerCase() === 'balance')?.uses).toEqual(uses.map(line => `${file}:${line}`));
+    }
+
     // With no other file to show, one file fills the list.
     const alone = await usesFor(
       { 'src/account.rs': 'pub struct Account {\n    pub balance: u64,\n}\n', 'src/ledger.rs': reads(i => `pub fn read_${i}(a: &Account) -> u64 {\n    a.balance\n}\n`) },

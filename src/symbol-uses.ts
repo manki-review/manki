@@ -163,6 +163,12 @@ interface FamilyRules {
   receiver?: (node: SgNode) => string | undefined;
   /** The name a method reads its own type's fields through, such as `self`, `this` or a Go receiver. */
   selfName: (method: SgNode) => string | undefined;
+  /**
+   * Functions that can bind that name again inside a method, so a read through it there is not the method's. With
+   * `byParameter`, one binds it only through a parameter of that name, as a Python `def f(self)` does. Without it, one
+   * always does, as a TypeScript `function` or object literal method binds its own `this`.
+   */
+  rebinds?: { kinds: string[]; byParameter?: true };
   /** The name of the field a declaration node declares, when the node has no `name` field, such as a Python assignment. */
   fieldName?: (node: SgNode, tree: Tree) => SgNode | undefined;
   /** The type a field holds when no type is written, such as `set` for a Python field assigned `set()`. */
@@ -208,6 +214,7 @@ const RULES: Record<Family, FamilyRules> = {
     index: 'subscript_expression',
     owners: { class_declaration: { type: 'name' }, abstract_class_declaration: { type: 'name' } },
     selfName: () => 'this',
+    rebinds: { kinds: ['function_declaration', 'function_expression', 'generator_function_declaration', 'generator_function', 'method_definition'] },
     // A class names its bases in `extends` and `implements` clauses, an interface in one `extends` clause, and a type
     // alias anywhere in its value, such as `Base & { extra: number }`.
     bases: scope => scope.kind() === 'type_alias_declaration'
@@ -228,6 +235,7 @@ const RULES: Record<Family, FamilyRules> = {
     index: 'subscript',
     owners: { class_definition: { type: 'name' } },
     selfName: () => 'self',
+    rebinds: { kinds: ['function_definition', 'lambda'], byParameter: true },
     bases: scope => scope.field('superclasses')?.children().filter(c => c.isNamed() && c.kind() !== 'keyword_argument') ?? [],
     fieldName: pythonFieldName,
     valueType: node => {
@@ -252,9 +260,15 @@ const RULES: Record<Family, FamilyRules> = {
     owners: {},
     receiver: node => typeName(goReceiver(node)?.field('type')?.text() ?? ''),
     selfName: node => goReceiver(node)?.field('name')?.text(),
+    rebinds: { kinds: ['func_literal'], byParameter: true },
     names: node => node.kind() === 'field_declaration' ? node.children().filter(c => c.kind() === 'field_identifier') : [],
   },
 };
+
+/** Returns the names a function's parameters bind, such as `self` and `x` in Python `def f(self, x=1)`. */
+function parameterNames(fn: SgNode): string[] {
+  return (fn.field('parameters')?.children() ?? []).flatMap(p => p.kind() === 'identifier' ? [p.text()] : p.children().filter(c => c.kind() === 'identifier').map(c => c.text()));
+}
 
 function goReceiver(method: SgNode): SgNode | undefined {
   return method.field('receiver')?.children().find(c => c.kind() === 'parameter_declaration');
@@ -906,8 +920,12 @@ class ParsedFile {
   private readonly ownFieldKeys = new Set<string>();
   /** The types and enum variants this file declares by name, `undefined` for a name it declares more than once. */
   private readonly typesByName = new Map<string, Declaration | undefined>();
-  /** The methods that name their receiver, by first line, their first lines, and the index of the one around each. */
-  private readonly selfMethods: Method[];
+  /**
+   * The methods that name their receiver and the other functions that may bind that name again, by first line, their
+   * first lines, and the index of the one around each. Such a function has no `method`, and `binds` lists the names its
+   * parameters bind when only those count.
+   */
+  private readonly selfScopes: Array<{ start: number; end: number; from: number; method?: Method; binds?: string[] }>;
   private readonly selfStarts: number[];
   private readonly enclosing: number[] = [];
   private readonly listings = new Map<string, Omit<StructListing, 'file'> | undefined>();
@@ -941,11 +959,20 @@ class ParsedFile {
       if (decl.kind === 'type' || decl.kind === 'variant') this.typesByName.set(decl.name, this.typesByName.has(decl.name) ? undefined : decl);
     }
     this.methods = this.findMethods();
-    this.selfMethods = this.methods.filter(m => m.self).sort((a, b) => a.decl.start - b.decl.start);
-    this.selfStarts = this.selfMethods.map(m => m.decl.start);
+    const selfMethods = this.methods.filter(m => m.self);
+    const methodNodes = new Set(selfMethods.map(m => m.decl.node.id()));
+    const { kinds: rebinders = [], byParameter } = rules.rebinds ?? {};
+    const rebinding = rebinders.length > 0 && selfMethods.length > 0 ? root.root().findAll({ rule: { any: rebinders.map(kind => ({ kind })) } }) : [];
+    this.selfScopes = [
+      ...selfMethods.map(method => ({ start: method.decl.start, end: method.decl.end, from: method.decl.node.range().start.index, method })),
+      ...rebinding.filter(n => !methodNodes.has(n.id())).map(n => ({
+        start: lineOf(n), end: n.range().end.line + 1, from: n.range().start.index, ...(byParameter && { binds: parameterNames(n) }),
+      })),
+    ].sort((a, b) => a.start - b.start || a.from - b.from);
+    this.selfStarts = this.selfScopes.map(s => s.start);
     const open: number[] = [];
-    this.selfMethods.forEach((method, i) => {
-      while (open.length > 0 && this.selfMethods[open.at(-1)!].decl.end < method.decl.start) open.pop();
+    this.selfScopes.forEach((scope, i) => {
+      while (open.length > 0 && this.selfScopes[open.at(-1)!].end < scope.start) open.pop();
       this.enclosing.push(open.at(-1) ?? -1);
       open.push(i);
     });
@@ -1209,11 +1236,17 @@ class ParsedFile {
     return true;
   }
 
-  /** Returns the innermost method of `selfMethods` that holds `line`, such as the one around a nested class's method. */
+  /**
+   * Returns the innermost method of `selfScopes` that holds `line`, such as the one around a nested class's method. A
+   * function between them that binds the method's receiver name again returns nothing.
+   */
   private methodAt(line: number): Method | undefined {
     let i = firstAtOrAfter(this.selfStarts, line + 1) - 1;
-    while (i >= 0 && this.selfMethods[i].decl.end < line) i = this.enclosing[i];
-    return i >= 0 ? this.selfMethods[i] : undefined;
+    while (i >= 0 && this.selfScopes[i].end < line) i = this.enclosing[i];
+    const between: Array<string[] | undefined> = [];
+    for (; i >= 0 && !this.selfScopes[i].method; i = this.enclosing[i]) between.push(this.selfScopes[i].binds);
+    const method = i >= 0 ? this.selfScopes[i].method : undefined;
+    return method && !between.some(binds => !binds || binds.includes(method.self!)) ? method : undefined;
   }
 }
 
