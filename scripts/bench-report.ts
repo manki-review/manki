@@ -23,6 +23,8 @@ export interface MatrixEntry {
   repo: string;
   base: string;
   head: string;
+  /** The commit the earlier round of a follow-up case reviewed, or an empty string. */
+  prior: string;
   /** The case file, relative to the checkout. */
   file: string;
 }
@@ -43,7 +45,7 @@ export function benchMatrix(cases: BenchCase[], root = '.'): MatrixEntry[] {
       files.set(parseCase(readFileSync(join(root, file), 'utf-8'), file, set).id, file);
     }
   }
-  return cases.map(({ id, set, repo, base, head }) => ({ id, set, repo, base, head, file: files.get(id)! }));
+  return cases.map(({ id, set, repo, base, head, priorRound }) => ({ id, set, repo, base, head, prior: priorRound?.head ?? '', file: files.get(id)! }));
 }
 
 /** Returns the Markdown summary of a merged report: the comparison table, then every case and run in a fold. */

@@ -17,10 +17,10 @@ npm run check-changelog-version
 ## Release PR checklist
 
 1. Run the hold-out benchmark on GitHub, and let its gate decide whether the release goes out. In the repository's **Actions** tab, open **Benchmark**, click **Run workflow**, keep `ref: main`, `set: holdout`, `variants: base` and `runs: 1`, and set `baseline` to the run id of the last release's benchmark, from its release PR body. A run id is the number at the end of the run's URL. The gate result is in the summary of the run's `report` job. The gate rule:
-   - It compares the hold-out cases that both runs scored with the same key version.
+   - It compares the hold-out cases that both runs scored with the same key version, as the same kind of round. A follow-up case that the baseline's ref reviewed as a first round is left out and listed.
    - A run with an incomplete review does not count, so run that side again.
-   - Any rise in false blockers fails.
-   - The must-catch items found at the key's grade or above, summed over those cases, may fall by at most one item on average. A fall within that margin on a single run reads `RERUN`: start the workflow once more with `ref` set to the commit in the first run's summary, the same `baseline`, and the first run's id in `rerun_of`, and the gate decides on the mean of both runs.
+   - Any rise in false blockers fails. So does any rise in the follow-up figures where less is better: earlier threads resolved that the key keeps open, and earlier findings posted again.
+   - The must-catch items found at the key's grade or above, summed over those cases, may fall by at most one item on average, and so may the earlier threads resolved as the key says. A fall within that margin on a single run reads `RERUN`: start the workflow once more with `ref` set to the commit in the first run's summary, the same `baseline`, and the first run's id in `rerun_of`, and the gate decides on the mean of both runs.
 
    Put the run's link and the gate result in the release PR body, where the next release finds its baseline. The `bench-report` artifact is kept for 90 days. When the baseline's has expired, run the last release's tag first and use that run as the baseline.
 

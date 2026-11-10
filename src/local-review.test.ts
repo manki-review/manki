@@ -99,6 +99,44 @@ describe('reviewLocal', () => {
     expect(review.context.meta).toMatchObject({ prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, outcome: 'ADDRESS_FIRST' });
   });
 
+  it('reviews a follow-up round from an earlier round: its threads with the code now, its record, and the diff since', async () => {
+    git(repo, 'checkout', '-q', 'feature');
+    const lines = Array.from({ length: 20 }, (_, i) => `const v${i + 1} = ${i + 1};`);
+    const reviewed = commit(repo, 'Add b', { 'src/b.ts': `${lines.join('\n')}\n` });
+    lines[19] = 'const v20 = 0;';
+    const fixed = commit(repo, 'Fix b', { 'src/b.ts': `${lines.join('\n')}\n` });
+    git(repo, 'checkout', '-q', 'main');
+    const findings = [{ ...finding }, { ...finding, file: 'src/b.ts', line: 2 }, { ...finding, file: 'src/b.ts', line: 20 }];
+    jest.mocked(runReview).mockResolvedValue({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: 'Still wrong', findings, highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    const earlier = {
+      head: reviewed,
+      findings: [
+        { id: 'P1', severity: 'blocker' as const, title: 'Wrong value', file: 'src/b.ts', line: 20, description: 'Should be 0.', suggestedFix: 'const v20 = 0;', security: true, thread: 'open' as const },
+        { id: 'P2', severity: 'warning' as const, title: 'Unused constant', file: 'src/a.ts', line: 1, thread: 'resolved' as const },
+        { id: 'P4', severity: 'blocker' as const, title: 'Missing check', file: 'src/a.ts', line: 2, thread: 'fixed' as const },
+        { id: 'P3', severity: 'suggestion' as const, title: 'Name the constant', file: 'src/a.ts', line: 1, gradeIfConfirmed: 'warning' as const },
+      ],
+    };
+
+    const review = await reviewLocal({ repoRoot: repo, base: 'main', head: fixed, earlier, providerInputs: inputs });
+
+    const options = jest.mocked(runReview).mock.calls[0][1];
+    expect(options.isFollowUp).toBe(true);
+    expect(options.interRoundDiff).toContain('-const v20 = 20;\n+const v20 = 0;');
+    expect(options.interRoundDiff).not.toContain('src/a.ts');
+    expect(options.previousFindings?.map(f => [f.threadId, f.status, f.fixed, f.isSecurity])).toEqual([['P1', 'open', undefined, true], ['P2', 'resolved', undefined, undefined], ['P4', 'resolved', true, undefined]]);
+    expect(options.openThreads).toEqual([expect.objectContaining({ threadId: 'P1', severity: 'blocker', description: 'Should be 0.', currentCode: expect.stringContaining('>>> 20: const v20 = 0;') })]);
+    const [record] = options.priorRounds!;
+    expect(record.meta).toMatchObject({ round: 1, commitSha: reviewed });
+    expect(record.judge.threadEvaluations).toEqual([{ threadId: 'P4', status: 'addressed', reason: 'Fixed by an earlier push.' }]);
+    expect(record.findings.entries.map(e => [e.title, e.threadId, e.severity, e.tags, e.gradeIfConfirmed])).toEqual([
+      ['Wrong value', 'P1', 'blocker', ['security'], undefined], ['Unused constant', 'P2', 'warning', undefined, undefined], ['Missing check', 'P4', 'blocker', undefined, undefined],
+      ['Name the constant', undefined, 'suggestion', undefined, 'warning'],
+    ]);
+    expect(review.result.findings.map(f => [f.file, f.line, f.origin])).toEqual([['src/a.ts', 2, 'reviewed'], ['src/b.ts', 2, 'reviewed'], ['src/b.ts', 20, 'new']]);
+    expect(review.context.meta).toMatchObject({ round: 2, commitSha: fixed });
+  });
+
   it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
     let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean } | undefined;
     jest.mocked(runReview).mockImplementation(async (_clients, options) => {

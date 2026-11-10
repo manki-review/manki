@@ -14,7 +14,7 @@ describe('selectCases and benchMatrix', () => {
     const [entry] = benchMatrix(selectCases('both', ['rdc-1295']));
     expect(entry).toEqual({
       id: 'rdc-1295', set: 'tuning', repo: 'xdustinface/rust-dashcore', file: 'bench/cases/rdc-1295.yml',
-      base: 'd9c30a7cb2c6f305cd528833193497500160aa1c', head: '63a021e6c52d7be694e779a0b3ba403e7ee7a881',
+      base: 'd9c30a7cb2c6f305cd528833193497500160aa1c', head: '63a021e6c52d7be694e779a0b3ba403e7ee7a881', prior: '',
     });
     expect(benchMatrix(holdout).every(e => e.file.startsWith('bench/holdout/'))).toBe(true);
     expect(() => selectCases('all', [])).toThrow('--set must be one of holdout, tuning, both');

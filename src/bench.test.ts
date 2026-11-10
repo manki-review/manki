@@ -14,6 +14,7 @@ const CASES_DIR = join(__dirname, '..', 'bench', 'cases');
 const HOLDOUT_DIR = join(__dirname, '..', 'bench', 'holdout');
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
+const SHA_C = 'c'.repeat(40);
 
 const CASE_YAML = `id: demo-1
 repo: owner/demo
@@ -39,6 +40,49 @@ nice_to_have:
   - id: N1
     severity: suggestion
     mechanism: The test duplicates a helper.
+`;
+
+const FOLLOW_UP_YAML = `${CASE_YAML}prior_round:
+  head: ${SHA_C}
+  findings:
+    - id: P1
+      severity: blocker
+      title: Reader allocates from a peer length
+      file: src/read.rs
+      line: 12
+      grade_if_confirmed: blocker
+      posted: thread
+      state: open
+      description: A peer picks the size.
+      how_to_fix: Cap the length.
+      suggested_fix: let len = len.min(MAX);
+      security: true
+    - id: P2
+      severity: warning
+      title: No timeout on the connection
+      file: src/conn.rs
+      line: 40
+      posted: thread
+      state: open
+    - id: P3
+      severity: suggestion
+      title: The retry loop has no test
+      file: src/conn.rs
+      line: 70
+      posted: body
+    - id: P4
+      severity: warning
+      title: Stale comment
+      file: src/conn.rs
+      line: 90
+      posted: thread
+      state: resolved
+must_resolve: [P1]
+must_keep_open:
+  - id: P2
+    severity: warning
+    mechanism: The read timeout is set, the write timeout is not.
+must_not_repeat: [P3]
 `;
 
 function makeFinding(overrides: Partial<Finding>): Finding {
@@ -73,7 +117,47 @@ describe('parseCase', () => {
         { id: 'K2', severity: 'warning', mechanism: 'The error path drops the lock.', locations: ['unlock'] },
       ],
       niceToHave: [{ id: 'N1', severity: 'suggestion', mechanism: 'The test duplicates a helper.', locations: [] }],
+      mustResolve: [], mustKeepOpen: [], mustNotRepeat: [],
     });
+  });
+
+  it('reads a follow-up case with the earlier round and the items that name its findings', () => {
+    const followUp = parseCase(FOLLOW_UP_YAML, 'follow.yml');
+    expect(followUp.priorRound).toEqual({
+      head: SHA_C,
+      findings: [
+        {
+          id: 'P1', severity: 'blocker', title: 'Reader allocates from a peer length', file: 'src/read.rs', line: 12, gradeIfConfirmed: 'blocker', thread: 'open',
+          description: 'A peer picks the size.', howToFix: 'Cap the length.', suggestedFix: 'let len = len.min(MAX);', security: true,
+        },
+        { id: 'P2', severity: 'warning', title: 'No timeout on the connection', file: 'src/conn.rs', line: 40, thread: 'open' },
+        { id: 'P3', severity: 'suggestion', title: 'The retry loop has no test', file: 'src/conn.rs', line: 70 },
+        { id: 'P4', severity: 'warning', title: 'Stale comment', file: 'src/conn.rs', line: 90, thread: 'resolved' },
+      ],
+    });
+    expect(followUp).toMatchObject({
+      mustResolve: ['P1'], mustNotRepeat: ['P3'],
+      mustKeepOpen: [{ id: 'P2', severity: 'warning', mechanism: 'The read timeout is set, the write timeout is not.', locations: ['src/conn.rs'] }],
+    });
+  });
+
+  it.each([
+    ['must_resolve: [P1]', 'must_resolve: [P4]', '`must_resolve` names P4, which is no open earlier thread'],
+    ['must_resolve: [P1]', 'must_resolve: [P9]', '`must_resolve` names P9, which is no earlier finding'],
+    ['must_not_repeat: [P3]', 'must_not_repeat: [P1]', 'earlier finding P1 is in more than one follow-up list'],
+    ['    - id: P3', '    - id: K1', 'item id K1 is used twice'],
+    ['      posted: body', '      posted: body\n      state: open', '`state` must be open, resolved or fixed for a thread, and unset for a body finding'],
+    ['      posted: body', '      posted: review', '`posted` must be thread or body'],
+    ['      line: 70', '      line: 0', 'prior_round.findings[2]: `line` must be a positive integer'],
+    [`  head: ${SHA_C}`, '  head: abc', '`prior_round.head` must be a full commit SHA'],
+    ['  - id: P2\n    severity: warning\n    mechanism: The read', '  - id: K1\n    severity: warning\n    locations: [src/conn.rs]\n    mechanism: The read', '`must_keep_open` names K1, which is no earlier finding'],
+    ['  - id: P2\n    severity: warning\n    mechanism: The read', '  - id: P4\n    severity: warning\n    locations: [src/conn.rs]\n    mechanism: The read', '`must_keep_open` names P4, which is no open earlier thread'],
+  ])('refuses a follow-up case where %s is %s', (from, to, message) => {
+    expect(() => parseCase(FOLLOW_UP_YAML.replace(from, to), 'bad.yml')).toThrow(message);
+  });
+
+  it('refuses follow-up items without an earlier round', () => {
+    expect(() => parseCase(`${CASE_YAML}must_not_repeat: [P1]\n`, 'bad.yml')).toThrow('`must_resolve`, `must_keep_open` and `must_not_repeat` need a `prior_round`');
   });
 
   it('reads a clean case without key items', () => {
@@ -250,6 +334,66 @@ describe('scoreRun', () => {
   });
 });
 
+describe('scoreRun on a follow-up case', () => {
+  const followUp = parseCase(FOLLOW_UP_YAML, 'follow.yml');
+  const findings = [
+    makeFinding({ severity: 'blocker', file: 'src/conn.rs', title: 'Write has no timeout' }),
+    makeFinding({ severity: 'suggestion', file: 'src/conn.rs', title: 'Retry loop untested' }),
+    makeFinding({ severity: 'blocker', file: 'src/read.rs', title: 'Peer length allocation' }),
+  ];
+  const decisions: Record<string, MatchDecision> = {
+    K1: { verdict: 'MATCH', findings: [0], reason: 'same' }, P2: { verdict: 'MATCH', findings: [0], reason: 'restates' }, P3: { verdict: 'MATCH', findings: [1], reason: 'restates' },
+  };
+  const matcher: Matcher = async item => decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' };
+  const review = (complete = true): LocalReview => {
+    const local = makeReview('ADDRESS_FIRST', findings, complete);
+    local.result.threadEvaluations = [
+      { threadId: 'P1', status: 'addressed', reason: 'capped' }, { threadId: 'P2', status: 'addressed', reason: 'read timeout set' },
+      { threadId: 'P4', status: 'addressed', reason: 'not open' }, { threadId: 'P3', status: 'not_addressed', reason: 'body' },
+    ];
+    return local;
+  };
+
+  it('scores resolutions against the key and repeats of earlier findings apart from extra findings, and reports each follow-up item', async () => {
+    const score = await scoreRun(followUp, review(), matcher);
+
+    expect(score.matches.map(m => [m.item, m.verdict, m.findings])).toEqual([['K1', 'MATCH', [2]], ['K2', 'NONE', []], ['N1', 'NONE', []], ['P2', 'MATCH', [0]], ['P3', 'MATCH', [1]]]);
+    expect(score).toMatchObject({
+      verdictCorrect: true, falseBlockers: 0, extraFindings: 0, duplicates: 0, followUp: { resolved: ['P1', 'P2'], resolvedRight: 1, resolvedWrong: 1, repeats: 2 },
+    });
+    expect(await scoreRun(followUp, review(false), matcher)).not.toHaveProperty('followUp');
+    const reworded = await scoreRun(followUp, review(), async item => (item.id === 'P2' ? { verdict: 'PARTIAL', findings: [0], reason: 'other mechanism' } : decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' }));
+    expect(reworded).toMatchObject({ falseBlockers: 1, extraFindings: 1, followUp: { repeats: 1 } });
+
+    const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase: followUp, runs: [score] }] }]);
+    expect(report.variants[0].cases[0].items.slice(3)).toEqual([
+      { id: 'P1', tier: 'must_resolve', severity: 'blocker', caught: 1, partial: 0, runs: 1 },
+      { id: 'P2', tier: 'must_keep_open', severity: 'warning', caught: 0, partial: 0, runs: 1 },
+      { id: 'P3', tier: 'must_not_repeat', severity: 'suggestion', caught: 0, partial: 0, runs: 1 },
+    ]);
+    expect(report.variants[0].summary).toMatchObject({ atGradeRecall: 0.5, resolvedRight: 1, resolvedWrong: 1, repeats: 2 });
+    const summary = formatBenchSummary(report);
+    expect(summary).toContain('  P2 keep open warning: 0/1\n');
+    expect(summary).toContain(', 0 duplicates, resolved 1 right and 1 wrong, 2 repeats, files read');
+    expect(summary).toContain('\nFollow-up rounds: resolved 1 right and 1 wrong, 2 repeats.\n');
+    expect(summary).toContain('| Resolved right | 1 |\n| Resolved wrong | 1 |\n| Repeats | 2 |\n');
+    expect(summary).toContain('| demo-1 P3 (no repeat suggestion) | 0/1 |');
+  });
+
+  it('expects a block while an earlier blocker or a kept-open blocker is still in the code, and an approval once nothing is left', async () => {
+    const approve = makeReview('READY', []);
+    const verdict = (changes: Partial<BenchCase>) => scoreRun({ ...followUp, mustCatch: [], ...changes }, approve, matcher).then(s => s.verdictCorrect);
+    expect(await verdict({})).toBeNull();
+    expect(await verdict({ mustKeepOpen: [] })).toBe(true);
+    expect(await verdict({ mustKeepOpen: [{ ...followUp.mustKeepOpen[0], severity: 'blocker' }] })).toBe(false);
+    expect(await verdict({ mustKeepOpen: [], mustResolve: [], mustNotRepeat: ['P1'] })).toBe(false);
+    expect(await verdict({ mustKeepOpen: [], mustResolve: [] })).toBe(false);
+    const resolvedBlocker = { ...followUp.priorRound!.findings[3], severity: 'blocker' as const };
+    const priorRound = { ...followUp.priorRound!, findings: [...followUp.priorRound!.findings.slice(0, 3), resolvedBlocker] };
+    expect(await verdict({ mustKeepOpen: [], priorRound, mustNotRepeat: ['P3', 'P4'] })).toBe(true);
+  });
+});
+
 describe('runBench and buildReport', () => {
   let checkout: string;
   let benchCase: BenchCase;
@@ -290,6 +434,10 @@ describe('runBench and buildReport', () => {
     const baseReview = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
     await runBench([benchCase], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: baseReview });
     expect(baseReview.mock.calls[0][0]).not.toHaveProperty('configOverrides');
+    expect(baseReview.mock.calls[0][0]).not.toHaveProperty('earlier');
+    const followUp = { ...benchCase, priorRound: { head: benchCase.base, findings: [] } };
+    await runBench([followUp], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: baseReview });
+    expect(baseReview.mock.calls[1][0].earlier).toBe(followUp.priorRound);
     const [{ variant, results }] = await runBench([benchCase], { runs: 5, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review, onCase, variants: [{ name: 'opus', overrides }] });
 
     expect(review).toHaveBeenCalledTimes(5);
@@ -311,9 +459,9 @@ describe('runBench and buildReport', () => {
       { id: 'N1', tier: 'nice_to_have', severity: 'suggestion', caught: 0, partial: 0, runs: 3 },
     ]);
     expect(report.variants[0].summary).toEqual({
-      runs: 5, incompleteRuns: 2, mustCatchRecall: 1 / 3, weightedRecall: expect.closeTo(0.4), verdictAccuracy: 2 / 3,
+      runs: 5, incompleteRuns: 2, mustCatchRecall: 1 / 3, weightedRecall: expect.closeTo(0.4), atGradeRecall: 1 / 3, verdictAccuracy: 2 / 3,
       bySeverity: { blocker: { caught: 2, partial: 1, total: 3 }, warning: { caught: 0, partial: 0, total: 3 } },
-      falseBlockers: 0, extraFindings: 0, duplicates: 0, costUsd: 5, costPerRunUsd: 1.25, wallTimePerRunMs: 90,
+      falseBlockers: 0, extraFindings: 0, duplicates: 0, resolvedRight: null, resolvedWrong: null, repeats: null, costUsd: 5, costPerRunUsd: 1.25, wallTimePerRunMs: 90,
     });
     expect(JSON.parse(JSON.stringify(report))).toStrictEqual(report);
     const summary = formatBenchSummary(report);
@@ -323,17 +471,22 @@ describe('runBench and buildReport', () => {
     expect(summary).toContain('  run 2: FAILED: provider down\n');
     expect(summary).toContain('  run 4: INCOMPLETE: The review did not complete.\n');
     expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 extra, 0 duplicates, files read finder-a 3, $1.25\n');
-    expect(summary).toContain('5 runs (2 incomplete). Must-catch recall 33%, weighted 40%, verdicts 67%.');
+    expect(summary).toContain('5 runs (2 incomplete). Must-catch recall 33%, weighted 40%, at grade 33%, verdicts 67%.');
+    expect(summary).not.toContain('Follow-up rounds');
     expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, extra findings 0, duplicates 0, cost $5.00.');
     expect(summary.slice(summary.indexOf('| Metric'))).toBe([
       '| Metric | base | opus |',
       '| --- | --- | --- |',
       '| Must-catch recall | 33% | 33% |',
       '| Weighted recall | 40% | 40% |',
+      '| Must-catch at grade | 33% | 33% |',
       '| Verdict accuracy | 67% | 67% |',
       '| False blockers | 0 | 0 |',
       '| Extra findings | 0 | 0 |',
       '| Duplicates | 0 | 0 |',
+      '| Resolved right | n/a | n/a |',
+      '| Resolved wrong | n/a | n/a |',
+      '| Repeats | n/a | n/a |',
       '| Incomplete runs | 2 of 5 | 2 of 5 |',
       '| Cost per run | $1.25 | $1.25 |',
       '| Wall time per run | 0m 00s | 0m 00s |',
@@ -399,6 +552,8 @@ describe('runBench and buildReport', () => {
       .rejects.toThrow('Variant typo does not load on case demo-1: The config overrides name keys the config does not know: Unknown config key: "models.reviwer"');
     await expect(runBench([benchCase], { ...options, checkouts: new Map() })).rejects.toThrow('No checkout for owner/demo');
     await expect(runBench([{ ...benchCase, head: 'c'.repeat(40) }], { ...options, checkouts: new Map([['owner/demo', checkout]]) })).rejects.toThrow(new RegExp(`Commit ${'c'.repeat(40)} of case demo-1 is not in .*Git said: `));
+    await expect(runBench([{ ...benchCase, priorRound: { head: 'd'.repeat(40), findings: [] } }], { ...options, checkouts: new Map([['owner/demo', checkout]]) }))
+      .rejects.toThrow(`Commit ${'d'.repeat(40)} of case demo-1 is not in`);
     expect(review).not.toHaveBeenCalled();
   });
 });
@@ -449,12 +604,29 @@ describe('mergeReports and gateReports', () => {
       baseline: { runs: 1, found: 2, falseBlockers: 0 }, candidate: { runs: 1, found: 2, falseBlockers: 0 },
     });
     expect(await gate('blocker', 'blocker', 1)).toMatchObject({ verdict: 'FAIL', reason: 'False blockers rose from 0 to 1 per run.' });
+    const followUps = async (scores: Partial<NonNullable<Run['followUp']>>) => report([
+      [first, [{ ...await run(first, 'blocker'), followUp: { resolved: [], resolvedRight: 0, resolvedWrong: 0, repeats: 0, ...scores } }]], [second, [await run(second, 'blocker')]],
+    ]);
+    expect(gateReports([await followUps({})], [await followUps({ resolvedWrong: 1, repeats: 2 })])[0]).toMatchObject({
+      verdict: 'FAIL', reason: 'Earlier threads resolved that the key keeps open rose from 0 to 1 per run. Earlier findings posted again rose from 0 to 2 per run.',
+    });
+    const firstRoundOnOneSide = gateReports([baseline], [await followUps({ resolvedWrong: 1 })])[0];
+    expect(firstRoundOnOneSide).toMatchObject({ verdict: 'PASS', shared: ['demo-2'], unlike: ['demo-1'] });
+    expect(formatGate([firstRoundOnOneSide])).toContain('Left out, scored as a follow-up round on one side and as a first round on the other: demo-1\n');
+    const onlyUnlike = report([[first, [{ ...await run(first, 'blocker'), followUp: { resolved: [], resolvedRight: 0, resolvedWrong: 0, repeats: 0 } }]]]);
+    expect(gateReports([report([[first, [await run(first, 'blocker')]]])], [onlyUnlike])[0]).toMatchObject({ verdict: 'NO DECISION', shared: [], unlike: ['demo-1'] });
+    expect(gateReports([await followUps({ resolvedRight: 1 })], [await followUps({ resolvedRight: 0 })])[0]).toMatchObject({
+      verdict: 'RERUN', reason: 'Earlier threads resolved as the key says fell by 1, within the margin of 1. Run the candidate once more and decide on the mean of both runs.',
+    });
     expect(await gate('blocker', 'warning')).toMatchObject({ verdict: 'RERUN', candidate: { found: 1 } });
     expect(await gate()).toMatchObject({ verdict: 'FAIL', reason: "Must-catch items found at the key's grade fell by 2, more than 1." });
 
     const rerun = report([[first, [await run(first, 'blocker')]], [second, [await run(second)]]]);
     const atMargin = report([[first, [await run(first, 'blocker')]], [second, [await run(second, 'blocker')]]]);
-    expect(gateReports([baseline], [rerun, atMargin])[0]).toMatchObject({ verdict: 'PASS', candidate: { runs: 2, found: 1.5 } });
+    expect(gateReports([baseline], [rerun, atMargin])[0]).toMatchObject({
+      verdict: 'PASS', candidate: { runs: 2, found: 1.5 },
+      reason: "False blockers, earlier threads resolved that the key keeps open and earlier findings posted again did not rise. Must-catch items found at the key's grade fell by 0.5 on the mean of 2 runs, within the margin of 1.",
+    });
     expect(gateReports([baseline], [rerun, rerun])[0]).toMatchObject({ verdict: 'PASS', candidate: { runs: 2, found: 1 } });
   });
 
@@ -474,8 +646,12 @@ describe('mergeReports and gateReports', () => {
     expect(() => gateReports([baseline], [{ ...baseline, matcherModel: 'model-b' }])).toThrow('The reports were matched by different models: model-a, model-b');
 
     const text = formatGate(gateReports([baseline], [baseline]));
-    expect(text).toContain("### Release gate, base: PASS\n\nFalse blockers did not rise, and must-catch items found at the key's grade did not fall.\n");
-    expect(text).toContain('| Figure | Baseline | Candidate |\n| --- | --- | --- |\n| Runs per case | 1 | 1 |\n| Must-catch found at grade | 2 | 2 |\n| False blockers | 0 | 0 |\n');
+    expect(text).toContain([
+      '### Release gate, base: PASS', '',
+      "False blockers, earlier threads resolved that the key keeps open and earlier findings posted again did not rise. Must-catch items found at the key's grade and earlier threads resolved as the key says did not fall.",
+      '', '| Figure | Baseline | Candidate |', '| --- | --- | --- |', '| Runs per case | 1 | 1 |', '| Must-catch found at grade | 2 | 2 |', '| Resolved right | 0 | 0 |',
+      '| False blockers | 0 | 0 |', '| Resolved wrong | 0 | 0 |', '| Repeats | 0 | 0 |', '',
+    ].join('\n'));
     expect(text).toContain('Shared hold-out cases (2): demo-1, demo-2');
   });
 });

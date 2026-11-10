@@ -1,0 +1,100 @@
+id: rdc-1138-r2
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1138, round 2 of the replay fork PR xdustinface/rust-dashcore#212, after one fix commit per round-1 blocker
+base: 9dfbd041c8d47cef91ef6ffa96142d963008dda5
+head: dc31ee5ce3dd56432ec59ebc5c3dd28796ad4a45
+title: "feat(dash)!: decode and encode ProUpServTx and ProUpRegTx version 3"
+body: |
+  Closes upstream issue 1133. Part of upstream issue 1047.
+
+  ProTx version 3 (`ExtAddr`, gated on v24) changes two update payloads (layouts from Core's `src/evo/providertx.h`):
+
+  - **ProUpServTx:** the service is an extended `netInfo` instead of a fixed ip and port, and Evo nodes write only `platformNodeID` (the platform ports live in `netInfo`). We rejected version 3 as unsupported, failing the whole block.
+  - **ProUpRegTx:** `scriptPayout` is replaced by DIP-0026 payouts, a `u8` count followed by `{scriptPayout, reward}` entries. We decoded version 3 with the old layout, misaligning the block.
+
+  ## Changes
+
+  - `ProTxVersion::ExtAddr = 3`.
+  - `ProviderUpdateServicePayload::net_info: Option<ExtNetInfo>`, present from version 3 (`ip_address`/`port` are zero then). Reuses the `ExtNetInfo` parser of the masternode list entries (upstream PR 797), now `Hash` and crate-visible.
+  - `ProviderUpdateRegistrarPayload::payouts: Option<Vec<MasternodePayoutShare>>`, present from version 3 (`script_payout` is empty then). New `MasternodePayoutShare`, to be reused by ProRegTx v3 (upstream issue 1132).
+  - ProUpServTx now reads `mn_type` from version 2 onwards, as Core does, instead of only at version 2.
+  - Hand-written bincode for both payloads with the derived layout, writing the new field only from version 3, so data persisted before keeps decoding.
+
+  Breaking: new public fields on both payloads.
+
+  ## Not in this PR
+
+  - The wallet still matches ProUpRegTx payouts through `script_payout` only, so it won't see a v3 ProUpRegTx paying one of its scripts.
+  - The FFI payload views still expose ip/port only (`0.0.0.0:0` for v3).
+  - The new fields follow the existing `Option` pattern; enums for the parts that vary (e.g. `MasternodeNetInfo` for the service) would make version/field mismatches unrepresentable.
+
+  ## Testing
+
+  - Unit: v3 round trips for both payloads (byte positions of `netInfo` and the payout count, exact bytes consumed, `size()`), Evo v3 without platform ports, version 4 rejected, v3 ProUpRegTx without payouts fails to encode, bincode v3 round trips. Existing v1/v2 vectors still pass.
+  - `cargo test -p dashcore -p key-wallet -p key-wallet-ffi -p key-wallet-manager`, `cargo test -p dash-spv` with dashd integration tests, clippy `-D warnings`.
+  - No real v3 transaction vectors yet: our regtest dashd doesn't run v24.
+key_version: 1
+prior_round:
+  head: 3b150e4de8b9a2bbf268b5859047440363a60b5c
+  findings:
+    - id: P1
+      severity: blocker
+      title: "`base_payload_hash()` panics on a version 3 payload whose `net_info` or `payouts` is `None`"
+      file: dash/src/blockdata/transaction/special_transaction/provider_update_service.rs
+      line: 197
+      posted: thread
+      state: open
+      description: The new version 3 branches in `base_payload_data_encode` return `InvalidInput` when `net_info` or `payouts` is `None`. `base_payload_hash()` then calls `.expect("engines don't error")` on that result, which panics. The fields are public `Option`s and `version` is a public field, so a caller can build such a payload without any validation. `size()` treats the same state as 0 bytes while encoding fails, so the two disagree.
+      how_to_fix: Make the hash path not panic, for example by returning a `Result` or documenting and enforcing the invariant. Alternatively make `size()` and the hash agree on how a missing `net_info` or `payouts` is handled. Apply the same change to `provider_update_registrar.rs`.
+    - id: P2
+      severity: warning
+      title: ProUpRegTx decode accepts versions above 3 with the version 3 layout
+      file: dash/src/blockdata/transaction/special_transaction/provider_update_registrar.rs
+      line: 152
+      posted: thread
+      state: open
+      description: "`consensus_decode` uses `version >= ExtAddr`, so versions 4 and above, and version 0, are decoded as if they were valid. Core's `CProUpRegTx` returns early on `nVersion == 0 || nVersion > GetMax(..)`, and `ProviderUpdateServicePayload` here rejects these versions. A future version with a different layout would be silently misparsed instead of failing."
+      how_to_fix: Reject `version == 0 || version > ProTxVersion::ExtAddr as u16` in the decoder, as `ProviderUpdateServicePayload` does. Add a test for version 4.
+    - id: P3
+      severity: warning
+      title: Fee estimate for v3 ProUpRegTx and ProUpServTx ignores `payouts` and `net_info`
+      file: key-wallet/src/wallet/managed_wallet_info/transaction_builder.rs
+      line: 502
+      # Not in the round record: the round-1 judge notes name the doubt that kept it below blocker.
+      grade_if_confirmed: blocker
+      posted: body
+    - id: P4
+      severity: suggestion
+      title: "`NetInfoEntry::consensus_encode_ext` writes a `Service` address of any length, but decode rejects a wrong length"
+      file: dash/src/sml/masternode_list_entry/net_info.rs
+      line: 96
+      posted: body
+must_resolve: [P1, P2]  # fixed by ba14161c3 and dc31ee5ce
+must_not_repeat: [P4]
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "`TransactionBuilder::estimated_payload_size` in key-wallet still sizes ProUpServTx with a fixed ip and port plus platform ports, and ProUpRegTx with `script_payout` only, so a version 3 transaction is underpriced (about 56 bytes short for two P2PKH payouts), and the finalizer's estimate guard cannot catch it. The fee can then fall below the minimum relay fee, and the network rejects the transaction."
+    locations: ["key-wallet/src/wallet/managed_wallet_info/transaction_builder.rs", "estimated_payload_size", "TransactionBuilder"]
+    fix: "31215cb1c"
+  - id: K2
+    severity: blocker
+    mechanism: "The wallet payout matchers in `account_checker.rs` (around lines 636 and 1225) read only `script_payout`, which is empty from version 3, where a ProUpRegTx carries its payees in `payouts`. A wallet that is one of the new payees never matches the transaction, so it never sees the payment."
+    locations: ["key-wallet/src/transaction_checking/account_checker.rs", "script_payout", "payouts"]
+    source: "owner /check review"
+  - id: K3
+    severity: blocker
+    mechanism: "`encode_payouts` returns an error above 255 payouts, and `base_payload_hash()` and `txid()` call it through `.expect`, so a version 3 ProUpRegTx whose public `payouts` holds more than 255 entries panics when it is hashed."
+    locations: ["dash/src/blockdata/transaction/special_transaction/provider_update_registrar.rs", "dash/src/blockdata/transaction/mod.rs", "encode_payouts", "base_payload_hash", "txid"]
+    source: "Manki v7.3.2 round 2, checked in the replay scorecard"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "`ExtNetInfo` encodes `purposes` in the caller's order, while Dash Core requires them ascending and unique."
+    locations: ["dash/src/sml/masternode_list_entry/net_info.rs", "ExtNetInfo", "purposes"]
+    source: "Manki v7.3.2 round 2"
+  - id: N2
+    severity: suggestion
+    mechanism: "ProRegTx still decodes version 3 with the version 2 layout and has no version check. Outside the PR's scope."
+    locations: ["dash/src/blockdata/transaction/special_transaction/provider_registration.rs"]
+    source: "owner /check review"

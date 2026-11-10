@@ -4,16 +4,19 @@ import { join, posix } from 'path';
 import { pathToFileURL } from 'url';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
+import { extractCurrentCodeWindow } from './code-window';
 import { changedKeys, loadConfig, validateConfig } from './config';
-import { addCodeContext, changeDigest, reviewableDiff, tagFindingOrigins } from './diff';
-import { ApprovalHeld, buildRepoContext, configFailed, loadBaseConfig, RepoFiles } from './github';
-import { isParsedLockfile, LockfileDiff, readLockfileChanges, withLockfiles } from './lockfile';
+import { addCodeContext, changeDigest, filterDiff, filterRawDiff, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
+import { ApprovalHeld, buildRepoContext, configFailed, loadBaseConfig, RepoFiles, titleToSlug } from './github';
+import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { MAX_LOCKFILE_BYTES } from './static-signals';
 import type { ProviderInputs } from './providers';
+import type { PreviousFinding } from './recap';
 import { ReviewProgress, runReview } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
-import type { ConfigSource, ParsedDiff, ReviewConfig, ReviewResult, RoundContext, RoundOutcome } from './types';
+import { SECURITY_TAG } from './types';
+import type { ConfigSource, Finding, FindingSeverity, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome } from './types';
 import { fetchWorkspace, runGit } from './workspace';
 
 const DEFAULT_CONFIG_PATH = '.manki.yml';
@@ -53,6 +56,32 @@ function loadOverlaidConfig(content: string | null, configPath: string, override
   return { config, source: config.review ? 'base' : 'builtin' };
 }
 
+/** A finding an earlier round posted, as the next round reads it back. */
+export interface EarlierFinding {
+  /** Names the finding's thread, so the round's thread evaluations can be told apart. */
+  id: string;
+  severity: FindingSeverity;
+  title: string;
+  file: string;
+  line: number;
+  gradeIfConfirmed?: FindingSeverity;
+  description?: string;
+  howToFix?: string;
+  suggestedFix?: string;
+  security?: boolean;
+  /**
+   * How its review thread stands before the round: `fixed` when an earlier round resolved it as fixed, and `resolved`
+   * when a person resolved it. Unset for a finding posted only in the review body.
+   */
+  thread?: 'open' | 'resolved' | 'fixed';
+}
+
+/** The round before the one under review: the commit it reviewed and what it posted. */
+export interface EarlierRound {
+  head: string;
+  findings: EarlierFinding[];
+}
+
 /** What a local review reads. Nothing is read from or written to GitHub. */
 export interface LocalReviewInput {
   /** Root of the git repository the commits are in. */
@@ -74,6 +103,8 @@ export interface LocalReviewInput {
   title?: string;
   /** Shown to the models as the pull request description. */
   body?: string;
+  /** Makes the review a follow-up round of this earlier round, read as a pull request round reads it from GitHub. Unused with `patch`. */
+  earlier?: EarlierRound;
   providerInputs: ProviderInputs;
   onProgress?: (progress: ReviewProgress) => void;
   signal?: AbortSignal;
@@ -156,9 +187,73 @@ async function readLocalLockfiles(repoRoot: string, rev: string, fullDiff: Parse
   return readLockfileChanges(fullDiff, contents, side);
 }
 
+/** What a follow-up pull request round reads from GitHub about the rounds before it. */
+interface FollowUpInputs {
+  previousFindings: PreviousFinding[];
+  openThreads: OpenThread[];
+  priorRounds: RoundContext[];
+  /** The change at the earlier round's commit, from its merge base with the base. */
+  priorChange: ParsedDiff;
+  interRoundDiff: string;
+}
+
+const DIFF_ARGS = ['diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/'];
+
+/**
+ * Builds from `earlier` what a pull request round reads from GitHub: the earlier threads, with the code now at each open
+ * one, the earlier round record, and the diff since that round, without what a rebase brought in. The record holds the
+ * posted findings, which is what a later round reads of it.
+ */
+async function followUpInputs(
+  repoRoot: string, base: string, head: string, earlier: EarlierRound, config: ReviewConfig, models: ReviewModels, reviewed: ParsedDiff, lockfiles: LockfileDiff[],
+): Promise<FollowUpInputs> {
+  const earlierHead = (await runGit(repoRoot, ['rev-parse', '--verify', `${earlier.head}^{commit}`])).trim();
+  const earlierBase = (await runGit(repoRoot, ['merge-base', base, earlierHead])).trim();
+  const lockfilePaths = new Set(lockfiles.map(l => l.path));
+  const priorChange = filterDiff(parsePRDiff(await runGit(repoRoot, [...DIFF_ARGS, earlierBase, earlierHead])), config.exclude_paths, lockfilePaths).diff;
+  const sinceEarlier = filterRawDiff(await runGit(repoRoot, [...DIFF_ARGS, earlierHead, head]), config.exclude_paths, lockfilePaths);
+  const interRoundDiff = lockfilesLast(ownChangeSince(sinceEarlier, priorChange, reviewed), lockfiles);
+
+  const threads = earlier.findings.filter(f => f.thread);
+  const previousFindings: PreviousFinding[] = threads.map(f => ({
+    title: f.title, file: f.file, line: f.line, severity: f.severity, status: f.thread === 'open' ? 'open' : 'resolved', ...(f.thread === 'fixed' && { fixed: true }), threadId: f.id,
+    markerSlug: titleToSlug(f.title), description: f.description, suggestedFix: f.suggestedFix, howToFix: f.howToFix, ...(f.security && { isSecurity: true }),
+  }));
+  const open = threads.filter(f => f.thread === 'open');
+  const files = gitRepoFiles(repoRoot, head);
+  const contents = new Map<string, string>();
+  for (const path of new Set(open.map(f => f.file))) {
+    const content = await files.read(path);
+    if (content !== null) contents.set(path, content);
+  }
+  const openThreads: OpenThread[] = open.map(f => ({
+    threadId: f.id, title: f.title, file: f.file, line: f.line, severity: f.severity, description: f.description, suggestedFix: f.suggestedFix, howToFix: f.howToFix,
+    currentCode: extractCurrentCodeWindow(contents, f.file, f.line),
+  }));
+
+  const posted: Finding[] = earlier.findings.map(f => ({
+    severity: f.severity, title: f.title, file: f.file, line: f.line, description: f.description ?? '', reviewers: [],
+    ...(f.howToFix && { howToFix: f.howToFix }), ...(f.suggestedFix && { suggestedFix: f.suggestedFix }), ...(f.gradeIfConfirmed && { gradeIfConfirmed: f.gradeIfConfirmed }),
+    ...(f.security && { tags: [SECURITY_TAG] }), ...(f.thread && { threadId: f.id }),
+  }));
+  const blocks = posted.some(f => f.severity === 'blocker');
+  // A pull request round reads a thread as fixed from the earlier judge's `addressed` evaluation.
+  const threadEvaluations = threads.filter(f => f.thread === 'fixed').map(f => ({ threadId: f.id, status: 'addressed' as const, reason: 'Fixed by an earlier push.' }));
+  const result: ReviewResult = {
+    verdict: blocks ? 'REQUEST_CHANGES' : 'APPROVE', outcome: blocks ? 'ADDRESS_FIRST' : 'READY', summary: '', findings: posted, highlights: [], reviewComplete: true, agentNames: [],
+    ...(threadEvaluations.length > 0 && { threadEvaluations }),
+  };
+  const record = buildRoundContext({
+    prNumber: 0, commitSha: earlierHead, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: 'base', models, plannerEnabled: false,
+    recap: { previousFindings: [], priorRounds: [] }, priorRoundCount: 0, maxAutoRounds: 0, diff: priorChange, changeDigest: changeDigest(priorChange), excludedFiles: [],
+    openThreads: [], memoryLoadStatus: 'disabled',
+  }, result, { judgeDurationMs: 0 });
+  return { previousFindings, openThreads, priorRounds: [record], priorChange, interRoundDiff };
+}
+
 /**
  * Runs the review pipeline a pull request round runs on a local change, and returns the result with the round record.
- * Memory, prior rounds, linked issues and static signals stay off, since they all come from GitHub.
+ * Memory, linked issues and static signals stay off, since they all come from GitHub. Prior rounds come only from `earlier`.
  */
 export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview> {
   const { repoRoot, patch, providerInputs, signal } = input;
@@ -167,7 +262,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
   const base = patch === undefined ? (await runGit(repoRoot, ['merge-base', input.base, head])).trim() : head;
   const loaded = input.config ? { config: input.config, source: 'base' as const } : await loadLocalConfig(repoRoot, base, head, configPath, input.configOverrides);
   const { config } = loaded;
-  const raw = patch ?? await runGit(repoRoot, ['diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', base, head]);
+  const raw = patch ?? await runGit(repoRoot, [...DIFF_ARGS, base, head]);
   const { fullDiff, diff, excludedFiles, rawDiff } = reviewableDiff(raw, config.exclude_paths);
   // A patch applies to `head`, so its lockfiles are read before the change, and a commit range's after it.
   const lockfiles = await readLocalLockfiles(repoRoot, head, fullDiff, patch === undefined ? 'head' : 'base');
@@ -179,6 +274,9 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
   const repoContext = await buildRepoContext(gitRepoFiles(repoRoot, base), diff.files.map(f => f.path));
   const title = input.title ?? (await runGit(repoRoot, ['log', '-1', '--format=%s', head])).trim();
   const hasTools = [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])].some(c => c.repoTools);
+  const followUp = input.earlier && patch === undefined
+    ? await followUpInputs(repoRoot, base, head, input.earlier, config, models, withLockfiles(diff, lockfiles), lockfiles)
+    : undefined;
 
   const startTime = Date.now();
   let plannerDurationMs: number | undefined;
@@ -203,6 +301,10 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       excludedPaths: excludedFiles.map(f => f.path),
       lockfiles,
       signal,
+      ...(followUp && {
+        isFollowUp: followUp.previousFindings.length > 0, openThreads: followUp.openThreads, previousFindings: followUp.previousFindings,
+        priorRounds: followUp.priorRounds, interRoundDiff: followUp.interRoundDiff,
+      }),
       onProgress: (event) => {
         if (event.plannerDurationMs !== undefined) plannerDurationMs = event.plannerDurationMs;
         if (event.phase === 'reviewed') reviewEndTime = Date.now();
@@ -211,12 +313,13 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
     });
     if (result.reviewComplete) {
       addCodeContext(result.findings, withLockfiles(diff, lockfiles));
-      tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), undefined);
+      tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), followUp?.priorChange, followUp?.interRoundDiff ? parsePRDiff(followUp.interRoundDiff) : undefined);
     }
     const context = buildRoundContext({
       prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: loaded.source,
-      models, plannerEnabled: !!clients.planner, recap: { previousFindings: [], priorRounds: [] }, priorRoundCount: 0, maxAutoRounds: 0,
-      diff, changeDigest: changeDigest(fullDiff), excludedFiles, openThreads: [], memoryLoadStatus: 'disabled',
+      models, plannerEnabled: !!clients.planner, recap: { previousFindings: followUp?.previousFindings ?? [], priorRounds: followUp?.priorRounds ?? [] },
+      priorRoundCount: followUp?.priorRounds.length ?? 0, maxAutoRounds: 0, diff, changeDigest: changeDigest(fullDiff), excludedFiles,
+      openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled',
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
     return { result, context, base, head, approvalHeld: configFailed(loaded.source) ? 'config' : false };
   } finally {

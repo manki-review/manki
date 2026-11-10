@@ -1,0 +1,93 @@
+id: rdc-1102-r2
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1102, round 2 of the replay fork PR xdustinface/rust-dashcore#209, after one fix commit per round-1 blocker
+base: 2322ef8b4b1e75a8c4adff7e80ef6b42d63a21a1
+head: 22b3f0fa9e2616bf4fd737d8bf62d0f2a76d7fc6
+title: "fix(dash-spv): follow the network onto a branch that replaces stored blocks"
+body: |
+  When the network reorganized onto a branch that replaces blocks the client already stored, the client stayed on the old branch for good. The headers of the new branch do not connect to any segment of the header pipeline, so they were dropped with a "no segment matched" warning, every time.
+
+  The block headers manager now looks up where such headers branch off: past the headers it already stores, if the parent of the first unknown one is stored below the tip, it emits `SyncEvent::ForkDetected` with that height. The sync loop then hands it to `handle_fork()`, which, under the lifecycle lock, stops the client, truncates the stored headers, filter headers, filters and blocks above the fork, and runs the client again, so it syncs onto the branch the network follows. To run again without releasing the lock, `run()` now delegates to `run_locked()`.
+
+  The wallet is not rewound: its synced height only moves forward, so the blocks of the new branch below its old height are not rescanned, and transactions of the dropped blocks stay as they were.
+
+  `test_sync_follows_reorg` makes dashd replace its last 3 blocks with a branch of 5 and requires the client to end on the new tip. Without this change it times out with the client still on the old branch.
+key_version: 1
+prior_round:
+  head: 630a8275eec7f34ea4382211b773ec4e95474764
+  findings:
+    - id: P1
+      severity: blocker
+      title: Unvalidated headers from any peer can make the client delete its stored chain
+      file: dash-spv/src/sync/block_headers/manager.rs
+      line: 142
+      posted: thread
+      state: open
+      description: "`fork_height` only looks up `prev_blockhash` in storage, so a header with no valid PoW whose parent is any stored block below the tip emits `ForkDetected`. `handle_fork` then truncates headers, filter headers, filters and blocks to that height and restarts the client. A malicious peer can repeat this with one bogus header, and so force a resync from the lowest stored height or keep the client from ever staying synced (DoS)."
+      how_to_fix: Before emitting `ForkDetected`, validate the unmatched headers with `BlockHeaderValidator` (continuity and PoW). Require the branch to have more work than the stored chain, or at least to reach past the tip. Reject forks that `CheckpointManager::should_reject_fork` rejects and forks below the last c...
+      security: true
+    - id: P2
+      severity: blocker
+      title: A failed `handle_fork` leaves the client stopped with half-truncated storage and no error callback
+      file: dash-spv/src/client/lifecycle.rs
+      line: 275
+      posted: thread
+      state: open
+      description: The four `truncate_above` calls run one after another with `?`, and the loop is already taken and stopped. If a later one fails, for example a filter store whose start height is above `fork_height` (`SegmentCache::truncate_above` returns `InvalidArgument`), the block headers are already cut but the filter headers, filters and blocks are not.
+      how_to_fix: Report failures through `on_error` for every handler. Treat a failed truncation as fatal for the stored state, for example by clearing the dependent stores, or check that `fork_height` is not below each store's start height before truncating anything.
+    - id: P3
+      severity: blocker
+      title: Fork recovery keeps the masternode engine, best ChainLock and wallet scan height of the dropped branch
+      file: dash-spv/src/client/lifecycle.rs
+      line: 276
+      posted: thread
+      state: open
+      description: Only the header, filter header, filter and block stores are truncated. `self.masternode_engine` is shared across runs and still holds lists above the fork, so `MasternodesManager::new` resumes from the highest old-branch height and never rebuilds lists for the new branch. `FiltersManager` starts scanning at the wallet's `synced_height + 1`, so new-branch blocks below the old height are never matched, and transactions from the dropped blocks stay confirmed.
+      how_to_fix: When recovering from a fork, remove masternode lists above `fork_height` from the engine and from masternode storage, and clear a stored best ChainLock that is above the fork. Rewind the wallet's synced height to `fork_height` so the new branch gets scanned.
+    - id: P4
+      severity: suggestion
+      title: FFI consumers are not told that the stored chain above the fork was dropped
+      file: dash-spv-ffi/src/callbacks.rs
+      line: 464
+      posted: thread
+      state: open
+      description: "`SyncEvent::ForkDetected` is matched and discarded, and there is no callback for it. A C or Swift consumer that mirrors block-processed records or header heights cannot learn that blocks above `fork_height` were replaced, so its mirror keeps the dropped blocks."
+      how_to_fix: 'Add an `on_fork_detected: Option<extern "C" fn(fork_height: u32, user_data: *mut c_void)>` field to `FFISyncEventCallbacks`, set it to `None` in `Default`, and dispatch to it here. The new field changes the struct layout, so call it out as a C ABI change.'
+must_resolve: [P1, P2]  # fixed by 0d681139c and 2c91e6f53
+must_keep_open:
+  - id: P3
+    severity: warning
+    mechanism: "Fork recovery now rebuilds the masternode engine and the best ChainLock and rewinds the wallet's synced height, but `rewind_synced_height` only lowers `synced_height`. Records and UTXOs of transactions in the dropped blocks stay confirmed, so balances and confirmations stay stale."
+    locations: ["key-wallet-manager/src/process_block.rs", "rewind_synced_height", "dash-spv/src/client/lifecycle.rs", "handle_fork"]
+must_not_repeat: [P4]
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "The header manager holds one fork branch. A header that does not extend the held branch but has a stored parent below the tip replaces `fork_branch`, and `BlockHeaderValidator` checks proof of work only against the header's own `bits`, so a peer can evict a real competing branch almost for free. An honest stale sibling does the same, and the client stops following the network's branch."
+    locations: ["dash-spv/src/sync/block_headers/manager.rs", "fork_branch", "BlockHeaderValidator"]
+    source: "Manki v7.3.2 round 2, checked in the replay scorecard"
+  - id: K2
+    severity: warning
+    mechanism: "A peer's invalid fork header makes `validate(new_headers)?` in the fork path return an error, which the sync manager turns into `SyncEvent::ManagerError`, so one bad peer message degrades sync."
+    locations: ["dash-spv/src/sync/block_headers/manager.rs", "dash-spv/src/sync/sync_manager.rs", "ManagerError"]
+    source: "Manki v7.3.2 round 2, checked in the replay scorecard"
+  - id: K3
+    severity: warning
+    mechanism: "The fork-event receiver in `sync_coordinator.rs` only handles `Ok(ForkDetected)`. A `Lagged` error is ignored, so fork recovery can be skipped silently. Acknowledged and deferred upstream."
+    locations: ["dash-spv/src/client/sync_coordinator.rs", "Lagged", "ForkDetected"]
+  - id: K4
+    severity: warning
+    mechanism: "`rewind_synced_height` emits no event, unlike `update_wallet_synced_height`, which emits `SyncHeightAdvanced`. A host that persists the synced height from that event keeps the higher height after a fork if it stops before the rescan catches up."
+    locations: ["key-wallet-manager/src/process_block.rs", "rewind_synced_height", "update_wallet_synced_height", "SyncHeightAdvanced"]
+    source: "Manki v7.3.2 round 2, checked in the replay scorecard"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "The ChainLock guard on a fork is skipped when the locked block is not stored, since `locked.is_some_and(..)` is false then."
+    locations: ["dash-spv/src/sync/block_headers/manager.rs", "is_some_and"]
+    source: "Manki v7.3.2 round 2"
+  - id: N2
+    severity: warning
+    mechanism: "A concurrent `run()` races `handle_fork` and drops the fork recovery. Upstream found it only at a later head."
+    locations: ["dash-spv/src/client/lifecycle.rs", "handle_fork", "run_locked"]
+    source: "Manki v7.1.1 review and owner /check review"

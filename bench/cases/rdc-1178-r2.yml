@@ -1,0 +1,55 @@
+id: rdc-1178-r2
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1178, round 2 of the replay fork PR xdustinface/rust-dashcore#208, after one fix commit per round-1 blocker
+base: 6b7bde74ee33ff85574cd44eaa3efed719ca84cc
+head: 1674380485a2a04e76f3adffabf8945daf1b379d
+title: "fix(dash-spv): make stop wait for the tasks the sync loop detaches"
+body: |
+  The sync loop runs fork recovery (`handle_fork`) and the stop of a failed loop (`stop_failed`) in detached tasks. Each holds a client clone, and with it the storage and its lock file. `stop()` didn't wait for them, so it could return while they still held the lock (upstream platform issue 5381).
+
+  - Those tasks now go into a `JoinSet` on the client.
+  - `stop()` joins them after releasing the `sync_loop` lock, which they take themselves. With the loop already taken, they return without acting.
+
+  Closes upstream issue 1171
+key_version: 1
+prior_round:
+  head: 56106419105f25aa2ffba02dee7eef64c39758c5
+  findings:
+    - id: P1
+      severity: blocker
+      title: "`join_detached_tasks` holds the `detached_tasks` lock while joining, against its own doc comment, and can deadlock"
+      file: dash-spv/src/client/lifecycle.rs
+      line: 253
+      posted: thread
+      state: open
+      description: "The doc comment says the set is taken out of its lock while joining, so a stopping sync loop can still add to it. The code keeps the `MutexGuard` alive across every `join_next().await`. A sync loop task that needs `detached_tasks.lock()` to spawn `stop_failed` or `handle_fork` blocks until the whole join ends. A joined task that waits on that blocked loop then never finishes: `run()` or a `handle_fork` task calls `stop_locked`, which awaits `task.await` on the blocked loop, while `stop()` waits ..."
+      how_to_fix: Take the set out of the lock with `std::mem::take(&mut *guard)`, drop the guard, join the local set, then loop again until the shared set is empty. This is what the doc comment describes.
+      suggested_fix: let mut tasks = std::mem::take(&mut *self.detached_tasks.lock().await);
+    - id: P2
+      severity: suggestion
+      title: The new test injects a task into the internal `detached_tasks` set and never exercises the fork or failure paths the fix changes
+      file: dash-spv/src/client/mod.rs
+      line: 142
+      posted: thread
+      state: open
+      description: The test spawns its own task straight into the private `detached_tasks` field instead of reaching `handle_fork` or `stop_failed` through the client. Reverting both `sync_coordinator.rs` changes back to `tokio::spawn` still lets the test pass, so it does not guard the issue being fixed (`stop` returning while the fork recovery or `stop_failed` task still holds storage). It also cannot catch the lock-held-while-joining deadlock above.
+      how_to_fix: Drive the real paths. Emit a `SyncEvent::ForkDetected` (or force an event-monitor failure) through the mock network or the sync coordinator, call `stop`, then assert `Arc::strong_count(&client.storage) == 1`. That test fails when `sync_coordinator.rs:153` or `:195` goes back to `tokio::spawn`.
+must_resolve: [P1]  # fixed by 167438048
+must_not_repeat: [P2]
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`join_detached_tasks` now takes the set out of `detached_tasks` with `mem::take` before joining. A second concurrent `stop()` or `clear_storage()` then finds the set empty and returns at once while the first caller still joins, so it can return while a detached task still holds the storage."
+    locations: ["dash-spv/src/client/lifecycle.rs", "dash-spv/src/client/core.rs", "join_detached_tasks", "detached_tasks"]
+    source: "Manki v7.3.2 round 2, checked in the replay scorecard"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "Finished detached tasks pile up in the `JoinSet` until `stop()` drains it."
+    locations: ["dash-spv/src/client/sync_coordinator.rs", "dash-spv/src/client/core.rs", "detached_tasks"]
+    source: "Manki v7.3.2 round 2"
+  - id: N2
+    severity: warning
+    mechanism: "A detached `stop_failed` or `handle_fork` still acts on whichever loop sits in `sync_loop`, so a task from one loop can stop or recover a later loop, with the wrong fork height. It needs a concurrent `run()` during `stop()` and a quick failure of the new loop. Upstream fixed it with per-loop ids."
+    locations: ["dash-spv/src/client/lifecycle.rs", "dash-spv/src/client/sync_coordinator.rs", "handle_fork", "stop_failed", "sync_loop"]
+    fix: "9d0d4d5a9"

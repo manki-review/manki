@@ -1,0 +1,111 @@
+id: rdc-1295-r2
+repo: xdustinface/rust-dashcore
+source: rust-dashcore upstream PR 1295, round 2 of the replay fork PR xdustinface/rust-dashcore#210, after one fix commit per round-1 blocker
+base: d9c30a7cb2c6f305cd528833193497500160aa1c
+head: f3925ee78aa035f8a8e95bd587c5c65efc0711c4
+title: "fix(key-wallet): keep a funds account's output out of the other funds accounts"
+body: |
+  ## Problem
+
+  `ManagedWalletInfo::update_balance` adds up the balances of the funds accounts. If two funds accounts hold the same outpoint, the wallet counts it twice.
+
+  A host can create that state. For example, a restore loads an output paid to a CoinJoin address into BIP44. A rescan then records the transaction for the CoinJoin account, which inserts the same outpoint again.
+
+  ## Fix
+
+  After each account records or confirms a transaction (`WalletTransactionChecker::check_core_transaction`, on both the block/mempool path and the InstantSend path), `ManagedAccountCollection::settle_outputs_held_elsewhere` runs for that account. It removes from the other accounts of `all_funding_accounts` (BIP44, BIP32, CoinJoin, DashPay receiving) any output of the transaction that:
+  - pays one of this account's own addresses, and
+  - this account holds.
+
+  The removed copy's InstantSend-lock, trusted and locked flags carry over to the owner's copy. A lock set on either copy stays. A DashPay external account holds a contact's coins, so it takes nothing from the wallet's own accounts.
+
+  Fixes upstream issue 1294.
+
+  Left open:
+  - **Only the UTXO moves.** The other account's reservations, spent-output tracking and any transaction record for that outpoint stay where they are.
+  - **A host-written duplicate settles only when its transaction is next processed** (a rescan, block or InstantSend lock). There is no wallet-wide sweep.
+  - **The move is silent.** No record or event reports it, so a host that restores per-account UTXOs from its own storage can bring the duplicate back on the next restore.
+
+  ## Changelog
+
+  - key-wallet: an outpoint held by a funds account that does not own its address moves to the owning account when that account records the transaction, so the wallet balance counts it once.
+
+  ## Tests
+
+  `an_output_held_by_another_funds_account_moves_to_its_owner`, with two cases. In both, a transaction pays BIP44 and pays X to a CoinJoin address, and BIP44 holds a restored copy of X.
+  - **rescan:** the transaction is recorded in a block. Afterwards only the CoinJoin account holds X, X is confirmed, and the balance counts it once.
+  - **after a locked mempool copy:** the CoinJoin account saw the transaction in the mempool and its copy of X is locked. After the block, the lock stays.
+
+  Both cases fail on `dev`: BIP44 still holds X, and the balance is 1,300,000 instead of 800,000.
+
+  `a_payment_the_reverse_external_chain_also_matches_stays_ours`: a wallet holding both identities of a friendship derives the same addresses for its DashPay receiving chain and for the reverse external chain. A payment to one of them stays in the receiving account and counts in the balance.
+key_version: 1
+prior_round:
+  head: 63a021e6c52d7be694e779a0b3ba403e7ee7a881
+  findings:
+    - id: P1
+      severity: suggestion
+      title: Flag carry-over from the removed copy has no test that fails when it is reverted
+      file: key-wallet/src/managed_account/managed_account_collection.rs
+      line: 1100
+      posted: thread
+      state: open
+      description: The three lines `utxo.is_instantlocked |= prior.is_instantlocked`, `utxo.is_trusted |= prior.is_trusted` and `utxo.is_locked |= prior.is_locked` are the only code that moves flags from the removed copy to the owner's copy. The new test restores a plain `Utxo::new(...)` copy with no flags, and the lock it checks sits on the owner's copy. `update_utxos` already keeps the owner's own lock, so deleting all three lines leaves both test cases green.
+      how_to_fix: Add a case where the restored copy in BIP44 has `is_instantlocked`, `is_trusted` and `is_locked` set and the owner's copy has none. Assert that the owner's copy ends up with all three.
+    - id: P2
+      severity: blocker
+      title: Moving a duplicate UTXO does not set `state_modified` on a rescan of an already-confirmed record
+      file: key-wallet/src/transaction_checking/wallet_checker.rs
+      line: 452
+      posted: thread
+      state: open
+      description: "`settle_outputs_held_elsewhere` removes a UTXO from an account, but the result of `check_core_transaction` is not told. When the rescanned transaction is already recorded and confirmed, `state_modified` can stay false. A host that persists only when `state_modified` is true then keeps the duplicate and restores it on the next load."
+      how_to_fix: Make `settle_outputs_held_elsewhere` return whether it removed anything. Set `result.state_modified = true` in both call sites when it did.
+    - id: P3
+      severity: warning
+      title: The removed copy is reported nowhere, so a host that stores UTXOs per account brings the duplicate back on every restart
+      file: key-wallet/src/managed_account/managed_account_collection.rs
+      line: 1092
+      posted: thread
+      state: open
+      description: The UTXO is taken out of the other account's `utxos` and dropped. `TransactionCheckResult` has no field naming it, so a host cannot update its own storage. After a restart the host reloads the same copy into BIP44, and the next settle runs only when that transaction is processed again. For a confirmed transaction that means the next rescan, so the wallet balance stays double counted until then.
+      how_to_fix: Return the moved outpoints and the account each was removed from, and add them to `TransactionCheckResult` so hosts can delete the stored copy. The PR description lists this as left open, but the fix does not hold across a restart without it.
+    - id: P4
+      severity: warning
+      title: Outpoint held in `spent_before_funded` is skipped, so a copy in another account stays counted
+      file: key-wallet/src/managed_account/managed_account_collection.rs
+      line: 1083
+      # Not in the round record: the round-1 judge notes name the doubt that kept it below blocker.
+      grade_if_confirmed: blocker
+      posted: thread
+      state: open
+      description: "`owner` can hold an output in `spent_before_funded` instead of `utxos`, and the change does not handle that. The `.filter(|outpoint| owner_account.utxos.contains_key(outpoint))` check drops such an output from `held`, so a host-placed copy in another funding account is never removed. That copy is a spent coin and stays in the other account's `utxos` and in the wallet balance. Only the unspent case is deduplicated."
+      how_to_fix: Also treat an outpoint as held when `owner_account.spent_before_funded` contains it. Remove it from the other accounts' `utxos` in that case too, and skip the flag carry-over because `owner` has no live `utxos` entry.
+    - id: P5
+      severity: warning
+      title: Copy of an output held in another account's `unsettled_spends` is not settled, so a fork can count the coin twice
+      file: key-wallet/src/managed_account/managed_account_collection.rs
+      line: 1093
+      posted: thread
+      state: open
+      description: Yes, `outpoint` can sit in `unsettled_spends` instead of `utxos`, and the change does not handle it. The change only removes copies from other accounts' `utxos`. A copy that another account moved to `unsettled_spends` when it processed a spend stays there while `owner` holds the coin in `utxos`. If a fork drops that spend, `truncate_above` puts the copy back into the other account's `utxos`, so the wallet counts the coin in two accounts again.
+      how_to_fix: Also drop the held outpoints from the other accounts' `unsettled_spends` entries in the same pass, through an accessor on `ManagedCoreFundsAccount`. Alternatively, skip restoring an outpoint in `truncate_above` when another funding account already holds it.
+must_resolve: [P2]  # fixed by f3925ee78
+must_not_repeat: [P1, P3, P5]
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "The owner check in `settle_outputs_held_elsewhere` reads only the owner's `utxos`. When the owning account holds the output in `spent_before_funded`, in `claim_guarded_outputs` or only in `spent_outpoints`, the copy in another funding account stays spendable and counted in the balance."
+    locations: ["key-wallet/src/managed_account/managed_account_collection.rs", "settle_outputs_held_elsewhere", "spent_before_funded", "claim_guarded_outputs", "spent_outpoints"]
+    fix: "095f7f208"
+  - id: K2
+    severity: warning
+    mechanism: "A reservation on the moved outpoint stays in the other account, since `reservations` is kept per account, so a transaction built while it is reserved can be rejected."
+    locations: ["key-wallet/src/managed_account/managed_account_collection.rs", "settle_outputs_held_elsewhere", "reservations"]
+    source: "Manki v7.3.2 round 2, checked in the replay scorecard"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "The settle call on the InstantSend path of `check_core_transaction` has no test. The tests use only block and mempool contexts."
+    locations: ["key-wallet/src/transaction_checking/wallet_checker.rs", "check_core_transaction"]
+    source: "Manki v7.3.2 round 2"

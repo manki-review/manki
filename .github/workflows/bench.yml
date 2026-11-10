@@ -119,13 +119,16 @@ jobs:
           CASE_REPO: ${{ matrix.case.repo }}
           CASE_BASE: ${{ matrix.case.base }}
           CASE_HEAD: ${{ matrix.case.head }}
-        # A full fetch of both commits and their history. The review fetches its workspace from this repository, which a
-        # blobless or shallow clone cannot serve. The refs keep both commits fetchable from it by name.
+          CASE_PRIOR: ${{ matrix.case.prior }}
+        # A full fetch of the commits and their history: base, head and, for a follow-up case, the earlier round's head.
+        # The review fetches its workspace from this repository, which a blobless or shallow clone cannot serve. The refs
+        # keep the commits fetchable from it by name.
         run: |
           git init -q case-repo
-          git -C case-repo fetch -q --no-tags "https://github.com/$CASE_REPO.git" "$CASE_BASE" "$CASE_HEAD"
+          git -C case-repo fetch -q --no-tags "https://github.com/$CASE_REPO.git" "$CASE_BASE" "$CASE_HEAD" ${CASE_PRIOR:+"$CASE_PRIOR"}
           git -C case-repo update-ref refs/bench/base "$CASE_BASE"
           git -C case-repo update-ref refs/bench/head "$CASE_HEAD"
+          [ -z "$CASE_PRIOR" ] || git -C case-repo update-ref refs/bench/prior "$CASE_PRIOR"
       - name: Review and score the case
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
