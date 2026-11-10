@@ -1801,7 +1801,7 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
   return [...kept.values()];
 }
 
-function findingKey(f: Finding): string {
+export function findingKey(f: Finding): string {
   return `${f.file}:${f.line}:${f.title}`;
 }
 
