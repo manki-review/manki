@@ -693,6 +693,8 @@ describe('onlyCommitAdding', () => {
     expect(onlyCommitAdding(commits, [at('src/retry.ts', 17, 400)])).toBeUndefined();
     expect(onlyCommitAdding(commits, [at('src/retry.ts', 2 ** 60)])).toBeUndefined();
     expect(onlyCommitAdding(commits, [at('src/retry.ts', 17), at('src/unchanged.ts', 3)])).toBeUndefined();
+    // The cap counts the lines of every cited range together.
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 1, 150), at('src/retry.ts', 151, 300)])).toBeUndefined();
   });
 
   it('counts a removal between two cited lines as writing them, but not one above the first', () => {
@@ -716,8 +718,25 @@ describe('onlyCommitAdding', () => {
     expect(onlyCommitAdding([commits[1]], [at('index.ts', 1)])).toBe('c2');
     // A thread on a root file keeps a bare name to itself, even when only a deeper file with that name changed.
     expect(onlyCommitAdding([commits[1]], [at('index.ts', 1)], 'index.ts')).toBeUndefined();
+    // The thread's own file wins even over a changed root file with the bare name.
+    const rootIndex = commit('r1', { path: 'index.ts', changeType: 'modified', hunks: [hunk(1, 1, ['-r', '+R'])] });
+    expect(onlyCommitAdding([commits[0], rootIndex], [at('index.ts', 1)], 'src/a/index.ts')).toBe('c1');
     // A path with a directory is taken as it is, never as the end of a longer changed path.
     expect(onlyCommitAdding(commits, [at('a/index.ts', 1)])).toBeUndefined();
+  });
+
+  it('is never certain past a commit that changed a cited file without lines to read, such as a pure rename', () => {
+    const rename = { ...commit('p1'), diff: { files: [], totalAdditions: 0, totalDeletions: 0, binarySkipped: [{ path: 'src/new.ts', header: JSON.stringify(['src/old.ts', 'src/new.ts', null, null, null]) }] } };
+    const edits = [
+      commit('x1', { path: 'src/old.ts', changeType: 'modified', hunks: [hunk(2, 2, ['-x', '+X'])] }),
+      rename,
+      commit('x2', { path: 'src/new.ts', changeType: 'modified', hunks: [hunk(5, 5, ['-y', '+Y'])] }),
+    ];
+    expect(onlyCommitAdding(edits, [at('src/new.ts', 2)])).toBeUndefined();
+    // A line a later commit wrote needs no walk past the rename.
+    expect(onlyCommitAdding(edits, [at('src/new.ts', 5)])).toBe('x2');
+    expect(onlyCommitChanging(edits.slice(0, 2), 'src/old.ts')).toBeUndefined();
+    expect(onlyCommitChanging([edits[0]], 'src/old.ts')).toBe('x1');
   });
 
   it('names a commit for a whole file only when it is the only one that changed the file', () => {

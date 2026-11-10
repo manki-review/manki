@@ -219,38 +219,44 @@ export function citedRanges(text: string): LineRange[] {
 /** A commit with its own diff against its parent. */
 type CommitDiff = { sha: string; diff: ParsedDiff };
 
-/** A cited range wider than this names no one place, so no commit is certain for it. */
-const MAX_CERTAIN_SPAN = 200;
+/** Cited lines past this many name no one place, so no commit is certain for them. */
+const MAX_CERTAIN_LINES = 200;
 
 /**
  * Returns the sha of the only one of `commits`, oldest first, that added a line of `ranges` as the lines stand at the
  * newest commit. Each line keeps the commit that last added it, since no earlier commit wrote that line. A line next to
- * a change does not count, nor a removal right above the first line, but a removal between two cited lines does. Returns none when no commit or several did, when a range names a file no
- * commit changed or a line past the safe integers, or when it is wider than `MAX_CERTAIN_SPAN`. A range may name its
- * file without its directory, such as `retry.ts`. Such a name means `ownPath` when that is or ends with it, else the one
- * changed file that does, and no commit is certain when several do.
+ * a change does not count. A removal counts only between two cited lines. Returns none when no commit or several did,
+ * when a range names a file no commit changed or a line past the safe integers, when the ranges hold more than
+ * `MAX_CERTAIN_LINES` lines, or when a commit changed a cited file without lines to read. A range may name its file
+ * without its directory, such as `retry.ts`. Such a name means `ownPath` when that is or ends with it, else the file
+ * itself or the one changed file ending with it, and no commit is certain when several do.
  */
 export function onlyCommitAdding(commits: CommitDiff[], ranges: LineRange[], ownPath?: string): string | undefined {
   const paths = new Set(commits.flatMap(c => c.diff.files.map(f => f.path)));
   const adding = new Set<string>();
+  // A line number past the safe integers would stall the walk.
+  if (!ranges.every(r => Number.isSafeInteger(r.end)) || ranges.reduce((n, r) => n + r.end - r.start + 1, 0) > MAX_CERTAIN_LINES) return undefined;
   for (const range of ranges) {
     const path = resolvePath(range.file, paths, ownPath);
-    // A line number past the safe integers would stall the walk, and a cited file no commit changed leaves the fix open.
-    if (path === undefined || !paths.has(path) || !Number.isSafeInteger(range.end) || range.end - range.start >= MAX_CERTAIN_SPAN) return undefined;
+    // A cited file no commit changed leaves the fix open.
+    if (path === undefined || !paths.has(path)) return undefined;
     for (let line = range.start; line <= range.end; line++) {
-      for (const sha of commitsWriting(commits, path, line, line > range.start)) adding.add(sha);
+      const writing = commitsWriting(commits, path, line, line > range.start);
+      if (!writing) return undefined;
+      writing.forEach(sha => adding.add(sha));
     }
   }
   return adding.size === 1 ? [...adding][0] : undefined;
 }
 
 /**
- * Returns the path `name` names: itself when it has a directory or is among `paths`, else `ownPath` when it is or ends
- * with `name`, else the one of `paths` ending with it. Returns none when several end with it.
+ * Returns the path `name` names: itself when it has a directory, else `ownPath` when it is or ends with `name`, else
+ * `name` itself or the one of `paths` ending with it. Returns none when several end with it.
  */
 function resolvePath(name: string, paths: ReadonlySet<string>, ownPath: string | undefined): string | undefined {
-  if (paths.has(name) || name.includes('/')) return name;
+  if (name.includes('/')) return name;
   if (ownPath === name || ownPath?.endsWith(`/${name}`)) return ownPath;
+  if (paths.has(name)) return name;
   const matches = [...paths].filter(p => p.endsWith(`/${name}`));
   if (matches.length <= 1) return matches[0] ?? name;
   return ownPath && matches.includes(ownPath) ? ownPath : undefined;
@@ -258,14 +264,16 @@ function resolvePath(name: string, paths: ReadonlySet<string>, ownPath: string |
 
 /**
  * Returns the shas of the commits that wrote line `line` of `path`, counted at the newest commit: the latest that added
- * it, and when `inside` a cited range, each later one that removed lines right above it.
+ * it, and when `inside` a cited range, each later one that removed lines right above it. Returns none when a commit
+ * changed the file without lines to read, such as a pure rename, since the walk cannot follow it.
  */
-function commitsWriting(commits: CommitDiff[], path: string, line: number, inside: boolean): string[] {
+function commitsWriting(commits: CommitDiff[], path: string, line: number, inside: boolean): string[] | undefined {
   const writing: string[] = [];
   let at: { path: string; line: number } | undefined = { path, line };
   for (let i = commits.length - 1; i >= 0 && at; i--) {
     const { path: name, line: current }: { path: string; line: number } = at;
     const file: DiffFile | undefined = commits[i].diff.files.find(f => f.path === name);
+    if (!file && unreadable(commits[i], name)) return undefined;
     if (!file) continue;
     const { before, removedAbove } = lineBefore(file.hunks, current);
     if (inside && removedAbove) writing.push(commits[i].sha);
@@ -283,12 +291,18 @@ export function onlyCommitChanging(commits: CommitDiff[], path: string): string 
   const changing: string[] = [];
   let name = path;
   for (const commit of commits) {
+    if (unreadable(commit, name)) return undefined;
     const file = commit.diff.files.find(f => (f.oldPath ?? f.path) === name);
     if (!file) continue;
     changing.push(commit.sha);
     name = file.path;
   }
   return changing.length === 1 ? changing[0] : undefined;
+}
+
+/** Whether `commit` changed the file at `path`, before or after, without lines Manki could read, as a pure rename does. */
+function unreadable(commit: CommitDiff, path: string): boolean {
+  return (commit.diff.binarySkipped ?? []).some(b => b.path === path || (JSON.parse(b.header) as unknown[])[0] === path);
 }
 
 /**
