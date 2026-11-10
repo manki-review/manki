@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'f
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { BenchCase, buildReport, candidateFindings, formatBenchSummary, formatGate, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, buildReport, candidateFindings, formatBenchSummary, formatGate, formatUnmatchedBlockers, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
 import type { Finding, FindingSeverity, RoundContext, RoundOutcome } from './types';
@@ -364,6 +364,17 @@ describe('scoreRun on a follow-up case', () => {
     expect(await scoreRun(followUp, review(false), matcher)).not.toHaveProperty('followUp');
     const reworded = await scoreRun(followUp, review(), async item => (item.id === 'P2' ? { verdict: 'PARTIAL', findings: [0], reason: 'other mechanism' } : decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' }));
     expect(reworded).toMatchObject({ falseBlockers: 1, extraFindings: 1, followUp: { repeats: 1 } });
+    const incomplete = await scoreRun(followUp, review(false), matcher);
+    const listed = (benchCase: BenchCase) => formatUnmatchedBlockers(buildReport(
+      { startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a' },
+      [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [score, reworded, incomplete] }] }],
+    ).variants);
+    expect(listed(followUp)).toBe([
+      '### Unmatched blockers on tuning cases', '',
+      "Blockers that match no key item. Add each real defect to its case's `must_catch` and bump the case's `key_version`.", '',
+      '```text', 'base demo-1 key v2 run 2: src/conn.rs:1: Write has no timeout', '```', '',
+    ].join('\n'));
+    expect(listed({ ...followUp, set: 'holdout' })).toBe('');
 
     const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase: followUp, runs: [score] }] }]);
     expect(report.variants[0].cases[0].items.slice(3)).toEqual([
@@ -603,12 +614,15 @@ describe('mergeReports and gateReports', () => {
       variant: 'base', verdict: 'PASS', shared: ['demo-1', 'demo-2'],
       baseline: { runs: 1, found: 2, falseBlockers: 0 }, candidate: { runs: 1, found: 2, falseBlockers: 0 },
     });
-    expect(await gate('blocker', 'blocker', 1)).toMatchObject({ verdict: 'FAIL', reason: 'False blockers rose from 0 to 1 per run.' });
+    expect(await gate('blocker', 'blocker', 1)).toMatchObject({
+      verdict: 'RERUN', reason: 'False blockers rose from 0 to 1 per run, within the margin of 1. Run the candidate once more and decide on the mean of both runs.',
+    });
+    expect(await gate('blocker', 'blocker', 2)).toMatchObject({ verdict: 'FAIL', reason: 'False blockers rose from 0 to 2 per run, by more than 1.' });
     const followUps = async (scores: Partial<NonNullable<Run['followUp']>>) => report([
       [first, [{ ...await run(first, 'blocker'), followUp: { resolved: [], resolvedRight: 0, resolvedWrong: 0, repeats: 0, ...scores } }]], [second, [await run(second, 'blocker')]],
     ]);
-    expect(gateReports([await followUps({})], [await followUps({ resolvedWrong: 1, repeats: 2 })])[0]).toMatchObject({
-      verdict: 'FAIL', reason: 'Earlier threads resolved that the key keeps open rose from 0 to 1 per run. Earlier findings posted again rose from 0 to 2 per run.',
+    expect(gateReports([await followUps({})], [await followUps({ resolvedWrong: 2, repeats: 2 })])[0]).toMatchObject({
+      verdict: 'FAIL', reason: 'Earlier threads resolved that the key keeps open rose from 0 to 2, and earlier findings posted again rose from 0 to 2 per run, by more than 1.',
     });
     const firstRoundOnOneSide = gateReports([baseline], [await followUps({ resolvedWrong: 1 })])[0];
     expect(firstRoundOnOneSide).toMatchObject({ verdict: 'PASS', shared: ['demo-2'], unlike: ['demo-1'] });
@@ -616,17 +630,19 @@ describe('mergeReports and gateReports', () => {
     const onlyUnlike = report([[first, [{ ...await run(first, 'blocker'), followUp: { resolved: [], resolvedRight: 0, resolvedWrong: 0, repeats: 0 } }]]]);
     expect(gateReports([report([[first, [await run(first, 'blocker')]]])], [onlyUnlike])[0]).toMatchObject({ verdict: 'NO DECISION', shared: [], unlike: ['demo-1'] });
     expect(gateReports([await followUps({ resolvedRight: 1 })], [await followUps({ resolvedRight: 0 })])[0]).toMatchObject({
-      verdict: 'RERUN', reason: 'Earlier threads resolved as the key says fell by 1, within the margin of 1. Run the candidate once more and decide on the mean of both runs.',
+      verdict: 'RERUN', reason: 'Earlier threads resolved as the key says fell from 1 to 0 per run, within the margin of 1. Run the candidate once more and decide on the mean of both runs.',
     });
     expect(await gate('blocker', 'warning')).toMatchObject({ verdict: 'RERUN', candidate: { found: 1 } });
-    expect(await gate()).toMatchObject({ verdict: 'FAIL', reason: "Must-catch items found at the key's grade fell by 2, more than 1." });
+    expect(await gate(undefined, undefined, 1)).toMatchObject({ verdict: 'FAIL', reason: "Must-catch items found at the key's grade fell from 2 to 0 per run, by more than 1." });
 
     const rerun = report([[first, [await run(first, 'blocker')]], [second, [await run(second)]]]);
     const atMargin = report([[first, [await run(first, 'blocker')]], [second, [await run(second, 'blocker')]]]);
     expect(gateReports([baseline], [rerun, atMargin])[0]).toMatchObject({
       verdict: 'PASS', candidate: { runs: 2, found: 1.5 },
-      reason: "False blockers, earlier threads resolved that the key keeps open and earlier findings posted again did not rise. Must-catch items found at the key's grade fell by 0.5 on the mean of 2 runs, within the margin of 1.",
+      reason: "Must-catch items found at the key's grade fell from 2 to 1.5 on the mean of 2 runs, within the margin of 1. No other figure got worse.",
     });
+    const noisy = report([[first, [await run(first, 'blocker', 2)]], [second, [await run(second, 'blocker')]]]);
+    expect(gateReports([baseline], [noisy, atMargin])[0]).toMatchObject({ verdict: 'PASS', candidate: { runs: 2, falseBlockers: 1 } });
     expect(gateReports([baseline], [rerun, rerun])[0]).toMatchObject({ verdict: 'PASS', candidate: { runs: 2, found: 1 } });
   });
 
@@ -648,7 +664,7 @@ describe('mergeReports and gateReports', () => {
     const text = formatGate(gateReports([baseline], [baseline]));
     expect(text).toContain([
       '### Release gate, base: PASS', '',
-      "False blockers, earlier threads resolved that the key keeps open and earlier findings posted again did not rise. Must-catch items found at the key's grade and earlier threads resolved as the key says did not fall.",
+      'No figure got worse.',
       '', '| Figure | Baseline | Candidate |', '| --- | --- | --- |', '| Runs per case | 1 | 1 |', '| Must-catch found at grade | 2 | 2 |', '| Resolved right | 0 | 0 |',
       '| False blockers | 0 | 0 |', '| Resolved wrong | 0 | 0 |', '| Repeats | 0 | 0 |', '',
     ].join('\n'));
