@@ -118,12 +118,12 @@ describe('listUsesOutsideDiff', () => {
       {
         changed: 'src/account.ts', before: 'export interface Account {\n  balance: number;\n}\n', after: 'export interface Account {\n  balance: bigint;\n}\n',
         ledger: 'src/ledger.ts', report: 'src/report.ts',
-        ledgerText: `import { Account } from './account';\n\n${reads(i => `export const read${i} = (a: Account) => a.balance;`)}\n\nexport class AccountView {\n  balance = 0;\n\n  shown() {\n    return this.balance;\n  }\n}\n\nexport enum Kind {\n  Joint = 1,\n}\n\nexport interface Joint extends Account {\n  balance: bigint;\n}\n\nexport type Shared = Account & {\n  balance: bigint;\n};\n\nexport class Printer {\n  show(x: { balance: bigint }) {\n    return x;\n  }\n}\n`,
+        ledgerText: `import { Account } from './account';\n\n${reads(i => `export const read${i} = (a: Account) => a.balance;`)}\n\nexport class AccountView {\n  balance = 0;\n\n  shown() {\n    return this.balance;\n  }\n}\n\nexport enum Kind {\n  Joint = 1,\n}\n\nexport interface Joint extends Account {\n  balance: bigint;\n}\n\nexport type Shared = Account & {\n  balance: bigint;\n};\n\nexport interface JointAccount extends Account {\n  balance: bigint;\n}\n\nexport type SharedRef = {\n  balance: bigint;\n  base: Account;\n};\n\nexport class Printer {\n  show(x: { balance: bigint }) {\n    return x;\n  }\n}\n`,
         reportText: 'export const opened = (e: Event) => e.holder.balance;\n',
         shown: (n: number) => `src/ledger.ts:${n + 3}: export const read${n} = (a: Account) => a.balance;`, reportLine: 'src/report.ts:1: export const opened = (e: Event) => e.holder.balance;',
         // An interface that extends the changed one, even with an enum member of its name before it, and a type that names
         // it, declare the same field. A parameter's inline type is no field of the class around it, and the changed type fits it.
-        extra: ['src/ledger.ts:22: balance: bigint;', 'src/ledger.ts:26: balance: bigint;', 'src/ledger.ts:30: show(x: { balance: bigint }) {'],
+        extra: [22, 26, 30, 34].map(line => `src/ledger.ts:${line}: balance: bigint;`).concat('src/ledger.ts:39: show(x: { balance: bigint }) {'),
       },
       {
         changed: 'bank/account.go', before: 'package bank\n\ntype Account struct {\n\tBalance int64\n}\n', after: 'package bank\n\ntype Account struct {\n\tBalance uint64\n}\n',
@@ -160,17 +160,19 @@ describe('listUsesOutsideDiff', () => {
     expect(alone.record?.symbols?.find(s => s.name === 'balance')?.uses).toEqual([2, 6, 10, 14, 18].map(line => `src/ledger.rs:${line}`));
 
     // A file's uses are counted in rank order, so its field reads come before its calls of a method of the same name, even
-    // on later lines. A test file comes after production code that never names the type.
+    // on later lines. A test file comes after production code that never names the type, and a struct literal in a file
+    // that names it comes before that code.
     const calls = [0, 1, 2].map(i => `pub fn call_${i}(w: &Wallet) -> u64 {\n    w.balance()\n}\n`).join('\n');
     const ordered = await usesFor({
       'src/account.rs': 'pub struct Account {\n    pub balance: u64,\n}\n',
       'src/ledger.rs': `${calls}\n${reads(i => `pub fn read_${i}(a: &Account) -> u64 {\n    a.balance\n}\n`)}`,
       'src/report.rs': 'pub fn opened(e: &Event) -> u64 {\n    e.holder.balance\n}\n',
+      'src/open.rs': 'pub fn open() -> Account {\n    Account { balance: 0 }\n}\n',
       'tests/account.rs': 'fn made() -> u64 {\n    let a = Account { balance: 1 };\n    a.balance\n}\n',
     }, { 'src/account.rs': 'pub struct Account {\n    pub balance: i64,\n}\n' });
     expect(ordered.record?.symbols?.find(s => s.name === 'balance')?.uses).toEqual([
-      'src/ledger.rs:14', 'src/ledger.rs:18', 'src/ledger.rs:22', 'src/report.rs:2', 'src/ledger.rs:26', 'src/ledger.rs:30',
-      'src/ledger.rs:2', 'src/ledger.rs:6', 'src/ledger.rs:10', 'tests/account.rs:2', 'tests/account.rs:3',
+      'src/ledger.rs:14', 'src/ledger.rs:18', 'src/ledger.rs:22', 'src/open.rs:2', 'src/report.rs:2', 'src/ledger.rs:26', 'src/ledger.rs:30',
+      'src/ledger.rs:2', 'src/ledger.rs:6', 'src/ledger.rs:10', 'tests/account.rs:3', 'tests/account.rs:2',
     ]);
   });
 
