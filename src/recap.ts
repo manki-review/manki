@@ -8,7 +8,7 @@ import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
 import { isSecurityFinding } from './review';
-import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN } from './types';
+import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -128,10 +128,10 @@ function recordedSecurityOverride(
 
 /**
  * Whether only someone other than the PR author can clear the finding: a blocker, or a security finding of any severity.
- * A live thread says so with `isBlocking`, a parsed one with `severity`. A thread without a severity marker predates them and blocks.
+ * A live thread says so with `isBlocking`, a parsed one by `threadBlocks` on its severity and partly-fixed grade.
  */
-function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown' }): boolean {
-  return !!t.isSecurity || !!t.isBlocking || t.severity === 'blocker' || t.severity === 'unknown';
+function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown'; partlyFixedGrade?: FindingSeverity }): boolean {
+  return !!t.isSecurity || !!t.isBlocking || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.partlyFixedGrade && { partlyFixedGrade: t.partlyFixedGrade }) }));
 }
 
 interface OverrideCandidate {

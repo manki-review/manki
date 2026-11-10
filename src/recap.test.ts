@@ -1,5 +1,5 @@
 import { Finding, FindingFingerprintEntry, RoundContext, threadBlocks } from './types';
-import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
+import { classifyAuthorReply, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -828,6 +828,8 @@ describe('fetchRecapState', () => {
     // A security thread keeps its marker too, which `threadBlocks` never lets lower it.
     expect(state.previousFindings.map(f => f.partlyFixedGrade)).toEqual([undefined, undefined, undefined, 'suggestion', 'warning', undefined]);
     expect(state.previousFindings.map(f => threadBlocks(f))).toEqual([true, true, true, false, true, true]);
+    // Only a thread that still blocks needs someone other than the PR author to clear it.
+    expect(state.previousFindings.map(f => isGuarded(f))).toEqual([true, true, true, false, true, true]);
   });
 
   it('uses the latest non-bot reply when multiple human replies exist', async () => {
