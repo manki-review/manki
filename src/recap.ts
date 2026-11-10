@@ -129,8 +129,16 @@ function recordedSecurityOverride(
  * Whether only someone other than the PR author can clear the finding: a blocker, or a security finding of any severity.
  * A live thread says so with `isBlocking`, a parsed one by `threadBlocks` on its severity and partly-fixed grade.
  */
-function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity; gradeUnknown?: boolean }): boolean {
-  return !!t.isSecurity || !!t.isBlocking || !!t.gradeUnknown || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.recordedGrade && { recordedGrade: t.recordedGrade }) }));
+function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity }): boolean {
+  return !!t.isSecurity || !!t.isBlocking || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.recordedGrade && { recordedGrade: t.recordedGrade }) }));
+}
+
+/**
+ * Whether the PR author alone cannot clear the thread: a guarded one, or one whose grade an unread round record may hold.
+ * An unknown grade never makes a resolution count as someone else's, so the checks that trust one use `isGuarded`.
+ */
+function authorCannotClear(t: Parameters<typeof isGuarded>[0] & { gradeUnknown?: boolean }): boolean {
+  return isGuarded(t) || !!t.gradeUnknown;
 }
 
 interface OverrideCandidate {
@@ -391,7 +399,7 @@ function inPrSuppressionReasonFor(
 /** Classifies the latest human reply on `pf`. A guarded finding is agreed away only when `authorReplyMayClear` holds. */
 function replyClassOf(pf: PreviousFinding): AuthorReplyClass {
   const replyClass = classifyAuthorReply(pf.authorReplyText);
-  return replyClass === 'agree' && isGuarded(pf) && !pf.authorReplyMayClear ? 'none' : replyClass;
+  return replyClass === 'agree' && authorCannotClear(pf) && !pf.authorReplyMayClear ? 'none' : replyClass;
 }
 
 interface RecapState {
@@ -527,7 +535,7 @@ async function fetchRecapState(
   const botThreads = threads.filter(t => t.isBotThread);
   const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isOverrideCandidate(t, prAuthorLogin))
     && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
-  const agreers = new Set(botThreads.flatMap(t => isGuarded(t) && t.authorReplyLogin && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
+  const agreers = new Set(botThreads.flatMap(t => authorCannotClear(t) && t.authorReplyLogin && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
     ? [t.authorReplyLogin] : []));
   const mayAgree = new Map(await Promise.all([...agreers].map(async login => [login, await hasWriteAccess(octokit, owner, repo, login)] as const)));
 
@@ -553,7 +561,7 @@ async function fetchRecapState(
       authorReplyLogin: t.authorReplyLogin,
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
       ...(t.isSecurity && { isSecurity: true }),
-      ...(isGuarded(t) && t.authorReplyLogin && mayAgree.get(t.authorReplyLogin) && { authorReplyMayClear: true }),
+      ...(authorCannotClear(t) && t.authorReplyLogin && mayAgree.get(t.authorReplyLogin) && { authorReplyMayClear: true }),
       ...(!securityOverride && shouldReopen(t, addressedThreadIds, prAuthorLogin) && { reopen: true }),
       ...(securityOverride && { securityOverride }),
       ...(t.answer && { answer: t.answer }),
@@ -596,7 +604,7 @@ function judgeAddressedThreadIds(rounds: RoundContext[]): Set<string> {
 
 /** Whether the PR author resolved a guarded thread the judge has not marked `addressed`, and Manki has not reopened it yet. */
 function shouldReopen(t: ReviewThread, addressedThreadIds: Set<string>, prAuthorLogin: string | undefined): boolean {
-  return isGuarded(t) && t.isResolved && t.resolvedByHuman && !t.reopenedByManki && !addressedThreadIds.has(t.threadId)
+  return authorCannotClear(t) && t.isResolved && t.resolvedByHuman && !t.reopenedByManki && !addressedThreadIds.has(t.threadId)
     && !!prAuthorLogin && t.resolvedByLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
 }
 
@@ -614,7 +622,7 @@ function threadStatus(
   const cleared = securityOverride || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin);
   if (t.isSecurity) return cleared ? 'resolved' : unresolved;
   if (!t.resolvedByHuman) return 'auto-resolved';
-  return cleared || !isGuarded(t) ? 'resolved' : unresolved;
+  return cleared || !authorCannotClear(t) ? 'resolved' : unresolved;
 }
 
 /**
