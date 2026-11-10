@@ -1439,6 +1439,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     memorySkip: run.memorySkip?.message,
     restart,
     skipped: { excluded: run.excludedFiles.filter(f => !run.lockfiles.some(l => l.path === f.path)), binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
+    onPosted: () => { run.progress.reviewPosted = true; },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
   // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed.

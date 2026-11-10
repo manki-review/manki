@@ -5349,9 +5349,11 @@ describe('runFullReview orchestration', () => {
     ['finds at posting that the head moved', 'superseded'],
     ['is cancelled while it posts', 'cancelled'],
     ['posts its review and then finds that the head moved', 'replaced'],
+    ['creates its review and then fails to post a comment of it', 'created'],
   ] as const)('resolves an addressed thread with prior rounds and a non-empty inter-round diff, and keeps it resolved only when the round %s', async (_label, outcome) => {
     const posted = outcome === 'posted';
     const superseded = outcome === 'superseded' || outcome === 'replaced';
+    const reopened = superseded || outcome === 'created';
     // End-to-end happy path for the thread-resolution flow: memory enabled,
     // recap exposes a prior round with a SHA distinct from the current
     // commit, `fetchInterRoundDiff` returns a non-empty patch, and the LLM
@@ -5415,6 +5417,12 @@ describe('runFullReview orchestration', () => {
       ],
     });
     if (outcome === 'superseded') jest.mocked(ghUtils.postReview).mockRejectedValueOnce(new ghUtils.SupersededError('abc123', 'def456'));
+    if (outcome === 'created') {
+      jest.mocked(ghUtils.postReview).mockImplementationOnce(async (...args) => {
+        args[9]?.onPosted?.();
+        throw new Error('Could not post blocking findings as threads');
+      });
+    }
     if (outcome === 'replaced') {
       jest.mocked(ghUtils.postReview).mockImplementationOnce(async () => {
         mockPullsGet.mockResolvedValueOnce({ data: { title: 'Test PR', body: 'body', head: { sha: 'def456' }, base: { ref: 'main' } } });
@@ -5449,7 +5457,7 @@ describe('runFullReview orchestration', () => {
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('resolveReviewThread')).map(([query, vars]) => [String(query).includes('unresolveReviewThread'), vars]))
       .toEqual([
         [false, { threadId: 'PRRT_abc', resolutionReason: 'ADDRESSED' }],
-        ...(superseded ? [[true, { threadId: 'PRRT_abc' }]] : []),
+        ...(reopened ? [[true, { threadId: 'PRRT_abc' }]] : []),
         // A kept repeat of the closed answered thread gets one reply there and reopens it.
         ...(posted ? [[true, { threadId: 'PRRT_def' }]] : []),
       ]);
@@ -5469,7 +5477,7 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(ghUtils.formatBlockerReply)).toHaveBeenCalledWith([raised]);
     expect(jest.mocked(ghUtils.postReview).mock.calls[0][5].findings.at(-1)).toEqual({ ...unreplied, threadId: undefined, variantOf: undefined });
     // A review that does not post takes back the replies it sent first, unless the run is cancelled and writes nothing
-    // more. A review that posted keeps them, even when the head moved before it replaced the previous one.
+    // more. A review GitHub created keeps them, even when the head moved or a comment of it failed afterwards.
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('deletePullRequestReviewComment')).map(([, vars]) => vars))
       .toEqual(outcome === 'superseded' ? [{ id: 'C_PRRT_ghi' }] : []);
     mockGraphql.mockResolvedValue({ resolveReviewThread: { thread: { isResolved: true } } });

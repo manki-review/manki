@@ -1434,7 +1434,7 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped, memorySkip, restart }: {
+  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped, memorySkip, restart, onPosted }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configFailed?: boolean; noVerdict?: boolean;
     /** Why the round ran without memory, with the fix. */
     memorySkip?: string;
@@ -1442,6 +1442,8 @@ export async function postReview(
     restart?: string;
     /** Changed files no model read. Any one holds the approval. */
     skipped?: SkippedFiles;
+    /** Called once GitHub created the review, before the file-level comments, which can still fail. */
+    onPosted?: () => void;
   } = {},
 ): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const event = mapVerdictToEvent(result.verdict);
@@ -1607,6 +1609,7 @@ export async function postReview(
 
   const withoutLineThreads = (): string => highlightCode(renderBody(true), codeTokens);
   const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads);
+  onPosted?.();
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
