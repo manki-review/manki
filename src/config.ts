@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import { parse as parseYaml } from 'yaml';
 
+import { LOCKFILES } from './binary-analyzers';
 import { parseModelSpec } from './providers';
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, canonicalJson, floorShortfall, resolveRouting, routeClass } from './routing';
 import { ANALYZERS, PairedPin, ReviewConfig, StaticAnalysisConfig } from './types';
@@ -14,7 +15,8 @@ const OPUS_MODEL = 'claude-opus-5-5';
 export const DEFAULT_CONFIG: ReviewConfig = {
   auto_review: true,
   auto_approve: true,
-  exclude_paths: ['*.lock', 'dist/**', '*.generated.*'],
+  // Package lockfiles by name, so any other `.lock` file, such as `.github/workflows/actions.lock`, is read as text.
+  exclude_paths: [...[...LOCKFILES].filter(name => name.endsWith('.lock')), 'dist/**', '*.generated.*'],
   skip_labels: [],
   skip_authors: [],
   skip_branches: [],
