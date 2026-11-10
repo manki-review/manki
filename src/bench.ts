@@ -419,12 +419,15 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
     const severity = named.map(i => findings[i].severity).sort((a, b) => SEVERITY_ORDER.indexOf(a) - SEVERITY_ORDER.indexOf(b))[0];
     matches.push({ item: item.id, verdict: decision.verdict, findings: named, ...(severity && { severity }), reason: decision.reason });
   }
-  const matched = new Set(matches.flatMap(m => m.findings));
+  const isRepeatItem = (m: ItemMatch) => repeats.some(item => item.id === m.item);
+  const keyMatches = matches.filter(m => !isRepeatItem(m));
+  // A finding on an earlier finding's code with another mechanism is new, so only a restatement leaves the extra findings.
+  const restated = new Set(matches.filter(m => isRepeatItem(m) && m.verdict === 'MATCH').flatMap(m => m.findings));
+  const matched = new Set([...keyMatches.flatMap(m => m.findings), ...restated]);
   const strict = (item: KeyItem) => matches.find(m => m.item === item.id && m.verdict === 'MATCH');
   const { mustCatch, priorRound } = benchCase;
   const totalWeight = mustCatch.reduce((sum, item) => sum + SEVERITY_WEIGHT[item.severity], 0);
   const expected = expectedVerdict(benchCase);
-  const keyMatches = matches.filter(m => !repeats.some(item => item.id === m.item));
   const resolved = priorRound && reviewComplete ? resolvedThreads(benchCase, review) : undefined;
   return {
     ...reviewFacts(review),
@@ -442,7 +445,7 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
         resolved,
         resolvedRight: resolved.filter(id => benchCase.mustResolve.includes(id)).length,
         resolvedWrong: resolved.filter(id => !benchCase.mustResolve.includes(id)).length,
-        repeats: new Set(matches.filter(m => m.verdict === 'MATCH' && repeats.some(item => item.id === m.item)).flatMap(m => m.findings)).size,
+        repeats: restated.size,
       },
     }),
   };
@@ -457,7 +460,7 @@ function expectedVerdict(benchCase: BenchCase): 'block' | 'approve' | undefined 
   const { mustCatch, mustKeepOpen, mustNotRepeat, mustResolve, priorRound } = benchCase;
   const earlier = priorRound?.findings ?? [];
   const stillThere = [
-    ...mustCatch, ...mustKeepOpen, ...mustNotRepeat.map(id => earlier.find(f => f.id === id)!),
+    ...mustCatch, ...mustKeepOpen, ...mustNotRepeat.map(id => earlier.find(f => f.id === id)!).filter(f => f.thread !== 'resolved'),
     ...earlier.filter(f => f.thread === 'open' && !mustResolve.includes(f.id)),
   ];
   if (stillThere.some(item => item.severity === 'blocker')) return 'block';

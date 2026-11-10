@@ -362,6 +362,8 @@ describe('scoreRun on a follow-up case', () => {
       verdictCorrect: true, falseBlockers: 0, extraFindings: 0, duplicates: 0, followUp: { resolved: ['P1', 'P2'], resolvedRight: 1, resolvedWrong: 1, repeats: 2 },
     });
     expect(await scoreRun(followUp, review(false), matcher)).not.toHaveProperty('followUp');
+    const reworded = await scoreRun(followUp, review(), async item => (item.id === 'P2' ? { verdict: 'PARTIAL', findings: [0], reason: 'other mechanism' } : decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' }));
+    expect(reworded).toMatchObject({ falseBlockers: 1, extraFindings: 1, followUp: { repeats: 1 } });
 
     const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase: followUp, runs: [score] }] }]);
     expect(report.variants[0].cases[0].items.slice(3)).toEqual([
@@ -386,6 +388,9 @@ describe('scoreRun on a follow-up case', () => {
     expect(await verdict({ mustKeepOpen: [{ ...followUp.mustKeepOpen[0], severity: 'blocker' }] })).toBe(false);
     expect(await verdict({ mustKeepOpen: [], mustResolve: [], mustNotRepeat: ['P1'] })).toBe(false);
     expect(await verdict({ mustKeepOpen: [], mustResolve: [] })).toBe(false);
+    const resolvedBlocker = { ...followUp.priorRound!.findings[3], severity: 'blocker' as const };
+    const priorRound = { ...followUp.priorRound!, findings: [...followUp.priorRound!.findings.slice(0, 3), resolvedBlocker] };
+    expect(await verdict({ mustKeepOpen: [], priorRound, mustNotRepeat: ['P3', 'P4'] })).toBe(true);
   });
 });
 
