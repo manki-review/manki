@@ -120,8 +120,8 @@ describe('reviewLocal', () => {
     expect(options.openThreads).toEqual([expect.objectContaining({ threadId: 'P1', severity: 'blocker', description: 'Should be 4.', currentCode: expect.stringContaining('>>> 2: const b = 4;') })]);
     const [record] = options.priorRounds!;
     expect(record.meta).toMatchObject({ round: 1, commitSha: head });
-    expect(record.findings.entries.map(e => [e.title, e.threadId, e.severity, e.tags])).toEqual([
-      ['Wrong value', 'P1', 'blocker', ['security']], ['Unused constant', 'P2', 'warning', undefined], ['Name the constant', undefined, 'suggestion', undefined],
+    expect(record.findings.entries.map(e => [e.title, e.threadId, e.severity, e.tags, e.gradeIfConfirmed])).toEqual([
+      ['Wrong value', 'P1', 'blocker', ['security'], undefined], ['Unused constant', 'P2', 'warning', undefined, undefined], ['Name the constant', undefined, 'suggestion', undefined, 'warning'],
     ]);
     expect(review.result.findings[0].origin).toBe('new');
     expect(review.context.meta).toMatchObject({ round: 2, commitSha: later });

@@ -57,7 +57,8 @@ describe('collectFollowUps', () => {
   ];
   const rounds = [
     round(1, [
-      entry('Lock order', { file: 'src/a.go', fingerprint: { file: 'src/a.go', lineStart: 0, lineEnd: 0, slug: '-Lock-order' } }), entry('Missing timeout', { file: 'src/b.go', severity: 'warning' }),
+      entry('Lock order', { file: 'src/a.go', fingerprint: { file: 'src/a.go', lineStart: 0, lineEnd: 0, slug: '-Lock-order' } }),
+      entry('Missing timeout', { file: 'src/b.go', severity: 'warning', gradeIfConfirmed: 'blocker' }),
       entry('Name the helper', { file: 'src/c.go', severity: 'suggestion', suggestedFix: 'func name() {}' }),
       entry('Old style', { file: 'src/d.go', severity: 'nitpick' }), entry('Overflow', { file: 'src/e.go' }), entry('Dropped', { severity: 'ignore' }),
     ]),
@@ -73,7 +74,7 @@ describe('collectFollowUps', () => {
       priorHead: 'sha1',
       findings: [
         { id: 'P1', severity: 'blocker', title: 'Lock order', file: 'src/a.go', line: 1, description: 'Lock order breaks.', howToFix: 'Fix it.', security: true, thread: 'open' },
-        { id: 'P2', severity: 'warning', title: 'Missing timeout', file: 'src/b.go', line: 10, description: 'Missing timeout breaks.', howToFix: 'Fix it.', thread: 'open' },
+        { id: 'P2', severity: 'warning', title: 'Missing timeout', file: 'src/b.go', line: 10, gradeIfConfirmed: 'blocker', description: 'Missing timeout breaks.', howToFix: 'Fix it.', thread: 'open' },
         { id: 'P3', severity: 'suggestion', title: 'Name the helper', file: 'src/c.go', line: 10, suggestedFix: 'func name() {}' },
         { id: 'P4', severity: 'nitpick', title: 'Old style', file: 'src/d.go', line: 10, description: 'Old style breaks.', howToFix: 'Fix it.', thread: 'resolved' },
         { id: 'P5', severity: 'blocker', title: 'Overflow', file: 'src/e.go', line: 10, description: 'Overflow breaks.', howToFix: 'Fix it.', thread: 'open' },

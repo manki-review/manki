@@ -119,6 +119,7 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
       followUp.findings.push({
         // A file-level finding has line 0, and a case line starts at 1.
         id, severity: entry.severity as FindingSeverity, title, file: entry.fingerprint.file, line: Math.max(1, entry.fingerprint.lineStart),
+        ...(entry.gradeIfConfirmed && { gradeIfConfirmed: entry.gradeIfConfirmed }),
         ...(meta.description && { description: meta.description }), ...(meta.howToFix && { howToFix: meta.howToFix }),
         ...((meta.suggestedFix ?? entry.suggestedFix) && { suggestedFix: meta.suggestedFix ?? entry.suggestedFix }),
         ...(thread && isSecurityThread(thread.root.body!) && { security: true }), ...(thread && { thread: open ? 'open' : 'resolved' }),
@@ -186,7 +187,8 @@ export function draftCase(repo: string, pr: DraftPr, miss: Miss, base: string, f
       prior_round: {
         head: followUp.priorHead,
         findings: followUp.findings.map(f => ({
-          id: f.id, severity: f.severity, title: plain(f.title), file: f.file, line: f.line, posted: f.thread ? 'thread' : 'body', ...(f.thread && { state: f.thread }),
+          id: f.id, severity: f.severity, title: plain(f.title), file: f.file, line: f.line, ...(f.gradeIfConfirmed && { grade_if_confirmed: f.gradeIfConfirmed }),
+          posted: f.thread ? 'thread' : 'body', ...(f.thread && { state: f.thread }),
           ...(f.description && { description: plain(f.description) }), ...(f.howToFix && { how_to_fix: plain(f.howToFix) }),
           ...(f.suggestedFix && { suggested_fix: f.suggestedFix }), ...(f.security && { security: true }),
         })),
