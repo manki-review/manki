@@ -4059,6 +4059,10 @@ describe('postReview fallback paths', () => {
       });
       expect(createReview.mock.calls[3][0].comments).toEqual([]);
       expect(createReview.mock.calls[3][0].body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker\./u);
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([named(2)]), outcome: 'ADDRESS_FIRST' }, diff, makeContext({ meta: { ...makeContext().meta, round: 2 } }), undefined, {
+        existingThreads: [{ ...existingThreads[0], severity: 'warning' as const, gradeUnknown: true }],
+      });
+      expect(createReview.mock.calls[4][0].body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker still open from an earlier review\./u);
     });
 
     it.each([

@@ -3036,6 +3036,13 @@ describe('runReview', () => {
       openThreads: null, previousFindings: [], priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ title: 'Retry never ends', threadId: undefined, fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } })])],
     });
     expect(unread.findings[0]).not.toHaveProperty('raisedIn');
+    // A security finding keeps its `sameAs` to a thread the round knows nothing about, since that thread may guard it.
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:10:10:retry-never-ends' })] });
+    const unknown = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, headSha: 'sha3', openThreads: null, previousFindings: [],
+      priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker', title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } })])],
+    });
+    expect(unknown.findings[0].sameAs).toBe('src/x.ts:10:10:retry-never-ends');
     expect(info).toHaveBeenCalledWith('The review threads could not be read, so no finding is matched to an earlier one this round');
     info.mockRestore();
     // A closed answered thread is read from the recap, so a security thread among them keeps its repeat.

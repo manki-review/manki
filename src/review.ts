@@ -2495,15 +2495,18 @@ function postedOnItsOwn(f: Finding): Finding {
  */
 function withoutUnguardedThread(f: Finding, openThreadIndex: Map<string, OpenThread>, previousFindings: PreviousFinding[] | undefined, priorThreads: ReadonlyMap<string, string>): Finding {
   if (!isSecurityFinding(f.tags, f.reviewers)) return f;
-  const guarded = (threadId: string): boolean => !!(openThreadIndex.get(threadId)?.isSecurity ?? previousFindings?.find(t => t.threadId === threadId)?.isSecurity);
-  const named = f.sameAs ? priorThreads.get(f.sameAs) : undefined;
+  // A thread the round knows nothing about, as when the threads could not be read, keeps its link.
+  const plain = (threadId: string | undefined): boolean => {
+    const thread = threadId ? openThreadIndex.get(threadId) ?? previousFindings?.find(t => t.threadId === threadId) : undefined;
+    return !!thread && !thread.isSecurity;
+  };
   const { sameAs, threadId, variantOf, answeredIn, ...rest } = f;
   return postedOnItsOwn({
     ...rest,
-    ...(sameAs && (!named || guarded(named)) && { sameAs }),
-    ...(threadId && guarded(threadId) && { threadId }),
-    ...(variantOf && (!threadId || guarded(threadId)) && { variantOf }),
-    ...(answeredIn && guarded(answeredIn.threadId) && { answeredIn }),
+    ...(sameAs && !plain(priorThreads.get(sameAs)) && { sameAs }),
+    ...(threadId && !plain(threadId) && { threadId }),
+    ...(variantOf && !plain(threadId) && { variantOf }),
+    ...(answeredIn && !plain(answeredIn.threadId) && { answeredIn }),
   });
 }
 

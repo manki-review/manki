@@ -1516,8 +1516,9 @@ export async function postReview(
     const openThread = threadId ? existingThreads.find(t => t.threadId === threadId) : undefined;
     if (threadId && openThread) {
       core.info(`Skipping "${f.title}" on ${f.file}: the thread ${threadId} already carries it`);
-      // A thread that did not block before is raised by this round, so its blocker counts as new.
-      if (threadBlocks(openThread)) {
+      // A thread that did not block before is raised by this round, so its blocker counts as new. One whose grade could
+      // not be read may have blocked, so it counts as still open.
+      if (threadBlocks(openThread) || openThread.gradeUnknown) {
         carriedBlockers++;
         carriedThreadIds.add(threadId);
       }
