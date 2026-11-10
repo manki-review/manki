@@ -106,24 +106,26 @@ describe('listUsesOutsideDiff', () => {
         changed: 'app/account.py', before: 'class Account:\n    balance: int = 0\n', after: 'class Account:\n    balance: float = 0.0\n',
         ledger: 'app/ledger.py', report: 'app/report.py',
         ledgerText: `from .account import Account\n\n${reads(i => `def read_${i}(a: Account):\n    return a.balance\n`)}\nclass ViewBase:\n    pass\n\n\nclass AccountView(ViewBase):\n    def __init__(self):\n        self.balance = 0\n\n    def shown(self):\n        class Row:\n            def cell(self):\n                return 0\n        return self.balance\n\n\n`
-          + ['Savings(Account)', 'Premium(Savings)', 'Imported(Remote)', `Wide(${Array.from({ length: 8 }, (_, i) => `Part${i}`).join(', ')}, Account)`, 'Made(mixin(Account))']
+          + ['Savings(Account)', 'Premium(Savings)', 'Imported(Remote)', `Wide(${Array.from({ length: 8 }, (_, i) => `Part${i}`).join(', ')}, Account)`, 'Made(mixin(Account))', 'Qualified(other.ViewBase)']
             .map((c, i) => `class ${c}:\n    def __init__(self):\n        self.balance = ${i}\n`).join('\n\n')
           + Array.from({ length: 8 }, (_, i) => `\n\nclass Part${i}:\n    pass\n`).join(''),
         reportText: 'def opened(event):\n    return event.holder.balance\n',
         shown: (n: number) => `app/ledger.py:${3 * n + 4}: return a.balance`, reportLine: 'app/report.py:2: return event.holder.balance',
         // A subclass's own field is the changed field, overridden, and so is one whose bases may derive from the changed
-        // type: a base declared elsewhere, more bases than are read, or one that is no plain name.
-        extra: [35, 40, 45, 50, 55].map((line, i) => `app/ledger.py:${line}: self.balance = ${i}`),
+        // type: a base declared elsewhere, more bases than are read, one that is no plain name, or one named through a
+        // module, although the file declares a type of the same name.
+        extra: [35, 40, 45, 50, 55, 60].map((line, i) => `app/ledger.py:${line}: self.balance = ${i}`),
       },
       {
         changed: 'src/account.ts', before: 'export interface Account {\n  balance: number;\n}\n', after: 'export interface Account {\n  balance: bigint;\n}\n',
         ledger: 'src/ledger.ts', report: 'src/report.ts',
-        ledgerText: `import { Account } from './account';\n\n${reads(i => `export const read${i} = (a: Account) => a.balance;`)}\n\nexport class AccountView {\n  balance = 0;\n\n  shown() {\n    return this.balance;\n  }\n}\n\nexport enum Kind {\n  Joint = 1,\n}\n\nexport interface Joint extends Account {\n  balance: bigint;\n}\n\nexport type Shared = Account & {\n  balance: bigint;\n};\n\nexport interface JointAccount extends Account {\n  balance: bigint;\n}\n\nexport type SharedRef = {\n  balance: bigint;\n  base: Account;\n};\n\nexport class Printer {\n  show(x: { balance: bigint }) {\n    return x;\n  }\n}\n`,
+        ledgerText: `import { Account } from './account';\n\n${reads(i => `export const read${i} = (a: Account) => a.balance;`)}\n\nexport class AccountView {\n  balance = 0;\n\n  shown() {\n    return this.balance;\n  }\n}\n\nexport enum Kind {\n  Joint = 1,\n}\n\nexport interface Joint extends Account {\n  balance: bigint;\n}\n\nexport type Shared = Account & {\n  balance: bigint;\n};\n\nexport interface JointAccount extends Account {\n  balance: bigint;\n}\n\nexport type SharedRef = {\n  balance: bigint;\n  base: Account;\n};\n\nexport class Printer {\n  show(x: { balance: bigint }) {\n    return x;\n  }\n}\n\nexport enum Source {\n  Remote = 1,\n}\n\nexport class Mirror extends Remote {\n  balance = 0n;\n}\n`,
         reportText: 'export const opened = (e: Event) => e.holder.balance;\n',
         shown: (n: number) => `src/ledger.ts:${n + 3}: export const read${n} = (a: Account) => a.balance;`, reportLine: 'src/report.ts:1: export const opened = (e: Event) => e.holder.balance;',
         // An interface that extends the changed one, even with an enum member of its name before it, and a type that names
-        // it, declare the same field. A parameter's inline type is no field of the class around it, and the changed type fits it.
-        extra: [22, 26, 30, 34].map(line => `src/ledger.ts:${line}: balance: bigint;`).concat('src/ledger.ts:39: show(x: { balance: bigint }) {'),
+        // it, declare the same field. A parameter's inline type is no field of the class around it, and the changed type fits
+        // it. A base that is only an enum member here is declared elsewhere.
+        extra: [22, 26, 30, 34].map(line => `src/ledger.ts:${line}: balance: bigint;`).concat('src/ledger.ts:39: show(x: { balance: bigint }) {', 'src/ledger.ts:49: balance = 0n;'),
       },
       {
         changed: 'bank/account.go', before: 'package bank\n\ntype Account struct {\n\tBalance int64\n}\n', after: 'package bank\n\ntype Account struct {\n\tBalance uint64\n}\n',

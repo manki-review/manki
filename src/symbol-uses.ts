@@ -1230,30 +1230,35 @@ class ParsedFile {
 
   /**
    * Whether type `name` is `owner` or may derive from it. It follows the bases of the types this file declares, at most
-   * `MAX_LINEAGE` of them. A base declared in another file, or more than once in this one, may derive from `owner`, and so
-   * may a type whose bases `allBases` cannot read. A standard base such as `Exception` is followed no further.
+   * `MAX_LINEAGE` of them, and past `name` itself never an enum variant. A base declared in another file, named through
+   * a module such as `other.Base`, or declared more than once in this file, may derive from `owner`, and so may a type whose
+   * bases `allBases` cannot read. A standard base such as `Exception` is followed no further.
    */
   mayDeriveFrom(name: string, owner: string): boolean {
     const lineage = [name];
     for (let i = 0; i < lineage.length; i++) {
       const type = this.typesByName.get(lineage[i]);
-      const bases = type && this.allBases(type.node);
+      const bases = type && (i === 0 || type.kind === 'type') && this.allBases(type.node);
       if (lineage[i] === owner || !bases || i >= MAX_LINEAGE) return true;
-      for (const base of bases) if (base === owner || (!STANDARD_BASES.has(base) && !lineage.includes(base))) lineage.push(base);
+      for (const base of bases) {
+        const last = base.split(/\.|::/).at(-1)!;
+        if (last === owner || (base !== last && !STANDARD_BASES.has(last))) return true;
+        if (!STANDARD_BASES.has(last) && !lineage.includes(last)) lineage.push(last);
+      }
     }
     return false;
   }
 
   /**
-   * Returns the last name of each base `scope` names, read once per type, or `undefined` when it names more than
-   * `MAX_BASES` or one that is no plain name, such as a call that makes a base.
+   * Returns each base `scope` names, read once per type, or `undefined` when it names more than `MAX_BASES` or one that is
+   * no plain name, such as a call that makes a base.
    */
   private allBases(scope: SgNode): string[] | undefined {
     if (!this.lineageBases.has(scope.id())) {
       const nodes = this.rules.bases?.(scope) ?? [];
       const names = nodes.length > MAX_BASES ? [] : nodes.map(n => n.range().end.index - n.range().start.index <= MAX_ITEM_CHARS ? typeName(n.text()) : '');
       const plain = nodes.length <= MAX_BASES && names.every(n => BASE_PATH.test(n));
-      this.lineageBases.set(scope.id(), plain ? names.map(n => n.split(/\.|::/).at(-1)!) : undefined);
+      this.lineageBases.set(scope.id(), plain ? names : undefined);
     }
     return this.lineageBases.get(scope.id());
   }
