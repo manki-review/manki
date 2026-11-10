@@ -209,11 +209,13 @@ export interface Finding {
   /** The round an open lead first came up in, when an earlier round left it unsettled. */
   leadSince?: number;
   /**
-   * The grade the judge would give if every premise it doubts holds, when that is above the grade it gave. The refuter
-   * checks the finding, and a confirmation gives it this grade.
+   * The grade the judge would give if every premise it doubts holds. Set when that is above the grade it gave, or when
+   * the judge names a doubt in `doubts`. The refuter checks the finding, and a confirmation of every doubt gives it this grade.
    */
   gradeIfConfirmed?: FindingSeverity;
-  /** How the judge's attempt to refute the finding with tools came out. Set on blockers, open leads, findings lowered for want of proof and findings with a `gradeIfConfirmed`. */
+  /** The premises the judge doubts, which the refuter checks one by one. */
+  doubts?: Doubt[];
+  /** How the judge's attempt to refute the finding with tools came out. Set on blockers, open leads, findings lowered for want of proof and findings checked for a doubt the judge named. */
   refutation?: Refutation;
   /** How the second refuter, on `models.refuter_pair`, came out. Set beside `refutation` when that model checked the finding. */
   pairRefutation?: Refutation;
@@ -376,6 +378,23 @@ export function gradeStep(finding: Finding, to: FindingSeverity, by: GradeChange
 
 export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
 
+/**
+ * A premise the judge doubts, stated as a fact the code can confirm or disprove. It `decides` either whether the defect
+ * exists at all, so a disproof drops the finding, or only whether the finding earns its `gradeIfConfirmed`.
+ */
+export interface Doubt {
+  premise: string;
+  decides: 'defect' | 'grade';
+}
+
+/** How a refuter answered one premise the judge doubts. */
+export interface PremiseCheck {
+  premise: string;
+  outcome: RefutationOutcome;
+  reason: string;
+  proof?: string[];
+}
+
 /** The outcome of the judge's attempt to refute a finding with tools. */
 export interface Refutation {
   outcome: RefutationOutcome;
@@ -385,6 +404,8 @@ export interface Refutation {
   rule?: string;
   /** The `file:line` locations the judge cites: the failure for `confirmed`, the reason it cannot happen for `disproved`. */
   proof?: string[];
+  /** The answer to each premise in the finding's `doubts`, in order. The outcome follows from them. */
+  premises?: PremiseCheck[];
   /** The finding's own file and the files the outcome cites. */
   files: string[];
   /** SHA-256 over `files` at the commit checked. A later round reuses the outcome while it still matches. */
@@ -1796,6 +1817,10 @@ export interface FindingFingerprintEntry {
   refutation?: Refutation;
   /** Mirrors `Finding.pairRefutation`. */
   pairRefutation?: Refutation;
+  /** Mirrors `Finding.gradeIfConfirmed`. */
+  gradeIfConfirmed?: FindingSeverity;
+  /** Mirrors `Finding.doubts`. */
+  doubts?: Doubt[];
   /** Mirrors `Finding.gradePath`. */
   gradePath?: GradeStep[];
   /** The reviewer's pre-existing claim kept by the judge, and how it was checked against the diff. */

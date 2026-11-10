@@ -4095,6 +4095,8 @@ describe('runFullReview orchestration', () => {
         category: 'concurrency' as const,
         effort: 'moderate' as const,
         toolEvidence: { status: 'contradicted' as const, note: 'src/gone.ts is not changed in this diff.' },
+        gradeIfConfirmed: 'blocker' as const,
+        doubts: [{ premise: 'Shutdown runs while a request is in flight', decides: 'grade' as const }],
       }, {
         severity: 'warning' as const,
         title: 'js/sql-injection: Query built from user input',
@@ -4140,6 +4142,7 @@ describe('runFullReview orchestration', () => {
     expect(entry.tags).toEqual(['own-proposal-followup', 'follow-up', 'security']);
     expect(entry.originalSeverity).toBe('warning');
     expect([entry.category, entry.effort]).toEqual(['concurrency', 'moderate']);
+    expect([entry.gradeIfConfirmed, entry.doubts]).toEqual(['blocker', [{ premise: 'Shutdown runs while a request is in flight', decides: 'grade' }]]);
   });
 
   it('splits judge suppression counters by tag in RoundContext.judge', async () => {
