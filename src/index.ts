@@ -1386,7 +1386,7 @@ async function replyInOpenThreads(run: ReviewRun, result: ReviewResult): Promise
   return replies;
 }
 
-/** Deletes the replies a round posted in threads before its review, when the review did not go through. */
+/** Deletes the replies a round posted in threads before its review, when the review did not post. */
 async function withdrawReplies(octokit: Octokit, replies: string[]): Promise<void> {
   for (const reply of replies) {
     try {
@@ -1782,9 +1782,9 @@ async function runFullReview(
     try {
       posted = await postRound(run, result, context, reviewTimeMs, pauseAfter.restart);
     } catch (error) {
-      // A thread is resolved, or gets a reply that adds to it, only by a review that replaces the previous one.
+      // A thread is resolved only by a review that replaces the previous one. A reply stays under a review that posted.
       await reopenThreads(octokit, resolved);
-      await withdrawReplies(octokit, replies);
+      if (!run.progress.reviewPosted) await withdrawReplies(octokit, replies);
       throw error;
     }
     await reportPrState(owner, repo, prNumber, {
