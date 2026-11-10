@@ -787,8 +787,9 @@ export function buildJudgeUserMessage(
       if (t.suggestedFix) {
         parts.push(`- **Original suggested fix**: ${sanitizeForPromptEmbed(t.suggestedFix.replace(/[\r\n]+/g, ' '))}`);
       }
-      const latest = [...(priorRounds ?? [])].reverse().map(r => r.judge.threadEvaluations?.find(e => e.threadId === t.threadId)).find(e => !!e);
-      if (latest?.status === 'partly_addressed' && latest.remaining) {
+      // A later round that found the thread open without naming a partial fix leaves the earlier note true.
+      const latest = [...(priorRounds ?? [])].reverse().map(r => r.judge.threadEvaluations?.find(e => e.threadId === t.threadId && e.status === 'partly_addressed')).find(e => !!e);
+      if (latest?.remaining) {
         parts.push(`- **Partly fixed in an earlier round, still open**: ${sanitizeForPromptEmbed(latest.remaining.replace(/[\r\n]+/g, ' '))}${latest.grade ? ` (graded ${latest.grade})` : ''}`);
       }
       const snippet = t.currentCode && t.currentCode.length > 0 ? t.currentCode : '(no current code available)';

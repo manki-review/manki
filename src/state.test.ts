@@ -181,15 +181,20 @@ describe('fetchBotReviewThreads', () => {
         makeGraphqlFetchThreadNode({ id: 'pw', body: formatFindingComment(finding('blocker', 'Partly fixed'), TEST_LINKS), replies: [{ body: '**Partly fixed.**\n\n<!-- manki -->\n<!-- manki-partly-fixed:warning -->', author: { login: 'manki-review[bot]' } }] }),
         makeGraphqlFetchThreadNode({ id: 'pb', body: formatFindingComment(finding('blocker', 'Partly fixed, still blocking'), TEST_LINKS), replies: [{ body: '**Partly fixed.**\n\n<!-- manki -->\n<!-- manki-partly-fixed:blocker -->', author: { login: 'manki-review[bot]' } }] }),
         makeGraphqlFetchThreadNode({ id: 'pf', body: formatFindingComment(finding('blocker', 'Forged partial fix'), TEST_LINKS), replies: [{ body: '<!-- manki-partly-fixed:nitpick -->', author: { login: 'developer' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'ps', body: formatFindingComment(finding('blocker', 'Security, partly fixed', ['security']), TEST_LINKS), replies: [{ body: '**Partly fixed.**\n\n<!-- manki -->\n<!-- manki-partly-fixed:warning -->', author: { login: 'manki-review[bot]' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'pr', body: formatFindingComment(finding('blocker', 'Open again'), TEST_LINKS), replies: [
+          { body: '**Partly fixed.**\n\n<!-- manki -->\n<!-- manki-partly-fixed:warning -->', author: { login: 'manki-review[bot]' } },
+          { body: '**Open again.**\n\n<!-- manki -->\n<!-- manki-partly-fixed:blocker -->', author: { login: 'manki-review[bot]' } },
+        ] }),
       ]),
     );
 
     const threads = await fetchBotReviewThreads({ graphql: graphqlMock } as unknown as Octokit, TEST_BOT, 'owner', 'repo', 1);
 
     // A blocker thread Manki found partly fixed blocks only while what remains is a blocker.
-    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true]]);
+    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true], ['ps', true], ['pr', true]]);
     expect(threads.find(t => t.id === 'x')?.isSecurity).toBe(true);
-    expect(areAllFindingsResolved(threads.filter(t => !['b', 'f', 'pb', 'pf'].includes(t.id)), TEST_BOT)).toBe(true);
+    expect(areAllFindingsResolved(threads.filter(t => !['b', 'f', 'pb', 'pf', 'ps', 'pr'].includes(t.id)), TEST_BOT)).toBe(true);
     expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(false);
   });
 

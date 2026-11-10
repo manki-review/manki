@@ -1010,6 +1010,7 @@ export interface OpenThread extends FindingMetadata {
   severity: FindingSeverity | 'unknown';
   /** The grade an earlier round's partly-fixed reply gave what remains. The thread blocks only when it is `blocker`. */
   partlyFixedGrade?: FindingSeverity;
+  isSecurity?: boolean;
   /**
    * Snippet of the current source around `line` (line ± a small window). Lets
    * the judge ground its addressed/not-addressed decision in the actual code,
@@ -1031,8 +1032,19 @@ export interface ThreadEvaluation {
   reason: string;
   /** For `partly_addressed`, what still goes wrong. */
   remaining?: string;
-  /** For `partly_addressed`, the grade the remaining damage earns. The thread blocks only when it is `blocker`. */
+  /**
+   * The grade the thread keeps after this round when a partial fix sets or changes it: on `partly_addressed` the grade
+   * the remaining damage earns, and on a thread an earlier partial fix lowered, its own grade once it is open again.
+   */
   grade?: FindingSeverity;
+}
+
+/**
+ * Whether an open thread blocks: by the grade Manki's latest partly-fixed reply gave what remains, or else by its own
+ * severity. A thread without a severity marker predates them and blocks.
+ */
+export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; partlyFixedGrade?: FindingSeverity }): boolean {
+  return t.partlyFixedGrade ? t.partlyFixedGrade === 'blocker' : t.severity === 'blocker' || t.severity === 'unknown';
 }
 
 

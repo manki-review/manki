@@ -33,7 +33,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, Finding, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases } from './types';
+import { ConfigSource, DashboardData, Finding, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases, threadBlocks } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -1025,6 +1025,7 @@ async function collectOpenThreads(
       line: currentFindingLine(f),
       severity: f.severity,
       ...(f.partlyFixedGrade && { partlyFixedGrade: f.partlyFixedGrade }),
+      ...(f.isSecurity && { isSecurity: true }),
       description: f.description,
       suggestedFix: f.suggestedFix,
       howToFix: f.howToFix,
@@ -1328,21 +1329,30 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
 }
 
 /**
- * Replies in each thread the judge found partly fixed with what remains, and marks the grade that remainder earns, so
- * later rounds keep the thread at it. A thread that already carries that grade gets no new reply while the push leaves
- * its file unchanged.
+ * Replies in each thread whose grade a partial fix sets or changes, and marks that grade, so later rounds keep the
+ * thread at it. A partly fixed thread hears what remains. It gets no new reply while it already carries that grade and
+ * the push leaves its file unchanged. A thread an earlier partial fix lowered hears that it is open again at its own grade.
  */
 async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
   const changed = filesChangedByPush(run.interRoundDiff);
   const threads = new Map(run.openThreads.map(t => [t.threadId, t]));
-  for (const { threadId, status, remaining, grade } of result.threadEvaluations ?? []) {
+  for (const { threadId, status, reason, remaining, grade } of result.threadEvaluations ?? []) {
     const thread = threads.get(threadId);
-    if (status !== 'partly_addressed' || !thread || !remaining || !grade) continue;
-    if (thread.partlyFixedGrade === grade && run.interRoundDiff !== undefined && !changed.has(thread.file)) continue;
-    const own = thread.partlyFixedGrade ?? (thread.severity === 'unknown' ? 'blocker' : thread.severity);
-    const lowered = grade === own ? '' : ` What remains is a ${grade}${own === 'blocker' ? ', so this thread no longer blocks' : ''}.`;
+    if (!thread || !grade) continue;
+    const carried = thread.partlyFixedGrade ?? (thread.severity === 'unknown' ? 'blocker' : thread.severity);
+    const blocks = grade === 'blocker' ? ', so it blocks' : '';
+    let body: string;
+    if (status === 'partly_addressed' && remaining) {
+      if (thread.partlyFixedGrade === grade && run.interRoundDiff !== undefined && !changed.has(thread.file)) continue;
+      const regraded = grade === carried ? '' : ` What remains is a ${grade}${carried === 'blocker' ? ', so this thread no longer blocks' : ''}.`;
+      body = `**Partly fixed.** Still open: ${sanitizeMarkdown(remaining)}${regraded}`;
+    } else if (grade !== carried) {
+      body = `**Open again.** ${sanitizeMarkdown(reason)} This thread is a ${grade} again${blocks}.`;
+    } else {
+      continue;
+    }
     try {
-      await replyToReviewThread(run.octokit, threadId, `**Partly fixed.** Still open: ${sanitizeMarkdown(remaining)}${lowered}`, partlyFixedMarker(grade));
+      await replyToReviewThread(run.octokit, threadId, body, partlyFixedMarker(grade));
     } catch (error) {
       core.warning(`Failed to reply on partly fixed thread ${threadId}: ${error}`);
     }
@@ -1434,7 +1444,7 @@ async function reopenThreads(octokit: Octokit, threads: OpenThread[]): Promise<v
 
 /** Turns an approval into a request for changes when a blocker thread it counted as fixed could not be resolved. */
 function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
-  const blocking = threads.filter(t => t.severity === 'blocker' || t.severity === 'unknown');
+  const blocking = threads.filter(threadBlocks);
   if (blocking.length === 0 || result.verdict !== 'APPROVE') return;
   result.verdict = 'REQUEST_CHANGES';
   result.outcome = 'ADDRESS_FIRST';

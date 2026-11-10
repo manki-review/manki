@@ -2805,8 +2805,20 @@ describe('runReview', () => {
     openThread.severity = 'warning';
     expect(await gradeAfter(partly('blocker'), touching)).toEqual(['warning', 'READY']);
     openThread.severity = 'blocker';
+    // A partial fix never lowers a security thread, which only a confirmed refutation or a person may clear.
+    openThread.isSecurity = true;
+    expect(await gradeAfter(partly('warning'), touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    delete openThread.isSecurity;
+
+    // A thread an earlier partial fix lowered can rise again, up to its own grade.
     openThread.partlyFixedGrade = 'suggestion';
-    expect(await gradeAfter(partly('warning'), touching)).toEqual(['suggestion', 'READY']);
+    expect(await gradeAfter(partly('warning'), touching)).toEqual(['warning', 'READY']);
+    expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['suggestion', 'READY']);
+    // It gets its own grade back when a push to its file leaves it open, or when this round names its blocker again.
+    const open: ThreadEvaluation = { threadId: 'T1', status: 'not_addressed', reason: 'The timeout is gone again.' };
+    expect(await gradeAfter(open, touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    expect(await gradeAfter(open, elsewhere)).toEqual([undefined, 'READY']);
+    expect(await gradeAfter(addressed, elsewhere, [repeat])).toEqual(['blocker', 'ADDRESS_FIRST']);
   });
 
   it('points a finding that restates an earlier finding still open at it, and a variant at its open thread', async () => {

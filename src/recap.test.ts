@@ -800,6 +800,15 @@ describe('fetchRecapState', () => {
         },
       }),
       makeThread({
+        id: 't6',
+        comments: {
+          nodes: [
+            { body: formatFindingComment({ severity: 'blocker', title: 'Token in log', file: 'src/a.ts', line: 3, description: 'd', reviewers: [], tags: ['security'] }, TEST_LINKS), author: { login: 'manki-review[bot]' } },
+            { body: '**Partly fixed.** Still open: one log line.\n\n<!-- manki -->\n<!-- manki-partly-fixed:warning -->', author: { login: 'manki-review[bot]' } },
+          ],
+        },
+      }),
+      makeThread({
         id: 't5',
         comments: {
           nodes: [
@@ -814,9 +823,10 @@ describe('fetchRecapState', () => {
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
     expect(state.previousFindings.slice(0, 3).map(f => f.answer)).toEqual([undefined, '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
-    expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'blocker', 'blocker', 'blocker']);
+    expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'blocker', 'blocker', 'blocker', 'blocker']);
     // Manki's latest partly-fixed reply grades what remains, until a later reply finds the problem again as a blocker.
-    expect(state.previousFindings.map(f => f.partlyFixedGrade)).toEqual([undefined, undefined, undefined, 'suggestion', undefined]);
+    // A partial fix never lowers a security thread.
+    expect(state.previousFindings.map(f => f.partlyFixedGrade)).toEqual([undefined, undefined, undefined, 'suggestion', undefined, undefined]);
   });
 
   it('uses the latest non-bot reply when multiple human replies exist', async () => {

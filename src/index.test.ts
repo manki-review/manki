@@ -5540,12 +5540,18 @@ describe('runFullReview orchestration', () => {
           { title: 'Upload', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
           { title: 'Log', file: 'src/app.ts', line: 2, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_def', partlyFixedGrade: 'warning' as const },
           { title: 'Retry', file: 'src/app.ts', line: 3, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
+          { title: 'Timeout', file: 'src/app.ts', line: 4, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_jkl', partlyFixedGrade: 'warning' as const },
+          { title: 'Cache', file: 'src/app.ts', line: 5, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_mno', partlyFixedGrade: 'warning' as const },
         ],
         priorRounds: [roundContextFromLegacy({ round: 1, commitSha: lastReviewed, timestamp: 't', findings: [] })],
       });
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
-        threadEvaluations: [partly('PRRT_abc', 'No timeout yet, ask @alice.'), partly('PRRT_def', 'Still slow.'), partly('PRRT_ghi', 'One path left.')],
+        threadEvaluations: [
+          partly('PRRT_abc', 'No timeout yet, ask @alice.'), partly('PRRT_def', 'Still slow.'), partly('PRRT_ghi', 'One path left.'),
+          { threadId: 'PRRT_jkl', status: 'not_addressed', reason: 'The timeout is gone again.', grade: 'blocker' },
+          { threadId: 'PRRT_mno', status: 'not_addressed', reason: 'Still keyed by user only.' },
+        ],
       });
       await callRunFullReview();
       expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('resolveReviewThread'))).toEqual([]);
@@ -5556,10 +5562,12 @@ describe('runFullReview orchestration', () => {
     expect(await run('abc123')).toEqual([
       { threadId: 'PRRT_abc', body: '**Partly fixed.** Still open: No timeout yet, ask @\u200Balice. What remains is a warning, so this thread no longer blocks.\n\n<!-- manki -->\n<!-- manki-partly-fixed:warning -->' },
       { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left.\n\n<!-- manki -->\n<!-- manki-partly-fixed:warning -->' },
+      // A thread an earlier partial fix lowered hears when it is open again at its own grade.
+      { threadId: 'PRRT_jkl', body: '**Open again.** The timeout is gone again. This thread is a blocker again, so it blocks.\n\n<!-- manki -->\n<!-- manki-partly-fixed:blocker -->' },
     ]);
     // When the change since the last round cannot be read, every partly fixed thread gets its reply.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed'));
-    expect((await run('old456')).map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi']);
+    expect((await run('old456')).map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
   });
 
   it('skips resolving threads not in the openThreads allowlist', async () => {
