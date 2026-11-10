@@ -2,8 +2,8 @@
  * Writes draft benchmark cases from Manki's round records and review threads on merged pull requests. A round whose
  * blockers sit on code the round before it already reviewed marks a miss of that earlier round, so a draft reviews the
  * commit that round reviewed. Every follow-up round also becomes a draft that reviews its commit after the rounds before
- * it, keyed by the threads it resolved and left open. Each draft has `key_version: 0` until the owner confirms its
- * items. It only reads from GitHub.
+ * it, keyed by the threads it resolved, found partly fixed and left open. Each draft has `key_version: 0` until the
+ * owner confirms its items. It only reads from GitHub.
  *
  * Usage:
  *   npm run missed-blockers -- --repo <owner/repo> [--last <n>] [--out <dir>]
@@ -16,9 +16,10 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { stringify as stringifyYaml } from 'yaml';
 
+import { fetchReviewThreadNodes } from '../src/github';
 import { replyOutcome } from '../src/interaction';
 import type { EarlierFinding } from '../src/local-review';
-import { FOUND_AGAIN_MARKER, isSecurityThread, parseFindingData, parseFindingFromComment, titlesOverlap } from '../src/recap';
+import { FOUND_AGAIN_MARKER, isSecurityThread, parseFindingData, parseFindingFromComment, recordedThreadGrades, titlesOverlap } from '../src/recap';
 import { fixedMarker } from '../src/state';
 import { FindingFingerprintEntry, FindingSeverity, PRE_EXISTING_TAG, RoundContext } from '../src/types';
 import { githubToken } from './review-history';
@@ -84,14 +85,25 @@ export interface FollowUp {
   findings: EarlierFinding[];
   /** Open threads the round resolved. */
   mustResolve: string[];
-  /** Open threads the round resolved and a later round found again. */
-  mustKeepOpen: string[];
+  /** Open threads the round found partly fixed, or resolved and a later round found again, with what is left of each. */
+  mustKeepOpen: Array<{ id: string; severity: FindingSeverity; mechanism: string }>;
   /** Open threads the round left open, and body findings it posted again. */
   mustNotRepeat: string[];
 }
 
-/** Returns each follow-up round of a pull request, by round number, with what its draft needs. */
-export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment[]): Map<number, FollowUp> {
+/** A review thread as GraphQL shows it, by the database id of its first comment. */
+export interface ThreadState {
+  /** The thread's node id, which the round records' thread evaluations name. */
+  id: string;
+  isResolved: boolean;
+}
+
+/**
+ * Returns each follow-up round of a pull request, by round number, with what its draft needs. The round's own thread
+ * evaluations decide where an earlier open thread goes. Without one, Manki's replies do, and a thread that is resolved
+ * now with no reply that dates it is left out.
+ */
+export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment[], states: ReadonlyMap<number, ThreadState> = new Map()): Map<number, FollowUp> {
   const sorted = [...rounds].sort((a, b) => a.meta.round - b.meta.round);
   const byBot = comments.filter(c => c.user?.type === 'Bot' && c.body);
   const threads = byBot.filter(c => !c.in_reply_to_id).flatMap((root) => {
@@ -110,26 +122,50 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
     const next = sorted[i + 1]?.meta.timestamp ?? '\uffff';
     const followUp: FollowUp = { priorHead: sorted[i - 1].meta.commitSha, findings: [], mustResolve: [], mustKeepOpen: [], mustNotRepeat: [] };
     const fixedByRound = sorted.slice(0, i).map(r => fixedMarker(r.meta.commitSha));
+    const grades = recordedThreadGrades(sorted.slice(0, i));
     for (const [n, entry] of [...latest.values()].entries()) {
       const id = `P${n + 1}`;
       const title = entry.title ?? entry.fingerprint.slug;
       const thread = threads.find(t => t.file === entry.fingerprint.file && t.title.slice(0, 200) === title && before(t.root, timestamp));
+      const state = thread && states.get(thread.root.id);
+      const evaluations = (r: RoundContext) => (state ? r.judge.threadEvaluations?.filter(e => e.threadId === state.id) ?? [] : []);
       const last = thread?.replies.filter(c => before(c, timestamp)).at(-1)?.body ?? '';
-      const open = !!thread && !replyOutcome(last.trim());
-      const fixed = !open && !!thread?.replies.some(c => before(c, timestamp) && fixedByRound.some(marker => c.body!.includes(marker)));
+      // The thread's latest verdict before the round decides, unless a later round found the problem again.
+      const verdict = sorted.slice(0, i).flatMap(r => evaluations(r).map(e => ({ status: e.status, at: r.meta.timestamp }))).at(-1);
+      const reopened = !!verdict && !!thread?.replies.some(c => !before(c, verdict.at) && before(c, timestamp) && c.body!.includes(FOUND_AGAIN_MARKER));
+      const fixedEarlier = verdict?.status === 'addressed' && !reopened;
+      // A partial fix can have changed the thread's grade since the round that posted it.
+      const recorded = state && grades.get(state.id)?.grade;
+      const severity = recorded && DRAFT_SEVERITIES.has(recorded) ? recorded : entry.severity as FindingSeverity;
+      const open = !!thread && !replyOutcome(last.trim()) && !fixedEarlier;
+      const fixed = !open && (fixedEarlier || !!thread?.replies.some(c => before(c, timestamp) && fixedByRound.some(marker => c.body!.includes(marker))));
       const meta = thread ? parseFindingFromComment(thread.root.body!) : {};
       followUp.findings.push({
         // A file-level finding has line 0, and a case line starts at 1.
-        id, severity: entry.severity as FindingSeverity, title, file: entry.fingerprint.file, line: Math.max(1, entry.fingerprint.lineStart),
+        id, severity, title, file: entry.fingerprint.file, line: Math.max(1, entry.fingerprint.lineStart),
         ...(entry.gradeIfConfirmed && { gradeIfConfirmed: entry.gradeIfConfirmed }),
         ...(meta.description && { description: meta.description }), ...(meta.howToFix && { howToFix: meta.howToFix }),
         ...((meta.suggestedFix ?? entry.suggestedFix) && { suggestedFix: meta.suggestedFix ?? entry.suggestedFix }),
         ...(thread && isSecurityThread(thread.root.body!) && { security: true }), ...(thread && { thread: open ? 'open' : fixed ? 'fixed' : 'resolved' }),
       });
       if (open) {
-        const resolved = thread.replies.some(c => !before(c, timestamp) && before(c, next) && c.body!.includes(fixedMarker(commitSha)));
+        const evaluation = evaluations(round).at(-1);
+        const resolved = evaluation
+          ? evaluation.status === 'addressed'
+          : thread.replies.some(c => !before(c, timestamp) && before(c, next) && c.body!.includes(fixedMarker(commitSha)));
         const foundAgain = resolved && thread.replies.some(c => !before(c, next) && c.body!.includes(FOUND_AGAIN_MARKER));
-        (foundAgain ? followUp.mustKeepOpen : resolved ? followUp.mustResolve : followUp.mustNotRepeat).push(id);
+        if (evaluation?.status === 'partly_addressed') {
+          const grade = evaluation.grade && DRAFT_SEVERITIES.has(evaluation.grade) ? evaluation.grade : severity;
+          followUp.mustKeepOpen.push({ id, severity: grade, mechanism: evaluation.remaining || title });
+        } else if (foundAgain) {
+          followUp.mustKeepOpen.push({ id, severity, mechanism: title });
+        } else if (resolved) {
+          followUp.mustResolve.push(id);
+        } else if (evaluation || !state?.isResolved || sorted.slice(i + 1).some(r => evaluations(r).some(e => e.status === 'addressed')
+          || thread.replies.some(c => c.body!.includes(fixedMarker(r.meta.commitSha))))) {
+          // The round left the thread open, and the thread is either still open or a later round dates its fix.
+          followUp.mustNotRepeat.push(id);
+        }
       } else if (!thread && (round.findings.entries ?? []).some(e => e.fingerprint.file === entry.fingerprint.file && titlesOverlap(e.title ?? e.fingerprint.slug, title))) {
         followUp.mustNotRepeat.push(id);
       }
@@ -162,6 +198,25 @@ export interface DraftPr {
   number: number;
   title: string;
   body: string | null;
+  /** Whether `body` is the text as it was at the drafted round, rather than as it is now. */
+  bodyAtRound?: boolean;
+}
+
+/** One version of a pull request body, from GraphQL's `userContentEdits`: the full text after an edit at `editedAt`. */
+export interface BodyEdit {
+  editedAt: string;
+  /** Unset when the edit was deleted from the history. */
+  diff?: string | null;
+}
+
+/**
+ * Returns the body as it was at `time`: the latest version edited at or before it. A body never edited is the same at
+ * any time. Without a version from before `time`, the body cannot be recovered, and `known` is false.
+ */
+export function bodyAt(current: string | null, edits: BodyEdit[], time: string): { body: string | null; known: boolean } {
+  if (edits.length === 0) return { body: current, known: true };
+  const version = [...edits].sort((a, b) => b.editedAt.localeCompare(a.editedAt)).find(e => e.editedAt <= time);
+  return typeof version?.diff === 'string' ? { body: version.diff, known: true } : { body: current, known: false };
 }
 
 /**
@@ -196,7 +251,7 @@ export function draftCase(repo: string, pr: DraftPr, miss: Miss, base: string, f
         })),
       },
       must_resolve: followUp.mustResolve,
-      must_keep_open: followUp.mustKeepOpen.map(finding => ({ id: finding, severity: earlier(finding).severity, mechanism: plain(earlier(finding).title), locations: [earlier(finding).file] })),
+      must_keep_open: followUp.mustKeepOpen.map(({ id: finding, severity, mechanism }) => ({ id: finding, severity, mechanism: plain(mechanism), locations: [earlier(finding).file] })),
       must_not_repeat: followUp.mustNotRepeat,
     }),
     must_catch: miss.blockers.map((entry, i) => ({
@@ -211,10 +266,13 @@ export function draftCase(repo: string, pr: DraftPr, miss: Miss, base: string, f
     ...(found ? [`# Draft from Manki's round records: round ${rounds} found these blockers on code round ${miss.missedBy} reviewed at ${miss.head}.`] : []),
     ...(followUp ? [
       `# Draft from Manki's round records and threads: round ${miss.missedBy} reviewed ${miss.head} after the round at ${followUp.priorHead}.`,
-      `# must_resolve lists the earlier threads round ${miss.missedBy} resolved, must_keep_open those it resolved and a later round found`,
-      '# again, and must_not_repeat the threads it left open and the body findings it posted again. A leftover\'s mechanism is the title.',
+      `# must_resolve lists the earlier threads round ${miss.missedBy} resolved, must_keep_open those it found partly fixed, with what it`,
+      '# said is left, or resolved and a later round found again, and must_not_repeat the threads it left open and the body findings',
+      '# it posted again. A thread resolved at a time no record shows is left out.',
     ] : []),
-    '# The body is the pull request body as it is now. Check each item, its severity and locations, then set key_version',
+    pr.bodyAtRound
+      ? `# The body is the pull request body as it was when round ${miss.missedBy} reviewed. Check each item, its severity and locations, then set key_version`
+      : `# The body is the pull request body as it is now, since its text at round ${miss.missedBy} could not be recovered. Check each item, its severity and locations, then set key_version`,
     '# to 1 and move the file to bench/cases or bench/holdout.',
   ].join('\n');
   return { id, text: `${header}\n${stringifyYaml(doc, { lineWidth: 0 })}` };
@@ -230,6 +288,14 @@ function parseArgs(args: string[]): { owner: string; repo: string; last: number;
   return owner && repo && rest.length === 0 && Number.isInteger(last) && last > 0 ? { owner, repo, last, out: value('--out') ?? DEFAULT_OUT } : undefined;
 }
 
+async function fetchBodyEdits(octokit: ReturnType<typeof github.getOctokit>, owner: string, repo: string, number: number): Promise<BodyEdit[]> {
+  const data = await octokit.graphql<{ repository: { pullRequest: { userContentEdits: { nodes: Array<BodyEdit | null> | null } | null } | null } }>(
+    'query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { userContentEdits(first: 100) { nodes { editedAt diff } } } } }',
+    { owner, repo, number },
+  );
+  return (data.repository.pullRequest?.userContentEdits?.nodes ?? []).filter((e): e is BodyEdit => !!e);
+}
+
 async function main(args: string[]): Promise<number> {
   const parsed = parseArgs(args);
   if (!parsed) {
@@ -243,7 +309,12 @@ async function main(args: string[]): Promise<number> {
   for (const pr of await listMergedPrs(octokit, owner, repo, last)) {
     const { rounds, threadComments } = await fetchPrRecords(octokit, owner, repo, pr.number);
     const misses = collectMisses(rounds);
-    const followUps = collectFollowUps(rounds, threadComments);
+    const nodes = await fetchReviewThreadNodes<{ id: string; isResolved: boolean; comments: { nodes: Array<{ databaseId?: number | null }> } }>(
+      octokit, owner, repo, pr.number, 'id isResolved comments(first: 1) { nodes { databaseId } }',
+    );
+    const states = new Map(nodes.flatMap(t => (t.comments.nodes[0]?.databaseId ? [[t.comments.nodes[0].databaseId, { id: t.id, isResolved: t.isResolved }] as const] : [])));
+    const followUps = collectFollowUps(rounds, threadComments, states);
+    const edits = await fetchBodyEdits(octokit, owner, repo, pr.number);
     const drafted = [...new Set([...misses.map(m => m.missedBy), ...followUps.keys()])].sort((a, b) => a - b);
     for (const round of drafted) {
       const miss = misses.find(m => m.missedBy === round) ?? { missedBy: round, foundIn: [], head: rounds.find(r => r.meta.round === round)!.meta.commitSha, blockers: [] };
@@ -257,7 +328,8 @@ async function main(args: string[]): Promise<number> {
         continue;
       }
       const followUp = followUps.get(round);
-      const { id, text } = draftCase(`${owner}/${repo}`, pr, miss, base, followUp);
+      const { body, known } = bodyAt(pr.body, edits, rounds.find(r => r.meta.round === round)!.meta.timestamp);
+      const { id, text } = draftCase(`${owner}/${repo}`, { number: pr.number, title: pr.title, body, bodyAtRound: known }, miss, base, followUp);
       writeFileSync(join(out, `${id}.yml`), text);
       written++;
       console.log(`${id}: ${miss.blockers.length} missed ${miss.blockers.length === 1 ? 'blocker' : 'blockers'}${followUp ? `, a follow-up of ${followUp.findings.length} earlier ${followUp.findings.length === 1 ? 'finding' : 'findings'}` : ''}`);
