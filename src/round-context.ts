@@ -351,6 +351,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     }),
     judge: {
       summary: result.summary,
+      ...(result.judgeEffort && { effort: result.judgeEffort }),
       ...(judgeDrops.length > 0 && { dropped: judgeDrops }),
       confidenceDistribution,
       severityChanges,
