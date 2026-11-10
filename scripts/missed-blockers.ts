@@ -214,8 +214,8 @@ export interface BodyEdit {
  * history, is the same at any time. Without the history, or a version from before `time`, the body cannot be recovered,
  * and `known` is false.
  */
-export function bodyAt(current: string | null, edits: BodyEdit[] | undefined, time: string): { body: string | null; known: boolean } {
-  if (!edits) return { body: current, known: false };
+export function bodyAt(current: string | null, edits: BodyEdit[] | undefined, time: string | undefined): { body: string | null; known: boolean } {
+  if (!edits || time === undefined) return { body: current, known: false };
   if (edits.length === 0) return { body: current, known: true };
   const version = [...edits].sort((a, b) => b.editedAt.localeCompare(a.editedAt)).find(e => e.editedAt <= time);
   return typeof version?.diff === 'string' ? { body: version.diff, known: true } : { body: current, known: false };
@@ -291,8 +291,11 @@ function parseArgs(args: string[]): { owner: string; repo: string; last: number;
 }
 
 /** Returns when the round's review started: its record's time less the run's wall-clock time, so an edit made during the review is left out. */
-export function reviewStart(round: RoundContext): string {
-  return new Date(Date.parse(round.meta.timestamp) - (round.usage.wallClockMs ?? 0)).toISOString();
+export function reviewStart(round: RoundContext): string | undefined {
+  const end = Date.parse(round.meta?.timestamp ?? '');
+  // A record without usage or a readable time cannot date the review, so the draft says its body is not recovered.
+  if (!round.usage || Number.isNaN(end)) return undefined;
+  return new Date(end - (round.usage.wallClockMs ?? 0)).toISOString();
 }
 
 /** Returns the body's edit history, or `undefined` when GitHub gives none. */
