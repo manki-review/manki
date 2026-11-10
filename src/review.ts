@@ -2331,15 +2331,19 @@ export function filesChangedByPush(interRoundDiff: string | undefined): Set<stri
   return new Set(interRoundDiff ? parsePRDiff(interRoundDiff).files.map(f => f.path) : []);
 }
 
-/** Whether `thread` is a blocker thread that stays open whatever the judge decides, because the push did not change its file. */
+/**
+ * Whether `thread` is a blocker thread that stays open whatever the judge decides, because neither the push changed its
+ * file nor, for an outdated thread, did its code change since it was posted.
+ */
 export function blockerThreadStaysOpen(thread: OpenThread, pushChangedFiles: ReadonlySet<string>): boolean {
-  return threadBlocks(thread) && !pushChangedFiles.has(thread.file);
+  return threadBlocks(thread) && !pushChangedFiles.has(thread.file) && !thread.changedSincePosted;
 }
 
 /**
  * Returns the grade `evaluation` leaves its thread at when a partial fix sets or changes it, never above the highest
  * grade the thread had: its own, or a blocker an earlier round carried on it. A partly fixed thread takes the judge's
- * grade for what remains, but drops below the grade it carries only after a push to its file, and never on a security
+ * grade for what remains, but drops below the grade it carries only after a push to its file, or for an outdated thread
+ * once its code changed since it was posted, and never on a security
  * thread or one whose blocker this round names again. A thread an earlier partial fix lowered gets its highest grade
  * back when this round names its blocker again, or finds it not fixed after a push to its file.
  */
@@ -2357,13 +2361,15 @@ function partialFixGrade(evaluation: ThreadEvaluation, thread: OpenThread | unde
   if (named) return top;
   if (thread.isSecurity || !evaluation.grade) return carried;
   const judged = rank(evaluation.grade) > rank(top) ? evaluation.grade : top;
-  return rank(judged) > rank(carried) && !pushChangedFiles.has(thread.file) ? carried : judged;
+  // An outdated thread's code can have changed in an earlier push than the last one.
+  return rank(judged) > rank(carried) && !pushChangedFiles.has(thread.file) && !thread.changedSincePosted ? carried : judged;
 }
 
 /**
  * Returns `evaluations` with `addressed` kept only where the round confirms the fix, and with the grade
  * `partialFixGrade` gives. A thread whose blocker this round names again is not fixed. A thread that blocks counts as
- * fixed only when the push changed its file, so a judge reading an unchanged file cannot clear it.
+ * fixed only when the push changed its file, or its code changed since it was posted, so a judge reading unchanged code
+ * cannot clear it.
  */
 function confirmFixes(
   evaluations: ThreadEvaluation[] | undefined,

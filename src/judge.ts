@@ -230,6 +230,7 @@ const MAX_CITED_WINDOWS = 40;
 const MAX_CITED_FILE_BYTES = 1024 * 1024;
 const MAX_CITED_LINE_CHARS = 300;
 const MAX_DOUBT_CHARS = 300;
+const MAX_ANSWER_CHARS = 1000;
 const MAX_REMAINING_CHARS = 500;
 
 /**
@@ -658,8 +659,10 @@ You MUST return exactly ${openThreadsCount} \`threadEvaluations\` entries, one f
 
 - **addressed**: the current code at the flagged region clearly no longer exhibits any failure the original concern names, OR the inter-round diff contains an explicit fix for every one of them. Either signal alone is sufficient: you may pick \`addressed\` even when the inter-round diff does not touch the thread's file, as long as the current code window plainly resolves the concern. (Note: when the inter-round diff is known-empty the resolver may override this verdict as a safety measure.)
 - **partly_addressed**: the change removes some of the failures the original concern names, but at least one remains. For example, an upload handler gets the size limit the concern asked for, but still has no timeout. Set \`remaining\` to what still goes wrong, in one or two plain sentences, and \`grade\` to the grade that remaining damage earns by the Severity Table and the rules above. That is the thread's own grade when the remaining damage is the same as before. Applying the fix an earlier round suggested never lowers it, since that fix can itself cover only part. The thread stays open, and Manki replies there with what remains.
-- **not_addressed**: the current code still exhibits the concern (and the inter-round diff did not fix it). When the code window is unavailable and the inter-round diff does not touch the file, default to \`not_addressed\` rather than \`uncertain\`.
+- **not_addressed**: the current code still exhibits the concern (and the inter-round diff did not fix it). When the code window is unavailable and the inter-round diff does not touch the file, default to \`not_addressed\` rather than \`uncertain\`. That default never applies to an outdated thread, or to a thread whose Manki answer you have not answered: judge those by the rules below.
 - **uncertain**: insufficient evidence to decide. The downstream resolver treats this as not-addressed, so prefer it over a speculative \`addressed\`.
+
+An outdated thread shows the code it named when it was posted and where that code sits now, or that it is gone. Judge the concern against the current code. An unchanged file, or no current code shown, is no evidence that the concern still holds. When a thread shows Manki's answer in it, such as a "Fixed." reply and the lines it cites, answer that evidence: confirm it, or say which part of it is wrong and cite the code, before you mark the thread \`not_addressed\`.
 
 The flagged thread \`line\` is GitHub-anchored from when the thread was created and may have drifted relative to the current head. Treat it as a hint, not a strict boundary: scan the full provided code window for the fix. Resolution requires concrete evidence: cite the changed lines or current-code excerpt that supports your call in \`reason\`. Use the thread IDs provided in the open threads section below.
 ` : ''}
@@ -798,11 +801,19 @@ export function buildJudgeUserMessage(
       if (latest?.remaining) {
         parts.push(`- **Partly fixed in an earlier round, still open**: ${sanitizeForPromptEmbed(latest.remaining.replace(/[\r\n]+/g, ' '))}${latest.grade ? ` (graded ${latest.grade})` : ''}`);
       }
-      const snippet = t.currentCode && t.currentCode.length > 0 ? t.currentCode : '(no current code available)';
-      const snippetFence = dynamicFence(snippet);
-      parts.push(snippetFence);
-      parts.push(snippet);
-      parts.push(snippetFence);
+      if (t.answer) {
+        parts.push(`- **Manki's answer in this thread**: ${sanitizeForPromptEmbed(safeTruncate(t.answer.replace(/[\r\n]+/g, ' '), MAX_ANSWER_CHARS))}`);
+      }
+      const fenced = (code: string): void => {
+        const fence = dynamicFence(code);
+        parts.push(fence, code, fence);
+      };
+      if (t.postedCode) {
+        parts.push(`- **Outdated thread.** The code it named when it was posted, at \`${(t.postedCommit ?? '').slice(0, 7)}\`:`);
+        fenced(t.postedCode);
+        parts.push(t.postedCodeGone ? '- **Now**: that code is not found in the file any more. The head\'s code near the same line:' : '- **Now**: where that code sits at the head:');
+      }
+      fenced(t.currentCode && t.currentCode.length > 0 ? t.currentCode : '(no current code available)');
       parts.push('');
     }
   }

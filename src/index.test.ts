@@ -4900,6 +4900,54 @@ describe('runFullReview orchestration', () => {
     expect(openThreads![0].currentCode).toContain('   15: line 15');
   });
 
+  it('gives an outdated thread the code it named on the commit it was posted on, and where that code sits now or that it is gone', async () => {
+    const changedFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 20, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [changedFile], totalAdditions: 20, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [changedFile], excluded: [] });
+    const posted = ['function reply(thread) {', '  reopenThread(thread);', '  postReply(thread);', '  return thread;', '}'].join('\n');
+    // The code moved down unchanged in one file, and was rewritten in the other.
+    const moved = ['// moved down', '', '', posted].join('\n');
+    const rewritten = ['function reply(thread) {', '  postReply(thread);', '}'].join('\n');
+    jest.mocked(ghUtils.fetchFileContents).mockImplementation(async (_o, _ow, _r, ref) => new Map([
+      ['src/app.ts', ref === 'c0ffee' ? posted : moved], ['src/gone.ts', ref === 'c0ffee' ? posted : rewritten],
+      // The head's copy of this file is not read, as when it is over the size limit.
+      ...(ref === 'c0ffee' ? [['src/unread.ts', posted] as const] : []),
+      ['src/small.ts', 'exit(1);'],
+    ]));
+    const outdated = { severity: 'blocker' as const, status: 'open' as const, line: 0, originalLine: 2, originalCommit: 'c0ffee' };
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [
+        { ...outdated, title: 'Moved', file: 'src/app.ts', threadId: 'PRRT_moved', answer: '**Fixed.** It reopens after posting.' },
+        { ...outdated, title: 'Gone', file: 'src/gone.ts', threadId: 'PRRT_gone' },
+        { ...outdated, title: 'Unread', file: 'src/unread.ts', threadId: 'PRRT_unread' },
+        // A posted line past the end of the posted file says nothing about the code either.
+        { ...outdated, title: 'Past the end', file: 'src/app.ts', threadId: 'PRRT_past', originalLine: 99 },
+        // A small file that did not change at all holds the code where it was, though too few of its lines can vote.
+        { ...outdated, title: 'Untouched', file: 'src/small.ts', threadId: 'PRRT_small', originalLine: 1 },
+      ],
+      priorRounds: [],
+    });
+
+    await callRunFullReview();
+
+    const [found, gone, unread, past, small] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
+    expect(small).toMatchObject({ line: 1, postedCode: '>>> 1: exit(1);', currentCode: '>>> 1: exit(1);' });
+    expect([small.postedCodeGone, small.changedSincePosted]).toEqual([undefined, undefined]);
+    expect([past.postedCode, past.changedSincePosted]).toEqual([undefined, undefined]);
+    // Without the head's copy, nothing is said about where the code went, and the thread keeps its guard.
+    expect(unread).toMatchObject({ line: 0, currentCode: '' });
+    expect([unread.postedCode, unread.postedCodeGone, unread.changedSincePosted]).toEqual([undefined, undefined, undefined]);
+    expect(found).toMatchObject({ line: 5, postedCommit: 'c0ffee', answer: '**Fixed.** It reopens after posting.' });
+    expect(found.postedCode).toContain('>>> 2:   reopenThread(thread);');
+    expect(found.currentCode).toContain('>>> 5:   reopenThread(thread);');
+    // Code that only moved is unchanged, so its blocker still needs a push to its file to clear.
+    expect([found.postedCodeGone, found.changedSincePosted]).toEqual([undefined, undefined]);
+    // Rewritten code is not found, so the judge sees the head's code near the same line, and the thread counts as changed.
+    expect(gone).toMatchObject({ line: 2, postedCodeGone: true, changedSincePosted: true });
+    expect(gone.currentCode).toContain('>>> 2:   postReply(thread);');
+    expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'c0ffee', ['src/app.ts', 'src/gone.ts', 'src/unread.ts', 'src/small.ts']);
+  });
+
   it('deduplicates open-thread file paths against changed files when fetching contents', async () => {
     const changedFile = {
       path: 'src/app.ts', changeType: 'modified' as const,

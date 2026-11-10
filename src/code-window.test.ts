@@ -1,4 +1,4 @@
-import { extractCurrentCodeWindow } from './code-window';
+import { extractCurrentCodeWindow, locatePostedLine, postedCodeChanged } from './code-window';
 
 describe('extractCurrentCodeWindow', () => {
   function makeFile(lineCount: number): string {
@@ -75,5 +75,34 @@ describe('extractCurrentCodeWindow', () => {
   it('returns empty string for empty file path', () => {
     const fileContents = new Map([['src/a.ts', makeFile(10)]]);
     expect(extractCurrentCodeWindow(fileContents, '', 5)).toBe('');
+  });
+});
+
+describe('locatePostedLine', () => {
+  const body = ['function read(path) {', '  const data = fs.readFileSync(path);', '  if (!data) return null;', '  return parse(data);', '}'];
+  const posted = body.join('\n');
+
+  it('finds the posted code where it moved by the lines around it, and never by one generic line', () => {
+    expect(locatePostedLine(posted, 2, ['// header', '', '', ...body].join('\n'))).toBe(5);
+    // Indentation does not count, and the nearest place wins when the code appears twice.
+    expect(locatePostedLine(posted, 2, [...body.map(l => `  ${l}`), '', ...body].join('\n'))).toBe(2);
+    // The flagged line was edited in place: its neighbours still place it.
+    expect(locatePostedLine(posted, 2, posted.replace('fs.readFileSync(path)', 'await fs.promises.readFile(path)'))).toBe(2);
+    // Only one generic line of the window is left, so nothing places the code.
+    expect(locatePostedLine(posted, 4, ['function other() {', '  return parse(data);', '}'].join('\n'))).toBeUndefined();
+    expect(locatePostedLine(posted, 2, 'nothing here')).toBeUndefined();
+  });
+
+  it('stays linear on a head file of many repeated lines, which the PR author controls', () => {
+    const repeated = [...Array(200_000).fill(''), ...Array(100_000).fill('  return parse(data);'), ...body].join('\n');
+    const started = Date.now();
+    expect(locatePostedLine(posted, 2, repeated)).toBe(300_002);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('tells whether the code around the posted line changed since it was posted', () => {
+    expect(postedCodeChanged(posted, 2, ['// header', ...body.map(l => `  ${l}`)].join('\n'), 3)).toBe(false);
+    expect(postedCodeChanged(posted, 2, posted.replace('return null', 'throw new Error()'), 2)).toBe(true);
+    expect(postedCodeChanged(posted, 2, posted, undefined)).toBe(true);
   });
 });

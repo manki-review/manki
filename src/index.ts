@@ -12,7 +12,7 @@ import { REVIEW_COMMAND, runReviewCommand } from './cli';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
-import { extractCurrentCodeWindow } from './code-window';
+import { extractCurrentCodeWindow, locatePostedLine, postedCodeChanged } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
 import { addCodeContext, changeDigest, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
@@ -1036,6 +1036,7 @@ async function collectOpenThreads(
       description: f.description,
       suggestedFix: f.suggestedFix,
       howToFix: f.howToFix,
+      ...(f.answer && { answer: f.answer }),
     }));
 
   // Fetch full file contents for changed files so reviewers have surrounding context.
@@ -1062,10 +1063,43 @@ async function collectOpenThreads(
     core.warning(`Failed to fetch file contents: ${error}`);
   }
 
-  const openThreads = baseOpenThreads.map(t => ({
-    ...t,
-    currentCode: extractCurrentCodeWindow(parsed.has(t.file) ? lockfileContents : fileContents, t.file, t.line),
+  // An outdated thread has no line at the head, so the judge sees the code it named when posted and where that code is now.
+  const postedAt = new Map(recap.previousFindings.flatMap(f => {
+    const line = f.findingLine ?? f.originalLine;
+    return f.threadId && !f.line && f.originalCommit && line ? [[f.threadId, { commit: f.originalCommit, line }] as const] : [];
   }));
+  const postedContents = new Map(await Promise.all([...new Set([...postedAt.values()].map(p => p.commit))].map(async commit => {
+    const files = [...new Set(baseOpenThreads.filter(t => postedAt.get(t.threadId)?.commit === commit).map(t => t.file))];
+    try {
+      return [commit, await fetchFileContents(octokit, owner, repo, commit, files)] as const;
+    } catch (error) {
+      core.warning(`Failed to fetch the code outdated threads were posted on at ${commit.slice(0, 7)}: ${error}`);
+      return [commit, new Map<string, string>()] as const;
+    }
+  })));
+  const openThreads = baseOpenThreads.map((t): OpenThread => {
+    const contents = parsed.has(t.file) ? lockfileContents : fileContents;
+    const posted = postedAt.get(t.threadId);
+    const old = posted && postedContents.get(posted.commit)?.get(t.file);
+    const current = contents?.get(t.file);
+    // Without both copies of the code, nothing can be said about where it went, so the thread keeps the plain path.
+    if (!posted || old === undefined || current === undefined || posted.line > old.split('\n').length) {
+      return { ...t, currentCode: extractCurrentCodeWindow(contents, t.file, t.line) };
+    }
+    // An unchanged file holds the code where it was, however few of its lines could vote.
+    const now = old === current ? posted.line : locatePostedLine(old, posted.line, current);
+    // Where the code is not found, the head's code near the same line still shows what the fix left there.
+    const near = now ?? Math.min(posted.line, current.split('\n').length);
+    return {
+      ...t,
+      line: near,
+      postedCode: extractCurrentCodeWindow(new Map([[t.file, old]]), t.file, posted.line),
+      postedCommit: posted.commit,
+      ...(now === undefined && { postedCodeGone: true }),
+      ...(old !== current && postedCodeChanged(old, posted.line, current, now) && { changedSincePosted: true }),
+      currentCode: extractCurrentCodeWindow(contents, t.file, near),
+    };
+  });
   return { openThreads, fileContents };
 }
 
