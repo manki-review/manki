@@ -689,6 +689,8 @@ export function mergeReports(parts: BenchReport[], cases: BenchCase[], meta: Pic
 /** How far a figure may get worse, per run on average, before a release fails, such as one more false blocker. */
 const GATE_MARGIN = 1;
 const GATE_EPSILON = 1e-9;
+/** Runs per case the gate decides on, on each side. */
+const GATE_RUNS = 2;
 
 /** Each figure the gate compares, summed over the shared cases as a mean per run. */
 interface GateSide {
@@ -756,16 +758,23 @@ function figure(value: number): string {
 
 /**
  * Applies the release gate to each variant both sides scored, on the hold-out cases both scored with the same key
- * version. A side with an incomplete review decides nothing. Each figure may get worse by at most `GATE_MARGIN` per
- * run, and a change within it on a single candidate run asks for a rerun, decided on the mean. Throws when the
- * candidate reports reviewed different commits, the baseline reviewed the candidate's commit, or the reports were
- * matched by different models.
+ * version. A side with an incomplete review decides nothing, and so does a baseline with fewer than `GATE_RUNS` runs per
+ * case. Each figure may get worse by at most `GATE_MARGIN` per run, and a change within it on a single candidate run asks
+ * for a rerun, decided on the mean. Throws when the reports of a side reviewed different commits or hold one run twice,
+ * the baseline reviewed the candidate's commit, or the reports were matched by different models.
  */
 export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): GateResult[] {
   if (baseline.length === 0 || candidate.length === 0) throw new Error('The gate needs a baseline and a candidate report');
   const all = [...baseline, ...candidate];
+  for (const [side, reports] of [['baseline', baseline], ['candidate', candidate]] as const) {
+    const reviewed = new Set(reports.map(r => r.commit).filter(Boolean));
+    if (reviewed.size > 1) throw new Error(`The ${side} reports reviewed different commits: ${[...reviewed].join(', ')}`);
+    // Each report must be its own run, or one run would count twice towards the runs the gate decides on.
+    const runs = reports.map(r => `${r.commit ?? ''} ${r.startedAt}`);
+    const twice = reports.find((_, i) => runs.indexOf(runs[i]) !== i);
+    if (twice) throw new Error(`The ${side} holds the run started at ${twice.startedAt} twice`);
+  }
   const commits = new Set(candidate.map(r => r.commit).filter(Boolean));
-  if (commits.size > 1) throw new Error(`The candidate reports reviewed different commits: ${[...commits].join(', ')}`);
   const own = baseline.find(r => r.commit && commits.has(r.commit));
   if (own) throw new Error(`The baseline reviewed the candidate's own commit ${own.commit}`);
   const matchers = new Set(all.map(r => r.matcherModel));
@@ -795,13 +804,19 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
     if (alike.length === 0) return { variant: name, verdict: 'NO DECISION', reason: 'The shared hold-out cases were scored as a follow-up round on one side and as a first round on the other.', shared: alike, ...left };
     const [b, c] = [gateSide(base, alike), gateSide(cand, alike)];
     const sides = { shared: alike, ...left, baseline: b, candidate: c };
+    if (b.runs < GATE_RUNS) {
+      return {
+        variant: name, verdict: 'NO DECISION', ...sides,
+        reason: `The baseline has ${b.runs} ${b.runs === 1 ? 'run' : 'runs'} per case, and the gate decides on ${GATE_RUNS}. Run the baseline's ref again and give both runs as the baseline.`,
+      };
+    }
     const worse = GATE_FIGURES.map(f => ({ ...f, by: f.better === 'more' ? b[f.key] - c[f.key] : c[f.key] - b[f.key] })).filter(f => f.by > GATE_EPSILON);
     const changed = (figures: typeof worse) => joinParts(figures.map(f => `${f.label} ${f.better === 'more' ? 'fell' : 'rose'} from ${figure(b[f.key])} to ${figure(c[f.key])}`), ', and ');
     const failed = worse.filter(f => f.by > GATE_MARGIN + GATE_EPSILON);
     if (failed.length > 0) {
       return { variant: name, verdict: 'FAIL', reason: `${changed(failed)} per run, by more than ${GATE_MARGIN}.`, ...sides };
     }
-    if (worse.length > 0 && c.runs < 2) {
+    if (worse.length > 0 && c.runs < GATE_RUNS) {
       return {
         variant: name, verdict: 'RERUN', ...sides,
         reason: `${changed(worse)} per run, within the margin of ${GATE_MARGIN}. Run the candidate once more and decide on the mean of both runs.`,
