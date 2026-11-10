@@ -2250,9 +2250,9 @@ function priorBlockerNamedBy(finding: Finding, priorBlockers: PriorFinding[]): P
   return finding.sameAs ? priorBlockers.find(p => stringifyFindingFingerprint(p.entry.fingerprint) === finding.sameAs) : undefined;
 }
 
-/** Returns the thread IDs of the prior blockers that a blocker in `findings` names again. */
+/** Returns the IDs of the threads a blocker in `findings` raises again: one it names, folds into, or repeats as answered. */
 function namedPriorThreadIds(findings: Finding[], priorBlockers: PriorFinding[]): Set<string> {
-  const ids = findings.filter(f => f.severity === 'blocker').map(f => priorBlockerNamedBy(f, priorBlockers)?.entry.threadId);
+  const ids = findings.filter(f => f.severity === 'blocker').flatMap(f => [priorBlockerNamedBy(f, priorBlockers)?.entry.threadId, f.threadId, f.answeredIn?.threadId]);
   return new Set(ids.filter((id): id is string => !!id));
 }
 

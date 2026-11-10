@@ -174,7 +174,6 @@ jest.mock('./recap', () => ({
   securityOverridesIn: jest.requireActual('./recap').securityOverridesIn,
   FOUND_AGAIN_MARKER: jest.requireActual('./recap').FOUND_AGAIN_MARKER,
   FOUND_AGAIN_BLOCKER_MARKER: jest.requireActual('./recap').FOUND_AGAIN_BLOCKER_MARKER,
-  partlyFixedMarker: jest.requireActual('./recap').partlyFixedMarker,
 }));
 
 jest.mock('./review', () => ({
@@ -5558,31 +5557,32 @@ describe('runFullReview orchestration', () => {
       return mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars);
     };
 
-    // The push left the file alone, so a thread that already carries this grade gets no second reply. A reply that
-    // raises a grade goes out before the review, and the rest after it.
+    // The push left the file alone, so a thread that already carries this grade gets no second reply. The round
+    // record keeps each grade, so a reply only tells the thread and carries no marker.
     expect(await run('abc123')).toEqual([
-      { threadId: 'PRRT_jkl', body: '**Open again.** The timeout is gone again. This thread is a blocker again, so it blocks.\n\n<!-- manki -->\n<!-- manki-partly-fixed:blocker -->' },
-      { threadId: 'PRRT_abc', body: '**Partly fixed.** Still open: No timeout yet, ask @\u200Balice. What remains is a warning, so this thread no longer blocks.\n\n<!-- manki -->\n<!-- manki-partly-fixed:warning -->' },
-      { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left.\n\n<!-- manki -->\n<!-- manki-partly-fixed:warning -->' },
+      { threadId: 'PRRT_abc', body: '**Partly fixed.** Still open: No timeout yet, ask @\u200Balice. What remains is a warning, so this thread no longer blocks.\n\n<!-- manki -->' },
+      { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left.\n\n<!-- manki -->' },
+      { threadId: 'PRRT_jkl', body: '**Open again.** The timeout is gone again. This thread is a blocker again, so it blocks.\n\n<!-- manki -->' },
     ]);
-    const postedAt = mockGraphql.mock.invocationCallOrder[mockGraphql.mock.calls.findIndex(([query, vars]) => String(query).includes('addPullRequestReviewThreadReply') && (vars as { threadId: string }).threadId === 'PRRT_jkl')];
-    expect(postedAt).toBeLessThan(jest.mocked(ghUtils.postReview).mock.invocationCallOrder.at(-1)!);
+    // The record carries each thread's grade with the review that decided it.
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![7]!.judge.threadEvaluations?.map(e => [e.threadId, e.grade])).toEqual([
+      ['PRRT_abc', 'warning'], ['PRRT_def', 'warning'], ['PRRT_ghi', 'warning'], ['PRRT_jkl', 'blocker'], ['PRRT_mno', undefined],
+    ]);
 
-    // A reply that would raise a grade and fails stops the round before its review posts.
+    // A reply that fails loses only the note: the review still posts.
     const posts = jest.mocked(ghUtils.postReview).mock.calls.length;
     const answer = mockGraphql.getMockImplementation()!;
     mockGraphql.mockImplementation(async (query: string, vars: { threadId?: string }) => {
       if (query.includes('addPullRequestReviewThreadReply') && vars?.threadId === 'PRRT_jkl') throw new Error('GitHub is down');
       return answer(query, vars);
     });
-    const attempted = await run('abc123');
+    await run('abc123');
     mockGraphql.mockImplementation(answer);
-    expect(attempted.map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_jkl']);
-    expect(jest.mocked(ghUtils.postReview).mock.calls.length).toBe(posts);
-    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('GitHub is down'));
+    expect(jest.mocked(ghUtils.postReview).mock.calls.length).toBe(posts + 1);
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Failed to reply on partly fixed thread PRRT_jkl'));
     // When the change since the last round cannot be read, every partly fixed thread gets its reply.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed'));
-    expect((await run('old456')).map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_jkl', 'PRRT_abc', 'PRRT_def', 'PRRT_ghi']);
+    expect((await run('old456')).map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
   });
 
   it('skips resolving threads not in the openThreads allowlist', async () => {
