@@ -135,8 +135,7 @@ jest.mock('./diff', () => {
     changeDigest: jest.requireActual('./diff').changeDigest,
     rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,
     shortenLongLines: jest.requireActual('./diff').shortenLongLines,
-    citedRanges: jest.requireActual('./diff').citedRanges,
-    earliestCommitTouching: jest.requireActual('./diff').earliestCommitTouching,
+    onlyCommitChanging: jest.requireActual('./diff').onlyCommitChanging,
   };
 });
 
@@ -5571,6 +5570,26 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'Thread PRRT_ghi: uncertain — No clear evidence',
     );
+    // Without an earlier reviewed head, the reply names the range. So it does when reading the commits since that head
+    // fails, when more commits came than a round reads, and when two commits changed the thread's file.
+    const replies = () => mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars.body.split('\n')[0]);
+    expect(replies()).toEqual(['Fixed by the commits up to abc123.']);
+    seedPriorRounds([{ round: 1, commitSha: 'sha1', timestamp: '2025-01-01T00:00:00Z', findings: [] }], [
+      { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
+    ]);
+    jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue('diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n');
+    const cases = [Promise.reject(new Error('compare failed')), Promise.resolve(Array.from({ length: 21 }, (_, i) => `${i}`.padStart(7, '0'))), Promise.resolve(['1111111aaa', '2222222bbb'])];
+    for (const commits of cases) {
+      commits.catch(() => undefined);
+      mockGraphql.mockClear();
+      jest.mocked(ghUtils.fetchCommitsSince).mockReturnValueOnce(commits);
+      await callRunFullReview();
+      expect(jest.mocked(ghUtils.fetchCommitsSince)).toHaveBeenLastCalledWith(expect.anything(), 'test-owner', 'test-repo', 'sha1', 'abc123');
+      expect(replies()).toEqual(['Fixed by the commits up to abc123.']);
+    }
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not read the commits since the last review, so each fix reply names the range: Error: compare failed');
+    // Both commits are read, and each changed the thread's file, so neither is certain.
+    expect(jest.mocked(ghUtils.fetchCommitDiff).mock.calls.map(c => c[3])).toEqual(['1111111aaa', '2222222bbb']);
   });
 
   it('keeps a partly fixed thread open and replies there with what remains, once per grade while the push leaves its file alone', async () => {
