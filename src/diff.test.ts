@@ -695,6 +695,9 @@ describe('onlyCommitAdding', () => {
     expect(onlyCommitAdding(commits, [at('src/retry.ts', 17), at('src/unchanged.ts', 3)])).toBeUndefined();
     // The cap counts the lines of every cited range together.
     expect(onlyCommitAdding(commits, [at('src/retry.ts', 1, 150), at('src/retry.ts', 151, 300)])).toBeUndefined();
+    // A reversed range never cancels another one out of the count.
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 100000, 1), at('src/retry.ts', 1, 99999)])).toBeUndefined();
+    expect(onlyCommitAdding(commits, [at('src/retry.ts', 18, 17)])).toBeUndefined();
   });
 
   it('counts a removal between two cited lines as writing them, but not one above the first', () => {

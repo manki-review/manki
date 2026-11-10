@@ -226,7 +226,7 @@ const MAX_CERTAIN_LINES = 200;
  * Returns the sha of the only one of `commits`, oldest first, that added a line of `ranges` as the lines stand at the
  * newest commit. Each line keeps the commit that last added it, since no earlier commit wrote that line. A line next to
  * a change does not count. A removal counts only between two cited lines. Returns none when no commit or several did,
- * when a range names a file no commit changed or a line past the safe integers, when the ranges hold more than
+ * when a range is reversed or names a file no commit changed or a line past the safe integers, when the ranges hold more than
  * `MAX_CERTAIN_LINES` lines, or when a commit changed a cited file without lines to read. A range may name its file
  * without its directory, such as `retry.ts`. Such a name means `ownPath` when that is or ends with it, else the file
  * itself or the one changed file ending with it, and no commit is certain when several do.
@@ -234,8 +234,9 @@ const MAX_CERTAIN_LINES = 200;
 export function onlyCommitAdding(commits: CommitDiff[], ranges: LineRange[], ownPath?: string): string | undefined {
   const paths = new Set(commits.flatMap(c => c.diff.files.map(f => f.path)));
   const adding = new Set<string>();
-  // A line number past the safe integers would stall the walk.
-  if (!ranges.every(r => Number.isSafeInteger(r.end)) || ranges.reduce((n, r) => n + r.end - r.start + 1, 0) > MAX_CERTAIN_LINES) return undefined;
+  // A reversed range or one past the safe integers would let the line count cancel out or stall the walk.
+  if (!ranges.every(r => r.start >= 1 && r.start <= r.end && Number.isSafeInteger(r.end))) return undefined;
+  if (ranges.reduce((n, r) => n + r.end - r.start + 1, 0) > MAX_CERTAIN_LINES) return undefined;
   for (const range of ranges) {
     const path = resolvePath(range.file, paths, ownPath);
     // A cited file no commit changed leaves the fix open.
