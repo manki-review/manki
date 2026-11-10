@@ -3114,28 +3114,6 @@ async function fetchStandingVerdict(
   return undefined;
 }
 
-const CONFIG_ERROR_MARKER = '<!-- manki-config-error -->';
-
-/**
- * Posts a config load error on the PR. Uses its own marker instead of `BOT_MARKER`,
- * so the progress-comment scans never treat it as a run in progress or a stale one.
- */
-async function postConfigErrorComment(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  prNumber: number,
-  message: string,
-): Promise<void> {
-  const fence = dynamicFence(message);
-  const body = withMarkers(`**Manki** could not load its config, so no review ran. Fix the file and push again.\n\n${fence}\n${message}\n${fence}`, CONFIG_ERROR_MARKER);
-  try {
-    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
-  } catch (error) {
-    core.warning(`Failed to post config error comment: ${error instanceof Error ? error.message : error}`);
-  }
-}
-
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

@@ -141,19 +141,26 @@ function gitRepoFiles(root: string, commit: string): RepoFiles {
 }
 
 /**
- * Loads the config at `base` the way a pull request round does, and logs the keys `head` changes. With `overrides`, they
- * are set on top, and a config that does not load throws instead of falling back to the defaults.
+ * Loads the config at `base` the way a pull request round does, and logs the keys `head` changes. A config at `head` that
+ * does not load only gives a warning. With `overrides`, they are set on top, and a base config that does not load throws
+ * instead of falling back to the defaults.
  */
 async function loadLocalConfig(
   root: string, base: string, head: string, configPath: string, overrides?: ConfigOverrides,
 ): Promise<{ config: ReviewConfig; source: ConfigSource }> {
-  const headConfig = loadConfig(await gitRepoFiles(root, head).read(configPath) ?? undefined, configPath);
+  const describe = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  let headConfig: ReviewConfig | undefined;
+  try {
+    headConfig = loadConfig(await gitRepoFiles(root, head).read(configPath) ?? undefined, configPath);
+  } catch (error) {
+    core.warning(`Could not load ${configPath} at the head, this review uses the base's settings: ${describe(error)}`);
+  }
   const read = () => gitRepoFiles(root, base).read(configPath);
   const loaded = overrides
     ? loadOverlaidConfig(await read(), configPath, overrides)
-    : await loadBaseConfig(read, configPath, error => (error instanceof Error ? error.message : String(error)));
+    : await loadBaseConfig(read, configPath, describe);
   // A key the overrides set differs from the head's whatever the change did, so it is left out.
-  const changed = changedKeys(headConfig, loaded.config).filter(key => !(overrides && key in overrides));
+  const changed = headConfig ? changedKeys(headConfig, loaded.config).filter(key => !(overrides && key in overrides)) : [];
   if (changed.length > 0) {
     core.info(`This change edits ${changed.map(key => `\`${key}\``).join(', ')} in ${configPath}, which applies after merge: this review uses the base's settings.`);
   }

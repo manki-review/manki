@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
+import { ApprovalHeld, buildDashboard, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { highlightCode } from './highlight';
@@ -4864,21 +4864,6 @@ describe('fetchStandingVerdict', () => {
     expect(await fetchStandingVerdict(makeMockOctokit(reviews, [dismissal(7, 'approved')]), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
     expect(await fetchStandingVerdict(makeMockOctokit(reviews, [dismissal(7, 'changes_requested')]), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
     expect(await fetchStandingVerdict(makeMockOctokit(reviews, new Error('API error')), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
-  });
-});
-
-describe('postConfigErrorComment', () => {
-  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
-
-  it('posts the error in a fence that its own backticks cannot close, as no progress comment', async () => {
-    const createComment = jest.fn().mockResolvedValue({});
-    const poster = { rest: { issues: { createComment } } } as unknown as Octokit;
-    await postConfigErrorComment(poster, 'owner', 'repo', 1, 'Invalid YAML in .manki.yml: bad ``` indent');
-    const body = createComment.mock.calls[0][0].body as string;
-    expect(body.startsWith('**Manki** could not load its config')).toBe(true);
-    expect(body.endsWith(`\n\n${CONFIG_ERROR_MARKER}`)).toBe(true);
-    expect(body).not.toContain(BOT_MARKER);
-    expect(body).toContain('````\nInvalid YAML in .manki.yml: bad ``` indent\n````');
   });
 });
 

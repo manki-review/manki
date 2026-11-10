@@ -242,7 +242,6 @@ jest.mock('./github', () => ({
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
   REVIEW_INCOMPLETE_LINE: jest.requireActual('./github').REVIEW_INCOMPLETE_LINE,
   PAUSE_NOTICE_MARKER: jest.requireActual('./github').PAUSE_NOTICE_MARKER,
-  postConfigErrorComment: jest.fn().mockResolvedValue(undefined),
   latestSettings: jest.requireActual('./github').latestSettings,
   retireSettingsBlocks: jest.fn().mockResolvedValue(undefined),
   setSettingsBlock: jest.fn().mockResolvedValue(undefined),
@@ -2081,13 +2080,22 @@ describe('runFullReview orchestration', () => {
       );
     });
 
-    it('fails the run on a PR whose own config does not load, even when the base branch\'s does', async () => {
-      configFiles('review_passes: 9\n', async () => null);
+    it.each([
+      ['does not load', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5'],
+      ['is in a format this version no longer reads', 'review:\n  classes:\n    payments:\n      critical: true\n', '`review.classes.payments.critical`'],
+    ])('reviews with the base branch\'s settings and a warning when the PR\'s own config %s', async (_label, head, reason) => {
+      const base = 'review_passes: 2\n';
+      configFiles(head, async () => base);
 
       await callRunFullReview();
 
-      expect(jest.mocked(ghUtils.postConfigErrorComment)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 42, expect.stringContaining('`review_passes` must be an integer between 1 and 5'));
-      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+      expect(reviewedConfig()).toEqual(actualLoadConfig(base));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configFailed: false }));
+      const warnings = jest.mocked(core.warning).mock.calls.map(([message]) => String(message)).filter(m => m.includes('.manki.yml'));
+      expect(warnings).toEqual([expect.stringMatching(/^Could not load the PR's \.manki\.yml, this round uses the base branch's settings: .*/)]);
+      expect(warnings[0]).toContain(reason);
+      expect(jest.mocked(core.info).mock.calls.map(([message]) => String(message))).not.toContainEqual(expect.stringContaining('This PR changes'));
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -7355,21 +7363,6 @@ describe('runFullReview config and dedupe', () => {
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenCalled();
     const [, , , commentIdArg] = jest.mocked(ghUtils.updateProgressComment).mock.calls[0];
     expect(commentIdArg).toBe(1);
-  });
-
-  it('fails the run and posts the error on the PR when the config cannot be loaded', async () => {
-    jest.mocked(configModule.loadConfig).mockImplementationOnce(() => {
-      throw new Error('Invalid YAML in /repo/.manki.yml: Flow sequence in block collection must be sufficiently indented');
-    });
-
-    await expect(callRunFullReview()).resolves.toBeUndefined();
-
-    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Invalid YAML in /repo/.manki.yml'));
-    expect(jest.mocked(ghUtils.postConfigErrorComment)).toHaveBeenCalledWith(
-      mockOctokitInstance, 'test-owner', 'test-repo', 42, expect.stringContaining('Invalid YAML in /repo/.manki.yml: Flow sequence'),
-    );
-    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
-    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
   });
 
   it('bails when the bot already reviewed the head SHA', async () => {

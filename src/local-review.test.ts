@@ -215,7 +215,7 @@ describe('reviewLocal', () => {
     expect(runReview).not.toHaveBeenCalled();
   });
 
-  it('reviews with the defaults when the base config does not load, as a pull request round does', async () => {
+  it('reviews with the defaults when the base config does not load, and with the base config when the head\'s does not load, as a pull request round does', async () => {
     jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
     git(repo, 'checkout', '-q', '-b', 'broken', base);
     commit(repo, 'Break config', { '.manki.yml': 'exclude_paths: [\n' });
@@ -230,6 +230,19 @@ describe('reviewLocal', () => {
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not load .manki.yml on the base branch, reviewing with the defaults'));
     await expect(reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', configOverrides: { review_passes: 2 }, providerInputs: inputs }))
       .rejects.toThrow('Invalid YAML in .manki.yml');
+
+    jest.mocked(runReview).mockClear();
+    jest.mocked(core.warning).mockClear();
+    jest.mocked(core.info).mockClear();
+    git(repo, 'checkout', '-q', '-b', 'rebreak', 'fix');
+    commit(repo, 'Break config again', { '.manki.yml': 'exclude_paths: [\n', 'src/a.ts': 'const a = 3;\n' });
+
+    const fromHead = await reviewLocal({ repoRoot: repo, base: 'fix', head: 'rebreak', providerInputs: inputs });
+
+    expect(fromHead.approvalHeld).toBe(false);
+    expect(jest.mocked(runReview).mock.calls[0][1].config.exclude_paths).toEqual([]);
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringMatching(/^Could not load \.manki\.yml at the head, this review uses the base's settings: Invalid YAML/));
+    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('This change edits'));
   });
 
   it('sets config overrides on top of the base config, and refuses overrides that make it invalid or name an unknown key before any model call', async () => {

@@ -74,7 +74,6 @@ import {
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
   markProgressCommentSuperseded,
-  postConfigErrorComment,
   latestSettings,
   PAUSE_NOTICE_MARKER,
   REVIEW_COMPLETE_MARKER,
@@ -724,32 +723,29 @@ function cancelDashboardFlush(progress: RunProgress): void {
 }
 
 /**
- * Loads the round's config from the base branch, so a PR cannot weaken its own review. The PR's own `.manki.yml` is still
- * loaded, so one that does not load fails the run, and the keys it changes are logged as applying after merge.
- * Returns `undefined` after reporting a config that does not load.
+ * Loads the round's config from the base branch, so a PR cannot weaken its own review. The keys the PR's own `.manki.yml`
+ * changes are logged as applying after merge. A PR file that does not load only gives a warning.
  */
-async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ config: ReviewConfig; reviewSource: ConfigSource } | undefined> {
-  const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
+async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ config: ReviewConfig; reviewSource: ConfigSource }> {
+  const { octokit, owner, repo, commitSha, baseRef } = target;
   // The contents API takes a repo-relative path, so `./`, absolute and outside paths are normalised first.
   const cwd = path.resolve(process.cwd());
   const repoRelative = path.relative(cwd, path.resolve(cwd, configPath));
   const outside = repoRelative.startsWith('..') || path.isAbsolute(repoRelative);
   if (outside) core.warning('`config_path` points outside the repository, reading `.manki.yml`');
   const repoConfigPath = outside ? '.manki.yml' : repoRelative.split(path.sep).join('/');
+  let headConfig: ReviewConfig | undefined;
   try {
-    const headConfig = loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath);
-    const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, repoConfigPath), repoConfigPath, failureReason);
-    const changed = changedKeys(headConfig, config);
-    if (changed.length > 0) {
-      core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${repoConfigPath}. The change applies after merge: this round uses the base branch's settings.`);
-    }
-    return { config, reviewSource: source };
+    headConfig = loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath);
   } catch (error) {
-    const reason = failureReason(error);
-    core.setFailed(reason);
-    await postConfigErrorComment(octokit, owner, repo, prNumber, reason);
-    return undefined;
+    core.warning(`Could not load the PR's ${repoConfigPath}, this round uses the base branch's settings: ${failureReason(error)}`);
   }
+  const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, repoConfigPath), repoConfigPath, failureReason);
+  const changed = headConfig ? changedKeys(headConfig, config) : [];
+  if (changed.length > 0) {
+    core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${repoConfigPath}. The change applies after merge: this round uses the base branch's settings.`);
+  }
+  return { config, reviewSource: source };
 }
 
 /** Whether the run stops before posting a progress comment: the commit is reviewed or stale, or nothing changed. */
@@ -1734,9 +1730,7 @@ async function runFullReview(
   let checkReport: CheckReport | undefined;
 
   try {
-    const loaded = await loadRunConfig(target, configPath);
-    if (!loaded) return;
-    const { config, reviewSource } = loaded;
+    const { config, reviewSource } = await loadRunConfig(target, configPath);
     if (await skipsRound(target, config, trigger, options)) return;
 
     const commentId = await postRunProgress(target, progress, options);
