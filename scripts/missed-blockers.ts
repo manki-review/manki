@@ -161,9 +161,9 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
           followUp.mustKeepOpen.push({ id, severity, mechanism: title });
         } else if (resolved) {
           followUp.mustResolve.push(id);
-        } else if (evaluation || !state?.isResolved || sorted.slice(i + 1).some(r => evaluations(r).some(e => e.status === 'addressed')
+        } else if (evaluation || !state?.isResolved || sorted.slice(i + 1).some(r => evaluations(r).length > 0
           || thread.replies.some(c => c.body!.includes(fixedMarker(r.meta.commitSha))))) {
-          // The round left the thread open, and the thread is either still open or a later round dates its fix.
+          // The round left the thread open, and the thread is still open or a later round judged it, so it was open after this round.
           followUp.mustNotRepeat.push(id);
         }
       } else if (!thread && (round.findings.entries ?? []).some(e => e.fingerprint.file === entry.fingerprint.file && titlesOverlap(e.title ?? e.fingerprint.slug, title))) {
@@ -210,10 +210,12 @@ export interface BodyEdit {
 }
 
 /**
- * Returns the body as it was at `time`: the latest version edited at or before it. A body never edited is the same at
- * any time. Without a version from before `time`, the body cannot be recovered, and `known` is false.
+ * Returns the body as it was at `time`: the latest version edited at or before it. A body never edited, with an empty
+ * history, is the same at any time. Without the history, or a version from before `time`, the body cannot be recovered,
+ * and `known` is false.
  */
-export function bodyAt(current: string | null, edits: BodyEdit[], time: string): { body: string | null; known: boolean } {
+export function bodyAt(current: string | null, edits: BodyEdit[] | undefined, time: string): { body: string | null; known: boolean } {
+  if (!edits) return { body: current, known: false };
   if (edits.length === 0) return { body: current, known: true };
   const version = [...edits].sort((a, b) => b.editedAt.localeCompare(a.editedAt)).find(e => e.editedAt <= time);
   return typeof version?.diff === 'string' ? { body: version.diff, known: true } : { body: current, known: false };
@@ -288,12 +290,18 @@ function parseArgs(args: string[]): { owner: string; repo: string; last: number;
   return owner && repo && rest.length === 0 && Number.isInteger(last) && last > 0 ? { owner, repo, last, out: value('--out') ?? DEFAULT_OUT } : undefined;
 }
 
-async function fetchBodyEdits(octokit: ReturnType<typeof github.getOctokit>, owner: string, repo: string, number: number): Promise<BodyEdit[]> {
+/** Returns when the round's review started: its record's time less the run's wall-clock time, so an edit made during the review is left out. */
+export function reviewStart(round: RoundContext): string {
+  return new Date(Date.parse(round.meta.timestamp) - (round.usage.wallClockMs ?? 0)).toISOString();
+}
+
+/** Returns the body's edit history, or `undefined` when GitHub gives none. */
+async function fetchBodyEdits(octokit: ReturnType<typeof github.getOctokit>, owner: string, repo: string, number: number): Promise<BodyEdit[] | undefined> {
   const data = await octokit.graphql<{ repository: { pullRequest: { userContentEdits: { nodes: Array<BodyEdit | null> | null } | null } | null } }>(
     'query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { userContentEdits(first: 100) { nodes { editedAt diff } } } } }',
     { owner, repo, number },
   );
-  return (data.repository.pullRequest?.userContentEdits?.nodes ?? []).filter((e): e is BodyEdit => !!e);
+  return data.repository.pullRequest?.userContentEdits?.nodes?.filter((e): e is BodyEdit => !!e);
 }
 
 async function main(args: string[]): Promise<number> {
@@ -328,7 +336,7 @@ async function main(args: string[]): Promise<number> {
         continue;
       }
       const followUp = followUps.get(round);
-      const { body, known } = bodyAt(pr.body, edits, rounds.find(r => r.meta.round === round)!.meta.timestamp);
+      const { body, known } = bodyAt(pr.body, edits, reviewStart(rounds.find(r => r.meta.round === round)!));
       const { id, text } = draftCase(`${owner}/${repo}`, { number: pr.number, title: pr.title, body, bodyAtRound: known }, miss, base, followUp);
       writeFileSync(join(out, `${id}.yml`), text);
       written++;
