@@ -727,9 +727,10 @@ function cancelDashboardFlush(progress: RunProgress): void {
 
 /**
  * Loads the round's config from the base branch, so a PR cannot weaken its own review. The keys the PR's own `.manki.yml`
- * changes are logged as applying after merge. A PR file that does not load gives a warning, and its path as `brokenHead`.
+ * changes are logged as applying after merge. A PR file that does not load gives a warning and `brokenHead`, which says
+ * whether the PR changed it.
  */
-async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ config: ReviewConfig; reviewSource: ConfigSource; brokenHead?: string }> {
+async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ config: ReviewConfig; reviewSource: ConfigSource; brokenHead?: { changed: boolean } }> {
   const { octokit, owner, repo, commitSha, baseRef } = target;
   // The contents API takes a repo-relative path, so `./`, absolute and outside paths are normalised first.
   const cwd = path.resolve(process.cwd());
@@ -737,19 +738,37 @@ async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ c
   const outside = repoRelative.startsWith('..') || path.isAbsolute(repoRelative);
   if (outside) core.warning('`config_path` points outside the repository, reading `.manki.yml`');
   const repoConfigPath = outside ? '.manki.yml' : repoRelative.split(path.sep).join('/');
+  let headContent: string | null | undefined;
   let headConfig: ReviewConfig | undefined;
   try {
-    headConfig = loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath);
+    headContent = await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath);
+    headConfig = loadConfig(headContent ?? undefined, repoConfigPath);
   } catch (error) {
     core.warning(`Could not read or load the PR's ${repoConfigPath}, this round uses the base branch's settings: ${failureReason(error)}`);
   }
   const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, repoConfigPath), repoConfigPath, failureReason);
-  if (!headConfig) return { config, reviewSource: source, brokenHead: repoConfigPath };
+  if (!headConfig) return { config, reviewSource: source, brokenHead: { changed: await changesConfig(target, repoConfigPath, headContent) } };
   const changed = changedKeys(headConfig, config);
   if (changed.length > 0) {
     core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${repoConfigPath}. The change applies after merge: this round uses the base branch's settings.`);
   }
   return { config, reviewSource: source };
+}
+
+/**
+ * Whether the PR changed its config file: the copy at its head differs from the copy at the merge base. A copy that cannot
+ * be read or compared counts as changed, so its approval is held.
+ */
+async function changesConfig(target: RunTarget, configPath: string, headContent: string | null | undefined): Promise<boolean> {
+  if (headContent === undefined) return true;
+  const { octokit, owner, repo, commitSha, baseRef } = target;
+  try {
+    const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base: baseRef, head: commitSha, per_page: 1 });
+    return await readConfigFile(octokit, owner, repo, data.merge_base_commit.sha, configPath) !== headContent;
+  } catch (error) {
+    core.warning(`Could not read ${configPath} at the merge base, so the PR counts as changing it: ${failureReason(error)}`);
+    return true;
+  }
 }
 
 /**
@@ -1831,7 +1850,7 @@ async function runFullReview(
     ]);
 
     const run: ReviewRun = {
-      ...target, options, trigger, config, reviewSource, configHold: brokenConfig(reviewSource, brokenHead, fullDiff), models, plannerEnabled: !!clients.planner,
+      ...target, options, trigger, config, reviewSource, configHold: brokenConfig(reviewSource, brokenHead?.changed ?? false), models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
       diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
       commentId, dashboard, progress, startTime, parseEndTime,

@@ -117,7 +117,7 @@ export interface LocalReview {
   /** The commit the change starts from: the merge base, or `head` for a patch. */
   base: string;
   head: string;
-  /** Set to `config` when the base config, or the head's copy the change edits, did not load, which holds a pull request round's approval. */
+  /** Set to `config` when the base config, or a head copy that differs from the base's, did not load, which holds a pull request round's approval. */
   approvalHeld: ApprovalHeld;
 }
 
@@ -142,16 +142,18 @@ function gitRepoFiles(root: string, commit: string): RepoFiles {
 
 /**
  * Loads the config at `base` the way a pull request round does, and logs the keys `head` changes. A config at `head` that
- * does not load gives a warning, and its path as `brokenHead`. With `overrides`, they are set on top, and a base config
- * that does not load throws instead of falling back to the defaults.
+ * does not load gives a warning and `brokenHead`, which says whether it differs from the copy at `base`. With `overrides`,
+ * they are set on top, and a base config that does not load throws instead of falling back to the defaults.
  */
 async function loadLocalConfig(
   root: string, base: string, head: string, configPath: string, overrides?: ConfigOverrides,
-): Promise<{ config: ReviewConfig; source: ConfigSource; brokenHead?: string }> {
+): Promise<{ config: ReviewConfig; source: ConfigSource; brokenHead?: { changed: boolean } }> {
   const describe = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  let headContent: string | null | undefined;
   let headConfig: ReviewConfig | undefined;
   try {
-    headConfig = loadConfig(await gitRepoFiles(root, head).read(configPath) ?? undefined, configPath);
+    headContent = await gitRepoFiles(root, head).read(configPath);
+    headConfig = loadConfig(headContent ?? undefined, configPath);
   } catch (error) {
     core.warning(`Could not load ${configPath} at the head, this review uses the base's settings: ${describe(error)}`);
   }
@@ -159,7 +161,8 @@ async function loadLocalConfig(
   const loaded = overrides
     ? loadOverlaidConfig(await read(), configPath, overrides)
     : await loadBaseConfig(read, configPath, describe);
-  if (!headConfig) return { ...loaded, brokenHead: configPath };
+  // A copy that cannot be read or compared counts as changed, so its approval is held.
+  if (!headConfig) return { ...loaded, brokenHead: { changed: headContent === undefined || headContent !== await read().catch(() => undefined) } };
   // A key the overrides set differs from the head's whatever the change did, so it is left out.
   const changed = changedKeys(headConfig, loaded.config).filter(key => !(overrides && key in overrides));
   if (changed.length > 0) {
@@ -329,7 +332,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       priorRoundCount: followUp?.priorRounds.length ?? 0, maxAutoRounds: 0, diff, changeDigest: changeDigest(fullDiff), excludedFiles,
       openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled',
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
-    return { result, context, base, head, approvalHeld: brokenConfig(loaded.source, loaded.brokenHead, fullDiff) ? 'config' : false };
+    return { result, context, base, head, approvalHeld: brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config' : false };
   } finally {
     if (workspace) rmSync(workspace, { recursive: true, force: true });
   }

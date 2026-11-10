@@ -34,6 +34,7 @@ const mockPullsGet = jest.fn().mockResolvedValue({
 });
 
 const mockListReviews = jest.fn().mockResolvedValue({ data: [] });
+const mockCompareCommits = jest.fn().mockResolvedValue({ data: { merge_base_commit: { sha: 'merge-base' } } });
 
 const mockListReactionsForIssueComment = jest.fn().mockResolvedValue({ data: [] });
 
@@ -57,6 +58,7 @@ const mockOctokitInstance = {
     issues: { deleteComment: jest.fn().mockResolvedValue(undefined), listComments: mockListComments, createComment: jest.fn().mockResolvedValue({ data: { id: 999 } }), updateComment: jest.fn().mockResolvedValue({}) },
     reactions: { listForIssueComment: mockListReactionsForIssueComment },
     checks: { create: mockChecksCreate, update: mockChecksUpdate, get: mockChecksGet },
+    repos: { compareCommits: mockCompareCommits },
   },
   graphql: mockGraphql,
   hook: { wrap: jest.fn((_name: string, hook: RequestHook) => { requestHooks.push(hook); }) },
@@ -2082,23 +2084,29 @@ describe('runFullReview orchestration', () => {
     });
 
     it.each([
-      ['does not load', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5', false],
-      ['is in a format this version no longer reads', 'review:\n  classes:\n    payments:\n      critical: true\n', '`review.classes.payments.critical`', false],
-      ['does not load after the PR\'s own change to it', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5', true],
-    ])('reviews with the base branch\'s settings and a warning when the PR\'s own config %s', async (_label, head, reason, changesConfig) => {
+      ['does not load', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5', 'same', undefined],
+      ['is in a format this version no longer reads', 'review:\n  classes:\n    payments:\n      critical: true\n', '`review.classes.payments.critical`', 'same', undefined],
+      ['does not load after the PR\'s own change to it', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5', 'changed', 'head'],
+      ['does not load and its merge base cannot be read', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5', 'unknown', 'head'],
+    ] as const)('reviews with the base branch\'s settings and a warning when the PR\'s own config %s', async (_label, head, reason, mergeBase, configHold) => {
       const base = 'review_passes: 2\n';
       configFiles(head, async () => base);
-      // Only a PR whose own diff changes the file holds its approval. One that merely predates the base's copy does not.
-      if (changesConfig) {
-        jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile, { path: '.manki.yml', changeType: 'modified' as const, hunks: [] }], totalAdditions: 2, totalDeletions: 0 });
+      // Only a copy the PR changed since the merge base holds the approval. One that merely predates the base's copy does not.
+      if (mergeBase === 'changed') {
+        jest.mocked(ghUtils.readConfigFile).mockImplementation(async (_o, _ow, _r, ref) => (ref === 'abc123' ? head : base));
       }
+      if (mergeBase === 'unknown') mockCompareCommits.mockRejectedValueOnce(new Error('API 500'));
 
       await callRunFullReview();
 
       expect(reviewedConfig()).toEqual(actualLoadConfig(base));
-      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: changesConfig ? 'head' : undefined }));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold }));
+      expect(mockCompareCommits).toHaveBeenCalledWith(expect.objectContaining({ base: 'main', head: 'abc123' }));
       const warnings = jest.mocked(core.warning).mock.calls.map(([message]) => String(message)).filter(m => m.includes('.manki.yml'));
-      expect(warnings).toEqual([expect.stringMatching(/^Could not read or load the PR's \.manki\.yml, this round uses the base branch's settings: .*/)]);
+      expect(warnings).toEqual([
+        expect.stringMatching(/^Could not read or load the PR's \.manki\.yml, this round uses the base branch's settings: .*/),
+        ...(mergeBase === 'unknown' ? ['Could not read .manki.yml at the merge base, so the PR counts as changing it: API 500'] : []),
+      ]);
       expect(warnings[0]).toContain(reason);
       expect(jest.mocked(core.info).mock.calls.map(([message]) => String(message))).not.toContainEqual(expect.stringContaining('This PR changes'));
       expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
