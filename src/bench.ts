@@ -678,7 +678,7 @@ export function mergeReports(parts: BenchReport[], cases: BenchCase[], meta: Pic
   };
 }
 
-/** How far a figure where more is better, such as the found must-catch items, may fall before a release fails. */
+/** How far a figure may get worse, per run on average, before a release fails, such as one more false blocker. */
 const GATE_MARGIN = 1;
 const GATE_EPSILON = 1e-9;
 
@@ -700,7 +700,7 @@ interface GateSide {
 
 type GateFigure = Exclude<keyof GateSide, 'runs'>;
 
-/** The figures where more is better, which may fall within `GATE_MARGIN`, and those where less is better, which may not rise. */
+/** The figures the gate compares, and whether more or less of each is better. */
 const GATE_FIGURES: Array<{ key: GateFigure; label: string; row: string; better: 'more' | 'less' }> = [
   { key: 'found', label: "Must-catch items found at the key's grade", row: 'Must-catch found at grade', better: 'more' },
   { key: 'resolvedRight', label: 'Earlier threads resolved as the key says', row: 'Resolved right', better: 'more' },
@@ -748,10 +748,10 @@ function figure(value: number): string {
 
 /**
  * Applies the release gate to each variant both sides scored, on the hold-out cases both scored with the same key
- * version. A side with an incomplete review decides nothing. A rise in a figure where less is better fails. A figure
- * where more is better may fall by at most `GATE_MARGIN`, and a fall within it on a single candidate run asks for a
- * rerun, decided on the mean. Throws when the candidate reports reviewed different commits, the baseline reviewed the
- * candidate's commit, or the reports were matched by different models.
+ * version. A side with an incomplete review decides nothing. Each figure may get worse by at most `GATE_MARGIN` per
+ * run, and a change within it on a single candidate run asks for a rerun, decided on the mean. Throws when the
+ * candidate reports reviewed different commits, the baseline reviewed the candidate's commit, or the reports were
+ * matched by different models.
  */
 export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): GateResult[] {
   if (baseline.length === 0 || candidate.length === 0) throw new Error('The gate needs a baseline and a candidate report');
@@ -788,23 +788,19 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
     const [b, c] = [gateSide(base, alike), gateSide(cand, alike)];
     const sides = { shared: alike, ...left, baseline: b, candidate: c };
     const worse = GATE_FIGURES.map(f => ({ ...f, by: f.better === 'more' ? b[f.key] - c[f.key] : c[f.key] - b[f.key] })).filter(f => f.by > GATE_EPSILON);
-    const failed = worse.filter(f => f.better === 'less' || f.by > GATE_MARGIN + GATE_EPSILON);
+    const changed = (figures: typeof worse) => joinParts(figures.map(f => `${f.label} ${f.better === 'more' ? 'fell' : 'rose'} from ${figure(b[f.key])} to ${figure(c[f.key])}`), ', and ');
+    const failed = worse.filter(f => f.by > GATE_MARGIN + GATE_EPSILON);
     if (failed.length > 0) {
-      const reasons = failed.map(f => (f.better === 'less'
-        ? `${f.label} rose from ${figure(b[f.key])} to ${figure(c[f.key])} per run.`
-        : `${f.label} fell by ${figure(f.by)}, more than ${GATE_MARGIN}.`));
-      return { variant: name, verdict: 'FAIL', reason: reasons.join(' '), ...sides };
+      return { variant: name, verdict: 'FAIL', reason: `${changed(failed)} per run, by more than ${GATE_MARGIN}.`, ...sides };
     }
-    const fell = worse.length > 0 ? joinParts(worse.map(f => `${f.label} fell by ${figure(f.by)}`), ', and ') : '';
-    if (fell && c.runs < 2) {
+    if (worse.length > 0 && c.runs < 2) {
       return {
         variant: name, verdict: 'RERUN', ...sides,
-        reason: `${fell}, within the margin of ${GATE_MARGIN}. Run the candidate once more and decide on the mean of both runs.`,
+        reason: `${changed(worse)} per run, within the margin of ${GATE_MARGIN}. Run the candidate once more and decide on the mean of both runs.`,
       };
     }
-    const labels = (better: 'more' | 'less') => joinParts(GATE_FIGURES.filter(f => f.better === better).map(f => f.label));
-    const more = fell ? `${fell} on the mean of ${c.runs} runs, within the margin of ${GATE_MARGIN}` : `${labels('more')} did not fall`;
-    return { variant: name, verdict: 'PASS', reason: `${labels('less')} did not rise. ${more}.`, ...sides };
+    const within = worse.length > 0 ? `${changed(worse)} on the mean of ${c.runs} runs, within the margin of ${GATE_MARGIN}. ` : '';
+    return { variant: name, verdict: 'PASS', reason: `${within}No ${within ? 'other ' : ''}figure got worse.`, ...sides };
   });
 }
 
