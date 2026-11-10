@@ -194,6 +194,12 @@ export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: s
   return undefined;
 }
 
+/** Returns the line that says a round requests changes because the round records of `reviews` could not be read while a thread is open. */
+export function unreadRecordsLine(reviews: readonly string[]): string {
+  const named = reviews.map((url, i) => `[review ${i + 1}](${url})`).join(', ');
+  return `**Approval withheld:** an earlier review record could not be read${named ? ` (${named})` : ''}, so Manki cannot tell how serious the open threads are and does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.`;
+}
+
 /** Returns the line that says why Manki does not approve. */
 export function approvalHoldLine(hold: ApprovalHold): string {
   if (hold.reason === 'draft') return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.';
@@ -1452,8 +1458,10 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped, memorySkip, restart, onPosted }: {
+  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configFailed?: boolean; noVerdict?: boolean;
+    /** The reviews whose round record could not be read while a thread stays open, named in the review's first line. */
+    unreadRecords?: string[];
     /** Why the round ran without memory, with the fix. */
     memorySkip?: string;
     /** What a review started by hand turns back on, for a round that pauses automatic review. */
@@ -1573,7 +1581,7 @@ export async function postReview(
   const renderBody = (withoutLineThreads = false): string => {
     const threads = threadFindings.filter(f => !(withoutLineThreads && lineThreads.has(f)));
     const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: bodyFindings, hold }, limitWarning);
-    let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
+    let head = [heldLine, unreadRecords && unreadRecordsLine(unreadRecords), lead].filter(Boolean).join('\n\n');
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
     }

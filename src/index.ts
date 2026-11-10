@@ -59,6 +59,7 @@ import {
   dismissPreviousReviews,
   postReview,
   formatOpenBlockers,
+  unreadRecordsLine,
   reactToIssueComment,
   fetchLinkedIssues,
   APPROVED_LINE,
@@ -1508,7 +1509,7 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
 }
 
 /** Posts the round's review and dismisses the previous one. Returns the new review's id, and whether its approval was held. */
-async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
+async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string, unreadRecords?: string[]): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const { octokit, owner, repo, prNumber, commitSha, diff, recap } = run;
   // A finding on a parsed lockfile gets a thread on its line like any other.
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, withLockfiles(diff, run.lockfiles), context, reviewTimeMs, {
@@ -1517,6 +1518,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     configFailed: configFailed(run.reviewSource),
     memorySkip: run.memorySkip?.message,
     restart,
+    ...(unreadRecords && { unreadRecords }),
     skipped: { excluded: run.excludedFiles.filter(f => !run.lockfiles.some(l => l.path === f.path)), binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
     onPosted: () => { run.progress.reviewPosted = true; },
   });
@@ -1855,17 +1857,20 @@ async function runFullReview(
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
     const resolved = await resolveAddressedThreads(run, result);
-    // A round record that could not be read may hold a raise, so the round does not approve while a Manki thread stays open.
-    if (recap.priorRoundsIncomplete) {
-      const agreed = new Set(recap.previousFindings.filter(f => f.threadId && replyClassOf(f) === 'agree').map(f => f.threadId));
-      blockOnOpenThreads(result, run.openThreads.filter(t => !resolved.includes(t) && !agreed.has(t.threadId)).map(t => ({ ...t, recordedGrade: 'blocker' as const })));
-    }
+    // A round record that could not be read may hold a raise, so the round requests changes while a Manki thread stays open,
+    // and says why in the review and the check.
+    const agreed = new Set(recap.previousFindings.filter(f => f.threadId && replyClassOf(f) === 'agree').map(f => f.threadId));
+    const stillOpen = recap.priorRoundsIncomplete ? run.openThreads.filter(t => !resolved.includes(t) && !agreed.has(t.threadId)) : [];
+    // Only a round the unread record kept from approving names it as the reason.
+    const withheld = stillOpen.length > 0 && result.verdict === 'APPROVE';
+    blockOnOpenThreads(result, stillOpen.map(t => ({ ...t, recordedGrade: 'blocker' as const })));
+    const unreadRecords = withheld ? recap.unreadRecords ?? [] : undefined;
     const replies = await replyInOpenThreads(run, result);
     const context = buildContext();
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     let posted: Awaited<ReturnType<typeof postRound>>;
     try {
-      posted = await postRound(run, result, context, reviewTimeMs, pauseAfter.restart);
+      posted = await postRound(run, result, context, reviewTimeMs, pauseAfter.restart, unreadRecords);
     } catch (error) {
       // A thread is resolved only by a review that replaces the previous one. A reply stays under a review that posted.
       await reopenThreads(octokit, resolved);
@@ -1883,7 +1888,7 @@ async function runFullReview(
     await completeProgressComment(run, stage, reviewTimeMs);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
     setReviewOutputs(posted.id, context, result);
-    checkReport = outcomeReport(result.outcome, result.summary, posted.approvalHeld);
+    checkReport = outcomeReport(result.outcome, unreadRecords ? `${unreadRecordsLine(unreadRecords)}\n\n${result.summary}` : result.summary, posted.approvalHeld);
   } catch (caught) {
     cancelDashboardFlush(progress);
     // A stopped run reports the stop, whatever error it ended on.
