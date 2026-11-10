@@ -917,7 +917,7 @@ export function buildJudgeUserMessage(
     } else {
       parts.push(`### Finding ${i + 1}: ${sanitizeForPromptEmbed(f.title)}`);
       parts.push(`- **File**: ${f.file}:${f.line}`);
-      // A name can carry a model-written title, such as a sweep's, so it is embedded like any untrusted text.
+      // A name is embedded like any untrusted text, so none can carry instructions into the prompt.
       parts.push(`- **Reviewers**: ${f.reviewers.map(sanitizeForPromptEmbed).join(', ')}`);
       parts.push(`- **Description**: ${sanitizeForPromptEmbed(f.description)}`);
       parts.push(...reviewerEvidenceLines(f));

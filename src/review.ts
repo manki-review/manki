@@ -1284,8 +1284,14 @@ export async function runReview(
     sweeps = sweep.sweeps;
     // A place the round already judged, kept or dropped, is not judged twice. The rest count as raw findings, like a finder's.
     const judgedAlready = allJudgedFindings ?? [];
-    // So is a place any judged finding cites as its location, proof or evidence, in whichever file.
-    const unmatched = sweep.findings.filter(s => !judgedAlready.some(f => sameProblem(f, s) || citedBy(f, s)));
+    // So is a place exactly on a line a kept judged finding cites as its location, proof or evidence, in whichever file.
+    const citing = judgedAlready.filter(f => f.severity !== 'ignore');
+    const unmatched = sweep.findings.filter(s => {
+      if (judgedAlready.some(f => sameProblem(f, s))) return false;
+      const cited = citing.find(f => citedBy(f, s, 0));
+      if (cited) core.info(`Sweep place ${s.file}:${s.line} is already cited by "${cited.title}", so it is not judged again`);
+      return !cited;
+    });
     // A sweep finding near one the round judged can say the same in other words, so the dedup model checks those pairs.
     const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => nearEachOther(f, s) ? [{ i, f }] : []));
     const dedupClient = clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');

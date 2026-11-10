@@ -87,13 +87,13 @@ function parseSweep(text: string, reviewer: string): { general: boolean; defectC
 }
 
 /**
- * Whether `f` sits on `cited`'s own line or near a line `cited` names in its proof or evidence, in any file. A cited
- * span wider than a few lines proves no one line, so it hides no other instance inside it.
+ * Whether `f` sits on `cited`'s own line or a line `cited` names in its proof or evidence, in any file, or within
+ * `tolerance` lines of one. A cited span wider than a few lines proves no one line, so it hides no other instance inside it.
  */
-export function citedBy(cited: Finding, f: Finding): boolean {
+export function citedBy(cited: Finding, f: Finding, tolerance = OWN_LINE_TOLERANCE): boolean {
   const spans = [`${cited.file}:${cited.line}`, ...(cited.evidence?.proof ?? []), ...(cited.evidence?.checks ?? []).map(c => c.match(/^\S+?:\d+(?:-\d+)?/)?.[0] ?? '')]
     .flatMap(location => parseLocation(location) ?? []).filter(span => span.end - span.start <= OWN_LINE_TOLERANCE * 2);
-  return spans.some(span => span.file === f.file && span.start - OWN_LINE_TOLERANCE <= f.line && f.line <= span.end + OWN_LINE_TOLERANCE);
+  return spans.some(span => span.file === f.file && span.start - tolerance <= f.line && f.line <= span.end + tolerance);
 }
 
 export interface SweepOptions {
