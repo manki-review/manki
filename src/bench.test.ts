@@ -385,6 +385,7 @@ describe('scoreRun on a follow-up case', () => {
     expect(await verdict({ mustKeepOpen: [] })).toBe(true);
     expect(await verdict({ mustKeepOpen: [{ ...followUp.mustKeepOpen[0], severity: 'blocker' }] })).toBe(false);
     expect(await verdict({ mustKeepOpen: [], mustResolve: [], mustNotRepeat: ['P1'] })).toBe(false);
+    expect(await verdict({ mustKeepOpen: [], mustResolve: [] })).toBe(false);
   });
 });
 
@@ -601,9 +602,14 @@ describe('mergeReports and gateReports', () => {
     const followUps = async (scores: Partial<NonNullable<Run['followUp']>>) => report([
       [first, [{ ...await run(first, 'blocker'), followUp: { resolved: [], resolvedRight: 0, resolvedWrong: 0, repeats: 0, ...scores } }]], [second, [await run(second, 'blocker')]],
     ]);
-    expect(gateReports([baseline], [await followUps({ resolvedWrong: 1, repeats: 2 })])[0]).toMatchObject({
+    expect(gateReports([await followUps({})], [await followUps({ resolvedWrong: 1, repeats: 2 })])[0]).toMatchObject({
       verdict: 'FAIL', reason: 'Earlier threads resolved that the key keeps open rose from 0 to 1 per run. Earlier findings posted again rose from 0 to 2 per run.',
     });
+    const firstRoundOnOneSide = gateReports([baseline], [await followUps({ resolvedWrong: 1 })])[0];
+    expect(firstRoundOnOneSide).toMatchObject({ verdict: 'PASS', shared: ['demo-2'], unlike: ['demo-1'] });
+    expect(formatGate([firstRoundOnOneSide])).toContain('Left out, scored as a follow-up round on one side and as a first round on the other: demo-1\n');
+    const onlyUnlike = report([[first, [{ ...await run(first, 'blocker'), followUp: { resolved: [], resolvedRight: 0, resolvedWrong: 0, repeats: 0 } }]]]);
+    expect(gateReports([report([[first, [await run(first, 'blocker')]]])], [onlyUnlike])[0]).toMatchObject({ verdict: 'NO DECISION', shared: [], unlike: ['demo-1'] });
     expect(gateReports([await followUps({ resolvedRight: 1 })], [await followUps({ resolvedRight: 0 })])[0]).toMatchObject({
       verdict: 'RERUN', reason: 'Earlier threads resolved as the key says fell by 1, within the margin of 1. Run the candidate once more and decide on the mean of both runs.',
     });

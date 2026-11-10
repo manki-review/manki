@@ -450,11 +450,16 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
 
 /**
  * The verdict a review of the case should reach: block on a must-catch blocker or an earlier blocker still in the code,
- * approve when nothing is left to fix, and none otherwise.
+ * approve when nothing is left to fix, and none otherwise. An earlier blocker thread that stays open blocks whatever
+ * grade its leftover keeps, as a pull request round blocks on it.
  */
 function expectedVerdict(benchCase: BenchCase): 'block' | 'approve' | undefined {
-  const { mustCatch, mustKeepOpen, mustNotRepeat, priorRound } = benchCase;
-  const stillThere = [...mustCatch, ...mustKeepOpen, ...mustNotRepeat.map(id => priorRound!.findings.find(f => f.id === id)!)];
+  const { mustCatch, mustKeepOpen, mustNotRepeat, mustResolve, priorRound } = benchCase;
+  const earlier = priorRound?.findings ?? [];
+  const stillThere = [
+    ...mustCatch, ...mustKeepOpen, ...mustNotRepeat.map(id => earlier.find(f => f.id === id)!),
+    ...earlier.filter(f => f.thread === 'open' && !mustResolve.includes(f.id)),
+  ];
   if (stillThere.some(item => item.severity === 'blocker')) return 'block';
   return mustCatch.length === 0 && mustKeepOpen.length === 0 ? 'approve' : undefined;
 }
@@ -703,8 +708,10 @@ export interface GateResult {
   variant: string;
   verdict: 'PASS' | 'FAIL' | 'RERUN' | 'NO DECISION';
   reason: string;
-  /** The hold-out cases both sides scored with the same key version. */
+  /** The hold-out cases both sides scored with the same key version, and as the same kind of round. */
   shared: string[];
+  /** Shared cases one side scored as a follow-up round and the other as a first round, which the gate leaves out. */
+  unlike?: string[];
   baseline?: GateSide;
   candidate?: GateSide;
 }
@@ -768,8 +775,13 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
       const listed = sides.filter(([, ids]) => ids.length > 0).map(([side, ids]) => `The ${side} has incomplete reviews on ${ids.join(', ')}.`);
       return { variant: name, verdict: 'NO DECISION', reason: `${listed.join(' ')} A run with incomplete reviews does not count, so run that side again.`, shared };
     }
-    const [b, c] = [gateSide(base, shared), gateSide(cand, shared)];
-    const sides = { shared, baseline: b, candidate: c };
+    // A ref without follow-up cases reviews one as a first round, so its figures do not compare with a follow-up round's.
+    const unlike = shared.filter(id => new Set(every.flatMap(v => v.cases.find(c => c.id === id)!.runs.map(run => !!run.followUp))).size > 1);
+    const alike = shared.filter(id => !unlike.includes(id));
+    const left = unlike.length > 0 ? { unlike } : {};
+    if (alike.length === 0) return { variant: name, verdict: 'NO DECISION', reason: 'The shared hold-out cases were scored as a follow-up round on one side and as a first round on the other.', shared: alike, ...left };
+    const [b, c] = [gateSide(base, alike), gateSide(cand, alike)];
+    const sides = { shared: alike, ...left, baseline: b, candidate: c };
     const worse = GATE_FIGURES.map(f => ({ ...f, by: f.better === 'more' ? b[f.key] - c[f.key] : c[f.key] - b[f.key] })).filter(f => f.by > GATE_EPSILON);
     const failed = worse.filter(f => f.better === 'less' || f.by > GATE_MARGIN + GATE_EPSILON);
     if (failed.length > 0) {
@@ -800,6 +812,7 @@ export function formatGate(results: GateResult[]): string {
       lines.push('| Figure | Baseline | Candidate |', '| --- | --- | --- |', row('Runs per case', 'runs'), ...GATE_FIGURES.map(f => row(f.row, f.key)), '');
     }
     lines.push(`Shared hold-out cases (${r.shared.length}): ${r.shared.join(', ') || 'none'}`, '');
+    if (r.unlike) lines.push(`Left out, scored as a follow-up round on one side and as a first round on the other: ${r.unlike.join(', ')}`, '');
     return lines.join('\n');
   }).join('\n');
 }
