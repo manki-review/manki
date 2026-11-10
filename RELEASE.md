@@ -24,7 +24,7 @@ npm run check-changelog-version
 
    Put the links of the run, or both runs, and the gate result in the release PR body, where the next release finds its baseline. The `bench-report` artifact is kept for 90 days. When the baseline's has expired, run the last release's tag with `runs: 2` and use that run as the baseline.
 
-   The first baseline with two runs is v7.3.2's, runs 42729695122 and 42733124985.
+   The first baseline with two runs is v7.3.2's, runs 42729695122 and 42733124985. Both reviewed commit 178ae7729f61adcbec86311c310e53945adea75c.
 2. Write a new `## [X.Y.Z] - YYYY-MM-DD` section in `CHANGELOG.md` from the PRs merged since the last tag (`git log --oneline vPREV..main`, then each PR's title and body), grouped by what a Manki user notices, not by PR. Use these sections in this order and leave out any that are empty: Breaking changes and migration (or Upgrading for a minor release), Review loop and verdicts, Review format, Security, Static analysis, Reviewer groups and models, Reliability, Docs, Internal. A new feature area, such as Webhook mode, gets its own section after the first one. Each entry is one or two plain sentences on what changed for the user, ending with the PR links. Fold anything still under `## [Unreleased]` into it. Feature and fix PRs never edit `CHANGELOG.md`, and CI rejects one that does, so this is the only place entries are written.
 3. Bump `version` in `package.json` to `X.Y.Z`.
 4. Refresh `package-lock.json` (`npm install` will do it).
