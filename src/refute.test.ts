@@ -354,6 +354,9 @@ describe('refuteBlockers', () => {
     });
     // A disproof cites only the premise it rests on, never the lines that confirmed another premise.
     expect(result.find(f => f.title === 'Disproved beside a confirmed premise')?.refutation?.proof).toEqual(['src/math.ts:1']);
+    // An unsettled outcome keeps the lines every settled premise cites.
+    expect(result.find(f => f.title === 'One premise confirmed')?.refutation?.proof).toEqual(['src/math.ts:2']);
+    expect(result.find(f => f.title === 'Lowering premise holds')?.refutation?.proof).toEqual(['src/math.ts:1']);
     expect(result[1].judgeNotes).toBe('Refutation unsettled: The code fact holds.\n- Premise "No caller bounds `a`" confirmed. It holds.\n- Premise "A public handler passes `a` through" unsettled. No caller found.');
     const message = client.messages.find(([, user]) => user.includes(': Every premise confirmed\n'))!;
     expect(message[1]).toContain("- **Premises the judge doubts**, to answer in order:\n  1. No caller bounds 'a'\n  2. A public handler passes 'a' through");
@@ -377,6 +380,8 @@ describe('refuteBlockers', () => {
       doubted('Doubted warning 3', 'warning'),
       // Blockers are always checked and take none of the four.
       doubted('Doubted blocker', 'blocker'),
+      // A doubt only about the grade cannot change a finding kept at that grade, so it takes no check.
+      finding('Grade doubt at its grade', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: [{ premise: 'Any client reaches it', decides: 'grade' }] }),
       doubted('Doubted warning 4', 'warning'),
       doubted('Doubted warning 5', 'warning'),
     ];

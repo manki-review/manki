@@ -182,9 +182,10 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
       return { premise: doubt.premise, outcome: settle(OUTCOMES.find(o => o === answer.outcome) ?? 'unsettled', cited), reason: replyText(answer.reason), ...(cited.length > 0 && { proof: cited }) };
     });
     outcome = premisesOutcome(finding.doubts, premises);
-    // Only the premises that decide the outcome cite its proof, so a disproof never lists lines that confirmed another premise.
+    // A disproof cites only the premises that disprove the defect, never lines that confirmed another premise.
     const doubts = finding.doubts;
-    proof = [...new Set(premises.flatMap((p, i) => p.outcome === outcome && (outcome !== 'disproved' || doubts[i].decides === 'defect') ? p.proof ?? [] : []))];
+    const cites = (p: PremiseCheck, i: number): boolean => outcome === 'disproved' ? p.outcome === 'disproved' && doubts[i].decides === 'defect' : p.outcome !== 'unsettled';
+    proof = [...new Set(premises.flatMap((p, i) => cites(p, i) ? p.proof ?? [] : []))];
   } else {
     const claimed = OUTCOMES.find(o => o === parsed.outcome);
     if (!claimed) throw new Error(`refutation outcome is ${JSON.stringify(parsed.outcome)}, not one of ${OUTCOMES.join(', ')}`);
@@ -267,7 +268,8 @@ function alwaysChecked(finding: Finding): boolean {
  */
 function doubtsToCheck(findings: readonly Finding[]): Finding[] {
   const doubted = findings
-    .filter(f => f.severity !== 'ignore' && !alwaysChecked(f) && f.gradeIfConfirmed && rank(f.gradeIfConfirmed) <= rank('warning'))
+    .filter(f => f.severity !== 'ignore' && !alwaysChecked(f) && f.gradeIfConfirmed && rank(f.gradeIfConfirmed) <= rank('warning')
+      && !!f.doubts?.some(d => d.decides === 'defect'))
     .sort((a, b) => rank(a.severity) - rank(b.severity));
   for (const skipped of doubted.slice(MAX_DOUBT_CHECKS)) {
     core.info(`Not checking the doubt on "${skipped.title}", since ${MAX_DOUBT_CHECKS} findings with higher grades took this round's checks`);
