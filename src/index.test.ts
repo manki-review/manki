@@ -4919,13 +4919,16 @@ describe('runFullReview orchestration', () => {
         { ...outdated, title: 'Moved', file: 'src/app.ts', threadId: 'PRRT_moved', answer: '**Fixed.** It reopens after posting.' },
         { ...outdated, title: 'Gone', file: 'src/gone.ts', threadId: 'PRRT_gone' },
         { ...outdated, title: 'Unread', file: 'src/unread.ts', threadId: 'PRRT_unread' },
+        // A posted line past the end of the posted file says nothing about the code either.
+        { ...outdated, title: 'Past the end', file: 'src/app.ts', threadId: 'PRRT_past', originalLine: 99 },
       ],
       priorRounds: [],
     });
 
     await callRunFullReview();
 
-    const [found, gone, unread] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
+    const [found, gone, unread, past] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
+    expect([past.postedCode, past.changedSincePosted]).toEqual([undefined, undefined]);
     // Without the head's copy, nothing is said about where the code went, and the thread keeps its guard.
     expect(unread).toMatchObject({ line: 0, currentCode: '' });
     expect([unread.postedCode, unread.postedCodeGone, unread.changedSincePosted]).toEqual([undefined, undefined, undefined]);

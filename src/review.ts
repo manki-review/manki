@@ -2331,7 +2331,10 @@ export function filesChangedByPush(interRoundDiff: string | undefined): Set<stri
   return new Set(interRoundDiff ? parsePRDiff(interRoundDiff).files.map(f => f.path) : []);
 }
 
-/** Whether `thread` is a blocker thread that stays open whatever the judge decides, because the push did not change its file. */
+/**
+ * Whether `thread` is a blocker thread that stays open whatever the judge decides, because neither the push changed its
+ * file nor, for an outdated thread, did its code change since it was posted.
+ */
 export function blockerThreadStaysOpen(thread: OpenThread, pushChangedFiles: ReadonlySet<string>): boolean {
   return threadBlocks(thread) && !pushChangedFiles.has(thread.file) && !thread.changedSincePosted;
 }
@@ -2364,7 +2367,8 @@ function partialFixGrade(evaluation: ThreadEvaluation, thread: OpenThread | unde
 /**
  * Returns `evaluations` with `addressed` kept only where the round confirms the fix, and with the grade
  * `partialFixGrade` gives. A thread whose blocker this round names again is not fixed. A thread that blocks counts as
- * fixed only when the push changed its file, so a judge reading an unchanged file cannot clear it.
+ * fixed only when the push changed its file, or its code changed since it was posted, so a judge reading unchanged code
+ * cannot clear it.
  */
 function confirmFixes(
   evaluations: ThreadEvaluation[] | undefined,

@@ -1082,8 +1082,10 @@ async function collectOpenThreads(
     const posted = postedAt.get(t.threadId);
     const old = posted && postedContents.get(posted.commit)?.get(t.file);
     const current = contents?.get(t.file);
-    // Without the head's copy nothing can be said about where the code went, so the thread keeps the plain path.
-    if (!posted || old === undefined || current === undefined) return { ...t, currentCode: extractCurrentCodeWindow(contents, t.file, t.line) };
+    // Without both copies of the code, nothing can be said about where it went, so the thread keeps the plain path.
+    if (!posted || old === undefined || current === undefined || posted.line > old.split('\n').length) {
+      return { ...t, currentCode: extractCurrentCodeWindow(contents, t.file, t.line) };
+    }
     const now = locatePostedLine(old, posted.line, current);
     // Where the code is not found, the head's code near the same line still shows what the fix left there.
     const near = now ?? Math.min(posted.line, current.split('\n').length);
