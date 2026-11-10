@@ -1325,12 +1325,15 @@ export async function runReview(
   const priorBlockers = collectPriorBlockers(sortedPriorRounds);
   const pushChangedFiles = filesChangedByPush(interRoundDiff);
   const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
-  let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
-  const earlier = earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
-  const earlierWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
-  // Unlinked before the outcome, so the verdict and the threads it lists already see the finding on its own.
+  // Unlinked before the threads are graded, so the grades, the fold and the verdict all see the finding on its own.
   const priorThreads = new Map(priorFindingsFlat.flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
   const guard = (f: Finding): Finding => withoutUnguardedThread(f, openThreadIndex, previousFindings, priorThreads);
+  finalFindings = finalFindings.map(guard);
+  let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+  // Without the threads, every finding of a thread would look listed in a review body, so nothing is matched this round.
+  if (openThreads === null && sortedPriorRounds.length > 0) core.info('The review threads could not be read, so no finding is matched to an earlier one this round');
+  const earlier = openThreads === null ? [] : earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
+  const earlierWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
   threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
@@ -2485,22 +2488,23 @@ function postedOnItsOwn(f: Finding): Finding {
 }
 
 /**
- * Returns the security finding `f` kept apart from threads that are not security threads. It leaves a plain thread
- * that carries it, since a thread is a security thread by its first comment and another would lose the finding's guard.
- * It drops a `sameAs` that names a finding of a plain open thread, which would leave that thread out of the open ones in
- * the verdict. `priorThreads` gives the thread of each earlier finding by its key.
+ * Returns the security finding `f` with no link to a thread that is not a security thread: not the thread that carries
+ * it, the answered thread it repeats, or the thread of the earlier finding its `sameAs` names. A thread is a security
+ * thread by its first comment, so another would lose the finding's guard, and a `sameAs` to it would leave that thread
+ * out of the open ones in the verdict. `priorThreads` gives the thread of each earlier finding by its key.
  */
 function withoutUnguardedThread(f: Finding, openThreadIndex: Map<string, OpenThread>, previousFindings: PreviousFinding[] | undefined, priorThreads: ReadonlyMap<string, string>): Finding {
   if (!isSecurityFinding(f.tags, f.reviewers)) return f;
+  const guarded = (threadId: string): boolean => !!(openThreadIndex.get(threadId)?.isSecurity ?? previousFindings?.find(t => t.threadId === threadId)?.isSecurity);
   const named = f.sameAs ? priorThreads.get(f.sameAs) : undefined;
-  const namesPlain = !!named && openThreadIndex.has(named) && !openThreadIndex.get(named)?.isSecurity;
-  const carrier = f.threadId ?? f.answeredIn?.threadId;
-  const guarded = !!carrier && !!(openThreadIndex.get(carrier)?.isSecurity ?? previousFindings?.find(t => t.threadId === carrier)?.isSecurity);
-  const { sameAs: _same, ...unnamed } = f;
-  const kept = namesPlain ? unnamed : f;
-  if (!carrier || guarded) return postedOnItsOwn(kept);
-  const { threadId: _thread, variantOf: _variant, answeredIn: _answered, ...own } = kept;
-  return postedOnItsOwn(own);
+  const { sameAs, threadId, variantOf, answeredIn, ...rest } = f;
+  return postedOnItsOwn({
+    ...rest,
+    ...(sameAs && (!named || guarded(named)) && { sameAs }),
+    ...(threadId && guarded(threadId) && { threadId }),
+    ...(variantOf && (!threadId || guarded(threadId)) && { variantOf }),
+    ...(answeredIn && guarded(answeredIn.threadId) && { answeredIn }),
+  });
 }
 
 /** What the same-problem checks read of a finding. */
