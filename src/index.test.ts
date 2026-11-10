@@ -220,6 +220,7 @@ jest.mock('./github', () => ({
   sanitizeMarkdown: jest.requireActual('./github').sanitizeMarkdown,
   formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
   unreadRecordsLine: jest.requireActual('./github').unreadRecordsLine,
+  withheldSummary: jest.requireActual('./github').withheldSummary,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   hasWriteAccess: jest.fn().mockResolvedValue(true),
@@ -5662,6 +5663,7 @@ describe('runFullReview orchestration', () => {
     expect(holdOf()).toEqual(['https://github.com/o/r/pull/1#pullrequestreview-7']);
     expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5]).toMatchObject({ verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' });
     expect(mockChecksUpdate.mock.calls.at(-1)?.[0].output.summary).toMatch(/^\*\*Approval withheld:\*\* an earlier review record could not be read \(\[review 1\]\(https:\/\/github\.com\/o\/r\/pull\/1#pullrequestreview-7\)\)/);
+    expect(mockChecksUpdate.mock.calls.at(-1)?.[0].output.summary).toMatch(/\n\n\*\*Summary:\*\* ok\.$/);
     // A round that requests changes for another reason does not name the unread record.
     jest.mocked(reviewModule.runReview).mockResolvedValueOnce({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'A blocker.', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'] });
     await callRunFullReview();
