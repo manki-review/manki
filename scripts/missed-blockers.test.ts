@@ -3,7 +3,7 @@ import { FOUND_AGAIN_MARKER } from '../src/recap';
 import { fixedMarker } from '../src/state';
 import { makeFindingFingerprintEntry, makeRoundContext } from '../src/test-utils';
 import { FindingFingerprintEntry, PRE_EXISTING_TAG } from '../src/types';
-import { collectFollowUps, collectMisses, draftCase, plainReferences } from './missed-blockers';
+import { bodyAt, collectFollowUps, collectMisses, draftCase, plainReferences } from './missed-blockers';
 
 function entry(title: string, overrides: Partial<FindingFingerprintEntry> & { file?: string } = {}): FindingFingerprintEntry {
   return { ...makeFindingFingerprintEntry({ title, file: overrides.file, severity: 'blocker' }), origin: 'reviewed', ...overrides };
@@ -49,6 +49,7 @@ describe('collectFollowUps', () => {
   const at = (round: number) => `2025-01-0${round}T00:00:05Z`;
   const comments = [
     root(1, 'Lock order', 'src/a.go', ['security']), root(2, 'Missing timeout', 'src/b.go'), root(4, 'Old style', 'src/d.go'), root(5, 'Overflow', 'src/e.go'),
+    root(6, 'Stale cache', 'src/g.go'), root(7, 'Unbounded retry', 'src/h.go'), root(8, 'Old lock', 'src/i.go'),
     reply(1, at(2), `Fixed in sha2.\n${fixedMarker('sha2')}`),
     reply(2, at(2), `Fixed in sha2.\n${fixedMarker('sha2')}`),
     reply(2, at(3), `This came up again.\n${FOUND_AGAIN_MARKER}`),
@@ -61,13 +62,26 @@ describe('collectFollowUps', () => {
       entry('Missing timeout', { file: 'src/b.go', severity: 'warning', gradeIfConfirmed: 'blocker' }),
       entry('Name the helper', { file: 'src/c.go', severity: 'suggestion', suggestedFix: 'func name() {}' }),
       entry('Old style', { file: 'src/d.go', severity: 'nitpick' }), entry('Overflow', { file: 'src/e.go' }), entry('Dropped', { severity: 'ignore' }),
+      entry('Stale cache', { file: 'src/g.go', severity: 'warning' }), entry('Unbounded retry', { file: 'src/h.go' }), entry('Old lock', { file: 'src/i.go', severity: 'warning' }),
     ]),
-    round(2, [entry('Name the helper', { file: 'src/c.go', severity: 'suggestion' })]),
+    {
+      ...round(2, [entry('Name the helper', { file: 'src/c.go', severity: 'suggestion' })]),
+      judge: {
+        summary: '',
+        threadEvaluations: [
+          { threadId: 'T5', status: 'not_addressed' as const, reason: 'Unchanged.' },
+          { threadId: 'T6', status: 'addressed' as const, reason: 'The cache is cleared.' },
+          { threadId: 'T7', status: 'partly_addressed' as const, reason: 'Capped.', remaining: 'Retries are capped, but the delay between them is not.', grade: 'warning' as const },
+        ],
+      },
+    },
     round(3, []),
   ];
+  // T8 is resolved now, but no round evaluated it and no Manki reply dates the resolve.
+  const states = new Map([1, 2, 4, 5, 6, 7, 8].map(id => [id, { id: `T${id}`, isResolved: [1, 2, 4, 6, 8].includes(id) }]));
 
-  it('keys each follow-up round by the threads it resolved, found again later or left open, and the body findings it posted again', () => {
-    const followUps = collectFollowUps(rounds, comments);
+  it('keys each follow-up round by the threads it resolved, found partly fixed, found again later or left open, and the body findings it posted again', () => {
+    const followUps = collectFollowUps(rounds, comments, states);
 
     expect([...followUps.keys()]).toEqual([2, 3]);
     expect(followUps.get(2)).toEqual({
@@ -78,28 +92,65 @@ describe('collectFollowUps', () => {
         { id: 'P3', severity: 'suggestion', title: 'Name the helper', file: 'src/c.go', line: 10, suggestedFix: 'func name() {}' },
         { id: 'P4', severity: 'nitpick', title: 'Old style', file: 'src/d.go', line: 10, description: 'Old style breaks.', howToFix: 'Fix it.', thread: 'resolved' },
         { id: 'P5', severity: 'blocker', title: 'Overflow', file: 'src/e.go', line: 10, description: 'Overflow breaks.', howToFix: 'Fix it.', thread: 'open' },
+        { id: 'P6', severity: 'warning', title: 'Stale cache', file: 'src/g.go', line: 10, description: 'Stale cache breaks.', howToFix: 'Fix it.', thread: 'open' },
+        { id: 'P7', severity: 'blocker', title: 'Unbounded retry', file: 'src/h.go', line: 10, description: 'Unbounded retry breaks.', howToFix: 'Fix it.', thread: 'open' },
+        { id: 'P8', severity: 'warning', title: 'Old lock', file: 'src/i.go', line: 10, description: 'Old lock breaks.', howToFix: 'Fix it.', thread: 'open' },
       ],
-      mustResolve: ['P1'], mustKeepOpen: ['P2'], mustNotRepeat: ['P3', 'P5'],
+      mustResolve: ['P1', 'P6'],
+      mustKeepOpen: [
+        { id: 'P2', severity: 'warning', mechanism: 'Missing timeout' },
+        { id: 'P7', severity: 'warning', mechanism: 'Retries are capped, but the delay between them is not.' },
+      ],
+      mustNotRepeat: ['P3', 'P5'],
     });
-    expect(followUps.get(3)).toMatchObject({ priorHead: 'sha2', mustResolve: [], mustKeepOpen: [], mustNotRepeat: ['P5'] });
-    expect(followUps.get(3)!.findings.map(f => [f.id, f.thread])).toEqual([['P1', 'fixed'], ['P2', 'fixed'], ['P3', undefined], ['P4', 'resolved'], ['P5', 'open']]);
+    expect(followUps.get(3)).toMatchObject({ priorHead: 'sha2', mustResolve: [], mustKeepOpen: [], mustNotRepeat: ['P5', 'P7'] });
+    expect(followUps.get(3)!.findings.map(f => [f.id, f.thread])).toEqual([
+      ['P1', 'fixed'], ['P2', 'fixed'], ['P3', undefined], ['P4', 'resolved'], ['P5', 'open'], ['P6', 'fixed'], ['P7', 'open'], ['P8', 'open'],
+    ]);
+    // Without the thread states, a thread the round resolved with no reply reads as still open.
+    expect(collectFollowUps(rounds, comments).get(2)).toMatchObject({ mustResolve: ['P1'], mustNotRepeat: ['P3', 'P5', 'P6', 'P7', 'P8'] });
   });
 
   it('drafts a follow-up case that parses with the earlier round and its follow-up lists', () => {
-    const followUp = collectFollowUps(rounds, comments).get(2)!;
+    const followUp = collectFollowUps(rounds, comments, states).get(2)!;
     const miss = { missedBy: 2, foundIn: [3], head: 'b'.repeat(40), blockers: [entry('Race on close', { file: 'src/f.go' })] };
     const { id, text } = draftCase('manki-review/token-service', { number: 12, title: 'fix: retry', body: 'Retries.' }, miss, 'a'.repeat(40), { ...followUp, priorHead: 'c'.repeat(40) });
 
     expect(id).toBe('token-service-12-r2');
     expect(text).toContain(`# Draft from Manki's round records and threads: round 2 reviewed ${'b'.repeat(40)} after the round at ${'c'.repeat(40)}.`);
+    expect(text).toContain('# The body is the pull request body as it is now, since its text at round 2 could not be recovered.');
+    expect(draftCase('manki-review/token-service', { number: 12, title: 'fix: retry', body: 'Retries.', bodyAtRound: true }, miss, 'a'.repeat(40), followUp).text)
+      .toContain('# The body is the pull request body as it was when round 2 reviewed.');
     const parsed = parseCase(text, `${id}.yml`);
     expect(parsed).toMatchObject({
       source: 'manki-review/token-service#12: round 2, a follow-up of the rounds before it, and round 3 raised blockers on code round 2 had reviewed',
-      head: 'b'.repeat(40), keyVersion: 0, mustResolve: ['P1'], mustNotRepeat: ['P3', 'P5'],
-      mustKeepOpen: [{ id: 'P2', severity: 'warning', mechanism: 'Missing timeout', locations: ['src/b.go'] }],
+      head: 'b'.repeat(40), keyVersion: 0, mustResolve: ['P1', 'P6'], mustNotRepeat: ['P3', 'P5'],
+      mustKeepOpen: [
+        { id: 'P2', severity: 'warning', mechanism: 'Missing timeout', locations: ['src/b.go'] },
+        { id: 'P7', severity: 'warning', mechanism: 'Retries are capped, but the delay between them is not.', locations: ['src/h.go'] },
+      ],
       mustCatch: [{ id: 'K1', severity: 'blocker', mechanism: 'Race on close', locations: ['src/f.go'] }],
     });
     expect(parsed.priorRound).toEqual({ head: 'c'.repeat(40), findings: followUp.findings });
+  });
+});
+
+describe('bodyAt', () => {
+  const edits = [
+    { editedAt: '2025-01-03T00:00:00Z', diff: 'Third, after the later fixes.' },
+    { editedAt: '2025-01-01T00:00:00Z', diff: 'First.' },
+    { editedAt: '2025-01-02T00:00:00Z', diff: null },
+  ];
+
+  it('returns the latest version edited at or before the time, or the body now when it was never edited', () => {
+    expect(bodyAt('Now.', edits, '2025-01-01T12:00:00Z')).toEqual({ body: 'First.', known: true });
+    expect(bodyAt('Now.', edits, '2025-01-03T00:00:00Z')).toEqual({ body: 'Third, after the later fixes.', known: true });
+    expect(bodyAt('Now.', [], '2025-01-01T00:00:00Z')).toEqual({ body: 'Now.', known: true });
+  });
+
+  it('falls back to the body now, as not recovered, before the first version or on a deleted version', () => {
+    expect(bodyAt('Now.', edits, '2024-12-31T00:00:00Z')).toEqual({ body: 'Now.', known: false });
+    expect(bodyAt('Now.', edits, '2025-01-02T12:00:00Z')).toEqual({ body: 'Now.', known: false });
   });
 });
 
