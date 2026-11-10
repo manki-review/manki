@@ -1305,8 +1305,9 @@ export async function runReview(
       try {
         core.info(`Judging ${fresh.length} finding(s) the sweep found`);
         const sweepJudge = withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'sweep');
-        // The open threads were judged already, so this pass judges only the sweep's findings.
-        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined })).findings;
+        // The open threads were evaluated already, so this pass only links its findings to them and suppresses against them.
+        const evaluatedThreads = { openThreads: openThreads ?? [], ...(judgeThreadEvaluations && { evaluations: judgeThreadEvaluations }) };
+        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads })).findings;
         allJudgedFindings = [...(allJudgedFindings ?? []), ...judged];
         const kept = judged.filter(f => f.severity !== 'ignore');
         const unsettled = refutation ? kept.filter(f => f.lead && f.severity !== 'blocker' && !isSecurityFinding(f.tags, f.reviewers)) : [];

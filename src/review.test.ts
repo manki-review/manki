@@ -2066,6 +2066,8 @@ describe('runReview', () => {
     // Near the blocker in other words, which the dedup model calls the same defect.
     const reworded = { ...original, title: 'Locale is ignored when caching', line: 15, evidence: ['src/cache.ts:15 reads the key'], proof: ['src/cache.ts:15'] };
     const sweeping = (system: string) => system.startsWith('A code review found the blocker');
+    const openThread: OpenThread = { threadId: 'T1', title: 'Search is slow', file: 'src/search.ts', line: 90, severity: 'warning' };
+    const evaluation: ThreadEvaluation = { threadId: 'T1', status: 'not_addressed', reason: 'r' };
     const run = async (sweep: boolean, disproved = false) => {
       const clients = makeClients();
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({
@@ -2076,8 +2078,10 @@ describe('runReview', () => {
       mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
       // The judge merges the finders' copies of the blocker into one, which the refuters may have disproved.
       const refutation = { outcome: 'disproved' as const, reason: 'Bounded.', files: [], codeDigest: '' };
-      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ findings: input.findings.slice(0, 1).map(f => (disproved ? { ...f, refutation } : f)), summary: 'ok' }));
-      const result = await runReview(clients, { config: makeConfig({ review: { sweep } }), diff: diffChanging('src/cache.ts', 'src/search.ts'), rawDiff: 'raw diff', repoContext: '', isFollowUp: true, openThreads: [] });
+      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
+        findings: input.findings.slice(0, 1).map(f => (disproved ? { ...f, refutation } : f)), summary: 'ok', threadEvaluations: [evaluation],
+      }));
+      const result = await runReview(clients, { config: makeConfig({ review: { sweep } }), diff: diffChanging('src/cache.ts', 'src/search.ts'), rawDiff: 'raw diff', repoContext: '', isFollowUp: true, openThreads: [openThread] });
       return { result, sweeps: jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => sweeping(call[0])) };
     };
 
@@ -2098,6 +2102,8 @@ describe('runReview', () => {
     expect(result.rawFindings?.map(f => f.title)).toContain('Search key misses the tenant');
     expect(result.rawFindingCount).toBe((result.rawFindings ?? []).length);
     expect(second[2].openThreads).toBeUndefined();
+    // It still links its findings to the open threads, and suppresses against what the first call found of them.
+    expect(second[2].evaluatedThreads).toEqual({ openThreads: [openThread], evaluations: [evaluation] });
     expect(result.findings.map(f => f.title)).toEqual(['Cache key misses the locale', 'Search key misses the tenant']);
     expect(result.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 3 }]);
     expect(result.llmCalls?.filter(c => c.stage === 'sweep').map(c => c.agent)).toEqual([reviewer]);

@@ -79,7 +79,7 @@ function byPriority(blockers: readonly Finding[]): Finding[] {
 }
 
 function parseSweep(text: string, reviewer: string): { general: boolean; defectClass: string; findings: Finding[] } {
-  const parsed = JSON.parse(extractJSON(text)) as Record<string, unknown>;
+  const parsed = JSON.parse(extractJSON(text, 'object')) as Record<string, unknown>;
   const defectClass = typeof parsed.class === 'string' ? parsed.class.trim().slice(0, MAX_CLASS_CHARS) : '';
   if (!defectClass) throw new Error('the reply names no defect class');
   const general = parsed.general !== false;

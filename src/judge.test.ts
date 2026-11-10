@@ -786,6 +786,11 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).not.toContain('Cache never cleared" at');
     expect(msg).not.toContain('"doubts"');
 
+    // Threads an earlier judge call of the round evaluated stay link targets, but get no evaluation section of their own.
+    const linked = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, priorRounds.map(roundContextFromLegacy), undefined, undefined, undefined, '', '', '', [openThread]);
+    expect(linked).toContain('- **P3** (round 1, warning): "Retry never ends" at src/b.ts:30');
+    expect(linked).not.toContain('## Open Review Threads');
+
     // A grade an earlier doubt capped shows its conditional grade and each doubt with how its check came out.
     const capped = {
       ...makeFindingFingerprintEntry({ title: 'Stale cache', severity: 'warning' }), gradeIfConfirmed: 'blocker' as const,
