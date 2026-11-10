@@ -1315,6 +1315,9 @@ describe('selectTeam', () => {
       ['docs and a deletion', [file('docs/a.md'), file('src/old.ts', 'deleted', '-code')], t(true, false, false), 'auto', 'docs', [verifier]],
       ['an unchanged rename', [{ path: 'src/b.ts', oldPath: 'src/a.ts', changeType: 'renamed', hunks: [] }], t(true, false, false), 'auto', 'docs', [verifier]],
       ['a rename with edits', [file('src/b.ts', 'renamed')], t(true, false, false), 'auto', 'internal', [`${S} · medium`]],
+      // A move can create agent instructions, and a mode change is not read, so neither takes the quick check.
+      ['an unchanged rename into agent instructions', [{ path: 'AGENTS.md', oldPath: 'docs/notes.md', changeType: 'renamed', hunks: [] }], t(true, false, false), 'auto', 'internal', [`${S} · medium`]],
+      ['an unchanged rename with a mode change', [{ path: 'src/b.sh', oldPath: 'src/a.sh', changeType: 'renamed', hunks: [], modeChange: '100644 100755' }], t(true, false, false), 'auto', 'internal', [`${S} · medium`]],
       ['code pinned never', code, t(false, true, true), 'never', 'internal', [`${S} · xhigh`]],
       ['code pinned always', code, t(false, false, false), 'always', 'behavior', [`${S} · medium`, `${O} · medium`]],
       ['docs pinned always', docs, t(true, false, false), 'always', 'docs', [verifier]],

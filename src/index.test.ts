@@ -135,6 +135,7 @@ jest.mock('./diff', () => {
     changeDigest: jest.requireActual('./diff').changeDigest,
     rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,
     shortenLongLines: jest.requireActual('./diff').shortenLongLines,
+    hasChangedContent: jest.requireActual('./diff').hasChangedContent,
     onlyCommitChanging: jest.requireActual('./diff').onlyCommitChanging,
   };
 });

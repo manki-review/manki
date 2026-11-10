@@ -5,7 +5,7 @@ import { readFileSync, statSync } from 'fs';
 import { AstGrepApi, isAstGrepFile, isRustFile, loadAstGrep, runAstGrep } from './ast-grep';
 import { installTool, isLockfile, runActionlint, runGitleaks, runOpengrep, runOsvScanner, runShellcheck, runTool, runZizmor, ToolRunner } from './binary-analyzers';
 import { loadStaticAnalysisConfig } from './config';
-import { addedLines, isLineInDiff } from './diff';
+import { addedLines, hasChangedContent, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { LockfileDiff, lockfileSignals } from './lockfile';
 import { resolveInRoot } from './mcp-server';
@@ -115,7 +115,7 @@ export async function collectStaticSignals(
   // within its own budget, so turning one on never shrinks what another one scans.
   const readHeadFiles = (keep: (path: string) => boolean, from = diff) => fetchFileContents(
     octokit, owner, repo, request.headSha,
-    from.files.filter(f => f.changeType !== 'deleted' && keep(f.path)).map(f => f.path),
+    from.files.filter(f => hasChangedContent(f) && keep(f.path)).map(f => f.path),
     MAX_ANALYZED_FILE_BYTES, MAX_ANALYZED_TOTAL_BYTES,
   );
   // A source returns `undefined` when it has no file to check, and is then left out of the record.

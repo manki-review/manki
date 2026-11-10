@@ -375,9 +375,14 @@ function isBinaryFile(file: parseDiff.File): boolean {
   return false;
 }
 
-/** Whether the diff only moves the file to a new path, with no content to read, so it holds nothing unread. */
+/** Whether the diff only moves the file to a new path, with no content or mode change, so it holds nothing unread. */
 function isPureRename(file: parseDiff.File): boolean {
-  return file.chunks.length === 0 && !file.index && determineChangeType(file) === 'renamed';
+  return file.chunks.length === 0 && !file.index && !file.oldMode && !file.newMode && determineChangeType(file) === 'renamed';
+}
+
+/** Whether the head holds lines the PR changed in `file`, so its content is worth reading. A pure rename has none. */
+export function hasChangedContent(file: DiffFile): boolean {
+  return file.changeType !== 'deleted' && file.hunks.length > 0;
 }
 
 function determineChangeType(file: parseDiff.File): DiffFile['changeType'] {

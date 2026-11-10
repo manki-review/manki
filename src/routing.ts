@@ -104,18 +104,18 @@ function matchesPath(path: string, pattern: string): boolean {
 }
 
 function isUnchangedRename(file: DiffFile): boolean {
-  if (file.changeType !== 'renamed') return false;
+  if (file.changeType !== 'renamed' || file.modeChange) return false;
   const { additions, deletions } = countChangedLines(file);
   return additions === 0 && deletions === 0;
 }
 
 /**
- * Whether every changed file could be trivial: prose other than agent instructions, snapshots or generated, deleted,
- * or renamed without edits.
+ * Whether every changed file could be trivial: prose, snapshots or generated, deleted, or renamed without edits, and
+ * never a path of agent instructions, which a move can create too.
  * The planner only sees PR-derived text, so its `trivial` answer needs this floor in code.
  */
 function couldBeTrivial(diff: ParsedDiff): boolean {
-  return diff.files.every(f => f.changeType === 'deleted' || isUnchangedRename(f) || (isDocsFile(f.path) && !isAgentInstructions(f.path)));
+  return diff.files.every(f => f.changeType === 'deleted' || ((isUnchangedRename(f) || isDocsFile(f.path)) && !isAgentInstructions(f.path)));
 }
 
 function matchesClass(diff: ParsedDiff, match: ReviewClassMatch, triage: Triage): boolean {

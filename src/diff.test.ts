@@ -1,5 +1,6 @@
 import {
   addCodeContext,
+  hasChangedContent,
   changeDigest,
   onlyCommitChanging,
   parsePRDiff,
@@ -179,9 +180,16 @@ describe('parsePRDiff', () => {
     const pure = parsePRDiff('diff --git a/src/a.ts b/src/b.ts\nsimilarity index 100%\nrename from src/a.ts\nrename to src/b.ts\n');
     expect(pure.files).toEqual([expect.objectContaining({ path: 'src/b.ts', oldPath: 'src/a.ts', changeType: 'renamed', hunks: [] })]);
     expect(pure.binarySkipped).toEqual([]);
+    // Its content changed nothing, so the round does not spend its file budget reading it.
+    expect(pure.files.map(hasChangedContent)).toEqual([false]);
+    expect(result.files.map(hasChangedContent)).toEqual([true]);
     const binary = parsePRDiff('diff --git a/a.png b/b.png\nsimilarity index 90%\nrename from a.png\nrename to b.png\nindex 1111111..2222222 100644\nBinary files a/a.png and b/b.png differ\n');
     expect(binary.files).toEqual([]);
     expect(binary.binarySkipped).toEqual([expect.objectContaining({ path: 'b.png' })]);
+    // A move that also changes the file mode still has a change no model reads.
+    const chmod = parsePRDiff('diff --git a/src/a.sh b/src/b.sh\nold mode 100644\nnew mode 100755\nsimilarity index 100%\nrename from src/a.sh\nrename to src/b.sh\n');
+    expect(chmod.files).toEqual([]);
+    expect(chmod.binarySkipped).toEqual([expect.objectContaining({ path: 'src/b.sh' })]);
   });
 
   it('skips binary files', () => {
