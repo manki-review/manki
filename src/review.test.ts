@@ -2961,6 +2961,14 @@ describe('runReview', () => {
     expect(unguarded.findings).toEqual([expect.objectContaining({ title: 'Retry never ends', ownThread: true })]);
     expect(unguarded.findings[0]).not.toHaveProperty('threadId');
     expect((await guarded(true)).findings).toEqual([expect.objectContaining({ title: 'Retry never ends', threadId: 'T1' })]);
+    // The unlink comes before the outcome, so an open blocker thread the finding left still counts as open.
+    const blockerThread = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends', severity: 'blocker' })], previousFindings: [], headSha: 'sha3',
+      priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker', title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } })])],
+    });
+    expect(blockerThread.findings[0]).toEqual(expect.objectContaining({ ownThread: true }));
+    expect(blockerThread.verdictTrace?.unresolvedPriors).toEqual([expect.objectContaining({ threadId: 'T1' })]);
     // A closed answered thread is read from the recap, so a security thread among them keeps its repeat.
     mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged', 'src/x.ts', 50, { tags: ['security'], answeredIn: { threadId: 'T9', answer: 'Agreed.' } })] });
     const answered = (isSecurity: boolean) => runReview(makeClients(), {
