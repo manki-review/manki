@@ -152,9 +152,15 @@ describe('listUsesOutsideDiff', () => {
     );
     expect(overridden.record?.symbols?.find(s => s.name === 'balance')).toEqual({ name: 'balance', declared: 'app/models.py:11', uses: ['app/models.py:3', 'app/models.py:6'] });
 
+    // A field of the same name the diff changes on a second type is no namesake, so that type's own reads stay.
+    const both = (num: string, init: string) => `export interface Account {\n  balance: ${num};\n}\n\nexport class Ledger {\n  balance = ${init};\n\n  total() {\n    return this.balance;\n  }\n}\n`;
+    const twice = await usesFor({ 'src/account.ts': both('number', '0') }, { 'src/account.ts': both('bigint', '0n') });
+    expect(twice.record?.symbols?.find(s => s.name === 'balance')?.uses).toEqual(['src/account.ts:9']);
+
     // A function inside a method that binds the receiver's name again reads another value through it: an object literal
     // method or a `function` in TypeScript, a nested `def` or `lambda` with a `self` parameter in Python, and a func literal
-    // with a parameter of the receiver's name in Go. The method's own reads, and a closure's, still read the class's field.
+    // with a parameter of the receiver's name in Go. So does a method whose body binds the name in a statement, such as a
+    // loop. The method's own reads, and a closure's, still read the class's field.
     const rebinding = [
       {
         changed: 'src/account.ts', before: 'export interface Account {\n  balance: number;\n}\n', after: 'export interface Account {\n  balance: bigint;\n}\n',
@@ -163,13 +169,13 @@ describe('listUsesOutsideDiff', () => {
       },
       {
         changed: 'app/account.py', before: 'class Account:\n    balance: int = 0\n', after: 'class Account:\n    balance: float = 0.0\n',
-        file: 'app/wrapper.py', uses: [7, 8],
-        text: 'class Wrapper:\n    def __init__(self):\n        self.balance = 0\n\n    def wrapped(self):\n        def total(self):\n            return self.balance\n        pick = lambda self: self.balance\n        def closure():\n            return self.balance\n        return total, pick, closure\n',
+        file: 'app/wrapper.py', uses: [7, 8, 15],
+        text: 'class Wrapper:\n    def __init__(self):\n        self.balance = 0\n\n    def wrapped(self):\n        def total(self):\n            return self.balance\n        pick = lambda self: self.balance\n        def closure():\n            return self.balance\n        return total, pick, closure\n\n    def each(self, accounts):\n        for self in accounts:\n            yield self.balance\n',
       },
       {
         changed: 'bank/account.go', before: 'package bank\n\ntype Account struct {\n\tBalance int64\n}\n', after: 'package bank\n\ntype Account struct {\n\tBalance uint64\n}\n',
-        file: 'bank/wrapper.go', uses: [9],
-        text: 'package bank\n\ntype Wrapper struct {\n\tBalance int64\n}\n\nfunc (v *Wrapper) Wrapped() func(*Account) uint64 {\n\t_ = func() int64 { return v.Balance }\n\treturn func(v *Account) uint64 { return v.Balance }\n}\n',
+        file: 'bank/wrapper.go', uses: [9, 15],
+        text: 'package bank\n\ntype Wrapper struct {\n\tBalance int64\n}\n\nfunc (v *Wrapper) Wrapped() func(*Account) uint64 {\n\t_ = func() int64 { return v.Balance }\n\treturn func(v *Account) uint64 { return v.Balance }\n}\n\nfunc (v *Wrapper) Sum(accounts []*Account) uint64 {\n\tvar total uint64\n\tfor _, v := range accounts {\n\t\ttotal += v.Balance\n\t}\n\treturn total\n}\n',
       },
     ];
     for (const { changed, before, after, file, text, uses } of rebinding) {

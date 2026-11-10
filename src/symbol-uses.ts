@@ -166,9 +166,11 @@ interface FamilyRules {
   /**
    * Functions that can bind that name again inside a method, so a read through it there is not the method's. With
    * `byParameter`, one binds it only through a parameter of that name, as a Python `def f(self)` does. Without it, one
-   * always does, as a TypeScript `function` or object literal method binds its own `this`.
+   * always does, as a TypeScript `function` or object literal method binds its own `this`. `locals` maps each statement
+   * that can bind it inside the method's own body, such as Go `for _, v := range`, to the field holding the names it binds,
+   * or to `''` when the statement lists them itself.
    */
-  rebinds?: { kinds: string[]; byParameter?: true };
+  rebinds?: { kinds: string[]; byParameter?: true; locals?: Record<string, string> };
   /** The name of the field a declaration node declares, when the node has no `name` field, such as a Python assignment. */
   fieldName?: (node: SgNode, tree: Tree) => SgNode | undefined;
   /** The type a field holds when no type is written, such as `set` for a Python field assigned `set()`. */
@@ -235,7 +237,10 @@ const RULES: Record<Family, FamilyRules> = {
     index: 'subscript',
     owners: { class_definition: { type: 'name' } },
     selfName: () => 'self',
-    rebinds: { kinds: ['function_definition', 'lambda'], byParameter: true },
+    rebinds: {
+      kinds: ['function_definition', 'lambda'], byParameter: true,
+      locals: { assignment: 'left', augmented_assignment: 'left', for_statement: 'left', for_in_clause: 'left', named_expression: 'name', as_pattern: 'alias' },
+    },
     bases: scope => scope.field('superclasses')?.children().filter(c => c.isNamed() && c.kind() !== 'keyword_argument') ?? [],
     fieldName: pythonFieldName,
     valueType: node => {
@@ -260,10 +265,23 @@ const RULES: Record<Family, FamilyRules> = {
     owners: {},
     receiver: node => typeName(goReceiver(node)?.field('type')?.text() ?? ''),
     selfName: node => goReceiver(node)?.field('name')?.text(),
-    rebinds: { kinds: ['func_literal'], byParameter: true },
+    rebinds: {
+      kinds: ['func_literal'], byParameter: true,
+      locals: { short_var_declaration: 'left', assignment_statement: 'left', range_clause: 'left', type_switch_statement: 'alias', var_spec: '', const_spec: '' },
+    },
     names: node => node.kind() === 'field_declaration' ? node.children().filter(c => c.kind() === 'field_identifier') : [],
   },
 };
+
+// Nodes that list the names a statement binds, such as Go's `a, b` in `a, b := f()` or Python's `a, b` in `a, b = f()`.
+const NAME_LISTS = new Set(['expression_list', 'pattern_list', 'tuple_pattern', 'list_pattern', 'as_pattern_target', 'var_spec', 'const_spec']);
+
+/** Returns the names `target` binds: itself when it is a name, or the names a list of them holds, but no `a.b` or `a[b]`. */
+function boundNames(target: SgNode | null | undefined): string[] {
+  if (!target) return [];
+  if (target.kind() === 'identifier') return [target.text()];
+  return NAME_LISTS.has(String(target.kind())) ? target.children().filter(c => c.kind() === 'identifier').map(c => c.text()) : [];
+}
 
 /** Returns the names a function's parameters bind, such as `self` and `x` in Python `def f(self, x=1)`. */
 function parameterNames(fn: SgNode): string[] {
@@ -546,6 +564,8 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   // A field or variant whose own lines change, its type or its doc, is redefined. A new one has no readers yet, only namesakes.
   const redefined = new Map<string, ChangedSymbol>();
   const changedFieldStructs: StructListing[] = [];
+  // Every type whose field of a name the diff changes, since `symbols` keeps one declaration per name.
+  const changedOwners = new Map<string, Array<{ owner: string; file: string }>>();
   const references = new Map<string, { code: number; count: number; files: Set<string> }>();
   const lookups: Array<Lookup & { file: string }> = [];
   for (const file of files) {
@@ -554,6 +574,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     if (parsed) {
       const changed = changedDeclarations(parsed.declarations, lines, file.path);
       for (const symbol of changed) addSymbol(symbols, symbol);
+      for (const { name, kind, owner } of changed) if (kind === 'field' && owner) appendTo(changedOwners, name, { owner, file: file.path });
       const replaced = replacedLines(file);
       // Every added line of a run shares the run's removed lines, so each run's words are collected once.
       const runWords = new Map<string[], Set<string>>();
@@ -623,12 +644,15 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   // Placing a use on its type parses the files that hold it. That runs last, so a file it leaves unparsed hides no type,
   // field or lookup and is not counted.
   const unparsed = parser.skipped;
-  // A use is another type's only when neither that type nor the field's own may derive from the other, as far as the file
-  // declaring each tells, since a base class's own reads of a field its subclass overrides read the subclass's value.
+  // A use is another type's only when neither that type nor any type whose field of that name the diff changes may derive
+  // from the other, as far as the file declaring each tells, since a base class's own reads of a field its subclass
+  // overrides read the subclass's value.
   const otherType = (symbol: ChangedSymbol, hit: Hit) => {
-    if (symbol.kind !== 'field' || !symbol.owner) return false;
-    const other = parser.parse(hit.file)?.otherTypeAt(symbol.name, hit.line, symbol.owner);
-    return other !== undefined && parser.parse(symbol.file)?.mayDeriveFrom(symbol.owner, other) === false;
+    const owners = symbol.kind === 'field' ? changedOwners.get(symbol.name) ?? [] : [];
+    return owners.length > 0 && owners.every(({ owner, file }) => {
+      const other = parser.parse(hit.file)?.otherTypeAt(symbol.name, hit.line, owner);
+      return other !== undefined && parser.parse(file)?.mayDeriveFrom(owner, other) === false;
+    });
   };
   const { blocks: sections, symbols: listed, common, capped } = formatSymbolUses(
     searched, hits.filter(hit => !touched.get(hit.file)?.has(hit.line)), packages, new Set(redefined.keys()), typeFiles, otherType,
@@ -1246,7 +1270,20 @@ class ParsedFile {
     const between: Array<string[] | undefined> = [];
     for (; i >= 0 && !this.selfScopes[i].method; i = this.enclosing[i]) between.push(this.selfScopes[i].binds);
     const method = i >= 0 ? this.selfScopes[i].method : undefined;
-    return method && !between.some(binds => !binds || binds.includes(method.self!)) ? method : undefined;
+    return method && !between.some(binds => !binds || binds.includes(method.self!)) && !this.rebindsLocally(method) ? method : undefined;
+  }
+
+  private readonly rebound = new Map<Method, boolean>();
+
+  /** Whether `method`'s body binds its receiver name again anywhere in a statement `rebinds.locals` lists, read once per method. */
+  private rebindsLocally(method: Method): boolean {
+    if (!this.rebound.has(method)) {
+      const locals = this.rules.rebinds?.locals ?? {};
+      const kinds = Object.keys(locals);
+      this.rebound.set(method, kinds.length > 0 && method.decl.node.findAll({ rule: { any: kinds.map(kind => ({ kind })) } })
+        .some(n => boundNames(locals[n.kind()] ? n.field(locals[n.kind()]) : n).includes(method.self!)));
+    }
+    return this.rebound.get(method)!;
   }
 }
 
