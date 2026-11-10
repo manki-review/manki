@@ -1,6 +1,5 @@
 import * as core from '@actions/core';
 
-import { uniqueNames } from './compare';
 import { UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
 import { extractJSON } from './json';
@@ -88,13 +87,13 @@ function parseSweep(text: string, reviewer: string): { general: boolean; defectC
 }
 
 /**
- * Whether `f` sits on the blocker's own line or near a line the blocker cites in its proof or evidence. A cited span
- * wider than a few lines proves no one line, so it hides no other instance inside it.
+ * Whether `f` sits on `cited`'s own line or a line `cited` names in its proof or evidence, in any file, or within
+ * `tolerance` lines of one. A cited span wider than a few lines proves no one line, so it hides no other instance inside it.
  */
-function citedByBlocker(blocker: Finding, f: Finding): boolean {
-  const cited = [`${blocker.file}:${blocker.line}`, ...(blocker.evidence?.proof ?? []), ...(blocker.evidence?.checks ?? []).map(c => c.match(/^\S+?:\d+(?:-\d+)?/)?.[0] ?? '')]
-    .flatMap(at => parseLocation(at) ?? []).filter(at => at.end - at.start <= OWN_LINE_TOLERANCE * 2);
-  return cited.some(at => at.file === f.file && at.start - OWN_LINE_TOLERANCE <= f.line && f.line <= at.end + OWN_LINE_TOLERANCE);
+export function citedBy(cited: Finding, f: Finding, tolerance = OWN_LINE_TOLERANCE): boolean {
+  const spans = [`${cited.file}:${cited.line}`, ...(cited.evidence?.proof ?? []), ...(cited.evidence?.checks ?? []).map(c => c.match(/^\S+?:\d+(?:-\d+)?/)?.[0] ?? '')]
+    .flatMap(location => parseLocation(location) ?? []).filter(span => span.end - span.start <= OWN_LINE_TOLERANCE * 2);
+  return spans.some(span => span.file === f.file && span.start - tolerance <= f.line && f.line <= span.end + tolerance);
 }
 
 export interface SweepOptions {
@@ -115,8 +114,8 @@ export async function runSweeps(
   clientFor: (reviewer: string) => LLMClient, blockers: readonly Finding[], { rawDiff, effort, workspace }: SweepOptions,
 ): Promise<{ findings: Finding[]; sweeps: RoundSweep[] }> {
   const ordered = byPriority(blockers);
-  // The title is model-written from PR content, so the name carries it sanitized, on one line.
-  const names = uniqueNames(ordered.map(b => `Sweep: ${sanitizeForPromptEmbed(b.title).replace(/\s+/g, ' ').trim()}`.slice(0, 120)));
+  // A name never carries text a model wrote from the PR, so each sweep is numbered and its record names the blocker's location.
+  const names = ordered.map((_, i) => `Sweep ${i + 1}`);
   const asked = ordered.slice(0, MAX_SWEEPS).map((blocker, i) => ({ blocker, reviewer: names[i] }));
   const at = (b: Finding): string => `${b.file}:${b.line}`;
   if (asked.length > 0) core.info(`Sweeping the diff for ${asked.length} blocker class(es)${ordered.length > asked.length ? `, ${ordered.length - asked.length} cut by the cap` : ''}`);
@@ -142,7 +141,7 @@ export async function runSweeps(
         core.info(`${reviewer}: the class is too specific to sweep for`);
         return { record: { ...record, status: 'too_specific', class: defectClass }, findings: [] };
       }
-      const elsewhere = findings.filter(f => !citedByBlocker(blocker, f));
+      const elsewhere = findings.filter(f => !citedBy(blocker, f));
       core.info(`${reviewer}: ${elsewhere.length} other place(s)`);
       return { record: { ...record, status: 'answered', class: defectClass, findings: elsewhere.length }, findings: elsewhere };
     } catch (error) {
