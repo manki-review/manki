@@ -129,7 +129,10 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
       const state = thread && states.get(thread.root.id);
       const evaluations = (r: RoundContext) => (state ? r.judge.threadEvaluations?.filter(e => e.threadId === state.id) ?? [] : []);
       const last = thread?.replies.filter(c => before(c, timestamp)).at(-1)?.body ?? '';
-      const fixedEarlier = sorted.slice(0, i).some(r => evaluations(r).some(e => e.status === 'addressed')) && !last.includes(FOUND_AGAIN_MARKER);
+      // The thread's latest verdict before the round decides, unless a later round found the problem again.
+      const verdict = sorted.slice(0, i).flatMap(r => evaluations(r).map(e => ({ status: e.status, at: r.meta.timestamp }))).at(-1);
+      const reopened = !!verdict && !!thread?.replies.some(c => !before(c, verdict.at) && before(c, timestamp) && c.body!.includes(FOUND_AGAIN_MARKER));
+      const fixedEarlier = verdict?.status === 'addressed' && !reopened;
       const open = !!thread && !replyOutcome(last.trim()) && !fixedEarlier;
       const fixed = !open && (fixedEarlier || !!thread?.replies.some(c => before(c, timestamp) && fixedByRound.some(marker => c.body!.includes(marker))));
       const meta = thread ? parseFindingFromComment(thread.root.body!) : {};
@@ -280,11 +283,11 @@ function parseArgs(args: string[]): { owner: string; repo: string; last: number;
 }
 
 async function fetchBodyEdits(octokit: ReturnType<typeof github.getOctokit>, owner: string, repo: string, number: number): Promise<BodyEdit[]> {
-  const data = await octokit.graphql<{ repository: { pullRequest: { userContentEdits: { nodes: Array<BodyEdit | null> } } } }>(
+  const data = await octokit.graphql<{ repository: { pullRequest: { userContentEdits: { nodes: Array<BodyEdit | null> | null } | null } | null } }>(
     'query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { userContentEdits(first: 100) { nodes { editedAt diff } } } } }',
     { owner, repo, number },
   );
-  return data.repository.pullRequest.userContentEdits.nodes.filter((e): e is BodyEdit => !!e);
+  return (data.repository.pullRequest?.userContentEdits?.nodes ?? []).filter((e): e is BodyEdit => !!e);
 }
 
 async function main(args: string[]): Promise<number> {

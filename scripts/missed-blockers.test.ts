@@ -49,7 +49,9 @@ describe('collectFollowUps', () => {
   const at = (round: number) => `2025-01-0${round}T00:00:05Z`;
   const comments = [
     root(1, 'Lock order', 'src/a.go', ['security']), root(2, 'Missing timeout', 'src/b.go'), root(4, 'Old style', 'src/d.go'), root(5, 'Overflow', 'src/e.go'),
-    root(6, 'Stale cache', 'src/g.go'), root(7, 'Unbounded retry', 'src/h.go'), root(8, 'Old lock', 'src/i.go'),
+    root(6, 'Stale cache', 'src/g.go'), root(7, 'Unbounded retry', 'src/h.go'), root(8, 'Old lock', 'src/i.go'), root(10, 'Leaked handle', 'src/j.go'),
+    reply(10, at(3), `This came up again.\n${FOUND_AGAIN_MARKER}`),
+    reply(10, at(4), '**Partly fixed.** Still open: the handle leaks on the error path.'),
     reply(1, at(2), `Fixed in sha2.\n${fixedMarker('sha2')}`),
     reply(2, at(2), `Fixed in sha2.\n${fixedMarker('sha2')}`),
     reply(2, at(3), `This came up again.\n${FOUND_AGAIN_MARKER}`),
@@ -63,6 +65,7 @@ describe('collectFollowUps', () => {
       entry('Name the helper', { file: 'src/c.go', severity: 'suggestion', suggestedFix: 'func name() {}' }),
       entry('Old style', { file: 'src/d.go', severity: 'nitpick' }), entry('Overflow', { file: 'src/e.go' }), entry('Dropped', { severity: 'ignore' }),
       entry('Stale cache', { file: 'src/g.go', severity: 'warning' }), entry('Unbounded retry', { file: 'src/h.go' }), entry('Old lock', { file: 'src/i.go', severity: 'warning' }),
+      entry('Leaked handle', { file: 'src/j.go', severity: 'warning' }),
     ]),
     {
       ...round(2, [entry('Name the helper', { file: 'src/c.go', severity: 'suggestion' })]),
@@ -72,18 +75,24 @@ describe('collectFollowUps', () => {
           { threadId: 'T5', status: 'not_addressed' as const, reason: 'Unchanged.' },
           { threadId: 'T6', status: 'addressed' as const, reason: 'The cache is cleared.' },
           { threadId: 'T7', status: 'partly_addressed' as const, reason: 'Capped.', remaining: 'Retries are capped, but the delay between them is not.', grade: 'warning' as const },
+          { threadId: 'T10', status: 'addressed' as const, reason: 'Closed on success.' },
         ],
       },
     },
     round(3, []),
+    {
+      ...round(4, []),
+      judge: { summary: '', threadEvaluations: [{ threadId: 'T10', status: 'partly_addressed' as const, reason: 'Closed on success.', remaining: 'The handle leaks on the error path.' }] },
+    },
+    round(5, []),
   ];
   // T8 is resolved now, but no round evaluated it and no Manki reply dates the resolve.
-  const states = new Map([1, 2, 4, 5, 6, 7, 8].map(id => [id, { id: `T${id}`, isResolved: [1, 2, 4, 6, 8].includes(id) }]));
+  const states = new Map([1, 2, 4, 5, 6, 7, 8, 10].map(id => [id, { id: `T${id}`, isResolved: [1, 2, 4, 6, 8].includes(id) }]));
 
   it('keys each follow-up round by the threads it resolved, found partly fixed, found again later or left open, and the body findings it posted again', () => {
     const followUps = collectFollowUps(rounds, comments, states);
 
-    expect([...followUps.keys()]).toEqual([2, 3]);
+    expect([...followUps.keys()]).toEqual([2, 3, 4, 5]);
     expect(followUps.get(2)).toEqual({
       priorHead: 'sha1',
       findings: [
@@ -95,20 +104,27 @@ describe('collectFollowUps', () => {
         { id: 'P6', severity: 'warning', title: 'Stale cache', file: 'src/g.go', line: 10, description: 'Stale cache breaks.', howToFix: 'Fix it.', thread: 'open' },
         { id: 'P7', severity: 'blocker', title: 'Unbounded retry', file: 'src/h.go', line: 10, description: 'Unbounded retry breaks.', howToFix: 'Fix it.', thread: 'open' },
         { id: 'P8', severity: 'warning', title: 'Old lock', file: 'src/i.go', line: 10, description: 'Old lock breaks.', howToFix: 'Fix it.', thread: 'open' },
+        { id: 'P9', severity: 'warning', title: 'Leaked handle', file: 'src/j.go', line: 10, description: 'Leaked handle breaks.', howToFix: 'Fix it.', thread: 'open' },
       ],
       mustResolve: ['P1', 'P6'],
       mustKeepOpen: [
         { id: 'P2', severity: 'warning', mechanism: 'Missing timeout' },
         { id: 'P7', severity: 'warning', mechanism: 'Retries are capped, but the delay between them is not.' },
+        { id: 'P9', severity: 'warning', mechanism: 'Leaked handle' },
       ],
       mustNotRepeat: ['P3', 'P5'],
     });
     expect(followUps.get(3)).toMatchObject({ priorHead: 'sha2', mustResolve: [], mustKeepOpen: [], mustNotRepeat: ['P5', 'P7'] });
     expect(followUps.get(3)!.findings.map(f => [f.id, f.thread])).toEqual([
-      ['P1', 'fixed'], ['P2', 'fixed'], ['P3', undefined], ['P4', 'resolved'], ['P5', 'open'], ['P6', 'fixed'], ['P7', 'open'], ['P8', 'open'],
+      ['P1', 'fixed'], ['P2', 'fixed'], ['P3', undefined], ['P4', 'resolved'], ['P5', 'open'], ['P6', 'fixed'], ['P7', 'open'], ['P8', 'open'], ['P9', 'fixed'],
     ]);
+    // Found again after round 2 fixed it, then partly fixed in round 4: open before rounds 4 and 5.
+    const p9 = (n: number) => followUps.get(n)!.findings.find(f => f.id === 'P9')!.thread;
+    expect([p9(4), p9(5)]).toEqual(['open', 'open']);
+    expect(followUps.get(4)!.mustKeepOpen).toContainEqual({ id: 'P9', severity: 'warning', mechanism: 'The handle leaks on the error path.' });
+    expect(followUps.get(5)!.mustNotRepeat).toContain('P9');
     // Without the thread states, a thread the round resolved with no reply reads as still open.
-    expect(collectFollowUps(rounds, comments).get(2)).toMatchObject({ mustResolve: ['P1'], mustNotRepeat: ['P3', 'P5', 'P6', 'P7', 'P8'] });
+    expect(collectFollowUps(rounds, comments).get(2)).toMatchObject({ mustResolve: ['P1'], mustNotRepeat: ['P3', 'P5', 'P6', 'P7', 'P8', 'P9'] });
   });
 
   it('drafts a follow-up case that parses with the earlier round and its follow-up lists', () => {
@@ -128,6 +144,7 @@ describe('collectFollowUps', () => {
       mustKeepOpen: [
         { id: 'P2', severity: 'warning', mechanism: 'Missing timeout', locations: ['src/b.go'] },
         { id: 'P7', severity: 'warning', mechanism: 'Retries are capped, but the delay between them is not.', locations: ['src/h.go'] },
+        { id: 'P9', severity: 'warning', mechanism: 'Leaked handle', locations: ['src/j.go'] },
       ],
       mustCatch: [{ id: 'K1', severity: 'blocker', mechanism: 'Race on close', locations: ['src/f.go'] }],
     });
