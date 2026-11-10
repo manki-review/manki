@@ -23,7 +23,7 @@ import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './wri
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listReferenceUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
-import { runSweeps } from './sweep';
+import { citedBy, runSweeps } from './sweep';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -1284,7 +1284,8 @@ export async function runReview(
     sweeps = sweep.sweeps;
     // A place the round already judged, kept or dropped, is not judged twice. The rest count as raw findings, like a finder's.
     const judgedAlready = allJudgedFindings ?? [];
-    const unmatched = sweep.findings.filter(s => !judgedAlready.some(f => sameProblem(f, s)));
+    // So is a place any judged finding cites as its location, proof or evidence, in whichever file.
+    const unmatched = sweep.findings.filter(s => !judgedAlready.some(f => sameProblem(f, s) || citedBy(f, s)));
     // A sweep finding near one the round judged can say the same in other words, so the dedup model checks those pairs.
     const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => nearEachOther(f, s) ? [{ i, f }] : []));
     const dedupClient = clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');

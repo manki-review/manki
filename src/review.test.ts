@@ -2065,13 +2065,16 @@ describe('runReview', () => {
     const restated = { ...original, title: 'Cache key misses the locale again', line: 14 };
     // Near the blocker in other words, which the dedup model calls the same defect.
     const reworded = { ...original, title: 'Locale is ignored when caching', line: 15, evidence: ['src/cache.ts:15 reads the key'], proof: ['src/cache.ts:15'] };
+    // Another finding the round judged cites a place in another file, which the sweep then reports again.
+    const other = { severity: 'warning', title: 'Retry loses the reason', file: 'src/retry.ts', line: 5, description: 'd', evidence: ['src/retry.ts:5 drops it'], proof: ['src/retry.ts:5', 'src/search.ts:70'] };
+    const citedElsewhere = { ...elsewhere, title: 'Index key misses the region', line: 70, evidence: ['src/search.ts:70 builds the key'], proof: ['src/search.ts:70'] };
     const sweeping = (system: string) => system.startsWith('A code review found the blocker');
     const openThread: OpenThread = { threadId: 'T1', title: 'Search is slow', file: 'src/search.ts', line: 90, severity: 'warning' };
     const evaluation: ThreadEvaluation = { threadId: 'T1', status: 'not_addressed', reason: 'r' };
     const run = async (sweep: boolean, disproved = false) => {
       const clients = makeClients();
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({
-        content: sweeping(system) ? JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [elsewhere, restated, reworded] }) : JSON.stringify([original]),
+        content: sweeping(system) ? JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [elsewhere, restated, reworded, citedElsewhere] }) : JSON.stringify([original, other]),
       }));
       clients.dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[{"pair": 1, "sameDefect": true}]' }) } as unknown as import('./providers').LLMClient;
       mockedRunJudgeAgent.mockClear();
@@ -2079,9 +2082,9 @@ describe('runReview', () => {
       // The judge merges the finders' copies of the blocker into one, which the refuters may have disproved.
       const refutation = { outcome: 'disproved' as const, reason: 'Bounded.', files: [], codeDigest: '' };
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
-        findings: input.findings.slice(0, 1).map(f => (disproved ? { ...f, refutation } : f)), summary: 'ok', threadEvaluations: [evaluation],
+        findings: input.findings.slice(0, 2).map(f => (disproved && f.severity === 'blocker' ? { ...f, refutation } : f)), summary: 'ok', threadEvaluations: [evaluation],
       }));
-      const result = await runReview(clients, { config: makeConfig({ review: { sweep } }), diff: diffChanging('src/cache.ts', 'src/search.ts'), rawDiff: 'raw diff', repoContext: '', isFollowUp: true, openThreads: [openThread] });
+      const result = await runReview(clients, { config: makeConfig({ review: { sweep } }), diff: diffChanging('src/cache.ts', 'src/search.ts', 'src/retry.ts'), rawDiff: 'raw diff', repoContext: '', isFollowUp: true, openThreads: [openThread] });
       return { result, sweeps: jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => sweeping(call[0])) };
     };
 
@@ -2092,7 +2095,7 @@ describe('runReview', () => {
     expect([disproved.sweeps.length, disproved.result.sweeps]).toEqual([0, undefined]);
 
     const { result, sweeps } = await run(true);
-    const reviewer = 'Sweep: Cache key misses the locale';
+    const reviewer = 'Sweep 1';
     expect(sweeps).toHaveLength(1);
     // A place the round already judged is not judged twice, and the rest gets a judge call of its own, without the open threads.
     const [, second] = mockedRunJudgeAgent.mock.calls;
@@ -2104,8 +2107,8 @@ describe('runReview', () => {
     expect(second[2].openThreads).toBeUndefined();
     // It still links its findings to the open threads, and suppresses against what the first call found of them.
     expect(second[2].evaluatedThreads).toEqual({ openThreads: [openThread], evaluations: [evaluation] });
-    expect(result.findings.map(f => f.title)).toEqual(['Cache key misses the locale', 'Search key misses the tenant']);
-    expect(result.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 3 }]);
+    expect(result.findings.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Search key misses the tenant']);
+    expect(result.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 4 }]);
     expect(result.llmCalls?.filter(c => c.stage === 'sweep').map(c => c.agent)).toEqual([reviewer]);
   });
 

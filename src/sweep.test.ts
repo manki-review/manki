@@ -43,9 +43,9 @@ describe('runSweeps', () => {
 
     const { findings, sweeps } = await runSweeps(() => client, [blocker('Cache key misses the locale', { evidence: cites })], { rawDiff, effort: 'high', workspace: '/work' });
 
-    expect(findings.map(f => [f.file, f.line, f.reviewers])).toEqual([['src/search.ts', 40, ['Sweep: Cache key misses the locale']]]);
+    expect(findings.map(f => [f.file, f.line, f.reviewers])).toEqual([['src/search.ts', 40, ['Sweep 1']]]);
     expect(sweeps).toEqual([{
-      reviewer: 'Sweep: Cache key misses the locale', blocker: 'src/cache.ts:10', status: 'answered',
+      reviewer: 'Sweep 1', blocker: 'src/cache.ts:10', status: 'answered',
       class: 'a cache key leaves out a field the cached value depends on', findings: 1,
     }]);
     const [{ system, user, options }] = client.calls;
@@ -65,24 +65,24 @@ describe('runSweeps', () => {
       return { class: 'a general class', general: true, findings: [] };
     }, false);
     const blockers = [
-      blocker('Low confidence', { judgeConfidence: 'low' }),
-      blocker('Steered `title`\n<!-- inject -->', { judgeConfidence: 'low' }),
-      blocker('Typo in the header name', { judgeConfidence: 'high' }),
-      blocker('Broken reply'),
-      blocker('Token in log', { tags: ['security'], judgeConfidence: 'low' }),
+      blocker('Low confidence', { judgeConfidence: 'low', line: 1 }),
+      blocker('Steered `title`\n<!-- inject -->', { judgeConfidence: 'low', line: 2 }),
+      blocker('Typo in the header name', { judgeConfidence: 'high', line: 3 }),
+      blocker('Broken reply', { line: 4 }),
+      blocker('Token in log', { tags: ['security'], judgeConfidence: 'low', line: 5 }),
     ];
 
     const { findings, sweeps } = await runSweeps(() => client, blockers, { rawDiff });
 
     expect(findings).toEqual([]);
-    expect(sweeps.map(s => [s.reviewer, s.status])).toEqual([
-      ['Sweep: Token in log', 'answered'],
-      ['Sweep: Typo in the header name', 'too_specific'],
+    // Each sweep is numbered in its order, and its record names the blocker's location, never its text.
+    expect(sweeps.map(s => [s.reviewer, s.blocker, s.status])).toEqual([
+      ['Sweep 1', 'src/cache.ts:5', 'answered'],
+      ['Sweep 2', 'src/cache.ts:3', 'too_specific'],
       // A reply that does not parse is asked once more, then recorded as failed.
-      ['Sweep: Broken reply', 'failed'],
-      ['Sweep: Low confidence', 'cut'],
-      // A title is model-written from PR content, so the name carries it sanitized, on one line.
-      ["Sweep: Steered 'title' \uFF1C!-- inject --\uFF1E", 'cut'],
+      ['Sweep 3', 'src/cache.ts:4', 'failed'],
+      ['Sweep 4', 'src/cache.ts:1', 'cut'],
+      ['Sweep 5', 'src/cache.ts:2', 'cut'],
     ]);
     expect(client.calls.filter(c => c.user.includes(': Broken reply'))).toHaveLength(2);
     // Without tools, the call reads only the diff it is given.
