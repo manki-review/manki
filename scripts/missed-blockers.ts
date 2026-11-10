@@ -19,7 +19,7 @@ import { stringify as stringifyYaml } from 'yaml';
 import { fetchReviewThreadNodes } from '../src/github';
 import { replyOutcome } from '../src/interaction';
 import type { EarlierFinding } from '../src/local-review';
-import { FOUND_AGAIN_MARKER, isSecurityThread, parseFindingData, parseFindingFromComment, titlesOverlap } from '../src/recap';
+import { FOUND_AGAIN_MARKER, isSecurityThread, parseFindingData, parseFindingFromComment, recordedThreadGrades, titlesOverlap } from '../src/recap';
 import { fixedMarker } from '../src/state';
 import { FindingFingerprintEntry, FindingSeverity, PRE_EXISTING_TAG, RoundContext } from '../src/types';
 import { githubToken } from './review-history';
@@ -122,6 +122,7 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
     const next = sorted[i + 1]?.meta.timestamp ?? '\uffff';
     const followUp: FollowUp = { priorHead: sorted[i - 1].meta.commitSha, findings: [], mustResolve: [], mustKeepOpen: [], mustNotRepeat: [] };
     const fixedByRound = sorted.slice(0, i).map(r => fixedMarker(r.meta.commitSha));
+    const grades = recordedThreadGrades(sorted.slice(0, i));
     for (const [n, entry] of [...latest.values()].entries()) {
       const id = `P${n + 1}`;
       const title = entry.title ?? entry.fingerprint.slug;
@@ -133,12 +134,15 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
       const verdict = sorted.slice(0, i).flatMap(r => evaluations(r).map(e => ({ status: e.status, at: r.meta.timestamp }))).at(-1);
       const reopened = !!verdict && !!thread?.replies.some(c => !before(c, verdict.at) && before(c, timestamp) && c.body!.includes(FOUND_AGAIN_MARKER));
       const fixedEarlier = verdict?.status === 'addressed' && !reopened;
+      // A partial fix can have changed the thread's grade since the round that posted it.
+      const recorded = state && grades.get(state.id)?.grade;
+      const severity = recorded && DRAFT_SEVERITIES.has(recorded) ? recorded : entry.severity as FindingSeverity;
       const open = !!thread && !replyOutcome(last.trim()) && !fixedEarlier;
       const fixed = !open && (fixedEarlier || !!thread?.replies.some(c => before(c, timestamp) && fixedByRound.some(marker => c.body!.includes(marker))));
       const meta = thread ? parseFindingFromComment(thread.root.body!) : {};
       followUp.findings.push({
         // A file-level finding has line 0, and a case line starts at 1.
-        id, severity: entry.severity as FindingSeverity, title, file: entry.fingerprint.file, line: Math.max(1, entry.fingerprint.lineStart),
+        id, severity, title, file: entry.fingerprint.file, line: Math.max(1, entry.fingerprint.lineStart),
         ...(entry.gradeIfConfirmed && { gradeIfConfirmed: entry.gradeIfConfirmed }),
         ...(meta.description && { description: meta.description }), ...(meta.howToFix && { howToFix: meta.howToFix }),
         ...((meta.suggestedFix ?? entry.suggestedFix) && { suggestedFix: meta.suggestedFix ?? entry.suggestedFix }),
@@ -151,13 +155,15 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
           : thread.replies.some(c => !before(c, timestamp) && before(c, next) && c.body!.includes(fixedMarker(commitSha)));
         const foundAgain = resolved && thread.replies.some(c => !before(c, next) && c.body!.includes(FOUND_AGAIN_MARKER));
         if (evaluation?.status === 'partly_addressed') {
-          const grade = evaluation.grade && DRAFT_SEVERITIES.has(evaluation.grade) ? evaluation.grade : entry.severity as FindingSeverity;
+          const grade = evaluation.grade && DRAFT_SEVERITIES.has(evaluation.grade) ? evaluation.grade : severity;
           followUp.mustKeepOpen.push({ id, severity: grade, mechanism: evaluation.remaining || title });
         } else if (foundAgain) {
-          followUp.mustKeepOpen.push({ id, severity: entry.severity as FindingSeverity, mechanism: title });
+          followUp.mustKeepOpen.push({ id, severity, mechanism: title });
         } else if (resolved) {
           followUp.mustResolve.push(id);
-        } else if (evaluation || !state?.isResolved) {
+        } else if (evaluation || !state?.isResolved || sorted.slice(i + 1).some(r => evaluations(r).some(e => e.status === 'addressed')
+          || thread.replies.some(c => c.body!.includes(fixedMarker(r.meta.commitSha))))) {
+          // The round left the thread open, and the thread is either still open or a later round dates its fix.
           followUp.mustNotRepeat.push(id);
         }
       } else if (!thread && (round.findings.entries ?? []).some(e => e.fingerprint.file === entry.fingerprint.file && titlesOverlap(e.title ?? e.fingerprint.slug, title))) {

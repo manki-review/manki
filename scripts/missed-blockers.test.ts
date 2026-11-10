@@ -52,6 +52,7 @@ describe('collectFollowUps', () => {
     root(6, 'Stale cache', 'src/g.go'), root(7, 'Unbounded retry', 'src/h.go'), root(8, 'Old lock', 'src/i.go'), root(10, 'Leaked handle', 'src/j.go'),
     reply(10, at(3), `This came up again.\n${FOUND_AGAIN_MARKER}`),
     reply(10, at(4), '**Partly fixed.** Still open: the handle leaks on the error path.'),
+    root(11, 'Missing index', 'src/k.go'), reply(11, at(3), `Fixed in sha3.\n${fixedMarker('sha3')}`),
     reply(1, at(2), `Fixed in sha2.\n${fixedMarker('sha2')}`),
     reply(2, at(2), `Fixed in sha2.\n${fixedMarker('sha2')}`),
     reply(2, at(3), `This came up again.\n${FOUND_AGAIN_MARKER}`),
@@ -65,7 +66,7 @@ describe('collectFollowUps', () => {
       entry('Name the helper', { file: 'src/c.go', severity: 'suggestion', suggestedFix: 'func name() {}' }),
       entry('Old style', { file: 'src/d.go', severity: 'nitpick' }), entry('Overflow', { file: 'src/e.go' }), entry('Dropped', { severity: 'ignore' }),
       entry('Stale cache', { file: 'src/g.go', severity: 'warning' }), entry('Unbounded retry', { file: 'src/h.go' }), entry('Old lock', { file: 'src/i.go', severity: 'warning' }),
-      entry('Leaked handle', { file: 'src/j.go', severity: 'warning' }),
+      entry('Leaked handle', { file: 'src/j.go', severity: 'warning' }), entry('Missing index', { file: 'src/k.go', severity: 'warning' }),
     ]),
     {
       ...round(2, [entry('Name the helper', { file: 'src/c.go', severity: 'suggestion' })]),
@@ -87,7 +88,7 @@ describe('collectFollowUps', () => {
     round(5, []),
   ];
   // T8 is resolved now, but no round evaluated it and no Manki reply dates the resolve.
-  const states = new Map([1, 2, 4, 5, 6, 7, 8, 10].map(id => [id, { id: `T${id}`, isResolved: [1, 2, 4, 6, 8].includes(id) }]));
+  const states = new Map([1, 2, 4, 5, 6, 7, 8, 10, 11].map(id => [id, { id: `T${id}`, isResolved: [1, 2, 4, 6, 8, 11].includes(id) }]));
 
   it('keys each follow-up round by the threads it resolved, found partly fixed, found again later or left open, and the body findings it posted again', () => {
     const followUps = collectFollowUps(rounds, comments, states);
@@ -105,6 +106,7 @@ describe('collectFollowUps', () => {
         { id: 'P7', severity: 'blocker', title: 'Unbounded retry', file: 'src/h.go', line: 10, description: 'Unbounded retry breaks.', howToFix: 'Fix it.', thread: 'open' },
         { id: 'P8', severity: 'warning', title: 'Old lock', file: 'src/i.go', line: 10, description: 'Old lock breaks.', howToFix: 'Fix it.', thread: 'open' },
         { id: 'P9', severity: 'warning', title: 'Leaked handle', file: 'src/j.go', line: 10, description: 'Leaked handle breaks.', howToFix: 'Fix it.', thread: 'open' },
+        { id: 'P10', severity: 'warning', title: 'Missing index', file: 'src/k.go', line: 10, description: 'Missing index breaks.', howToFix: 'Fix it.', thread: 'open' },
       ],
       mustResolve: ['P1', 'P6'],
       mustKeepOpen: [
@@ -112,11 +114,14 @@ describe('collectFollowUps', () => {
         { id: 'P7', severity: 'warning', mechanism: 'Retries are capped, but the delay between them is not.' },
         { id: 'P9', severity: 'warning', mechanism: 'Leaked handle' },
       ],
-      mustNotRepeat: ['P3', 'P5'],
+      // P10 is resolved now, and round 3's reply dates the fix after round 2.
+      mustNotRepeat: ['P3', 'P5', 'P10'],
     });
-    expect(followUps.get(3)).toMatchObject({ priorHead: 'sha2', mustResolve: [], mustKeepOpen: [], mustNotRepeat: ['P5', 'P7'] });
+    expect(followUps.get(3)).toMatchObject({ priorHead: 'sha2', mustResolve: ['P10'], mustKeepOpen: [], mustNotRepeat: ['P5', 'P7'] });
+    // Round 2's partial fix lowered P7 to a warning.
+    expect(followUps.get(3)!.findings.find(f => f.id === 'P7')!.severity).toBe('warning');
     expect(followUps.get(3)!.findings.map(f => [f.id, f.thread])).toEqual([
-      ['P1', 'fixed'], ['P2', 'fixed'], ['P3', undefined], ['P4', 'resolved'], ['P5', 'open'], ['P6', 'fixed'], ['P7', 'open'], ['P8', 'open'], ['P9', 'fixed'],
+      ['P1', 'fixed'], ['P2', 'fixed'], ['P3', undefined], ['P4', 'resolved'], ['P5', 'open'], ['P6', 'fixed'], ['P7', 'open'], ['P8', 'open'], ['P9', 'fixed'], ['P10', 'open'],
     ]);
     // Found again after round 2 fixed it, then partly fixed in round 4: open before rounds 4 and 5.
     const p9 = (n: number) => followUps.get(n)!.findings.find(f => f.id === 'P9')!.thread;
@@ -124,7 +129,7 @@ describe('collectFollowUps', () => {
     expect(followUps.get(4)!.mustKeepOpen).toContainEqual({ id: 'P9', severity: 'warning', mechanism: 'The handle leaks on the error path.' });
     expect(followUps.get(5)!.mustNotRepeat).toContain('P9');
     // Without the thread states, a thread the round resolved with no reply reads as still open.
-    expect(collectFollowUps(rounds, comments).get(2)).toMatchObject({ mustResolve: ['P1'], mustNotRepeat: ['P3', 'P5', 'P6', 'P7', 'P8', 'P9'] });
+    expect(collectFollowUps(rounds, comments).get(2)).toMatchObject({ mustResolve: ['P1'], mustNotRepeat: ['P3', 'P5', 'P6', 'P7', 'P8', 'P9', 'P10'] });
   });
 
   it('drafts a follow-up case that parses with the earlier round and its follow-up lists', () => {
@@ -140,7 +145,7 @@ describe('collectFollowUps', () => {
     const parsed = parseCase(text, `${id}.yml`);
     expect(parsed).toMatchObject({
       source: 'manki-review/token-service#12: round 2, a follow-up of the rounds before it, and round 3 raised blockers on code round 2 had reviewed',
-      head: 'b'.repeat(40), keyVersion: 0, mustResolve: ['P1', 'P6'], mustNotRepeat: ['P3', 'P5'],
+      head: 'b'.repeat(40), keyVersion: 0, mustResolve: ['P1', 'P6'], mustNotRepeat: ['P3', 'P5', 'P10'],
       mustKeepOpen: [
         { id: 'P2', severity: 'warning', mechanism: 'Missing timeout', locations: ['src/b.go'] },
         { id: 'P7', severity: 'warning', mechanism: 'Retries are capped, but the delay between them is not.', locations: ['src/h.go'] },
