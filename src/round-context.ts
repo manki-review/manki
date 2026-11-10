@@ -234,6 +234,8 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.refutation && { refutation: f.refutation }),
     ...(f.pairRefutation && { pairRefutation: f.pairRefutation }),
     ...(f.gradePath && { gradePath: f.gradePath }),
+    ...(f.gradeIfConfirmed && { gradeIfConfirmed: f.gradeIfConfirmed }),
+    ...(f.doubts && { doubts: f.doubts }),
   }));
   const toEntry = (f: Finding): FindingFingerprintEntry => ({
     fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),

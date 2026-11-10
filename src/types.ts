@@ -1561,6 +1561,10 @@ export interface RoundJudgeDrop {
   pairRefutation?: Refutation;
   /** How the finding's severity changed until it was dropped. */
   gradePath?: GradeStep[];
+  /** Mirrors `Finding.gradeIfConfirmed`. */
+  gradeIfConfirmed?: FindingSeverity;
+  /** Mirrors `Finding.doubts`. */
+  doubts?: Doubt[];
 }
 
 export interface RoundAgentMetric {

@@ -306,7 +306,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(unsure).toContain('List each premise you doubt in `doubts`, as a fact the code can confirm or disprove: "a public request handler passes `index` to `getItem` unchecked", not "callers probably validate `index`". Set `decides` to `defect` when the defect does not exist if the premise is false, and to `grade` when the finding stands either way and only its grade depends on the premise. When you doubt nothing, leave `doubts` empty.');
     expect(prompt).not.toContain('Manki checks each premise with tools');
     expect(prompt).toContain('"gradeIfConfirmed": "blocker" | "warning" | "suggestion" | "nitpick" | "ignore",\n      "doubts": [{"premise": "A fact the code can confirm or disprove", "decides": "defect" | "grade"}],');
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki checks each premise with tools when `gradeIfConfirmed` is `warning` or above, for at most four findings a round besides blockers and leads, the highest grades first. The finding gets `gradeIfConfirmed` only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps your grade. A finding you mark `ignore` is never checked.');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki checks each premise with tools when `gradeIfConfirmed` is above `severity`. When you keep a finding at its grade with a doubt whether the defect exists, it checks the premises of at most four such findings a round at `warning` or above, the highest grades first. The finding gets `gradeIfConfirmed` only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps your grade. A finding you mark `ignore` is never checked.');
   });
 
   it('blocks on a claimed build, type or test failure only when CI confirms it', () => {
@@ -791,6 +791,8 @@ describe('buildJudgeUserMessage', () => {
       ...makeFindingFingerprintEntry({ title: 'Stale cache', severity: 'warning' }), gradeIfConfirmed: 'blocker' as const,
       doubts: [{ premise: 'The route never sets `tenant`', decides: 'defect' }, { premise: 'Any client reaches the route', decides: 'grade' }],
       refutation: { outcome: 'unsettled', reason: 'r', files: [], codeDigest: '', premises: [{ premise: 'The route never sets `tenant`', outcome: 'confirmed', reason: 'r' }, { premise: 'Any client reaches the route', outcome: 'unsettled', reason: 'r' }] },
+      // The second refuter settled what the first left open, and disagreed on the other premise.
+      pairRefutation: { outcome: 'unsettled', reason: 'r', files: [], codeDigest: '', premises: [{ premise: 'The route never sets `tenant`', outcome: 'disproved', reason: 'r' }, { premise: 'Any client reaches the route', outcome: 'confirmed', reason: 'r' }] },
     } satisfies FindingFingerprintEntry;
     const settled = { ...makeFindingFingerprintEntry({ title: 'Raised', severity: 'blocker' }), gradeIfConfirmed: 'blocker', doubts: [{ premise: 'Unchecked input', decides: 'defect' as const }] } satisfies FindingFingerprintEntry;
     const doubted = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 2, severityCounts: {}, entries: [capped, settled] } })]);
@@ -798,7 +800,7 @@ describe('buildJudgeUserMessage', () => {
     expect(payload[0].findings.map(({ title, gradeIfConfirmed, doubts }) => ({ title, gradeIfConfirmed, doubts }))).toEqual([
       {
         title: 'Stale cache', gradeIfConfirmed: 'blocker',
-        doubts: [{ premise: 'The route never sets tenant', decides: 'defect', check: 'confirmed' }, { premise: 'Any client reaches the route', decides: 'grade', check: 'unsettled' }],
+        doubts: [{ premise: 'The route never sets tenant', decides: 'defect', check: 'split' }, { premise: 'Any client reaches the route', decides: 'grade', check: 'confirmed' }],
       },
       // A grade equal to its conditional grade was capped by nothing, so only its doubts show.
       { title: 'Raised', gradeIfConfirmed: undefined, doubts: [{ premise: 'Unchecked input', decides: 'defect', check: 'not checked' }] },
