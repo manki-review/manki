@@ -1516,7 +1516,8 @@ export function mapJudgedToFindings(
       if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
       if (match.buildClaim) finding.buildClaim = true;
       const doubted = !!match.doubts && match.gradeIfConfirmed === match.severity;
-      if (match.gradeIfConfirmed && !o.toolSource && match.severity !== 'ignore' && (doubted || moreSevere(match.gradeIfConfirmed, match.severity))) {
+      // A dropped finding keeps them too, for the round record. The refuter never checks a finding marked `ignore`.
+      if (match.gradeIfConfirmed && !o.toolSource && (doubted || moreSevere(match.gradeIfConfirmed, match.severity))) {
         finding.gradeIfConfirmed = match.gradeIfConfirmed;
         if (match.doubts) finding.doubts = match.doubts;
       }

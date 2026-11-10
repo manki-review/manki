@@ -1690,6 +1690,8 @@ describe('runJudgeAgent', () => {
         ['Doubted nit', 'suggestion'],
       ]);
       expect(refuterMessages).toHaveLength(4);
+      // A finding the judge drops keeps its conditional grade for the round record, and is never checked.
+      expect(result.findings.find(f => f.title === 'Unseen dropped')).toMatchObject({ severity: 'ignore', gradeIfConfirmed: 'blocker' });
       expect(refuterMessages.find(m => m.includes(': Copy never removed\n'))).toContain('- **Premises the judge doubts**, to answer in order:\n  1. No other path removes the copy');
       expect(result.findings[8]).toMatchObject({ gradeIfConfirmed: 'suggestion', doubts: [{ premise: 'The name is exported', decides: 'defect' }] });
       expect(refuterMessages.find(m => m.includes(': Second cache left stale\n'))).toContain("- **Judge's reasoning**: warning. Not sure this PR causes it");
