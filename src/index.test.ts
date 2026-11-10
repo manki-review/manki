@@ -220,6 +220,7 @@ jest.mock('./github', () => ({
   formatRaisedReply: jest.fn().mockReturnValue('Now a blocker.'),
   sanitizeMarkdown: jest.requireActual('./github').sanitizeMarkdown,
   formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
+  unreadRecordsLine: jest.requireActual('./github').unreadRecordsLine,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   hasWriteAccess: jest.fn().mockResolvedValue(true),
@@ -5630,11 +5631,14 @@ describe('runFullReview orchestration', () => {
     mockGraphql.mockImplementation(answer);
     expect(jest.mocked(ghUtils.postReview).mock.calls.length).toBe(posts + 1);
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Failed to reply on partly fixed thread PRRT_jkl'));
-    // With a round record unread, a raise could hide, so the review holds its approval and names the unread review.
+    // With a round record unread, a raise could hide, so the round requests changes, and the review and the check say why.
     const holdOf = () => jest.mocked(ghUtils.postReview).mock.calls.at(-1)![9]?.unreadRecords;
     expect(holdOf()).toBeUndefined();
+    mockChecksUpdate.mockClear();
     await run('abc123', true);
     expect(holdOf()).toEqual(['https://github.com/o/r/pull/1#pullrequestreview-7']);
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5]).toMatchObject({ verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' });
+    expect(mockChecksUpdate.mock.calls.at(-1)?.[0].output.summary).toMatch(/^\*\*Approval withheld:\*\* an earlier review record could not be read \(\[review 1\]\(https:\/\/github\.com\/o\/r\/pull\/1#pullrequestreview-7\)\)/);
 
     // When the change since the last round cannot be read, every partly fixed thread gets its reply.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed'));

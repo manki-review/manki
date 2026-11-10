@@ -59,6 +59,7 @@ import {
   dismissPreviousReviews,
   postReview,
   formatOpenBlockers,
+  unreadRecordsLine,
   reactToIssueComment,
   fetchLinkedIssues,
   APPROVED_LINE,
@@ -1856,10 +1857,12 @@ async function runFullReview(
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
     const resolved = await resolveAddressedThreads(run, result);
-    // A round record that could not be read may hold a raise, so an approval is held while a Manki thread stays open.
+    // A round record that could not be read may hold a raise, so the round requests changes while a Manki thread stays open,
+    // and says why in the review and the check.
     const agreed = new Set(recap.previousFindings.filter(f => f.threadId && replyClassOf(f) === 'agree').map(f => f.threadId));
-    const unreadRecords = recap.priorRoundsIncomplete && run.openThreads.some(t => !resolved.includes(t) && !agreed.has(t.threadId))
-      ? recap.unreadRecords ?? [] : undefined;
+    const stillOpen = recap.priorRoundsIncomplete ? run.openThreads.filter(t => !resolved.includes(t) && !agreed.has(t.threadId)) : [];
+    blockOnOpenThreads(result, stillOpen.map(t => ({ ...t, recordedGrade: 'blocker' as const })));
+    const unreadRecords = stillOpen.length > 0 ? recap.unreadRecords ?? [] : undefined;
     const replies = await replyInOpenThreads(run, result);
     const context = buildContext();
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
@@ -1883,7 +1886,7 @@ async function runFullReview(
     await completeProgressComment(run, stage, reviewTimeMs);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
     setReviewOutputs(posted.id, context, result);
-    checkReport = outcomeReport(result.outcome, result.summary, posted.approvalHeld);
+    checkReport = outcomeReport(result.outcome, unreadRecords ? `${unreadRecordsLine(unreadRecords)}\n\n${result.summary}` : result.summary, posted.approvalHeld);
   } catch (caught) {
     cancelDashboardFlush(progress);
     // A stopped run reports the stop, whatever error it ended on.

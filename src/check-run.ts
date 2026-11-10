@@ -39,7 +39,6 @@ const HELD_TITLES: Record<Exclude<ApprovalHeld, false>, string> = {
   draft: 'Approval held: the PR is a draft',
   config: 'Approval held: the base branch config did not load',
   unread: 'Approval held: some changed files were not read',
-  records: 'Approval held: an earlier review record could not be read',
 };
 
 /** Returns the check report for a round that ended with `outcome`. A held approval reports neutral, whatever the outcome. */
