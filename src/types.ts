@@ -661,8 +661,6 @@ export interface ReviewClass {
   rank: number;
   /** A floor class always gets at least two readers on two models. */
   floor?: boolean;
-  /** Any wrong result in the class's paths is severe damage, even in a rare internal edge case. */
-  critical?: boolean;
   match: ReviewClassMatch;
 }
 
@@ -710,11 +708,13 @@ export interface ReviewRoutingConfig {
   /** Adds groups, or replaces a built-in group of the same name. */
   groups?: Record<string, ReviewGroup>;
   /** Adds classes. On a built-in path class, `match.paths_any` adds paths to the built-in rule. */
-  classes?: Record<string, { rank?: number; critical?: boolean; match?: ReviewClassMatch }>;
+  classes?: Record<string, { rank?: number; match?: ReviewClassMatch }>;
   /** Group per class, over the built-in routing. */
   routing?: Record<string, string>;
   /** Floor classes that may route to a group below the floor. */
   allow_weaker?: string[];
+  /** Globs or path aliases where any wrong result is severe damage, even in a rare internal edge case, for the judge. */
+  critical_paths?: string[];
   /** What counts as outside input in this repository, for the judge. */
   outside_input?: string;
   /** Worked examples of this repository's findings that are and are not blockers, for the judge. */

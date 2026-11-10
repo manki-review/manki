@@ -130,15 +130,12 @@
 #     hot_path:
 #       rank: 85
 #       match: { paths_any: ["src/consensus/**", "src/net/**"] }
-#     ledger:
-#       rank: 75
-#       critical: true               # any wrong result in these paths is severe
-#       match: { paths_any: ["src/ledger/**"] }
 #   routing:
 #     security: deep
 #     hot_path: deep
 #     internal: solo
 #   allow_weaker: []                 # floor classes allowed below the floor
+#   critical_paths: ["src/ledger/**"]   # any wrong result in these paths is severe, for the judge
 #   outside_input: "HTTP requests and webhook payloads"   # for the judge
 #   examples:                        # findings from this repo on each side of the bar, for the judge
 #     blocker:
