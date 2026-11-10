@@ -121,6 +121,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Accuracy');
     expect(prompt).toContain('Actionability');
     expect(prompt).toContain('Severity');
+    expect(prompt).toContain('Does the fix remove every failure the finding names? When it removes only part, set `fixLeaves` to the failure it leaves, and Manki adds that to the fix. Otherwise leave `fixLeaves` empty.');
   });
 
   it('includes project instructions when present', () => {
@@ -403,6 +404,11 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('"uncertain"');
     expect(prompt).toContain('Open Thread Evaluation');
     expect(prompt).toContain('You MUST return exactly 3 `threadEvaluations` entries');
+    // A thread is fixed only when every failure it names is gone, and a partial fix keeps it open at what remains.
+    expect(prompt).toContain('- **addressed**: the current code at the flagged region clearly no longer exhibits any failure the original concern names, OR the inter-round diff contains an explicit fix for every one of them.');
+    expect(prompt).toContain('- **partly_addressed**: the change removes some of the failures the original concern names, but at least one remains.');
+    expect(prompt).toContain("That is the thread's own grade when the remaining damage is the same as before. Applying the fix an earlier round suggested never lowers it, since that fix can itself cover only part.");
+    expect(prompt).toContain('"status": "addressed" | "partly_addressed" | "not_addressed" | "uncertain"');
   });
 
   it.each([1, 3, 7])(
@@ -664,10 +670,16 @@ describe('buildJudgeUserMessage', () => {
       makeFindingFingerprintEntry({ title: 'Unused import', file: 'src/bar.ts', severity: 'suggestion', threadId: 'PRRT_def' }),
       makeFindingFingerprintEntry({ title: 'Agreed later', file: 'src/baz.ts', severity: 'blocker', threadId: 'PRRT_ghi', authorReplyClass: 'agree' }),
     ];
-    const rounds = [makeRoundContext(1, { findings: { count: 3, severityCounts: {}, entries } })];
+    const rounds = [makeRoundContext(1, {
+      findings: { count: 3, severityCounts: {}, entries },
+      judge: { summary: '', threadEvaluations: [{ threadId: 'PRRT_def', status: 'partly_addressed', reason: 'r', remaining: 'The upload\nstill has no timeout.', grade: 'suggestion' }] },
+    })];
     const followUp = (interRoundDiff: string) =>
       buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [...openThreads, agreed], rounds, interRoundDiff);
     const unpushed = followUp('');
+    // The judge sees what an earlier round found still open after a partial fix, and the grade it gave that.
+    expect(unpushed).toContain('- **Partly fixed in an earlier round, still open**: The upload still has no timeout. (graded suggestion)');
+    expect(unpushed.match(/Partly fixed in an earlier round/g)).toHaveLength(1);
     expect(unpushed).toContain('"Null check missing" at src/foo.ts:10 (earlier blocker, stays open: the push did not change this file)');
     expect(unpushed).toMatch(/"Unused import" at src\/bar\.ts:20\n/);
     expect(unpushed).toMatch(/"Agreed later" at src\/baz\.ts:5\n/);
@@ -1038,6 +1050,15 @@ describe('parseJudgeResponse', () => {
       { id: 3, title: 'C', severity: 'warning', reasoning: 'r', confidence: 'high', category: 'toString', gradeIfConfirmed: 'severe' },
     ] }));
     expect(result.findings.map(f => [f.category, f.effort])).toEqual([['concurrency', 'larger'], [undefined, undefined], [undefined, undefined]]);
+    // A fix that leaves part of the problem says so in the posted fix.
+    const leaves = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
+      { id: 1, title: 'Upload unbounded', severity: 'warning', reasoning: 'r', confidence: 'high', gradeIfConfirmed: 'warning', fixLeaves: ' The upload still has no timeout. ' },
+      { id: 2, title: 'Covered', severity: 'warning', reasoning: 'r', confidence: 'high', gradeIfConfirmed: 'warning', fixLeaves: '' },
+    ] })).findings;
+    expect(leaves.map(f => f.fixLeaves)).toEqual(['The upload still has no timeout.', undefined]);
+    const base = { severity: 'warning' as const, file: 'src/upload.ts', line: 3, description: 'd', reviewers: ['r'] };
+    const mapped = mapJudgedToFindings([{ ...base, title: 'Upload unbounded', howToFix: 'Check the size.' }, { ...base, title: 'Covered', line: 9 }], leaves);
+    expect(mapped.map(f => f.howToFix)).toEqual(['Check the size. This fix leaves part of the problem: The upload still has no timeout.', undefined]);
     // A doubt keeps only a premise it names, and one that does not decide only the grade decides whether the defect exists.
     const doubts = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
       { id: 1, title: 'A', severity: 'warning', reasoning: 'r', confidence: 'low', gradeIfConfirmed: 'blocker', doubts: [
@@ -1162,11 +1183,21 @@ describe('parseJudgeResponse', () => {
         { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in new diff' },
         { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Still applies' },
         { threadId: 'PRRT_ghi', status: 'uncertain', reason: 'No clear evidence' },
+        { threadId: 'PRRT_jkl', status: 'partly_addressed', reason: 'Size is checked', remaining: ' The upload still has no timeout. ', grade: 'warning' },
+        { threadId: 'PRRT_mno', status: 'partly_addressed', reason: 'r', remaining: 'Still slow.', grade: 'ignore' },
+        { threadId: 'PRRT_pqr', status: 'partly_addressed', reason: 'Some of it', grade: 'warning' },
       ],
     });
 
     const result = parseJudgeResponse(json);
-    expect(result.threadEvaluations).toHaveLength(3);
+    expect(result.threadEvaluations!.slice(3)).toEqual([
+      { threadId: 'PRRT_jkl', status: 'partly_addressed', reason: 'Size is checked', remaining: 'The upload still has no timeout.', grade: 'warning' },
+      // A grade that drops what remains is no grade, so the thread keeps its own.
+      { threadId: 'PRRT_mno', status: 'partly_addressed', reason: 'r', remaining: 'Still slow.' },
+      // A partial fix that names nothing left over counts as not addressed.
+      { threadId: 'PRRT_pqr', status: 'not_addressed', reason: 'Some of it' },
+    ]);
+    result.threadEvaluations!.length = 3;
     expect(result.threadEvaluations![0]).toEqual({ threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in new diff' });
     expect(result.threadEvaluations![1]).toEqual({ threadId: 'PRRT_def', status: 'not_addressed', reason: 'Still applies' });
     expect(result.threadEvaluations![2]).toEqual({ threadId: 'PRRT_ghi', status: 'uncertain', reason: 'No clear evidence' });

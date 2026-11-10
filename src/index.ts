@@ -22,9 +22,9 @@ import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, wit
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
-import { currentFindingLine, fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
+import { currentFindingLine, fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, partlyFixedMarker, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { disproof } from './refute';
-import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
+import { filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals, fetchLockfiles } from './static-signals';
@@ -62,6 +62,7 @@ import {
   APPROVED_LINE,
   BOT_MARKER as PROGRESS_MARKER,
   isBotLogin,
+  sanitizeMarkdown,
   titleToSlug,
   isApprovedOnCommit,
   hasBotReviewOnCommit,
@@ -1023,6 +1024,7 @@ async function collectOpenThreads(
       // A thread posted on a fallback line sits away from its finding, and the judge has to look at the finding.
       line: currentFindingLine(f),
       severity: f.severity,
+      ...(f.partlyFixedGrade && { partlyFixedGrade: f.partlyFixedGrade }),
       description: f.description,
       suggestedFix: f.suggestedFix,
       howToFix: f.howToFix,
@@ -1321,6 +1323,28 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
       await replyToReviewThread(octokit, threadId, `Fixed in ${commitSha.slice(0, 7)}.`, fixedMarker(commitSha));
     } catch (error) {
       core.warning(`Failed to reply on resolved thread ${threadId}: ${error}`);
+    }
+  }
+}
+
+/**
+ * Replies in each thread the judge found partly fixed with what remains, and marks the grade that remainder earns, so
+ * later rounds keep the thread at it. A thread that already carries that grade gets no new reply while the push leaves
+ * its file unchanged.
+ */
+async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+  const changed = filesChangedByPush(run.interRoundDiff);
+  const threads = new Map(run.openThreads.map(t => [t.threadId, t]));
+  for (const { threadId, status, remaining, grade } of result.threadEvaluations ?? []) {
+    const thread = threads.get(threadId);
+    if (status !== 'partly_addressed' || !thread || !remaining || !grade) continue;
+    if (thread.partlyFixedGrade === grade && run.interRoundDiff !== undefined && !changed.has(thread.file)) continue;
+    const own = thread.partlyFixedGrade ?? (thread.severity === 'unknown' ? 'blocker' : thread.severity);
+    const lowered = grade === own ? '' : ` What remains is a ${grade}${own === 'blocker' ? ', so this thread no longer blocks' : ''}.`;
+    try {
+      await replyToReviewThread(run.octokit, threadId, `**Partly fixed.** Still open: ${sanitizeMarkdown(remaining)}${lowered}`, partlyFixedMarker(grade));
+    } catch (error) {
+      core.warning(`Failed to reply on partly fixed thread ${threadId}: ${error}`);
     }
   }
 }
@@ -1793,6 +1817,7 @@ async function runFullReview(
       pause: pauseReport(pauseAfter),
     });
     await replyFixedThreads(run, resolved);
+    await replyPartlyFixedThreads(run, result);
     await replyAnsweredThreads(run, result);
     await completeProgressComment(run, stage, reviewTimeMs);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);

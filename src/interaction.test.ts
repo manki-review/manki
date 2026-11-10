@@ -826,6 +826,8 @@ describe('handleReviewCommentReply', () => {
       'The review of `aaaaaaa`, which finished after this reply, still finds this open: the disproved lead still drops the grade.'],
     ['a "Fixed." written during the round, on its head, which was not sure', 'Fixed. The guard now runs first.', '14:32:05', 'head', 'uncertain', true,
       'The review of `aaaaaaa`, which finished after this reply, could not tell whether this is addressed: the disproved lead still drops the grade.'],
+    ['a "Fixed." written during the round, on its head, which found the thread partly fixed', 'Fixed. The guard now runs first.', '14:32:05', 'head', 'partly_addressed', true,
+      'The review of `aaaaaaa`, which finished after this reply, finds this only partly fixed: the disproved lead still drops the grade.'],
     ['a "Fixed." the round agrees with', 'Fixed. The guard now runs first.', '14:32:05', 'head', 'addressed', true, undefined],
     ['a "Fixed." written after the round', 'Fixed. The guard now runs first.', '14:36:00', 'head', 'not_addressed', true, undefined],
     ['a "Fixed." on a head that moved since the round', 'Fixed. The guard now runs first.', '14:32:05', 'other', 'not_addressed', true, undefined],

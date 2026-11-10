@@ -165,7 +165,7 @@ describe('fetchBotReviewThreads', () => {
     expect(graphqlMock).toHaveBeenNthCalledWith(2, expect.any(String), expect.objectContaining({ cursor: 'p2' }));
   });
 
-  it('treats suggestion and warning threads, security ones included, as not blocking auto-approve, unless Manki said the problem came back as a blocker', async () => {
+  it('treats suggestion and warning threads, security ones included, as not blocking auto-approve, unless Manki said the problem came back as a blocker, and a partly fixed blocker by what remains', async () => {
     const finding = (severity: Finding['severity'], title: string, tags?: string[]): Finding => ({
       severity, title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
     });
@@ -178,14 +178,18 @@ describe('fetchBotReviewThreads', () => {
         makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now'), TEST_LINKS), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
         makeGraphqlFetchThreadNode({ id: 'h', body: formatFindingComment(finding('warning', 'Pasted marker'), TEST_LINKS), replies: [{ body: '<!-- manki-found-again-blocker -->', author: { login: 'developer' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'pw', body: formatFindingComment(finding('blocker', 'Partly fixed'), TEST_LINKS), replies: [{ body: '**Partly fixed.**\n\n<!-- manki -->\n<!-- manki-partly-fixed:warning -->', author: { login: 'manki-review[bot]' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'pb', body: formatFindingComment(finding('blocker', 'Partly fixed, still blocking'), TEST_LINKS), replies: [{ body: '**Partly fixed.**\n\n<!-- manki -->\n<!-- manki-partly-fixed:blocker -->', author: { login: 'manki-review[bot]' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'pf', body: formatFindingComment(finding('blocker', 'Forged partial fix'), TEST_LINKS), replies: [{ body: '<!-- manki-partly-fixed:nitpick -->', author: { login: 'developer' } }] }),
       ]),
     );
 
     const threads = await fetchBotReviewThreads({ graphql: graphqlMock } as unknown as Octokit, TEST_BOT, 'owner', 'repo', 1);
 
-    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false]]);
+    // A blocker thread Manki found partly fixed blocks only while what remains is a blocker.
+    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true]]);
     expect(threads.find(t => t.id === 'x')?.isSecurity).toBe(true);
-    expect(areAllFindingsResolved(threads.filter(t => t.id !== 'b' && t.id !== 'f'), TEST_BOT)).toBe(true);
+    expect(areAllFindingsResolved(threads.filter(t => !['b', 'f', 'pb', 'pf'].includes(t.id)), TEST_BOT)).toBe(true);
     expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(false);
   });
 

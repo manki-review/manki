@@ -547,6 +547,19 @@ describe('determineOutcome', () => {
       expect(evaluate('addressed').outcome).toBe('READY');
       expect(evaluate('uncertain').verdictReason).toBe('prior_unaddressed');
       expect(evaluate('not_addressed').verdictReason).toBe('prior_unaddressed');
+
+      // A partly fixed thread blocks while what remains earns a blocker, this round or as an earlier round graded it.
+      const partly = (grade: ThreadEvaluation['grade'], partlyFixedGrade?: ThreadEvaluation['grade'], status: ThreadEvaluation['status'] = 'partly_addressed') => determineOutcome(
+        [nitpick], fingerprintEntriesFromLegacy(priors), [{ ...open[0], ...(partlyFixedGrade && { partlyFixedGrade }) }], undefined,
+        [{ threadId: 'T_BLOCKER', status, reason: 'r', remaining: 'No timeout yet.', ...(grade && { grade }) }],
+      ).verdictReason;
+      expect(partly('blocker')).toBe('prior_unaddressed');
+      expect(partly(undefined)).toBe('prior_unaddressed');
+      expect(partly('warning')).toBe('only_nit_or_suggestion');
+      expect(partly(undefined, 'warning', 'not_addressed')).toBe('only_nit_or_suggestion');
+      expect(partly(undefined, 'blocker', 'not_addressed')).toBe('prior_unaddressed');
+      // This round's grade for what remains decides over an earlier one.
+      expect(partly('blocker', 'warning')).toBe('prior_unaddressed');
     });
 
     it('lists a thread once when two priors point at it', () => {
@@ -929,6 +942,7 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('Put in it only code that applies as is: no prose, no markdown fences');
     expect(prompt).toContain('"howToFix": "The change that fixes it, in one or two sentences"');
     expect(prompt).toContain('List any known caveats of the fix in `howToFix`');
+    expect(prompt).toContain('Check that the fix removes every failure the description names. When it removes only part, say in `howToFix` which failure it leaves.');
     expect(prompt).toContain(WRITING_RULES);
     expect(prompt).not.toMatch(/[\u2014\u2013]| -- /);
   });
@@ -2776,6 +2790,23 @@ describe('runReview', () => {
     const namedAgain = await runWith(touching);
     expect(namedAgain.outcome).toBe('ADDRESS_FIRST');
     expect(namedAgain.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'T1', status: 'not_addressed' })]);
+
+    // A partly fixed thread keeps the grade what remains earns, never above its own, and drops only on a push to its file.
+    const partly = (grade?: ThreadEvaluation['grade']): ThreadEvaluation => ({ threadId: 'T1', status: 'partly_addressed', reason: 'Size checked.', remaining: 'No timeout.', ...(grade && { grade }) });
+    const gradeAfter = async (evaluation: ThreadEvaluation, diff: string | undefined, findings: Finding[] = []) => {
+      mockedRunJudgeAgent.mockResolvedValue({ findings, summary: 's', threadEvaluations: [evaluation] });
+      const result = await runWith(diff);
+      return [result.threadEvaluations?.[0].grade, result.outcome];
+    };
+    expect(await gradeAfter(partly('warning'), touching)).toEqual(['warning', 'READY']);
+    expect(await gradeAfter(partly(), touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    expect(await gradeAfter(partly('warning'), touching, [repeat])).toEqual(['blocker', 'ADDRESS_FIRST']);
+    openThread.severity = 'warning';
+    expect(await gradeAfter(partly('blocker'), touching)).toEqual(['warning', 'READY']);
+    openThread.severity = 'blocker';
+    openThread.partlyFixedGrade = 'suggestion';
+    expect(await gradeAfter(partly('warning'), touching)).toEqual(['suggestion', 'READY']);
   });
 
   it('points a finding that restates an earlier finding still open at it, and a variant at its open thread', async () => {

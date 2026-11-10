@@ -788,12 +788,35 @@ describe('fetchRecapState', () => {
           ],
         },
       }),
+      makeThread({
+        id: 't4',
+        comments: {
+          nodes: [
+            { body: '<!-- manki:blocker:Upload --> **Blocker**: Upload\n\nDesc.', author: { login: 'manki-review[bot]' } },
+            { body: '**Partly fixed.** Still open: no timeout.\n\n<!-- manki -->\n<!-- manki-partly-fixed:blocker -->', author: { login: 'manki-review[bot]' } },
+            { body: '**Partly fixed.** Still open: a slow log.\n\n<!-- manki -->\n<!-- manki-partly-fixed:suggestion -->', author: { login: 'manki-review[bot]' } },
+            { body: 'Pasted <!-- manki-partly-fixed:nitpick -->', author: { login: 'developer' } },
+          ],
+        },
+      }),
+      makeThread({
+        id: 't5',
+        comments: {
+          nodes: [
+            { body: '<!-- manki:blocker:Upload --> **Blocker**: Upload\n\nDesc.', author: { login: 'manki-review[bot]' } },
+            { body: '**Partly fixed.** Still open: a slow log.\n\n<!-- manki -->\n<!-- manki-partly-fixed:suggestion -->', author: { login: 'manki-review[bot]' } },
+            { body: 'This came up again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } },
+          ],
+        },
+      }),
     ]);
 
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
-    expect(state.previousFindings.map(f => f.answer)).toEqual([undefined, '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
-    expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'blocker']);
+    expect(state.previousFindings.slice(0, 3).map(f => f.answer)).toEqual([undefined, '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
+    expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'blocker', 'blocker', 'blocker']);
+    // Manki's latest partly-fixed reply grades what remains, until a later reply finds the problem again as a blocker.
+    expect(state.previousFindings.map(f => f.partlyFixedGrade)).toEqual([undefined, undefined, undefined, 'suggestion', undefined]);
   });
 
   it('uses the latest non-bot reply when multiple human replies exist', async () => {

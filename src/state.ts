@@ -8,7 +8,7 @@ import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, Bot
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, foundAgainAsBlocker, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
+import { fetchPriorRoundContexts, foundAgainAsBlocker, isOverrideCandidate, partlyFixedGrade, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
 import { formatApprovalRecord } from './review-record';
 import { ApprovalRecord, ReviewConfig, RoundContext, SecurityOverride } from './types';
 import { withMarkers } from './utils';
@@ -134,7 +134,8 @@ async function fetchBotReviewThreads(
       const severity = threadSeverity(body);
       const isSecurity = isSecurityThread(body);
       // A thread without a severity marker predates them, so it keeps blocking.
-      const isBlocking = severity === 'unknown' || severity === 'blocker' || foundAgainAsBlocker(bot, thread.comments.nodes);
+      const partly = partlyFixedGrade(bot, thread.comments.nodes);
+      const isBlocking = partly ? partly === 'blocker' : severity === 'unknown' || severity === 'blocker' || foundAgainAsBlocker(bot, thread.comments.nodes);
       // The marker's slug turned every other character into a hyphen, so the finding data keeps the real title.
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
       const findingTitle = parseFindingData(body)?.title?.trim() || (titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown');
