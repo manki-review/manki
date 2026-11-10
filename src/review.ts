@@ -1394,8 +1394,14 @@ export async function runReview(
   }
 
   finalFindings = finalFindings.map(f => {
-    const threadId = f.severity === 'blocker' ? priorBlockerNamedBy(f, priorBlockers)?.entry.threadId : undefined;
-    return threadId && openThreadIndex.has(threadId) ? { ...f, threadId } : f;
+    const named = f.severity === 'blocker' ? priorBlockerNamedBy(f, priorBlockers)?.entry.threadId : undefined;
+    const linked = named && openThreadIndex.has(named) ? { ...f, threadId: named } : f;
+    // A thread is a security thread by its first comment, so a security finding carried by another one would lose its guard.
+    const carrier = linked.threadId ?? linked.answeredIn?.threadId;
+    const guarded = openThreadIndex.get(carrier ?? '')?.isSecurity ?? previousFindings?.find(t => t.threadId === carrier)?.isSecurity;
+    if (!carrier || !isSecurityFinding(linked.tags, linked.reviewers) || guarded) return linked;
+    const { threadId: _thread, variantOf: _variant, answeredIn: _answered, ...own } = linked;
+    return { ...own, ownThread: true };
   });
   if (earlierWrap?.getTotals().calls) logOutputTokens('LLM dedup against earlier findings', earlierWrap.getTotals().usage);
 
