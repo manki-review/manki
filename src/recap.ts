@@ -901,8 +901,7 @@ async function fetchReviewThreads(
       const lineStart = thread.startLine ?? line;
       const recordedOverride = isBotThread ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
-      // A partial fix never lowers a security thread.
-      const partly = isBotThread && !isSecurityThread(body) ? partlyFixedGrade(bot, thread.comments.nodes) : undefined;
+      const partly = isBotThread ? partlyFixedGrade(bot, thread.comments.nodes) : undefined;
 
       return {
         threadId: thread.id,

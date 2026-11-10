@@ -5558,16 +5558,31 @@ describe('runFullReview orchestration', () => {
       return mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars);
     };
 
-    // The push left the file alone, so a thread that already carries this grade gets no second reply.
+    // The push left the file alone, so a thread that already carries this grade gets no second reply. A reply that
+    // raises a grade goes out before the review, and the rest after it.
     expect(await run('abc123')).toEqual([
+      { threadId: 'PRRT_jkl', body: '**Open again.** The timeout is gone again. This thread is a blocker again, so it blocks.\n\n<!-- manki -->\n<!-- manki-partly-fixed:blocker -->' },
       { threadId: 'PRRT_abc', body: '**Partly fixed.** Still open: No timeout yet, ask @\u200Balice. What remains is a warning, so this thread no longer blocks.\n\n<!-- manki -->\n<!-- manki-partly-fixed:warning -->' },
       { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left.\n\n<!-- manki -->\n<!-- manki-partly-fixed:warning -->' },
-      // A thread an earlier partial fix lowered hears when it is open again at its own grade.
-      { threadId: 'PRRT_jkl', body: '**Open again.** The timeout is gone again. This thread is a blocker again, so it blocks.\n\n<!-- manki -->\n<!-- manki-partly-fixed:blocker -->' },
     ]);
+    const postedAt = mockGraphql.mock.invocationCallOrder[mockGraphql.mock.calls.findIndex(([query, vars]) => String(query).includes('addPullRequestReviewThreadReply') && (vars as { threadId: string }).threadId === 'PRRT_jkl')];
+    expect(postedAt).toBeLessThan(jest.mocked(ghUtils.postReview).mock.invocationCallOrder.at(-1)!);
+
+    // A reply that would raise a grade and fails stops the round before its review posts.
+    const posts = jest.mocked(ghUtils.postReview).mock.calls.length;
+    const answer = mockGraphql.getMockImplementation()!;
+    mockGraphql.mockImplementation(async (query: string, vars: { threadId?: string }) => {
+      if (query.includes('addPullRequestReviewThreadReply') && vars?.threadId === 'PRRT_jkl') throw new Error('GitHub is down');
+      return answer(query, vars);
+    });
+    const attempted = await run('abc123');
+    mockGraphql.mockImplementation(answer);
+    expect(attempted.map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_jkl']);
+    expect(jest.mocked(ghUtils.postReview).mock.calls.length).toBe(posts);
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('GitHub is down'));
     // When the change since the last round cannot be read, every partly fixed thread gets its reply.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed'));
-    expect((await run('old456')).map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
+    expect((await run('old456')).map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_jkl', 'PRRT_abc', 'PRRT_def', 'PRRT_ghi']);
   });
 
   it('skips resolving threads not in the openThreads allowlist', async () => {

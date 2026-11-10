@@ -133,9 +133,8 @@ async function fetchBotReviewThreads(
       const body = thread.comments.nodes[0]?.body ?? '';
       const severity = threadSeverity(body);
       const isSecurity = isSecurityThread(body);
-      // A partial fix never lowers a security thread.
-      const partly = isSecurity ? undefined : partlyFixedGrade(bot, thread.comments.nodes);
-      const isBlocking = threadBlocks({ severity: foundAgainAsBlocker(bot, thread.comments.nodes) ? 'blocker' : severity, ...(partly && { partlyFixedGrade: partly }) });
+      const partly = partlyFixedGrade(bot, thread.comments.nodes);
+      const isBlocking = threadBlocks({ severity: foundAgainAsBlocker(bot, thread.comments.nodes) ? 'blocker' : severity, ...(partly && { partlyFixedGrade: partly }), isSecurity });
       // The marker's slug turned every other character into a hyphen, so the finding data keeps the real title.
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
       const findingTitle = parseFindingData(body)?.title?.trim() || (titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown');

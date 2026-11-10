@@ -1041,10 +1041,10 @@ export interface ThreadEvaluation {
 
 /**
  * Whether an open thread blocks: by the grade Manki's latest partly-fixed reply gave what remains, or else by its own
- * severity. A thread without a severity marker predates them and blocks.
+ * severity. A partial fix never lowers a security thread. A thread without a severity marker predates them and blocks.
  */
-export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; partlyFixedGrade?: FindingSeverity }): boolean {
-  return t.partlyFixedGrade ? t.partlyFixedGrade === 'blocker' : t.severity === 'blocker' || t.severity === 'unknown';
+export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; partlyFixedGrade?: FindingSeverity; isSecurity?: boolean }): boolean {
+  return t.partlyFixedGrade && !t.isSecurity ? t.partlyFixedGrade === 'blocker' : t.severity === 'blocker' || t.severity === 'unknown';
 }
 
 

@@ -1,4 +1,4 @@
-import { Finding, FindingFingerprintEntry, RoundContext } from './types';
+import { Finding, FindingFingerprintEntry, RoundContext, threadBlocks } from './types';
 import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
@@ -825,8 +825,9 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings.slice(0, 3).map(f => f.answer)).toEqual([undefined, '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
     expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'blocker', 'blocker', 'blocker', 'blocker']);
     // Manki's latest partly-fixed reply grades what remains, until a later reply finds the problem again as a blocker.
-    // A partial fix never lowers a security thread.
-    expect(state.previousFindings.map(f => f.partlyFixedGrade)).toEqual([undefined, undefined, undefined, 'suggestion', undefined, undefined]);
+    // A security thread keeps its marker too, which `threadBlocks` never lets lower it.
+    expect(state.previousFindings.map(f => f.partlyFixedGrade)).toEqual([undefined, undefined, undefined, 'suggestion', 'warning', undefined]);
+    expect(state.previousFindings.map(f => threadBlocks(f))).toEqual([true, true, true, false, true, true]);
   });
 
   it('uses the latest non-bot reply when multiple human replies exist', async () => {

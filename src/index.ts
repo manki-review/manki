@@ -33,7 +33,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, Finding, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases, threadBlocks } from './types';
+import { ConfigSource, DashboardData, Finding, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases, threadBlocks, FindingSeverity, SEVERITY_ORDER } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -1328,29 +1328,46 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
   }
 }
 
+/** A reply that marks the grade a partial fix sets or changes on a thread, and whether that grade is above the one the thread carries. */
+interface GradeReply { threadId: string; body: string; grade: FindingSeverity; raises: boolean }
+
 /**
- * Replies in each thread whose grade a partial fix sets or changes, and marks that grade, so later rounds keep the
- * thread at it. A partly fixed thread hears what remains. It gets no new reply while it already carries that grade and
- * the push leaves its file unchanged. A thread an earlier partial fix lowered hears that it is open again at its own grade.
+ * Returns the reply for each thread whose grade a partial fix sets or changes. A partly fixed thread hears what
+ * remains, but not again while it already carries that grade and the push leaves its file unchanged. A thread an
+ * earlier partial fix lowered hears that it is open again at its own grade.
  */
-async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+function gradeReplies(run: ReviewRun, result: ReviewResult): GradeReply[] {
   const changed = filesChangedByPush(run.interRoundDiff);
   const threads = new Map(run.openThreads.map(t => [t.threadId, t]));
-  for (const { threadId, status, reason, remaining, grade } of result.threadEvaluations ?? []) {
+  return (result.threadEvaluations ?? []).flatMap(({ threadId, status, reason, remaining, grade }) => {
     const thread = threads.get(threadId);
-    if (!thread || !grade) continue;
+    if (!thread || !grade) return [];
     const carried = thread.partlyFixedGrade ?? (thread.severity === 'unknown' ? 'blocker' : thread.severity);
-    const blocks = grade === 'blocker' ? ', so it blocks' : '';
-    let body: string;
+    const raises = SEVERITY_ORDER.indexOf(grade) < SEVERITY_ORDER.indexOf(carried);
     if (status === 'partly_addressed' && remaining) {
-      if (thread.partlyFixedGrade === grade && run.interRoundDiff !== undefined && !changed.has(thread.file)) continue;
+      if (thread.partlyFixedGrade === grade && run.interRoundDiff !== undefined && !changed.has(thread.file)) return [];
       const regraded = grade === carried ? '' : ` What remains is a ${grade}${carried === 'blocker' ? ', so this thread no longer blocks' : ''}.`;
-      body = `**Partly fixed.** Still open: ${sanitizeMarkdown(remaining)}${regraded}`;
-    } else if (grade !== carried) {
-      body = `**Open again.** ${sanitizeMarkdown(reason)} This thread is a ${grade} again${blocks}.`;
-    } else {
-      continue;
+      return [{ threadId, body: `**Partly fixed.** Still open: ${sanitizeMarkdown(remaining)}${regraded}`, grade, raises }];
     }
+    if (grade === carried) return [];
+    return [{ threadId, body: `**Open again.** ${sanitizeMarkdown(reason)} This thread is a ${grade} again${grade === 'blocker' ? ', so it blocks' : ''}.`, grade, raises }];
+  });
+}
+
+/**
+ * Posts each reply that raises a thread's grade before the round posts its review, since the reply alone keeps the
+ * thread at that grade for the approval check. A reply that fails stops the round, so a thread never stays lowered
+ * under a review that raised it.
+ */
+async function postRaisedGrades(run: ReviewRun, replies: GradeReply[]): Promise<void> {
+  for (const { threadId, body, grade } of replies.filter(r => r.raises)) {
+    await replyToReviewThread(run.octokit, threadId, body, partlyFixedMarker(grade));
+  }
+}
+
+/** Posts each reply that keeps or lowers a thread's grade. One that fails leaves the thread at its higher grade. */
+async function replyPartlyFixedThreads(run: ReviewRun, replies: GradeReply[]): Promise<void> {
+  for (const { threadId, body, grade } of replies.filter(r => !r.raises)) {
     try {
       await replyToReviewThread(run.octokit, threadId, body, partlyFixedMarker(grade));
     } catch (error) {
@@ -1808,6 +1825,8 @@ async function runFullReview(
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
+    const replies = gradeReplies(run, result);
+    await postRaisedGrades(run, replies);
     const resolved = await resolveAddressedThreads(run, result);
     const replies = await replyInOpenThreads(run, result);
     const context = buildContext();
@@ -1827,7 +1846,7 @@ async function runFullReview(
       pause: pauseReport(pauseAfter),
     });
     await replyFixedThreads(run, resolved);
-    await replyPartlyFixedThreads(run, result);
+    await replyPartlyFixedThreads(run, replies);
     await replyAnsweredThreads(run, result);
     await completeProgressComment(run, stage, reviewTimeMs);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
