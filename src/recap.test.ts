@@ -1682,6 +1682,12 @@ describe('fetchRecapState', () => {
       // An unknown grade never makes a resolution count as someone else's, so a new blocker there still reaches the judge.
       const repeat = makeFinding({ severity: 'blocker', title: 'Stale cache', file: 'src/c.ts', line: 4 });
       expect(deduplicateFindings([repeat], state.previousFindings).unique).toHaveLength(1);
+
+      // A repo admin author still clears their own resolved thread, as with a blocker.
+      const admin = Object.create(octokit);
+      Object.assign(admin, { rest: { ...octokit.rest, repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'admin' } })) } } });
+      const adminState = await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author');
+      expect(adminState.previousFindings.map(f => [f.status, !!f.reopen, f.securityOverride?.login])).toEqual([['resolved', false, 'author'], ['replied', false, undefined], ['resolved', false, undefined]]);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(3);
       // A skipped record could hold a thread's grade, so the recap says the rounds are incomplete.

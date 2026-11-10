@@ -175,6 +175,7 @@ jest.mock('./recap', () => ({
   sanitize: jest.requireActual('./recap').sanitize,
   securityOverridesIn: jest.requireActual('./recap').securityOverridesIn,
   FOUND_AGAIN_MARKER: jest.requireActual('./recap').FOUND_AGAIN_MARKER,
+  replyClassOf: jest.requireActual('./recap').replyClassOf,
 }));
 
 jest.mock('./review', () => ({
@@ -5565,7 +5566,10 @@ describe('runFullReview orchestration', () => {
           { title: 'Log', file: 'src/app.ts', line: 2, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_def', recordedGrade: 'warning' as const },
           { title: 'Retry', file: 'src/app.ts', line: 3, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
           { title: 'Timeout', file: 'src/app.ts', line: 4, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_jkl', recordedGrade: 'warning' as const },
-          { title: 'Cache', file: 'src/app.ts', line: 5, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_mno', recordedGrade: 'warning' as const },
+          {
+            title: 'Cache', file: 'src/app.ts', line: 5, severity: 'blocker' as const, status: 'replied' as const, threadId: 'PRRT_mno', recordedGrade: 'warning' as const,
+            authorReplyText: 'Agreed, no change needed.', authorReplyLogin: 'bob', authorReplyMayClear: true,
+          },
         ],
         priorRounds: [roundContextFromLegacy({ round: 1, commitSha: lastReviewed, timestamp: 't', findings: [] })],
       });
@@ -5610,7 +5614,8 @@ describe('runFullReview orchestration', () => {
     await run('abc123', true);
     const held = jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5];
     expect(held).toMatchObject({ verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' });
-    expect(held.verdictTrace?.unresolvedPriors.map(p => p.threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl', 'PRRT_mno']);
+    // A thread someone with write access agreed away is not held.
+    expect(held.verdictTrace?.unresolvedPriors.map(p => p.threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
 
     // When the change since the last round cannot be read, every partly fixed thread gets its reply.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed'));
@@ -5618,8 +5623,8 @@ describe('runFullReview orchestration', () => {
 
     // With a record unread, a thread the round resolves is left out of the hold, and with none left open the round approves.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue('diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n');
-    await run('prior-sha', true, ['PRRT_mno']);
-    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5].verdictTrace?.unresolvedPriors.map(p => p.threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
+    await run('prior-sha', true, ['PRRT_ghi']);
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5].verdictTrace?.unresolvedPriors.map(p => p.threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_jkl']);
     await run('prior-sha', true, ['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl', 'PRRT_mno']);
     expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5].verdict).toBe('APPROVE');
   });

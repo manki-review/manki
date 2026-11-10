@@ -145,6 +145,8 @@ interface OverrideCandidate {
   isSecurity?: boolean;
   isBlocking?: boolean;
   severity?: FindingSeverity | 'unknown';
+  recordedGrade?: FindingSeverity;
+  gradeUnknown?: boolean;
   isResolved: boolean;
   resolvedByLogin?: string;
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
@@ -154,9 +156,9 @@ function isLogin(login: string | undefined, prAuthorLogin: string | undefined): 
   return !!login && !!prAuthorLogin && login.toLowerCase() === prAuthorLogin.toLowerCase();
 }
 
-/** Whether a resolved guarded thread can only be cleared by the PR author as a repo admin, so it needs the admin check. */
+/** Whether a resolved thread the PR author alone cannot clear needs the admin check, since only an admin author may clear it. */
 function isOverrideCandidate(t: OverrideCandidate, prAuthorLogin: string | undefined): boolean {
-  return isGuarded(t) && t.isResolved && (isLogin(t.resolvedByLogin, prAuthorLogin) || isLogin(t.recordedOverride?.login, prAuthorLogin));
+  return authorCannotClear(t) && t.isResolved && (isLogin(t.resolvedByLogin, prAuthorLogin) || isLogin(t.recordedOverride?.login, prAuthorLogin));
 }
 
 /** The security overrides on `previousFindings`, one per thread. */
@@ -1214,4 +1216,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
