@@ -3816,6 +3816,7 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(false);
     expect(result.verdict).toBe('COMMENT');
     expect(result.summary).toContain('judge failed');
+    expect(result).not.toHaveProperty('relatedWork');
     expect(result).toMatchObject({
       judgeEffort: 'high', rawFindingCount: 2, staticDedupCount: 0, llmDedupCount: 0, judgeRetryCount: 0, agentDurationMs: expect.any(Map),
       rawFindings: [expect.objectContaining({ title: 'Some code improvement' }), expect.objectContaining({ title: 'Some code improvement' })],
@@ -3834,6 +3835,14 @@ describe('runReview', () => {
       expect(unjudged.verdict).toBe('COMMENT');
       expect(unjudged.findings).toEqual([]);
     }
+    // A judge that fails on a call counts every attempt, failed ones included, in its retries.
+    const judgeCalls = jest.mocked(clients.judge.sendMessage);
+    judgeCalls.mockReset();
+    judgeCalls.mockResolvedValueOnce({ content: 'not json {broken' }).mockRejectedValue(new Error('Judge timed out'));
+    const timedOut = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    expect(timedOut.reviewComplete).toBe(false);
+    expect(judgeCalls.mock.calls.length).toBeGreaterThan(1);
+    expect(timedOut.judgeRetryCount).toBe(judgeCalls.mock.calls.length - 1);
   });
 
   it('runs multi-pass review with review_passes > 1', async () => {

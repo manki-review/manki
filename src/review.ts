@@ -1082,16 +1082,14 @@ export async function runReview(
       reason: workspace ? 'no finder has repository tools' : 'the PR head was not checked out for the tools',
     }));
   const finderContext = { ...(relatedRepos?.length && { relatedRepos }), ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }) };
-  const incomplete = async (summary: string, extra: Partial<ReviewResult> = {}): Promise<ReviewResult & { outcome: RoundOutcome }> => {
-    const relatedWork = await relatedWorkPromise;
-    return {
-      verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
-      agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
-      ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-      ...(modelFallbacks.length > 0 && { modelFallbacks }), llmCalls, ...finderContext, ...(relatedWork && { relatedWork }),
-      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
-    };
-  };
+  // Related work is left out: the posted incomplete review would render it.
+  const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
+    verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
+    agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
+    ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
+    ...(modelFallbacks.length > 0 && { modelFallbacks }), llmCalls, ...finderContext,
+    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
+  });
 
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
@@ -1262,7 +1260,8 @@ export async function runReview(
     core.warning(`Judge failed: ${error}`);
     logOutputTokens('Judge', judgeWrap.getTotals().usage);
     return incomplete(error instanceof QuotaError ? quotaSummary(error) : `The judge failed. ${RETRY_HINT}`, {
-      judgeRetryCount: Math.max(0, judgeWrap.getTotals().calls - 1), ...(openLeads.length > 0 && { openLeads }),
+      // The failed attempts count too, since the judge ended on one.
+      judgeRetryCount: Math.max(0, judgeWrap.getTotals().calls + judgeWrap.getTotals().failures - 1), ...(openLeads.length > 0 && { openLeads }),
     });
   }
   Object.assign(recorded, {
