@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatBlockerReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers } from './github';
+import { ApprovalHeld, buildDashboard, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatBlockerReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { highlightCode } from './highlight';
@@ -3267,6 +3267,15 @@ describe('fetchInterRoundDiff', () => {
     const compareCommits = jest.fn().mockResolvedValue({ data: { files: [{ filename: 'app.jar', sha: 'a'.repeat(40) }, { filename: 'big.bin' }] } });
     expect(await fetchBlobShas(makeOctokit(compareCommits), 'owner', 'repo', 'main', 'head')).toEqual(new Map([['app.jar', 'a'.repeat(40)]]));
     expect(compareCommits).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', base: 'main', head: 'head', per_page: 1 });
+  });
+
+  it('lists the commits a head adds on one line of history with `fetchCommitsSince`, and none after a rebase, a merge or past one page', async () => {
+    const commit = (sha: string, parents = 1) => ({ sha, parents: Array.from({ length: parents }, () => ({ sha: 'p' })) });
+    const since = (data: object) => fetchCommitsSince(makeOctokit(jest.fn().mockResolvedValue({ data })), 'owner', 'repo', 'base', 'head');
+    expect(await since({ status: 'ahead', total_commits: 2, commits: [commit('a'), commit('b')] })).toEqual(['a', 'b']);
+    expect(await since({ status: 'diverged', total_commits: 2, commits: [commit('a'), commit('b')] })).toEqual([]);
+    expect(await since({ status: 'ahead', total_commits: 2, commits: [commit('a'), commit('m', 2)] })).toEqual([]);
+    expect(await since({ status: 'ahead', total_commits: 120, commits: [commit('a')] })).toEqual([]);
   });
 
   it('returns empty string when base equals head and skips the API call', async () => {

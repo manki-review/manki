@@ -115,6 +115,9 @@ class FakeGitHub {
   headSha = HEAD_SHA;
   /** The PR's diff against its base at each head commit, `PR_DIFF` unless set. */
   prDiffs: Record<string, string> = {};
+  /** The commits each head adds on top of the head before it, oldest first, and the diff of each commit. A head adds only itself by default. */
+  pushedCommits: Record<string, string[]> = {};
+  commitDiffs: Record<string, string> = {};
   mergeable: boolean | null = true;
   /** The repository's other open PRs, as the GraphQL API lists them. */
   openPrs: Array<{ number: number; title: string; body: string; isDraft: boolean; files: { nodes: Array<{ path: string }> } }> = [];
@@ -248,6 +251,12 @@ class FakeGitHub {
       return json({ id: this.nextId++ }, 201);
     }
     if (method === 'GET' && route.startsWith('/compare/') && headers.get('accept')?.includes('diff')) return text(this.prDiffs[route.split('...').at(-1) ?? ''] ?? PR_DIFF);
+    if (method === 'GET' && route.startsWith('/compare/')) {
+      const head = route.split('...').at(-1) ?? '';
+      const commits = (this.pushedCommits[head] ?? [head]).map(sha => ({ sha, parents: [{ sha: 'parent' }] }));
+      return json({ status: 'ahead', total_commits: commits.length, commits, files: [] });
+    }
+    if (method === 'GET' && (match = route.match(/^\/commits\/(\w+)$/)) && headers.get('accept')?.includes('diff')) return text(this.commitDiffs[match[1]] ?? '');
     const config = this.configs[searchParams.get('ref') ?? ''];
     if (method === 'GET' && route === `/contents/${INPUTS.config_path}` && config) {
       return json({ type: 'file', encoding: 'base64', size: config.length, content: Buffer.from(config).toString('base64') });
@@ -881,8 +890,15 @@ describe('runFullReview end to end', () => {
     expect(rebased.body).toContain('**Still open from earlier reviews:**\n- `src/math.ts:2`: Sum is never range checked ([view thread](https://github.com/acme/widgets/pull/42#discussion_PRRT_1))');
     expect(mockGitHub.threads).toHaveLength(1);
 
+    // Two commits since the last review: the first rewrites the thread's line, the second only changes the README. GitHub
+    // then shows the thread outdated, without a line, so its file stands in for it. Only the first commit changed that file.
     mockGitHub.headSha = 'c3'.repeat(20);
     mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
+    const fix = 'f1'.repeat(20);
+    mockGitHub.pushedCommits[mockGitHub.headSha] = [fix, mockGitHub.headSha];
+    mockGitHub.commitDiffs[fix] = 'diff --git a/src/math.ts b/src/math.ts\n--- a/src/math.ts\n+++ b/src/math.ts\n@@ -2,2 +2,2 @@\n-  const sum = a + b;\n+  const sum = checkedSum(a, b);\n   return sum;\n';
+    mockGitHub.commitDiffs[mockGitHub.headSha] = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+Sums are range checked.\n';
+    mockGitHub.threads[0].line = 0;
     Object.assign(mockLLM.replies, READY_REPLIES, {
       judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
     });
@@ -893,7 +909,7 @@ describe('runFullReview end to end', () => {
     const [thread] = mockGitHub.threads;
     expect(thread.isResolved).toBe(true);
     expect(mockGitHub.writes).toContain('POST /resolve');
-    expect(thread.comments.at(-1)?.body).toMatch(/^Fixed in c3c3c3c\./);
+    expect(thread.comments.at(-1)?.body).toMatch(/^Fixed in f1f1f1f\./);
   });
 
   it.each([
