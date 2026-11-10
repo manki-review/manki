@@ -4125,6 +4125,7 @@ describe('runFullReview orchestration', () => {
       allJudgedFindings: [{
         severity: 'ignore' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', reviewers: ['Concurrency'],
         reviewerSeverity: 'suggestion' as const, judgeConfidence: 'high' as const, judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
+        gradeIfConfirmed: 'suggestion' as const, doubts: [{ premise: 'Callers read the old name', decides: 'defect' as const }],
       }],
       highlights: [], reviewComplete: true, agentNames: ['Concurrency'],
     });
@@ -4141,6 +4142,7 @@ describe('runFullReview orchestration', () => {
     expect(rc!.judge.dropped).toEqual([{
       title: 'Rename helper', file: 'src/app.ts', line: 7, reviewers: ['Concurrency'],
       reviewerSeverity: 'suggestion', judgeConfidence: 'high', judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
+      gradeIfConfirmed: 'suggestion', doubts: [{ premise: 'Callers read the old name', decides: 'defect' }],
     }]);
     expect(rc!.findings.entries.map(e => [e.toolEvidence, e.toolSource])).toEqual([['contradicted', undefined], ['confirmed', 'CodeQL']]);
     // A first round has no earlier change to compare with, so every finding is new.

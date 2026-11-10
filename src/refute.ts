@@ -27,7 +27,7 @@ const OUTCOMES: readonly RefutationOutcome[] = ['disproved', 'confirmed', 'unset
 const LINE_TOLERANCE = 5;
 // Blockers posted as warnings for want of proof a tool could find.
 const CHECKED_TAGS: readonly string[] = [UNPROVEN_TAG, UNBUILT_TAG];
-// Findings checked for a doubt the judge named, besides blockers, leads and the tagged ones, which are always checked.
+// Findings checked for a doubt whether the defect exists, at the grade the judge kept. Every other check runs uncapped.
 const MAX_DOUBT_CHECKS = 4;
 
 type RefutationField = 'refutation' | 'pairRefutation';
@@ -182,7 +182,10 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
       return { premise: doubt.premise, outcome: settle(OUTCOMES.find(o => o === answer.outcome) ?? 'unsettled', cited), reason: replyText(answer.reason), ...(cited.length > 0 && { proof: cited }) };
     });
     outcome = premisesOutcome(finding.doubts, premises);
-    proof = [...new Set(premises.flatMap(p => (p.outcome === 'unsettled' ? [] : p.proof ?? [])))];
+    // A disproof cites only the premises that disprove the defect, never lines that confirmed another premise.
+    const doubts = finding.doubts;
+    const cites = (p: PremiseCheck, i: number): boolean => outcome === 'disproved' ? p.outcome === 'disproved' && doubts[i].decides === 'defect' : p.outcome !== 'unsettled';
+    proof = [...new Set(premises.flatMap((p, i) => cites(p, i) ? p.proof ?? [] : []))];
   } else {
     const claimed = OUTCOMES.find(o => o === parsed.outcome);
     if (!claimed) throw new Error(`refutation outcome is ${JSON.stringify(parsed.outcome)}, not one of ${OUTCOMES.join(', ')}`);
@@ -251,20 +254,23 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
   return graded;
 }
 
-function alwaysChecked(finding: Finding): boolean {
-  return finding.severity === 'blocker' || !!finding.lead || !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag));
-}
-
 const rank = (severity: FindingSeverity): number => SEVERITY_ORDER.indexOf(severity);
 
+function alwaysChecked(finding: Finding): boolean {
+  return finding.severity === 'blocker' || !!finding.lead || !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag))
+    || (!!finding.gradeIfConfirmed && rank(finding.gradeIfConfirmed) < rank(finding.severity));
+}
+
 /**
- * Returns the findings to check for a doubt the judge named: those whose `gradeIfConfirmed` is `warning` or above, at
- * most `MAX_DOUBT_CHECKS`, the highest `gradeIfConfirmed` first and then the highest grade.
+ * Returns the findings the judge kept at their grade with a doubt whether the defect exists, to check with tools: those
+ * at `warning` or above, at most `MAX_DOUBT_CHECKS`, the highest grade first. A finding the judge would grade higher if
+ * its doubts hold is always checked, since that check is how a warning becomes a blocker.
  */
 function doubtsToCheck(findings: readonly Finding[]): Finding[] {
   const doubted = findings
-    .filter(f => f.severity !== 'ignore' && !alwaysChecked(f) && f.gradeIfConfirmed && rank(f.gradeIfConfirmed) <= rank('warning'))
-    .sort((a, b) => rank(a.gradeIfConfirmed!) - rank(b.gradeIfConfirmed!) || rank(a.severity) - rank(b.severity));
+    .filter(f => f.severity !== 'ignore' && !alwaysChecked(f) && f.gradeIfConfirmed && rank(f.gradeIfConfirmed) <= rank('warning')
+      && !!f.doubts?.some(d => d.decides === 'defect'))
+    .sort((a, b) => rank(a.severity) - rank(b.severity));
   for (const skipped of doubted.slice(MAX_DOUBT_CHECKS)) {
     core.info(`Not checking the doubt on "${skipped.title}", since ${MAX_DOUBT_CHECKS} findings with higher grades took this round's checks`);
   }
@@ -281,7 +287,7 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
   const prior = [...priorRounds].reverse().flatMap(r => r.findings.entries)
     .find(e => e.fingerprint.file === finding.file && Math.abs(e.fingerprint.lineStart - finding.line) <= LINE_TOLERANCE && titlesMatch(e.title ?? '', finding.title));
   if (!prior?.gradeIfConfirmed || prior.severity !== finding.severity || rank(prior.gradeIfConfirmed) >= rank(prior.severity)) return finding;
-  const settled = [prior.refutation, prior.pairRefutation].some(r => r && (r.outcome === 'confirmed' || r.premises?.some(p => p.outcome === 'disproved')));
+  const settled = [prior.refutation, prior.pairRefutation].some(r => r && (r.outcome !== 'unsettled' || r.premises?.some(p => p.outcome === 'disproved')));
   if (settled) return finding;
   core.info(`"${finding.title}" keeps a grade an earlier round capped with an open doubt, so it is checked again`);
   return { ...finding, gradeIfConfirmed: prior.gradeIfConfirmed, ...(prior.doubts && { doubts: prior.doubts }) };

@@ -25,7 +25,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, Finding, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG } from './types';
+import { CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, Finding, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -512,7 +512,7 @@ Being certain overrides this. It governs doubt, never judgment.
 
 Set \`gradeIfConfirmed\` on every finding to the grade its consequence earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. So is a premise that lowers or caps the grade, such as callers probably validating a value, a path looking limited or an input looking trusted, unless the code shown or your tool calls prove it. When you doubt nothing, it equals \`severity\`. Except for an open lead, which follows its own rule, never mark a finding \`ignore\` for an unsettled doubt alone: when it would earn \`warning\` or \`blocker\` if the doubt holds, grade it by these rules and set \`gradeIfConfirmed\`.
 
-List each premise you doubt in \`doubts\`, as a fact the code can confirm or disprove: "a public request handler passes \`index\` to \`getItem\` unchecked", not "callers probably validate \`index\`". Set \`decides\` to \`defect\` when the defect does not exist if the premise is false, and to \`grade\` when the finding stands either way and only its grade depends on the premise. When you doubt nothing, leave \`doubts\` empty.${toolsCheckFindings ? ' Manki checks each premise with tools when `gradeIfConfirmed` is `warning` or above, for at most four findings a round besides blockers and leads, the highest grades first. The finding gets `gradeIfConfirmed` only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps your grade. A finding you mark `ignore` is never checked.' : ''}
+List each premise you doubt in \`doubts\`, as a fact the code can confirm or disprove: "a public request handler passes \`index\` to \`getItem\` unchecked", not "callers probably validate \`index\`". Set \`decides\` to \`defect\` when the defect does not exist if the premise is false, and to \`grade\` when the finding stands either way and only its grade depends on the premise. When you doubt nothing, leave \`doubts\` empty.${toolsCheckFindings ? ' Manki checks each premise with tools when `gradeIfConfirmed` is above `severity`. When you keep a finding at its grade with a doubt whether the defect exists, it checks the premises of at most four such findings a round at `warning` or above, the highest grades first. The finding gets `gradeIfConfirmed` only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps your grade. A finding you mark `ignore` is never checked.' : ''}
 
 Start \`reasoning\` with your verdict, then the facts behind it. For a blocker, name the failure and cite the proving lines (e.g., "blocker. When a request omits \`page\`, \`listItems\` at src/api.ts:42 divides by zero and the handler returns 500 for every default listing.").
 
@@ -823,7 +823,7 @@ export function buildJudgeUserMessage(
               doubts: f.doubts.map((d, i) => ({
                 premise: d.premise.replace(/[\r\n]/g, ' ').replace(/`/g, '').slice(0, MAX_DOUBT_CHARS),
                 decides: d.decides,
-                check: (f.refutation ?? f.pairRefutation)?.premises?.[i]?.outcome ?? 'not checked',
+                check: premiseCheck([f.refutation, f.pairRefutation], i),
               })),
             }),
           })),
@@ -1112,6 +1112,13 @@ function oneOf<K extends string>(allowed: Readonly<Record<K, string>>, value: un
   if (typeof value === 'string' && Object.hasOwn(allowed, value)) return value as K;
   core.warning(`Judge returned ${field} ${JSON.stringify(value).slice(0, 40)}, which is not one of ${Object.keys(allowed).join(', ')}. Dropping it.`);
   return undefined;
+}
+
+/** Returns how the refuters answered premise `i`: the settled answer they agree on, `split` when they differ, else whatever they said. */
+function premiseCheck(refutations: Array<Refutation | undefined>, i: number): string {
+  const answers = refutations.flatMap(r => r?.premises?.[i]?.outcome ?? []);
+  const settled = new Set(answers.filter(o => o !== 'unsettled'));
+  return settled.size > 1 ? 'split' : [...settled][0] ?? answers[0] ?? 'not checked';
 }
 
 /** Returns the doubts in `value` that name a premise. One whose `decides` is not `grade` decides whether the defect exists. */
@@ -1509,7 +1516,8 @@ export function mapJudgedToFindings(
       if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
       if (match.buildClaim) finding.buildClaim = true;
       const doubted = !!match.doubts && match.gradeIfConfirmed === match.severity;
-      if (match.gradeIfConfirmed && !o.toolSource && match.severity !== 'ignore' && (doubted || moreSevere(match.gradeIfConfirmed, match.severity))) {
+      // A dropped finding keeps them too, for the round record. The refuter never checks a finding marked `ignore`.
+      if (match.gradeIfConfirmed && !o.toolSource && (doubted || moreSevere(match.gradeIfConfirmed, match.severity))) {
         finding.gradeIfConfirmed = match.gradeIfConfirmed;
         if (match.doubts) finding.doubts = match.doubts;
       }
