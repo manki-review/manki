@@ -99,6 +99,34 @@ describe('reviewLocal', () => {
     expect(review.context.meta).toMatchObject({ prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, outcome: 'ADDRESS_FIRST' });
   });
 
+  it('reviews a follow-up round from an earlier round: its threads with the code now, its record, and the diff since', async () => {
+    jest.mocked(runReview).mockResolvedValue({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: 'Still wrong', findings: [{ ...finding }], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    const earlier = {
+      head: 'feature~1',
+      findings: [
+        { id: 'P1', severity: 'blocker' as const, title: 'Wrong value', file: 'src/a.ts', line: 2, description: 'Should be 4.', suggestedFix: 'const b = 4;', security: true, thread: 'open' as const },
+        { id: 'P2', severity: 'warning' as const, title: 'Unused constant', file: 'src/a.ts', line: 1, thread: 'resolved' as const },
+        { id: 'P3', severity: 'suggestion' as const, title: 'Name the constant', file: 'src/a.ts', line: 1, gradeIfConfirmed: 'warning' as const },
+      ],
+    };
+
+    const review = await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature', earlier, providerInputs: inputs });
+
+    const options = jest.mocked(runReview).mock.calls[0][1];
+    expect(options.isFollowUp).toBe(true);
+    expect(options.interRoundDiff).toContain('-const b = 3;\n+const b = 4;');
+    expect(options.interRoundDiff).not.toContain('docs/x.md');
+    expect(options.previousFindings?.map(f => [f.threadId, f.status, f.isSecurity])).toEqual([['P1', 'open', true], ['P2', 'resolved', undefined]]);
+    expect(options.openThreads).toEqual([expect.objectContaining({ threadId: 'P1', severity: 'blocker', description: 'Should be 4.', currentCode: expect.stringContaining('>>> 2: const b = 4;') })]);
+    const [record] = options.priorRounds!;
+    expect(record.meta).toMatchObject({ round: 1, commitSha: head });
+    expect(record.findings.entries.map(e => [e.title, e.threadId, e.severity, e.tags])).toEqual([
+      ['Wrong value', 'P1', 'blocker', ['security']], ['Unused constant', 'P2', 'warning', undefined], ['Name the constant', undefined, 'suggestion', undefined],
+    ]);
+    expect(review.result.findings[0].origin).toBe('new');
+    expect(review.context.meta).toMatchObject({ round: 2, commitSha: later });
+  });
+
   it('reviews a patch on a workspace holding the tracked files of the head with the patch applied, with the given config, title and body', async () => {
     let workspaceSeen: { content: string; env: boolean; linkIsFile: boolean } | undefined;
     jest.mocked(runReview).mockImplementation(async (_clients, options) => {
