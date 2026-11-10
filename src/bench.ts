@@ -162,7 +162,10 @@ function checkFollowUp(
   };
   mustResolve.forEach(id => find(id, 'must_resolve'));
   mustNotRepeat.forEach(id => find(id, 'must_not_repeat'));
-  return mustKeepOpen.map(item => (item.locations.length > 0 ? item : { ...item, locations: [find(item.id, 'must_keep_open').file] }));
+  return mustKeepOpen.map((item) => {
+    const { file: thread } = find(item.id, 'must_keep_open');
+    return item.locations.length > 0 ? item : { ...item, locations: [thread] };
+  });
 }
 
 /** Parses and checks one case file. Throws an error naming the file and the field that is wrong. */
@@ -326,6 +329,17 @@ interface FinderSteps {
   filesRead: number;
 }
 
+interface FollowUpScore {
+  /** The earlier open threads the round resolved. */
+  resolved: string[];
+  /** Earlier threads the round resolved that the key says the push fixes. */
+  resolvedRight: number;
+  /** Earlier threads the round resolved that the key says stay open. */
+  resolvedWrong: number;
+  /** Findings that restate an earlier finding the key says the round must not post again. */
+  repeats: number;
+}
+
 interface RunScore {
   outcome: string;
   /** False for a review that did not complete, or a run that failed. */
@@ -346,14 +360,8 @@ interface RunScore {
   extraFindings: number;
   /** Findings past the first that name a key item another finding already names. */
   duplicates: number;
-  /** On a follow-up case, the earlier open threads the round resolved. */
-  resolved?: string[];
-  /** Earlier threads the round resolved that the key says the push fixes. `null` for a first round and an incomplete run. */
-  resolvedRight: number | null;
-  /** Earlier threads the round resolved that the key says stay open. */
-  resolvedWrong: number | null;
-  /** Findings that restate an earlier finding the key says the round must not post again. */
-  repeats: number | null;
+  /** Set on a complete run of a follow-up case. A report from a ref without follow-up cases has none. */
+  followUp?: FollowUpScore;
   finders: FinderSteps[];
   costUsd: number;
   inputTokens: number;
@@ -429,12 +437,14 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
     falseBlockers: findings.filter((f, i) => f.severity === 'blocker' && !matched.has(i)).length,
     extraFindings: findings.filter((_, i) => !matched.has(i)).length,
     duplicates: keyMatches.reduce((sum, m) => sum + Math.max(0, m.findings.length - 1), 0),
-    ...(resolved && { resolved }),
-    resolvedRight: resolved ? resolved.filter(id => benchCase.mustResolve.includes(id)).length : null,
-    resolvedWrong: resolved ? resolved.filter(id => !benchCase.mustResolve.includes(id)).length : null,
-    repeats: priorRound && reviewComplete
-      ? new Set(matches.filter(m => m.verdict === 'MATCH' && repeats.some(item => item.id === m.item)).flatMap(m => m.findings)).size
-      : null,
+    ...(resolved && {
+      followUp: {
+        resolved,
+        resolvedRight: resolved.filter(id => benchCase.mustResolve.includes(id)).length,
+        resolvedWrong: resolved.filter(id => !benchCase.mustResolve.includes(id)).length,
+        repeats: new Set(matches.filter(m => m.verdict === 'MATCH' && repeats.some(item => item.id === m.item)).flatMap(m => m.findings)).size,
+      },
+    }),
   };
 }
 
@@ -516,7 +526,7 @@ interface VariantSummary {
   falseBlockers: number;
   extraFindings: number;
   duplicates: number;
-  /** Sums over the complete runs of follow-up cases. `null` without one. */
+  /** Sums over the complete runs of follow-up cases, `null` without one. */
   resolvedRight: number | null;
   resolvedWrong: number | null;
   repeats: number | null;
@@ -568,7 +578,7 @@ function caseReport(benchCase: BenchCase, runs: RunScore[]): CaseReport {
     partial: tier === 'must_catch' || tier === 'nice_to_have' ? complete.filter(run => verdict(run, item.id) === 'PARTIAL').length : 0, runs: complete.length,
   });
   const caught = (item: KeyItem) => (run: RunScore) => verdict(run, item.id) === 'MATCH';
-  const resolved = (id: string, run: RunScore) => !!run.resolved?.includes(id);
+  const resolved = (id: string, run: RunScore) => !!run.followUp?.resolved.includes(id);
   const earlier = (id: string) => benchCase.priorRound!.findings.find(f => f.id === id)! as Pick<KeyItem, 'id' | 'severity'>;
   return {
     id: benchCase.id, set: benchCase.set, source: benchCase.source, keyVersion: benchCase.keyVersion,
@@ -603,10 +613,8 @@ function summarize(cases: CaseReport[]): VariantSummary {
   }
   const verdicts = runs.map(r => r.verdictCorrect).filter((v): v is boolean => v !== null);
   const reviewed = runs.filter(r => r.outcome !== 'FAILED');
-  const sum = (value: (run: RunScore) => number | null) => {
-    const known = runs.map(value).filter((v): v is number => v !== null);
-    return known.length > 0 ? known.reduce((a, b) => a + b, 0) : null;
-  };
+  const followUps = runs.flatMap(r => (r.followUp ? [r.followUp] : []));
+  const sum = (value: (score: FollowUpScore) => number) => (followUps.length > 0 ? followUps.reduce((total, f) => total + value(f), 0) : null);
   return {
     runs: runs.length,
     incompleteRuns: runs.filter(r => !r.complete).length,
@@ -621,9 +629,9 @@ function summarize(cases: CaseReport[]): VariantSummary {
     falseBlockers: runs.reduce((total, r) => total + r.falseBlockers, 0),
     extraFindings: runs.reduce((total, r) => total + r.extraFindings, 0),
     duplicates: runs.reduce((total, r) => total + r.duplicates, 0),
-    resolvedRight: sum(r => r.resolvedRight),
-    resolvedWrong: sum(r => r.resolvedWrong),
-    repeats: sum(r => r.repeats),
+    resolvedRight: sum(f => f.resolvedRight),
+    resolvedWrong: sum(f => f.resolvedWrong),
+    repeats: sum(f => f.repeats),
     costUsd: runs.reduce((total, r) => total + r.costUsd, 0),
     costPerRunUsd: mean(reviewed.map(r => r.costUsd)),
     wallTimePerRunMs: mean(reviewed.map(r => r.durationMs)),
@@ -708,10 +716,10 @@ function gateSide(variants: VariantReport[], shared: string[]): GateSide {
   return {
     runs: Math.min(...perCase.map(reports => reports.reduce((sum, c) => sum + c.runs.length, 0))),
     found: meanPerRun((c, run) => c.items.filter(item => item.tier === 'must_catch' && foundAtGrade(item, run)).length),
-    resolvedRight: meanPerRun((_, run) => run.resolvedRight ?? 0),
+    resolvedRight: meanPerRun((_, run) => run.followUp?.resolvedRight ?? 0),
     falseBlockers: meanPerRun((_, run) => run.falseBlockers),
-    resolvedWrong: meanPerRun((_, run) => run.resolvedWrong ?? 0),
-    repeats: meanPerRun((_, run) => run.repeats ?? 0),
+    resolvedWrong: meanPerRun((_, run) => run.followUp?.resolvedWrong ?? 0),
+    repeats: meanPerRun((_, run) => run.followUp?.repeats ?? 0),
   };
 }
 
@@ -866,7 +874,7 @@ export function formatBenchSummary(report: BenchReport): string {
         const reads = run.finders.map(f => `${f.name} ${f.filesRead}`).join(', ') || 'none';
         lines.push(run.error
           ? `  run ${i + 1}: ${run.outcome}: ${run.error}`
-          : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.repeats === null ? '' : `, resolved ${run.resolvedRight} right and ${run.resolvedWrong} wrong, ${run.repeats} repeats`}, files read ${reads}, $${run.costUsd.toFixed(2)}`);
+          : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}, $${run.costUsd.toFixed(2)}`);
       }
     }
     for (const { label, summary: s } of setSummaries(variant)) {
@@ -905,7 +913,6 @@ function failedRun(error: unknown, review?: LocalReview): RunScore {
     ...(review && reviewFacts(review)),
     complete: false, error: error instanceof Error ? error.message : String(error), matches: [],
     mustCatchRecall: null, weightedRecall: null, verdictCorrect: null, falseBlockers: 0, extraFindings: 0, duplicates: 0,
-    resolvedRight: null, resolvedWrong: null, repeats: null,
   };
 }
 

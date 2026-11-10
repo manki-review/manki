@@ -150,6 +150,8 @@ describe('parseCase', () => {
     ['      posted: body', '      posted: review', '`posted` must be thread or body'],
     ['      line: 70', '      line: 0', 'prior_round.findings[2]: `line` must be a positive integer'],
     [`  head: ${SHA_C}`, '  head: abc', '`prior_round.head` must be a full commit SHA'],
+    ['  - id: P2\n    severity: warning\n    mechanism: The read', '  - id: K1\n    severity: warning\n    locations: [src/conn.rs]\n    mechanism: The read', '`must_keep_open` names K1, which is no earlier finding'],
+    ['  - id: P2\n    severity: warning\n    mechanism: The read', '  - id: P4\n    severity: warning\n    locations: [src/conn.rs]\n    mechanism: The read', '`must_keep_open` names P4, which is no open earlier thread'],
   ])('refuses a follow-up case where %s is %s', (from, to, message) => {
     expect(() => parseCase(FOLLOW_UP_YAML.replace(from, to), 'bad.yml')).toThrow(message);
   });
@@ -357,9 +359,9 @@ describe('scoreRun on a follow-up case', () => {
 
     expect(score.matches.map(m => [m.item, m.verdict, m.findings])).toEqual([['K1', 'MATCH', [2]], ['K2', 'NONE', []], ['N1', 'NONE', []], ['P2', 'MATCH', [0]], ['P3', 'MATCH', [1]]]);
     expect(score).toMatchObject({
-      verdictCorrect: true, falseBlockers: 0, extraFindings: 0, duplicates: 0, resolved: ['P1', 'P2'], resolvedRight: 1, resolvedWrong: 1, repeats: 2,
+      verdictCorrect: true, falseBlockers: 0, extraFindings: 0, duplicates: 0, followUp: { resolved: ['P1', 'P2'], resolvedRight: 1, resolvedWrong: 1, repeats: 2 },
     });
-    expect(await scoreRun(followUp, review(false), matcher)).toMatchObject({ resolvedRight: null, resolvedWrong: null, repeats: null });
+    expect(await scoreRun(followUp, review(false), matcher)).not.toHaveProperty('followUp');
 
     const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase: followUp, runs: [score] }] }]);
     expect(report.variants[0].cases[0].items.slice(3)).toEqual([
@@ -596,7 +598,9 @@ describe('mergeReports and gateReports', () => {
       baseline: { runs: 1, found: 2, falseBlockers: 0 }, candidate: { runs: 1, found: 2, falseBlockers: 0 },
     });
     expect(await gate('blocker', 'blocker', 1)).toMatchObject({ verdict: 'FAIL', reason: 'False blockers rose from 0 to 1 per run.' });
-    const followUps = async (scores: Partial<Run>) => report([[first, [{ ...await run(first, 'blocker'), ...scores }]], [second, [await run(second, 'blocker')]]]);
+    const followUps = async (scores: Partial<NonNullable<Run['followUp']>>) => report([
+      [first, [{ ...await run(first, 'blocker'), followUp: { resolved: [], resolvedRight: 0, resolvedWrong: 0, repeats: 0, ...scores } }]], [second, [await run(second, 'blocker')]],
+    ]);
     expect(gateReports([baseline], [await followUps({ resolvedWrong: 1, repeats: 2 })])[0]).toMatchObject({
       verdict: 'FAIL', reason: 'Earlier threads resolved that the key keeps open rose from 0 to 1 per run. Earlier findings posted again rose from 0 to 2 per run.',
     });
