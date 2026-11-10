@@ -2850,6 +2850,12 @@ describe('runReview', () => {
     }
     openThread.severity = 'blocker';
 
+    // An outdated thread whose code changed since it was posted can be cleared though the last push left its file alone.
+    openThread.changedSincePosted = true;
+    const changedEarlier = await runWith(elsewhere);
+    expect([changedEarlier.outcome, changedEarlier.threadEvaluations]).toEqual(['READY', [addressed]]);
+    delete openThread.changedSincePosted;
+
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.', threadEvaluations: [addressed] });
     const namedAgain = await runWith(touching);

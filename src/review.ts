@@ -2333,7 +2333,7 @@ export function filesChangedByPush(interRoundDiff: string | undefined): Set<stri
 
 /** Whether `thread` is a blocker thread that stays open whatever the judge decides, because the push did not change its file. */
 export function blockerThreadStaysOpen(thread: OpenThread, pushChangedFiles: ReadonlySet<string>): boolean {
-  return threadBlocks(thread) && !pushChangedFiles.has(thread.file);
+  return threadBlocks(thread) && !pushChangedFiles.has(thread.file) && !thread.changedSincePosted;
 }
 
 /**

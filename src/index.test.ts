@@ -4904,9 +4904,11 @@ describe('runFullReview orchestration', () => {
     const changedFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 20, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [changedFile], totalAdditions: 20, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [changedFile], excluded: [] });
-    const posted = ['function reply(thread) {', '  reopenThread(thread);', '  postReply(thread);', '}'].join('\n');
-    const now = ['// moved down', '', '', 'function reply(thread) {', '  postReply(thread);', '  reopenThread(thread);', '}'].join('\n');
-    jest.mocked(ghUtils.fetchFileContents).mockImplementation(async (_o, _ow, _r, ref) => new Map([['src/app.ts', ref === 'c0ffee' ? posted : now], ['src/gone.ts', ref === 'c0ffee' ? posted : 'nothing here']]));
+    const posted = ['function reply(thread) {', '  reopenThread(thread);', '  postReply(thread);', '  return thread;', '}'].join('\n');
+    // The code moved down unchanged in one file, and was rewritten in the other.
+    const moved = ['// moved down', '', '', posted].join('\n');
+    const rewritten = ['function reply(thread) {', '  postReply(thread);', '}'].join('\n');
+    jest.mocked(ghUtils.fetchFileContents).mockImplementation(async (_o, _ow, _r, ref) => new Map([['src/app.ts', ref === 'c0ffee' ? posted : moved], ['src/gone.ts', ref === 'c0ffee' ? posted : rewritten]]));
     const outdated = { severity: 'blocker' as const, status: 'open' as const, line: 0, originalLine: 2, originalCommit: 'c0ffee' };
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
@@ -4918,12 +4920,15 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    const [moved, gone] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
-    expect(moved).toMatchObject({ line: 6, postedCommit: 'c0ffee', answer: '**Fixed.** It reopens after posting.' });
-    expect(moved.postedCode).toContain('>>> 2:   reopenThread(thread);');
-    expect(moved.currentCode).toContain('>>> 6:   reopenThread(thread);');
-    expect(moved.postedCodeGone).toBeUndefined();
-    expect(gone).toMatchObject({ line: 0, postedCodeGone: true, currentCode: '' });
+    const [found, gone] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
+    expect(found).toMatchObject({ line: 5, postedCommit: 'c0ffee', answer: '**Fixed.** It reopens after posting.' });
+    expect(found.postedCode).toContain('>>> 2:   reopenThread(thread);');
+    expect(found.currentCode).toContain('>>> 5:   reopenThread(thread);');
+    // Code that only moved is unchanged, so its blocker still needs a push to its file to clear.
+    expect([found.postedCodeGone, found.changedSincePosted]).toEqual([undefined, undefined]);
+    // Rewritten code is not found, so the judge sees the head's code near the same line, and the thread counts as changed.
+    expect(gone).toMatchObject({ line: 2, postedCodeGone: true, changedSincePosted: true });
+    expect(gone.currentCode).toContain('>>> 2:   postReply(thread);');
     expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'c0ffee', ['src/app.ts', 'src/gone.ts']);
   });
 

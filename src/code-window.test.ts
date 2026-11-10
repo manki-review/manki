@@ -1,4 +1,4 @@
-import { extractCurrentCodeWindow, locatePostedLine } from './code-window';
+import { extractCurrentCodeWindow, locatePostedLine, postedCodeChanged } from './code-window';
 
 describe('extractCurrentCodeWindow', () => {
   function makeFile(lineCount: number): string {
@@ -79,16 +79,23 @@ describe('extractCurrentCodeWindow', () => {
 });
 
 describe('locatePostedLine', () => {
-  const posted = ['function read(path) {', '  const data = fs.readFileSync(path);', '  return data;', '}'].join('\n');
+  const body = ['function read(path) {', '  const data = fs.readFileSync(path);', '  if (!data) return null;', '  return parse(data);', '}'];
+  const posted = body.join('\n');
 
-  it('finds the posted line where it moved, the nearest one when it appears twice, and says when it is gone', () => {
-    const moved = ['// header', '', 'function read(path) {', '  const data = fs.readFileSync(path);', '  return data;', '}'].join('\n');
-    expect(locatePostedLine(posted, 2, moved)).toBe(4);
-    const twice = [...Array(10).fill('  const data = fs.readFileSync(path);'), 'x'].join('\n');
-    expect(locatePostedLine(posted, 2, twice)).toBe(2);
-    expect(locatePostedLine(posted, 2, 'function read(path) {\n  return fs.promises.readFile(path);\n}')).toBe('gone');
-    // A line too short to tell apart, such as `}`, says nothing about where the code went.
-    expect(locatePostedLine(posted, 4, moved)).toBe('unknown');
-    expect(locatePostedLine(posted, 9, moved)).toBe('unknown');
+  it('finds the posted code where it moved by the lines around it, and never by one generic line', () => {
+    expect(locatePostedLine(posted, 2, ['// header', '', '', ...body].join('\n'))).toBe(5);
+    // Indentation does not count, and the nearest place wins when the code appears twice.
+    expect(locatePostedLine(posted, 2, [...body.map(l => `  ${l}`), '', ...body].join('\n'))).toBe(2);
+    // The flagged line was edited in place: its neighbours still place it.
+    expect(locatePostedLine(posted, 2, posted.replace('fs.readFileSync(path)', 'await fs.promises.readFile(path)'))).toBe(2);
+    // Only one generic line of the window is left, so nothing places the code.
+    expect(locatePostedLine(posted, 4, ['function other() {', '  return parse(data);', '}'].join('\n'))).toBeUndefined();
+    expect(locatePostedLine(posted, 2, 'nothing here')).toBeUndefined();
+  });
+
+  it('tells whether the code around the posted line changed since it was posted', () => {
+    expect(postedCodeChanged(posted, 2, ['// header', ...body.map(l => `  ${l}`)].join('\n'), 3)).toBe(false);
+    expect(postedCodeChanged(posted, 2, posted.replace('return null', 'throw new Error()'), 2)).toBe(true);
+    expect(postedCodeChanged(posted, 2, posted, undefined)).toBe(true);
   });
 });

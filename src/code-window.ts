@@ -30,17 +30,47 @@ export function extractCurrentCodeWindow(
   return out.join('\n');
 }
 
-// A line shorter than this, such as `}` or `return;`, recurs too often to tell where the code went.
-const MIN_LOCATABLE_CHARS = 8;
+// A line shorter than this, such as `}`, recurs too often to anchor anything on its own.
+const MIN_LOCATABLE_CHARS = 4;
+// How many lines of the posted window must line up at one place in the head before the code counts as found there.
+const MIN_MATCHING_LINES = 3;
 
 /**
- * Returns where line `line` of `posted` sits in `current`: the line holding the same trimmed text, the one nearest
- * `line` when several do, or `gone` when none does. A line too short to tell apart gives `unknown`.
+ * Returns where line `line` of `posted` sits in `current`: the place where the most lines of the posted window around
+ * it line up again, the one nearest `line` when several tie, or `undefined` when fewer than `MIN_MATCHING_LINES` do.
+ * One generic line, such as `return result;`, never places the code on its own.
  */
-export function locatePostedLine(posted: string, line: number, current: string): number | 'gone' | 'unknown' {
-  const text = posted.split('\n')[line - 1]?.trim() ?? '';
-  if (text.length < MIN_LOCATABLE_CHARS) return 'unknown';
-  const matches = current.split('\n').flatMap((l, i) => (l.trim() === text ? [i + 1] : []));
-  if (matches.length === 0) return 'gone';
-  return matches.reduce((best, m) => (Math.abs(m - line) < Math.abs(best - line) ? m : best));
+export function locatePostedLine(posted: string, line: number, current: string): number | undefined {
+  const old = posted.split('\n');
+  const now = current.split('\n');
+  const at = new Map<string, number[]>();
+  now.forEach((l, i) => at.set(l.trim(), [...(at.get(l.trim()) ?? []), i + 1]));
+  const votes = new Map<number, number>();
+  for (let d = -OPEN_THREAD_CODE_WINDOW; d <= OPEN_THREAD_CODE_WINDOW; d++) {
+    const text = old[line - 1 + d]?.trim() ?? '';
+    if (text.length < MIN_LOCATABLE_CHARS) continue;
+    for (const i of at.get(text) ?? []) votes.set(i - d, (votes.get(i - d) ?? 0) + 1);
+  }
+  let best: number | undefined;
+  for (const [anchor, n] of votes) {
+    if (n < MIN_MATCHING_LINES || anchor < 1 || anchor > now.length) continue;
+    const bestVotes = best === undefined ? 0 : votes.get(best)!;
+    if (n > bestVotes || (n === bestVotes && Math.abs(anchor - line) < Math.abs(best! - line))) best = anchor;
+  }
+  return best;
+}
+
+/**
+ * Whether the code around line `line` of `posted` differs from the code around line `now` of `current`, or the code was
+ * not found at all (`now` undefined). Indentation does not count.
+ */
+export function postedCodeChanged(posted: string, line: number, current: string, now: number | undefined): boolean {
+  if (now === undefined) return true;
+  const old = posted.split('\n');
+  const cur = current.split('\n');
+  for (let d = -OPEN_THREAD_CODE_WINDOW; d <= OPEN_THREAD_CODE_WINDOW; d++) {
+    const was = old[line - 1 + d];
+    if (was !== undefined && was.trim() !== (cur[now - 1 + d] ?? '').trim()) return true;
+  }
+  return false;
 }

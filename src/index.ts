@@ -12,7 +12,7 @@ import { REVIEW_COMMAND, runReviewCommand } from './cli';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
-import { extractCurrentCodeWindow, locatePostedLine } from './code-window';
+import { extractCurrentCodeWindow, locatePostedLine, postedCodeChanged } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
 import { addCodeContext, changeDigest, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
@@ -1083,14 +1083,17 @@ async function collectOpenThreads(
     const old = posted && postedContents.get(posted.commit)?.get(t.file);
     if (!posted || old === undefined) return { ...t, currentCode: extractCurrentCodeWindow(contents, t.file, t.line) };
     const current = contents?.get(t.file);
-    const now = current === undefined ? 'unknown' : locatePostedLine(old, posted.line, current);
+    const now = current === undefined ? undefined : locatePostedLine(old, posted.line, current);
+    // Where the code is not found, the head's code near the same line still shows what the fix left there.
+    const near = now ?? Math.min(posted.line, current?.split('\n').length ?? posted.line);
     return {
       ...t,
-      ...(typeof now === 'number' && { line: now }),
+      line: near,
       postedCode: extractCurrentCodeWindow(new Map([[t.file, old]]), t.file, posted.line),
       postedCommit: posted.commit,
-      ...(now === 'gone' && { postedCodeGone: true }),
-      currentCode: typeof now === 'number' ? extractCurrentCodeWindow(contents, t.file, now) : '',
+      ...(now === undefined && { postedCodeGone: true }),
+      ...((current === undefined || postedCodeChanged(old, posted.line, current, now)) && { changedSincePosted: true }),
+      currentCode: current === undefined ? '' : extractCurrentCodeWindow(contents, t.file, near),
     };
   });
   return { openThreads, fileContents };
