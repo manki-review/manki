@@ -2,7 +2,7 @@ import { parseCase } from '../src/bench';
 import { FOUND_AGAIN_MARKER } from '../src/recap';
 import { fixedMarker } from '../src/state';
 import { makeFindingFingerprintEntry, makeRoundContext } from '../src/test-utils';
-import { FindingFingerprintEntry, PRE_EXISTING_TAG } from '../src/types';
+import { FindingFingerprintEntry, PRE_EXISTING_TAG, RoundContext } from '../src/types';
 import { bodyAt, collectFollowUps, collectMisses, draftCase, plainReferences, reviewStart } from './missed-blockers';
 
 function entry(title: string, overrides: Partial<FindingFingerprintEntry> & { file?: string } = {}): FindingFingerprintEntry {
@@ -183,6 +183,13 @@ describe('reviewStart', () => {
   it('dates a round at the start of its review, or at its record without a wall-clock time', () => {
     expect(reviewStart(makeRoundContext(2, { usage: { wallClockMs: 300_000 } }))).toBe('2025-01-01T23:55:00.000Z');
     expect(reviewStart(makeRoundContext(2))).toBe('2025-01-02T00:00:00.000Z');
+  });
+
+  it('gives no start for a record without usage or a readable time, so the body reads as not recovered', () => {
+    const noUsage = { ...makeRoundContext(2), usage: undefined } as unknown as RoundContext;
+    const badTime = makeRoundContext(2, { meta: { ...makeRoundContext(2).meta, timestamp: 'not a time' } });
+    expect([reviewStart(noUsage), reviewStart(badTime)]).toEqual([undefined, undefined]);
+    expect(bodyAt('Now.', [{ editedAt: '2025-01-01T00:00:00Z', diff: 'First.' }], reviewStart(badTime))).toEqual({ body: 'Now.', known: false });
   });
 });
 
