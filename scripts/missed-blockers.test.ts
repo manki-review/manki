@@ -170,6 +170,7 @@ describe('bodyAt', () => {
     expect(bodyAt('Now.', edits, '2025-01-01T12:00:00Z')).toEqual({ body: 'First.', known: true });
     expect(bodyAt('Now.', edits, '2025-01-03T00:00:00Z')).toEqual({ body: 'Third, after the later fixes.', known: true });
     expect(bodyAt('Now.', [], '2025-01-01T00:00:00Z')).toEqual({ body: 'Now.', known: true });
+    expect(bodyAt('Now.', [], undefined)).toEqual({ body: 'Now.', known: true });
   });
 
   it('falls back to the body now, as not recovered, before the first version, on a deleted version, or without a history', () => {
