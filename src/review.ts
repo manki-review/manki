@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { classifyRelatedWork } from './related-work';
@@ -23,6 +23,7 @@ import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './wri
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listReferenceUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
+import { runSweeps } from './sweep';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -39,7 +40,7 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
 }
 
 /** Parses the `file:line` or `file:start-end` location `at`. */
-function parseLocation(at: string): { file: string; start: number; end: number } | undefined {
+export function parseLocation(at: string): { file: string; start: number; end: number } | undefined {
   const [, file, start, end] = at.match(/^(.+):(\d+)(?:-(\d+))?$/) ?? [];
   return file ? { file, start: Number(start), end: Number(end ?? start) } : undefined;
 }
@@ -1202,33 +1203,33 @@ export async function runReview(
     ...(clients.refuterPair?.repoTools && { pair: withFallback({ client: clients.refuterPair }, 'judge', 'refute_pair') }),
   } : undefined;
   if (clients.refuterPair && !refutation?.pair) core.warning('No second refuter runs, since `models.refuter_pair` needs the PR head checked out and repository tools on both its model and the judge\'s');
+  const judgeInput: JudgeInput = {
+    findings: findingsForJudge,
+    diff: diffWithLockfiles,
+    ...(options.excludedPaths && { excludedPaths: options.excludedPaths }),
+    lockfiles,
+    rawDiff,
+    memory: memory ?? undefined,
+    repoContext,
+    prContext,
+    linkedIssues,
+    agentCount: team.finders.length,
+    isFollowUp,
+    openThreads: openThreads ?? undefined,
+    priorRounds,
+    inPrSuppressions,
+    effort: judgeEffort,
+    provenanceMap,
+    interRoundDiff,
+    resolvedThreadIds,
+    suppressResolvedThreads,
+    ...(related && { relatedRepos: related.repos }),
+    ...(refutation && { refutation }),
+    toolSteps: judgeToolSteps(config, clients, !!refutation),
+    usesOutsideDiff,
+  };
   try {
     core.info(`Running judge on ${findingsForJudge.length} findings...`);
-    const judgeInput: JudgeInput = {
-      findings: findingsForJudge,
-      diff: diffWithLockfiles,
-      ...(options.excludedPaths && { excludedPaths: options.excludedPaths }),
-      lockfiles,
-      rawDiff,
-      memory: memory ?? undefined,
-      repoContext,
-      prContext,
-      linkedIssues,
-      agentCount: team.finders.length,
-      isFollowUp,
-      openThreads: openThreads ?? undefined,
-      priorRounds,
-      inPrSuppressions,
-      effort: judgeEffort,
-      provenanceMap,
-      interRoundDiff,
-      resolvedThreadIds,
-      suppressResolvedThreads,
-      ...(related && { relatedRepos: related.repos }),
-      ...(refutation && { refutation }),
-      toolSteps: judgeToolSteps(config, clients, !!refutation),
-      usesOutsideDiff,
-    };
     const judgeStart = Date.now();
     const judgeResult = await runJudgeAgent(judgeWrap.client, config, judgeInput);
     judgeDurationMs = Date.now() - judgeStart;
@@ -1268,6 +1269,55 @@ export async function runReview(
     };
   }
   await checkpoint?.();
+
+  // A blocker's defect class can recur elsewhere in the diff, so with `review.sweep` each kept blocker starts a search for it.
+  let sweeps: RoundSweep[] | undefined;
+  let sweepRaw: Finding[] = [];
+  // A blocker the refuters disproved stays posted, but it starts no sweep, so one false blocker never turns into several.
+  const sweptBlockers = config.review?.sweep ? finalFindings.filter(f => f.severity === 'blocker' && !disproof(f)) : [];
+  if (sweptBlockers.length > 0) {
+    const sweep = await runSweeps(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweptBlockers, {
+      rawDiff, effort: comparisonEffort, workspace,
+    });
+    sweeps = sweep.sweeps;
+    // A place the round already judged, kept or dropped, is not judged twice. The rest count as raw findings, like a finder's.
+    const judgedAlready = allJudgedFindings ?? [];
+    const unmatched = sweep.findings.filter(s => !judgedAlready.some(f => sameProblem(f, s)));
+    // A sweep finding near one the round judged can say the same in other words, so the dedup model checks those pairs.
+    const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => nearEachOther(f, s) ? [{ i, f }] : []));
+    const dedupClient = clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
+    const same = pairs.length > 0 && dedupClient ? await llmSameDefects(pairs.map(({ i, f }) => [f, unmatched[i]]), dedupClient) : [];
+    const restated = new Set(pairs.flatMap(({ i }, k) => same[k] ? [i] : []));
+    sweepRaw = unmatched.filter((_, i) => !restated.has(i)).map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
+    let fresh = sweepRaw;
+    if (previousFindings && previousFindings.length > 0 && fresh.length > 0) {
+      const changed = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
+      const statics = deduplicateFindings(fresh, previousFindings, changed);
+      const llm = dedupClient && statics.unique.length > 0
+        ? await llmDeduplicateFindings(statics.unique, previousFindings, dedupClient)
+        : { unique: statics.unique, duplicates: [] };
+      for (const d of [...statics.duplicates, ...llm.duplicates]) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
+      staticDedupCount += statics.duplicates.length;
+      llmDedupCount += llm.duplicates.length;
+      fresh = llm.unique;
+    }
+    if (fresh.length > 0) {
+      try {
+        core.info(`Judging ${fresh.length} finding(s) the sweep found`);
+        const sweepJudge = withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'sweep');
+        // The open threads were evaluated already, so this pass only links its findings to them and suppresses against them.
+        const evaluatedThreads = { openThreads: openThreads ?? [], ...(judgeThreadEvaluations && { evaluations: judgeThreadEvaluations }) };
+        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads })).findings;
+        allJudgedFindings = [...(allJudgedFindings ?? []), ...judged];
+        const kept = judged.filter(f => f.severity !== 'ignore');
+        const unsettled = refutation ? kept.filter(f => f.lead && f.severity !== 'blocker' && !isSecurityFinding(f.tags, f.reviewers)) : [];
+        openLeads.push(...unsettled);
+        finalFindings = [...finalFindings, ...kept.filter(f => !unsettled.includes(f))];
+      } catch (error) {
+        core.warning(`The judge failed on the sweep's findings, so the round posts none of them: ${error}`);
+      }
+    }
+  }
 
   // Memory suppressions apply after the judge, so the judge's severity and security tag decide what they may hide.
   let suppressionCount = 0;
@@ -1450,11 +1500,11 @@ export async function runReview(
     findings: finalFindings,
     highlights: [],
     reviewComplete: true,
-    rawFindingCount: checkedFindings.length,
+    rawFindingCount: checkedFindings.length + sweepRaw.length,
     ...(toolAlerts.length > 0 && { toolAlertCount: toolAlerts.length }),
     agentNames: team.finders.map(a => a.name),
     allJudgedFindings,
-    rawFindings: allFindings,
+    rawFindings: [...allFindings, ...sweepRaw],
     ...(openLeads.length > 0 && { openLeads }),
     ...(leads.length > 0 && { leads }),
     threadEvaluations,
@@ -1487,6 +1537,7 @@ export async function runReview(
     ...(modelFallbacks.length > 0 && { modelFallbacks }),
     llmCalls,
     ...finderContext,
+    ...(sweeps && { sweeps }),
     ...(relatedWork && { relatedWork }),
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
   };

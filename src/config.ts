@@ -117,7 +117,7 @@ const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
 const MAX_JUDGE_TOOL_STEPS = 100;
 
 export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', 'reviewer_pair', 'judge', 'refuter_pair', 'dedup', 'fallback']);
-export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'critical_paths', 'outside_input', 'examples']);
+export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'critical_paths', 'outside_input', 'examples', 'sweep']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus', 'role']);
 const EFFORT_CHOICES = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
@@ -599,6 +599,7 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
   if ('outside_input' in review && (typeof review.outside_input !== 'string' || !review.outside_input.trim())) {
     errors.push('`review.outside_input` must be a non-empty string');
   }
+  if ('sweep' in review && typeof review.sweep !== 'boolean') errors.push('`review.sweep` must be true or false');
   if ('examples' in review) {
     const examples = review.examples;
     if (!isObject(examples) || Object.keys(examples).length === 0) {

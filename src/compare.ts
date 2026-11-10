@@ -77,7 +77,7 @@ ${members.join('\n\n')}`;
 }
 
 /** Appends ` #2`, ` #3` and so on to a name already taken, so each question's findings name it alone. */
-function uniqueNames(labels: string[]): string[] {
+export function uniqueNames(labels: string[]): string[] {
   const taken = new Set<string>();
   return labels.map(label => {
     let name = label;

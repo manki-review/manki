@@ -182,7 +182,7 @@ describe('config', () => {
 
     it('loads groups, classes and routing as written and leaves the built-ins when unset', () => {
       expect(loadConfigFromContent('').review).toBeUndefined();
-      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n  critical_paths: ["src/consensus/**", "@security_paths"]\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n`);
+      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n  critical_paths: ["src/consensus/**", "@security_paths"]\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n  sweep: true\n`);
       expect(config.review).toEqual({
         groups: { deep: { reviewers: [{ model: 'claude-opus-5-5', effort: 'high' }, { model: 'gpt-5.5', effort: 'xhigh' }] } },
         classes: {
@@ -194,6 +194,7 @@ describe('config', () => {
         critical_paths: ['src/consensus/**', '@security_paths'],
         outside_input: 'Messages from network peers.',
         examples: { blocker: ['A panic on a peer message.'], not_blocker: ['A slow RPC call.'] },
+        sweep: true,
       });
       expect(core.warning).not.toHaveBeenCalled();
     });
@@ -221,6 +222,7 @@ describe('config', () => {
       ['critical paths with an unknown alias', 'review:\n  critical_paths: ["src/**", "@hot_paths"]\n', '`review.critical_paths` names unknown path alias `@hot_paths`'],
       ['an empty outside_input', 'review:\n  outside_input: "  "\n', '`review.outside_input` must be a non-empty string'],
       ['outside_input that is no string', 'review:\n  outside_input: [peers]\n', '`review.outside_input` must be a non-empty string'],
+      ['a sweep that is no boolean', 'review:\n  sweep: "yes"\n', '`review.sweep` must be true or false'],
       ['examples as a plain list', 'review:\n  examples: [A panic.]\n', '`review.examples` must set `blocker`, `not_blocker` or both'],
       ['empty examples', 'review:\n  examples: {}\n', '`review.examples` must set `blocker`, `not_blocker` or both'],
       ['an unknown example side', 'review:\n  examples:\n    warning: [A slow call.]\n', '`review.examples.warning` is not a known side'],
