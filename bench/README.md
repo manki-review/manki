@@ -39,13 +39,13 @@ The cases are split in two sets. `cases/` is the tuning set: develop and debug a
 npm run bench -- $CHECKOUTS --holdout
 ```
 
-Both sets mix repositories, languages and sizes: rust-dashcore (Rust), manki and token-service (TypeScript), the GitHub CLI (Go), Dash Core (C++), SwiftNIO (Swift), Apache Commons Lang (Java), kotlinx.coroutines (Kotlin), and CI workflow changes. Each set holds clean cases. The five rust-dashcore replays are tuning cases.
+Both sets mix repositories, languages and sizes: rust-dashcore (Rust), manki and token-service (TypeScript), the GitHub CLI (Go), Dash Core (C++), SwiftNIO (Swift), Apache Commons Lang (Java), kotlinx.coroutines (Kotlin), and CI workflow changes. Each set holds clean cases. The five rust-dashcore replays are tuning cases, each as a first round and as a follow-up round (`rdc-<n>-r2`).
 
 `npm run missed-blockers -- --repo <owner/name> [--last <n>]` drafts more cases from Manki's own misses. It reads the round records of the last merged pull requests and finds each round whose blockers sit on code the round before it had already reviewed (`origin: reviewed`), which no earlier round raised as a blocker. Each such earlier round becomes a draft in `bench/drafts/`: its commit is the head, its merge base with the base commit the pull request recorded is the base, and each missed blocker is a `must_catch` item. Run it on a repository Manki reviews, such as manki-review/manki or the owner's forks, since a case names its repository. A draft has `key_version: 0`. Check its items, severities and locations, then set `key_version` to 1 and move it to `bench/cases` or `bench/holdout`. The body is the pull request body as it is now, and references to repositories outside manki-review and the forks are written as plain text.
 
 ## On GitHub
 
-The **Benchmark** workflow (`.github/workflows/bench.yml`) runs the bench without local clones. Start it from the Actions tab with **Run workflow**. Each case runs in its own job, four at a time. A job builds Manki at `ref`, fetches the case's two commits in full, and runs that ref's `manki bench` on the case file of the workflow's own commit. The `report` job merges the case reports with `npm run bench-report -- merge`, writes the comparison table to its summary and uploads `report.json` as the `bench-report` artifact. Given the run ids of earlier runs in `baseline`, it also applies the release gate in `RELEASE.md`.
+The **Benchmark** workflow (`.github/workflows/bench.yml`) runs the bench without local clones. Start it from the Actions tab with **Run workflow**. Each case runs in its own job, four at a time. A job builds Manki at `ref`, fetches the case's commits in full (base, head and a follow-up case's earlier head), and runs that ref's `manki bench` on the case file of the workflow's own commit. The `report` job merges the case reports with `npm run bench-report -- merge`, writes the comparison table to its summary and uploads `report.json` as the `bench-report` artifact. Given the run ids of earlier runs in `baseline`, it also applies the release gate in `RELEASE.md`.
 
 Each ref scores with its own bench code. After a change to the matcher, run the baseline's ref again rather than compare with an older report. To compare downloaded reports locally, run `npm run bench-report -- gate --baseline old.json --candidate new.json`.
 
@@ -86,8 +86,40 @@ nice_to_have: []                         # design, test, reuse and convention po
 
 A case with no `must_catch` items is clean: a review of it should approve, and every finding counts as noise.
 
+### Follow-up cases
+
+A follow-up case reviews a push that follows an earlier review. `prior_round` holds what that review posted, and `head` is the commit after the push. The bench hands the earlier round to the review in place of what a pull request round reads from GitHub: the earlier threads, with the code now at each open one, the earlier round record and the diff since that round. So a follow-up case runs offline like a first round. It tests the round given this earlier review, not two rounds in a row.
+
+```yaml
+prior_round:
+  head: <full SHA>                       # the commit the earlier round reviewed
+  findings:                              # each finding the earlier round posted
+    - id: P1
+      severity: blocker
+      title: "The finding's title"
+      file: path/to/file.rs
+      line: 42
+      grade_if_confirmed: blocker        # optional, the judge's grade if its doubt holds
+      posted: thread                     # thread or body
+      state: open                        # a thread's state before the push: open or resolved
+      description: What goes wrong.      # optional, as the thread shows it
+      how_to_fix: The fix in words.      # optional
+      suggested_fix: replacement code    # optional
+      security: true                     # optional, a security thread
+must_resolve: [P1]                       # open threads the push fixes, which the round should resolve
+must_keep_open:                          # open threads the push fixes only in part
+  - id: P2
+    severity: warning                    # the grade the leftover keeps
+    mechanism: What is left of it.
+    locations: [path/to/file.rs]         # optional, defaults to the thread's file
+must_not_repeat: [P3]                    # earlier findings still in the code, which the round must not post again
+must_catch: []                           # problems still in the code or brought in by the push, with their grades
+```
+
+An earlier open thread the key does not list should stay open. List an earlier finding the push leaves in place under `must_not_repeat`, unless the round should regrade it: then it is a `must_catch` item at the grade it earns. A ref older than follow-up support reviews such a case as a first round, so compare follow-up figures only between refs that support them.
+
 A new case comes from a merged pull request in a public repository. Its head is the commit a review saw before a later commit fixed the defect, and each `must_catch` item is checked against the code at that head, with the fixing commit in `fix`. A clean case is a pull request merged as first pushed, with no later fix to its code. Put a new case in the set that needs it more, and never move a hold-out case into tuning to debug it.
 
 ## Scoring
 
-The matcher only sees findings in a file the item lists or naming one of its symbols. It grades the closest one MATCH (same root cause in the same code), PARTIAL (right code, vaguer or different mechanism) or NONE, and lists every finding that names the same defect. Recall counts MATCH only. Weighted recall gives blockers 3, warnings 2 and the rest 1, with half credit when the highest severity among the matching findings is one tier low and none below that. A run's verdict is correct when it blocks a case with a must-catch blocker or approves a clean case. Findings that match no item count as extra, blocker findings among them as false blockers, and further findings on an item already matched as duplicates. A run that fails or does not complete is listed with its reason and counts in no recall, verdict or catch rate. The matcher is tried twice before a finished review is given up, and such a run keeps its findings and cost. The command exits 2 when any variant completes no review of one of the sets. The report is saved after each case. Matcher decisions are cached in `bench/.matcher-cache.json` by the matcher prompt, the item and the findings it saw. A cache file that does not parse stops the bench with its path. Delete it to start a fresh one.
+The matcher only sees findings in a file the item lists or naming one of its symbols. It grades the closest one MATCH (same root cause in the same code), PARTIAL (right code, vaguer or different mechanism) or NONE, and lists every finding that names the same defect. Recall counts MATCH only. Weighted recall gives blockers 3, warnings 2 and the rest 1, with half credit when the highest severity among the matching findings is one tier low and none below that. A run's verdict is correct when it blocks a case with a must-catch blocker or approves a clean case. On a follow-up case, an earlier blocker still in the code (a `must_keep_open` or `must_not_repeat` item graded blocker) also asks for a block, and a case with no `must_catch` and no `must_keep_open` item should approve. A follow-up run also counts the earlier open threads it resolved, right when the key lists them in `must_resolve` and wrong otherwise, and its repeats: findings the matcher pairs with a `must_keep_open` or `must_not_repeat` item. A repeat counts in neither the extra findings nor the false blockers. Must-catch at grade counts a MATCH graded at the key's severity or above. Findings that match no item count as extra, blocker findings among them as false blockers, and further findings on an item already matched as duplicates. A run that fails or does not complete is listed with its reason and counts in no recall, verdict or catch rate. The matcher is tried twice before a finished review is given up, and such a run keeps its findings and cost. The command exits 2 when any variant completes no review of one of the sets. The report is saved after each case. Matcher decisions are cached in `bench/.matcher-cache.json` by the matcher prompt, the item and the findings it saw. A cache file that does not parse stops the bench with its path. Delete it to start a fresh one.
