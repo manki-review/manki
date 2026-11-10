@@ -2961,6 +2961,12 @@ describe('runReview', () => {
     expect(unguarded.findings).toEqual([expect.objectContaining({ title: 'Retry never ends', ownThread: true })]);
     expect(unguarded.findings[0]).not.toHaveProperty('threadId');
     expect((await guarded(true)).findings).toEqual([expect.objectContaining({ title: 'Retry never ends', threadId: 'T1' })]);
+    // Next to the plain thread, it finds the security thread it opened before, so it does not open another each round.
+    const beside = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, previousFindings: [], priorRounds: [prior], headSha: 'sha3',
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends' }), makePriorOpenThread({ threadId: 'S1', title: 'Retry never ends', isSecurity: true })],
+    });
+    expect(beside.findings).toEqual([expect.objectContaining({ title: 'Retry never ends', threadId: 'S1' })]);
     // The unlink comes before the outcome, so an open blocker thread the finding left still counts as open.
     const blockerThread = await runReview(makeClients(), {
       config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
