@@ -81,7 +81,7 @@ Create `.manki.yml` in your repo root:
 ```yaml
 auto_review: true
 auto_approve: true
-exclude_paths: ["*.lock"]
+exclude_paths: ["Cargo.lock", "vendor/**"]
 
 instructions: |
   This is a Rust project. Focus on ownership and error handling.

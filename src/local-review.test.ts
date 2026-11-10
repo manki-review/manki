@@ -61,6 +61,7 @@ describe('reviewLocal', () => {
     later = commit(repo, 'Fix a later', { 'src/a.ts': 'const a = 1;\nconst b = 4;\n' });
     git(repo, 'checkout', '-q', 'main');
     commit(repo, 'Base moves on', { 'README.md': 'readme\n' });
+    jest.clearAllMocks();
     jest.mocked(runReview).mockReset();
   });
 
