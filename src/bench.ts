@@ -716,7 +716,7 @@ function gateSide(variants: VariantReport[], shared: string[]): GateSide {
 }
 
 /** Joins the parts of one sentence: the first keeps its capital, and the others start lower case. */
-function listed(parts: string[], last = ' and '): string {
+function joinParts(parts: string[], last = ' and '): string {
   const [first, ...rest] = parts;
   const others = rest.map(part => part[0].toLowerCase() + part.slice(1));
   return others.length === 0 ? first : `${[first, ...others.slice(0, -1)].join(', ')}${last}${others.at(-1)}`;
@@ -770,14 +770,14 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
         : `${f.label} fell by ${figure(f.by)}, more than ${GATE_MARGIN}.`));
       return { variant: name, verdict: 'FAIL', reason: reasons.join(' '), ...sides };
     }
-    const fell = worse.length > 0 ? listed(worse.map(f => `${f.label} fell by ${figure(f.by)}`), ', and ') : '';
+    const fell = worse.length > 0 ? joinParts(worse.map(f => `${f.label} fell by ${figure(f.by)}`), ', and ') : '';
     if (fell && c.runs < 2) {
       return {
         variant: name, verdict: 'RERUN', ...sides,
         reason: `${fell}, within the margin of ${GATE_MARGIN}. Run the candidate once more and decide on the mean of both runs.`,
       };
     }
-    const labels = (better: 'more' | 'less') => listed(GATE_FIGURES.filter(f => f.better === better).map(f => f.label));
+    const labels = (better: 'more' | 'less') => joinParts(GATE_FIGURES.filter(f => f.better === better).map(f => f.label));
     const more = fell ? `${fell} on the mean of ${c.runs} runs, within the margin of ${GATE_MARGIN}` : `${labels('more')} did not fall`;
     return { variant: name, verdict: 'PASS', reason: `${labels('less')} did not rise. ${more}.`, ...sides };
   });
