@@ -1309,13 +1309,22 @@ function proseRank(word: RegExp, { file, text }: Hit): number {
   return word.test(text.replace(COMMENT, '')) ? 0 : 1;
 }
 
+/** The patterns that tell how a line names a field: as a read `.name`, as a call `.name(`, and at all. */
+interface FieldPatterns {
+  read: RegExp;
+  call: RegExp;
+  any: RegExp;
+}
+
 /**
- * Ranks a code line: 0 code that names a symbol, or for a field reads it as `fieldRead` matches, a `.name` that is not a
- * `.name(` call, 1 other code, 2 test code.
+ * Ranks a code line as `[test, call, other]`, each 0 or 1. `test` is 1 in a test file. For a field, `call` is 1 when the
+ * line names it only in `.name(` calls, and `other` is 1 when the line never reads it as `.name`, such as a struct literal.
  */
-function codeRank(fieldRead: RegExp | undefined, { file, text }: Hit): number {
-  if (TEST_PATH.test(file)) return 2;
-  return !fieldRead || fieldRead.test(text) ? 0 : 1;
+function codeRank(field: FieldPatterns | undefined, { file, text }: Hit): number[] {
+  const test = Number(TEST_PATH.test(file));
+  if (!field || field.read.test(text)) return [test, 0, 0];
+  const calls = text.match(field.call)?.length ?? 0;
+  return [test, Number(calls > 0 && calls === (text.match(field.any)?.length ?? 0)), 1];
 }
 
 function wordPattern(names: string[], flags = ''): RegExp {
@@ -1362,31 +1371,34 @@ function formatSymbolUses(
   const byRank = (a: { use: Hit; rank: number[] }, b: { use: Hit; rank: number[] }) =>
     compareRanks(a.rank, b.rank) || a.use.file.localeCompare(b.use.file) || a.use.line - b.use.line;
   // Within a rank, the first use in each file comes before a second use in any file, and a file's uses past its best
-  // `MAX_USES_PER_FILE` come after every other file's, so one file cannot fill a symbol's share. A file's uses are counted
-  // in rank order, so its field reads come first. Only a symbol's best uses can be shown, so each keeps just its share
-  // before the merge, which bounds the sort over all symbols however many uses a redefined field has.
+  // `MAX_USES_PER_FILE` come after every other file's, so one file cannot fill a symbol's share. Test files and lines that
+  // only call `.name()` come after that cap. A file's uses are counted in rank order, so its field reads come first. Only a
+  // symbol's best uses can be shown, so each keeps just its share before the merge, which bounds the sort over all symbols
+  // however many uses a redefined field has.
   const ranked = entries.filter(e => !isCommon(e)).flatMap(e => {
     const word = wordPattern([e.symbol.name]);
-    const fieldRead = e.symbol.kind === 'field' ? new RegExp(`\\.${word.source}(?!\\s*\\()`) : undefined;
+    const field = e.symbol.kind === 'field'
+      ? { read: new RegExp(`\\.${word.source}(?!\\s*\\()`), call: new RegExp(`\\.${word.source}\\s*\\(`, 'g'), any: new RegExp(word.source, 'g') }
+      : undefined;
     const typed = typeFilesOf(e.symbol);
     const placed = e.uses.map(use => {
       const location = locationRank(e.symbol, use.file, packages);
-      const [prose, code, untyped] = [proseRank(word, use), codeRank(fieldRead, use), Number(!!typed && !typed.has(use.file))];
-      return { use, rank: [prose, Number(e.symbol.tier === 2), Number(location === 3), code, untyped, location] };
+      const [test, call, other] = codeRank(field, use);
+      return { use, rank: [proseRank(word, use), Number(e.symbol.tier === 2), Number(location === 3), test, call, Number(!!typed && !typed.has(use.file)), location, other] };
     }).sort(byRank);
     const seen = new Map<string, number>();
-    return placed.map(({ use, rank: [prose, member, unreachable, code, untyped, location] }) => {
+    return placed.map(({ use, rank: [prose, member, unreachable, test, call, untyped, location, other] }) => {
       const nth = seen.get(use.file) ?? 0;
       seen.set(use.file, nth + 1);
-      const rank = [prose, member, unreachable, code, Number(nth >= MAX_USES_PER_FILE), untyped, location, e.symbol.tier, nth, e.uses.length, e.index];
+      const rank = [prose, member, unreachable, test, call, Number(nth >= MAX_USES_PER_FILE), untyped, location, other, e.symbol.tier, nth, e.uses.length, e.index];
       return { entry: e, use, rank };
     }).sort(byRank).slice(0, capOf(e.symbol));
   }).sort(byRank);
 
   // A redefined field's uses in production code are what the change can break, so they take their slots before any other
   // use fills `MAX_USES`. Only a redefined field ranks files that never name its type last, which other symbols do not.
-  const isReserved = ({ entry, rank: [prose, , unreachable, code] }: typeof ranked[number]) =>
-    redefined.has(entry.symbol.name) && prose === 0 && unreachable === 0 && code < 2;
+  const isReserved = ({ entry, rank: [prose, , unreachable, test, call] }: typeof ranked[number]) =>
+    redefined.has(entry.symbol.name) && prose === 0 && unreachable === 0 && test === 0 && call === 0;
   const shown = new Map<string, Hit[]>();
   let total = 0;
   for (const { entry, use } of [...ranked.filter(isReserved), ...ranked.filter(r => !isReserved(r))]) {
