@@ -1272,14 +1272,17 @@ export async function runReview(
 
   // A blocker's defect class can recur elsewhere in the diff, so with `review.sweep` each kept blocker starts a search for it.
   let sweeps: RoundSweep[] | undefined;
+  let sweepRaw: Finding[] = [];
   const sweptBlockers = config.review?.sweep ? finalFindings.filter(f => f.severity === 'blocker') : [];
   if (sweptBlockers.length > 0) {
     const sweep = await runSweeps(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweptBlockers, {
       rawDiff, effort: comparisonEffort, workspace,
     });
     sweeps = sweep.sweeps;
-    // A place the round already judged, kept or dropped, is not judged twice.
-    let fresh = sweep.findings.filter(s => !(allJudgedFindings ?? []).some(f => sameProblem(f, s)));
+    // A place the round already judged, kept or dropped, is not judged twice. The rest count as raw findings, like a finder's.
+    sweepRaw = sweep.findings.filter(s => !(allJudgedFindings ?? []).some(f => sameProblem(f, s)))
+      .map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
+    let fresh = sweepRaw;
     if (previousFindings && previousFindings.length > 0 && fresh.length > 0) {
       const changed = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
       const statics = deduplicateFindings(fresh, previousFindings, changed);
@@ -1488,11 +1491,11 @@ export async function runReview(
     findings: finalFindings,
     highlights: [],
     reviewComplete: true,
-    rawFindingCount: checkedFindings.length,
+    rawFindingCount: checkedFindings.length + sweepRaw.length,
     ...(toolAlerts.length > 0 && { toolAlertCount: toolAlerts.length }),
     agentNames: team.finders.map(a => a.name),
     allJudgedFindings,
-    rawFindings: allFindings,
+    rawFindings: [...allFindings, ...sweepRaw],
     ...(openLeads.length > 0 && { openLeads }),
     ...(leads.length > 0 && { leads }),
     threadEvaluations,

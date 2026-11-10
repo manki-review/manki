@@ -51,7 +51,11 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 ${WRITING_RULES}`;
 }
 
-function sweepMessage(blocker: Finding, rawDiff: string): string {
+function sweepMessage(blocker: Finding, rawDiff: string, tools: boolean): string {
+  const shown = truncateDiff(rawDiff);
+  const cut = shown.length < rawDiff.length
+    ? `The diff is cut to ${shown.length} of its ${rawDiff.length} characters, so large files show only part of their changes. ${tools ? 'Read the changed files with your tools where the diff is cut before you answer.' : 'Search only what is shown, and say nothing about what is cut.'}`
+    : '';
   return [
     `## Blocker: ${sanitizeForPromptEmbed(blocker.title)}`,
     '',
@@ -62,8 +66,9 @@ function sweepMessage(blocker: Finding, rawDiff: string): string {
     `## Pull Request Diff`,
     '',
     UNTRUSTED_DIFF_NOTE,
+    ...(cut ? ['', cut] : []),
     '',
-    fenceText(truncateDiff(rawDiff), 'diff'),
+    fenceText(shown, 'diff'),
   ].join('\n');
 }
 
@@ -114,7 +119,7 @@ export async function runSweeps(
     };
     try {
       const { general, defectClass, findings } = await sendWithParseRetry(
-        sweepMessage(blocker, rawDiff),
+        sweepMessage(blocker, rawDiff, tools),
         message => client.sendMessage(systemPrompt(tools), message, options),
         reply => {
           if (reply.truncated) throw new Error(`response truncated at the output token limit (length ${reply.content.length})`);

@@ -2086,6 +2086,10 @@ describe('runReview', () => {
     // A place the round already judged is not judged twice, and the rest gets a judge call of its own, without the open threads.
     const [, second] = mockedRunJudgeAgent.mock.calls;
     expect(second[2].findings.map(f => [f.title, f.reviewers])).toEqual([['Search key misses the tenant', [reviewer]]]);
+    // Like a finder's, its findings get the claim checks and count as raw findings.
+    expect(second[2].findings[0].toolEvidence).toBeDefined();
+    expect(result.rawFindings?.map(f => f.title)).toContain('Search key misses the tenant');
+    expect(result.rawFindingCount).toBe((result.rawFindings ?? []).length);
     expect(second[2].openThreads).toBeUndefined();
     expect(result.findings.map(f => f.title)).toEqual(['Cache key misses the locale', 'Search key misses the tenant']);
     expect(result.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 2 }]);

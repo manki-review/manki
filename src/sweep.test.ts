@@ -82,4 +82,19 @@ describe('runSweeps', () => {
     // Without tools, the call reads only the diff it is given.
     expect(client.calls[0].options).toEqual({});
   });
+
+  it('says when the diff it shows is cut, and with tools asks to read the cut files', async () => {
+    const big = `diff --git a/src/big.ts b/src/big.ts\n@@ -1,1 +1,9000 @@\n${'+const line = 1;\n'.repeat(15_000)}`;
+    const answer = () => ({ class: 'a general class', general: true, findings: [] });
+    const withTools = fakeClient(answer);
+    const without = fakeClient(answer, false);
+
+    await runSweeps(() => withTools, [blocker('Cache key misses the locale')], { rawDiff: big, workspace: '/work' });
+    await runSweeps(() => without, [blocker('Cache key misses the locale')], { rawDiff: big });
+    await runSweeps(() => without, [blocker('Cache key misses the locale')], { rawDiff });
+
+    expect(withTools.calls[0].user).toMatch(/The diff is cut to \d+ of its \d+ characters.*Read the changed files with your tools where the diff is cut/);
+    expect(without.calls[0].user).toContain('Search only what is shown, and say nothing about what is cut.');
+    expect(without.calls[1].user).not.toContain('The diff is cut');
+  });
 });
