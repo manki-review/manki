@@ -1,0 +1,51 @@
+id: polly-3287
+repo: App-vNext/Polly
+source: Polly upstream PR 3287
+base: 3ab3ec00b74e4816f5a4759dadbb6997fe175c17
+head: 8ee411b17c48155c3b40b20df6a5efc1e7fa2c29
+title: "Improve pipeline execution performance"
+body: |
+  ## The issue or feature being addressed
+
+  Improve the performance of the hot path when executing resilience pipelines.
+
+  ## Details on the issue fix or feature implementation
+
+  Profiling a pipeline of five strategies showed that a significant part of the time Polly itself spends per execution is generic virtual method (GVM) dispatch between the components of the pipeline chain (each hop costs roughly 7 ns and there were up to three per strategy), plus the circuit breaker taking its lock twice per execution.
+
+  - Avoid GVM dispatch between delegating components in the pipeline chain. `DelegatingComponent` exposes a non-virtual `Execute()` method that the composite root and the previous link in the chain call directly when the next component is a `DelegatingComponent`.
+  - Execute non-generic strategies directly rather than through their `BridgeComponent`, which is a trivial forwarder. `DelegatingComponent` unwraps the strategy at construction time.
+  - Skip the circuit breaker lock on pre-execution when the circuit is closed. A closed circuit cannot transition to another state in `OnActionPreExecuteAsync()`, so a volatile read is sufficient and a concurrent transition after the read is indistinguishable from one that happens right after the lock would have been released.
+
+  There are no public API changes and no changes to allocations.
+
+  ### Benchmarks
+
+  Benchmarks were run against `main` (3ab3ec00) in a separate worktree and against this branch, pinned to the performance cores (`--affinity 4095`) with two interleaved rounds per side. The figures below are the mean of the two rounds, and `Ratio` is branch/main.
+
+  | Benchmark | Parameters | main (ns) | branch (ns) | Ratio | Allocated |
+  |---|---|---:|---:|---:|---:|
+  | `PipelineBenchmark.ExecutePipeline_V8` | Components=1 | 37.2 | 34.7 | 0.93 | - |
+  | `PipelineBenchmark.ExecutePipeline_V8` | Components=2 | 50.8 | 46.8 | 0.92 | - |
+  | `PipelineBenchmark.ExecutePipeline_V8` | Components=5 | 112.6 | 90.9 | 0.81 | - |
+  | `PipelineBenchmark.ExecutePipeline_V8` | Components=10 | 236.4 | 200.3 | 0.85 | - |
+  | `MultipleStrategiesBenchmark.ExecuteStrategyPipeline_Generic_V8` |  | 619.6 | 569.7 | 0.92 | 40 B |
+  | `MultipleStrategiesBenchmark.ExecuteStrategyPipeline_NonGeneric_V8` |  | 742.4 | 649.6 | 0.88 | 40 B |
+  | `CircuitBreakerBenchmark.ExecuteCircuitBreaker_V8` |  | 130.3 | 115.8 | 0.89 | - |
+  | `TimeoutBenchmark.ExecuteTimeout_V8` |  | 126.2 | 121.0 | 0.96 | - |
+  | `RetryBenchmark.ExecuteRetry_V8` |  | 105.8 | 99.1 | 0.94 | - |
+
+  The retry strategy is generic and is not affected by these changes, so `RetryBenchmark` acts as a control for run-to-run noise on this machine (its two rounds were 110.0/101.5 ns on `main` and 99.1/99.2 ns on this branch). The 40 B allocated by `MultipleStrategiesBenchmark` is the `ConcurrencyLease` from `System.Threading.RateLimiting` and is unchanged.
+
+  ```text
+  BenchmarkDotNet v0.15.8, Windows 11 (10.0.26300.9711)
+  13th Gen Intel Core i7-13700H 2.90GHz, 1 CPU, 20 logical and 14 physical cores
+  .NET SDK 10.0.402
+    [Host] : .NET 10.0.13 (10.0.13, 10.0.1326.50504), X64 RyuJIT x86-64-v3
+  Job=MediumRun  Toolchain=InProcessEmitToolchain  IterationCount=15  LaunchCount=2  WarmupCount=10
+  ```
+
+  An attempt to skip the retry strategy's `GetTimestamp()` calls when neither telemetry nor `OnRetry` can observe the duration was measured at ~1.7 ns and discarded as noise.
+key_version: 1
+must_catch: []
+nice_to_have: []

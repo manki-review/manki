@@ -1,0 +1,41 @@
+id: valkey-4772
+repo: valkey-io/valkey
+source: valkey upstream PR 4772
+base: 77b00b2ddaf1b5cce154313098d3951ea83b155c
+head: 310b010ae3353c0c4dca40193c76d8eef19c20b5
+title: "Avoid propagating expired hash fields from HDEL, HGETDEL, HPERSIST, and HEXPIRE"
+body: |
+  Fixes upstream issue 4732
+
+  ## Problem
+
+  A hash field whose expiration has passed stays stored until active expiry reclaims it. HDEL, HGETDEL, HPERSIST and HEXPIRE treat such a field as nonexistent (reply `-2`, nil, or not counted), yet they propagate their original field list. A replica applies its primary's stream ignoring field expiry, and AOF loading does the same, so the applying side acts on a field the primary did not:
+
+  - HPERSIST / HEXPIRE: the replica persists or re-expires the stored field and serves its value, while the primary keeps returning nil for it.
+  - HDEL / HGETDEL: the replica deletes the field. When it was the last one the key is removed on the replica only.
+
+  The same divergence appears on the primary itself after an AOF reload, since the replayed `HSETEX ... PXAT <past>` re-stores the field and the replayed command then acts on it.
+
+  ## Change
+
+  For hashes with volatile fields, HDEL, HGETDEL, HPERSIST and HEXPIRE now propagate the command without the fields they treat as nonexistent. A command cannot tell an expired field from a missing one, so it drops both. HGETDEL's rewrite is propagated as HDEL. HEXPIRE with a past time keeps its existing rewrite to an HDEL of the expired fields.
+
+  A command that treats no field as nonexistent, or runs on a hash without field expirations, propagates unchanged with no extra allocation. A command that changes no field propagates nothing, so it is not rewritten and does not allocate.
+
+  Replies are unchanged. No new command arguments, reply fields or configuration.
+
+  ## Tests
+
+  `tests/unit/hashexpire.tcl` checks the replication stream, a primary/replica pair and an AOF reload for each command over an `expired` + `live` pair, on both listpack and hashtable encodings.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "In `hdelCommand`, `hgetdelCommand`, `hpersistCommand` and `hexpireGenericCommand` the rewritten argv `new_argv` is only allocated when a field is changed after the first skipped field, and the rewrite runs only `if (new_argv)`. When the skipped (expired or missing) field comes after the last changed one, as in `HDEL h live expired`, `skipped` is set but `new_argv` stays NULL, so the original command is propagated with the expired field still in it. The replica or AOF replay then deletes, persists or re-expires that field, and when it was the last stored field the replica drops the key while the primary keeps it, which is the divergence the PR sets out to fix."
+    locations: ["src/t_hash.c", "hdelCommand", "hgetdelCommand", "hpersistCommand", "hexpireGenericCommand", "createChangedFieldsArgv", "skipped", "new_argv"]
+    fix: "e1848a19f991faed675852c9545d8a76fae02cf9"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "`hexpireGenericCommand` and `hpersistCommand` mark a field as skipped on any result other than success, including a failed NX/XX/GT/LT condition or a field with no TTL. Such a field gives the same result on the replica, so the command is rewritten and an argv allocated for nothing. Only `EXPIRATION_MODIFICATION_NOT_EXIST` needs to count as a skip."
+    locations: ["src/t_hash.c", "hexpireGenericCommand", "hpersistCommand", "filter_updated"]

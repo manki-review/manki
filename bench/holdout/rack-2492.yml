@@ -1,0 +1,40 @@
+id: rack-2492
+repo: rack/rack
+source: rack upstream PR 2492
+base: e76e40c1a4a5a5c4929f666223d17296b4d52423
+head: 4fb35b577aebe8f6e369cf637b8f3c60fff98de3
+title: "Allow disabling the query bytesize limit via nil"
+body: |
+  ## Background
+
+  `Request#POST` reads the request body using:
+
+  ```ruby
+  get_header(RACK_INPUT).read(query_parser.bytesize_limit + 2)
+  ```
+
+  If `bytesize_limit` is configured close to the OS's `read(2)` size ceiling (`2**32` on many platforms), the `+ 2` padding pushes the requested read size past that ceiling. The resulting behavior is OS-dependent: some platforms raise `Errno::EINVAL`, others silently truncate the read.
+
+  Working around this by lowering `RACK_QUERY_PARSER_BYTESIZE_LIMIT` a few bytes below the OS ceiling is fragile: callers have to know about the internal `+ 2` and back it out of a config value, and any change to that offset (or a different OS ceiling) breaks the workaround again.
+
+  Some deployments also enforce a request size limit upstream (e.g. in a reverse proxy), making rack's own `bytesize_limit` redundant. Those users currently have no way to fully disable the check; they still have to pick *some* number small enough to stay under the OS read limit, effectively managing the same limit twice.
+
+  `Rack::Multipart::Parser::PARSER_BYTESIZE_LIMIT` already supports this: a non-positive `RACK_MULTIPART_PARSER_BYTESIZE_LIMIT` is treated as `nil` (no limit). `QueryParser` not supporting the same convention is inconsistent.
+
+  ## What changed
+
+  `QueryParser#bytesize_limit` now accepts `nil` or `0` to mean "no limit":
+
+  - `QueryParser::BYTESIZE_LIMIT` is derived the same way as multipart's `PARSER_BYTESIZE_LIMIT`: a non-positive `RACK_QUERY_PARSER_BYTESIZE_LIMIT` becomes `nil`.
+  - `each_query_pair` skips the bytesize check entirely when `@bytesize_limit` is `nil`.
+  - `Request#POST` reads the body with an unbounded `read` (no length argument) when `bytesize_limit` is `nil`, instead of `bytesize_limit + 2`.
+
+  This lets callers who already bound request size elsewhere opt out of the check with `bytesize_limit: nil`, without having to reason about rack's internal read padding relative to the OS's read size limit.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`BYTESIZE_LIMIT = bytesize_limit > 0 ? bytesize_limit : nil` turns a `RACK_QUERY_PARSER_BYTESIZE_LIMIT` of `0` or below into `nil`, which now disables the check in `each_query_pair` and makes `Request#POST` read the whole body with an unbounded `read`. Before this change such a value was a literal limit that rejected every non-empty query string and form body. A deployment that set `0` to refuse query parsing silently gets no size limit at all after upgrading. Only an explicit opt out, such as a negative value or `nil`, should disable the limit, and `0` should keep its old meaning."
+    locations: ["lib/rack/query_parser.rb", "BYTESIZE_LIMIT", "RACK_QUERY_PARSER_BYTESIZE_LIMIT", "each_query_pair"]
+    fix: "304acbf4edaa35c655026380f8138a0086bd718c"
+nice_to_have: []

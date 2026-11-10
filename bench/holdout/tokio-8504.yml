@@ -1,0 +1,18 @@
+id: tokio-8504
+repo: tokio-rs/tokio
+source: tokio upstream PR 8504
+base: facc6fc47eb2ba13a465a3179f8e34db620561ec
+head: 0694089ab06658dc4accc821f5a5ffb867d71219
+title: "fs: add File::set_times"
+body: |
+  Adds an async `File::set_times` wrapper around `std::fs::File::set_times`, mirroring the existing `set_permissions` passthrough. Handy for async code that needs to set file timestamps without blocking the runtime or dropping down to std.
+
+  Fixes upstream issue 6368.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`File::set_times` clones `self.std` and calls `asyncify` straight away, without first taking `self.inner.lock()` and awaiting `complete_inflight()` as `sync_all` and `set_len` do. `poll_write` returns `Ready` once the write is handed to a blocking task, so after `write_all(..).await` without a flush the background write can finish after `set_times` and overwrite the modification time it just set."
+    locations: ["tokio/src/fs/file.rs", "set_times", "complete_inflight"]
+    fix: "f80c8eb0ced55903502a3ea0f520d7b291c0829d"
+nice_to_have: []

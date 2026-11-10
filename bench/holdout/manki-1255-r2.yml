@@ -1,0 +1,74 @@
+id: manki-1255-r2
+repo: manki-review/manki
+source: manki PR 1255, round 2
+base: 6dbce822510f7a1c6bf8965b0db48ad91fd488fa
+head: 02b830aa3fec01a2b1c1bdcd6017d227a77b1acc
+title: "feat: verify blockers with a second refuter"
+body: |
+  ## Summary
+
+  Adds an optional second refuter on another model, set with `models.refuter_pair`. The first refuter runs on the judge's model. The second checks every finding the first checks (blockers, open leads, findings lowered for want of proof, findings the judge left to the tools for unseen code or reachability, and the verdict reader's blockers), at the same time, with the same prompt and tool budget. Checks within one model family are not independent: on the v7.1.1 replay a false compile blocker passed a Sonnet finder, an Opus judge and an Opus refuter. Unset, nothing changes and no extra call is made, so cost only rises for a repo that opts in.
+
+  ## Changes
+
+  - `models.refuter_pair` config key (non-empty model id), next to `models.judge` in the pipeline order. The client is built beside the judge's and needs repository tools, so the Claude or Codex CLI. The run warns whenever the key is set but no second refuter can run.
+  - `refuteBlockers` runs both refuters per finding in parallel. An unsettled answer, or a call that fails, abstains, and the other answer decides as it would alone.
+  - A confirmation against a disproof is a split: the finding keeps the judge's grade and "How this was checked" shows both reasons, the second under "Second check, on another model".
+  - No number of disproofs lowers a blocker. A blocker both refuters disprove stays a blocker, posted with both reasons, because text in the PR could steer both refuters alike and only a person may let a blocker go (#1106). A security finding still changes only when confirmed.
+  - Below blocker, the combination works as one refuter does today: one confirmation with no disproof raises the finding, and one disproof with no confirmation drops it.
+  - The round record stores the second answer as `pairRefutation` beside `refutation` (kept and dropped findings), and the model as `models.refuterPair` on rounds where it checked a finding. Its calls are recorded under the `refute_pair` agent. A later round reuses a stored second answer under the same rules as the first.
+  - Docs: configuration reference, `.manki.yml.example`, how reviews work, security.
+
+  No restriction was removed. The change adds evidence and never takes a guard away.
+
+  What changes for users: nothing unless `models.refuter_pair` is set. With it set, each refuted finding costs one more tool-using call on that model, and a split or a double disproof shows both refuters' reasons on the finding.
+
+  ## Testing
+
+  - `src/refute.test.ts`: every combination (both confirm, both disprove leaves a blocker blocking, security both disprove, split, disprove plus abstain, lead split, lead abstain plus disprove, unproven and unseen confirm plus abstain, unseen split, first call fails), that both calls run at once, and reuse of a stored second answer.
+  - `src/review.test.ts`: the second refuter wired through `runReview` on the verdict reader path. Two disproofs leave the reader blocker blocking and the round at ADDRESS_FIRST, the comment shows both reasons, both calls are recorded, and a judge without tools logs the warning.
+  - `src/github.test.ts`: rendering of a split.
+  - `src/index.test.ts`, `src/config.test.ts`: client building, logging, round record fields, and the progress comment's disproved list taking the second refuter's reason.
+
+  Closes #1164
+  Part of #1242
+key_version: 1
+prior_round:
+  head: 4147eb93c3ad7f6b4c851af95cb5337c4b16054b
+  findings:
+    - id: P1
+      severity: blocker
+      title: Two disproofs lower a blocker to a non-blocking warning, so text in the PR can steer both refuters and approve the PR
+      file: src/refute.ts
+      line: 197
+      posted: thread
+      state: open
+      description: When both refuters return `disproved`, a non-security blocker becomes a `warning`. Warnings do not block, so the round ends `READY` and can be approved. Both refuters read PR-controlled files and any disproof only has to cite a line in the finding's file or the diff, so planted text such as a comment saying the code is intended can steer both models.
+      security: true
+    - id: P2
+      severity: suggestion
+      title: Review statistics ignore the second refuter, so its precision cannot be measured
+      file: scripts/review-stats.ts
+      line: 202
+      posted: body
+    - id: P3
+      severity: blocker
+      title: Two steered disproofs can lower a verdict reader blocker on a security problem, because the security tag is added after refutation
+      file: src/review.ts
+      line: 1340
+      posted: thread
+      state: open
+      description: Verdict reader blockers reach `refuteBlockers` without `SECURITY_TAG`. `foldIntoReaderBlockers` copies the tag from a judged security finding only afterwards, so the guard at `refute.ts:194` never sees it, and two disproofs lower the blocker to a warning at `refute.ts:197`.
+      security: true
+    - id: P4
+      severity: warning
+      title: "`models.refuter_pair` is skipped without a warning when the judge has no repository tools, but the round record still names it"
+      file: src/review.ts
+      line: 1170
+      posted: thread
+      state: open
+      description: "`pair` is only built inside `refutation`, which needs `clients.judge.repoTools`. So a judge on an API key with `refuter_pair` on the Claude or Codex CLI runs no second refuter. The only warning covers a pair client without tools, so this case is silent."
+must_resolve: [P1, P3, P4]
+must_not_repeat: [P2]
+must_catch: []
+nice_to_have: []

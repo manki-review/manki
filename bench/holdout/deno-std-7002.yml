@@ -1,0 +1,41 @@
+id: deno-std-7002
+repo: denoland/std
+source: deno std upstream PR 7002
+base: 823ee48a0ad1fe0611937508eacf60ca1495c637
+head: 7b146458ee8d6d7f965e347855d983c15d536379
+title: "feat(async/unstable): allow setting dynamic timeframe for `throttle`"
+body: |
+  Closes upstream issue 6796.
+
+  If `fn` returns a promise, `lastExecution` is now based on the _asynchronous_ end time of the previous _completed_ call. For example with this function:
+
+  ```ts
+  async function fn() {
+      const start = performance.now()
+      while (performance.now() - start < 50) { /* idle  loop */ }
+      await new Promise((res) => setTimeout(res, 100))
+  }
+  ```
+
+  If the throttled function is called once at time 0 and we observe  `lastExecution`:
+
+  Observation time | Current implementation | New implementation
+  -|-|-
+  0 | -Infinity | -Infinity
+  100 | ~50 | -Infinity
+  200 | ~50 | ~150
+
+  This will also affect how throttling works with asynchronous functions. The current implementation basically doesn't throttle at all for typical async functions, whereas the new one does.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`throttled.clear()` resets only `lastExecution` and leaves the new `throttlingAsync` flag alone. The `throttling` getter is `Date.now() - lastExecution <= tf || throttlingAsync`, so calling `clear()` while an async call is still pending leaves `throttling` true and drops further calls, although `ThrottledFunction.clear` promises that `throttling` is reset to `false`."
+    locations: ["async/unstable_throttle.ts", "throttle", "clear", "throttlingAsync"]
+    fix: "f36b9ea8aef751b61995d350e5fe334121a3fe29"
+  - id: K2
+    severity: warning
+    mechanism: "`isPromiseLike` only checks for a `then` method, but the result is then used as `result.finally(done)`. A thenable without `finally` makes that line throw a `TypeError` out of the throttled call after `throttlingAsync` was set to `true`, and `done` never runs, so `throttling` stays true for good and every later call is dropped. Wrapping it as `Promise.resolve(result).finally(done)` handles any thenable."
+    locations: ["async/unstable_throttle.ts", "throttle", "isPromiseLike", "throttlingAsync"]
+    fix: "f36b9ea8aef751b61995d350e5fe334121a3fe29"
+nice_to_have: []

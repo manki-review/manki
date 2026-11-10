@@ -1,0 +1,24 @@
+id: stackexchange.redis-3090
+repo: seredis/StackExchange.Redis
+source: StackExchange.Redis upstream PR 3090
+base: 2800b3a9d5ac81e0449e9fbc914bb42ab28a5942
+head: 968002582a9b9b23e7047ba60efd31873f78b8cb
+title: "Fix platform-specific TCP keep-alive issues"
+body: |
+  Fix upstream issue 3086
+
+  before .NET 10, there are problems with TCP keep-alive on DNS endpoint on non-Windows; here we compensate:
+
+  1. make TCP keep-alive an explicit option (defaults to enabled, usual setup i.e. defaults-provider etc)
+  2. restrict TCP keep-alives to IP and DNS endpoints
+  3. if not .NET10+, disable for DNS endpoints if not on Windows
+
+  (also updates CI image to Redis 8.8)
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The new `OptionKeys.TcpKeepAlive` key (`\"tcpkeepalive\"`) is added to the `switch` in `DoParse` but not to the `normalizedOptions` dictionary, which `OptionKeys.TryNormalize` uses to match option names case-insensitively. A configuration string that spells the option like the property, such as `tcpKeepAlive=false` or `TcpKeepAlive=false`, falls through to `default` and `ConfigurationOptions.Parse` throws `Keyword 'tcpKeepAlive' is not supported`, or with `ignoreUnknown` silently keeps keep-alive enabled. Every other option name is accepted in any case."
+    locations: ["src/StackExchange.Redis/ConfigurationOptions.cs", "normalizedOptions", "TryNormalize", "TcpKeepAlive", "DoParse"]
+    fix: "957c888b419b5e4929010ead973e91f5c0ed67ac"
+nice_to_have: []
