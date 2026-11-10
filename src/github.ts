@@ -296,6 +296,22 @@ export async function fetchInterRoundDiff(
 }
 
 /**
+ * Returns the shas of the commits `head` adds on top of `base`, oldest first, when they form one line of history. Returns
+ * none when `head` does not descend from `base`, as after a rebase, or when a merge brought in commits of another branch.
+ */
+export async function fetchCommitsSince(octokit: Octokit, owner: string, repo: string, base: string, head: string): Promise<string[]> {
+  const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base, head, per_page: 100 });
+  const linear = data.status === 'ahead' && data.commits.length === data.total_commits && data.commits.every(c => c.parents.length === 1);
+  return linear ? data.commits.map(c => c.sha) : [];
+}
+
+/** Returns the unified diff of commit `sha` against its parent. */
+export async function fetchCommitDiff(octokit: Octokit, owner: string, repo: string, sha: string): Promise<string> {
+  const { data } = await octokit.rest.repos.getCommit({ owner, repo, ref: sha, mediaType: { format: 'diff' } });
+  return data as unknown as string;
+}
+
+/**
  * Returns the full blob sha of each file `head` changes against its merge base with `base`, by path. GitHub lists at most
  * 300 files for a comparison, so a path past that is missing from the map.
  */

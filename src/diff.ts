@@ -205,6 +205,87 @@ export function isLineInDiff(file: DiffFile, line: number, end = line): boolean 
   );
 }
 
+/** A `path:line` or `path:start-end` location in text, where the path has an extension, such as `src/retry.ts:48-52`. */
+const TEXT_LOCATION_RE = /([\w./-]+\.\w+):(\d+)(?:-(\d+))?/g;
+
+/** Lines `start` to `end` of the file at `file`. */
+type LineRange = { file: string; start: number; end: number };
+
+/** Returns the line ranges `text` cites as `path:line` or `path:start-end`. */
+export function citedRanges(text: string): LineRange[] {
+  return [...text.matchAll(TEXT_LOCATION_RE)].map(([, file, start, end]) => ({ file, start: Number(start), end: Number(end ?? start) }));
+}
+
+/**
+ * Returns the sha of the earliest of `commits`, oldest first each with its own diff, whose change touches a line of
+ * `ranges`. The ranges count lines at the newest commit, so each is carried back through the hunks of later commits. A
+ * range may name its file by a path suffix, such as `retry.ts` for `src/retry.ts`. With `onlyOne`, it returns a commit
+ * only when no other commit touches the ranges.
+ */
+export function earliestCommitTouching(commits: Array<{ sha: string; diff: ParsedDiff }>, ranges: LineRange[], onlyOne = false): string | undefined {
+  const touching = new Set<number>();
+  for (const range of ranges) {
+    let at: LineRange | undefined = range;
+    for (let i = commits.length - 1; i >= 0 && at; i--) {
+      const { file: name, start, end }: LineRange = at;
+      const file: DiffFile | undefined = commits[i].diff.files.find(f => f.path === name || f.path.endsWith(`/${name}`));
+      if (!file) continue;
+      if ([...touchedLines(file)].some(line => start <= line && line <= end)) touching.add(i);
+      const first = lineBefore(file.hunks, start, 'start');
+      const last = lineBefore(file.hunks, end, 'end');
+      // Lines this commit added did not exist before it, so a range of only such lines ends the walk.
+      at = file.changeType === 'added' || first > last ? undefined : { file: file.oldPath ?? file.path, start: first, end: last };
+    }
+  }
+  return touching.size === 0 || (onlyOne && touching.size > 1) ? undefined : commits[Math.min(...touching)].sha;
+}
+
+/**
+ * Returns the new-file lines the change to `file` touches: each added line and the lines right next to it, and the lines
+ * on both sides of each removal. The other context lines of a hunk are not touched.
+ */
+function touchedLines(file: DiffFile): Set<number> {
+  const touched = new Set<number>();
+  for (const hunk of file.hunks) {
+    let line = hunk.newStart;
+    for (const content of hunk.content.split('\n')) {
+      if (content.startsWith('\\')) continue;
+      if (content.startsWith('-')) {
+        touched.add(line - 1).add(line);
+        continue;
+      }
+      if (content.startsWith('+')) touched.add(line - 1).add(line).add(line + 1);
+      line++;
+    }
+  }
+  return touched;
+}
+
+/**
+ * Returns the line `line` of a file sat on before the change `hunks` made. A line the change added had none, so as the
+ * `start` of a range it maps to the line after where it went in, and as its `end` to the line before.
+ */
+function lineBefore(hunks: DiffHunk[], line: number, side: 'start' | 'end'): number {
+  let shift = 0;
+  for (const hunk of [...hunks].sort((a, b) => a.newStart - b.newStart)) {
+    if (line < hunk.newStart) break;
+    let oldLine = hunk.oldStart;
+    let newLine = hunk.newStart;
+    for (const content of hunk.content.split('\n')) {
+      if (content.startsWith('\\')) continue;
+      if (content.startsWith('-')) {
+        oldLine++;
+        continue;
+      }
+      if (newLine === line) return content.startsWith('+') && side === 'end' ? oldLine - 1 : oldLine;
+      if (!content.startsWith('+')) oldLine++;
+      newLine++;
+    }
+    shift = oldLine - newLine;
+  }
+  return line + shift;
+}
+
 /**
  * Sum additions and deletions across the given files. Files lacking
  * per-file counts contribute zero, matching the behavior of test fixtures

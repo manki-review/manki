@@ -135,6 +135,8 @@ jest.mock('./diff', () => {
     changeDigest: jest.requireActual('./diff').changeDigest,
     rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,
     shortenLongLines: jest.requireActual('./diff').shortenLongLines,
+    citedRanges: jest.requireActual('./diff').citedRanges,
+    earliestCommitTouching: jest.requireActual('./diff').earliestCommitTouching,
   };
 });
 
@@ -201,6 +203,8 @@ jest.mock('./github', () => ({
   fetchRepoContext: jest.fn().mockResolvedValue(''),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),
+  fetchCommitsSince: jest.fn().mockResolvedValue([]),
+  fetchCommitDiff: jest.fn().mockResolvedValue(''),
   fetchBlobShas: jest.fn().mockResolvedValue(new Map()),
   fetchHeadSha: jest.requireActual('./github').fetchHeadSha,
   assertHeadUnchanged: jest.requireActual('./github').assertHeadUnchanged,
@@ -5418,6 +5422,8 @@ describe('runFullReview orchestration', () => {
         { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in latest push' },
       ],
     });
+    // A lone commit since the reviewed head made every change, so the reply names it.
+    jest.mocked(ghUtils.fetchCommitsSince).mockResolvedValue(['1111111aaa']);
     if (outcome === 'superseded') jest.mocked(ghUtils.postReview).mockRejectedValueOnce(new ghUtils.SupersededError('abc123', 'def456'));
     if (outcome === 'created') {
       jest.mocked(ghUtils.postReview).mockImplementationOnce(async (...args) => {
@@ -5470,7 +5476,7 @@ describe('runFullReview orchestration', () => {
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars)).toEqual([
       ...openThreadReplies,
       ...(posted ? [
-        { threadId: 'PRRT_abc', body: 'Fixed in abc123.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->' },
+        { threadId: 'PRRT_abc', body: 'Fixed in 1111111.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->' },
         { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->' },
       ] : []),
     ]);
