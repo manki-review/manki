@@ -36,6 +36,12 @@ const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
   ...overrides,
 });
 
+
+/** An octokit that serves review threads from `graphql` and lists `reviews`, whose round records grade the threads. */
+function threadsOctokit(graphql: jest.Mock, reviews: unknown[] = []): Octokit {
+  return { graphql, paginate: jest.fn().mockResolvedValue(reviews), rest: { pulls: { listReviews: jest.fn() } } } as unknown as Octokit;
+}
+
 describe('areAllFindingsResolved', () => {
   it('returns true for an empty array', () => {
     expect(areAllFindingsResolved([], TEST_BOT)).toBe(true);
@@ -142,7 +148,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(3);
@@ -157,7 +163,7 @@ describe('fetchBotReviewThreads', () => {
       .mockResolvedValueOnce({ repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: true, endCursor: 'p2' }, nodes: nodes.slice(0, 100) } } } })
       .mockResolvedValueOnce(makeGraphqlFetchResponse(nodes.slice(100)));
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads.map(t => t.id)).toEqual(nodes.map(n => n.id));
@@ -165,7 +171,7 @@ describe('fetchBotReviewThreads', () => {
     expect(graphqlMock).toHaveBeenNthCalledWith(2, expect.any(String), expect.objectContaining({ cursor: 'p2' }));
   });
 
-  it('treats suggestion and warning threads, security ones included, as not blocking auto-approve, unless Manki said the problem came back as a blocker, and a partly fixed blocker by what remains', async () => {
+  it('treats suggestion and warning threads, security ones included, as not blocking auto-approve, unless a round record raised them, and a partly fixed blocker by what remains', async () => {
     const finding = (severity: Finding['severity'], title: string, tags?: string[]): Finding => ({
       severity, title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
     });
@@ -176,35 +182,47 @@ describe('fetchBotReviewThreads', () => {
         makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security']), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug'), TEST_LINKS) }),
-        makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now'), TEST_LINKS), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
-        makeGraphqlFetchThreadNode({ id: 'h', body: formatFindingComment(finding('warning', 'Pasted marker'), TEST_LINKS), replies: [{ body: '<!-- manki-found-again-blocker -->', author: { login: 'developer' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now'), TEST_LINKS), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->', author: { login: 'manki-review[bot]' } }] }),
+        // A reply never decides blocking, even one of Manki's that reads like an old marker.
+        makeGraphqlFetchThreadNode({ id: 'h', body: formatFindingComment(finding('warning', 'Old marker'), TEST_LINKS), replies: [{ body: '<!-- manki -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
         makeGraphqlFetchThreadNode({ id: 'pw', body: formatFindingComment(finding('blocker', 'Partly fixed'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'pb', body: formatFindingComment(finding('blocker', 'Partly fixed, still blocking'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'pf', body: formatFindingComment(finding('blocker', 'Forged partial fix'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'ps', body: formatFindingComment(finding('blocker', 'Security, partly fixed', ['security']), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'pr', body: formatFindingComment(finding('blocker', 'Open again'), TEST_LINKS) }),
-        makeGraphqlFetchThreadNode({ id: 'pa', body: formatFindingComment(finding('blocker', 'Came back'), TEST_LINKS), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'pa', body: formatFindingComment(finding('blocker', 'Came back'), TEST_LINKS) }),
       ]),
     );
     // The round records keep the grade a partial fix left each thread, and only Manki's records count.
     const partly = (threadId: string, grade: ThreadEvaluation['grade'], status: ThreadEvaluation['status'] = 'partly_addressed'): ThreadEvaluation => ({ threadId, status, reason: 'r', remaining: 'r', grade });
-    const record = (round: number, threadEvaluations: ThreadEvaluation[], login = 'manki-review[bot]') => ({
-      id: round, user: { login }, body: `<!-- manki-context: ${JSON.stringify(makeRoundContext(round, { judge: { summary: '', threadEvaluations } }))} -->`,
+    // A blocker a round carried on a thread raises it, whatever grade the thread had.
+    const record = (round: number, threadEvaluations: ThreadEvaluation[], carried: string[] = [], login = 'manki-review[bot]') => ({
+      id: round, user: { login }, body: `<!-- manki-context: ${JSON.stringify(makeRoundContext(round, {
+        judge: { summary: '', threadEvaluations },
+        findings: { count: carried.length, severityCounts: {}, entries: carried.map(threadId => ({ fingerprint: { file: 'src/a.ts', lineStart: 3, lineEnd: 3, slug: 'x' }, severity: 'blocker' as const, threadId })) },
+      }))} -->`,
     });
     const reviews = [
       record(1, [partly('pw', 'warning'), partly('pb', 'blocker'), partly('ps', 'warning'), partly('pr', 'warning'), partly('pa', 'warning')]),
-      record(2, [partly('pr', 'blocker', 'not_addressed')]),
-      record(3, [partly('pf', 'nitpick')], 'developer'),
+      record(2, [partly('pr', 'blocker', 'not_addressed')], ['f', 'pa']),
+      record(3, [partly('pf', 'nitpick')], ['h'], 'developer'),
     ];
-    const octokit = { graphql: graphqlMock, paginate: jest.fn().mockResolvedValue(reviews), rest: { pulls: { listReviews: jest.fn() } } } as unknown as Octokit;
-
-    const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(threadsOctokit(graphqlMock, reviews), TEST_BOT, 'owner', 'repo', 1);
 
     // A blocker thread Manki found partly fixed blocks only while what remains is a blocker.
     expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true], ['ps', true], ['pr', true], ['pa', true]]);
     expect(threads.find(t => t.id === 'x')?.isSecurity).toBe(true);
     expect(areAllFindingsResolved(threads.filter(t => !['b', 'f', 'pb', 'pf', 'ps', 'pr', 'pa'].includes(t.id)), TEST_BOT)).toBe(true);
     expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(false);
+
+    // A raised thread the PR author resolved still blocks, though no thread is open any more.
+    const resolved = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now'), TEST_LINKS), isResolved: true })])), reviews);
+    expect((await fetchBotReviewThreads(resolved, TEST_BOT, 'owner', 'repo', 1)).map(t => [t.id, t.isBlocking])).toEqual([['f', true]]);
+
+    // Without the round records a raise could hide, so every thread blocks and auto-approve waits.
+    const unread = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('suggestion', 'Extract helper'), TEST_LINKS), isResolved: true })])));
+    jest.mocked(unread.paginate).mockRejectedValueOnce(new Error('rate limited'));
+    expect((await fetchBotReviewThreads(unread, TEST_BOT, 'owner', 'repo', 1)).map(t => [t.id, t.isBlocking])).toEqual([['s', true]]);
   });
 
   it('filters out non-bot threads', async () => {
@@ -220,7 +238,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(1);
@@ -239,7 +257,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const threads = await fetchBotReviewThreads({ graphql: graphqlMock } as unknown as Octokit, TEST_BOT, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(threadsOctokit(graphqlMock), TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads.map(t => t.recordedOverride)).toEqual([{ login: 'jdoe_acme', via: 'dismiss' }, undefined]);
   });
@@ -251,7 +269,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(1);
@@ -269,7 +287,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(4);
@@ -287,7 +305,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(2);
@@ -300,7 +318,7 @@ describe('fetchBotReviewThreads', () => {
       makeGraphqlFetchResponse([]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(0);
