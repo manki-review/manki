@@ -790,11 +790,11 @@ function sameModel(a: string, b: string): boolean {
   return a.replace(/^anthropic\//, '') === b.replace(/^anthropic\//, '');
 }
 
-/** Returns the other Claude tier of `model` (Sonnet for Opus and Haiku, Opus for Sonnet), or `model` itself for other providers. */
+/** Returns the other Claude tier of `model` (Sonnet for Opus and Haiku, Opus for Sonnet and Fable), or `model` itself for other providers. */
 function otherClaudeTier(model: string): string {
   const id = model.replace(/^anthropic\//, '');
   if (id.startsWith('claude-opus-')) return SONNET_MODEL;
-  if (id.startsWith('claude-sonnet-')) return OPUS_MODEL;
+  if (id.startsWith('claude-sonnet-') || id.startsWith('claude-fable-')) return OPUS_MODEL;
   if (id.startsWith('claude-haiku-')) return SONNET_MODEL;
   return model;
 }

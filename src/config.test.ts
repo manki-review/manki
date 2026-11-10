@@ -717,6 +717,8 @@ models:
       expect(resolvePairModel(withModels({ reviewer: 'claude-opus-4-7' }))).toBe('claude-sonnet-5-5');
       expect(resolvePairModel(withModels({ reviewer: 'anthropic/claude-opus-4-6' }))).toBe('claude-sonnet-5-5');
       expect(resolvePairModel(withModels({ reviewer: 'claude-haiku-4-5-20251001' }))).toBe('claude-sonnet-5-5');
+      expect(resolvePairModel(withModels({ reviewer: 'claude-fable-5-1' }))).toBe('claude-opus-5-5');
+      expect(resolvePairModel(withModels({ reviewer: 'anthropic/claude-fable-5' }))).toBe('claude-opus-5-5');
     });
 
     it('keeps the reviewer model for other providers and honours `reviewer_pair`', () => {
@@ -733,6 +735,7 @@ models:
       expect(resolveFallbackModel(DEFAULT_CONFIG, 'claude-haiku-5-5')).toBe('claude-sonnet-5-5');
       expect(resolveFallbackModel(DEFAULT_CONFIG, 'claude-sonnet-5-5')).toBe('claude-opus-5-5');
       expect(resolveFallbackModel(DEFAULT_CONFIG, 'anthropic/claude-sonnet-5-5')).toBe('claude-opus-5-5');
+      expect(resolveFallbackModel(withModels({ reviewer: 'claude-fable-5-1' }), 'claude-fable-5-1')).toBe('claude-opus-5-5');
     });
 
     it('honours `models.fallback` and returns undefined when no other model is left', () => {
