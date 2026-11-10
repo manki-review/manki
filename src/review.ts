@@ -250,7 +250,7 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
   const risky = floor || finders.length >= 2;
   return group.reviewers.map(reviewer => {
     const model = resolveReviewerModel(config, reviewer.model);
-    const base: EffortLevel = !reviewer.effort || reviewer.effort === 'auto' ? (triage.subtle ? 'high' : 'medium') : reviewer.effort;
+    const base: EffortLevel = !reviewer.effort || reviewer.effort === 'auto' ? (triage.subtle ? 'xhigh' : 'medium') : reviewer.effort;
     const effort = deeper ? DEEPER_EFFORT[base] : base;
     const verifier = reviewer.role === 'verifier';
     const custom = reviewer.focus ? [...config.reviewers, { name: 'This review group', focus: reviewer.focus }] : config.reviewers;
