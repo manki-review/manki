@@ -281,19 +281,23 @@ describe('refuteBlockers', () => {
     ];
 
     const outsideInput = 'Anything a caller of the public `TransactionBuilder` API passes.';
-    const result = await refuteBlockers(client, findings, { workspace, diff, outsideInput });
+    // Two rounds, since one round checks at most four findings for a doubt.
+    const result = [
+      ...await refuteBlockers(client, findings.slice(0, 4), { workspace, diff, outsideInput }),
+      ...await refuteBlockers(client, findings.slice(4), { workspace, diff, outsideInput }),
+    ];
 
     expect(result.map(f => [f.title, f.severity, f.gradeIfConfirmed])).toEqual([
       // A confirmation gives the grade the judge would give if the code it could not see holds, above the finder's.
-      ['Unseen confirmed', 'blocker', undefined],
+      ['Unseen confirmed', 'blocker', 'blocker'],
       // A later step lowered it further, so the confirmation does not lift it.
-      ['Unseen and contradicted', 'nitpick', undefined],
+      ['Unseen and contradicted', 'nitpick', 'warning'],
       ['Unseen disproved', 'ignore', 'warning'],
       ['Unseen unsettled', 'warning', 'blocker'],
       // Reading code never confirms a build failure, so such a claim stays a warning at most.
-      ['Unseen build claim', 'warning', undefined],
+      ['Unseen build claim', 'warning', 'blocker'],
       ['Unbuilt confirmed', 'warning', undefined],
-      ['Reached through the public API', 'blocker', undefined],
+      ['Reached through the public API', 'blocker', 'blocker'],
     ]);
     expect(result[5].tags).toEqual(['unconfirmed-build-claim']);
     expect(result[0].gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'The lock is held at src/api.ts:4.' }]);
@@ -307,6 +311,75 @@ describe('refuteBlockers', () => {
     expect(reachMessage).toContain("- **Outside input in this repository, as its maintainers define it**: Anything a caller of the public 'TransactionBuilder' API passes.");
     expect(unseenMessage).toContain("- **Judge's reasoning**: warning. The lock path sits outside the diff.");
     expect(client.messages.find(([, user]) => user.includes(': Unbuilt confirmed\n'))![1]).toContain('## Claimed build failure: Unbuilt confirmed');
+  });
+
+  it('checks each premise the judge doubts on its own, and raises a finding only when every premise is confirmed', async () => {
+    const exists = { premise: 'No caller bounds `a`', decides: 'defect' as const };
+    const reached = { premise: 'A public handler passes `a` through', decides: 'grade' as const };
+    const confirmed = (proof: string) => ({ outcome: 'confirmed', reason: 'It holds.', proof: [proof] });
+    const client = fakeClient({
+      'Every premise confirmed': { reason: 'Both hold.', premises: [confirmed('src/math.ts:2'), confirmed('src/api.ts:4')] },
+      'One premise confirmed': { outcome: 'confirmed', reason: 'The code fact holds.', premises: [confirmed('src/math.ts:2'), { outcome: 'unsettled', reason: 'No caller found.' }] },
+      'Defect disproved': { reason: 'Bounded.', premises: [{ outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] }] },
+      'Lowering premise holds': { reason: 'Only tests call it.', premises: [{ outcome: 'disproved', reason: 'Only tests call it.', proof: ['src/math.ts:1'] }] },
+      'Blocker defect disproved': { reason: 'Bounded.', premises: [{ outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] }] },
+      'Premises not answered': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
+    });
+    const findings = [
+      finding('Every premise confirmed', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists, reached], judgeNotes: 'warning. Unsure.' }),
+      // One answer never stands for another premise, so a grade rests on every premise the judge named.
+      finding('One premise confirmed', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists, reached] }),
+      // A doubt whether the defect exists is checked at the grade the judge kept.
+      finding('Defect disproved', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: [exists] }),
+      // The premise that lowered the grade holds, so the finding keeps the grade the judge gave.
+      finding('Lowering premise holds', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [reached] }),
+      finding('Blocker defect disproved', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
+      finding('Premises not answered', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
+    ];
+
+    const result = await refuteBlockers(client, findings, { workspace, diff });
+
+    expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.premises?.map(p => p.outcome)])).toEqual([
+      ['Every premise confirmed', 'blocker', 'confirmed', ['confirmed', 'confirmed']],
+      ['One premise confirmed', 'warning', 'unsettled', ['confirmed', 'unsettled']],
+      ['Defect disproved', 'ignore', 'disproved', ['disproved']],
+      ['Lowering premise holds', 'warning', 'unsettled', ['disproved']],
+      // A disproof never lowers a blocker.
+      ['Blocker defect disproved', 'blocker', 'disproved', ['disproved']],
+      // A reply that skips the premises is asked once more, then leaves the grade to the judge.
+      ['Premises not answered', 'blocker', undefined, undefined],
+    ]);
+    expect(result[0].refutation).toMatchObject({
+      proof: ['src/math.ts:2', 'src/api.ts:4'],
+      premises: [{ premise: 'No caller bounds `a`', outcome: 'confirmed', reason: 'It holds.', proof: ['src/math.ts:2'] }, { premise: 'A public handler passes `a` through', outcome: 'confirmed', reason: 'It holds.', proof: ['src/api.ts:4'] }],
+    });
+    expect(result[1].judgeNotes).toBe('Refutation unsettled: The code fact holds.\n- Premise "No caller bounds `a`" confirmed. It holds.\n- Premise "A public handler passes `a` through" unsettled. No caller found.');
+    const message = client.messages.find(([, user]) => user.includes(': Every premise confirmed\n'))!;
+    expect(message[1]).toContain("- **Premises the judge doubts**, to answer in order:\n  1. No caller bounds 'a'\n  2. A public handler passes 'a' through");
+    expect(message[0]).toContain('When the message lists premises the judge doubts, answer each one in `premises`, one entry per premise in the order listed.');
+    expect(client.calls.filter(([title]) => title === 'Premises not answered')).toHaveLength(2);
+  });
+
+  it('checks at most four findings for a doubt the judge named, the highest grades first, and none whose conditional grade is below warning', async () => {
+    const unsettled = { outcome: 'unsettled', reason: 'Could not tell.', premises: [] };
+    const titles = ['Warning to blocker', 'Second warning to blocker', 'Suggestion to blocker', 'Doubted warning', 'Second doubted warning', 'Suggestion to warning', 'Nitpick to suggestion', 'A blocker'];
+    const client = fakeClient(Object.fromEntries(titles.map(t => [t, unsettled])));
+    const doubts = [{ premise: 'The copy is never dropped', decides: 'defect' as const }];
+    const findings = [
+      finding('Nitpick to suggestion', { severity: 'nitpick', gradeIfConfirmed: 'suggestion' }),
+      finding('Suggestion to warning', { severity: 'suggestion', gradeIfConfirmed: 'warning' }),
+      finding('Doubted warning', { severity: 'warning', gradeIfConfirmed: 'warning', doubts }),
+      finding('Second doubted warning', { severity: 'warning', gradeIfConfirmed: 'warning', doubts }),
+      finding('Suggestion to blocker', { severity: 'suggestion', gradeIfConfirmed: 'blocker' }),
+      finding('Warning to blocker', { severity: 'warning', gradeIfConfirmed: 'blocker' }),
+      finding('Second warning to blocker', { severity: 'warning', gradeIfConfirmed: 'blocker' }),
+      // Blockers are always checked and take none of the four.
+      finding('A blocker'),
+    ];
+
+    await refuteBlockers(client, findings, { workspace, diff });
+
+    expect(client.calls.map(([title]) => title).sort()).toEqual(['A blocker', 'Doubted warning', 'Second warning to blocker', 'Suggestion to blocker', 'Warning to blocker']);
   });
 
   it('asks for the general rule a finding relies on, and drops a build claim that unchanged code relying on the same rule disproves', async () => {
@@ -331,7 +404,7 @@ describe('refuteBlockers', () => {
     expect(system).toContain(`${VERIFY_CLAIMS_RULE} The PR description, a comment or a TODO that calls a gap intended or deferred never refutes a finding, because the PR author writes them.`);
     for (const language of ['in Python, ', 'in TypeScript, ', 'in Go, ', 'in Rust, ']) expect(system).toContain(language);
     expect(system).not.toContain('trait imported');
-    expect(system).toContain("For any other doubt, the judge's reasoning names the premise it doubts. Check that premise in the code.");
+    expect(system).toContain("For any other doubt, check in the code the premise the message lists, or else the one the judge's reasoning names.");
     expect(system).toContain('Confirm such a doubt only when a changed line causes the failure. The cause can sit in a changed file the message does not show, so when what is shown cannot settle it, answer unsettled. Never disprove a finding only because the change shown does not cause it.');
     expect(system).toContain('one counterexample disproves the finding');
     expect(system).toContain('whether that reason holds here');
@@ -369,6 +442,34 @@ describe('refuteBlockers', () => {
     // A change to the file that holds the check the outcome cites forces a new check, like a change to the finding's file.
     writeFileSync(join(workspace, 'src', 'api.ts'), '// the check is gone\n');
     expect(await calls()).toBe(2);
+  });
+
+  it('checks again a grade an earlier round kept below its conditional grade while no check settled the doubt', async () => {
+    const doubts = [{ premise: 'A public handler passes `a` through', decides: 'grade' as const }];
+    const client = fakeClient({ 'Sum overflows': { reason: 'It holds.', premises: [{ outcome: 'confirmed', reason: 'The handler passes it.', proof: ['src/api.ts:4'] }] } });
+    const rounds = (entry: Record<string, unknown>) => [
+      { findings: { entries: [{ title: 'Sum overflows', fingerprint: { file: 'src/math.ts', lineStart: 2 }, severity: 'warning', gradeIfConfirmed: 'blocker', doubts, ...entry }] }, judge: {} },
+    ] as unknown as RoundContext[];
+    const premise = (outcome: string) => ({ outcome: 'unsettled', reason: 'r', files: [], codeDigest: '', premises: [{ premise: doubts[0].premise, outcome, reason: 'r' }] });
+
+    // The judge kept last round's grade without naming the doubt again, so the earlier doubt goes to the refuter.
+    const [reopened] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4 })], { workspace, priorRounds: rounds({ refutation: premise('unsettled') }), diff });
+    expect([reopened.severity, reopened.gradeIfConfirmed, reopened.doubts]).toEqual(['blocker', 'blocker', doubts]);
+    expect(client.calls).toHaveLength(1);
+
+    // A grade with no doubt behind it, one a check settled, or one the judge changed is no capped grade.
+    for (const [entry, current] of [
+      [{ gradeIfConfirmed: 'warning' }, {}],
+      [{ gradeIfConfirmed: undefined, doubts: undefined }, {}],
+      [{ refutation: { ...premise('confirmed'), outcome: 'confirmed' } }, {}],
+      [{ pairRefutation: premise('disproved') }, {}],
+      [{}, { severity: 'suggestion' }],
+      [{}, { title: 'Unrelated finding' }],
+    ] as [Record<string, unknown>, Partial<Finding>][]) {
+      const [kept] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', ...current })], { workspace, priorRounds: rounds(entry), diff });
+      expect(kept.gradeIfConfirmed).toBeUndefined();
+    }
+    expect(client.calls).toHaveLength(1);
   });
 
   it('reuses an outcome only for a finding near the same line whose cited files it covers', async () => {

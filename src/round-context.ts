@@ -256,6 +256,8 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.notChecked && { notChecked: true }),
     ...(f.refutation && { refutation: f.refutation }),
     ...(f.pairRefutation && { pairRefutation: f.pairRefutation }),
+    ...(f.gradeIfConfirmed && { gradeIfConfirmed: f.gradeIfConfirmed }),
+    ...(f.doubts && { doubts: f.doubts }),
     ...(f.gradePath && { gradePath: f.gradePath }),
     ...(f.preExisting && f.preExistingCheck && { preExisting: { reason: f.preExisting.slice(0, 200), check: f.preExistingCheck } }),
   });
