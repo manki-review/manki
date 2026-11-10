@@ -1319,9 +1319,9 @@ export async function runReview(
   const pushChangedFiles = filesChangedByPush(interRoundDiff);
   const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
   let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+  const earlier = earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
   const earlierWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
-  finalFindings = await foldIntoEarlierFindings(finalFindings, earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations), earlierWrap?.client);
-  if (earlierWrap?.getTotals().calls) logOutputTokens('LLM dedup against earlier findings', earlierWrap.getTotals().usage);
+  finalFindings = await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client);
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
@@ -1373,8 +1373,9 @@ export async function runReview(
       const refuted = (refutation
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort: judgeEffort as 'low' | 'medium' | 'high', diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
         : readerBlockers).filter(f => f.severity !== 'ignore');
+      const restated = await foldIntoEarlierFindings(refuted, earlier, earlierWrap?.client);
       const foldWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
-      const folded = await foldIntoReaderBlockers(finalFindings, refuted, foldWrap?.client);
+      const folded = await foldIntoReaderBlockers(finalFindings, restated, foldWrap?.client);
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       const readerFindings = folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
       finalFindings = [...folded.findings, ...readerFindings];
@@ -1394,6 +1395,7 @@ export async function runReview(
     const threadId = f.severity === 'blocker' ? priorBlockerNamedBy(f, priorBlockers)?.entry.threadId : undefined;
     return threadId && openThreadIndex.has(threadId) ? { ...f, threadId } : f;
   });
+  if (earlierWrap?.getTotals().calls) logOutputTokens('LLM dedup against earlier findings', earlierWrap.getTotals().usage);
 
   let needsHuman: NeedsHuman | undefined;
   const fixClaimed = fixClaimedThreadIds(previousFindings, openThreads, sortedPriorRounds);

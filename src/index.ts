@@ -47,6 +47,7 @@ import {
   fetchInterRoundDiff,
   formatFoundAgainReply,
   formatVariantReply,
+  formatBlockerReply,
   fetchHeadSha,
   assertHeadUnchanged,
   SupersededError,
@@ -1326,19 +1327,22 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
 
 /**
  * Replies in the threads this round's findings go to, once per thread. A closed answered thread where the judge kept a
- * finding that repeats its problem is reopened first. An open thread gets the variants of its finding listed. A reply
- * with a blocker in it makes the thread block.
+ * finding that repeats its problem is reopened first. An open thread gets the variants of its finding listed, and a
+ * blocker that restates a thread that does not block yet. A reply with a blocker in it makes the thread block.
  */
 async function replyInThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+  const threads = new Map(run.recap.previousFindings.flatMap(t => t.threadId ? [[t.threadId, t] as const] : []));
+  const blocks = (threadId: string) => ['blocker', 'unknown'].includes(threads.get(threadId)?.severity ?? 'unknown');
   const byThread = new Map<string, Finding[]>();
   for (const f of result.findings) {
-    const threadId = f.answeredIn?.threadId ?? (f.variantOf ? f.threadId : undefined);
+    const threadId = f.answeredIn?.threadId ?? (f.threadId && (f.variantOf || (f.severity === 'blocker' && !blocks(f.threadId))) ? f.threadId : undefined);
     if (threadId) byThread.set(threadId, [...(byThread.get(threadId) ?? []), f]);
   }
   for (const [threadId, findings] of byThread) {
     const answered = findings.find(f => f.answeredIn);
-    const variants = findings.filter(f => !f.answeredIn);
-    const thread = run.recap.previousFindings.find(t => t.threadId === threadId);
+    const variants = findings.filter(f => !f.answeredIn && f.variantOf);
+    const raised = findings.filter(f => !f.answeredIn && !f.variantOf);
+    const thread = threads.get(threadId);
     // Reopened first, so the thread a blocker was listed under stays open even when the reply fails.
     if (answered && thread && thread.status !== 'open' && thread.status !== 'replied') {
       try {
@@ -1347,7 +1351,11 @@ async function replyInThreads(run: ReviewRun, result: ReviewResult): Promise<voi
         core.warning(`Failed to reopen answered thread ${threadId}: ${error}`);
       }
     }
-    const body = [answered && formatFoundAgainReply(answered), variants.length > 0 && formatVariantReply(variants)].filter(part => !!part).join('\n\n---\n\n');
+    const body = [
+      answered && formatFoundAgainReply(answered),
+      raised.length > 0 && formatBlockerReply(raised),
+      variants.length > 0 && formatVariantReply(variants),
+    ].filter(part => !!part).join('\n\n---\n\n');
     const markers = [...(answered ? [FOUND_AGAIN_MARKER] : []), ...(findings.some(f => f.severity === 'blocker') ? [FOUND_AGAIN_BLOCKER_MARKER] : [])];
     try {
       await replyToReviewThread(run.octokit, threadId, body, ...markers);

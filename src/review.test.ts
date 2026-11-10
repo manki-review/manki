@@ -2828,6 +2828,19 @@ describe('runReview', () => {
     const calls = jest.mocked(dedup.sendMessage).mock.calls;
     expect(calls).toHaveLength(1);
     expect(calls[0][1]).toBe('## Pairs:\n1.\n   A: "Name is vague" (src/y.ts:5)\n   B: "Helper is misnamed" (src/y.ts:7): "d"\n2.\n   A: "Retry never ends" (src/x.ts:10)\n   B: "File handle leaks" (src/x.ts:14): "d"');
+
+    // A verdict reader blocker that restates an open thread goes to that thread too.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
+    const reading = makeClients();
+    jest.mocked(reading.judge.sendMessage).mockResolvedValue({
+      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 10, title: 'Retry never ends', description: 'It spins.' }], summary: 'Spins.', whatThisDoes: '', whatToTest: '' }),
+    });
+    const read = await runReview(reading, {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends' })], previousFindings: [], priorRounds: [prior], headSha: 'sha2',
+    });
+    expect(read.outcome).toBe('ADDRESS_FIRST');
+    expect(read.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'Retry never ends', threadId: 'T1' })]);
   });
 
   it('ends the last automatic round READY when nothing blocks, otherwise NOT_CONVERGING', async () => {

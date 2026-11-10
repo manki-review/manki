@@ -1376,8 +1376,17 @@ export function formatFoundAgainReply(finding: Finding): string {
 
 /** Returns Manki's reply in an open thread that lists `variants`, other instances of the problem the thread names. */
 export function formatVariantReply(variants: Finding[]): string {
-  const lead = variants.length === 1 ? 'This round found another instance of this problem.' : `This round found ${variants.length} more instances of this problem.`;
-  return [lead, variants.map(f => formatReplyFinding(f).join('\n\n')).join('\n\n---\n\n')].join('\n\n');
+  return formatReplyListing(variants.length === 1 ? 'This round found another instance of this problem.' : `This round found ${variants.length} more instances of this problem.`, variants);
+}
+
+/** Returns Manki's reply in an open thread whose problem `blockers` raise again as a blocker, which makes the thread block. */
+export function formatBlockerReply(blockers: Finding[]): string {
+  return formatReplyListing('This round raises this problem again as a blocker, so this thread now blocks.', blockers);
+}
+
+/** Returns a reply that opens with `lead` and lists `findings`. */
+function formatReplyListing(lead: string, findings: Finding[]): string {
+  return [lead, findings.map(f => formatReplyFinding(f).join('\n\n')).join('\n\n---\n\n')].join('\n\n');
 }
 
 /** Returns the parts of a finding shown in a reply: its header, title, description and fix. */
