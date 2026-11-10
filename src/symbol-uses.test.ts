@@ -342,7 +342,8 @@ describe('listUsesOutsideDiff', () => {
     const readers = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`src/reader_${i}.rs`, 'fn read(h: &Holder) -> u16 {\n    h.s.paid_total + h.s.held_total + h.s.kept_total\n}\n']));
     const calls = Object.fromEntries([0, 1].map(i => [`src/calls_${i}.rs`, `fn run() {\n    ${helpers.map(f => `${f}();`).join(' ')}\n}\n`]));
     const half = await usesFor({ ...readers, ...calls, 'src/lib.rs': many('u8', 'todo!()') }, { 'src/lib.rs': many('u16', 'unimplemented!()') });
-    expect(half.record?.symbols?.filter(s => fields.includes(s.name)).flatMap(s => s.uses)).toHaveLength(30);
+    // The fields share the reserved slots in turn, so each gets 10.
+    expect(half.record?.symbols?.filter(s => fields.includes(s.name)).map(s => s.uses.length)).toEqual([10, 10, 10]);
     expect(half.record?.symbols?.flatMap(s => s.uses)).toHaveLength(60);
   });
 

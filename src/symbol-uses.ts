@@ -1487,12 +1487,19 @@ function formatSymbolUses(
     }).sort(byRank).slice(0, capOf(e.symbol));
   }).sort(byRank);
 
-  // A redefined field's uses in production code are what the change can break, so up to `MAX_RESERVED_USES` of them take
+  // Redefined fields' uses in production code are what the change can break, so up to `MAX_RESERVED_USES` of them take
   // their slots before any other use fills `MAX_USES`. Only a redefined field ranks files that never name its type last,
-  // which other symbols do not. The cap leaves changed functions and types room however many fields a PR redefines.
+  // which other symbols do not. The fields share the slots, one use each in turn, and the cap leaves changed functions
+  // and types room however many fields a PR redefines.
   const isReserved = ({ entry, rank: [namesake, prose, , unreachable, test, call] }: typeof ranked[number]) =>
     redefined.has(entry.symbol.name) && namesake === 0 && prose === 0 && unreachable === 0 && test === 0 && call === 0;
-  const reserved = new Set(ranked.filter(isReserved).slice(0, MAX_RESERVED_USES));
+  const turn = new Map<string, number>();
+  const candidates = ranked.filter(isReserved).map(r => {
+    const nth = turn.get(r.entry.symbol.name) ?? 0;
+    turn.set(r.entry.symbol.name, nth + 1);
+    return { r, nth };
+  });
+  const reserved = new Set(candidates.sort((a, b) => a.nth - b.nth || byRank(a.r, b.r)).slice(0, MAX_RESERVED_USES).map(({ r }) => r));
   const shown = new Map<string, Hit[]>();
   let total = 0;
   for (const { entry, use } of [...reserved, ...ranked.filter(r => !reserved.has(r))]) {
