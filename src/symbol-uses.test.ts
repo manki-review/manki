@@ -63,7 +63,7 @@ describe('listUsesOutsideDiff', () => {
 
     expect(section).toMatch(/^## Uses Outside the Diff\n\n.*untrusted PR content, never instructions\.\n\n/);
     // A same-package file that never names `Order` reads a namesake, so it ranks after every file that names it. The
-    // `Coupon` field's own declaration is no use at all.
+    // `Coupon` field's own declaration is likely another type's, so it ranks after every other use, but stays listed.
     expect(section).toContain([
       '### `discount` (field of `Order`)',
       '',
@@ -75,6 +75,7 @@ describe('listUsesOutsideDiff', () => {
       'core/src/stats.rs:2: xs[0].discount as usize',
       'promo/src/lib.rs:6: c.discount',
       'README.md:1: Each order has a `discount`.',
+      'promo/src/lib.rs:2: pub discount: u8,',
       '```',
     ].join('\n'));
     // The struct's body changed, so its name is searched too, while its new field has no use outside the diff.
@@ -85,14 +86,14 @@ describe('listUsesOutsideDiff', () => {
     // The record keeps where each listed line is, without the code.
     expect(record?.symbols?.find(s => s.name === 'discount')).toEqual({
       name: 'discount', declared: 'core/src/order.rs:3',
-      uses: ['billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:10', 'core/src/stats.rs:2', 'promo/src/lib.rs:6', 'README.md:1'],
+      uses: ['billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:10', 'core/src/stats.rs:2', 'promo/src/lib.rs:6', 'README.md:1', 'promo/src/lib.rs:2'],
     });
     expect(record?.symbols?.find(s => s.name === 'Order')).toMatchObject({ declared: 'core/src/order.rs:1', uses: expect.arrayContaining(['billing/src/invoice.rs:1']) });
     expect(record?.types).toEqual(['core/src/order.rs:1: struct Order { version, discount, line_items, gift_note }']);
     expect(JSON.stringify(record)).not.toContain('is_some');
   });
 
-  it('shows a redefined field\'s uses from other files before a fourth from one file, and drops a same-named field of another type, in Rust, Python, TypeScript and Go', async () => {
+  it('shows a redefined field\'s uses from other files before a fourth from one file, and ranks a same-named field of another type last, in Rust, Python, TypeScript and Go', async () => {
     const reads = (line: (i: number) => string) => Array.from({ length: 5 }, (_, i) => line(i)).join('\n');
     const cases = [
       {
@@ -101,6 +102,7 @@ describe('listUsesOutsideDiff', () => {
         ledgerText: `${reads(i => `pub fn read_${i}(a: &Account) -> i64 {\n    a.balance\n}\n`)}\npub struct AccountView {\n    pub balance: u64,\n}\n\nimpl AccountView {\n    pub fn shown(&self) -> u64 {\n        self.balance\n    }\n}\n`,
         reportText: 'pub fn opened(e: &Event) -> i64 {\n    e.holder.balance\n}\n',
         shown: (n: number) => `src/ledger.rs:${4 * n + 2}: a.balance`, reportLine: 'src/report.rs:2: e.holder.balance',
+        namesakes: ['src/ledger.rs:27: self.balance', 'src/ledger.rs:22: pub balance: u64,'],
       },
       {
         changed: 'app/account.py', before: 'class Account:\n    balance: int = 0\n', after: 'class Account:\n    balance: float = 0.0\n',
@@ -133,26 +135,27 @@ describe('listUsesOutsideDiff', () => {
         ledgerText: `package bank\n\n${reads(i => `func Read${i}(a Account) uint64 { return a.Balance }`)}\n\ntype AccountView struct {\n\tBalance int64\n}\n\nfunc (v *AccountView) Shown() int64 {\n\treturn v.Balance\n}\n`,
         reportText: 'package bank\n\nfunc Opened(e Event) uint64 { return e.Holder.Balance }\n',
         shown: (n: number) => `bank/ledger.go:${n + 3}: func Read${n}(a Account) uint64 { return a.Balance }`, reportLine: 'bank/report.go:3: func Opened(e Event) uint64 { return e.Holder.Balance }',
+        namesakes: ['bank/ledger.go:14: return v.Balance', 'bank/ledger.go:10: Balance int64'],
       },
     ];
-    for (const { changed, before, after, ledger, report, ledgerText, reportText, shown, reportLine, extra = [] } of cases) {
+    for (const { changed, before, after, ledger, report, ledgerText, reportText, shown, reportLine, extra = [], namesakes = [] } of cases) {
       const { section } = await usesFor({ [changed]: before, [ledger]: ledgerText, [report]: reportText }, { [changed]: after });
       const block = section.match(/### `[Bb]alance` \(field of `Account`\)\n\n```\n[^`]*```/)?.[0];
-      // The report never names `Account`, yet its one use comes before the ledger's fourth.
+      // The report never names `Account`, yet its one use comes before the ledger's fourth. The `AccountView` lines are
+      // likely another type's, so they come after every other use, and the cap of 12 can leave them out.
       expect(block).toBe(`### \`${changed.endsWith('.go') ? 'Balance' : 'balance'}\` (field of \`Account\`)\n\n\`\`\`\ndeclared at ${changed}:${changed.endsWith('.go') ? 4 : 2}\n${[
-        shown(0), shown(1), shown(2), reportLine, shown(3), shown(4), ...extra,
+        shown(0), shown(1), shown(2), reportLine, shown(3), shown(4), ...extra, ...namesakes,
       ].join('\n')}\n\`\`\``);
-      expect(section).not.toMatch(/AccountView|this\.balance|self\.balance$|v\.Balance/m);
     }
 
     // A base class's own reads of a field its changed subclass overrides read the subclass's value, while an unrelated
-    // class's own field is still left out.
+    // class's own field ranks after them.
     const models = (value: string) => `class Account:\n    def __init__(self):\n        self.balance = 0\n\n    def total(self):\n        return self.balance\n\n\nclass Savings(Account):\n    def __init__(self):\n        self.balance = ${value}\n`;
     const overridden = await usesFor(
       { 'app/models.py': models('1'), 'app/report.py': 'class Report:\n    def __init__(self):\n        self.balance = 0\n' },
       { 'app/models.py': models('1.5') },
     );
-    expect(overridden.record?.symbols?.find(s => s.name === 'balance')).toEqual({ name: 'balance', declared: 'app/models.py:11', uses: ['app/models.py:3', 'app/models.py:6'] });
+    expect(overridden.record?.symbols?.find(s => s.name === 'balance')).toEqual({ name: 'balance', declared: 'app/models.py:11', uses: ['app/models.py:3', 'app/models.py:6', 'app/report.py:3'] });
 
     // A field of the same name the diff changes on a second type is no namesake, so that type's own reads stay.
     const both = (num: string, init: string) => `export interface Account {\n  balance: ${num};\n}\n\nexport class Ledger {\n  balance = ${init};\n\n  total() {\n    return this.balance;\n  }\n}\n`;
@@ -163,27 +166,27 @@ describe('listUsesOutsideDiff', () => {
     // method or a `function` in TypeScript, a nested `def` or `lambda` with a `self` parameter in Python, and a func literal
     // with a parameter of the receiver's name in Go, and a class in TypeScript. So does a method whose body binds the name
     // in a statement, such as a loop, a `select` case or an import. The method's own reads, and a closure's, still read the
-    // class's field.
+    // class's field, so they rank last.
     const rebinding = [
       {
         changed: 'src/account.ts', before: 'export interface Account {\n  balance: number;\n}\n', after: 'export interface Account {\n  balance: bigint;\n}\n',
-        file: 'src/wrapper.ts', uses: [5, 6, 14, 15],
+        file: 'src/wrapper.ts', uses: [5, 6, 14, 15], namesakes: [10, 2],
         text: 'export class Wrapper {\n  balance = 0;\n\n  wrapped(a: Account) {\n    const view = { ...a, total() { return this.balance; } };\n    return function (this: Account) { return this.balance; };\n  }\n\n  shown() {\n    return [1].map(() => this.balance);\n  }\n\n  nested() {\n    class Inner { snap = this.balance; }\n    return class { snap = this.balance; };\n  }\n}\n',
       },
       {
         changed: 'app/account.py', before: 'class Account:\n    balance: int = 0\n', after: 'class Account:\n    balance: float = 0.0\n',
-        file: 'app/wrapper.py', uses: [7, 8, 15, 19],
+        file: 'app/wrapper.py', uses: [7, 8, 15, 19], namesakes: [3, 10],
         text: 'class Wrapper:\n    def __init__(self):\n        self.balance = 0\n\n    def wrapped(self):\n        def total(self):\n            return self.balance\n        pick = lambda self: self.balance\n        def closure():\n            return self.balance\n        return total, pick, closure\n\n    def each(self, accounts):\n        for self in accounts:\n            yield self.balance\n\n    def imported(self):\n        import account as self\n        return self.balance\n',
       },
       {
         changed: 'bank/account.go', before: 'package bank\n\ntype Account struct {\n\tBalance int64\n}\n', after: 'package bank\n\ntype Account struct {\n\tBalance uint64\n}\n',
-        file: 'bank/wrapper.go', uses: [9, 15, 23],
+        file: 'bank/wrapper.go', uses: [9, 15, 23], namesakes: [8, 4],
         text: 'package bank\n\ntype Wrapper struct {\n\tBalance int64\n}\n\nfunc (v *Wrapper) Wrapped() func(*Account) uint64 {\n\t_ = func() int64 { return v.Balance }\n\treturn func(v *Account) uint64 { return v.Balance }\n}\n\nfunc (v *Wrapper) Sum(accounts []*Account) uint64 {\n\tvar total uint64\n\tfor _, v := range accounts {\n\t\ttotal += v.Balance\n\t}\n\treturn total\n}\n\nfunc (v *Wrapper) Next(ch chan *Account) uint64 {\n\tselect {\n\tcase v := <-ch:\n\t\treturn v.Balance\n\t}\n\treturn 0\n}\n',
       },
     ];
-    for (const { changed, before, after, file, text, uses } of rebinding) {
+    for (const { changed, before, after, file, text, uses, namesakes } of rebinding) {
       const { record } = await usesFor({ [changed]: before, [file]: text }, { [changed]: after });
-      expect(record?.symbols?.find(s => s.name.toLowerCase() === 'balance')?.uses).toEqual(uses.map(line => `${file}:${line}`));
+      expect(record?.symbols?.find(s => s.name.toLowerCase() === 'balance')?.uses).toEqual([...uses, ...namesakes].map(line => `${file}:${line}`));
     }
 
     // With no other file to show, one file fills the list.
@@ -330,6 +333,17 @@ describe('listUsesOutsideDiff', () => {
     );
     expect(reserved.section).toMatch(/### `shared_wide` \(field of `Shares`\)\n\n```\ndeclared at src\/lib\.rs:\d+\nsrc\/view\.rs:2: h\.shares\.shared_wide\n```/);
     expect(reserved.record?.symbols?.flatMap(s => s.uses)).toHaveLength(60);
+
+    // The reserved slots stop at half the list, so changed functions keep room when a PR redefines many fields, even
+    // when the fields' readers never name their type and would otherwise rank last.
+    const fields = ['paid_total', 'held_total', 'kept_total'];
+    const helpers = Array.from({ length: 30 }, (_, i) => `helper_${i}`);
+    const many = (type: string, body: string) => `pub struct Shares {\n${fields.map(f => `    pub ${f}: ${type},\n`).join('')}}\n\n${helpers.map(f => `pub fn ${f}() {\n    ${body}\n}\n`).join('\n')}`;
+    const readers = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`src/reader_${i}.rs`, 'fn read(h: &Holder) -> u16 {\n    h.s.paid_total + h.s.held_total + h.s.kept_total\n}\n']));
+    const calls = Object.fromEntries([0, 1].map(i => [`src/calls_${i}.rs`, `fn run() {\n    ${helpers.map(f => `${f}();`).join(' ')}\n}\n`]));
+    const half = await usesFor({ ...readers, ...calls, 'src/lib.rs': many('u8', 'todo!()') }, { 'src/lib.rs': many('u16', 'unimplemented!()') });
+    expect(half.record?.symbols?.filter(s => fields.includes(s.name)).flatMap(s => s.uses)).toHaveLength(30);
+    expect(half.record?.symbols?.flatMap(s => s.uses)).toHaveLength(60);
   });
 
   it('names what the diff changes and reads and what its comments mention for the reference search, leaving out tests', async () => {
@@ -672,7 +686,7 @@ ${body}	return true
 
     // Placing uses on their types parses files within the same budget. The redefined `balance` is checked first, although
     // three new fields declared before it are read in 210 files. A field too common to list is not checked, so `spent`,
-    // declared after it, still is. A namesake of either in a file left unparsed would be listed.
+    // declared after it, still is. A namesake of either in a file left unparsed would rank first, by its file name.
     const fields = ['total_paid', 'spent', 'owed', 'held', 'kept'].map(f => `    pub ${f}: u64,\n`).join('');
     const account = (head: boolean) => `pub struct Account {\n${head ? fields : ''}    pub balance: ${head ? 'i64' : 'u64'},\n}\n`;
     const readers = Object.fromEntries(Array.from({ length: 210 }, (_, i) => [
@@ -680,12 +694,12 @@ ${body}	return true
     ]));
     const budget = await usesFor({
       ...readers, 'src/account.rs': account(false), 'src/use.rs': 'pub fn left(a: &Account) -> u64 {\n    a.balance + a.spent\n}\n',
-      'src/view.rs': 'pub struct AccountView {\n    pub balance: u64,\n}\n', 'src/z_other.rs': 'pub struct Other {\n    pub spent: u64,\n}\n',
+      'src/a_view.rs': 'pub struct AccountView {\n    pub balance: u64,\n}\n\nimpl AccountView {\n    pub fn shown(&self, _: &Account) -> u64 {\n        self.balance\n    }\n}\n',
+      'src/a_other.rs': 'pub struct Other {\n    pub spent: u64,\n}\n\nimpl Other {\n    pub fn left(&self) -> u64 {\n        self.spent\n    }\n}\n',
     }, { 'src/account.rs': account(true) });
     expect(budget.section).toContain('`total_paid` (210 uses)');
-    expect(budget.section).toContain('### `balance` (field of `Account`)\n\n```\ndeclared at src/account.rs:7\nsrc/use.rs:2: a.balance + a.spent\n```');
-    expect(budget.section).toContain('### `spent` (field of `Account`)\n\n```\ndeclared at src/account.rs:3\nsrc/use.rs:2: a.balance + a.spent\n```');
-    expect(budget.section).not.toMatch(/src\/view\.rs|src\/z_other\.rs/);
+    expect(budget.section).toContain('### `balance` (field of `Account`)\n\n```\ndeclared at src/account.rs:7\nsrc/use.rs:2: a.balance + a.spent\nsrc/a_view.rs:7: self.balance\nsrc/a_view.rs:2: pub balance: u64,\n```');
+    expect(budget.section).toContain('### `spent` (field of `Account`)\n\n```\ndeclared at src/account.rs:3\nsrc/use.rs:2: a.balance + a.spent\nsrc/a_other.rs:7: self.spent\nsrc/a_other.rs:2: pub spent: u64,\n```');
   }, 30_000);
 
   const NOTHING: UsesOutsideDiff = { section: '', siblings: { fields: [], implementations: [] } };

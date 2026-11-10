@@ -22,6 +22,8 @@ const MAX_REDEFINED_USES = 12;
 /** Uses of a symbol shown from one file while other files still have uses to show. */
 const MAX_USES_PER_FILE = 3;
 const MAX_USES = 60;
+/** Uses of redefined fields that take their slots before other symbols' uses fill `MAX_USES`. */
+const MAX_RESERVED_USES = MAX_USES / 2;
 const MAX_SYMBOLS = 80;
 /**
  * A symbol with more uses than this is listed by name only, since its uses would flood the list. A field or variant the
@@ -1430,7 +1432,7 @@ interface SymbolUses {
 /**
  * Returns one block per symbol with its best ranked uses, plus a note on the symbols left out. A symbol in `redefined` is
  * never left out as too common, shows up to `MAX_REDEFINED_USES` uses, and ranks the uses in the files `typeFiles` lists
- * for its type first. A hit `otherType` places on a namesake of another type is no use.
+ * for its type first. A hit `otherType` places on a namesake of another type ranks after every other use of the symbol.
  */
 function formatSymbolUses(
   symbols: ChangedSymbol[], hits: Hit[], packages: Packages, redefined: Set<string>, typeFiles: Map<string, Set<string>>, otherType: (symbol: ChangedSymbol, hit: Hit) => boolean,
@@ -1446,10 +1448,13 @@ function formatSymbolUses(
   }
   const isCommon = (e: { symbol: ChangedSymbol; uses: Hit[] }) => e.uses.length > COMMON_USES && !redefined.has(e.symbol.name);
   // Placing a use on its type can parse its file within the round's budget, so only symbols that can be listed are
-  // checked, the redefined ones first.
+  // checked, the redefined ones first. The parser can misplace a receiver, so a likely namesake is only ranked last and
+  // never dropped: a wrong guess costs a reader its rank, not its place in the list.
   const checked = [...byName.values()].filter(e => !isCommon(e))
     .sort((a, b) => Number(!redefined.has(a.symbol.name)) - Number(!redefined.has(b.symbol.name)) || a.symbol.tier - b.symbol.tier || a.index - b.index);
-  for (const e of checked) e.uses = e.uses.filter(use => !otherType(e.symbol, use));
+  const namesakes = new Set<string>();
+  const useKey = (symbol: ChangedSymbol, use: Hit) => `${symbol.name}\0${use.file}:${use.line}`;
+  for (const e of checked) for (const use of e.uses) if (otherType(e.symbol, use)) namesakes.add(useKey(e.symbol, use));
   const entries = [...byName.values()].filter(e => e.uses.length > 0);
   const capOf = (symbol: ChangedSymbol) => redefined.has(symbol.name) ? MAX_REDEFINED_USES : MAX_USES_PER_SYMBOL;
   const typeFilesOf = (symbol: ChangedSymbol) => redefined.has(symbol.name) && symbol.owner ? typeFiles.get(symbol.owner) : undefined;
@@ -1470,24 +1475,27 @@ function formatSymbolUses(
     const placed = e.uses.map(use => {
       const location = locationRank(e.symbol, use.file, packages);
       const [test, call, other] = codeRank(field, use);
-      return { use, rank: [proseRank(word, use), Number(e.symbol.tier === 2), Number(location === 3), test, call, Number(!!typed && !typed.has(use.file)), location, other] };
+      const namesake = Number(namesakes.has(useKey(e.symbol, use)));
+      return { use, rank: [namesake, proseRank(word, use), Number(e.symbol.tier === 2), Number(location === 3), test, call, Number(!!typed && !typed.has(use.file)), location, other] };
     }).sort(byRank);
     const seen = new Map<string, number>();
-    return placed.map(({ use, rank: [prose, member, unreachable, test, call, untyped, location, other] }) => {
+    return placed.map(({ use, rank: [namesake, prose, member, unreachable, test, call, untyped, location, other] }) => {
       const nth = seen.get(use.file) ?? 0;
       seen.set(use.file, nth + 1);
-      const rank = [prose, member, unreachable, test, call, Number(nth >= MAX_USES_PER_FILE), untyped, location, other, e.symbol.tier, nth, e.uses.length, e.index];
+      const rank = [namesake, prose, member, unreachable, test, call, Number(nth >= MAX_USES_PER_FILE), untyped, location, other, e.symbol.tier, nth, e.uses.length, e.index];
       return { entry: e, use, rank };
     }).sort(byRank).slice(0, capOf(e.symbol));
   }).sort(byRank);
 
-  // A redefined field's uses in production code are what the change can break, so they take their slots before any other
-  // use fills `MAX_USES`. Only a redefined field ranks files that never name its type last, which other symbols do not.
-  const isReserved = ({ entry, rank: [prose, , unreachable, test, call] }: typeof ranked[number]) =>
-    redefined.has(entry.symbol.name) && prose === 0 && unreachable === 0 && test === 0 && call === 0;
+  // A redefined field's uses in production code are what the change can break, so up to `MAX_RESERVED_USES` of them take
+  // their slots before any other use fills `MAX_USES`. Only a redefined field ranks files that never name its type last,
+  // which other symbols do not. The cap leaves changed functions and types room however many fields a PR redefines.
+  const isReserved = ({ entry, rank: [namesake, prose, , unreachable, test, call] }: typeof ranked[number]) =>
+    redefined.has(entry.symbol.name) && namesake === 0 && prose === 0 && unreachable === 0 && test === 0 && call === 0;
+  const reserved = new Set(ranked.filter(isReserved).slice(0, MAX_RESERVED_USES));
   const shown = new Map<string, Hit[]>();
   let total = 0;
-  for (const { entry, use } of [...ranked.filter(isReserved), ...ranked.filter(r => !isReserved(r))]) {
+  for (const { entry, use } of [...reserved, ...ranked.filter(r => !reserved.has(r))]) {
     const list = shown.get(entry.symbol.name) ?? [];
     if (total >= MAX_USES || list.length >= capOf(entry.symbol)) continue;
     list.push(use);
