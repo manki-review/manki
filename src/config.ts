@@ -47,6 +47,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   },
   judge: {
     tool_steps: 0,
+    effort: 'auto',
   },
   static_analysis: {
     checks: true,
@@ -118,11 +119,11 @@ const MAX_JUDGE_TOOL_STEPS = 100;
 export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', 'reviewer_pair', 'judge', 'refuter_pair', 'dedup', 'fallback']);
 export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'critical_paths', 'outside_input', 'examples']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus', 'role']);
-const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
+const EFFORT_CHOICES = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 const REVIEWER_AGENT_KEYS: ReadonlySet<string> = new Set(['name', 'focus']);
 const PLANNER_KEYS: ReadonlySet<string> = new Set(['enabled', 'paired']);
-const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps']);
+const JUDGE_KEYS: ReadonlySet<string> = new Set(['tool_steps', 'effort']);
 const STATIC_ANALYSIS_KEYS: ReadonlySet<string> = new Set(['checks', 'code_scanning', 'dependency_review', 'wait_for_checks', 'wait_timeout_seconds', 'analyzers']);
 const CONVERGENCE_KEYS: ReadonlySet<string> = new Set(['max_auto_rounds', 'rounds_after_restart', 'test_path_patterns', 'suppress_resolved_threads']);
 const METRICS_KEYS: ReadonlySet<string> = new Set(['fix_rate']);
@@ -284,6 +285,7 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
       if ('tool_steps' in judge && (!Number.isInteger(judge.tool_steps) || (judge.tool_steps as number) < 0 || (judge.tool_steps as number) > MAX_JUDGE_TOOL_STEPS)) {
         errors.push(`\`judge.tool_steps\` must be an integer from 0 to ${MAX_JUDGE_TOOL_STEPS}`);
       }
+      if ('effort' in judge && !EFFORT_CHOICES.has(judge.effort as string)) errors.push('`judge.effort` must be one of: low, medium, high, xhigh, max, auto');
     }
   }
 
@@ -535,7 +537,7 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
           }
           if ('model' in reviewer && (typeof reviewer.model !== 'string' || reviewer.model === '')) errors.push(`${at}.model\` must be a non-empty string`);
           else if (typeof reviewer.model === 'string' && !MODEL_REFS.has(reviewer.model)) pushModelError(errors, `review.groups.${name}.reviewers[${i}].model`, reviewer.model);
-          if ('effort' in reviewer && !REVIEWER_EFFORTS.has(reviewer.effort as string)) errors.push(`${at}.effort\` must be one of: low, medium, high, xhigh, max, auto`);
+          if ('effort' in reviewer && !EFFORT_CHOICES.has(reviewer.effort as string)) errors.push(`${at}.effort\` must be one of: low, medium, high, xhigh, max, auto`);
           if ('focus' in reviewer && (typeof reviewer.focus !== 'string' || reviewer.focus === '')) errors.push(`${at}.focus\` must be a non-empty string`);
           if ('role' in reviewer && reviewer.role !== 'finder' && reviewer.role !== 'verifier') errors.push(`${at}.role\` must be one of: finder, verifier`);
         });

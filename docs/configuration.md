@@ -159,6 +159,7 @@ memory:
 | `planner` | map | see below | The planner stage. |
 | `planner.enabled` | boolean | `true` | Run the planner. Without it, every round takes the side that adds review: two finders at xhigh effort. |
 | `judge` | map | see below | The judge stage. |
+| `judge.effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | The judge's effort, which the refuter follows. `auto` takes the level the planner picks for the change, low, medium or high, and high without a planner. A fixed level replaces that pick on every round. Read from the base branch. |
 | `judge.tool_steps` | integer from 0 to 100 | `0` | Read-only repository tool calls the judge may make while it grades, on a judge that runs on the Claude or Codex CLI. With them the judge reads the code a finding rests on itself, at the cost of a longer judge call. A round whose judge fallback model has no tools runs the judge without them. `0` gives it none. |
 | `review` | map | the built-in groups | Review groups and how PR classes route to them. Read from the base branch, so a PR cannot weaken its own review. See [Review groups](how-reviews-work.md#review-groups). |
 | `review.groups` | map of groups | `trivial`, `solo` and `pair` | Each group lists its `reviewers`. A group with a built-in name replaces it. |

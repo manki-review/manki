@@ -769,9 +769,12 @@ models:
   });
 
   describe('judge config', () => {
-    it('gives the judge no tool steps by default, and takes an integer from 0 to 100', () => {
-      expect(loadConfig(undefined).judge).toEqual({ tool_steps: 0 });
-      expect(loadConfig('judge:\n  tool_steps: 30\n').judge).toEqual({ tool_steps: 30 });
+    it('gives the judge no tool steps and auto effort by default, and takes tool steps from 0 to 100 and an effort level', () => {
+      expect(loadConfig(undefined).judge).toEqual({ tool_steps: 0, effort: 'auto' });
+      expect(loadConfig('judge:\n  tool_steps: 30\n').judge).toEqual({ tool_steps: 30, effort: 'auto' });
+      expect(loadConfig('judge:\n  effort: xhigh\n').judge).toEqual({ tool_steps: 0, effort: 'xhigh' });
+      expect(() => loadConfig('judge:\n  effort: extreme\n')).toThrow('Invalid config');
+      expect(core.error).toHaveBeenCalledWith('`judge.effort` must be one of: low, medium, high, xhigh, max, auto');
       for (const bad of ['-1', '1.5', '101', '"30"']) {
         expect(() => loadConfig(`judge:\n  tool_steps: ${bad}\n`)).toThrow('Invalid config');
       }
