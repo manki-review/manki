@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { classifyRelatedWork } from './related-work';
@@ -1322,6 +1322,8 @@ export async function runReview(
   const earlier = earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
   const earlierWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
   finalFindings = await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client);
+  // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
+  threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
@@ -1379,7 +1381,7 @@ export async function runReview(
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       const readerFindings = folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
       finalFindings = [...folded.findings, ...readerFindings];
-      threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+      threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
       // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
       if (readerFindings.some(f => f.severity === 'blocker')) {
         outcome = 'ADDRESS_FIRST';
@@ -1700,7 +1702,7 @@ Example of one finding:
 }
 \`\`\`
 
-\`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`howToFix\`. List any known caveats of the fix in \`howToFix\`, such as a missing bounds check or an untested edge case.
+\`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`howToFix\`. List any known caveats of the fix in \`howToFix\`, such as a missing bounds check or an untested edge case. Check that the fix removes every failure the description names. When it removes only part, say in \`howToFix\` which failure it leaves.
 
 ## Evidence
 
@@ -2179,7 +2181,8 @@ export function determineOutcome(
   const seenThreadIds = new Set<string>();
   const unresolvedPriors = prior.filter(p =>
     !namedAgain.has(stringifyFindingFingerprint(p.fingerprint)) && !(p.threadId && carriedThreadIds.has(p.threadId))
-    && isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId, changedFiles),
+    && isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId, changedFiles)
+    && remainderBlocks(p, openThreadIndex, threadEvaluationsByThreadId),
   ).filter(p => {
     if (!p.threadId) return true;
     if (seenThreadIds.has(p.threadId)) return false;
@@ -2194,6 +2197,19 @@ export function determineOutcome(
   if (blockers.length > 0) return { outcome: 'ADDRESS_FIRST', verdictReason: 'required_present', verdictTrace };
   if (unresolvedPriors.length > 0) return { outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed', verdictTrace };
   return { outcome: 'READY', verdictReason: readyReason(findings), verdictTrace };
+}
+
+/**
+ * Whether the thread carrying `p` still blocks at the grade a partial fix left: this round's grade for what remains, or
+ * else the grade an earlier round's partly-fixed reply gave it.
+ */
+function remainderBlocks(p: FindingFingerprintEntry, openThreadIndex: Map<string, OpenThread>, evaluations: Map<string, ThreadEvaluation>): boolean {
+  const thread = p.threadId ? openThreadIndex.get(p.threadId) : undefined;
+  if (!thread) return true;
+  const grade = evaluations.get(thread.threadId)?.grade;
+  if (grade) return grade === 'blocker';
+  // The prior is a blocker, so only the grade an earlier partial fix left can lower it.
+  return threadBlocks({ ...thread, severity: 'blocker' });
 }
 
 /** Returns why a round where nothing blocks is `READY`: warnings among its findings, or only smaller ones. */
@@ -2236,9 +2252,9 @@ function priorBlockerNamedBy(finding: Finding, priorBlockers: PriorFinding[]): P
   return finding.sameAs ? priorBlockers.find(p => stringifyFindingFingerprint(p.entry.fingerprint) === finding.sameAs) : undefined;
 }
 
-/** Returns the thread IDs of the prior blockers that a blocker in `findings` names again. */
+/** Returns the IDs of the threads a blocker in `findings` raises again: one it names, folds into, or repeats as answered. */
 function namedPriorThreadIds(findings: Finding[], priorBlockers: PriorFinding[]): Set<string> {
-  const ids = findings.filter(f => f.severity === 'blocker').map(f => priorBlockerNamedBy(f, priorBlockers)?.entry.threadId);
+  const ids = findings.filter(f => f.severity === 'blocker').flatMap(f => [priorBlockerNamedBy(f, priorBlockers)?.entry.threadId, f.threadId, f.answeredIn?.threadId]);
   return new Set(ids.filter((id): id is string => !!id));
 }
 
@@ -2249,13 +2265,34 @@ export function filesChangedByPush(interRoundDiff: string | undefined): Set<stri
 
 /** Whether `thread` is a blocker thread that stays open whatever the judge decides, because the push did not change its file. */
 export function blockerThreadStaysOpen(thread: OpenThread, pushChangedFiles: ReadonlySet<string>): boolean {
-  return (thread.severity === 'blocker' || thread.severity === 'unknown') && !pushChangedFiles.has(thread.file);
+  return threadBlocks(thread) && !pushChangedFiles.has(thread.file);
 }
 
 /**
- * Returns `evaluations` with `addressed` kept only where the round confirms the fix.
- * A thread whose blocker this round names again is not fixed. A blocker thread, or one whose severity
- * is unknown, counts as fixed only when the push changed its file, so a judge reading an unchanged file cannot clear it.
+ * Returns the grade `evaluation` leaves its thread at when a partial fix sets or changes it, never above the thread's
+ * own. A partly fixed thread takes the judge's grade for what remains, but drops below the grade it carries only after
+ * a push to its file, and never on a security thread or one whose blocker this round names again. A thread an earlier
+ * partial fix lowered gets its own grade back when this round names its blocker again, or finds it not fixed after a
+ * push to its file.
+ */
+function partialFixGrade(evaluation: ThreadEvaluation, thread: OpenThread | undefined, namedThreadIds: Set<string>, pushChangedFiles: ReadonlySet<string>): FindingSeverity | undefined {
+  if (!thread || evaluation.status === 'addressed') return undefined;
+  const rank = (grade: FindingSeverity): number => SEVERITY_ORDER.indexOf(grade);
+  const own = thread.severity === 'unknown' ? 'blocker' : thread.severity;
+  const earlier = thread.isSecurity ? undefined : thread.partlyFixedGrade;
+  const named = namedThreadIds.has(evaluation.threadId);
+  if (evaluation.status !== 'partly_addressed') return earlier && earlier !== own && (named || pushChangedFiles.has(thread.file)) ? own : undefined;
+  if (named || thread.isSecurity) return own;
+  const carried = earlier ?? own;
+  if (!evaluation.grade) return carried;
+  const judged = rank(evaluation.grade) > rank(own) ? evaluation.grade : own;
+  return rank(judged) > rank(carried) && !pushChangedFiles.has(thread.file) ? carried : judged;
+}
+
+/**
+ * Returns `evaluations` with `addressed` kept only where the round confirms the fix, and with the grade
+ * `partialFixGrade` gives. A thread whose blocker this round names again is not fixed. A thread that blocks counts as
+ * fixed only when the push changed its file, so a judge reading an unchanged file cannot clear it.
  */
 function confirmFixes(
   evaluations: ThreadEvaluation[] | undefined,
@@ -2263,14 +2300,21 @@ function confirmFixes(
   namedThreadIds: Set<string>,
   pushChangedFiles: ReadonlySet<string>,
 ): ThreadEvaluation[] | undefined {
-  return evaluations?.map(e => {
+  const confirm = (e: ThreadEvaluation, thread: OpenThread | undefined): ThreadEvaluation => {
     if (e.status !== 'addressed') return e;
     if (namedThreadIds.has(e.threadId)) return { ...e, status: 'not_addressed', reason: 'This round names the same blocker again.' };
-    const thread = openThreadIndex.get(e.threadId);
     if (thread && blockerThreadStaysOpen(thread, pushChangedFiles)) {
       return { ...e, status: 'uncertain', reason: `The push did not change \`${thread.file}\`, so the fix is not confirmed.` };
     }
     return e;
+  };
+  return evaluations?.map(e => {
+    const thread = openThreadIndex.get(e.threadId);
+    const confirmed = confirm(e, thread);
+    const grade = partialFixGrade(confirmed, thread, namedThreadIds, pushChangedFiles);
+    // Only a grade `partialFixGrade` bounds stays, so a judge grade for a thread that is not open is dropped.
+    const { grade: _judged, ...rest } = confirmed;
+    return grade ? { ...rest, grade } : rest;
   });
 }
 

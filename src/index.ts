@@ -24,7 +24,7 @@ import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { disproof } from './refute';
-import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
+import { filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals, fetchLockfiles } from './static-signals';
@@ -33,7 +33,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, Finding, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases } from './types';
+import { ConfigSource, DashboardData, Finding, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases, threadBlocks } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -62,6 +62,7 @@ import {
   APPROVED_LINE,
   BOT_MARKER as PROGRESS_MARKER,
   isBotLogin,
+  sanitizeMarkdown,
   titleToSlug,
   isApprovedOnCommit,
   hasBotReviewOnCommit,
@@ -1023,6 +1024,8 @@ async function collectOpenThreads(
       // A thread posted on a fallback line sits away from its finding, and the judge has to look at the finding.
       line: currentFindingLine(f),
       severity: f.severity,
+      ...(f.partlyFixedGrade && { partlyFixedGrade: f.partlyFixedGrade }),
+      ...(f.isSecurity && { isSecurity: true }),
       description: f.description,
       suggestedFix: f.suggestedFix,
       howToFix: f.howToFix,
@@ -1326,6 +1329,37 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
 }
 
 /**
+ * Tells each thread whose grade a partial fix sets or changes what happened. The round record keeps the grade, so a
+ * reply that fails loses only the note. A partly fixed thread hears what remains, but not again while it already
+ * carries that grade and the push leaves its file unchanged. A thread an earlier partial fix lowered hears that it is
+ * open again at its own grade.
+ */
+async function replyPartlyFixedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+  const changed = filesChangedByPush(run.interRoundDiff);
+  const threads = new Map(run.openThreads.map(t => [t.threadId, t]));
+  for (const { threadId, status, reason, remaining, grade } of result.threadEvaluations ?? []) {
+    const thread = threads.get(threadId);
+    if (!thread || !grade) continue;
+    const carried = thread.partlyFixedGrade ?? (thread.severity === 'unknown' ? 'blocker' : thread.severity);
+    let body: string;
+    if (status === 'partly_addressed' && remaining) {
+      if (thread.partlyFixedGrade === grade && run.interRoundDiff !== undefined && !changed.has(thread.file)) continue;
+      const regraded = grade === carried ? '' : ` What remains is a ${grade}${carried === 'blocker' ? ', so this thread no longer blocks' : ''}.`;
+      body = `**Partly fixed.** Still open: ${sanitizeMarkdown(remaining)}${regraded}`;
+    } else if (grade !== carried) {
+      body = `**Open again.** ${sanitizeMarkdown(reason)} This thread is a ${grade} again${grade === 'blocker' ? ', so it blocks' : ''}.`;
+    } else {
+      continue;
+    }
+    try {
+      await replyToReviewThread(run.octokit, threadId, body);
+    } catch (error) {
+      core.warning(`Failed to reply on partly fixed thread ${threadId}: ${error}`);
+    }
+  }
+}
+
+/**
  * Reopens each closed answered thread where the judge kept a finding that repeats its problem, and replies there.
  * A thread gets one reply per round, and a blocker's reply makes the thread block.
  */
@@ -1410,7 +1444,7 @@ async function reopenThreads(octokit: Octokit, threads: OpenThread[]): Promise<v
 
 /** Turns an approval into a request for changes when a blocker thread it counted as fixed could not be resolved. */
 function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
-  const blocking = threads.filter(t => t.severity === 'blocker' || t.severity === 'unknown');
+  const blocking = threads.filter(threadBlocks);
   if (blocking.length === 0 || result.verdict !== 'APPROVE') return;
   result.verdict = 'REQUEST_CHANGES';
   result.outcome = 'ADDRESS_FIRST';
@@ -1794,6 +1828,7 @@ async function runFullReview(
       pause: pauseReport(pauseAfter),
     });
     await replyFixedThreads(run, resolved);
+    await replyPartlyFixedThreads(run, result);
     await replyAnsweredThreads(run, result);
     await completeProgressComment(run, stage, reviewTimeMs);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);

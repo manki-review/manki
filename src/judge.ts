@@ -230,6 +230,7 @@ const MAX_CITED_WINDOWS = 40;
 const MAX_CITED_FILE_BYTES = 1024 * 1024;
 const MAX_CITED_LINE_CHARS = 300;
 const MAX_DOUBT_CHARS = 300;
+const MAX_REMAINING_CHARS = 500;
 
 /**
  * Whether the inter-round diff is known to be empty, meaning prior rounds exist
@@ -306,6 +307,8 @@ export interface JudgedFinding {
   gradeIfConfirmed?: FindingSeverity;
   /** The premises the judge doubts. */
   doubts?: Doubt[];
+  /** The failure the finding names that its fix does not remove. */
+  fixLeaves?: string;
   /** Whether the finding claims the code fails to compile, type-check or pass its tests. */
   buildClaim?: boolean;
   category?: FindingCategory;
@@ -535,7 +538,7 @@ Not blockers:
 For each finding, evaluate:
 
 1. **Accuracy**: Is the finding's central claim, the defect it names and what goes wrong, technically correct given the code context? A wrong side detail, such as an off line number, a misnamed helper or a wrong path, is corrected in \`reasoning\`, never a reason on its own to lower or drop the finding.
-2. **Actionability**: Can the developer fix this? Is the fix clear?
+2. **Actionability**: Can the developer fix this? Is the fix clear? Does the fix remove every failure the finding names? When it removes only part, set \`fixLeaves\` to the failure it leaves, and Manki adds that to the fix. Otherwise leave \`fixLeaves\` empty.
 3. **Severity**: Based on the blocker tests and the severity table.
 
 ## Guidelines
@@ -626,6 +629,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "buildClaim": false,
       "category": "correctness" | "security" | "reliability" | "data" | "concurrency" | "performance" | "compatibility" | "testing" | "maintainability" | "documentation" | "style",
       "effort": "quick" | "moderate" | "larger",
+      "fixLeaves": "",
       "confidence": "high" | "medium" | "low",
       "reasoning": "Your verdict first, then 1-2 sentences on why",
       "proof": ["file:line of each line that shows the failure, for a blocker"]
@@ -634,8 +638,10 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
   "threadEvaluations": [
     {
       "threadId": "PRRT_xxx",
-      "status": "addressed" | "not_addressed" | "uncertain",
-      "reason": "Brief explanation citing evidence from the inter-round diff or current code"
+      "status": "addressed" | "partly_addressed" | "not_addressed" | "uncertain",
+      "reason": "Brief explanation citing evidence from the inter-round diff or current code",
+      "remaining": "For partly_addressed: what still goes wrong",
+      "grade": "blocker" | "warning" | "suggestion" | "nitpick"
     }
   ]` : ''}
 }
@@ -645,7 +651,8 @@ ${hasOpenThreads ? `
 
 You MUST return exactly ${openThreadsCount} \`threadEvaluations\` entries, one for every open review thread listed in the user message. Omitting any thread is a contract violation that forces a retry. Status values:
 
-- **addressed**: the current code at the flagged region clearly no longer exhibits the original concern, OR the inter-round diff contains an explicit fix for it. Either signal alone is sufficient: you may pick \`addressed\` even when the inter-round diff does not touch the thread's file, as long as the current code window plainly resolves the concern. (Note: when the inter-round diff is known-empty the resolver may override this verdict as a safety measure.)
+- **addressed**: the current code at the flagged region clearly no longer exhibits any failure the original concern names, OR the inter-round diff contains an explicit fix for every one of them. Either signal alone is sufficient: you may pick \`addressed\` even when the inter-round diff does not touch the thread's file, as long as the current code window plainly resolves the concern. (Note: when the inter-round diff is known-empty the resolver may override this verdict as a safety measure.)
+- **partly_addressed**: the change removes some of the failures the original concern names, but at least one remains. For example, an upload handler gets the size limit the concern asked for, but still has no timeout. Set \`remaining\` to what still goes wrong, in one or two plain sentences, and \`grade\` to the grade that remaining damage earns by the Severity Table and the rules above. That is the thread's own grade when the remaining damage is the same as before. Applying the fix an earlier round suggested never lowers it, since that fix can itself cover only part. The thread stays open, and Manki replies there with what remains.
 - **not_addressed**: the current code still exhibits the concern (and the inter-round diff did not fix it). When the code window is unavailable and the inter-round diff does not touch the file, default to \`not_addressed\` rather than \`uncertain\`.
 - **uncertain**: insufficient evidence to decide. The downstream resolver treats this as not-addressed, so prefer it over a speculative \`addressed\`.
 
@@ -779,6 +786,11 @@ export function buildJudgeUserMessage(
       }
       if (t.suggestedFix) {
         parts.push(`- **Original suggested fix**: ${sanitizeForPromptEmbed(t.suggestedFix.replace(/[\r\n]+/g, ' '))}`);
+      }
+      // A later round that found the thread open without naming a partial fix leaves the earlier note true.
+      const latest = [...(priorRounds ?? [])].reverse().map(r => r.judge.threadEvaluations?.find(e => e.threadId === t.threadId && e.status === 'partly_addressed')).find(e => !!e);
+      if (latest?.remaining) {
+        parts.push(`- **Partly fixed in an earlier round, still open**: ${sanitizeForPromptEmbed(latest.remaining.replace(/[\r\n]+/g, ' '))}${latest.grade ? ` (graded ${latest.grade})` : ''}`);
       }
       const snippet = t.currentCode && t.currentCode.length > 0 ? t.currentCode : '(no current code available)';
       const snippetFence = dynamicFence(snippet);
@@ -1128,6 +1140,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       const proof = parseProof(f.proof);
       const gradeIfConfirmed = SEVERITY_ORDER.find(s => s === f.gradeIfConfirmed);
       const doubts = parseDoubts(f.doubts);
+      const fixLeaves = typeof f.fixLeaves === 'string' ? f.fixLeaves.trim().slice(0, MAX_REMAINING_CHARS) : '';
       return {
         ...(id !== undefined && { id }),
         title: String(f.title || 'Untitled'),
@@ -1141,6 +1154,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         ...(f.preExisting === true && { preExisting: true }),
         ...(gradeIfConfirmed && { gradeIfConfirmed }),
         ...(doubts.length > 0 && { doubts }),
+        ...(fixLeaves && { fixLeaves }),
         ...(f.buildClaim === true && { buildClaim: true }),
         ...(category && { category }),
         ...(effort && { effort }),
@@ -1161,11 +1175,14 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
     const threadEvaluations = Array.isArray(parsed.threadEvaluations)
       ? (parsed.threadEvaluations as Array<Record<string, unknown>>)
         .filter(t => typeof t.threadId === 'string' && t.threadId.length > 0)
-        .map(t => ({
-          threadId: String(t.threadId),
-          status: validateThreadStatus(t.status),
-          reason: typeof t.reason === 'string' ? t.reason : '',
-        }))
+        .map((t): ThreadEvaluation => {
+          const evaluation = { threadId: String(t.threadId), status: validateThreadStatus(t.status), reason: typeof t.reason === 'string' ? t.reason : '' };
+          if (evaluation.status !== 'partly_addressed') return evaluation;
+          const remaining = typeof t.remaining === 'string' ? safeTruncate(t.remaining.trim(), MAX_REMAINING_CHARS) : '';
+          const grade = SEVERITY_ORDER.find(s => s === t.grade && s !== 'ignore');
+          // A partial fix that names nothing left over gives the reply nothing to say, so the thread counts as not addressed.
+          return remaining ? { ...evaluation, remaining, ...(grade && { grade }) } : { ...evaluation, status: 'not_addressed' };
+        })
       : undefined;
     return { summary, findings, threadEvaluations };
   }
@@ -1202,7 +1219,7 @@ function validateConfidence(value: unknown): 'high' | 'medium' | 'low' {
 }
 
 function validateThreadStatus(value: unknown): ThreadEvaluation['status'] {
-  if (value === 'addressed' || value === 'not_addressed' || value === 'uncertain') {
+  if (value === 'addressed' || value === 'partly_addressed' || value === 'not_addressed' || value === 'uncertain') {
     return value;
   }
   return 'not_addressed';
@@ -1500,6 +1517,7 @@ export function mapJudgedToFindings(
       if (finding.tags?.includes(SECURITY_TAG)) finding.category = 'security';
       else if (match.category && match.category !== 'security') finding.category = match.category;
       if (match.effort) finding.effort = match.effort;
+      if (match.fixLeaves) finding.howToFix = [finding.howToFix?.trim(), `This fix leaves part of the problem: ${match.fixLeaves}`].filter(Boolean).join(' ');
       if (match.proof) finding.evidence = mergeEvidence(finding.evidence, { checks: [], proof: match.proof });
       applyOwnProposal(finding, provenanceMap);
       const sameAs = priorKey(priorFindings, match.sameAs);

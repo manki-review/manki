@@ -175,7 +175,7 @@ async function openAfterRound(
 function roundPointer(commit: string, { status, reason }: ThreadEvaluation): string {
   const round = `The review of \`${commit.slice(0, 7)}\`, which finished after this reply, `;
   const why = safeTruncate(reason.trim(), MAX_ROUND_REASON_CHARS);
-  const finding = status === 'uncertain' ? 'could not tell whether this is addressed' : 'still finds this open';
+  const finding = status === 'uncertain' ? 'could not tell whether this is addressed' : status === 'partly_addressed' ? 'finds this only partly fixed' : 'still finds this open';
   return `${round}${finding}${why ? `: ${why}` : '.'}`;
 }
 

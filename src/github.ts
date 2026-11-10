@@ -12,7 +12,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { MAX_AGENT_RETRIES, SEVERITY_ORDER } from './types';
+import { MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -1908,10 +1908,9 @@ export function formatBlockingPriorThreads(
 
 const STILL_OPEN_HEADING = '**Still open from earlier reviews:**';
 
-/** Returns the blocking threads still open, one linked line each, or null when there are none. A thread without a severity marker blocks. */
+/** Returns the blocking threads still open, by `threadBlocks`, one linked line each, or null when there are none. */
 export function formatOpenBlockers(threads: PreviousFinding[]): string | null {
-  const open = threads.filter(t => (t.status === 'open' || t.status === 'replied' || t.reopen)
-    && (t.severity === 'unknown' || t.severity === 'blocker'));
+  const open = threads.filter(t => (t.status === 'open' || t.status === 'replied' || t.reopen) && threadBlocks(t));
   return open.length > 0 ? `${STILL_OPEN_HEADING}\n${open.map(formatTraceEntry).join('\n')}` : null;
 }
 

@@ -1008,6 +1008,9 @@ export interface OpenThread extends FindingMetadata {
   file: string;
   line: number;
   severity: FindingSeverity | 'unknown';
+  /** The grade an earlier round's partly-fixed reply gave what remains. The thread blocks only when it is `blocker`. */
+  partlyFixedGrade?: FindingSeverity;
+  isSecurity?: boolean;
   /**
    * Snippet of the current source around `line` (line ± a small window). Lets
    * the judge ground its addressed/not-addressed decision in the actual code,
@@ -1021,12 +1024,27 @@ export interface OpenThread extends FindingMetadata {
  * Per-thread judgment from the LLM judge on whether an open review thread has
  * been addressed by the latest changes. Only `status === 'addressed'` triggers
  * a `resolveReviewThread` mutation downstream; `'uncertain'` is treated as
- * not-addressed (insufficient evidence).
+ * not-addressed (insufficient evidence). A `partly_addressed` thread stays open.
  */
 export interface ThreadEvaluation {
   threadId: string;
-  status: 'addressed' | 'not_addressed' | 'uncertain';
+  status: 'addressed' | 'partly_addressed' | 'not_addressed' | 'uncertain';
   reason: string;
+  /** For `partly_addressed`, what still goes wrong. */
+  remaining?: string;
+  /**
+   * The grade the thread keeps after this round when a partial fix sets or changes it: on `partly_addressed` the grade
+   * the remaining damage earns, and on a thread an earlier partial fix lowered, its own grade once it is open again.
+   */
+  grade?: FindingSeverity;
+}
+
+/**
+ * Whether an open thread blocks: by the grade Manki's latest partly-fixed reply gave what remains, or else by its own
+ * severity. A partial fix never lowers a security thread. A thread without a severity marker predates them and blocks.
+ */
+export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; partlyFixedGrade?: FindingSeverity; isSecurity?: boolean }): boolean {
+  return t.partlyFixedGrade && !t.isSecurity ? t.partlyFixedGrade === 'blocker' : t.severity === 'blocker' || t.severity === 'unknown';
 }
 
 

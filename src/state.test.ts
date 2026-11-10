@@ -5,7 +5,7 @@ import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS }
 import { formatFindingComment } from './github';
 import { extractApprovalRecords, formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG } from './config';
-import { ApprovalRecord, Finding, RoundContext } from './types';
+import { ApprovalRecord, Finding, RoundContext, ThreadEvaluation } from './types';
 import * as authModule from './auth';
 
 jest.mock('./auth', () => ({
@@ -165,7 +165,7 @@ describe('fetchBotReviewThreads', () => {
     expect(graphqlMock).toHaveBeenNthCalledWith(2, expect.any(String), expect.objectContaining({ cursor: 'p2' }));
   });
 
-  it('treats suggestion and warning threads, security ones included, as not blocking auto-approve, unless Manki said the problem came back as a blocker', async () => {
+  it('treats suggestion and warning threads, security ones included, as not blocking auto-approve, unless Manki said the problem came back as a blocker, and a partly fixed blocker by what remains', async () => {
     const finding = (severity: Finding['severity'], title: string, tags?: string[]): Finding => ({
       severity, title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
     });
@@ -178,14 +178,32 @@ describe('fetchBotReviewThreads', () => {
         makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now'), TEST_LINKS), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
         makeGraphqlFetchThreadNode({ id: 'h', body: formatFindingComment(finding('warning', 'Pasted marker'), TEST_LINKS), replies: [{ body: '<!-- manki-found-again-blocker -->', author: { login: 'developer' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'pw', body: formatFindingComment(finding('blocker', 'Partly fixed'), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 'pb', body: formatFindingComment(finding('blocker', 'Partly fixed, still blocking'), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 'pf', body: formatFindingComment(finding('blocker', 'Forged partial fix'), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 'ps', body: formatFindingComment(finding('blocker', 'Security, partly fixed', ['security']), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 'pr', body: formatFindingComment(finding('blocker', 'Open again'), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 'pa', body: formatFindingComment(finding('blocker', 'Came back'), TEST_LINKS), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
       ]),
     );
+    // The round records keep the grade a partial fix left each thread, and only Manki's records count.
+    const partly = (threadId: string, grade: ThreadEvaluation['grade'], status: ThreadEvaluation['status'] = 'partly_addressed'): ThreadEvaluation => ({ threadId, status, reason: 'r', remaining: 'r', grade });
+    const record = (round: number, threadEvaluations: ThreadEvaluation[], login = 'manki-review[bot]') => ({
+      id: round, user: { login }, body: `<!-- manki-context: ${JSON.stringify(makeRoundContext(round, { judge: { summary: '', threadEvaluations } }))} -->`,
+    });
+    const reviews = [
+      record(1, [partly('pw', 'warning'), partly('pb', 'blocker'), partly('ps', 'warning'), partly('pr', 'warning'), partly('pa', 'warning')]),
+      record(2, [partly('pr', 'blocker', 'not_addressed')]),
+      record(3, [partly('pf', 'nitpick')], 'developer'),
+    ];
+    const octokit = { graphql: graphqlMock, paginate: jest.fn().mockResolvedValue(reviews), rest: { pulls: { listReviews: jest.fn() } } } as unknown as Octokit;
 
-    const threads = await fetchBotReviewThreads({ graphql: graphqlMock } as unknown as Octokit, TEST_BOT, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
-    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false]]);
+    // A blocker thread Manki found partly fixed blocks only while what remains is a blocker.
+    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true], ['ps', true], ['pr', true], ['pa', true]]);
     expect(threads.find(t => t.id === 'x')?.isSecurity).toBe(true);
-    expect(areAllFindingsResolved(threads.filter(t => t.id !== 'b' && t.id !== 'f'), TEST_BOT)).toBe(true);
+    expect(areAllFindingsResolved(threads.filter(t => !['b', 'f', 'pb', 'pf', 'ps', 'pr', 'pa'].includes(t.id)), TEST_BOT)).toBe(true);
     expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(false);
   });
 

@@ -8,7 +8,7 @@ import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
 import { isSecurityFinding } from './review';
-import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
+import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN, threadBlocks } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -66,6 +66,20 @@ const FOUND_AGAIN_MARKER = '<!-- manki-found-again -->';
 /** Added to a reply in a thread whose finding is a blocker. The thread blocks from then on, whatever its first comment says. */
 const FOUND_AGAIN_BLOCKER_MARKER = '<!-- manki-found-again-blocker -->';
 
+/**
+ * Returns the grade each thread keeps after a partial fix, from the latest round record that set one. The record posts
+ * with its review, so a grade holds exactly while a review stands that decided it.
+ */
+function partlyFixedGrades(priorRounds: readonly RoundContext[]): Map<string, FindingSeverity> {
+  const grades = new Map<string, FindingSeverity>();
+  for (const round of [...priorRounds].sort((a, b) => a.meta.round - b.meta.round)) {
+    for (const { threadId, grade } of round.judge.threadEvaluations ?? []) {
+      if (grade) grades.set(threadId, grade);
+    }
+  }
+  return grades;
+}
+
 /** Whether a Manki reply in `comments` says the problem came back as a blocker. */
 function foundAgainAsBlocker(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author: { login: string } | null }>): boolean {
   return comments.slice(1).some(c => isBotLogin(bot, c.author?.login) && !!c.body?.includes(FOUND_AGAIN_BLOCKER_MARKER));
@@ -110,10 +124,10 @@ function recordedSecurityOverride(
 
 /**
  * Whether only someone other than the PR author can clear the finding: a blocker, or a security finding of any severity.
- * A live thread says so with `isBlocking`, a parsed one with `severity`. A thread without a severity marker predates them and blocks.
+ * A live thread says so with `isBlocking`, a parsed one by `threadBlocks` on its severity and partly-fixed grade.
  */
-function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown' }): boolean {
-  return !!t.isSecurity || !!t.isBlocking || t.severity === 'blocker' || t.severity === 'unknown';
+function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown'; partlyFixedGrade?: FindingSeverity }): boolean {
+  return !!t.isSecurity || !!t.isBlocking || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.partlyFixedGrade && { partlyFixedGrade: t.partlyFixedGrade }) }));
 }
 
 interface OverrideCandidate {
@@ -269,6 +283,8 @@ interface PreviousFinding extends FindingMetadata {
   line: number;
   lineStart?: number;
   severity: FindingSeverity | 'unknown';
+  /** The grade a partial fix left the thread at, from `partlyFixedGrades`. The thread blocks only when it is `blocker`. */
+  partlyFixedGrade?: FindingSeverity;
   /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open. */
   status: 'open' | 'resolved' | 'replied' | 'auto-resolved';
   /** Resolved because the judge of an earlier round marked the thread `addressed`. */
@@ -482,8 +498,14 @@ async function fetchRecapState(
     fetchReviewThreads(octokit, bot, owner, repo, prNumber),
     fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber),
   ]);
-  const { threads, state: openThreadsState } = threadsResult;
+  const { threads: fetched, state: openThreadsState } = threadsResult;
   const addressedThreadIds = judgeAddressedThreadIds(priorRounds);
+  const grades = partlyFixedGrades(priorRounds);
+  // A reply that found the problem again as a blocker outranks a grade a partial fix left.
+  const threads = fetched.map(t => {
+    const grade = t.isBotThread && !t.foundAgainBlocker ? grades.get(t.threadId) : undefined;
+    return grade ? { ...t, partlyFixedGrade: grade } : t;
+  });
   const botThreads = threads.filter(t => t.isBotThread);
   const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isOverrideCandidate(t, prAuthorLogin))
     && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
@@ -499,6 +521,7 @@ async function fetchRecapState(
       line: t.line,
       lineStart: t.lineStart,
       severity: t.severity,
+      ...(t.partlyFixedGrade && { partlyFixedGrade: t.partlyFixedGrade }),
       status: threadStatus(t, addressedThreadIds, bot, prAuthorLogin, !!securityOverride),
       ...(t.isResolved && addressedThreadIds.has(t.threadId) && { fixed: true }),
       threadId: t.threadId,
@@ -703,6 +726,9 @@ interface ReviewThread extends FindingMetadata {
   line: number;
   lineStart: number;
   severity: FindingSeverity | 'unknown';
+  /** Whether a Manki reply found the problem again as a blocker. */
+  foundAgainBlocker?: boolean;
+  partlyFixedGrade?: FindingSeverity;
   authorReplyText?: string;
   authorReplyLogin?: string;
   authorReplyAssociation?: string;
@@ -862,7 +888,8 @@ async function fetchReviewThreads(
       const authorReplyAssociation = lastNonBotReply?.authorAssociation;
 
       const rootSeverity = threadSeverity(firstComment?.body ?? '');
-      const severity = isBotThread && foundAgainAsBlocker(bot, thread.comments.nodes) ? 'blocker' : rootSeverity;
+      const foundAgainBlocker = isBotThread && foundAgainAsBlocker(bot, thread.comments.nodes);
+      const severity = foundAgainBlocker ? 'blocker' : rootSeverity;
 
       const markerSlug = firstComment?.body?.match(new RegExp(`<!-- manki:(?:${SEVERITY_TOKEN_PATTERN}):(.+?) -->`))?.[1];
 
@@ -906,6 +933,7 @@ async function fetchReviewThreads(
         authorReplyLogin,
         ...(authorReplyAssociation && { authorReplyAssociation }),
         ...(answer && { answer }),
+        ...(foundAgainBlocker && { foundAgainBlocker }),
       };
     });
     return { threads, state: threads.length === 0 ? 'empty' : 'fetched' };
@@ -1157,4 +1185,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, partlyFixedGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

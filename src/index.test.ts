@@ -188,6 +188,7 @@ jest.mock('./review', () => ({
   teamModels: jest.requireActual('./review').teamModels,
   RETRY_HINT: jest.requireActual('./review').RETRY_HINT,
   stringifyFindingFingerprint: jest.requireActual('./review').stringifyFindingFingerprint,
+  filesChangedByPush: jest.requireActual('./review').filesChangedByPush,
   selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
@@ -213,6 +214,7 @@ jest.mock('./github', () => ({
   formatFoundAgainReply: jest.fn().mockReturnValue('Found again.'),
   formatVariantReply: jest.fn().mockReturnValue('Another instance.'),
   formatBlockerReply: jest.fn().mockReturnValue('Now a blocker.'),
+  sanitizeMarkdown: jest.requireActual('./github').sanitizeMarkdown,
   formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
@@ -5537,6 +5539,67 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'Thread PRRT_ghi: uncertain — No clear evidence',
     );
+  });
+
+  it('keeps a partly fixed thread open and replies there with what remains, once per grade while the push leaves its file alone', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
+    const partly = (threadId: string, remaining: string) => ({ threadId, status: 'partly_addressed' as const, reason: 'r', remaining, grade: 'warning' as const });
+    const run = async (lastReviewed: string) => {
+      mockGraphql.mockClear();
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+        previousFindings: [
+          { title: 'Upload', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
+          { title: 'Log', file: 'src/app.ts', line: 2, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_def', partlyFixedGrade: 'warning' as const },
+          { title: 'Retry', file: 'src/app.ts', line: 3, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
+          { title: 'Timeout', file: 'src/app.ts', line: 4, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_jkl', partlyFixedGrade: 'warning' as const },
+          { title: 'Cache', file: 'src/app.ts', line: 5, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_mno', partlyFixedGrade: 'warning' as const },
+        ],
+        priorRounds: [roundContextFromLegacy({ round: 1, commitSha: lastReviewed, timestamp: 't', findings: [] })],
+      });
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
+        threadEvaluations: [
+          partly('PRRT_abc', 'No timeout yet, ask @alice.'), partly('PRRT_def', 'Still slow.'), partly('PRRT_ghi', 'One path left.'),
+          { threadId: 'PRRT_jkl', status: 'not_addressed', reason: 'The timeout is gone again.', grade: 'blocker' },
+          { threadId: 'PRRT_mno', status: 'not_addressed', reason: 'Still keyed by user only.' },
+        ],
+      });
+      await callRunFullReview();
+      expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('resolveReviewThread'))).toEqual([]);
+      return mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars);
+    };
+
+    // The push left the file alone, so a thread that already carries this grade gets no second reply. The round
+    // record keeps each grade, so a reply only tells the thread and carries no marker.
+    expect(await run('abc123')).toEqual([
+      { threadId: 'PRRT_abc', body: '**Partly fixed.** Still open: No timeout yet, ask @\u200Balice. What remains is a warning, so this thread no longer blocks.\n\n<!-- manki -->' },
+      { threadId: 'PRRT_ghi', body: '**Partly fixed.** Still open: One path left.\n\n<!-- manki -->' },
+      { threadId: 'PRRT_jkl', body: '**Open again.** The timeout is gone again. This thread is a blocker again, so it blocks.\n\n<!-- manki -->' },
+    ]);
+    // The record carries each thread's grade with the review that decided it.
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![7]!.judge.threadEvaluations?.map(e => [e.threadId, e.grade])).toEqual([
+      ['PRRT_abc', 'warning'], ['PRRT_def', 'warning'], ['PRRT_ghi', 'warning'], ['PRRT_jkl', 'blocker'], ['PRRT_mno', undefined],
+    ]);
+
+    // A reply that fails loses only the note: the review still posts.
+    const posts = jest.mocked(ghUtils.postReview).mock.calls.length;
+    const answer = mockGraphql.getMockImplementation()!;
+    mockGraphql.mockImplementation(async (query: string, vars: { threadId?: string }) => {
+      if (query.includes('addPullRequestReviewThreadReply') && vars?.threadId === 'PRRT_jkl') throw new Error('GitHub is down');
+      return answer(query, vars);
+    });
+    await run('abc123');
+    mockGraphql.mockImplementation(answer);
+    expect(jest.mocked(ghUtils.postReview).mock.calls.length).toBe(posts + 1);
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Failed to reply on partly fixed thread PRRT_jkl'));
+    // When the change since the last round cannot be read, every partly fixed thread gets its reply.
+    jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed'));
+    expect((await run('old456')).map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
   });
 
   it('skips resolving threads not in the openThreads allowlist', async () => {
