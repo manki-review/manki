@@ -85,8 +85,9 @@ describe('resolveReasoningEffort', () => {
     ['gpt-6-astra', 'max'],
     ['gpt-6.1-sol', 'max'],
     ['gpt-6.1-terra', 'max'],
-  ])('maps max to the highest effort %s accepts', (model, expected) => {
+  ])('maps max to the highest effort %s accepts, and xhigh to at most that', (model, expected) => {
     expect(resolveReasoningEffort(model, 'max')).toBe(expected);
+    expect(resolveReasoningEffort(model, 'xhigh')).toBe(expected === 'high' ? 'high' : 'xhigh');
     for (const tier of ['low', 'medium', 'high'] as const) {
       expect(resolveReasoningEffort(model, tier)).toBe(tier);
     }
@@ -108,6 +109,7 @@ describe('resolveReasoningEffort', () => {
     'overlord',
   ])('returns undefined for %s, which rejects reasoning effort', (model) => {
     expect(resolveReasoningEffort(model, 'high')).toBeUndefined();
+    expect(resolveReasoningEffort(model, 'xhigh')).toBeUndefined();
     expect(resolveReasoningEffort(model, 'max')).toBeUndefined();
   });
 });

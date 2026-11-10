@@ -20,7 +20,7 @@ describe('parseArgs', () => {
   });
 
   describe('--effort', () => {
-    it.each(['low', 'medium', 'high', 'max'] as const)('accepts effort=%s', (effort) => {
+    it.each(['low', 'medium', 'high', 'xhigh', 'max'] as const)('accepts effort=%s', (effort) => {
       expect(parseArgs(['--model', 'm', '--effort', effort])).toMatchObject({ effort });
     });
 

@@ -163,7 +163,7 @@ export interface RepoTools {
 }
 
 export interface SendMessageOptions {
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Wall-clock limit for the call. Unset keeps the provider's default limit. */
   timeoutMs?: number;
   /** Stops the call once it aborts. The call then rejects with the signal's reason. */

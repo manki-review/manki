@@ -193,7 +193,7 @@ function quotaRoundSummary(quotaErrors: ReadonlyMap<string, QuotaError>, failedA
 /** The answers used when the planner is disabled or fails: each takes the side that adds review. */
 const FAIL_SAFE_TRIAGE: Readonly<Triage> = Object.freeze({ trivial: false, subtle: true, paired: true });
 
-const DEEPER_EFFORT: Record<EffortLevel, EffortLevel> = { low: 'medium', medium: 'high', high: 'max', max: 'max' };
+const DEEPER_EFFORT: Record<EffortLevel, EffortLevel> = { low: 'medium', medium: 'high', high: 'max', xhigh: 'max', max: 'max' };
 
 /**
  * Builds the round's readers. The PR's class, from its paths and the triage, picks a review group,

@@ -118,7 +118,7 @@
 #     pair:
 #       reviewers:
 #         - { model: "@reviewer", effort: auto }        # `@reviewer` and `@reviewer_pair` resolve through `models`
-#         - { model: "@reviewer_pair", effort: auto }   # effort: low, medium, high, max or auto
+#         - { model: "@reviewer_pair", effort: auto }   # effort: low, medium, high, xhigh, max or auto
 #     deep:
 #       reviewers:
 #         - { model: claude-opus-5-5, effort: high, focus: "authz, injection, secret handling" }

@@ -139,6 +139,7 @@ export function sanitizeLogOutput(text: string): string {
 }
 
 type OpenAIReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+const REASONING_ORDER: readonly OpenAIReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
  * Returns the highest `reasoning_effort` the model accepts, or `undefined` if it rejects the
@@ -160,16 +161,16 @@ function maxReasoningEffort(model: string): OpenAIReasoningEffort | undefined {
 
 /**
  * Maps manki's effort tier to the `reasoning_effort` value for `model`, or `undefined`
- * when the model rejects the parameter. `max` becomes the model's highest value.
+ * when the model rejects the parameter. `max`, and a tier above the model's highest value, become that value.
  * The chat completions API and the Codex CLI accept the same values.
  */
 export function resolveReasoningEffort(
   model: string,
-  effort: 'low' | 'medium' | 'high' | 'max',
+  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max',
 ): OpenAIReasoningEffort | undefined {
   const ceiling = maxReasoningEffort(model);
   if (!ceiling) return undefined;
-  return effort === 'max' ? ceiling : effort;
+  return effort === 'max' || REASONING_ORDER.indexOf(effort) > REASONING_ORDER.indexOf(ceiling) ? ceiling : effort;
 }
 
 /** Maps an SDK 429, a used-up quota (`insufficient_quota`) or a rate limit, to a `QuotaError`. */

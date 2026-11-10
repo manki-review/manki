@@ -105,6 +105,16 @@ describe('sendMessage effort option (CLI path)', () => {
     expect(spawnArgs[spawnArgs.indexOf('--effort') + 1]).toBe('high');
   });
 
+  it('passes xhigh only to a model that takes it, and high to an earlier one', async () => {
+    for (const [model, expected] of [['claude-opus-5-5', 'xhigh'], ['claude-opus-4-7', 'xhigh'], ['claude-opus-4-6', 'high'], ['claude-sonnet-4-5-20250929', 'high']]) {
+      mockSpawn.mockClear();
+      setupSpawnMock('response text');
+      await new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model }).sendMessage('system', 'user', { effort: 'xhigh' });
+      const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
+      expect(spawnArgs[spawnArgs.indexOf('--effort') + 1]).toBe(expected);
+    }
+  });
+
   it('omits --effort flag when no options provided', async () => {
     setupSpawnMock('response text');
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
@@ -150,10 +160,11 @@ describe('sendMessage effort option (API path)', () => {
   it('sends adaptive thinking with the native effort level on models after the 4.5 generation', async () => {
     const models = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-future-9'];
     for (const model of models) {
-      for (const effort of ['low', 'medium', 'high', 'max'] as const) {
+      for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
         const params = await sentParams(model, effort);
         expect(params.thinking).toEqual({ type: 'adaptive' });
-        expect(params.output_config).toEqual({ effort });
+        // `xhigh` arrived with Opus 4.7, so the 4.6 generation gets `high`, never more than asked.
+        expect(params.output_config).toEqual({ effort: effort === 'xhigh' && model.endsWith('4-6') ? 'high' : effort });
         expect(params.max_tokens).toBe(32768);
       }
     }
@@ -164,6 +175,7 @@ describe('sendMessage effort option (API path)', () => {
     for (const model of models) {
       expect((await sentParams(model, 'medium')).thinking).toEqual({ type: 'enabled', budget_tokens: 5000 });
       expect((await sentParams(model, 'high')).thinking).toEqual({ type: 'enabled', budget_tokens: 10000 });
+      expect((await sentParams(model, 'xhigh')).thinking).toEqual({ type: 'enabled', budget_tokens: 13000 });
       const params = await sentParams(model, 'max');
       expect(params.thinking).toEqual({ type: 'enabled', budget_tokens: 16000 });
       expect(params.output_config).toBeUndefined();

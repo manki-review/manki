@@ -639,7 +639,7 @@ export interface ReviewerAgent {
   focus: string;
 }
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** The planner's three triage answers. Each takes the side that adds review when unknown. */
 export interface Triage {

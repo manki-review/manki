@@ -1354,6 +1354,8 @@ describe('selectTeam', () => {
       expect(readers(pair)).toEqual([`${S} · max`, `${O} · max`]);
       expect(pair.routing).toMatchObject({ group: 'pair', groupSource: 'routing', deeper: true });
       expect(pair.routing.escalatedFrom).toBeUndefined();
+      const xhigh = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer', effort: 'xhigh' }, { model: '@reviewer_pair', effort: 'xhigh' }] } } } });
+      expect(readers(selectTeam(makeDiff({ files: code }), xhigh, t(false, true, true), true))).toEqual([`${S} · max`, `${O} · max`]);
 
       expect(run(['', code, t(false, false, false), 'auto', '', []]).routing.deeper).toBeUndefined();
     });
