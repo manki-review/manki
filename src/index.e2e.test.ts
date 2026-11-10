@@ -1058,6 +1058,7 @@ describe('runFullReview end to end', () => {
       const [thread] = mockGitHub.threads;
       mockGitHub.headSha = 'c3'.repeat(20);
       mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
+      mockGitHub.commitDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
       const round = async () => {
         Object.assign(mockLLM.replies, READY_REPLIES, {
           judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
