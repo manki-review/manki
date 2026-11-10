@@ -35,10 +35,12 @@ describe('runSweeps', () => {
   it('states each blocker class in general terms and reports every other place in the diff, without the blocker\'s own line', async () => {
     const client = fakeClient(() => ({
       class: 'a cache key leaves out a field the cached value depends on', general: true,
-      findings: [found('src/cache.ts', 11, 'The same key again'), found('src/search.ts', 40)],
+      findings: [found('src/cache.ts', 11, 'The same key again'), found('src/keys.ts', 31), found('src/helper.ts', 5), found('src/search.ts', 40)],
     }));
+    // A place the blocker already cites as proof or evidence is the blocker itself.
+    const cites = { checks: ['src/helper.ts:5 builds the key the same way'], proof: ['src/cache.ts:10', 'src/keys.ts:28-30'] };
 
-    const { findings, sweeps } = await runSweeps(() => client, [blocker('Cache key misses the locale')], { rawDiff, effort: 'high', workspace: '/work' });
+    const { findings, sweeps } = await runSweeps(() => client, [blocker('Cache key misses the locale', { evidence: cites })], { rawDiff, effort: 'high', workspace: '/work' });
 
     expect(findings.map(f => [f.file, f.line, f.reviewers])).toEqual([['src/search.ts', 40, ['Sweep: Cache key misses the locale']]]);
     expect(sweeps).toEqual([{

@@ -6,7 +6,7 @@ import { fenceText } from './github';
 import { extractJSON } from './json';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, SendMessageOptions } from './providers';
-import { CLAIMS_MISSING_RULE, parseFindings, PRE_EXISTING_RULE, truncateDiff } from './review';
+import { CLAIMS_MISSING_RULE, parseFindings, parseLocation, PRE_EXISTING_RULE, truncateDiff } from './review';
 import { EffortLevel, Finding, RoundSweep, SECURITY_TAG } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
@@ -16,7 +16,7 @@ const SWEEP_STEPS = 15;
 // A safety net. The step budget is what normally ends the call.
 const SWEEP_TIMEOUT_MS = 600_000;
 const MAX_CLASS_CHARS = 300;
-// A finding this close to the blocker's own line restates the blocker.
+// A finding this close to a line the blocker cites restates the blocker.
 const OWN_LINE_TOLERANCE = 3;
 const CONFIDENCE_ORDER = ['high', 'medium', 'low'];
 
@@ -87,6 +87,13 @@ function parseSweep(text: string, reviewer: string): { general: boolean; defectC
   return { general, defectClass, findings };
 }
 
+/** Whether `f` sits on the blocker's own line or near any line the blocker cites in its proof or evidence. */
+function citedByBlocker(blocker: Finding, f: Finding): boolean {
+  const cited = [`${blocker.file}:${blocker.line}`, ...(blocker.evidence?.proof ?? []), ...(blocker.evidence?.checks ?? []).map(c => c.match(/^\S+?:\d+(?:-\d+)?/)?.[0] ?? '')]
+    .flatMap(at => parseLocation(at) ?? []);
+  return cited.some(at => at.file === f.file && at.start - OWN_LINE_TOLERANCE <= f.line && f.line <= at.end + OWN_LINE_TOLERANCE);
+}
+
 export interface SweepOptions {
   /** The PR's raw diff, which the sweep searches. */
   rawDiff: string;
@@ -131,7 +138,7 @@ export async function runSweeps(
         core.info(`${reviewer}: the class is too specific to sweep for`);
         return { record: { ...record, status: 'too_specific', class: defectClass }, findings: [] };
       }
-      const elsewhere = findings.filter(f => !(f.file === blocker.file && Math.abs(f.line - blocker.line) <= OWN_LINE_TOLERANCE));
+      const elsewhere = findings.filter(f => !citedByBlocker(blocker, f));
       core.info(`${reviewer}: ${elsewhere.length} other place(s)`);
       return { record: { ...record, status: 'answered', class: defectClass, findings: elsewhere.length }, findings: elsewhere };
     } catch (error) {

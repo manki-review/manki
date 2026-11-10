@@ -40,7 +40,7 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
 }
 
 /** Parses the `file:line` or `file:start-end` location `at`. */
-function parseLocation(at: string): { file: string; start: number; end: number } | undefined {
+export function parseLocation(at: string): { file: string; start: number; end: number } | undefined {
   const [, file, start, end] = at.match(/^(.+):(\d+)(?:-(\d+))?$/) ?? [];
   return file ? { file, start: Number(start), end: Number(end ?? start) } : undefined;
 }
@@ -1273,21 +1273,28 @@ export async function runReview(
   // A blocker's defect class can recur elsewhere in the diff, so with `review.sweep` each kept blocker starts a search for it.
   let sweeps: RoundSweep[] | undefined;
   let sweepRaw: Finding[] = [];
-  const sweptBlockers = config.review?.sweep ? finalFindings.filter(f => f.severity === 'blocker') : [];
+  // A blocker the refuters disproved stays posted, but it starts no sweep, so one false blocker never turns into several.
+  const sweptBlockers = config.review?.sweep ? finalFindings.filter(f => f.severity === 'blocker' && !disproof(f)) : [];
   if (sweptBlockers.length > 0) {
     const sweep = await runSweeps(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweptBlockers, {
       rawDiff, effort: comparisonEffort, workspace,
     });
     sweeps = sweep.sweeps;
     // A place the round already judged, kept or dropped, is not judged twice. The rest count as raw findings, like a finder's.
-    sweepRaw = sweep.findings.filter(s => !(allJudgedFindings ?? []).some(f => sameProblem(f, s)))
-      .map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
+    const judgedAlready = allJudgedFindings ?? [];
+    const unmatched = sweep.findings.filter(s => !judgedAlready.some(f => sameProblem(f, s)));
+    // A sweep finding near one the round judged can say the same in other words, so the dedup model checks those pairs.
+    const pairs = unmatched.flatMap((s, i) => judgedAlready.flatMap(f => nearEachOther(f, s) ? [{ i, f }] : []));
+    const dedupClient = clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup');
+    const same = pairs.length > 0 && dedupClient ? await llmSameDefects(pairs.map(({ i, f }) => [f, unmatched[i]]), dedupClient) : [];
+    const restated = new Set(pairs.flatMap(({ i }, k) => same[k] ? [i] : []));
+    sweepRaw = unmatched.filter((_, i) => !restated.has(i)).map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
     let fresh = sweepRaw;
     if (previousFindings && previousFindings.length > 0 && fresh.length > 0) {
       const changed = interRoundDiff === undefined ? undefined : new Set(parsePRDiff(interRoundDiff).files.map(f => f.path));
       const statics = deduplicateFindings(fresh, previousFindings, changed);
-      const llm = clients.dedup && statics.unique.length > 0
-        ? await llmDeduplicateFindings(statics.unique, previousFindings, withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'))
+      const llm = dedupClient && statics.unique.length > 0
+        ? await llmDeduplicateFindings(statics.unique, previousFindings, dedupClient)
         : { unique: statics.unique, duplicates: [] };
       for (const d of [...statics.duplicates, ...llm.duplicates]) duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
       staticDedupCount += statics.duplicates.length;
