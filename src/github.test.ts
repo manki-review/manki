@@ -4070,8 +4070,11 @@ describe('postReview fallback paths', () => {
       const updateReview = jest.fn().mockRejectedValue(new Error('update down'));
       const { octokit } = makeOctokit(createReviewComment, undefined, updateReview);
 
-      await expect(postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker]), diff))
+      // The review itself was created before the failure, and `onPosted` says so.
+      const onPosted = jest.fn();
+      await expect(postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker]), diff, undefined, undefined, { onPosted }))
         .rejects.toThrow('"Refused thread" (src/a.ts)');
+      expect(onPosted).toHaveBeenCalledTimes(1);
     });
   });
 });

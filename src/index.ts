@@ -1386,7 +1386,7 @@ async function replyInOpenThreads(run: ReviewRun, result: ReviewResult): Promise
   return replies;
 }
 
-/** Deletes the replies a round posted in threads before its review, when the review did not go through. */
+/** Deletes the replies a round posted in threads before its review, when the review did not post. */
 async function withdrawReplies(octokit: Octokit, replies: string[]): Promise<void> {
   for (const reply of replies) {
     try {
@@ -1439,6 +1439,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     memorySkip: run.memorySkip?.message,
     restart,
     skipped: { excluded: run.excludedFiles.filter(f => !run.lockfiles.some(l => l.path === f.path)), binary: (diff.binarySkipped ?? []).filter(f => !f.deleted) },
+    onPosted: () => { run.progress.reviewPosted = true; },
   });
   await replacePreviousReviews(run, run.progress, posted.id);
   // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed.
@@ -1782,9 +1783,9 @@ async function runFullReview(
     try {
       posted = await postRound(run, result, context, reviewTimeMs, pauseAfter.restart);
     } catch (error) {
-      // A thread is resolved, or gets a reply that adds to it, only by a review that replaces the previous one.
+      // A thread is resolved only by a review that replaces the previous one. A reply stays under a review that posted.
       await reopenThreads(octokit, resolved);
-      await withdrawReplies(octokit, replies);
+      if (!run.progress.reviewPosted) await withdrawReplies(octokit, replies);
       throw error;
     }
     await reportPrState(owner, repo, prNumber, {
