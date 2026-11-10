@@ -46,7 +46,7 @@ const globAlias = (patterns: readonly string[]) => (path: string) => patterns.so
 const isDocsFile = globAlias(DOCS_FILE_PATTERNS);
 const isAgentInstructions = (path: string) => AGENT_INSTRUCTION_PATTERNS.some(p => minimatch(path, p, { dot: true, nocase: true }));
 
-/** Path aliases a class's `paths_any` can name next to plain globs. */
+/** Path aliases a class's `paths_any` and `critical_paths` can name next to plain globs. */
 export const PATH_ALIASES: Readonly<Record<string, (path: string) => boolean>> = Object.freeze({
   '@security_paths': (path: string) => path.toLowerCase().split('/').some(segment => {
     const base = segment.replace(/\.[^.]+$/, '');
@@ -162,7 +162,7 @@ export function resolveRouting(review: ReviewRoutingConfig | undefined): Resolve
     const builtIn = BUILT_IN_CLASSES[name];
     classes[name] = builtIn
       ? { ...builtIn, match: { ...builtIn.match, paths_any: [...(builtIn.match.paths_any ?? []), ...(def.match?.paths_any ?? [])] } }
-      : { rank: def.rank ?? 0, ...(def.critical && { critical: true }), match: def.match ?? {} };
+      : { rank: def.rank ?? 0, match: def.match ?? {} };
   }
   // Groups without routing send every class to the default group.
   const routing = review?.groups && !review.routing ? {} : { ...BUILT_IN_ROUTING, ...review?.routing };
@@ -175,11 +175,9 @@ export function resolveRouting(review: ReviewRoutingConfig | undefined): Resolve
   };
 }
 
-/** Returns the highest ranked critical class whose paths match `path`, or undefined when none does. */
-export function criticalAreaOf(classes: Readonly<Record<string, ReviewClass>>, path: string): string | undefined {
-  return Object.entries(classes)
-    .filter(([, c]) => c.critical && c.match.paths_any?.some(p => matchesPath(path, p)))
-    .sort(([, a], [, b]) => b.rank - a.rank)[0]?.[0];
+/** Returns the first of `criticalPaths` that matches `path`, or undefined when none does. */
+export function criticalAreaOf(criticalPaths: readonly string[], path: string): string | undefined {
+  return criticalPaths.find(pattern => matchesPath(path, pattern));
 }
 
 /** Returns the group a class routes to. */

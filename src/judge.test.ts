@@ -131,7 +131,7 @@ describe('buildJudgeSystemPrompt', () => {
 
   it('adds the repository rules the `review` block sets, before the project instructions, and only those it sets', () => {
     const review: ReviewConfig['review'] = {
-      classes: { consensus: { rank: 60, critical: true, match: { paths_any: ['src/consensus/**'] } } },
+      critical_paths: ['src/consensus/**'],
       outside_input: 'Messages from network peers and RPC callers.',
       examples: { blocker: ['A panic on a peer message.'], not_blocker: ['A slow RPC call is a `suggestion`.'] },
     };
@@ -2702,15 +2702,9 @@ describe('runJudgeAgent', () => {
     expect(result.inPrSuppressedCount).toBeUndefined();
   });
 
-  it('marks each finding in a critical area with the highest ranked critical class, and a repeat of an answered thread with its answer', async () => {
+  it('marks each finding in a critical area with the first critical path it matches, and a repeat of an answered thread with its answer', async () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'x', findings: [1, 2, 3].map(id => ({ id, title: 't', severity: 'warning', reasoning: 'r', confidence: 'high' })) }) });
-    const review: ReviewConfig['review'] = {
-      classes: {
-        consensus: { rank: 60, critical: true, match: { paths_any: ['src/consensus/**'] } },
-        validation: { rank: 70, critical: true, match: { paths_any: ['src/consensus/validate/**'] } },
-        hot_path: { rank: 85, match: { paths_any: ['src/**'] } },
-      },
-    };
+    const review: ReviewConfig['review'] = { critical_paths: ['src/consensus/validate/**', 'src/consensus/**', '@security_paths'] };
     const input: JudgeInput = {
       findings: [
         makeFinding({ title: 'Wrong fee', file: 'src/consensus/fees.ts' }),
@@ -2727,8 +2721,8 @@ describe('runJudgeAgent', () => {
 
     const userMessage: string = mockSendMessage.mock.calls[0][1];
     const block = (title: string) => userMessage.slice(userMessage.indexOf(`: ${title}`)).split('### Finding')[0];
-    expect(block('Wrong fee')).toContain('- **Critical area**: `consensus`');
-    expect(block('Wrong check')).toContain('- **Critical area**: `validation`');
+    expect(block('Wrong fee')).toContain('- **Critical area**: `src/consensus/**`');
+    expect(block('Wrong check')).toContain('- **Critical area**: `src/consensus/validate/**`');
     expect(block('Slow loop')).not.toContain('Critical area');
     expect(block('Slow loop')).toContain('- **Already answered**: Manki answered the developer about this problem in its review thread: "Withdrawn. The loop runs once."');
     expect(block('Wrong fee')).not.toContain('Already answered');

@@ -105,7 +105,7 @@ const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
 const MAX_JUDGE_TOOL_STEPS = 100;
 
 export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', 'reviewer_pair', 'judge', 'refuter_pair', 'dedup', 'fallback']);
-export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'outside_input', 'examples']);
+export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'critical_paths', 'outside_input', 'examples']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus', 'role']);
 const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
@@ -481,6 +481,17 @@ function isRepoRelativePattern(pattern: string): boolean {
     && !pattern.split('/').includes('..');
 }
 
+/** Checks that `paths` is a non-empty list of globs and known path aliases. `at` names the setting in an error. */
+function checkPathList(paths: unknown, at: string, errors: string[]): void {
+  if (!isStringArray(paths) || paths.length === 0) {
+    errors.push(`${at} must be a non-empty array of strings`);
+    return;
+  }
+  for (const p of paths.filter(p => p.startsWith('@') && !(p in PATH_ALIASES))) {
+    errors.push(`${at} names unknown path alias \`${p}\`. Known aliases: ${Object.keys(PATH_ALIASES).join(', ')}`);
+  }
+}
+
 function validateReviewBlock(review: unknown, errors: string[], warnings: string[]): void {
   if (!isObject(review)) {
     errors.push('`review` must be an object');
@@ -536,8 +547,9 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
         }
         const builtIn = BUILT_IN_CLASSES[name];
         const match = def.match;
+        if ('critical' in def) errors.push(`${at}.critical\` is not a class setting. List the critical paths in \`review.critical_paths\``);
         if (builtIn) {
-          if (!builtIn.match.paths_any || 'rank' in def || 'floor' in def || 'critical' in def || !isObject(match) || Object.keys(match).some(k => k !== 'paths_any')) {
+          if (!builtIn.match.paths_any || 'rank' in def || 'floor' in def || !isObject(match) || Object.keys(match).some(k => k !== 'paths_any')) {
             errors.push(builtIn.match.paths_any
               ? `${at}\` is built in: it takes only \`match.paths_any\`, which adds paths to its built-in rule`
               : `${at}\` is built in and cannot be changed. Route it with \`review.routing\` instead`);
@@ -545,10 +557,6 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
           }
         } else {
           if ('floor' in def) errors.push(`${at}.floor\` is not allowed: only the built-in security, supply_chain and data_contract classes are floors`);
-          if ('critical' in def && typeof def.critical !== 'boolean') errors.push(`${at}.critical\` must be a boolean`);
-          if (def.critical === true && (!isObject(match) || !('paths_any' in match) || 'triage' in match)) {
-            errors.push(`${at}.critical\` needs \`match.paths_any\` and no \`triage\`: a critical area is a set of paths`);
-          }
           if (typeof def.rank !== 'number' || !Number.isInteger(def.rank)) {
             errors.push(`${at}.rank\` must be an integer`);
           } else if (ranks.has(def.rank)) {
@@ -569,19 +577,12 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
             }
           }
         }
-        if ('paths_any' in match) {
-          if (!isStringArray(match.paths_any) || match.paths_any.length === 0) {
-            errors.push(`${at}.match.paths_any\` must be a non-empty array of strings`);
-          } else {
-            for (const p of match.paths_any.filter(p => p.startsWith('@') && !(p in PATH_ALIASES))) {
-              errors.push(`${at}.match.paths_any\` names unknown path alias \`${p}\`. Known aliases: ${Object.keys(PATH_ALIASES).join(', ')}`);
-            }
-          }
-        }
+        if ('paths_any' in match) checkPathList(match.paths_any, `${at}.match.paths_any\``, errors);
       }
     }
   }
 
+  if ('critical_paths' in review) checkPathList(review.critical_paths, '`review.critical_paths`', errors);
   if ('outside_input' in review && (typeof review.outside_input !== 'string' || !review.outside_input.trim())) {
     errors.push('`review.outside_input` must be a non-empty string');
   }

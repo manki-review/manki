@@ -118,7 +118,7 @@ describe('documented `review` examples', () => {
     expect([setupBlocks.length, exampleBlocks.length]).toEqual([3, 2]);
     const reviews = [...setupBlocks, ...exampleBlocks].map(block => loadConfigFromContent(block).review);
     expect(reviews.filter(review => review?.groups?.deep)).toHaveLength(4);
-    expect(reviews.filter(review => review?.outside_input && review.examples && Object.values(review.classes ?? {}).some(c => c.critical))).toHaveLength(2);
+    expect(reviews.filter(review => review?.outside_input && review.examples && review.critical_paths)).toHaveLength(2);
   });
 });
 

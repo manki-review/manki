@@ -23,7 +23,7 @@ import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, fenc
 import { VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { refuteBlockers } from './refute';
-import { criticalAreaOf, resolveRouting } from './routing';
+import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
 import { CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, Finding, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 
@@ -667,8 +667,8 @@ A finding cites their code as \`owner/name:path:line\`. Its tool evidence says w
 
 /** Returns the judge rules the base branch's `review` block adds, or an empty string when it adds none. */
 function buildRepositoryRules(config: ReviewConfig): string {
-  const { outside_input: outsideInput, examples } = config.review ?? {};
-  const hasCriticalAreas = Object.values(resolveRouting(config.review).classes).some(c => c.critical);
+  const { outside_input: outsideInput, examples, critical_paths: criticalPaths } = config.review ?? {};
+  const hasCriticalAreas = !!criticalPaths?.length;
   if (!hasCriticalAreas && !outsideInput && !examples) return '';
   const exampleList = (label: string, list: string[] | undefined) => (list ? ['', label, ...list.map(e => `- ${e.trim()}`)] : []);
   const parts = ['## Repository Rules', '', 'The repository\'s maintainers set these rules. They add to the rules above and never lower a security defect.'];
@@ -1259,10 +1259,9 @@ export async function runJudgeAgent(
   // The prompt's sections follow the round: a follow-up, open threads, earlier blockers, a second finder and the tools
   // that settle leads. Every one is on here, so the recorded digest changes only with the template or the repository's rules.
   const judgeTemplate = (steps: number) => buildJudgeSystemPrompt(config, 2, true, 1, relatedRepos, 2, true, steps);
-  const { classes } = resolveRouting(config.review);
   const citedCode = refutation ? citedCodeOutsideDiff(findings, diff, refutation.workspace) : new Map<Finding, string[]>();
   const findingNotes = (f: Finding): string[] => {
-    const area = criticalAreaOf(classes, f.file);
+    const area = criticalAreaOf(config.review?.critical_paths ?? [], f.file);
     const fix = ownProposalOf(f, provenanceMap);
     return [
       ...(citedCode.get(f) ?? []),

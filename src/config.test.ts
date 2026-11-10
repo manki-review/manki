@@ -182,16 +182,16 @@ describe('config', () => {
 
     it('loads groups, classes and routing as written and leaves the built-ins when unset', () => {
       expect(loadConfigFromContent('').review).toBeUndefined();
-      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n    consensus:\n      rank: 60\n      critical: true\n      match: { paths_any: ["src/consensus/**"] }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n`);
+      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n  critical_paths: ["src/consensus/**", "@security_paths"]\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n`);
       expect(config.review).toEqual({
         groups: { deep: { reviewers: [{ model: 'claude-opus-5-5', effort: 'high' }, { model: 'gpt-5.5', effort: 'high' }] } },
         classes: {
           security: { match: { paths_any: ['src/billing/**'] } },
           hot_path: { rank: 85, match: { paths_any: ['src/net/**'], triage: { subtle: true } } },
-          consensus: { rank: 60, critical: true, match: { paths_any: ['src/consensus/**'] } },
         },
         routing: { security: 'deep', hot_path: 'deep', internal: 'solo' },
         default_group: 'pair',
+        critical_paths: ['src/consensus/**', '@security_paths'],
         outside_input: 'Messages from network peers.',
         examples: { blocker: ['A panic on a peer message.'], not_blocker: ['A slow RPC call.'] },
       });
@@ -215,10 +215,10 @@ describe('config', () => {
       ['a new rank on a built-in class', 'review:\n  classes:\n    security: { rank: 10, match: { paths_any: ["src/**"] } }\n', '`review.classes.security` is built in: it takes only `match.paths_any`'],
       ['a change to a triage class', 'review:\n  classes:\n    docs: { match: { paths_any: ["docs/**"] } }\n', '`review.classes.docs` is built in and cannot be changed'],
       ['allow_weaker on a class that is no floor', 'review:\n  allow_weaker: [behavior]\n', '`review.allow_weaker` must be an array of floor classes'],
-      ['a critical built-in class', 'review:\n  classes:\n    security: { critical: true, match: { paths_any: ["src/**"] } }\n', '`review.classes.security` is built in: it takes only `match.paths_any`'],
-      ['a critical class matched by triage', 'review:\n  classes:\n    hot: { rank: 60, critical: true, match: { paths_any: ["src/**"], triage: { subtle: true } } }\n', '`review.classes.hot.critical` needs `match.paths_any` and no `triage`'],
-      ['a critical class without paths', 'review:\n  classes:\n    hot: { rank: 60, critical: true, match: { triage: { subtle: true } } }\n', '`review.classes.hot.critical` needs `match.paths_any` and no `triage`'],
-      ['a critical flag that is no boolean', 'review:\n  classes:\n    hot: { rank: 60, critical: "yes", match: { paths_any: ["src/**"] } }\n', '`review.classes.hot.critical` must be a boolean'],
+      ['a critical class', 'review:\n  classes:\n    hot: { rank: 60, critical: true, match: { paths_any: ["src/**"] } }\n', '`review.classes.hot.critical` is not a class setting. List the critical paths in `review.critical_paths`'],
+      ['a critical built-in class', 'review:\n  classes:\n    security: { critical: true, match: { paths_any: ["src/**"] } }\n', '`review.classes.security.critical` is not a class setting. List the critical paths in `review.critical_paths`'],
+      ['empty critical paths', 'review:\n  critical_paths: []\n', '`review.critical_paths` must be a non-empty array of strings'],
+      ['critical paths with an unknown alias', 'review:\n  critical_paths: ["src/**", "@hot_paths"]\n', '`review.critical_paths` names unknown path alias `@hot_paths`'],
       ['an empty outside_input', 'review:\n  outside_input: "  "\n', '`review.outside_input` must be a non-empty string'],
       ['outside_input that is no string', 'review:\n  outside_input: [peers]\n', '`review.outside_input` must be a non-empty string'],
       ['examples as a plain list', 'review:\n  examples: [A panic.]\n', '`review.examples` must set `blocker`, `not_blocker` or both'],
