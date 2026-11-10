@@ -174,6 +174,7 @@ memory:
 | `review.critical_paths` | list of globs | none | Critical areas, where any wrong result is severe even in a rare internal edge case. Globs or the path aliases. The judge grades a wrong result there as severe damage. See [Review groups](how-reviews-work.md#review-groups). |
 | `review.outside_input` | string | none | What counts as outside input in your repository. The judge treats a failure this input can trigger as reachable. |
 | `review.examples` | map with `blocker` and `not_blocker` lists | none | Worked examples from your repository, which the judge reads next to its built-in examples. |
+| `review.sweep` | boolean | `false` | After the judge keeps a blocker, search the whole diff for other instances of its defect class, at most three blockers a round. Their findings go through dedup and the judge like any finding. See [Sweeping for a defect class](how-reviews-work.md#sweeping-for-a-defect-class). |
 | `static_analysis` | map | see below | Which CI results the reviewers read as evidence, and Manki's own analyzers. Read from the base branch. See [Reading CI results](how-reviews-work.md#reading-ci-results). |
 | `static_analysis.checks` | boolean | `true` | Read check-run annotations. Needs `checks: read` in the workflow. |
 | `static_analysis.code_scanning` | boolean | `true` | Read open code scanning alerts. Needs `security-events: read` in the workflow. |

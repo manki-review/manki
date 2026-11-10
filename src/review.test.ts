@@ -2059,6 +2059,39 @@ describe('runReview', () => {
     expect(result.agentNames).not.toContain(reviewer);
   });
 
+  it('sweeps the diff for other instances of each kept blocker\'s class with `review.sweep`, and judges what it finds', async () => {
+    const original = { severity: 'blocker', title: 'Cache key misses the locale', file: 'src/cache.ts', line: 10, description: 'd', evidence: ['src/cache.ts:10 builds the key'], proof: ['src/cache.ts:10'] };
+    const elsewhere = { ...original, title: 'Search key misses the tenant', file: 'src/search.ts', line: 40, evidence: ['src/search.ts:40 builds the key'], proof: ['src/search.ts:40'] };
+    const restated = { ...original, title: 'Cache key misses the locale again', line: 14 };
+    const sweeping = (system: string) => system.startsWith('A code review found the blocker');
+    const run = async (sweep: boolean) => {
+      const clients = makeClients();
+      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({
+        content: sweeping(system) ? JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [elsewhere, restated] }) : JSON.stringify([original]),
+      }));
+      mockedRunJudgeAgent.mockClear();
+      mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+      // The judge merges the finders' copies of the blocker into one.
+      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ findings: input.findings.slice(0, 1), summary: 'ok' }));
+      const result = await runReview(clients, { config: makeConfig({ review: { sweep } }), diff: diffChanging('src/cache.ts', 'src/search.ts'), rawDiff: 'raw diff', repoContext: '', isFollowUp: true, openThreads: [] });
+      return { result, sweeps: jest.mocked(clients.reviewer.sendMessage).mock.calls.filter(call => sweeping(call[0])) };
+    };
+
+    const off = await run(false);
+    expect([off.sweeps.length, mockedRunJudgeAgent.mock.calls.length, off.result.sweeps]).toEqual([0, 1, undefined]);
+
+    const { result, sweeps } = await run(true);
+    const reviewer = 'Sweep: Cache key misses the locale';
+    expect(sweeps).toHaveLength(1);
+    // A place the round already judged is not judged twice, and the rest gets a judge call of its own, without the open threads.
+    const [, second] = mockedRunJudgeAgent.mock.calls;
+    expect(second[2].findings.map(f => [f.title, f.reviewers])).toEqual([['Search key misses the tenant', [reviewer]]]);
+    expect(second[2].openThreads).toBeUndefined();
+    expect(result.findings.map(f => f.title)).toEqual(['Cache key misses the locale', 'Search key misses the tenant']);
+    expect(result.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 2 }]);
+    expect(result.llmCalls?.filter(c => c.stage === 'sweep').map(c => c.agent)).toEqual([reviewer]);
+  });
+
   it('stops waiting for a comparison a grace period after the finders are done, records it as timed out and completes the round', async () => {
     const queue = (body: string) => `export class Queue {\n  pending: Set<string> = new Set();\n  done: Set<string> = new Set();\n\n  start(id: string) {\n${body}  }\n}\n`;
     const { root, diff } = gitWorkspace({ 'src/queue.ts': queue('') }, { 'src/queue.ts': queue('    if (this.pending.has(id)) return;\n') });

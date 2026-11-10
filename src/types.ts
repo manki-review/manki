@@ -355,6 +355,23 @@ export interface RoundComparison {
   findings?: number;
 }
 
+/** A search of the diff for other instances of one blocker's defect class. */
+export interface RoundSweep {
+  /** The reviewer name its findings carry. */
+  reviewer: string;
+  /** The blocker it started from, as `file:line`. */
+  blocker: string;
+  /**
+   * `too_specific` when the call judged the class too narrow to recur, `failed` when the call failed or its reply did not
+   * parse twice, and `cut` when the round's cap left it out.
+   */
+  status: 'answered' | 'too_specific' | 'failed' | 'cut';
+  /** The defect class in general terms, as the call stated it. */
+  class?: string;
+  /** The other places it reported, before dedup and the judge. */
+  findings?: number;
+}
+
 export interface RoundSlicing {
   /** The changed files in each slice. A file split across slices counts in each. */
   files: number[];
@@ -594,6 +611,8 @@ export interface ReviewResult {
   relatedWork?: RelatedWork;
   /** Each sibling comparison the round found, asked or cut. */
   comparisons?: RoundComparison[];
+  /** Each sweep the round's blockers started, asked or cut. */
+  sweeps?: RoundSweep[];
   /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
   changedSinceLastRoundCount?: number;
   /** The open or earlier threads where someone claimed a fix: resolved, answered by a person, or confirmed by a round. */
@@ -755,6 +774,8 @@ export interface ReviewRoutingConfig {
   outside_input?: string;
   /** Worked examples of this repository's findings that are and are not blockers, for the judge. */
   examples?: { blocker?: string[]; not_blocker?: string[] };
+  /** Whether each blocker the judge keeps starts a search of the diff for other instances of its defect class. */
+  sweep?: boolean;
 }
 
 /** How a round's review group was picked. */
@@ -1241,6 +1262,8 @@ export interface RoundContext {
   relatedWork?: RoundRelatedWork;
   /** Each sibling comparison the round found, asked or cut. */
   comparisons?: RoundComparison[];
+  /** Each sweep the round's blockers started, asked or cut. */
+  sweeps?: RoundSweep[];
   /** How each open lead ended, so the next round carries over the ones still unsettled. */
   leads?: RoundLead[];
   /**
@@ -1930,7 +1953,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'judge' | 'dedup' | 'verdict' | 'related', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'related', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */

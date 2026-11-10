@@ -3772,6 +3772,7 @@ describe('runFullReview orchestration', () => {
           call('compare', 'dddddddddddd', { agent: 'Sibling field: utxos vs spent' }),
         ],
         comparisons,
+        sweeps: [{ reviewer: 'Sweep: Bug', blocker: 'src/app.ts:5', status: 'answered' as const, class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', blocker: 'src/app.ts:9', status: 'cut' as const }],
         relatedRepos: [{ repo: 'o/r', status: 'fetched', durationMs: 900 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }],
         usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] },
         relatedWork: {
@@ -3805,6 +3806,7 @@ describe('runFullReview orchestration', () => {
       expect(rc.meta.needsHuman).toEqual({ cause: 'repeated', blockers: [blocker] });
       expect(rc.meta.promptVersions).toEqual({ reviewer: ['aaaaaaaaaaaa', 'bbbbbbbbbbbb'], judge: ['cccccccccccc'], compare: ['dddddddddddd'] });
       expect(rc.comparisons).toEqual(comparisons);
+      expect(rc.sweeps).toEqual([{ reviewer: 'Sweep: Bug', blocker: 'src/app.ts:5', status: 'answered', class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', blocker: 'src/app.ts:9', status: 'cut' }]);
       expect(rc.usage.perStage?.compare).toMatchObject({ calls: 1 });
       expect(rc.usage.llmCalls?.[0]).toMatchObject({ stepBudget: 15, wrapUpNoted: true });
       expect(rc.usage.llmCalls?.[3]).not.toHaveProperty('limits');

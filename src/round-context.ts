@@ -423,6 +423,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       },
     }),
     ...(result.comparisons?.length && { comparisons: result.comparisons }),
+    ...(result.sweeps?.length && { sweeps: result.sweeps }),
   };
 }
 
