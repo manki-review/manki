@@ -17,7 +17,7 @@ import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
 import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
-import { isEmptyInterRoundDiff } from './judge';
+import { findingKey, isEmptyInterRoundDiff } from './judge';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
@@ -1451,22 +1451,18 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
 
   const keptSeverities: Record<string, number> = {};
   const droppedSeverities: Record<string, number> = {};
-  const keptSet = new Set(result.findings);
   for (const f of result.findings) {
     keptSeverities[f.severity] = (keptSeverities[f.severity] ?? 0) + 1;
   }
+  // Kept findings are copies of the judged ones, so a judged finding counts as kept by its file, line and title.
+  const keptKeys = new Set(result.findings.map(findingKey));
   // judgeDecisions is built in lock-step with allJudgedForDashboard, so the
   // index aligns and d.originalSeverity carries the pre-judge severity even
   // when the judge merged or renamed the finding before dropping it.
-  allJudgedForDashboard.forEach((f, i) => {
-    if (!keptSet.has(f) && !listed.has(f)) {
-      const sev = judgeDecisions[i].originalSeverity;
-      droppedSeverities[sev] = (droppedSeverities[sev] ?? 0) + 1;
-    }
-  });
-
-  // Kept findings are copies of the judged ones, so the count goes by size, less the listed leads among the judged.
-  const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size - allJudgedForDashboard.filter(f => listed.has(f)).length;
+  const dropped = judgeDecisions.filter((_, i) => !keptKeys.has(findingKey(allJudgedForDashboard[i])) && !listed.has(allJudgedForDashboard[i]));
+  for (const { originalSeverity } of dropped) {
+    droppedSeverities[originalSeverity] = (droppedSeverities[originalSeverity] ?? 0) + 1;
+  }
   const disproved = allJudgedForDashboard.flatMap(f => {
     const by = f.severity === 'ignore' && disproof(f);
     return by ? [{ title: f.title, file: f.file, line: f.line, reason: by.reason }] : [];
@@ -1477,7 +1473,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
     totalDurationMs,
     ...(result.routing && { routing: result.routing }),
     keptCount: result.findings.length,
-    droppedCount: judgeDroppedCount,
+    droppedCount: dropped.length,
     keptSeverities,
     droppedSeverities,
     ...(result.suppressionCount && { suppressionCount: result.suppressionCount }),

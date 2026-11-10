@@ -2519,7 +2519,8 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
-      findings,
+      // Kept findings are copies of the judged ones, as the review tags them after the judge.
+      findings: findings.map(f => ({ ...f })),
       highlights: [],
       reviewComplete: true,
       rawFindingCount: 7,
