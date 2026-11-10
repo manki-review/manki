@@ -65,6 +65,8 @@ const MAX_HUNK_LINES = 120;
 const MAX_EXCERPT_LINE_CHARS = 300;
 const MAX_ITEM_CHARS = 60;
 const MAX_BASES = 8;
+/** The types followed to tell whether a type derives from another. A type with a longer line of bases may. */
+const MAX_LINEAGE = 16;
 /** The longest item source read before its whitespace is collapsed to at most `MAX_ITEM_CHARS`. */
 const MAX_ITEM_SOURCE_CHARS = 4 * MAX_ITEM_CHARS;
 /** A field pattern reads only this much of a line, which holds any declaration, so a crafted line cannot slow it. */
@@ -159,6 +161,16 @@ interface FamilyRules {
   bases?: (scope: SgNode) => SgNode[];
   /** The type a method's receiver names, for a language that declares methods outside their type, such as Go. */
   receiver?: (node: SgNode) => string | undefined;
+  /** The name a method reads its own type's fields through, such as `self`, `this` or a Go receiver. */
+  selfName: (method: SgNode) => string | undefined;
+  /**
+   * Functions that can bind that name again inside a method, so a read through it there is not the method's. With
+   * `byParameter`, one binds it only through a parameter of that name, as a Python `def f(self)` does. Without it, one
+   * always does, as a TypeScript `function`, object literal method or nested class binds its own `this`. `locals` maps each statement
+   * that can bind it inside the method's own body, such as Go `for _, v := range`, to the field holding the names it binds,
+   * or to `''` when the statement lists them itself.
+   */
+  rebinds?: { kinds: string[]; byParameter?: true; locals?: Record<string, string> };
   /** The name of the field a declaration node declares, when the node has no `name` field, such as a Python assignment. */
   fieldName?: (node: SgNode, tree: Tree) => SgNode | undefined;
   /** The type a field holds when no type is written, such as `set` for a Python field assigned `set()`. */
@@ -184,6 +196,7 @@ const RULES: Record<Family, FamilyRules> = {
     object: 'value',
     index: 'index_expression',
     owners: { impl_item: { type: 'type', trait: 'trait' } },
+    selfName: () => 'self',
     testModule: node => node.kind() === 'mod_item' && /^tests?$/.test(node.field('name')?.text() ?? ''),
   },
   typescript: {
@@ -202,7 +215,19 @@ const RULES: Record<Family, FamilyRules> = {
     object: 'object',
     index: 'subscript_expression',
     owners: { class_declaration: { type: 'name' }, abstract_class_declaration: { type: 'name' } },
-    bases: scope => scope.children().find(c => c.kind() === 'class_heritage')?.children().flatMap(clause => clause.children().filter(c => c.isNamed())) ?? [],
+    selfName: () => 'this',
+    rebinds: {
+      kinds: [
+        'function_declaration', 'function_expression', 'generator_function_declaration', 'generator_function', 'method_definition',
+        'class', 'class_declaration', 'abstract_class_declaration',
+      ],
+    },
+    // A class names its bases in `extends` and `implements` clauses, an interface in one `extends` clause, and a type
+    // alias anywhere in its value, such as `Base & { extra: number }`.
+    bases: scope => scope.kind() === 'type_alias_declaration'
+      ? scope.field('value')?.findAll({ rule: { kind: 'type_identifier' } }) ?? []
+      : scope.children().flatMap(c => c.kind() === 'class_heritage' ? c.children() : c.kind() === 'extends_type_clause' ? [c] : [])
+        .flatMap(clause => clause.children().filter(c => c.isNamed())),
   },
   python: {
     declarations: { class_definition: 'type', function_definition: 'function', assignment: 'field' },
@@ -216,6 +241,14 @@ const RULES: Record<Family, FamilyRules> = {
     object: 'object',
     index: 'subscript',
     owners: { class_definition: { type: 'name' } },
+    selfName: () => 'self',
+    rebinds: {
+      kinds: ['function_definition', 'lambda'], byParameter: true,
+      locals: {
+        assignment: 'left', augmented_assignment: 'left', for_statement: 'left', for_in_clause: 'left', named_expression: 'name', as_pattern: 'alias',
+        aliased_import: 'alias',
+      },
+    },
     bases: scope => scope.field('superclasses')?.children().filter(c => c.isNamed() && c.kind() !== 'keyword_argument') ?? [],
     fieldName: pythonFieldName,
     valueType: node => {
@@ -238,10 +271,37 @@ const RULES: Record<Family, FamilyRules> = {
     object: 'operand',
     index: 'index_expression',
     owners: {},
-    receiver: node => typeName(node.field('receiver')?.children().find(c => c.kind() === 'parameter_declaration')?.field('type')?.text() ?? ''),
+    receiver: node => typeName(goReceiver(node)?.field('type')?.text() ?? ''),
+    selfName: node => goReceiver(node)?.field('name')?.text(),
+    rebinds: {
+      kinds: ['func_literal'], byParameter: true,
+      locals: {
+        short_var_declaration: 'left', assignment_statement: 'left', range_clause: 'left', receive_statement: 'left', type_switch_statement: 'alias',
+        var_spec: '', const_spec: '',
+      },
+    },
     names: node => node.kind() === 'field_declaration' ? node.children().filter(c => c.kind() === 'field_identifier') : [],
   },
 };
+
+// Nodes that list the names a statement binds, such as Go's `a, b` in `a, b := f()` or Python's `a, b` in `a, b = f()`.
+const NAME_LISTS = new Set(['expression_list', 'pattern_list', 'tuple_pattern', 'list_pattern', 'as_pattern_target', 'var_spec', 'const_spec']);
+
+/** Returns the names `target` binds: itself when it is a name, or the names a list of them holds, but no `a.b` or `a[b]`. */
+function boundNames(target: SgNode | null | undefined): string[] {
+  if (!target) return [];
+  if (target.kind() === 'identifier') return [target.text()];
+  return NAME_LISTS.has(String(target.kind())) ? target.children().filter(c => c.kind() === 'identifier').map(c => c.text()) : [];
+}
+
+/** Returns the names a function's parameters bind, such as `self` and `x` in Python `def f(self, x=1)`. */
+function parameterNames(fn: SgNode): string[] {
+  return (fn.field('parameters')?.children() ?? []).flatMap(p => p.kind() === 'identifier' ? [p.text()] : p.children().filter(c => c.kind() === 'identifier').map(c => c.text()));
+}
+
+function goReceiver(method: SgNode): SgNode | undefined {
+  return method.field('receiver')?.children().find(c => c.kind() === 'parameter_declaration');
+}
 
 /** Returns the name a type is written with, without a pointer star or generic arguments, such as `Queue` for `*Queue[T]` or `Cache<K, V>`. */
 function typeName(text: string): string {
@@ -272,6 +332,8 @@ const KEYWORD_KIND: Record<string, SymbolKind> = { def: 'function', func: 'funct
 const CONFIG_FILE = /\.(?:ya?ml|toml|json)$/i;
 // A config key. Only keys with an underscore, such as `slice_lines`, are distinct enough to search for.
 const CONFIG_KEY_LINE = /^\s*"?([A-Za-z][\w-]*)"?\s*[:=]/;
+// Type expressions that declare fields in place, such as a TypeScript `{ a: number }` or a Go `struct { A int }`.
+const INLINE_TYPES = new Set(['object_type', 'struct_type']);
 // Nodes that wrap a declaration, so the comments above them belong to it.
 const WRAPPERS = ['export_statement', 'lexical_declaration', 'decorated_definition', 'expression_statement', 'type_declaration', 'const_declaration'];
 const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|test_utils|spec)\/|[._](?:test|spec)s?\.\w+$|(?:^|\/)test_[^/]*\.py$/;
@@ -381,6 +443,8 @@ interface Method {
   trait?: string;
   /** The classes or interfaces the owner extends or implements. */
   bases: string[];
+  /** The name its body reads the owner's fields through, such as `self`. */
+  self?: string;
   decl: Declaration;
 }
 
@@ -511,6 +575,8 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   // A field or variant whose own lines change, its type or its doc, is redefined. A new one has no readers yet, only namesakes.
   const redefined = new Map<string, ChangedSymbol>();
   const changedFieldStructs: StructListing[] = [];
+  // Every type whose field of a name the diff changes, since `symbols` keeps one declaration per name.
+  const changedOwners = new Map<string, Array<{ owner: string; file: string }>>();
   const references = new Map<string, { code: number; count: number; files: Set<string> }>();
   const lookups: Array<Lookup & { file: string }> = [];
   for (const file of files) {
@@ -519,6 +585,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
     if (parsed) {
       const changed = changedDeclarations(parsed.declarations, lines, file.path);
       for (const symbol of changed) addSymbol(symbols, symbol);
+      for (const { name, kind, owner } of changed) if (kind === 'field' && owner) appendTo(changedOwners, name, { owner, file: file.path });
       const replaced = replacedLines(file);
       // Every added line of a run shares the run's removed lines, so each run's words are collected once.
       const runWords = new Map<string[], Set<string>>();
@@ -580,21 +647,33 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   const packages = new Packages(workspace);
   const fields = siblingFields(parser, lookups, lookupFields, hits, packages, diff, added);
   const siblings = { fields, implementations };
-  const { blocks: sections, symbols: listed, common, capped } = formatSymbolUses(
-    searched, hits.filter(hit => !touched.get(hit.file)?.has(hit.line)), packages, new Set(redefined.keys()), typeFiles,
-  );
-
   const perField = referenced.map(([name, { files: readers }]) => structsDeclaringField(parser, name, hits, readers, packages));
   // Each field's likeliest type first, then the second likeliest, so the most read field cannot fill the list alone.
   const interleaved = Array.from({ length: MAX_STRUCTS_PER_FIELD }, (_, i) => perField.flatMap(list => list[i] ?? [])).flat();
   const structs = dedupeListings([...interleaved, ...changedFieldStructs]).slice(0, MAX_STRUCTS);
   const types = structs.map(s => `${s.file}:${s.line}: ${s.text}`);
+  // Placing a use on its type parses the files that hold it. That runs last, so a file it leaves unparsed hides no type,
+  // field or lookup and is not counted.
+  const unparsed = parser.skipped;
+  // A use is another type's only when neither that type nor any type whose field of that name the diff changes may derive
+  // from the other, as far as the file declaring each tells, since a base class's own reads of a field its subclass
+  // overrides read the subclass's value.
+  const otherType = (symbol: ChangedSymbol, hit: Hit) => {
+    const owners = symbol.kind === 'field' ? changedOwners.get(symbol.name) ?? [] : [];
+    return owners.length > 0 && owners.every(({ owner, file }) => {
+      const other = parser.parse(hit.file)?.otherTypeAt(symbol.name, hit.line, owner);
+      return other !== undefined && parser.parse(file)?.mayDeriveFrom(owner, other) === false;
+    });
+  };
+  const { blocks: sections, symbols: listed, common, capped } = formatSymbolUses(
+    searched, hits.filter(hit => !touched.get(hit.file)?.has(hit.line)), packages, new Set(redefined.keys()), typeFiles, otherType,
+  );
   if (types.length > 0) {
     sections.push(`### Types Behind the Fields the Diff Uses\n\nEach type declaring a field the changed lines read or change, with all its fields.\n\n${fenceText(types.join('\n'))}`);
   }
-  if (parser.skipped > 0) {
-    core.info(`Uses outside the diff: the parse limit left ${parser.skipped} files unparsed`);
-    sections.push(`The limit of ${MAX_PARSED_FILES} parsed files or ${MAX_PARSED_BYTES / 1024 / 1024} MB per round left ${parser.skipped} more ${parser.skipped === 1 ? 'file' : 'files'} unparsed, so types, fields and lookups in them are not listed.`);
+  if (unparsed > 0) {
+    core.info(`Uses outside the diff: the parse limit left ${unparsed} files unparsed`);
+    sections.push(`The limit of ${MAX_PARSED_FILES} parsed files or ${MAX_PARSED_BYTES / 1024 / 1024} MB per round left ${unparsed} more ${unparsed === 1 ? 'file' : 'files'} unparsed, so types, fields and lookups in them are not listed.`);
   }
   if (sections.length === 0) return { ...nothing, siblings };
   const record: RoundUses = {
@@ -871,6 +950,19 @@ class ParsedFile {
   private readonly byKey = new Map<string, Declaration>();
   private readonly members = new Map<string, Declaration[]>();
   private readonly fieldsByLine = new Map<number, Declaration[]>();
+  /** Each field a type declares itself, as `Type.field`, and the `key` of each such field. */
+  private readonly ownFields = new Set<string>();
+  private readonly ownFieldKeys = new Set<string>();
+  /** The types and enum variants this file declares by name, `undefined` for a name it declares more than once. */
+  private readonly typesByName = new Map<string, Declaration | undefined>();
+  /**
+   * The methods that name their receiver and the other functions that may bind that name again, by first line, their
+   * first lines, and the index of the one around each. Such a function has no `method`, and `binds` lists the names its
+   * parameters bind when only those count.
+   */
+  private readonly selfScopes: Array<{ start: number; end: number; from: number; method?: Method; binds?: string[] }>;
+  private readonly selfStarts: number[];
+  private readonly enclosing: number[] = [];
   private readonly listings = new Map<string, Omit<StructListing, 'file'> | undefined>();
   private readonly groups = new Map<string, number>();
   private readonly marked = new Map<number, boolean>();
@@ -894,7 +986,31 @@ class ParsedFile {
       if (decl.container) appendTo(this.members, decl.container, decl);
       if (decl.kind === 'field') appendTo(this.fieldsByLine, lineOf(decl.node), decl);
     }
+    for (const decl of this.declarations) {
+      if (decl.kind === 'field' && decl.container && this.isOwnField(decl)) {
+        this.ownFields.add(`${this.byKey.get(decl.container)?.name}.${decl.name}`);
+        this.ownFieldKeys.add(decl.key);
+      }
+      if (decl.kind === 'type' || decl.kind === 'variant') this.typesByName.set(decl.name, this.typesByName.has(decl.name) ? undefined : decl);
+    }
     this.methods = this.findMethods();
+    const selfMethods = this.methods.filter(m => m.self);
+    const methodNodes = new Set(selfMethods.map(m => m.decl.node.id()));
+    const { kinds: rebinders = [], byParameter } = rules.rebinds ?? {};
+    const rebinding = rebinders.length > 0 && selfMethods.length > 0 ? root.root().findAll({ rule: { any: rebinders.map(kind => ({ kind })) } }) : [];
+    this.selfScopes = [
+      ...selfMethods.map(method => ({ start: method.decl.start, end: method.decl.end, from: method.decl.node.range().start.index, method })),
+      ...rebinding.filter(n => !methodNodes.has(n.id())).map(n => ({
+        start: lineOf(n), end: n.range().end.line + 1, from: n.range().start.index, ...(byParameter && { binds: parameterNames(n) }),
+      })),
+    ].sort((a, b) => a.start - b.start || a.from - b.from);
+    this.selfStarts = this.selfScopes.map(s => s.start);
+    const open: number[] = [];
+    this.selfScopes.forEach((scope, i) => {
+      while (open.length > 0 && this.selfScopes[open.at(-1)!].end < scope.start) open.pop();
+      this.enclosing.push(open.at(-1) ?? -1);
+      open.push(i);
+    });
     const accesses = touched.size > 0 && rules.access ? root.root().findAll({ rule: { kind: rules.access.kind } }) : [];
     this.reads = this.fieldReads(accesses, touched);
     this.lookups = this.collectionLookups(accesses, touched);
@@ -1023,7 +1139,8 @@ class ParsedFile {
       if (this.inTests(decl.node)) return [];
       const { owner = '', trait, bases = [] } = this.rules.receiver ? { owner: this.rules.receiver(decl.node) } : this.scopeOf(decl.node);
       if (!TYPE_PATH.test(owner) || (trait !== undefined && !TYPE_PATH.test(trait))) return [];
-      return [{ name: decl.name, owner, ...(trait && { trait }), bases, decl }];
+      const self = this.rules.selfName(decl.node);
+      return [{ name: decl.name, owner, ...(trait && { trait }), bases, ...(self && { self }), decl }];
     });
   }
 
@@ -1041,6 +1158,7 @@ class ParsedFile {
   }
 
   private readonly bases = new Map<number, string[]>();
+  private readonly lineageBases = new Map<number, string[] | undefined>();
 
   /** Returns the first `MAX_BASES` bases `scope` names, read once per class however many methods it holds. */
   private basesOf(scope: SgNode): string[] {
@@ -1084,6 +1202,104 @@ class ParsedFile {
   /** Returns the `key` of the type declaring field `name` at `line`, or `undefined` when no field of that name is declared there. */
   fieldContainer(name: string, line: number): string | undefined {
     return this.fieldsByLine.get(line)?.find(d => d.name === name)?.container;
+  }
+
+  /**
+   * Returns the type other than `owner` whose field `name` is every `name` on `line`: the line declares that type's field,
+   * or reads it as `self.name` in a method of a type that declares its own `name`. A type that may derive from `owner`
+   * counts as `owner`, and a read the parser cannot place, such as `x.name` on a local, counts as a use of `owner`.
+   */
+  otherTypeAt(name: string, line: number, owner: string): string | undefined {
+    const text = this.lines[line - 1] ?? '';
+    if (text.length > MAX_REFERENCE_LINE_CHARS) return undefined;
+    const code = text.replace(COMMENT, '');
+    const word = wordPattern([name]);
+    const total = code.match(new RegExp(word.source, 'g'))?.length ?? 0;
+    const field = this.fieldsByLine.get(line)?.find(d => d.name === name);
+    const type = field && this.ownFieldKeys.has(field.key) ? this.byKey.get(field.container!) : undefined;
+    let other: string | undefined;
+    if (type) {
+      if (total === 1) other = type.name;
+    } else {
+      const method = this.methodAt(line);
+      const reads = method ? code.match(new RegExp(`(?<![\\w$])${escapeRegExp(method.self!)}\\s*\\??\\.\\s*${word.source}`, 'g'))?.length ?? 0 : 0;
+      if (method && reads > 0 && reads === total && this.ownFields.has(`${method.owner}.${name}`)) other = method.owner;
+    }
+    return other !== undefined && !this.mayDeriveFrom(other, owner) ? other : undefined;
+  }
+
+  /**
+   * Whether type `name` is `owner` or may derive from it. It follows the bases of the types this file declares, at most
+   * `MAX_LINEAGE` of them, and past `name` itself never an enum variant. A base declared in another file, named through
+   * a module such as `other.Base`, or declared more than once in this file, may derive from `owner`, and so may a type whose
+   * bases `allBases` cannot read. A standard base such as `Exception` is followed no further.
+   */
+  mayDeriveFrom(name: string, owner: string): boolean {
+    const lineage = [name];
+    for (let i = 0; i < lineage.length; i++) {
+      const type = this.typesByName.get(lineage[i]);
+      const bases = type && (i === 0 || type.kind === 'type') && this.allBases(type.node);
+      if (lineage[i] === owner || !bases || i >= MAX_LINEAGE) return true;
+      for (const base of bases) {
+        const last = base.split(/\.|::/).at(-1)!;
+        if (last === owner || (base !== last && !STANDARD_BASES.has(last))) return true;
+        if (!STANDARD_BASES.has(last) && !lineage.includes(last)) lineage.push(last);
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns each base `scope` names, read once per type, or `undefined` when it names more than `MAX_BASES` or one that is
+   * no plain name, such as a call that makes a base.
+   */
+  private allBases(scope: SgNode): string[] | undefined {
+    if (!this.lineageBases.has(scope.id())) {
+      const nodes = this.rules.bases?.(scope) ?? [];
+      const names = nodes.length > MAX_BASES ? [] : nodes.map(n => n.range().end.index - n.range().start.index <= MAX_ITEM_CHARS ? typeName(n.text()) : '');
+      const plain = nodes.length <= MAX_BASES && names.every(n => BASE_PATH.test(n));
+      this.lineageBases.set(scope.id(), plain ? names : undefined);
+    }
+    return this.lineageBases.get(scope.id());
+  }
+
+  /**
+   * Whether field `decl` belongs to its type itself, not to an inline type or a function inside the type, such as the
+   * `{ a: number }` of a method's parameter. A family that names its fields itself, such as Python, places them already.
+   */
+  private isOwnField(decl: Declaration): boolean {
+    if (this.rules.fieldName) return true;
+    for (let a = this.tree.parent(decl.node); a && nodeKey(a) !== decl.container; a = this.tree.parent(a)) {
+      if (this.rules.declarations[a.kind()] === 'function') return false;
+      if (INLINE_TYPES.has(String(a.kind())) && nodeKey(this.tree.parent(a) ?? a) !== decl.container) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Returns the innermost method of `selfScopes` that holds `line`, such as the one around a nested class's method. A
+   * function between them that binds the method's receiver name again returns nothing.
+   */
+  private methodAt(line: number): Method | undefined {
+    let i = firstAtOrAfter(this.selfStarts, line + 1) - 1;
+    while (i >= 0 && this.selfScopes[i].end < line) i = this.enclosing[i];
+    const between: Array<string[] | undefined> = [];
+    for (; i >= 0 && !this.selfScopes[i].method; i = this.enclosing[i]) between.push(this.selfScopes[i].binds);
+    const method = i >= 0 ? this.selfScopes[i].method : undefined;
+    return method && !between.some(binds => !binds || binds.includes(method.self!)) && !this.rebindsLocally(method) ? method : undefined;
+  }
+
+  private readonly rebound = new Map<Method, boolean>();
+
+  /** Whether `method`'s body binds its receiver name again anywhere in a statement `rebinds.locals` lists, read once per method. */
+  private rebindsLocally(method: Method): boolean {
+    if (!this.rebound.has(method)) {
+      const locals = this.rules.rebinds?.locals ?? {};
+      const kinds = Object.keys(locals);
+      this.rebound.set(method, kinds.length > 0 && method.decl.node.findAll({ rule: { any: kinds.map(kind => ({ kind })) } })
+        .some(n => boundNames(locals[n.kind()] ? n.field(locals[n.kind()]) : n).includes(method.self!)));
+    }
+    return this.rebound.get(method)!;
   }
 }
 
@@ -1179,13 +1395,22 @@ function proseRank(word: RegExp, { file, text }: Hit): number {
   return word.test(text.replace(COMMENT, '')) ? 0 : 1;
 }
 
+/** The patterns that tell how a line names a field: as a read `.name`, as a call `.name(`, and at all. */
+interface FieldPatterns {
+  read: RegExp;
+  call: RegExp;
+  any: RegExp;
+}
+
 /**
- * Ranks a code line: 0 code that names a symbol, or for a field reads it as `fieldRead` matches, a `.name` that is not a
- * `.name(` call, 1 other code, 2 test code.
+ * Ranks a code line as `[test, call, other]`, each 0 or 1. `test` is 1 in a test file. For a field, `call` is 1 when the
+ * line names it only in `.name(` calls, and `other` is 1 when the line never reads it as `.name`, such as a struct literal.
  */
-function codeRank(fieldRead: RegExp | undefined, { file, text }: Hit): number {
-  if (TEST_PATH.test(file)) return 2;
-  return !fieldRead || fieldRead.test(text) ? 0 : 1;
+function codeRank(field: FieldPatterns | undefined, { file, text }: Hit): number[] {
+  const test = Number(TEST_PATH.test(file));
+  if (!field || field.read.test(text)) return [test, 0, 0];
+  const calls = text.match(field.call)?.length ?? 0;
+  return [test, Number(calls > 0 && calls === (text.match(field.any)?.length ?? 0)), 1];
 }
 
 function wordPattern(names: string[], flags = ''): RegExp {
@@ -1205,9 +1430,11 @@ interface SymbolUses {
 /**
  * Returns one block per symbol with its best ranked uses, plus a note on the symbols left out. A symbol in `redefined` is
  * never left out as too common, shows up to `MAX_REDEFINED_USES` uses, and ranks the uses in the files `typeFiles` lists
- * for its type first.
+ * for its type first. A hit `otherType` places on a namesake of another type is no use.
  */
-function formatSymbolUses(symbols: ChangedSymbol[], hits: Hit[], packages: Packages, redefined: Set<string>, typeFiles: Map<string, Set<string>>): SymbolUses {
+function formatSymbolUses(
+  symbols: ChangedSymbol[], hits: Hit[], packages: Packages, redefined: Set<string>, typeFiles: Map<string, Set<string>>, otherType: (symbol: ChangedSymbol, hit: Hit) => boolean,
+): SymbolUses {
   if (symbols.length === 0) return { blocks: [], symbols: [], common: [], capped: [] };
   const byName = new Map(symbols.map((s, index) => [s.name, { symbol: s, index, uses: [] as Hit[] }]));
   const pattern = wordPattern(symbols.map(s => s.name), 'g');
@@ -1217,38 +1444,50 @@ function formatSymbolUses(symbols: ChangedSymbol[], hits: Hit[], packages: Packa
       if (entry && !(hit.file === entry.symbol.file && hit.line === entry.symbol.line)) entry.uses.push(hit);
     }
   }
+  const isCommon = (e: { symbol: ChangedSymbol; uses: Hit[] }) => e.uses.length > COMMON_USES && !redefined.has(e.symbol.name);
+  // Placing a use on its type can parse its file within the round's budget, so only symbols that can be listed are
+  // checked, the redefined ones first.
+  const checked = [...byName.values()].filter(e => !isCommon(e))
+    .sort((a, b) => Number(!redefined.has(a.symbol.name)) - Number(!redefined.has(b.symbol.name)) || a.symbol.tier - b.symbol.tier || a.index - b.index);
+  for (const e of checked) e.uses = e.uses.filter(use => !otherType(e.symbol, use));
   const entries = [...byName.values()].filter(e => e.uses.length > 0);
-  const isCommon = (e: typeof entries[number]) => e.uses.length > COMMON_USES && !redefined.has(e.symbol.name);
   const capOf = (symbol: ChangedSymbol) => redefined.has(symbol.name) ? MAX_REDEFINED_USES : MAX_USES_PER_SYMBOL;
   const typeFilesOf = (symbol: ChangedSymbol) => redefined.has(symbol.name) && symbol.owner ? typeFiles.get(symbol.owner) : undefined;
   const common = entries.filter(isCommon);
   const byRank = (a: { use: Hit; rank: number[] }, b: { use: Hit; rank: number[] }) =>
     compareRanks(a.rank, b.rank) || a.use.file.localeCompare(b.use.file) || a.use.line - b.use.line;
   // Within a rank, the first use in each file comes before a second use in any file, and a file's uses past its best
-  // `MAX_USES_PER_FILE` come after every other file's, so one file cannot fill a symbol's share. Only a symbol's best uses
-  // can be shown, so each keeps just its share before the merge, which bounds the sort over all symbols however many uses
-  // a redefined field has.
+  // `MAX_USES_PER_FILE` come after every other file's, so one file cannot fill a symbol's share. Test files and lines that
+  // only call `.name()` come after that cap. A file's uses are counted in rank order, so its field reads come first. Only a
+  // symbol's best uses can be shown, so each keeps just its share before the merge, which bounds the sort over all symbols
+  // however many uses a redefined field has.
   const ranked = entries.filter(e => !isCommon(e)).flatMap(e => {
     const word = wordPattern([e.symbol.name]);
-    const fieldRead = e.symbol.kind === 'field' ? new RegExp(`\\.${word.source}(?!\\s*\\()`) : undefined;
+    const field = e.symbol.kind === 'field'
+      ? { read: new RegExp(`\\.${word.source}(?!\\s*\\()`), call: new RegExp(`\\.${word.source}\\s*\\(`, 'g'), any: new RegExp(word.source, 'g') }
+      : undefined;
     const typed = typeFilesOf(e.symbol);
     const placed = e.uses.map(use => {
       const location = locationRank(e.symbol, use.file, packages);
-      const [prose, code, untyped] = [proseRank(word, use), codeRank(fieldRead, use), Number(!!typed && !typed.has(use.file))];
-      return { use, rank: [prose, Number(e.symbol.tier === 2), Number(location === 3), untyped, location, code] };
+      const [test, call, other] = codeRank(field, use);
+      return { use, rank: [proseRank(word, use), Number(e.symbol.tier === 2), Number(location === 3), test, call, Number(!!typed && !typed.has(use.file)), location, other] };
     }).sort(byRank);
     const seen = new Map<string, number>();
-    return placed.map(({ use, rank: [prose, member, unreachable, untyped, location, code] }) => {
+    return placed.map(({ use, rank: [prose, member, unreachable, test, call, untyped, location, other] }) => {
       const nth = seen.get(use.file) ?? 0;
       seen.set(use.file, nth + 1);
-      const rank = [prose, member, unreachable, Number(nth >= MAX_USES_PER_FILE), untyped, location, code, e.symbol.tier, nth, e.uses.length, e.index];
+      const rank = [prose, member, unreachable, test, call, Number(nth >= MAX_USES_PER_FILE), untyped, location, other, e.symbol.tier, nth, e.uses.length, e.index];
       return { entry: e, use, rank };
     }).sort(byRank).slice(0, capOf(e.symbol));
   }).sort(byRank);
 
+  // A redefined field's uses in production code are what the change can break, so they take their slots before any other
+  // use fills `MAX_USES`. Only a redefined field ranks files that never name its type last, which other symbols do not.
+  const isReserved = ({ entry, rank: [prose, , unreachable, test, call] }: typeof ranked[number]) =>
+    redefined.has(entry.symbol.name) && prose === 0 && unreachable === 0 && test === 0 && call === 0;
   const shown = new Map<string, Hit[]>();
   let total = 0;
-  for (const { entry, use } of ranked) {
+  for (const { entry, use } of [...ranked.filter(isReserved), ...ranked.filter(r => !isReserved(r))]) {
     const list = shown.get(entry.symbol.name) ?? [];
     if (total >= MAX_USES || list.length >= capOf(entry.symbol)) continue;
     list.push(use);
