@@ -117,7 +117,7 @@ export interface LocalReview {
   /** The commit the change starts from: the merge base, or `head` for a patch. */
   base: string;
   head: string;
-  /** Set to `config` when the base config did not load, which holds a pull request round's approval. */
+  /** Set to `config` when the base config, or the head's copy the change edits, did not load, which holds a pull request round's approval. */
   approvalHeld: ApprovalHeld;
 }
 

@@ -28,7 +28,7 @@ Options:
 Credentials come from CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, OPENAI_OAUTH_TOKEN,
 OPENAI_API_KEY, GEMINI_OAUTH_TOKEN or GEMINI_API_KEY.
 
-Exit codes: 0 nothing blocks, 1 something blocks or the base config did not load,
+Exit codes: 0 nothing blocks, 1 something blocks or a config file did not load,
 2 the review is incomplete or failed.`;
 
 interface ReviewArgs {

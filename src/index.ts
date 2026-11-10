@@ -39,6 +39,7 @@ import {
   fetchConfigFile,
   brokenConfig,
   ConfigHold,
+  configFailed,
   loadBaseConfig,
   readConfigFile,
   fetchRepoContext,
@@ -740,7 +741,7 @@ async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ c
   try {
     headConfig = loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath);
   } catch (error) {
-    core.warning(`Could not load the PR's ${repoConfigPath}, this round uses the base branch's settings: ${failureReason(error)}`);
+    core.warning(`Could not read or load the PR's ${repoConfigPath}, this round uses the base branch's settings: ${failureReason(error)}`);
   }
   const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, repoConfigPath), repoConfigPath, failureReason);
   if (!headConfig) return { config, reviewSource: source, brokenHead: repoConfigPath };
@@ -751,8 +752,11 @@ async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ c
   return { config, reviewSource: source };
 }
 
-/** Whether the run stops before posting a progress comment: the commit is reviewed or stale, or nothing changed. */
-async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, { forceReview, settings = NO_SETTINGS, draft }: FullReviewOptions): Promise<boolean> {
+/**
+ * Whether the run stops before posting a progress comment: the commit is reviewed or stale, or nothing changed. With
+ * `configBroken`, an unchanged PR is reviewed again, so the full round decides whether the config holds its approval.
+ */
+async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, { forceReview, settings = NO_SETTINGS, draft }: FullReviewOptions, configBroken: boolean): Promise<boolean> {
   const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
 
   // A run queued behind another can find its commit reviewed already. `forceReview` reviews it again, as a box tick asks.
@@ -772,7 +776,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
     return true;
   }
 
-  if (trigger.event === 'pull_request:synchronize' && config.auto_review) {
+  if (trigger.event === 'pull_request:synchronize' && config.auto_review && !configBroken) {
     const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, baseRef, commitSha);
     if (standing) {
       const shortSha = standing.commitSha.slice(0, 7);
@@ -1734,7 +1738,7 @@ async function runFullReview(
 
   try {
     const { config, reviewSource, brokenHead } = await loadRunConfig(target, configPath);
-    if (await skipsRound(target, config, trigger, options)) return;
+    if (await skipsRound(target, config, trigger, options, configFailed(reviewSource) || brokenHead !== undefined)) return;
 
     const commentId = await postRunProgress(target, progress, options);
     progress.commentId = commentId;

@@ -199,6 +199,7 @@ jest.mock('./github', () => ({
   readConfigFile: jest.fn().mockResolvedValue(null),
   loadBaseConfig: jest.requireActual('./github').loadBaseConfig,
   brokenConfig: jest.requireActual('./github').brokenConfig,
+  configFailed: jest.requireActual('./github').configFailed,
   fetchRepoContext: jest.fn().mockResolvedValue(''),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),
@@ -1951,7 +1952,7 @@ describe('runFullReview orchestration', () => {
     it.each([
       ['conflict', 'Approval held: the PR conflicts with its base'],
       ['draft', 'Approval held: the PR is a draft'],
-      ['config', 'Approval held: the base branch config did not load'],
+      ['config', 'Approval held: a config file did not load'],
       ['unread', 'Approval held: some changed files were not read'],
     ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {
       jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld: held });
@@ -2097,7 +2098,7 @@ describe('runFullReview orchestration', () => {
       expect(reviewedConfig()).toEqual(actualLoadConfig(base));
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: changesConfig ? 'head' : undefined }));
       const warnings = jest.mocked(core.warning).mock.calls.map(([message]) => String(message)).filter(m => m.includes('.manki.yml'));
-      expect(warnings).toEqual([expect.stringMatching(/^Could not load the PR's \.manki\.yml, this round uses the base branch's settings: .*/)]);
+      expect(warnings).toEqual([expect.stringMatching(/^Could not read or load the PR's \.manki\.yml, this round uses the base branch's settings: .*/)]);
       expect(warnings[0]).toContain(reason);
       expect(jest.mocked(core.info).mock.calls.map(([message]) => String(message))).not.toContainEqual(expect.stringContaining('This PR changes'));
       expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
@@ -6456,6 +6457,7 @@ describe('runFullReview orchestration', () => {
     afterEach(() => {
       jest.mocked(ghUtils.fetchStandingVerdict).mockResolvedValue(undefined);
       jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue('');
+      jest.mocked(ghUtils.readConfigFile).mockResolvedValue(null);
     });
 
     function expectNoRound(): void {
@@ -6586,6 +6588,23 @@ describe('runFullReview orchestration', () => {
 
       expect(jest.mocked(ghUtils.fetchStandingVerdict)).toHaveBeenCalled();
       expect(jest.mocked(ghUtils.fetchInterRoundDiff)).not.toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'main', 'abc123');
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+      expect(mockCreateReview).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the base branch\'s', 'main'],
+      ['the PR\'s own', 'abc123'],
+    ])('runs a normal round while %s config file does not load, so the round decides the hold', async (_label, brokenRef) => {
+      seedPush('APPROVE', REBASED_DIFF);
+      jest.mocked(ghUtils.readConfigFile).mockImplementation(async (_o, _ow, _r, ref) => {
+        if (ref === brokenRef) throw new Error('socket hang up');
+        return null;
+      });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(ghUtils.fetchStandingVerdict)).not.toHaveBeenCalled();
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
       expect(mockCreateReview).not.toHaveBeenCalled();
     });

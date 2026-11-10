@@ -372,13 +372,18 @@ export async function readConfigFile(
   }
 }
 
+/** Whether the base branch config could not be read or loaded. */
+export function configFailed(source: ConfigSource): boolean {
+  return source === 'base_unreadable' || source === 'base_invalid';
+}
+
 /**
  * Returns the config file that holds the round's approval: the base branch's when it could not be read or loaded, else the
  * PR's own copy at `brokenHead` when it does not load and `diff` changes it. A PR that only predates the base's file holds
  * nothing.
  */
 export function brokenConfig(source: ConfigSource, brokenHead: string | undefined, diff: ParsedDiff): ConfigHold | undefined {
-  if (source === 'base_unreadable' || source === 'base_invalid') return 'base';
+  if (configFailed(source)) return 'base';
   return brokenHead !== undefined && diff.files.some(file => file.path === brokenHead) ? 'head' : undefined;
 }
 
