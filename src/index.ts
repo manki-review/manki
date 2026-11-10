@@ -1433,13 +1433,13 @@ async function replyInOpenThreads(run: ReviewRun, result: ReviewResult): Promise
   const replies: string[] = [];
   const threads = new Map(run.recap.previousFindings.flatMap(t => t.threadId ? [[t.threadId, t] as const] : []));
   const rank = (grade: FindingSeverity | 'unknown'): number => grade === 'unknown' ? 0 : -SEVERITY_ORDER.indexOf(grade);
-  // A finding an earlier round already carried on the thread at its grade was replied then, so it raises nothing now.
-  const carried = run.recap.priorRounds.flatMap(r => r.findings.entries ?? []);
+  const entries = run.recap.priorRounds.flatMap(r => r.findings.entries ?? []);
   const raises = (f: Finding, threadId: string): boolean => {
     const thread = threads.get(threadId);
     if (!thread || threadBlocks(thread)) return false;
-    const grades = [thread.recordedGrade ?? thread.severity, ...carried.filter(e => e.threadId === threadId).map(e => e.severity)];
-    return grades.every(grade => rank(f.severity) > rank(grade));
+    // An earlier round that carried a finding above the thread's own grade replied with that raise, so it counts too.
+    const raised = entries.filter(e => e.threadId === threadId && rank(e.severity) > rank(thread.severity)).map(e => e.severity);
+    return [thread.recordedGrade ?? thread.severity, ...raised].every(grade => rank(f.severity) > rank(grade));
   };
   const byThread = new Map<string, Finding[]>();
   for (const f of result.findings) {
