@@ -79,7 +79,7 @@ import {
   showSettings,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, fetchBotReviewThreads, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -1357,8 +1357,10 @@ async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promi
  * Replies in each open thread that carries a finding of this round that adds to it: a variant of the thread's finding,
  * or a blocker that restates a thread that does not block yet. A reply with a blocker in it makes the thread block. It
  * runs before the review posts, so a finding whose reply fails is taken out of its thread and the review posts it.
+ * Returns the node IDs of the replies, which `withdrawReplies` deletes when the review does not post.
  */
-async function replyInOpenThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+async function replyInOpenThreads(run: ReviewRun, result: ReviewResult): Promise<string[]> {
+  const replies: string[] = [];
   const threads = new Map(run.recap.previousFindings.flatMap(t => t.threadId ? [[t.threadId, t] as const] : []));
   const blocks = (threadId: string) => ['blocker', 'unknown'].includes(threads.get(threadId)?.severity ?? 'unknown');
   const byThread = new Map<string, Finding[]>();
@@ -1371,13 +1373,26 @@ async function replyInOpenThreads(run: ReviewRun, result: ReviewResult): Promise
     const variants = findings.filter(f => f.variantOf);
     const body = [raised.length > 0 && formatBlockerReply(raised), variants.length > 0 && formatVariantReply(variants)].filter(part => !!part).join('\n\n---\n\n');
     try {
-      await replyToReviewThread(run.octokit, threadId, body, ...(findings.some(f => f.severity === 'blocker') ? [FOUND_AGAIN_BLOCKER_MARKER] : []));
+      const reply = await replyToReviewThread(run.octokit, threadId, body, ...(findings.some(f => f.severity === 'blocker') ? [FOUND_AGAIN_BLOCKER_MARKER] : []));
+      if (reply) replies.push(reply);
     } catch (error) {
       core.warning(`Failed to reply in thread ${threadId}, so the review posts its findings on their own: ${error}`);
       for (const f of findings) {
         delete f.threadId;
         delete f.variantOf;
       }
+    }
+  }
+  return replies;
+}
+
+/** Deletes the replies a round posted in threads before its review, when the review did not go through. */
+async function withdrawReplies(octokit: Octokit, replies: string[]): Promise<void> {
+  for (const reply of replies) {
+    try {
+      await deleteThreadReply(octokit, reply);
+    } catch (error) {
+      core.warning(`Failed to delete reply ${reply} after the review did not post: ${error}`);
     }
   }
 }
@@ -1760,15 +1775,16 @@ async function runFullReview(
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
     const resolved = await resolveAddressedThreads(run, result);
-    await replyInOpenThreads(run, result);
+    const replies = await replyInOpenThreads(run, result);
     const context = buildContext();
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     let posted: Awaited<ReturnType<typeof postRound>>;
     try {
       posted = await postRound(run, result, context, reviewTimeMs, pauseAfter.restart);
     } catch (error) {
-      // A thread is resolved only by a review that replaces the previous one.
+      // A thread is resolved, or gets a reply that adds to it, only by a review that replaces the previous one.
       await reopenThreads(octokit, resolved);
+      await withdrawReplies(octokit, replies);
       throw error;
     }
     await reportPrState(owner, repo, prNumber, {

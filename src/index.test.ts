@@ -250,6 +250,7 @@ jest.mock('./state', () => ({
   pauseState: jest.requireActual('./state').pauseState,
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
+  deleteThreadReply: jest.requireActual('./state').deleteThreadReply,
   resolveReviewThread: jest.requireActual('./state').resolveReviewThread,
   retireStaleNotices: jest.requireActual('./state').retireStaleNotices,
   unresolveReviewThread: jest.requireActual('./state').unresolveReviewThread,
@@ -5399,6 +5400,7 @@ describe('runFullReview orchestration', () => {
     const unreplied = { ...variant, title: 'Bug E in another field', threadId: 'PRRT_mno' };
     mockGraphql.mockImplementation(async (query: string, vars: { threadId?: string }) => {
       if (query.includes('addPullRequestReviewThreadReply') && vars.threadId === 'PRRT_mno') throw new Error('rate limited');
+      if (query.includes('addPullRequestReviewThreadReply')) return { addPullRequestReviewThreadReply: { comment: { id: `C_${vars.threadId}` } } };
       return { resolveReviewThread: { thread: { isResolved: true } } };
     });
 
@@ -5458,6 +5460,9 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(ghUtils.formatVariantReply)).toHaveBeenCalledWith(variants);
     expect(jest.mocked(ghUtils.formatBlockerReply)).toHaveBeenCalledWith([raised]);
     expect(jest.mocked(ghUtils.postReview).mock.calls[0][5].findings.at(-1)).toEqual({ ...unreplied, threadId: undefined, variantOf: undefined });
+    // A review that does not post takes back the replies it sent first, unless the run is cancelled and writes nothing more.
+    expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('deletePullRequestReviewComment')).map(([, vars]) => vars))
+      .toEqual(outcome === 'superseded' ? [{ id: 'C_PRRT_ghi' }] : []);
     mockGraphql.mockResolvedValue({ resolveReviewThread: { thread: { isResolved: true } } });
     expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_jkl', undefined]);
   });

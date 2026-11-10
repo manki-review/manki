@@ -182,15 +182,22 @@ async function unresolveReviewThread(octokit: Octokit, threadId: string): Promis
 }
 
 /**
- * Posts `body` as a Manki reply in the review thread `threadId`. Pass any marker besides `BOT_MARKER` in `markers`.
- * Throws the abort reason once GitHub writes are stopped.
+ * Posts `body` as a Manki reply in the review thread `threadId` and returns the reply's node ID. Pass any marker besides
+ * `BOT_MARKER` in `markers`. Throws the abort reason once GitHub writes are stopped.
  */
-async function replyToReviewThread(octokit: Octokit, threadId: string, body: string, ...markers: string[]): Promise<void> {
+async function replyToReviewThread(octokit: Octokit, threadId: string, body: string, ...markers: string[]): Promise<string | undefined> {
   assertWritesAllowed();
-  await octokit.graphql(
+  const result = await octokit.graphql<{ addPullRequestReviewThreadReply?: { comment?: { id?: string } } } | undefined>(
     'mutation($threadId: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) { comment { id } } }',
     { threadId, body: withMarkers(body, BOT_MARKER, ...markers) },
   );
+  return result?.addPullRequestReviewThreadReply?.comment?.id;
+}
+
+/** Deletes Manki's reply with the node ID `commentId` from its review thread. Throws the abort reason once GitHub writes are stopped. */
+async function deleteThreadReply(octokit: Octokit, commentId: string): Promise<void> {
+  assertWritesAllowed();
+  await octokit.graphql('mutation($id: ID!) { deletePullRequestReviewComment(input: { id: $id }) { clientMutationId } }', { id: commentId });
 }
 
 function reopenReply(isSecurity: boolean, paused: boolean): string {
@@ -646,4 +653,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, deleteThreadReply, explainUnreviewedHead, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
