@@ -43,8 +43,15 @@ const MIN_MATCHING_LINES = 3;
 export function locatePostedLine(posted: string, line: number, current: string): number | undefined {
   const old = posted.split('\n');
   const now = current.split('\n');
+  // Indexed in one pass, and only lines long enough to vote, so a file of repeated short lines stays linear.
   const at = new Map<string, number[]>();
-  now.forEach((l, i) => at.set(l.trim(), [...(at.get(l.trim()) ?? []), i + 1]));
+  now.forEach((l, i) => {
+    const text = l.trim();
+    if (text.length < MIN_LOCATABLE_CHARS) return;
+    const lines = at.get(text);
+    if (lines) lines.push(i + 1);
+    else at.set(text, [i + 1]);
+  });
   const votes = new Map<number, number>();
   for (let d = -OPEN_THREAD_CODE_WINDOW; d <= OPEN_THREAD_CODE_WINDOW; d++) {
     const text = old[line - 1 + d]?.trim() ?? '';

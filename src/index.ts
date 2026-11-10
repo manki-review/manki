@@ -1081,19 +1081,20 @@ async function collectOpenThreads(
     const contents = parsed.has(t.file) ? lockfileContents : fileContents;
     const posted = postedAt.get(t.threadId);
     const old = posted && postedContents.get(posted.commit)?.get(t.file);
-    if (!posted || old === undefined) return { ...t, currentCode: extractCurrentCodeWindow(contents, t.file, t.line) };
     const current = contents?.get(t.file);
-    const now = current === undefined ? undefined : locatePostedLine(old, posted.line, current);
+    // Without the head's copy nothing can be said about where the code went, so the thread keeps the plain path.
+    if (!posted || old === undefined || current === undefined) return { ...t, currentCode: extractCurrentCodeWindow(contents, t.file, t.line) };
+    const now = locatePostedLine(old, posted.line, current);
     // Where the code is not found, the head's code near the same line still shows what the fix left there.
-    const near = now ?? Math.min(posted.line, current?.split('\n').length ?? posted.line);
+    const near = now ?? Math.min(posted.line, current.split('\n').length);
     return {
       ...t,
       line: near,
       postedCode: extractCurrentCodeWindow(new Map([[t.file, old]]), t.file, posted.line),
       postedCommit: posted.commit,
       ...(now === undefined && { postedCodeGone: true }),
-      ...((current === undefined || postedCodeChanged(old, posted.line, current, now)) && { changedSincePosted: true }),
-      currentCode: current === undefined ? '' : extractCurrentCodeWindow(contents, t.file, near),
+      ...(postedCodeChanged(old, posted.line, current, now) && { changedSincePosted: true }),
+      currentCode: extractCurrentCodeWindow(contents, t.file, near),
     };
   });
   return { openThreads, fileContents };

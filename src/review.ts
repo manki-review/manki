@@ -2357,7 +2357,8 @@ function partialFixGrade(evaluation: ThreadEvaluation, thread: OpenThread | unde
   if (named) return top;
   if (thread.isSecurity || !evaluation.grade) return carried;
   const judged = rank(evaluation.grade) > rank(top) ? evaluation.grade : top;
-  return rank(judged) > rank(carried) && !pushChangedFiles.has(thread.file) ? carried : judged;
+  // An outdated thread's code can have changed in an earlier push than the last one.
+  return rank(judged) > rank(carried) && !pushChangedFiles.has(thread.file) && !thread.changedSincePosted ? carried : judged;
 }
 
 /**

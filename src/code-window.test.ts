@@ -93,6 +93,13 @@ describe('locatePostedLine', () => {
     expect(locatePostedLine(posted, 2, 'nothing here')).toBeUndefined();
   });
 
+  it('stays linear on a head file of many repeated lines, which the PR author controls', () => {
+    const repeated = [...Array(200_000).fill(''), ...Array(100_000).fill('  return parse(data);'), ...body].join('\n');
+    const started = Date.now();
+    expect(locatePostedLine(posted, 2, repeated)).toBe(300_002);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   it('tells whether the code around the posted line changed since it was posted', () => {
     expect(postedCodeChanged(posted, 2, ['// header', ...body.map(l => `  ${l}`)].join('\n'), 3)).toBe(false);
     expect(postedCodeChanged(posted, 2, posted.replace('return null', 'throw new Error()'), 2)).toBe(true);
