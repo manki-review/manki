@@ -1,0 +1,30 @@
+id: attrs-1200
+repo: python-attrs/attrs
+source: attrs upstream PR 1200
+base: 079954ef405919968fb020921232509df3b0bcc9
+head: 6bbc0a6f4fb7ad423402a2791e4509d90134f064
+title: "Add support for cached_properties to slotted attrs classes."
+body: |
+  # Summary
+
+  Proof of concept for detecting and adapting cached_property decorated functions for slotted classes. This addresses:
+
+  Caching dynamic properties when using slots=True. (upstream issue 164)
+key_version: 1
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "`_ClassBuilder._create_slots_class` now checks every class dict entry with `isinstance(..., functools.cached_property)`, but `functools.cached_property` only exists from Python 3.8 while the package still declares `requires-python = \">=3.7\"`. On Python 3.7 every slotted class, which includes every `attrs.define` class, fails at class creation with an `AttributeError`, whether or not it uses a cached property."
+    locations: ["src/attr/_make.py", "_create_slots_class", "cached_properties", "functools.cached_property"]
+    fix: "74205c56531b3ab883f2f6257d710dd5b1e65b98"
+  - id: K2
+    severity: blocker
+    mechanism: "After collecting `cached_properties`, `_create_slots_class` removes the descriptors with a single `del cd[name]` after the annotations loop, so only the last cached property is deleted. With two or more cached properties the others stay in the class dict while their names are also in `__slots__`, and creating the class raises `ValueError` (slot conflicts with class variable). When the class dict has no `__annotations__`, the loop never runs and `name` is unbound, so the `del` raises `UnboundLocalError`. Each cached property needs its own `del cd[name]` in a loop over `cached_properties`."
+    locations: ["src/attr/_make.py", "_create_slots_class", "cached_properties"]
+    fix: "6737a28371722773aec39e22e76bd1f3cef35344"
+  - id: K3
+    severity: warning
+    mechanism: "The generated `__getattr__` from `_make_cached_property_getattr` only falls back to `cd.get(\"__getattr__\")`, the `__getattr__` defined in the class body itself. A `__getattr__` inherited from a base class or mixin is never consulted, so any attribute that is not a cached property raises `AttributeError` instead of reaching the parent's `__getattr__`. The fallback has to follow the MRO, for example through `super().__getattr__`."
+    locations: ["src/attr/_make.py", "_make_cached_property_getattr", "__getattr__", "_create_slots_class"]
+    fix: "80e8a6b8cda020818c77688f6a306275887c8aa3"
+nice_to_have: []

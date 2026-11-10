@@ -1,0 +1,28 @@
+id: vapor-3467
+repo: vapor/vapor
+source: vapor upstream PR 3467
+base: 8cfd55759c9f9e30ebdb95e30a3e80d96563f3fd
+head: f12c8eb3dbd20c6df6b8d4b19b22ce7e5e185801
+title: "Prefer FoundationEssentials"
+body: |
+  We should use FoundationEssentials where possible to avoid the Foundation dependency bloat on Linux
+
+  As part of this, Swift `Regex` doesn't support the old `regexInternationalEmail` pattern we had which used code-point ranges (e.g `\^@-ÿĀ-\u017...`), so I had to replace it to use unicode property classes
+key_version: 1
+must_catch:
+  - id: K1
+    severity: blocker
+    mechanism: "`HTTPCookies.Value.serialize(name:)` now writes `\"; Expires\\(expires.formatted(.rfc1123))\"` without the `=`, so every `Set-Cookie` header with an expiry carries a malformed `ExpiresSun, 06 Nov ...` attribute that clients ignore. The default sessions cookie from `SessionsConfiguration.default()` loses its one week lifetime and becomes a browser session cookie, and `HTTPCookies.Value.expired`, which `SessionsMiddleware` sends to drop a destroyed session, no longer expires the cookie."
+    locations: ["Sources/Vapor/HTTP/Headers/HTTPCookies.swift", "serialize", "expires", "HTTPCookies.Value"]
+    fix: "55dab16127d54a4d27e6e84a5b75a4935ec6fc78"
+  - id: K2
+    severity: warning
+    mechanism: "In `URLEncodedFormDecoder.Configuration.decodeDate`, the `.iso8601` case replaces `ISO8601DateFormatter` with `Date(dateString, strategy: .rfc1123)`, the HTTP date parser. An ISO-8601 string such as `2026-06-15T12:09:57Z` never parses, so every form or query decode of a `Date` under the `.iso8601` strategy throws `dataCorrupted` (\"Unable to decode ISO-8601 date.\")."
+    locations: ["Sources/Vapor/URLEncodedForm/URLEncodedFormDecoder.swift", "decodeDate", "iso8601", "dateDecodingStrategy"]
+    fix: "55dab16127d54a4d27e6e84a5b75a4935ec6fc78"
+  - id: K3
+    severity: warning
+    mechanism: "Because `CharacterSet` is not in FoundationEssentials, the whole of `CharacterSet.swift` is commented out with no replacement: the public `.ascii`, `.alphanumeric` and `.characterSet(_:)` validators for `String` and `[String]` and their `ValidatorResults.CharacterSet` and `CollectionCharacterSet` results disappear. Users' validations stop compiling, and `ValidationTests`, which still use `.alphanumeric` and `.characterSet(.alphanumerics + .whitespaces)`, no longer build."
+    locations: ["Sources/Vapor/Validation/Validators/CharacterSet.swift", "alphanumeric", "characterSet", "ValidatorResults.CharacterSet", "Tests/VaporTests/ValidationTests.swift"]
+    fix: "2d43901c1f1d62360c66bb4fd43c428a05e996dc"
+nice_to_have: []

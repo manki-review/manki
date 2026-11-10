@@ -1,0 +1,107 @@
+id: ts-42-r2
+repo: manki-review/token-service
+source: token-service PR 42, round 2
+base: cf7437c087aa8063a8ed451a107eb506a3ae72a5
+head: 790436d5716fe86e79ab94190c70799e14c7bd08
+title: "feat: handle settings box edits in the Worker"
+body: |
+  ## Summary
+
+  The Worker now applies the settings boxes on Manki's progress comment. A writer's tick acts at once without a runner: Pause stops automatic reviews until unticked, Full review, Deeper review, Review this draft and Force review each ask for one review with that mode, and Cancel cancels the running review. A tick by someone without write access is put back. `/state` returns the result for the Action (manki-review/manki#534).
+
+  ## `/state` shape (manki-review/manki#534 builds on this)
+
+  - Top level `settings: { paused: boolean }`. Its presence tells the Action that the Worker handles the boxes.
+  - Every `active[]` and `queue[]` item carries `modes: ('full' | 'deeper' | 'draft' | 'force')[]`, empty for an item without modes. The run finds its own item by `run_id === github.context.runId` and reads its modes there, never from the dispatch inputs.
+
+  ## Markup
+
+  ```
+  - [ ] Pause automatic reviews <!-- manki-box:pause -->
+  - [ ] Full review <!-- manki-box:full -->
+  - [ ] Deeper review <!-- manki-box:deeper -->
+  - [ ] Cancel this review <!-- manki-box:cancel -->
+  - [ ] Review this draft <!-- manki-box:draft -->
+  - [ ] Force review <!-- manki-box:force -->
+  <!-- manki-settings -->
+  ```
+
+  The Worker keys on the hidden `manki-box:<id>` only, so the Action may change labels and show only the boxes that apply.
+
+  ## Changes
+
+  - `src/manki.ts`: `SETTINGS_MARKER`, `changedBoxes` (the boxes whose tick differs between two bodies) and `setBoxes`.
+  - `src/routing.ts`: an `issue_comment.edited` on a comment by one of Manki's logins holding the marker becomes a `settings` item in a new `settings` lane, with the changed boxes. An edit that changes no box, or has no earlier body, is ignored. Manki's own edits are already dropped as a bot's.
+  - `src/coordinator.ts`:
+    - The editor's write access is looked up as for any comment, now cached for 5 minutes per login. Without it, `revertBoxes` puts the changed boxes back on the comment and nothing else changes.
+    - `applySettings`: Pause sets or clears `settings.paused`, which holds automatic reviews like the reported `pause`. A review box adds its mode to a review a writer already queued. A queued push review becomes the box's review, so a pause, a skip rule or a draft cannot drop it. Otherwise a review of the settings comment is queued. Cancel cancels the running review through the existing `cancel` with the coordinator's `actions: write` token, the item ends `skipped` with conclusion `cancelled`, and the cron leaves that head alone. Unticking any box but Pause changes nothing.
+    - Settings edits of one comment are never collapsed in the queue, since each carries its own changes. An edit older than the last one applied (by the comment's `updated_at`) changes nothing, so a reordered or redelivered tick cannot undo a newer one.
+    - A cancel GitHub fails throws, so the edit is tried again. Cancel is applied first within an edit. A revert sets Pause as it applies and every other box unticked.
+    - New `modes` and `boxes` columns (one migration).
+  - README documents the markup, the lane and the `/state` fields.
+
+  ## What changes for users
+
+  Once Manki v7 renders the boxes, ticking one acts within seconds and starts at most the one review it asks for. Nothing changes before that: today's Force review ticks work as before.
+
+  ## Testing
+
+  - `npx vitest run`: 482 passed. `npm run typecheck` clean.
+  - Routing: a tick goes to the settings lane with the changed boxes (`[X]` counts), an edit that changes no box, one without the earlier body, and a copy of the boxes in someone else's comment are ignored.
+  - Coordinator:
+    - Pause holds a push review, a Force review tick on the paused PR still dispatches with `modes: ['force']`, and after the untick a push dispatches again.
+    - Full, Deeper and Pause ticks on a queued push review turn it into one review of the settings comment with `modes: ['full', 'deeper']`, which dispatches although the PR is paused.
+    - Cancel cancels the running run (`POST actions/runs/9000/cancel`), the item ends `skipped`/`cancelled` and the head counts as handled. With nothing running it does nothing.
+    - A tick by someone without write access is put back on the comment as the state applies (also for a tick then an untick, and for an untick of a writer's Pause), changes nothing and dispatches nothing, and they are looked up once.
+    - An edit older than the last applied one is ignored. A failed cancel is retried.
+    - The empty and running `/state` replies include `settings` and `modes`.
+
+  Closes #30
+  Part of manki-review/manki#1036
+key_version: 1
+prior_round:
+  head: 3b4d551c3da94003dce64abcb76bdc504b9ebfca
+  findings:
+    - id: P1
+      severity: warning
+      title: Pause state follows delivery order, so reordered or redelivered ticks leave the wrong value
+      file: src/coordinator.ts
+      line: 929
+      posted: thread
+      state: open
+      description: Each settings delivery carries an absolute `ticked` value, and `applySettings` stores it as `settings.paused`. `GitHub` does not guarantee delivery order, and the reconciler redelivers failed deliveries up to 6 hours later. A tick followed quickly by an untick can therefore arrive as untick then tick, or a redelivered tick can land after a newer untick. Pause then stays set while the comment shows it cleared, and automatic reviews are silently skipped. Derive the value from the comment's current...
+    - id: P2
+      severity: warning
+      title: A failed cancel is reported as requested and never retried as a user cancel
+      file: src/coordinator.ts
+      line: 972
+      posted: thread
+      state: open
+      description: "`cancel` keeps the item running when the `GitHub` cancel call fails and does not throw. `cancelReview` still returns `cancel of work N requested`, and `applySettings` finishes the settings item as `done`. The writer's Cancel tick is consumed and the run goes on until the 40-minute poll timeout, where it ends as `timed_out` instead of `cancelled`. Have `cancel` return whether it succeeded, and let `cancelReview` throw or report the failure so the settings item is retried."
+    - id: P3
+      severity: warning
+      title: Revert flips each box relative to the edit instead of restoring the coordinator's state
+      file: src/coordinator.ts
+      line: 987
+      posted: thread
+      state: open
+      description: "`revertBoxes` sets each box to `!ticked` on the comment as it is now. Take an outsider who ticks Pause and then unticks it. Both edits queue. The first revert leaves Pause unticked. The second revert ticks it again. The comment now shows Pause ticked while `settings.paused` is `false`, and a writer who unticks it changes nothing. Set `pause` to `this.reported().settings.paused` and every one-shot box to unticked, so the comment always matches what applies."
+      suggested_fix: "    const reverted = setBoxes(body ?? '', changes.map(({ box }) => ({ box, ticked: box === 'pause' ? this.reported().settings.paused : false })));"
+must_resolve: [P1, P2, P3]
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`applySettings` skips a whole settings edit whose comment `updated_at` is older than `settings_at`, the time of the last edit applied for any box. A writer's Full, Deeper, Draft, Force or Cancel tick that the reconciler redelivers after a newer Pause edit was applied is therefore dropped, and the requested review or cancel never happens."
+    locations: ["src/coordinator.ts", "applySettings", "settings_at"]
+    fix: "c8319a240a6b0dec401d1a3c452af9647d15908e"
+  - id: K2
+    severity: warning
+    mechanism: "`cancelReview` cancels whichever review is running when the settings item is processed. A Cancel tick delivered late, after its run ended and a newer one started, cancels the newer run that the writer never saw."
+    locations: ["src/coordinator.ts", "cancelReview", "applySettings"]
+    fix: "ad18ab969be44af3413a4dfc16e30042dd000b38"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "A settings edit is routed with `writer: false`, so the installation limiter counts it as an outsider's delivery. Only a writer can edit Manki's comment, so during an outsider flood a writer's Pause or Cancel tick can be refused."
+    locations: ["src/routing.ts", "routeIssueComment", "src/webhook.ts", "handleWebhook"]
+    fix: "c8319a240a6b0dec401d1a3c452af9647d15908e"

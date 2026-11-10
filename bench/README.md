@@ -24,7 +24,17 @@ CHECKOUTS="--checkout xdustinface/rust-dashcore=$HOME/GIT/rust-dashcore \
   --checkout xdustinface/dash=$HOME/GIT/bench-repos/dash \
   --checkout apple/swift-nio=$HOME/GIT/bench-repos/swift-nio \
   --checkout apache/commons-lang=$HOME/GIT/bench-repos/commons-lang \
-  --checkout Kotlin/kotlinx.coroutines=$HOME/GIT/bench-repos/kotlinx.coroutines"
+  --checkout Kotlin/kotlinx.coroutines=$HOME/GIT/bench-repos/kotlinx.coroutines \
+  --checkout python-attrs/attrs=$HOME/GIT/bench-repos/attrs \
+  --checkout rack/rack=$HOME/GIT/bench-repos/rack \
+  --checkout google/gson=$HOME/GIT/bench-repos/gson \
+  --checkout valkey-io/valkey=$HOME/GIT/bench-repos/valkey \
+  --checkout tokio-rs/tokio=$HOME/GIT/bench-repos/tokio \
+  --checkout denoland/std=$HOME/GIT/bench-repos/deno-std \
+  --checkout App-vNext/Polly=$HOME/GIT/bench-repos/polly \
+  --checkout go-chi/chi=$HOME/GIT/bench-repos/chi \
+  --checkout seredis/StackExchange.Redis=$HOME/GIT/bench-repos/StackExchange.Redis \
+  --checkout vapor/vapor=$HOME/GIT/bench-repos/vapor"
 ```
 
 Clone each in full with `git clone https://github.com/<owner/name>.git`. A blobless or shallow clone does not work, because the review fetches its workspace from this clone. A case's head is often a commit of a pull request that no branch holds any more. The bench names each commit it cannot find, and `git fetch origin <sha>` fetches it. For the rust-dashcore cases, fetch the fork's `test-base/<n>` and `test/<n>` branches. The Dash Core cases name the owner's fork `xdustinface/dash`, which shares its objects with the upstream repository, so a clone of the fork can fetch every upstream commit by SHA. The review reads `.manki.yml` from `base`, or the defaults when there is none, and the tools read a fresh copy holding only `head`, so no later fix commit is visible to them.
@@ -39,7 +49,7 @@ The cases are split in two sets. `cases/` is the tuning set: develop and debug a
 npm run bench -- $CHECKOUTS --holdout
 ```
 
-Both sets mix repositories, languages and sizes: rust-dashcore (Rust), manki and token-service (TypeScript), the GitHub CLI (Go), Dash Core (C++), SwiftNIO (Swift), Apache Commons Lang (Java), kotlinx.coroutines (Kotlin), and CI workflow changes. Each set holds clean cases. The five rust-dashcore replays are tuning cases, each as a first round and as a follow-up round (`rdc-<n>-r2`).
+Both sets mix repositories, languages and sizes: rust-dashcore (Rust), manki and token-service (TypeScript), the GitHub CLI (Go), Dash Core (C++), SwiftNIO and Vapor (Swift), Apache Commons Lang and Gson (Java), kotlinx.coroutines (Kotlin), attrs (Python), Rack (Ruby), Valkey (C), Polly and StackExchange.Redis (C#), Tokio (Rust), Deno std (TypeScript), chi (Go), and CI workflow changes. Each set holds clean cases. The five rust-dashcore replays are tuning cases, each as a first round and as a follow-up round (`rdc-<n>-r2`).
 
 `npm run missed-blockers -- --repo <owner/name> [--last <n>]` drafts more cases from Manki's own misses. It reads the round records of the last merged pull requests and finds each round whose blockers sit on code the round before it had already reviewed (`origin: reviewed`), which no earlier round raised as a blocker. Each such earlier round becomes a draft in `bench/drafts/`: its commit is the head, its merge base with the base commit the pull request recorded is the base, and each missed blocker is a `must_catch` item. Each follow-up round also becomes a follow-up draft: its `prior_round` holds the latest of each finding the rounds before it posted, with each thread's state before the round. A thread an earlier round resolved with its "Fixed in" reply is `fixed`. `must_resolve` lists the threads the round resolved, `must_keep_open` those it resolved and a later round found again, and `must_not_repeat` the threads it left open and the body findings it posted again. A follow-up round with missed blockers gets one draft holding both. Run it on a repository Manki reviews, such as manki-review/manki or the owner's forks, since a case names its repository. A draft has `key_version: 0`. Check its items, severities and locations, then set `key_version` to 1 and move it to `bench/cases` or `bench/holdout`. The body is the pull request body as it is now, and references to repositories outside manki-review and the forks are written as plain text.
 

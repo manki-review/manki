@@ -1,0 +1,33 @@
+id: gson-2948
+repo: google/gson
+source: gson upstream PR 2948
+base: a271f487b5969601308ed438b2da9c8fc1a8e927
+head: f20ca75fe17b2730f8bc3e8b4d7432935c64249d
+title: "Add type adapters for `java.time` classes"
+body: |
+  Add type adapters for `java.time` classes.
+
+  These adapters essentially freeze the JSON representation that `ReflectiveTypeAdapterFactory` established by default, based on the private fields of `java.time` classes. That's not a great representation, but it is understandable. Changing it to anything else would break compatibility with systems that are expecting the current format.
+
+  If Gson had been updated with `java.time` adapters at the time the `java.time` API was added, the representation would surely have been something else, probably ISO standard formats. We can potentially supply non-default adapters for that, but we'll still need to have these legacy adapters by default.
+
+  I've been meaning to make this change for a while, but the need to do so becomes more urgent with JDK commit cc05530b813564a40c233eaaa80b906795c6d752, which makes a number of `java.time` fields `transient`. That means that, in JDK 26, the reflective-based adapter will no longer work with the classes that were changed.
+
+  This addresses upstream issues 1059 and 739. All relevant classes in the `java.time` package are covered.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`IntegerFieldsTypeAdapter.read` reads a name with `nextName()` and only consumes the value when the name is one of its `fields`. An unknown property leaves its value unread, so the next loop iteration peeks a value token, not `END_OBJECT`, and `nextName()` throws `IllegalStateException`. This is a regression for `CALENDAR`, whose old adapter read and ignored unknown properties, and it affects every adapter built on this class (`DURATION`, `INSTANT`, `LOCAL_DATE`, `LOCAL_TIME`, `ZONE_OFFSET`). The `default` branches of `LOCAL_DATE_TIME` and `ZONED_DATE_TIME` and the non-`id` names in `ZONE_REGION` have the same missing `in.skipValue()`."
+    locations: ["gson/src/main/java/com/google/gson/internal/bind/TypeAdapters.java", "IntegerFieldsTypeAdapter", "read", "CALENDAR", "LOCAL_DATE_TIME", "ZONE_REGION", "skipValue"]
+    fix: "4ab05a96c496313cf003532de1856e1c3731b410"
+  - id: K2
+    severity: warning
+    mechanism: "`JAVA_TIME_FACTORY` maps every `ZoneId` type other than `ZoneOffset` to `ZONE_REGION`, which only reads and writes an `id` field. A `ZoneId` field holding a `ZoneOffset`, such as `ZoneOffset.UTC` or the result of `ZoneId.of(\"Z\")`, is written by `TypeAdapterRuntimeTypeWrapper` with the runtime type's adapter `ZONE_OFFSET` as `{\"totalSeconds\":0}`, and reading it back through `ZONE_REGION` fails because it never handles `totalSeconds`. So a plain `ZoneId` field does not round-trip whenever its value is an offset. The `ZoneId` adapter has to write and read both forms."
+    locations: ["gson/src/main/java/com/google/gson/internal/bind/TypeAdapters.java", "JAVA_TIME_FACTORY", "ZONE_REGION", "ZONE_OFFSET"]
+    fix: "4ab05a96c496313cf003532de1856e1c3731b410"
+nice_to_have:
+  - id: N1
+    severity: suggestion
+    mechanism: "`LOCAL_DATE_TIME` and `ZONED_DATE_TIME` report a missing field with `requireNonNull`, which throws `NullPointerException` instead of a `JsonSyntaxException` naming the field and the JSON path, unlike `ZONE_REGION`."
+    locations: ["gson/src/main/java/com/google/gson/internal/bind/TypeAdapters.java", "LOCAL_DATE_TIME", "ZONED_DATE_TIME", "requireNonNull"]

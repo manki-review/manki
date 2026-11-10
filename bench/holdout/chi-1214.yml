@@ -1,0 +1,27 @@
+id: chi-1214
+repo: go-chi/chi
+source: chi upstream PR 1214
+base: 167e1e3bd039d060696b99c8da4e876ae04f42c1
+head: 5ec1aa5cc93ebbc11ec4bf196526786277e05eb4
+title: "middleware: treat RemoteAddr as the rightmost hop in ClientIPFrom*"
+body: |
+  Fixes security advisory GHSA-j6qf-3m9c-vwj3.
+
+  `ClientIPFromXFF` trusted XFF entries in the configured CIDRs but never checked that the TCP peer was one of those proxies. Any client reaching the origin directly could pick its own client IP, e.g. `X-Forwarded-For: 10.0.0.7`.
+
+  The fix: treat `r.RemoteAddr` as the rightmost hop. If the peer isn't trusted, it's the client and the header is ignored. This is how nginx (`set_real_ip_from`), Apache (`RemoteIPTrustedProxy`) and Caddy (`trusted_proxies`) work.
+
+  ## Changes
+
+  - **`ClientIPFromXFF(cidrs...)`**: an untrusted peer is the client IP. An unparseable `RemoteAddr` sets no IP (fail-closed).
+  - **`ClientIPFromHeader(header, cidrs...)`**: new optional trusted prefixes, same rule. Without them, behavior is unchanged.
+  - **`ClientIPFromXFFTrustedProxies(n)`**: no change. It's for unknown proxy IPs, and its docs already require a firewall.
+
+  ## Breaking changes (release notes)
+
+  - `ClientIPFromXFF()` with no prefixes now **panics at startup**. Without CIDRs it only duplicated `ClientIPFromXFFTrustedProxies(1)`. Migrate to that, or pass your proxy, e.g. `ClientIPFromXFF("127.0.0.1/32", "::1/128")`. Callers passing a config slice that can be empty should fall back to `ClientIPFromRemoteAddr`.
+  - With prefixes, a peer outside them now gets its own IP as the client. Make sure your list covers the proxy that actually connects to you.
+  - Unix-socket setups (unparseable `RemoteAddr`) get no IP from `ClientIPFromXFF`. Use `ClientIPFromXFFTrustedProxies(1)`.
+key_version: 1
+must_catch: []
+nice_to_have: []

@@ -1,0 +1,89 @@
+id: manki-1321-r2
+repo: manki-review/manki
+source: manki PR 1321, round 2
+base: 1b0857a367fa64b15799d99a353f2c7d1655837a
+head: 78c9856302cee7466b6328241363f5fc952b3b84
+title: "fix: compare protocol methods only across a base"
+body: |
+  ## Summary
+
+  Sibling-implementation questions no longer group methods that every type has across unrelated classes. Python `__init__` and other dunder methods, TypeScript `constructor` and `toString`, Go `String` and `Error`, and a Rust `new` are compared only between classes that share a base class or interface. Implementations of standard Rust traits are not compared at all. This fixes the last warning on #1289.
+
+  ## Changes
+
+  - `siblingImplementations` groups a protocol method by each base its class names, so two subclasses of `Account` still compare their `__eq__`, while two unrelated classes in one directory do not compare their `__init__`.
+  - Python classes read their bases from the superclass list, keyword arguments left out, and TypeScript classes from `extends` and `implements`, once per class. A base may be a dotted path such as `models.Model`. Standard bases unrelated classes name, such as `object`, `Generic`, `Protocol`, `ABC`, `Enum`, `Exception` or `Error`, are left out, and so is a base written as a long expression. Classes that share two bases are asked about a method once.
+  - Methods of standard Rust traits, such as `Display`, `Debug`, `Clone`, `Default`, `From`, `PartialEq` or `Hash`, are not grouped, since unrelated types each implement them. Domain traits, such as a codec trait shared by message types, are grouped as before.
+  - `docs/how-reviews-work.md` describes the rule.
+
+  General defect class: a comparison question between types that have nothing in common but a method every type has, which costs a model call and invites speculative findings.
+
+  Example outside rust-dashcore: a Python package with `User`, `Invoice` and `Settings` classes in one directory, where a PR edits `User.__init__`, used to ask why `Invoice.__init__` lacks the same checks.
+
+  What it could make worse: two unrelated classes that do need the same constructor checks are no longer compared, unless they share a base. Go has no declared interfaces, so Go `String` and `Error` are never compared.
+
+  ## Testing
+
+  `npx jest src/symbol-uses.test.ts src/compare.test.ts src/review.test.ts` passes. The sibling-implementation test adds the following, on classes with and without a shared base: Python dunder methods, Go `String`, Rust `Display::fmt` and `new`, TypeScript `constructor` and `toString`, a dotted base, two shared bases, and classes sharing only `Generic` and `ABC`. Only the shared-base groups remain, each asked once. Each of these cases fails without its fix. The size test adds one Python class with 20,000 bases and 2,000 methods.
+
+  Part of #1281
+key_version: 1
+prior_round:
+  head: 18d8e16b92d296792319ee25cd2fc75b977780d4
+  findings:
+    - id: P1
+      severity: blocker
+      title: Bases are recomputed for every method, so a crafted class makes the work quadratic
+      file: src/symbol-uses.ts
+      line: 1026
+      posted: thread
+      state: open
+      description: "`scopeOf` runs once per method and calls `this.rules.bases?.(scope)`. That call builds a node for every base, and only afterwards does the length filter drop the long ones. A class with tens of thousands of bases (`class A(b0, b1, ...)` or `implements ...`) and thousands of methods in one file under 1 MB costs bases × methods node reads. The file's own tests keep per-node work linear for crafted input of this kind, so this is a regression from that."
+      how_to_fix: Compute the bases once per class scope and cache them by `nodeKey(scope)`, as `holdsOne` caches by key. Take only the first few named children, for example `MAX_GROUP_MEMBERS`, before building their text.
+      security: true
+    - id: P2
+      severity: warning
+      title: Dotted base names are dropped, so subclasses of `models.Model` or `ns.Base` are never grouped
+      file: src/symbol-uses.ts
+      line: 1027
+      posted: thread
+      state: open
+      description: Bases are kept only if they match `TYPE_PATH`, which allows `::` but not `.`. A Python `class A(models.Account)` or a `TypeScript` `extends ns.Base` yields no base. Its `__init__`, `__eq__` and `constructor` then match no group, even though the classes share a base. The docs and PR text say such methods are compared between classes that share a base, and only mention skipping long expressions.
+      how_to_fix: Accept dotted paths for bases, for example by normalizing `a.b.C` to its last segment or by allowing `.` in the pattern for bases. If dotted bases are meant to be skipped, say so in the docs.
+    - id: P3
+      severity: warning
+      title: A protocol method on a class with two shared bases is asked about twice
+      file: src/symbol-uses.ts
+      line: 1437
+      posted: thread
+      state: open
+      description: "`keysOf` gives a protocol method one key per base, and the loop adds the method to the group of each key. Take `class A(Base, Mixin)` and `class B(Base, Mixin)`, or `class A extends View implements Widget` and the same on `B`. Both `Base::__init__` and `Mixin::__init__` then hold the same two members."
+      how_to_fix: Remove repeated groups before ranking. Key each group by its sorted list of member files and lines, and keep only the first group for each key.
+    - id: P4
+      severity: warning
+      title: The test never checks that a Rust `new` is left out
+      file: src/symbol-uses.test.ts
+      line: 348
+      posted: thread
+      state: open
+      description: "The `display` helper adds `fn new()` with the body `Self { version: ${text.length} }`. The test changes `'text'` to `'TEXT'`, which has the same length, so `new` is the same in the base and the head. No `new` method is touched, so none is wanted, and taking `'new'` out of `PROTOCOL_METHODS` still lets the test pass. The PR description says the test covers Rust `new`, and it does not."
+      how_to_fix: Change the body of `new` in the head, for example with a text of another length or an explicit body, so that `TextPart::new` is touched and `ImagePart::new` differs from it. The expected list stays the same.
+    - id: P5
+      severity: suggestion
+      title: Python typing markers such as `Generic[T]` and `ABC` count as a shared base
+      file: src/symbol-uses.ts
+      line: 1026
+      posted: thread
+      state: open
+      description: "`typeName` turns `Generic[T]` into `Generic`, and `object` is the only base removed. Unrelated classes such as `class Repo(Generic[T])` and `class Cache(Generic[K])`, or two `ABC` or `Protocol` subclasses in one directory, therefore still compare their `__init__`. That is the case this PR sets out to stop."
+      how_to_fix: Remove the typing marker bases (`Generic`, `Protocol`, `ABC`, `NamedTuple`, `TypedDict`) in the same place `object` is removed.
+      suggested_fix: "      .map(base => typeName(base.text())).filter(base => TYPE_PATH.test(base) && !['object', 'Generic', 'Protocol', 'ABC', 'NamedTuple', 'TypedDict'].includes(base));"
+must_resolve: [P2, P3, P4, P5]
+must_keep_open:
+  - id: P1
+    severity: blocker
+    mechanism: "`basesOf` now reads a class's bases once and caches them by `scope.id()`, but it keeps every base. `keysOf` still builds one group key per base for every dunder or protocol method, so a crafted class with tens of thousands of bases and thousands of such methods still costs bases times methods."
+    locations: ["src/symbol-uses.ts", "basesOf", "keysOf"]
+    fix: "377c724b64630d60b4e7803b12e45a8de5459815"
+must_catch: []
+nice_to_have: []

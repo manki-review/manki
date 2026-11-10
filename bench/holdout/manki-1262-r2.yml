@@ -1,0 +1,84 @@
+id: manki-1262-r2
+repo: manki-review/manki
+source: manki PR 1262, round 2
+base: 6fc83ec4be6ec846d68955b2d29198a24c5758cd
+head: 3b06709765e759ddcf9e7355a1ab3c8387f82e51
+title: "feat: report the second refuter's agreement in stats"
+body: |
+  ## Summary
+
+  A follow-up to #1255 that does Manki's two suggestions on it. `review-stats` now reports what the second refuter (`models.refuter_pair`) costs and how often it changes anything, so the owner can judge whether the extra calls pay off, as #1164 asks. The round record also names the second refuter's model when it only reused earlier answers.
+
+  ## Changes
+
+  - `review-stats` gets a "Second refuter" section with the second refuter's cost and the findings it checked. It shows the share where it agreed with the first refuter, the share where the two split (one confirmed, one disproved), and the share where it changed the outcome the first refuter alone gave. It changes the outcome on a split, and when it settles a finding the first left unsettled or never answered. A table counts each pair of outcomes.
+  - Refutation outcomes in `review-stats` now also count the findings a disproof dropped (listed with the judge's drops), unposted findings, and leads left unsettled, which each recorded lead now carries with its refutations. An answer a later round reused counts only once. The second refuter's cost names calls with no known price instead of counting them as free.
+  - The round record names `models.refuterPair` when a finding carries a second answer reused from an earlier round, not only when a `refute_pair` call ran.
+  - `docs/how-reviews-work.md` lists the new report lines.
+
+  What changes for users: the weekly review statistics show the second refuter's numbers, and the refutation table includes dropped findings.
+
+  ## Testing
+
+  - `scripts/review-stats.test.ts`: a kept blocker with a split and a dropped finding the second refuter decided, plus a priced `refute_pair` call. It checks the counts, the cost and the rendered section, and that an empty report says there was no second refuter.
+  - `src/index.test.ts`: a round that only reused a stored second answer still records `models.refuterPair`.
+
+  Part of #1242
+key_version: 1
+prior_round:
+  head: 4cd46a4f90dea7b5f55154e4e72d4bb4db6c70ad
+  findings:
+    - id: P1
+      severity: warning
+      title: Second refuter stats count answers reused from earlier rounds as new checks
+      file: scripts/review-stats.ts
+      line: 213
+      posted: thread
+      state: open
+      description: A reused `pairRefutation` is copied into each later round's entries (`src/refute.ts:236-239`). `computeStats` counts it again in every round, but `pairRefutationCost` only counts `refute_pair` calls that ran. So "Findings checked" and the agree, split and changed shares are inflated, and the "for N USD" figure covers fewer findings than the count beside it.
+    - id: P2
+      severity: suggestion
+      title: '"Changed the outcome" counts a split on a blocker, which never changes'
+      file: scripts/review-stats.ts
+      line: 343
+      posted: thread
+      state: open
+      description: The `split` test counts every confirmed/disproved pair as a changed outcome. The docs say a disproved blocker keeps its grade whether or not the second refuter agrees. So for a blocker where the first refuter disproved and the second confirmed, the result is the same as without the second refuter, yet the report counts it.
+    - id: P3
+      severity: warning
+      title: Refuted findings that are neither posted nor dropped by the judge are left out of the refuter counts
+      file: scripts/review-stats.ts
+      line: 213
+      posted: thread
+      state: open
+      description: The loop reads only `findings.entries` and `judge.dropped`. Leads below blocker that the refuters left unsettled go to `openLeads`, and the record keeps their refutations in neither list. Unposted pre-existing findings sit in `findings.unposted`, which `tallyRound` reads but this loop does not.
+    - id: P4
+      severity: warning
+      title: The second refuter's cost shows 0.00 USD when its calls are unpriced, such as on the Codex CLI
+      file: scripts/review-stats.ts
+      line: 217
+      posted: thread
+      state: open
+      description: "`c.costUsd ?? 0` counts an unpriced call as free and says nothing about it. The docs recommend a second refuter from another provider, and it needs a CLI with repository tools."
+    - id: P5
+      severity: suggestion
+      title: "`models.refuterPair` names the current model for an answer an earlier model gave"
+      file: src/round-context.ts
+      line: 303
+      posted: thread
+      state: open
+      description: The new condition records the current `models.refuterPair` whenever a finding carries a `pairRefutation`. But `priorRefutation` reuses a stored answer without checking which model gave it, and `Refutation` has no model field. After someone changes `models.refuter_pair`, a round that only reused earlier answers says the new model checked findings it never saw.
+must_resolve: [P1, P3, P4]
+must_not_repeat: [P2, P5]
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "`computeStats` counts a refutation answer once by `JSON.stringify([title, refuter, refutation])`. `priorRefutation` reuses a stored answer when the titles only overlap through `titlesMatch`, and the round record cuts entry titles to 200 characters but keeps judge drop titles whole. So the same stored answer comes back under another title in a later round and is counted again in `refutations` and `pairRefutations`."
+    locations: ["scripts/review-stats.ts", "computeStats", "fresh"]
+    fix: "2d0adff4e43eb08981c6ee433c385f1f7564562d"
+  - id: K2
+    severity: warning
+    mechanism: "`pairRefutationLines` returns `No second refuter.` when no `pairRefutation` was recorded, before it reads `pairRefutationCalls`. When `refute_pair` calls ran and none gave an answer, the report says no second refuter ran and hides what those calls cost."
+    locations: ["scripts/review-stats.ts", "pairRefutationLines", "pairRefutationCalls"]
+    fix: "2d0adff4e43eb08981c6ee433c385f1f7564562d"
+nice_to_have: []
