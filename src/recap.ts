@@ -133,10 +133,20 @@ function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: F
   return !!t.isSecurity || !!t.isBlocking || (!!t.severity && threadBlocks({ severity: t.severity, ...(t.recordedGrade && { recordedGrade: t.recordedGrade }) }));
 }
 
+/**
+ * Whether the PR author alone cannot clear the thread: a guarded one, or one whose grade an unread round record may hold.
+ * An unknown grade never makes a resolution count as someone else's, so the checks that trust one use `isGuarded`.
+ */
+function authorCannotClear(t: Parameters<typeof isGuarded>[0] & { gradeUnknown?: boolean }): boolean {
+  return isGuarded(t) || !!t.gradeUnknown;
+}
+
 interface OverrideCandidate {
   isSecurity?: boolean;
   isBlocking?: boolean;
   severity?: FindingSeverity | 'unknown';
+  recordedGrade?: FindingSeverity;
+  gradeUnknown?: boolean;
   isResolved: boolean;
   resolvedByLogin?: string;
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
@@ -146,9 +156,9 @@ function isLogin(login: string | undefined, prAuthorLogin: string | undefined): 
   return !!login && !!prAuthorLogin && login.toLowerCase() === prAuthorLogin.toLowerCase();
 }
 
-/** Whether a resolved guarded thread can only be cleared by the PR author as a repo admin, so it needs the admin check. */
+/** Whether a resolved thread the PR author alone cannot clear needs the admin check, since only an admin author may clear it. */
 function isOverrideCandidate(t: OverrideCandidate, prAuthorLogin: string | undefined): boolean {
-  return isGuarded(t) && t.isResolved && (isLogin(t.resolvedByLogin, prAuthorLogin) || isLogin(t.recordedOverride?.login, prAuthorLogin));
+  return authorCannotClear(t) && t.isResolved && (isLogin(t.resolvedByLogin, prAuthorLogin) || isLogin(t.recordedOverride?.login, prAuthorLogin));
 }
 
 /** The security overrides on `previousFindings`, one per thread. */
@@ -290,6 +300,8 @@ interface PreviousFinding extends FindingMetadata {
   recordedGrade?: FindingSeverity;
   /** The highest grade the round records ever gave the thread. */
   peakGrade?: FindingSeverity;
+  /** Set when a round record could not be read, so the grade it may hold is unknown and the thread stays guarded. */
+  gradeUnknown?: boolean;
   /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open. */
   status: 'open' | 'resolved' | 'replied' | 'auto-resolved';
   /** Resolved because the judge of an earlier round marked the thread `addressed`. */
@@ -389,7 +401,7 @@ function inPrSuppressionReasonFor(
 /** Classifies the latest human reply on `pf`. A guarded finding is agreed away only when `authorReplyMayClear` holds. */
 function replyClassOf(pf: PreviousFinding): AuthorReplyClass {
   const replyClass = classifyAuthorReply(pf.authorReplyText);
-  return replyClass === 'agree' && isGuarded(pf) && !pf.authorReplyMayClear ? 'none' : replyClass;
+  return replyClass === 'agree' && authorCannotClear(pf) && !pf.authorReplyMayClear ? 'none' : replyClass;
 }
 
 interface RecapState {
@@ -519,12 +531,13 @@ async function fetchRecapState(
   const grades = recordedThreadGrades(priorRounds);
   const threads = fetched.map(t => {
     const grade = t.isBotThread ? grades.get(t.threadId) : undefined;
-    return grade ? { ...t, recordedGrade: grade.grade, peakGrade: grade.peak } : t;
+    // An unread record could hold a raise, so only someone other than the PR author may clear the thread meanwhile.
+    return { ...t, ...(grade && { recordedGrade: grade.grade, peakGrade: grade.peak }), ...(t.isBotThread && priorRoundsIncomplete && { gradeUnknown: true }) };
   });
   const botThreads = threads.filter(t => t.isBotThread);
   const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isOverrideCandidate(t, prAuthorLogin))
     && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
-  const agreers = new Set(botThreads.flatMap(t => isGuarded(t) && t.authorReplyLogin && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
+  const agreers = new Set(botThreads.flatMap(t => authorCannotClear(t) && t.authorReplyLogin && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
     ? [t.authorReplyLogin] : []));
   const mayAgree = new Map(await Promise.all([...agreers].map(async login => [login, await hasWriteAccess(octokit, owner, repo, login)] as const)));
 
@@ -538,6 +551,7 @@ async function fetchRecapState(
       severity: t.severity,
       ...(t.recordedGrade && { recordedGrade: t.recordedGrade }),
       ...(t.peakGrade && { peakGrade: t.peakGrade }),
+      ...(t.gradeUnknown && { gradeUnknown: true }),
       status: threadStatus(t, addressedThreadIds, bot, prAuthorLogin, !!securityOverride),
       ...(t.isResolved && addressedThreadIds.has(t.threadId) && { fixed: true }),
       threadId: t.threadId,
@@ -549,7 +563,7 @@ async function fetchRecapState(
       authorReplyLogin: t.authorReplyLogin,
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
       ...(t.isSecurity && { isSecurity: true }),
-      ...(isGuarded(t) && t.authorReplyLogin && mayAgree.get(t.authorReplyLogin) && { authorReplyMayClear: true }),
+      ...(authorCannotClear(t) && t.authorReplyLogin && mayAgree.get(t.authorReplyLogin) && { authorReplyMayClear: true }),
       ...(!securityOverride && shouldReopen(t, addressedThreadIds, prAuthorLogin) && { reopen: true }),
       ...(securityOverride && { securityOverride }),
       ...(t.answer && { answer: t.answer }),
@@ -592,7 +606,7 @@ function judgeAddressedThreadIds(rounds: RoundContext[]): Set<string> {
 
 /** Whether the PR author resolved a guarded thread the judge has not marked `addressed`, and Manki has not reopened it yet. */
 function shouldReopen(t: ReviewThread, addressedThreadIds: Set<string>, prAuthorLogin: string | undefined): boolean {
-  return isGuarded(t) && t.isResolved && t.resolvedByHuman && !t.reopenedByManki && !addressedThreadIds.has(t.threadId)
+  return authorCannotClear(t) && t.isResolved && t.resolvedByHuman && !t.reopenedByManki && !addressedThreadIds.has(t.threadId)
     && !!prAuthorLogin && t.resolvedByLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
 }
 
@@ -610,7 +624,7 @@ function threadStatus(
   const cleared = securityOverride || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin);
   if (t.isSecurity) return cleared ? 'resolved' : unresolved;
   if (!t.resolvedByHuman) return 'auto-resolved';
-  return cleared || !isGuarded(t) ? 'resolved' : unresolved;
+  return cleared || !authorCannotClear(t) ? 'resolved' : unresolved;
 }
 
 /**
@@ -746,6 +760,8 @@ interface ReviewThread extends FindingMetadata {
   severity: FindingSeverity | 'unknown';
   recordedGrade?: FindingSeverity;
   peakGrade?: FindingSeverity;
+  /** Set when a round record could not be read, so the grade it may hold is unknown. */
+  gradeUnknown?: boolean;
   authorReplyText?: string;
   authorReplyLogin?: string;
   authorReplyAssociation?: string;
@@ -1200,4 +1216,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

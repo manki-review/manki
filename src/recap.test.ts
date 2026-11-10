@@ -1656,11 +1656,38 @@ describe('fetchRecapState', () => {
     it('skips malformed JSON block but still loads subsequent valid blocks', async () => {
       const ctx3 = makeRoundContext(3);
       const malformed = '<!-- manki-context: {bad} -->';
-      const octokit = mockOctokit([], [
+      const resolvedByAuthor = makeThread({
+        id: 'tw', isResolved: true, resolvedBy: { login: 'author' },
+        comments: { nodes: [{ body: '<!-- manki:warning:Bug --> **Warning**: Bug found\n\nDesc.', author: { login: BOT_LOGIN } }] },
+      });
+      const agreedByAuthor = makeThread({
+        id: 'ta', path: 'src/other.ts',
+        comments: { nodes: [
+          { body: '<!-- manki:warning:Bug --> **Warning**: Bug found\n\nDesc.', author: { login: BOT_LOGIN } },
+          { body: 'Agreed, no change needed.', author: { login: 'author' } },
+        ] },
+      });
+      const resolvedByCollaborator = makeThread({
+        id: 'tc', isResolved: true, resolvedBy: { login: 'alice' }, path: 'src/c.ts', line: 4,
+        comments: { nodes: [{ body: '<!-- manki:warning:Stale-cache --> **Warning**: Stale cache\n\nDesc.', author: { login: BOT_LOGIN } }] },
+      });
+      const octokit = mockOctokit([resolvedByAuthor, agreedByAuthor, resolvedByCollaborator], [
         { id: 500, body: malformed, user: { login: BOT_LOGIN } },
         { id: 501, body: htmlCommentBlock(ctx3), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author');
+      // The skipped record may have raised the threads, so neither the PR author's resolution nor agreement clears them.
+      expect(state.previousFindings.map(f => [f.status, f.reopen, f.gradeUnknown])).toEqual([['open', true, true], ['replied', undefined, true], ['resolved', undefined, true]]);
+      expect(collectInPrSuppressions(state.previousFindings, 'author').map(s => s.fingerprint.file)).toEqual(['src/c.ts']);
+      // An unknown grade never makes a resolution count as someone else's, so a new blocker there still reaches the judge.
+      const repeat = makeFinding({ severity: 'blocker', title: 'Stale cache', file: 'src/c.ts', line: 4 });
+      expect(deduplicateFindings([repeat], state.previousFindings).unique).toHaveLength(1);
+
+      // A repo admin author still clears their own resolved thread, as with a blocker.
+      const admin = Object.create(octokit);
+      Object.assign(admin, { rest: { ...octokit.rest, repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'admin' } })) } } });
+      const adminState = await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author');
+      expect(adminState.previousFindings.map(f => [f.status, !!f.reopen, f.securityOverride?.login])).toEqual([['resolved', false, 'author'], ['replied', false, undefined], ['resolved', false, undefined]]);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(3);
       // A skipped record could hold a thread's grade, so the recap says the rounds are incomplete.

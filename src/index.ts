@@ -22,7 +22,7 @@ import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, wit
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
-import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
+import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, replyClassOf, securityOverridesIn } from './recap';
 import { disproof } from './refute';
 import { filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
@@ -1846,10 +1846,13 @@ async function runFullReview(
     });
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
-    // A round record that could not be read may hold a raise, so the round does not approve while a Manki thread is open.
-    if (recap.priorRoundsIncomplete) blockOnOpenThreads(result, run.openThreads.map(t => ({ ...t, recordedGrade: 'blocker' as const })));
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
     const resolved = await resolveAddressedThreads(run, result);
+    // A round record that could not be read may hold a raise, so the round does not approve while a Manki thread stays open.
+    if (recap.priorRoundsIncomplete) {
+      const agreed = new Set(recap.previousFindings.filter(f => f.threadId && replyClassOf(f) === 'agree').map(f => f.threadId));
+      blockOnOpenThreads(result, run.openThreads.filter(t => !resolved.includes(t) && !agreed.has(t.threadId)).map(t => ({ ...t, recordedGrade: 'blocker' as const })));
+    }
     const replies = await replyInOpenThreads(run, result);
     const context = buildContext();
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
