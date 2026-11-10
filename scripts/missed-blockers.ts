@@ -290,12 +290,17 @@ function parseArgs(args: string[]): { owner: string; repo: string; last: number;
   return owner && repo && rest.length === 0 && Number.isInteger(last) && last > 0 ? { owner, repo, last, out: value('--out') ?? DEFAULT_OUT } : undefined;
 }
 
-/** Returns when the round's review started: its record's time less the run's wall-clock time, so an edit made during the review is left out. */
+/**
+ * Returns when the round's review started: its record's time less the run's wall-clock time, so an edit made during the
+ * review is left out. Returns `undefined` when the record lacks either value or holds one that dates nothing.
+ */
 export function reviewStart(round: RoundContext): string | undefined {
-  const end = Date.parse(round.meta?.timestamp ?? '');
-  // A record without usage or a readable time cannot date the review, so the draft says its body is not recovered.
-  if (!round.usage || Number.isNaN(end)) return undefined;
-  return new Date(end - (round.usage.wallClockMs ?? 0)).toISOString();
+  // A record without a readable time or wall-clock time cannot date the review, so the draft says its body is not recovered.
+  const timestamp: unknown = round.meta?.timestamp;
+  const wall: unknown = round.usage?.wallClockMs;
+  if (typeof timestamp !== 'string' || typeof wall !== 'number' || !Number.isFinite(wall) || wall < 0) return undefined;
+  const start = new Date(Date.parse(timestamp) - wall);
+  return Number.isNaN(start.getTime()) ? undefined : start.toISOString();
 }
 
 /** Returns the body's edit history, or `undefined` when GitHub gives none. */
