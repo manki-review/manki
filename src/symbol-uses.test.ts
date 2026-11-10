@@ -159,23 +159,24 @@ describe('listUsesOutsideDiff', () => {
 
     // A function inside a method that binds the receiver's name again reads another value through it: an object literal
     // method or a `function` in TypeScript, a nested `def` or `lambda` with a `self` parameter in Python, and a func literal
-    // with a parameter of the receiver's name in Go. So does a method whose body binds the name in a statement, such as a
-    // loop. The method's own reads, and a closure's, still read the class's field.
+    // with a parameter of the receiver's name in Go, and a class in TypeScript. So does a method whose body binds the name
+    // in a statement, such as a loop, a `select` case or an import. The method's own reads, and a closure's, still read the
+    // class's field.
     const rebinding = [
       {
         changed: 'src/account.ts', before: 'export interface Account {\n  balance: number;\n}\n', after: 'export interface Account {\n  balance: bigint;\n}\n',
-        file: 'src/wrapper.ts', uses: [5, 6],
-        text: 'export class Wrapper {\n  balance = 0;\n\n  wrapped(a: Account) {\n    const view = { ...a, total() { return this.balance; } };\n    return function (this: Account) { return this.balance; };\n  }\n\n  shown() {\n    return [1].map(() => this.balance);\n  }\n}\n',
+        file: 'src/wrapper.ts', uses: [5, 6, 14, 15],
+        text: 'export class Wrapper {\n  balance = 0;\n\n  wrapped(a: Account) {\n    const view = { ...a, total() { return this.balance; } };\n    return function (this: Account) { return this.balance; };\n  }\n\n  shown() {\n    return [1].map(() => this.balance);\n  }\n\n  nested() {\n    class Inner { snap = this.balance; }\n    return class { snap = this.balance; };\n  }\n}\n',
       },
       {
         changed: 'app/account.py', before: 'class Account:\n    balance: int = 0\n', after: 'class Account:\n    balance: float = 0.0\n',
-        file: 'app/wrapper.py', uses: [7, 8, 15],
-        text: 'class Wrapper:\n    def __init__(self):\n        self.balance = 0\n\n    def wrapped(self):\n        def total(self):\n            return self.balance\n        pick = lambda self: self.balance\n        def closure():\n            return self.balance\n        return total, pick, closure\n\n    def each(self, accounts):\n        for self in accounts:\n            yield self.balance\n',
+        file: 'app/wrapper.py', uses: [7, 8, 15, 19],
+        text: 'class Wrapper:\n    def __init__(self):\n        self.balance = 0\n\n    def wrapped(self):\n        def total(self):\n            return self.balance\n        pick = lambda self: self.balance\n        def closure():\n            return self.balance\n        return total, pick, closure\n\n    def each(self, accounts):\n        for self in accounts:\n            yield self.balance\n\n    def imported(self):\n        import account as self\n        return self.balance\n',
       },
       {
         changed: 'bank/account.go', before: 'package bank\n\ntype Account struct {\n\tBalance int64\n}\n', after: 'package bank\n\ntype Account struct {\n\tBalance uint64\n}\n',
-        file: 'bank/wrapper.go', uses: [9, 15],
-        text: 'package bank\n\ntype Wrapper struct {\n\tBalance int64\n}\n\nfunc (v *Wrapper) Wrapped() func(*Account) uint64 {\n\t_ = func() int64 { return v.Balance }\n\treturn func(v *Account) uint64 { return v.Balance }\n}\n\nfunc (v *Wrapper) Sum(accounts []*Account) uint64 {\n\tvar total uint64\n\tfor _, v := range accounts {\n\t\ttotal += v.Balance\n\t}\n\treturn total\n}\n',
+        file: 'bank/wrapper.go', uses: [9, 15, 23],
+        text: 'package bank\n\ntype Wrapper struct {\n\tBalance int64\n}\n\nfunc (v *Wrapper) Wrapped() func(*Account) uint64 {\n\t_ = func() int64 { return v.Balance }\n\treturn func(v *Account) uint64 { return v.Balance }\n}\n\nfunc (v *Wrapper) Sum(accounts []*Account) uint64 {\n\tvar total uint64\n\tfor _, v := range accounts {\n\t\ttotal += v.Balance\n\t}\n\treturn total\n}\n\nfunc (v *Wrapper) Next(ch chan *Account) uint64 {\n\tselect {\n\tcase v := <-ch:\n\t\treturn v.Balance\n\t}\n\treturn 0\n}\n',
       },
     ];
     for (const { changed, before, after, file, text, uses } of rebinding) {

@@ -166,7 +166,7 @@ interface FamilyRules {
   /**
    * Functions that can bind that name again inside a method, so a read through it there is not the method's. With
    * `byParameter`, one binds it only through a parameter of that name, as a Python `def f(self)` does. Without it, one
-   * always does, as a TypeScript `function` or object literal method binds its own `this`. `locals` maps each statement
+   * always does, as a TypeScript `function`, object literal method or nested class binds its own `this`. `locals` maps each statement
    * that can bind it inside the method's own body, such as Go `for _, v := range`, to the field holding the names it binds,
    * or to `''` when the statement lists them itself.
    */
@@ -216,7 +216,12 @@ const RULES: Record<Family, FamilyRules> = {
     index: 'subscript_expression',
     owners: { class_declaration: { type: 'name' }, abstract_class_declaration: { type: 'name' } },
     selfName: () => 'this',
-    rebinds: { kinds: ['function_declaration', 'function_expression', 'generator_function_declaration', 'generator_function', 'method_definition'] },
+    rebinds: {
+      kinds: [
+        'function_declaration', 'function_expression', 'generator_function_declaration', 'generator_function', 'method_definition',
+        'class', 'class_declaration', 'abstract_class_declaration',
+      ],
+    },
     // A class names its bases in `extends` and `implements` clauses, an interface in one `extends` clause, and a type
     // alias anywhere in its value, such as `Base & { extra: number }`.
     bases: scope => scope.kind() === 'type_alias_declaration'
@@ -239,7 +244,10 @@ const RULES: Record<Family, FamilyRules> = {
     selfName: () => 'self',
     rebinds: {
       kinds: ['function_definition', 'lambda'], byParameter: true,
-      locals: { assignment: 'left', augmented_assignment: 'left', for_statement: 'left', for_in_clause: 'left', named_expression: 'name', as_pattern: 'alias' },
+      locals: {
+        assignment: 'left', augmented_assignment: 'left', for_statement: 'left', for_in_clause: 'left', named_expression: 'name', as_pattern: 'alias',
+        aliased_import: 'alias',
+      },
     },
     bases: scope => scope.field('superclasses')?.children().filter(c => c.isNamed() && c.kind() !== 'keyword_argument') ?? [],
     fieldName: pythonFieldName,
@@ -267,7 +275,10 @@ const RULES: Record<Family, FamilyRules> = {
     selfName: node => goReceiver(node)?.field('name')?.text(),
     rebinds: {
       kinds: ['func_literal'], byParameter: true,
-      locals: { short_var_declaration: 'left', assignment_statement: 'left', range_clause: 'left', type_switch_statement: 'alias', var_spec: '', const_spec: '' },
+      locals: {
+        short_var_declaration: 'left', assignment_statement: 'left', range_clause: 'left', receive_statement: 'left', type_switch_statement: 'alias',
+        var_spec: '', const_spec: '',
+      },
     },
     names: node => node.kind() === 'field_declaration' ? node.children().filter(c => c.kind() === 'field_identifier') : [],
   },
