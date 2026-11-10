@@ -639,15 +639,23 @@ ${body}	return true
     expect(Date.now() - started).toBeLessThan(10_000);
 
     // Many sibling types across files with a method of the same name, one of them changed: each joins the same group.
-    const areas = (from: number, first = '0') => `package gen\n\n${Array.from({ length: 20_000 }, (_, i) => `func (s S${from + i}) Area() int { return ${i === 0 ? first : i} }`).join('\n')}\n`;
-    started = Date.now();
-    const grouped = await usesFor(
-      { 'gen/a.go': areas(0), 'gen/b.go': areas(20_000), 'gen/c.go': areas(40_000), 'gen/d.go': areas(60_000) },
-      { 'gen/a.go': areas(0, '7') },
-    );
-    expect(grouped.siblings.implementations.map(q => [q.name, q.members.length])).toEqual([['Area', 4]]);
-    // Four files of 20,000 methods each take longer to parse, so this bound is wider. Copying the group per member took over 30 seconds.
-    expect(Date.now() - started).toBeLessThan(20_000);
+    // Four times the methods must take well under 16 times as long, which copying the group per member came close to.
+    // A busy runner can stretch one run, so a large run over the bound is timed once more.
+    const areas = (count: number, from: number, first = '0') => `package gen\n\n${Array.from({ length: count }, (_, i) => `func (s S${from + i}) Area() int { return ${i === 0 ? first : i} }`).join('\n')}\n`;
+    const timeGroups = async (count: number) => {
+      const begun = Date.now();
+      const grouped = await usesFor(
+        Object.fromEntries(['a', 'b', 'c', 'd'].map((name, i) => [`gen/${name}.go`, areas(count, i * count)])),
+        { 'gen/a.go': areas(count, 0, '7') },
+      );
+      expect(grouped.siblings.implementations.map(q => [q.name, q.members.length])).toEqual([['Area', 4]]);
+      return Date.now() - begun;
+    };
+    const small = await timeGroups(5_000);
+    let large = await timeGroups(20_000);
+    if (large >= 6 * small) large = Math.min(large, await timeGroups(20_000));
+    expect(large).toBeLessThan(6 * small);
+    expect(large).toBeLessThan(60_000);
 
     // A changed file of many methods, each with a sibling beside it: every one is a group, and only the questions asked are quoted.
     const mirrored = (owner: string, value: number) => `package gen\n\n${Array.from({ length: 5_000 }, (_, i) => `func (m ${owner}) S${i}() int { return ${value} }`).join('\n')}\n`;
