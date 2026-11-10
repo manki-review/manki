@@ -1637,11 +1637,12 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
   return result.filter((_, i) => !folded.has(i));
 }
 
-/** Merges the duplicate `copy` into `survivor`: its reviewers, its prior-round match, its fix in words and what it cites. */
+/** Merges the duplicate `copy` into `survivor`: its reviewers, its prior-round match and open thread, its fix in words and what it cites. */
 export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (copy: Finding) => boolean): void {
   survivor.reviewers = [...new Set([...survivor.reviewers, ...copy.reviewers])];
   survivor.sameAs ??= copy.sameAs;
   survivor.variantOf ??= copy.variantOf;
+  survivor.threadId ??= copy.threadId;
   survivor.howToFix ??= copy.howToFix;
   // Every merged copy must pass the pre-existing checks on its own, or the merged finding is not pre-existing.
   if (!copy.preExisting || (staysPreExisting && !staysPreExisting(copy))) delete survivor.preExisting;

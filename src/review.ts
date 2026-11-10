@@ -2332,62 +2332,79 @@ interface EarlierFinding {
   keys: Set<string>;
   /** The open thread that carries it. Without one, an earlier round listed it in its review body. */
   threadId?: string;
+  /** Whether it is one of the findings an earlier round recorded under its thread, such as a variant the thread took. */
+  recorded?: boolean;
   /** The round that first listed it in its review body. */
   raisedIn?: number;
 }
 
 /**
- * Returns the earlier findings a finding of this round can restate: each of `openThreads` the round leaves open, and
- * each finding an earlier round listed only in its review body.
+ * Returns the earlier findings a finding of this round can restate: each of `openThreads` the round leaves open, each
+ * finding an earlier round recorded under one of them, and each finding an earlier round listed only in its review body.
  */
 function earlierFindings(priorRounds: RoundContext[], openThreads: OpenThread[], threadEvaluations: ThreadEvaluation[] | undefined): EarlierFinding[] {
   const addressed = new Set((threadEvaluations ?? []).filter(e => e.status === 'addressed').map(e => e.threadId));
+  const open = new Set(openThreads.filter(t => !addressed.has(t.threadId)).map(t => t.threadId));
   const entries = priorRounds.flatMap(r => (r.findings.entries ?? []).map(entry => ({ entry, key: stringifyFindingFingerprint(entry.fingerprint), round: entry.raisedIn ?? r.meta.round })));
-  const threads = openThreads.filter(t => !addressed.has(t.threadId)).map(t => ({
+  const threads = openThreads.filter(t => open.has(t.threadId)).map(t => ({
     finding: { title: t.title, file: t.file, line: t.line, description: t.description },
     keys: new Set(entries.filter(e => e.entry.threadId === t.threadId).map(e => e.key)),
     threadId: t.threadId,
   }));
-  const listed = new Map<string, EarlierFinding & { raisedIn: number }>();
+  const byKey = new Map<string, EarlierFinding>();
   for (const { entry, key, round } of entries) {
-    if (entry.threadId || !entry.title || entry.severity === 'ignore') continue;
-    const known = listed.get(key);
-    if (known) known.raisedIn = Math.min(known.raisedIn, round);
-    else listed.set(key, { finding: { title: entry.title, file: entry.fingerprint.file, line: entry.fingerprint.lineStart, evidence: entry.evidence }, keys: new Set([key]), raisedIn: round });
+    if ((entry.threadId && !open.has(entry.threadId)) || !entry.title || entry.severity === 'ignore') continue;
+    // The finding a thread was opened for is the thread's own entry already.
+    if (threads.some(t => t.threadId === entry.threadId && t.finding.title === entry.title)) continue;
+    const known = byKey.get(key);
+    if (known?.raisedIn) known.raisedIn = Math.min(known.raisedIn, round);
+    if (known) continue;
+    const finding = { title: entry.title, file: entry.fingerprint.file, line: entry.fingerprint.lineStart, evidence: entry.evidence };
+    byKey.set(key, entry.threadId ? { finding, keys: new Set([key]), threadId: entry.threadId, recorded: true } : { finding, keys: new Set([key]), raisedIn: round });
   }
-  return [...threads, ...listed.values()];
+  return [...threads, ...byKey.values()];
 }
 
 /**
  * Points each finding that restates one of the `earlier` findings at it, so the review posts no second copy. A finding
- * restating an open thread takes its `threadId`, and one restating a finding listed in an earlier review body takes
- * `raisedIn`. The judge's `sameAs` counts first. A finding the judge left unlinked is matched by `sameProblem`, then by
- * the `dedup` model for nearby pairs, asked in one call for the whole round. A finding the judge calls a variant of an
- * open thread's finding goes to that thread too, and keeps `variantOf` so it is posted there as a reply.
+ * restating an open thread or a finding recorded under one takes its `threadId`, and one restating a finding listed in
+ * an earlier review body takes `raisedIn`. The judge's `sameAs` counts first. A finding the judge left unlinked is
+ * matched by `sameProblem`, then by the `dedup` model for nearby pairs, asked in one call for the whole round. A finding
+ * the judge calls a variant of an open thread's finding goes to that thread too, and keeps `variantOf` so it is posted
+ * there as a reply, unless the same checks find it restates a finding recorded under that thread.
  */
 async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFinding[], dedup: LLMClient | undefined): Promise<Finding[]> {
   if (earlier.length === 0) return findings;
   const named = (key: string | undefined) => key ? earlier.find(e => e.keys.has(key)) : undefined;
   // A lockfile alert names its package and change, so only the open thread with its exact title carries it.
   const unlinked = (f: Finding) => !f.threadId && !f.answeredIn && !f.sameAs && !f.variantOf && !isLockfileAlert(f.title);
+  // A variant is checked only against the other findings its thread took, since it differs from the one it varies.
+  const candidates = (f: Finding, link: { earlier: EarlierFinding; variant: boolean } | undefined) => !link
+    ? (unlinked(f) ? earlier : [])
+    : link.variant ? earlier.filter(e => e.recorded && e.threadId === link.earlier.threadId && !e.keys.has(f.variantOf ?? '')) : [];
   const links = findings.map(f => {
     if (f.threadId || f.answeredIn) return undefined;
-    const restated = named(f.sameAs) ?? (unlinked(f) ? earlier.find(e => sameProblem(e.finding, f)) : undefined);
+    const restated = named(f.sameAs);
     if (restated) return { earlier: restated, variant: false };
     const varied = named(f.variantOf);
     return varied && { earlier: varied, variant: true };
   });
-  const pairs = findings.flatMap((f, i) => !links[i] && unlinked(f) ? earlier.flatMap(e => nearEachOther(e.finding, f) ? [{ i, e }] : []) : []);
+  findings.forEach((f, i) => {
+    const same = candidates(f, links[i]).find(e => sameProblem(e.finding, f));
+    if (same) links[i] = { earlier: same, variant: false };
+  });
+  const pairs = findings.flatMap((f, i) => candidates(f, links[i]).flatMap(e => nearEachOther(e.finding, f) ? [{ i, e }] : []));
   if (pairs.length > 0 && !dedup) core.warning(`${pairs.length} findings near an earlier finding stay apart unchecked, since the round has no dedup model`);
   const answers = pairs.length > 0 && dedup ? await llmSameDefects(pairs.map(({ i, e }) => [e.finding, findings[i]]), dedup) : [];
   pairs.forEach(({ i, e }, k) => {
-    if (answers[k] && !links[i]) links[i] = { earlier: e, variant: false };
+    if (answers[k] && (!links[i] || links[i]?.variant)) links[i] = { earlier: e, variant: false };
   });
   return findings.map((f, i) => {
     const link = links[i];
     if (link?.earlier.threadId) {
       core.info(`"${f.title}" ${link.variant ? 'is another instance of' : 'restates'} the open thread ${link.earlier.threadId}`);
-      return { ...f, threadId: link.earlier.threadId };
+      const { variantOf: _, ...restating } = f;
+      return link.variant ? { ...f, threadId: link.earlier.threadId } : { ...restating, threadId: link.earlier.threadId };
     }
     if (!link || link.variant) return f;
     core.info(`"${f.title}" restates "${link.earlier.finding.title}", which round ${link.earlier.raisedIn} listed`);

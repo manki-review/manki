@@ -5381,22 +5381,29 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug B', file: 'src/app.ts', line: 5, severity: 'warning' as const, status: 'auto-resolved' as const, threadId: 'PRRT_def', answer: 'Withdrawn. Fine.' },
         { title: 'Bug C', file: 'src/app.ts', line: 8, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
         { title: 'Bug D', file: 'src/app.ts', line: 3, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_jkl' },
+        { title: 'Bug E', file: 'src/app.ts', line: 7, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_mno' },
       ],
     );
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
     const worse = { severity: 'blocker' as const, title: 'Bug B', file: 'src/app.ts', line: 5, description: 'Worse now.', reviewers: [], answeredIn: { threadId: 'PRRT_def', answer: 'Withdrawn. Fine.' } };
-    // The variants of an open thread's finding go there in one reply, and so does a blocker that restates a thread that
-    // does not block yet. A smaller restatement adds nothing, nor does a blocker in a thread that already blocks.
+    // Before the review posts, the variants of an open thread's finding go there in one reply, and so does a blocker that
+    // restates a thread that does not block yet. A smaller restatement adds nothing, nor does a blocker in a thread that
+    // already blocks. A finding whose reply fails leaves its thread, so the review posts it on its own.
     const variant = { severity: 'warning' as const, title: 'Bug C in another field', file: 'src/app.ts', line: 9, description: 'Same miss.', reviewers: [], threadId: 'PRRT_ghi', variantOf: 'src/app.ts:8:8:Bug-C' };
     const variants = [variant, { ...variant, severity: 'blocker' as const, title: 'Bug C in a third field' }];
     const restated = { ...variant, title: 'Bug C again', variantOf: undefined };
     const raised = { ...restated, severity: 'blocker' as const, title: 'Bug C crashes' };
     const inBlockerThread = { ...raised, threadId: 'PRRT_jkl' };
+    const unreplied = { ...variant, title: 'Bug E in another field', threadId: 'PRRT_mno' };
+    mockGraphql.mockImplementation(async (query: string, vars: { threadId?: string }) => {
+      if (query.includes('addPullRequestReviewThreadReply') && vars.threadId === 'PRRT_mno') throw new Error('rate limited');
+      return { resolveReviewThread: { thread: { isResolved: true } } };
+    });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse, ...variants, restated, raised, inBlockerThread],
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse, ...variants, restated, raised, inBlockerThread, unreplied],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [
@@ -5436,15 +5443,23 @@ describe('runFullReview orchestration', () => {
         // A kept repeat of the closed answered thread gets one reply there and reopens it.
         ...(posted ? [[true, { threadId: 'PRRT_def' }]] : []),
       ]);
-    expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars)).toEqual(posted ? [
-      { threadId: 'PRRT_abc', body: 'Fixed in abc123.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->' },
-      { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->' },
+    const openThreadReplies = [
       { threadId: 'PRRT_ghi', body: 'Now a blocker.\n\n---\n\nAnother instance.\n\n<!-- manki -->\n<!-- manki-found-again-blocker -->' },
-    ] : []);
+      { threadId: 'PRRT_mno', body: 'Another instance.\n\n<!-- manki -->' },
+    ];
+    expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars)).toEqual([
+      ...openThreadReplies,
+      ...(posted ? [
+        { threadId: 'PRRT_abc', body: 'Fixed in abc123.\n\n<!-- manki -->\n<!-- manki-fixed:abc123 -->' },
+        { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->' },
+      ] : []),
+    ]);
     if (posted) expect(jest.mocked(ghUtils.formatFoundAgainReply)).toHaveBeenCalledWith(worse);
-    if (posted) expect(jest.mocked(ghUtils.formatVariantReply)).toHaveBeenCalledWith(variants);
-    if (posted) expect(jest.mocked(ghUtils.formatBlockerReply)).toHaveBeenCalledWith([raised]);
-    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_jkl']);
+    expect(jest.mocked(ghUtils.formatVariantReply)).toHaveBeenCalledWith(variants);
+    expect(jest.mocked(ghUtils.formatBlockerReply)).toHaveBeenCalledWith([raised]);
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][5].findings.at(-1)).toEqual({ ...unreplied, threadId: undefined, variantOf: undefined });
+    mockGraphql.mockResolvedValue({ resolveReviewThread: { thread: { isResolved: true } } });
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_ghi', 'PRRT_jkl', undefined]);
   });
 
   it('resolves only threads with status addressed', async () => {

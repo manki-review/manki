@@ -2841,6 +2841,38 @@ describe('runReview', () => {
     });
     expect(read.outcome).toBe('ADDRESS_FIRST');
     expect(read.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'Retry never ends', threadId: 'T1' })]);
+
+    // A reader blocker that absorbs a finding restating an open thread takes that thread too.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [finding('warning', 'Retry never ends', 'src/x.ts', 13)], summary: 'One warning.' });
+    jest.mocked(reading.judge.sendMessage).mockResolvedValue({
+      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'src/x.ts', line: 16, title: 'Retry never ends under load', description: 'It spins.' }], summary: 'Spins.', whatThisDoes: '', whatToTest: '' }),
+    });
+    const absorbed = await runReview(reading, {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends' })], previousFindings: [], priorRounds: [prior], headSha: 'sha2',
+    });
+    expect(absorbed.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'Retry never ends under load', threadId: 'T1' })]);
+
+    // A later round matches every finding an earlier round took into a thread, so a variant the thread took already is
+    // restated, whether the judge calls it a variant of the thread again or leaves it unlinked.
+    const taken = buildPriorRound(2, [makePriorWarningFinding({ title: 'Retry also ignores the backoff field', fingerprint: { file: 'src/x.ts', lineStart: 11, lineEnd: 11, slug: 'retry-also-ignores-the-backoff-field' } })]);
+    mockedRunJudgeAgent.mockResolvedValue({
+      summary: 'Findings.',
+      findings: [
+        finding('warning', 'Retry also ignores the backoff field', 'src/x.ts', 11, { variantOf: 'src/x.ts:10:10:retry-never-ends' }),
+        finding('suggestion', 'Retry also ignores the backoff field', 'src/x.ts', 12),
+        finding('warning', 'Retry also ignores the jitter field', 'src/x.ts', 30, { variantOf: 'src/x.ts:10:10:retry-never-ends' }),
+      ],
+    });
+    const later = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true,
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends' })], previousFindings: [], priorRounds: [prior, taken], headSha: 'sha3',
+    });
+    expect(later.findings.map(f => [f.title, f.threadId, f.variantOf])).toEqual([
+      ['Retry also ignores the backoff field', 'T1', undefined],
+      ['Retry also ignores the backoff field', 'T1', undefined],
+      ['Retry also ignores the jitter field', 'T1', 'src/x.ts:10:10:retry-never-ends'],
+    ]);
   });
 
   it('ends the last automatic round READY when nothing blocks, otherwise NOT_CONVERGING', async () => {

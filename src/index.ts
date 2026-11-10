@@ -1326,41 +1326,58 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
 }
 
 /**
- * Replies in the threads this round's findings go to, once per thread. A closed answered thread where the judge kept a
- * finding that repeats its problem is reopened first. An open thread gets the variants of its finding listed, and a
- * blocker that restates a thread that does not block yet. A reply with a blocker in it makes the thread block.
+ * Reopens each closed answered thread where the judge kept a finding that repeats its problem, and replies there.
+ * A thread gets one reply per round, and a blocker's reply makes the thread block.
  */
-async function replyInThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
-  const threads = new Map(run.recap.previousFindings.flatMap(t => t.threadId ? [[t.threadId, t] as const] : []));
-  const blocks = (threadId: string) => ['blocker', 'unknown'].includes(threads.get(threadId)?.severity ?? 'unknown');
-  const byThread = new Map<string, Finding[]>();
+async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+  const replied = new Set<string>();
   for (const f of result.findings) {
-    const threadId = f.answeredIn?.threadId ?? (f.threadId && (f.variantOf || (f.severity === 'blocker' && !blocks(f.threadId))) ? f.threadId : undefined);
-    if (threadId) byThread.set(threadId, [...(byThread.get(threadId) ?? []), f]);
-  }
-  for (const [threadId, findings] of byThread) {
-    const answered = findings.find(f => f.answeredIn);
-    const variants = findings.filter(f => !f.answeredIn && f.variantOf);
-    const raised = findings.filter(f => !f.answeredIn && !f.variantOf);
-    const thread = threads.get(threadId);
+    const threadId = f.answeredIn?.threadId;
+    if (!threadId || replied.has(threadId)) continue;
+    replied.add(threadId);
+    const thread = run.recap.previousFindings.find(t => t.threadId === threadId);
     // Reopened first, so the thread a blocker was listed under stays open even when the reply fails.
-    if (answered && thread && thread.status !== 'open' && thread.status !== 'replied') {
+    if (thread && thread.status !== 'open' && thread.status !== 'replied') {
       try {
         await unresolveReviewThread(run.octokit, threadId);
       } catch (error) {
         core.warning(`Failed to reopen answered thread ${threadId}: ${error}`);
       }
     }
-    const body = [
-      answered && formatFoundAgainReply(answered),
-      raised.length > 0 && formatBlockerReply(raised),
-      variants.length > 0 && formatVariantReply(variants),
-    ].filter(part => !!part).join('\n\n---\n\n');
-    const markers = [...(answered ? [FOUND_AGAIN_MARKER] : []), ...(findings.some(f => f.severity === 'blocker') ? [FOUND_AGAIN_BLOCKER_MARKER] : [])];
+    const markers = f.severity === 'blocker' ? [FOUND_AGAIN_MARKER, FOUND_AGAIN_BLOCKER_MARKER] : [FOUND_AGAIN_MARKER];
     try {
-      await replyToReviewThread(run.octokit, threadId, body, ...markers);
+      await replyToReviewThread(run.octokit, threadId, formatFoundAgainReply(f), ...markers);
     } catch (error) {
-      core.warning(`Failed to reply in thread ${threadId}: ${error}`);
+      core.warning(`Failed to reply on answered thread ${threadId}: ${error}`);
+    }
+  }
+}
+
+/**
+ * Replies in each open thread that carries a finding of this round that adds to it: a variant of the thread's finding,
+ * or a blocker that restates a thread that does not block yet. A reply with a blocker in it makes the thread block. It
+ * runs before the review posts, so a finding whose reply fails is taken out of its thread and the review posts it.
+ */
+async function replyInOpenThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+  const threads = new Map(run.recap.previousFindings.flatMap(t => t.threadId ? [[t.threadId, t] as const] : []));
+  const blocks = (threadId: string) => ['blocker', 'unknown'].includes(threads.get(threadId)?.severity ?? 'unknown');
+  const byThread = new Map<string, Finding[]>();
+  for (const f of result.findings) {
+    if (f.answeredIn || !f.threadId || !(f.variantOf || (f.severity === 'blocker' && !blocks(f.threadId)))) continue;
+    byThread.set(f.threadId, [...(byThread.get(f.threadId) ?? []), f]);
+  }
+  for (const [threadId, findings] of byThread) {
+    const raised = findings.filter(f => !f.variantOf);
+    const variants = findings.filter(f => f.variantOf);
+    const body = [raised.length > 0 && formatBlockerReply(raised), variants.length > 0 && formatVariantReply(variants)].filter(part => !!part).join('\n\n---\n\n');
+    try {
+      await replyToReviewThread(run.octokit, threadId, body, ...(findings.some(f => f.severity === 'blocker') ? [FOUND_AGAIN_BLOCKER_MARKER] : []));
+    } catch (error) {
+      core.warning(`Failed to reply in thread ${threadId}, so the review posts its findings on their own: ${error}`);
+      for (const f of findings) {
+        delete f.threadId;
+        delete f.variantOf;
+      }
     }
   }
 }
@@ -1743,6 +1760,7 @@ async function runFullReview(
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
     const resolved = await resolveAddressedThreads(run, result);
+    await replyInOpenThreads(run, result);
     const context = buildContext();
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     let posted: Awaited<ReturnType<typeof postRound>>;
@@ -1759,7 +1777,7 @@ async function runFullReview(
       pause: pauseReport(pauseAfter),
     });
     await replyFixedThreads(run, resolved);
-    await replyInThreads(run, result);
+    await replyAnsweredThreads(run, result);
     await completeProgressComment(run, stage, reviewTimeMs);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
     setReviewOutputs(posted.id, context, result);
