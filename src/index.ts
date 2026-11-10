@@ -1861,8 +1861,10 @@ async function runFullReview(
     // and says why in the review and the check.
     const agreed = new Set(recap.previousFindings.filter(f => f.threadId && replyClassOf(f) === 'agree').map(f => f.threadId));
     const stillOpen = recap.priorRoundsIncomplete ? run.openThreads.filter(t => !resolved.includes(t) && !agreed.has(t.threadId)) : [];
+    // Only a round the unread record kept from approving names it as the reason.
+    const withheld = stillOpen.length > 0 && result.verdict === 'APPROVE';
     blockOnOpenThreads(result, stillOpen.map(t => ({ ...t, recordedGrade: 'blocker' as const })));
-    const unreadRecords = stillOpen.length > 0 ? recap.unreadRecords ?? [] : undefined;
+    const unreadRecords = withheld ? recap.unreadRecords ?? [] : undefined;
     const replies = await replyInOpenThreads(run, result);
     const context = buildContext();
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);

@@ -5639,6 +5639,10 @@ describe('runFullReview orchestration', () => {
     expect(holdOf()).toEqual(['https://github.com/o/r/pull/1#pullrequestreview-7']);
     expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5]).toMatchObject({ verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' });
     expect(mockChecksUpdate.mock.calls.at(-1)?.[0].output.summary).toMatch(/^\*\*Approval withheld:\*\* an earlier review record could not be read \(\[review 1\]\(https:\/\/github\.com\/o\/r\/pull\/1#pullrequestreview-7\)\)/);
+    // A round that requests changes for another reason does not name the unread record.
+    jest.mocked(reviewModule.runReview).mockResolvedValueOnce({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'A blocker.', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'] });
+    await callRunFullReview();
+    expect(holdOf()).toBeUndefined();
 
     // When the change since the last round cannot be read, every partly fixed thread gets its reply.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed'));

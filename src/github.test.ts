@@ -1542,9 +1542,9 @@ describe('postReview body lead', () => {
     const held = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([held.event, records.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
     expect(held.body).toBe(`${unreadRecordsLine([url])}\n\n${plain.body}`);
-    expect(unreadRecordsLine([url])).toBe(`**Approval withheld:** an earlier review record could not be read ([review 1](${url})), so Manki does not approve while a thread is open. A person can approve once they have checked the open threads.`);
+    expect(unreadRecordsLine([url])).toBe(`**Approval withheld:** an earlier review record could not be read ([review 1](${url})), so Manki cannot tell how serious the open threads are and does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.`);
     // When the reviews could not even be listed, the line names none.
-    expect(unreadRecordsLine([])).toBe('**Approval withheld:** an earlier review record could not be read, so Manki does not approve while a thread is open. A person can approve once they have checked the open threads.');
+    expect(unreadRecordsLine([])).toBe('**Approval withheld:** an earlier review record could not be read, so Manki cannot tell how serious the open threads are and does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.');
   });
 
   it('names why memory was skipped and the fix under the lead, and keeps the approval', async () => {

@@ -197,7 +197,7 @@ export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: s
 /** Returns the line that says a round requests changes because the round records of `reviews` could not be read while a thread is open. */
 export function unreadRecordsLine(reviews: readonly string[]): string {
   const named = reviews.map((url, i) => `[review ${i + 1}](${url})`).join(', ');
-  return `**Approval withheld:** an earlier review record could not be read${named ? ` (${named})` : ''}, so Manki does not approve while a thread is open. A person can approve once they have checked the open threads.`;
+  return `**Approval withheld:** an earlier review record could not be read${named ? ` (${named})` : ''}, so Manki cannot tell how serious the open threads are and does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.`;
 }
 
 /** Returns the line that says why Manki does not approve. */

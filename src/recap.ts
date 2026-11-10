@@ -441,7 +441,7 @@ function parseContextBlocks(
   const duplicateRounds = new Set<number>();
 
   for (const review of reviews) {
-    const reviewUrl = `https://github.com/${owner}/${repo}/pull/${prNumber}#pullrequestreview-${review.id}`;
+    const reviewUrl = `${github.context.serverUrl || 'https://github.com'}/${owner}/${repo}/pull/${prNumber}#pullrequestreview-${review.id}`;
     const { records: candidates, errors } = extractReviewRecords(review.body);
     for (const error of errors) {
       core.warning(`Skipping undecodable Manki context block at ${reviewUrl}: ${error}`);
