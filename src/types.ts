@@ -180,10 +180,17 @@ export interface Finding {
   reviewerSeverity?: FindingSeverity;
   /** Each change of the finding's severity after the reviewer graded it, in order, with what changed it. */
   gradePath?: GradeStep[];
-  /** Fingerprint key of the prior-round blocker that names the same defect. */
+  /** Fingerprint key of the earlier finding that names the same defect. */
   sameAs?: string;
-  /** ID of the still open thread where an earlier round raised this blocker. The review points at that thread instead of opening a new one. */
+  /** Fingerprint key of the earlier finding this one is another instance of: the same mistake in another place. */
+  variantOf?: string;
+  /**
+   * ID of the still open thread where an earlier round raised this finding. The review opens no new thread for it. A
+   * variant goes there as a reply, and a blocker is listed under a link to that thread.
+   */
   threadId?: string;
+  /** Round that listed this finding in its review body first, when the finding restates it. */
+  raisedIn?: number;
   /** Tool that reported the finding, when it comes from a CI or code-scanning result instead of a reviewer. */
   toolSource?: string;
   /** What the deterministic claim checks and CI results say about the finding. */
@@ -194,7 +201,7 @@ export interface Finding {
   resemblesFixed?: { title: string; file: string; line: number };
   /** The Manki thread that already answered the developer about this problem, and that answer. The judge keeps the finding only when the code there got worse. */
   answeredIn?: { threadId: string; answer: string };
-  /** Whether the finding sits on code the PR changed since the last reviewed round, or on code an earlier round reviewed. */
+  /** Whether the finding sits on code the PR changed since the last reviewed round or on code an earlier round reviewed, or restates a finding an earlier round listed. */
   origin?: FindingOrigin;
   /** The kind of problem, set by the judge. */
   category?: FindingCategory;
@@ -412,7 +419,8 @@ export interface Refutation {
   codeDigest: string;
 }
 
-export type FindingOrigin = 'new' | 'reviewed';
+/** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
+export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
 /** What was cited to back a finding. */
 export interface FindingEvidence {
@@ -1805,6 +1813,8 @@ export interface FindingFingerprintEntry {
   toolSource?: string;
   /** New code or code an earlier round reviewed. Mirrors `Finding.origin`. */
   origin?: FindingOrigin;
+  /** Mirrors `Finding.raisedIn`. */
+  raisedIn?: number;
   /** Mirrors `Finding.category`. */
   category?: FindingCategory;
   /** Mirrors `Finding.effort`. */

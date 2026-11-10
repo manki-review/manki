@@ -1294,13 +1294,24 @@ function formatFindingSection(heading: string, folds: string[], intro?: string, 
 
 /**
  * Returns the findings listed in the review body in one section per origin, each headed by its counts per severity:
- * found this round (just "Findings" on a first round), missed by an earlier review, and pre-existing.
+ * found this round (just "Findings" on a first round), still open from an earlier round's body, one section per round,
+ * missed by an earlier review, and pre-existing.
  */
 function formatOriginSections(findings: Finding[], links: CodeLinks, followUp: boolean): string[] {
-  const missed = findings.filter(f => !isPreExisting(f) && f.origin === 'reviewed');
-  const preExisting = findings.filter(isPreExisting);
+  const isEarlier = (f: Finding): f is Finding & { raisedIn: number } => f.origin === 'earlier' && f.raisedIn !== undefined;
+  const earlier = findings.filter(isEarlier);
+  const rest = findings.filter(f => !isEarlier(f));
+  const missed = rest.filter(f => !isPreExisting(f) && f.origin === 'reviewed');
+  const preExisting = rest.filter(isPreExisting);
+  const rounds = [...new Set(earlier.map(f => f.raisedIn))].sort((a, b) => a - b);
   const groups: Array<[string, Finding[], string?]> = [
-    [followUp ? 'Found this round' : 'Findings', findings.filter(f => !isPreExisting(f) && f.origin !== 'reviewed')],
+    [followUp ? 'Found this round' : 'Findings', rest.filter(f => !isPreExisting(f) && f.origin !== 'reviewed')],
+    ...rounds.map((round): [string, Finding[], string] => {
+      const listed = earlier.filter(f => f.raisedIn === round);
+      return [`Still open from round ${round}`, listed, listed.length === 1
+        ? `Round ${round} listed it, and this round finds it again.`
+        : `Round ${round} listed these, and this round finds them again.`];
+    }),
     [MISSED_EARLIER, missed, missed.length === 1
       ? 'It sits on lines an earlier round already reviewed, so it doesn\'t block this PR.'
       : 'These sit on lines an earlier round already reviewed, so none of them block this PR.'],
@@ -1360,14 +1371,33 @@ function agreedFollowUps(threads: PreviousFinding[]): Finding[] {
 
 /** Returns Manki's reply in an answered thread when the problem came back and the code there got worse. */
 export function formatFoundAgainReply(finding: Finding): string {
+  return ['This came up again, and the code here is worse than when this thread was answered.', ...formatReplyFinding(finding)].join('\n\n');
+}
+
+/** Returns Manki's reply in an open thread that lists `variants`, other instances of the problem the thread names. */
+export function formatVariantReply(variants: Finding[]): string {
+  return formatReplyListing(variants.length === 1 ? 'This round found another instance of this problem.' : `This round found ${variants.length} more instances of this problem.`, variants);
+}
+
+/** Returns Manki's reply in an open thread whose problem `blockers` raise again as a blocker, which makes the thread block. */
+export function formatBlockerReply(blockers: Finding[]): string {
+  return formatReplyListing('This round raises this problem again as a blocker, so this thread now blocks.', blockers);
+}
+
+/** Returns a reply that opens with `lead` and lists `findings`. */
+function formatReplyListing(lead: string, findings: Finding[]): string {
+  return [lead, findings.map(f => formatReplyFinding(f).join('\n\n')).join('\n\n---\n\n')].join('\n\n');
+}
+
+/** Returns the parts of a finding shown in a reply: its header, title, description and fix. */
+function formatReplyFinding(finding: Finding): string[] {
   const fix = fixPart(finding, finding.suggestedFix?.trim() ? formatBodyFix(finding.suggestedFix, finding.file) : undefined);
   return [
-    'This came up again, and the code here is worse than when this thread was answered.',
     `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}`,
     `**${sanitizeMarkdown(finding.title)}**`,
     ...formatFindingDescription(finding),
     ...(fix?.open ? [fix.open] : []),
-  ].join('\n\n');
+  ];
 }
 
 /** Whether an unresolved Manki thread was already posted for this finding. */
@@ -1441,9 +1471,11 @@ export async function postReview(
     if (!isBlockingFinding(f)) {
       if (f.answeredIn) {
         core.info(`Skipping "${f.title}" on ${f.file}: it goes as a reply in its answered thread ${f.answeredIn.threadId}`);
+      } else if (f.threadId) {
+        core.info(`Skipping "${f.title}" on ${f.file}: ${f.variantOf ? 'it goes as a reply in' : 'it restates'} the open thread ${f.threadId}`);
       } else if (hasOpenThread(f, existingThreads)) {
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
-      } else if (isPreExisting(f) || f.origin === 'reviewed') {
+      } else if (isPreExisting(f) || f.origin === 'reviewed' || f.origin === 'earlier') {
         bodyFindings.push(f);
       } else {
         nonBlocking.push(f);
