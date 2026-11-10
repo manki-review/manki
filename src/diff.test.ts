@@ -174,6 +174,14 @@ describe('parsePRDiff', () => {
     expect(result.files[0].path).toBe('src/new-name.ts');
     expect(result.files[0].changeType).toBe('renamed');
     expect(result.files[0].oldPath).toBe('src/old-name.ts');
+    // A pure rename has no lines to read, so it is a renamed file with no hunks, never an unread one. A binary file
+    // renamed and changed still is unread.
+    const pure = parsePRDiff('diff --git a/src/a.ts b/src/b.ts\nsimilarity index 100%\nrename from src/a.ts\nrename to src/b.ts\n');
+    expect(pure.files).toEqual([expect.objectContaining({ path: 'src/b.ts', oldPath: 'src/a.ts', changeType: 'renamed', hunks: [] })]);
+    expect(pure.binarySkipped).toEqual([]);
+    const binary = parsePRDiff('diff --git a/a.png b/b.png\nsimilarity index 90%\nrename from a.png\nrename to b.png\nindex 1111111..2222222 100644\nBinary files a/a.png and b/b.png differ\n');
+    expect(binary.files).toEqual([]);
+    expect(binary.binarySkipped).toEqual([expect.objectContaining({ path: 'b.png' })]);
   });
 
   it('skips binary files', () => {

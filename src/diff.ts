@@ -21,7 +21,7 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
 
   for (const file of parsed) {
     const kind = unreadableKind(file);
-    if (kind || isBinaryFile(file)) {
+    if (kind || (isBinaryFile(file) && !isPureRename(file))) {
       const binaryPath = file.to && file.to !== '/dev/null' ? file.to : file.from ?? '';
       if (binaryPath) binarySkipped.push({ path: binaryPath, header: JSON.stringify([file.from, file.to, file.index, file.oldMode, file.newMode]), ...(kind && { kind }), ...(file.deleted && { deleted: true as const }) });
       continue;
@@ -373,6 +373,11 @@ function isBinaryFile(file: parseDiff.File): boolean {
     return true;
   }
   return false;
+}
+
+/** Whether the diff only moves the file to a new path, with no content to read, so it holds nothing unread. */
+function isPureRename(file: parseDiff.File): boolean {
+  return file.chunks.length === 0 && !file.index && determineChangeType(file) === 'renamed';
 }
 
 function determineChangeType(file: parseDiff.File): DiffFile['changeType'] {
