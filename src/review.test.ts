@@ -1304,18 +1304,18 @@ describe('selectTeam', () => {
     // Each row gives the same finders as the selection before review classes existed.
     it.each<Row>([
       ['code, nothing set', code, t(false, false, false), 'auto', 'internal', [`${S} · medium`]],
-      ['code, subtle', code, t(false, true, false), 'auto', 'internal', [`${S} · high`]],
+      ['code, subtle', code, t(false, true, false), 'auto', 'internal', [`${S} · xhigh`]],
       ['code, paired', code, t(false, false, true), 'auto', 'behavior', [`${S} · medium`, `${O} · medium`]],
-      ['code, subtle and paired', code, t(false, true, true), 'auto', 'behavior', [`${S} · high`, `${O} · high`]],
+      ['code, subtle and paired', code, t(false, true, true), 'auto', 'behavior', [`${S} · xhigh`, `${O} · xhigh`]],
       ['code the planner called trivial', code, t(true, false, false), 'auto', 'internal', [`${S} · medium`]],
-      ['code the planner called trivial and paired', code, t(true, true, true), 'auto', 'behavior', [`${S} · high`, `${O} · high`]],
-      ['no triage', code, undefined, 'auto', 'behavior', [`${S} · high`, `${O} · high`]],
+      ['code the planner called trivial and paired', code, t(true, true, true), 'auto', 'behavior', [`${S} · xhigh`, `${O} · xhigh`]],
+      ['no triage', code, undefined, 'auto', 'behavior', [`${S} · xhigh`, `${O} · xhigh`]],
       ['docs called trivial and paired', docs, t(true, true, true), 'auto', 'docs', [verifier]],
       ['docs not called trivial', docs, t(false, false, false), 'auto', 'internal', [`${S} · medium`]],
       ['docs and a deletion', [file('docs/a.md'), file('src/old.ts', 'deleted', '-code')], t(true, false, false), 'auto', 'docs', [verifier]],
       ['an unchanged rename', [{ path: 'src/b.ts', oldPath: 'src/a.ts', changeType: 'renamed', hunks: [] }], t(true, false, false), 'auto', 'docs', [verifier]],
       ['a rename with edits', [file('src/b.ts', 'renamed')], t(true, false, false), 'auto', 'internal', [`${S} · medium`]],
-      ['code pinned never', code, t(false, true, true), 'never', 'internal', [`${S} · high`]],
+      ['code pinned never', code, t(false, true, true), 'never', 'internal', [`${S} · xhigh`]],
       ['code pinned always', code, t(false, false, false), 'always', 'behavior', [`${S} · medium`, `${O} · medium`]],
       ['docs pinned always', docs, t(true, false, false), 'always', 'docs', [verifier]],
       ['a security path called trivial, pinned never', [file('src/auth/session.ts')], t(true, false, false), 'never', 'security', [`${S} · medium`, `${O} · medium`]],
@@ -1405,7 +1405,7 @@ describe('selectTeam', () => {
   });
 
   it('runs one finder whose effort follows `subtle` when the change is not paired', () => {
-    for (const [subtle, effort] of [[true, 'high'], [false, 'medium']] as const) {
+    for (const [subtle, effort] of [[true, 'xhigh'], [false, 'medium']] as const) {
       const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle, paired: false });
       expect(team.finders).toEqual([expect.objectContaining({ name: `Claude Sonnet 5.5 · ${effort}`, effort })]);
     }
@@ -1418,13 +1418,13 @@ describe('selectTeam', () => {
     expect(team.finders.map(f => f.prompt)).toEqual([buildFinderAgent([]), buildFinderAgent([])]);
 
     const configured = selectTeam(plainDiff, makeConfig({ models: { reviewer: 'claude-opus-5-5', reviewer_pair: 'gpt-5.5' } }), { trivial: false, subtle: true, paired: true });
-    expect(names(configured)).toEqual(['Claude Opus 5.5 · high', 'GPT 5.5 · high']);
+    expect(names(configured)).toEqual(['Claude Opus 5.5 · xhigh', 'GPT 5.5 · xhigh']);
   });
 
-  it('defaults to two finders at high effort without a triage', () => {
+  it('defaults to two finders at xhigh effort without a triage', () => {
     const team = selectTeam(plainDiff, makeConfig());
     expect(team.triage).toEqual({ trivial: false, subtle: true, paired: true });
-    expect(team.finders.map(f => f.effort)).toEqual(['high', 'high']);
+    expect(team.finders.map(f => f.effort)).toEqual(['xhigh', 'xhigh']);
   });
 
   it('forces `trivial: false` and `paired: true` on a security-sensitive path, over the planner and the pin', () => {
@@ -1438,7 +1438,7 @@ describe('selectTeam', () => {
 
   it('pins `paired` with `planner.paired` on other paths', () => {
     const never = selectTeam(plainDiff, makeConfig({ planner: { enabled: true, paired: 'never' } }), { trivial: false, subtle: true, paired: true });
-    expect(names(never)).toEqual(['Claude Sonnet 5.5 · high']);
+    expect(names(never)).toEqual(['Claude Sonnet 5.5 · xhigh']);
     const always = selectTeam(plainDiff, makeConfig({ planner: { enabled: true, paired: 'always' } }), { trivial: false, subtle: true, paired: false });
     expect(names(always)).toHaveLength(2);
     expect(always.sensitivePaths).toBe(false);
@@ -2247,7 +2247,7 @@ describe('runReview', () => {
     it('carries over a lead the last round left unsettled, once, with the round it first came up in', async () => {
       const lead = { checked: 'read the file', left: 'check the caller' };
       const earlier = (title: string, file: string, severity: FindingSeverity, outcome: RoundLead['outcome'], extra: Partial<RoundLead> = {}): RoundLead => ({
-        title, file, line: 1, severity, reviewers: ['Claude Sonnet 5.5 · high'], description: `${title}.`, lead, outcome, since: 1, ...extra,
+        title, file, line: 1, severity, reviewers: ['Claude Sonnet 5.5 · xhigh'], description: `${title}.`, lead, outcome, since: 1, ...extra,
       });
       const last = buildPriorRound(2, []);
       last.leads = [
@@ -3439,7 +3439,7 @@ describe('runReview', () => {
 
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.reviewComplete).toBe(false);
-    expect(result.failedAgents).toEqual(['Claude Opus 5.5 · high']);
+    expect(result.failedAgents).toEqual(['Claude Opus 5.5 · xhigh']);
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
@@ -3845,7 +3845,7 @@ describe('runReview', () => {
 
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(result.agentNames).toBeDefined();
-    expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high']);
+    expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · xhigh', 'Claude Opus 5.5 · xhigh']);
   });
 
   it('returns APPROVE when priorRounds agreed suggestion matches current finding (verdict ceiling)', async () => {
@@ -4201,7 +4201,7 @@ describe('runReview', () => {
         round: 1,
         commitSha: 'sha1',
         timestamp: '2024-01-01T00:00:00Z',
-        agents: ['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high'],
+        agents: ['Claude Sonnet 5.5 · xhigh', 'Claude Opus 5.5 · xhigh'],
         findings: [
           { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'none', specialist: 'Architecture & Design' },
           { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Architecture & Design' },
@@ -4219,7 +4219,7 @@ describe('runReview', () => {
       },
     );
 
-    expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · high']);
+    expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · xhigh']);
     expect(plannerSpy.mock.calls[0][0]).toBe(buildPlannerSystemPrompt());
   });
 
@@ -4248,7 +4248,7 @@ describe('runReview', () => {
     expect(fallback).toBeDefined();
     expect(fallback!.plannerResult).toBeUndefined();
     expect(fallback!.teamAgentNames).toEqual(result.agentNames);
-    expect(result.agentEffortMap).toEqual(new Map(result.agentNames.map(name => [name, 'high'])));
+    expect(result.agentEffortMap).toEqual(new Map(result.agentNames.map(name => [name, 'xhigh'])));
     expect(fallback!.plannerDurationMs).toBeGreaterThanOrEqual(0);
   });
 
@@ -4352,7 +4352,7 @@ describe('runReview', () => {
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
 
     expect(result.llmCalls!.filter(c => c.stage === 'reviewer')).toEqual(result.agentNames.map(agent => ({
-      stage: 'reviewer', agent, model: 'claude-sonnet-5-5', effort: 'high', attempt: 1, durationMs: 1500, promptDigest: expect.stringMatching(/^[0-9a-f]{12}$/),
+      stage: 'reviewer', agent, model: 'claude-sonnet-5-5', effort: 'xhigh', attempt: 1, durationMs: 1500, promptDigest: expect.stringMatching(/^[0-9a-f]{12}$/),
       inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: 0, reasoningTokens: 0,
       costUsd: (95 * 2 + 5 * 0.2 + 20 * 10) / 1_000_000,
     })));
@@ -4558,11 +4558,11 @@ describe('runReview', () => {
     const retrying = agentCompleteCalls.filter(p => p.agentStatus === 'retrying');
     expect(retrying).toHaveLength(MAX_AGENT_RETRIES);
     for (const progress of retrying) {
-      expect(progress.agentName).toBe('Claude Opus 5.5 · high');
+      expect(progress.agentName).toBe('Claude Opus 5.5 · xhigh');
       expect(progress.retryCount).toBeGreaterThanOrEqual(1);
     }
-    const pairFailure = agentCompleteCalls.filter(p => p.agentName === 'Claude Opus 5.5 · high' && p.agentStatus === 'failure');
-    const pairSuccess = agentCompleteCalls.filter(p => p.agentName === 'Claude Opus 5.5 · high' && p.agentStatus === 'success');
+    const pairFailure = agentCompleteCalls.filter(p => p.agentName === 'Claude Opus 5.5 · xhigh' && p.agentStatus === 'failure');
+    const pairSuccess = agentCompleteCalls.filter(p => p.agentName === 'Claude Opus 5.5 · xhigh' && p.agentStatus === 'success');
     expect(pairFailure).toHaveLength(1);
     expect(pairSuccess).toHaveLength(1);
     expect(pairSuccess[0].completedAgents).toBeGreaterThan(pairFailure[0].completedAgents!);
@@ -4588,11 +4588,11 @@ describe('runReview', () => {
     expect(firstMessage).not.toContain('Your previous reply could not be used');
     expect((clients.reviewer.sendMessage as jest.Mock).mock.calls.map(([, message]) => message).some((m: string) => m.includes('Your previous reply'))).toBe(false);
     const judged = mockedRunJudgeAgent.mock.calls[0][2].findings;
-    expect(judged.map(f => [f.title, f.reviewers])).toEqual([['Unchecked sum', ['Claude Opus 5.5 · high']]]);
+    expect(judged.map(f => [f.title, f.reviewers])).toEqual([['Unchecked sum', ['Claude Opus 5.5 · xhigh']]]);
   });
 
   it.each<[string, () => ReviewClients, string[]]>([
-    ['the primary finder', () => pairedClients(jest.fn().mockRejectedValue(new Error('Permanent failure')), jest.fn().mockResolvedValue({ content: '[]' })), ['Claude Sonnet 5.5 · high']],
+    ['the primary finder', () => pairedClients(jest.fn().mockRejectedValue(new Error('Permanent failure')), jest.fn().mockResolvedValue({ content: '[]' })), ['Claude Sonnet 5.5 · xhigh']],
     ['the only finder', () => ({ ...pairedClients(jest.fn().mockRejectedValue(new Error('Timeout')), jest.fn()), planner: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) }) } as unknown as import('./providers').LLMClient }), ['Quick check · Claude Sonnet 5.5']],
   ])('ends INCOMPLETE when %s fails all retries', async (_label, build, failed) => {
     const clients = build();
@@ -4614,17 +4614,17 @@ describe('runReview', () => {
 
     const result = await runReview(pairedClients(primary, pair), { config: makeConfig({ review_passes: passes }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', onProgress });
     expect([result.outcome, result.reviewComplete]).toEqual(['INCOMPLETE', false]);
-    expect(result.summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token.');
-    expect(result.failedAgents).toEqual(['Claude Sonnet 5.5 · high']);
+    expect(result.summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · xhigh. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token.');
+    expect(result.failedAgents).toEqual(['Claude Sonnet 5.5 · xhigh']);
     expect(primary).toHaveBeenCalledTimes(passes);
     expect(pair).toHaveBeenCalledTimes(2 * passes);
     const retried = onProgress.mock.calls.map(([p]: [ReviewProgress]) => p).filter(p => p.agentStatus === 'retrying').map(p => p.agentName);
-    expect(retried).not.toContain('Claude Sonnet 5.5 · high');
+    expect(retried).not.toContain('Claude Sonnet 5.5 · xhigh');
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
 
     const run = (pairFailure: Error) => runReview(pairedClients(jest.fn().mockRejectedValue(limit), jest.fn().mockRejectedValue(pairFailure)), { config: makeConfig({ review_passes: passes }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
-    expect((await run(limit)).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high, Claude Opus 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token.');
-    expect((await run(new Error('Timeout'))).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token. Claude Opus 5.5 · high also failed after retries.');
+    expect((await run(limit)).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · xhigh, Claude Opus 5.5 · xhigh. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token.');
+    expect((await run(new Error('Timeout'))).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · xhigh. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token. Claude Opus 5.5 · xhigh also failed after retries.');
   });
 
   it('retries a failed finder in multi-pass mode and recovers on the retry passes', async () => {
@@ -4636,7 +4636,7 @@ describe('runReview', () => {
       .mockResolvedValue({ content: JSON.stringify([securityFinding]) });
     const clients = pairedClients(jest.fn().mockResolvedValue({ content: '[]' }), pair);
     mockedRunJudgeAgent.mockResolvedValue({
-      findings: [{ ...securityFinding, reviewers: ['Claude Opus 5.5 · high'] }],
+      findings: [{ ...securityFinding, reviewers: ['Claude Opus 5.5 · xhigh'] }],
       summary: 'One required finding from retry.',
     });
 
@@ -5711,13 +5711,13 @@ describe('runReview triage', () => {
   it.each<[string, string | undefined, string, string | undefined]>([
     ['the planner fails', 'not json', 'heuristic_fallback', 'exception'],
     ['the planner is disabled', undefined, 'disabled', undefined],
-  ])('runs two finders at high effort with the fail-safe triage when %s', async (_label, plannerResponse, source, reason) => {
+  ])('runs two finders at xhigh effort with the fail-safe triage when %s', async (_label, plannerResponse, source, reason) => {
     const result = await runReview(makeClients(plannerResponse), { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
     expect(result.plannerSource).toBe(source);
     expect(result.plannerFallbackReason).toBe(reason);
     expect(result.triage).toEqual({ trivial: false, subtle: true, paired: true });
-    expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high']);
-    expect([...result.agentEffortMap!.values()]).toEqual(['high', 'high']);
+    expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · xhigh', 'Claude Opus 5.5 · xhigh']);
+    expect([...result.agentEffortMap!.values()]).toEqual(['xhigh', 'xhigh']);
   });
 
   it('runs the trivial verifier alone, except on a security-sensitive path', async () => {
@@ -5753,8 +5753,8 @@ describe('runReview triage', () => {
     const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.verdict).toBe('COMMENT');
-    expect(result.failedAgents).toEqual(['Claude Opus 5.5 · high']);
-    expect(result.summary).toContain('Claude Opus 5.5 · high failed after retries');
+    expect(result.failedAgents).toEqual(['Claude Opus 5.5 · xhigh']);
+    expect(result.summary).toContain('Claude Opus 5.5 · xhigh failed after retries');
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
@@ -5781,8 +5781,8 @@ describe('runReview triage', () => {
 
   it('records `multiPassConsistency` per agent on multi-pass rounds', async () => {
     const findings = [
-      { severity: 'warning' as const, title: 'Bug A', file: 'src/a.ts', line: 5, description: 'd', reviewers: ['Claude Sonnet 5.5 · high'] },
-      { severity: 'warning' as const, title: 'Bug B', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['Claude Sonnet 5.5 · high'] },
+      { severity: 'warning' as const, title: 'Bug A', file: 'src/a.ts', line: 5, description: 'd', reviewers: ['Claude Sonnet 5.5 · xhigh'] },
+      { severity: 'warning' as const, title: 'Bug B', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['Claude Sonnet 5.5 · xhigh'] },
     ];
     // Two passes per agent; both return the same two findings, so all consistent.
     const reviewerSendMessage = jest.fn().mockResolvedValue({ content: JSON.stringify(findings) });
@@ -5798,7 +5798,7 @@ describe('runReview triage', () => {
     });
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo' });
     expect(result.agentMultiPassConsistency).toBeDefined();
-    const sec = result.agentMultiPassConsistency!.get('Claude Sonnet 5.5 · high');
+    const sec = result.agentMultiPassConsistency!.get('Claude Sonnet 5.5 · xhigh');
     expect(sec).toEqual({ consistent: 2, totalRaw: 4 });
   });
 

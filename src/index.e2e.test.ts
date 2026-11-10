@@ -526,7 +526,7 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.roundContext(review)).toMatchObject({
       meta: { round: 1, outcome: 'READY' },
       verdict: 'APPROVE',
-      routing: { class: 'internal', classSource: 'triage', group: 'solo', groupSource: 'routing', configSource: 'builtin', reviewers: [expect.objectContaining({ effort: 'high' })] },
+      routing: { class: 'internal', classSource: 'triage', group: 'solo', groupSource: 'routing', configSource: 'builtin', reviewers: [expect.objectContaining({ effort: 'xhigh' })] },
     });
     expect(mockLLM.calls).toEqual(['planner', 'reviewer', 'judge', 'verdict']);
     expect(core.setOutput).toHaveBeenCalledWith('verdict', 'APPROVE');
