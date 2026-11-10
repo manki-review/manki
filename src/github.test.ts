@@ -4058,6 +4058,16 @@ describe('postReview fallback paths', () => {
         expect(review.body).toContain('**Still open from earlier reviews:**\n- `src/a.ts:2`: Floor class runs on one model ([view thread](https://github.com/owner/repo/pull/1#discussion_r1))\n\n  This round names it as:\n\n  **Blocker**\n  **Floor class weakened by the PR**\n  [`src/a.ts:');
       }
       expect(createReview.mock.calls[1][0].body).toContain('  [`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n  **What goes wrong:** Desc.');
+      // A blocker in a thread that did not block before is raised by this round, so the verdict counts it as new.
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([named(2)]), outcome: 'ADDRESS_FIRST' }, diff, makeContext({ meta: { ...makeContext().meta, round: 2 } }), undefined, {
+        existingThreads: [{ ...existingThreads[0], severity: 'warning' as const }],
+      });
+      expect(createReview.mock.calls[3][0].comments).toEqual([]);
+      expect(createReview.mock.calls[3][0].body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker\./u);
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([named(2)]), outcome: 'ADDRESS_FIRST' }, diff, makeContext({ meta: { ...makeContext().meta, round: 2 } }), undefined, {
+        existingThreads: [{ ...existingThreads[0], severity: 'warning' as const, gradeUnknown: true }],
+      });
+      expect(createReview.mock.calls[4][0].body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker still open from an earlier review\./u);
     });
 
     it.each([

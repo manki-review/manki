@@ -3046,9 +3046,55 @@ describe('runReview', () => {
     expect(elsewhere.findings[0]).not.toHaveProperty('sameAs');
     expect(elsewhere.findings[0]).not.toHaveProperty('answeredIn');
     expect(elsewhere.verdictTrace?.unresolvedPriors).toEqual([expect.objectContaining({ threadId: 'T1' })]);
+    // It keeps no link to a plain thread at all: here `answeredIn` and `sameAs` name two different closed plain threads.
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:30:30:cache-leaks', answeredIn: { threadId: 'T9', answer: 'Agreed.' } })] });
+    const closed = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, headSha: 'sha3', openThreads: [],
+      previousFindings: [
+        { title: 'Token logged', file: 'src/x.ts', line: 80, severity: 'warning', status: 'resolved', threadId: 'T9', answer: 'Agreed.' },
+        { title: 'Cache leaks', file: 'src/x.ts', line: 30, severity: 'blocker', status: 'resolved', threadId: 'T5' },
+      ],
+      priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker', title: 'Cache leaks', threadId: 'T5', fingerprint: { file: 'src/x.ts', lineStart: 30, lineEnd: 30, slug: 'cache-leaks' } })])],
+    });
+    expect(closed.findings[0]).not.toHaveProperty('sameAs');
+    expect(closed.findings[0]).not.toHaveProperty('answeredIn');
+    expect(closed.findings[0].ownThread).toBe(true);
+    // The link is gone before the threads are graded, so a plain thread the judge found fixed stays fixed and takes no
+    // warning that restates it, instead of being held open by the dropped link and swallowing that warning.
+    mockedRunJudgeAgent.mockResolvedValue({
+      summary: 'Findings.',
+      threadEvaluations: [{ threadId: 'T1', status: 'addressed', reason: 'Fixed.' }],
+      findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:10:10:retry-never-ends' }), finding('warning', 'Retry never ends', 'src/x.ts', 10)],
+    });
+    const fixed = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, headSha: 'sha3', previousFindings: [],
+      openThreads: [makePriorOpenThread({ title: 'Retry never ends', severity: 'blocker' })],
+      interRoundDiff: 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -10 +10 @@\n-old\n+new\n',
+      priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker', title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } })])],
+    });
+    expect(fixed.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'T1', status: 'addressed' })]);
+    expect(fixed.findings.find(f => f.title === 'Retry never ends')).not.toHaveProperty('threadId');
     // With no earlier finding at all, a security finding is still posted on its own.
     const first = await runReview(makeClients(), { config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(first.findings[0]).toEqual(expect.objectContaining({ ownThread: true }));
+    // When the threads could not be read, every finding of a thread looks listed in a review body, so the round matches
+    // none: the restatement of a thread's finding is not taken for a body finding still open.
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('warning', 'Retry never ends', 'src/x.ts', 10)] });
+    const info = jest.spyOn(core, 'info').mockImplementation(() => {});
+    const unread = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, headSha: 'sha3',
+      openThreads: null, previousFindings: [], priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ title: 'Retry never ends', threadId: undefined, fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } })])],
+    });
+    expect(unread.findings[0]).not.toHaveProperty('raisedIn');
+    // A security finding keeps its `sameAs` to a thread the round knows nothing about, since that thread may guard it.
+    mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged on retry', 'src/x.ts', 80, { tags: ['security'], sameAs: 'src/x.ts:10:10:retry-never-ends' })] });
+    const unknown = await runReview(makeClients(), {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, headSha: 'sha3', openThreads: null, previousFindings: [],
+      priorRounds: [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker', title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } })])],
+    });
+    expect(unknown.findings[0].sameAs).toBe('src/x.ts:10:10:retry-never-ends');
+    expect(info).toHaveBeenCalledWith('The review threads could not be read, so no finding is matched to an earlier one this round');
+    info.mockRestore();
     // A closed answered thread is read from the recap, so a security thread among them keeps its repeat.
     mockedRunJudgeAgent.mockResolvedValue({ summary: 'Findings.', findings: [finding('blocker', 'Token logged', 'src/x.ts', 50, { tags: ['security'], answeredIn: { threadId: 'T9', answer: 'Agreed.' } })] });
     const answered = (isSecurity: boolean) => runReview(makeClients(), {
