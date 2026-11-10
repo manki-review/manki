@@ -290,6 +290,8 @@ interface PreviousFinding extends FindingMetadata {
   recordedGrade?: FindingSeverity;
   /** The highest grade the round records ever gave the thread. */
   peakGrade?: FindingSeverity;
+  /** Set when a round record could not be read, so the grade it may hold is unknown and the thread stays guarded. */
+  gradeUnknown?: boolean;
   /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open. */
   status: 'open' | 'resolved' | 'replied' | 'auto-resolved';
   /** Resolved because the judge of an earlier round marked the thread `addressed`. */
@@ -539,6 +541,7 @@ async function fetchRecapState(
       severity: t.severity,
       ...(t.recordedGrade && { recordedGrade: t.recordedGrade }),
       ...(t.peakGrade && { peakGrade: t.peakGrade }),
+      ...(t.gradeUnknown && { gradeUnknown: true }),
       status: threadStatus(t, addressedThreadIds, bot, prAuthorLogin, !!securityOverride),
       ...(t.isResolved && addressedThreadIds.has(t.threadId) && { fixed: true }),
       threadId: t.threadId,

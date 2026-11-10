@@ -1660,13 +1660,21 @@ describe('fetchRecapState', () => {
         id: 'tw', isResolved: true, resolvedBy: { login: 'author' },
         comments: { nodes: [{ body: '<!-- manki:warning:Bug --> **Warning**: Bug found\n\nDesc.', author: { login: BOT_LOGIN } }] },
       });
-      const octokit = mockOctokit([resolvedByAuthor], [
+      const agreedByAuthor = makeThread({
+        id: 'ta', path: 'src/other.ts',
+        comments: { nodes: [
+          { body: '<!-- manki:warning:Bug --> **Warning**: Bug found\n\nDesc.', author: { login: BOT_LOGIN } },
+          { body: 'Agreed, no change needed.', author: { login: 'author' } },
+        ] },
+      });
+      const octokit = mockOctokit([resolvedByAuthor, agreedByAuthor], [
         { id: 500, body: malformed, user: { login: BOT_LOGIN } },
         { id: 501, body: htmlCommentBlock(ctx3), user: { login: BOT_LOGIN } },
       ]);
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author');
-      // The skipped record may have raised the thread, so the PR author's resolution does not clear it.
-      expect(state.previousFindings.map(f => [f.status, f.reopen])).toEqual([['open', true]]);
+      // The skipped record may have raised the threads, so neither the PR author's resolution nor agreement clears them.
+      expect(state.previousFindings.map(f => [f.status, f.reopen, f.gradeUnknown])).toEqual([['open', true, true], ['replied', undefined, true]]);
+      expect(collectInPrSuppressions(state.previousFindings, 'author')).toEqual([]);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(3);
       // A skipped record could hold a thread's grade, so the recap says the rounds are incomplete.

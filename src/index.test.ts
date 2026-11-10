@@ -279,7 +279,7 @@ jest.mock('./related-work', () => ({
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
 import { buildRoundRecap } from './round-context';
-import type { ParsedDiff, PrState, ReviewConfig, RunMode } from './types';
+import type { ParsedDiff, PrState, ReviewConfig, RunMode, ThreadEvaluation } from './types';
 import { SettingsView, withSettingsBlock } from './settings';
 import { registerSecret, withMarkers } from './utils';
 import { createLLMClient, LLMCall, parseModelSpec, removeSeededAuthFiles } from './providers';
@@ -5556,7 +5556,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     const partly = (threadId: string, remaining: string) => ({ threadId, status: 'partly_addressed' as const, reason: 'r', remaining, grade: 'warning' as const });
-    const run = async (lastReviewed: string, priorRoundsIncomplete?: true) => {
+    const run = async (lastReviewed: string, priorRoundsIncomplete?: true, addressed: string[] = []) => {
       mockGraphql.mockClear();
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
         ...(priorRoundsIncomplete && { priorRoundsIncomplete }),
@@ -5571,14 +5571,14 @@ describe('runFullReview orchestration', () => {
       });
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
-        threadEvaluations: [
+        threadEvaluations: ([
           partly('PRRT_abc', 'No timeout yet, ask @alice.'), partly('PRRT_def', 'Still slow.'), partly('PRRT_ghi', 'One path left.'),
           { threadId: 'PRRT_jkl', status: 'not_addressed', reason: 'The timeout is gone again.', grade: 'blocker' },
           { threadId: 'PRRT_mno', status: 'not_addressed', reason: 'Still keyed by user only.' },
-        ],
+        ] as ThreadEvaluation[]).map(e => (addressed.includes(e.threadId) ? { threadId: e.threadId, status: 'addressed' as const, reason: 'Fixed.' } : e)),
       });
       await callRunFullReview();
-      expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('resolveReviewThread'))).toEqual([]);
+      expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('resolveReviewThread')).length).toBe(addressed.length);
       return mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars);
     };
 
@@ -5615,6 +5615,13 @@ describe('runFullReview orchestration', () => {
     // When the change since the last round cannot be read, every partly fixed thread gets its reply.
     jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed'));
     expect((await run('old456')).map(r => (r as { threadId: string }).threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
+
+    // With a record unread, a thread the round resolves is left out of the hold, and with none left open the round approves.
+    jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue('diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n');
+    await run('prior-sha', true, ['PRRT_mno']);
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5].verdictTrace?.unresolvedPriors.map(p => p.threadId)).toEqual(['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl']);
+    await run('prior-sha', true, ['PRRT_abc', 'PRRT_def', 'PRRT_ghi', 'PRRT_jkl', 'PRRT_mno']);
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)![5].verdict).toBe('APPROVE');
   });
 
   it('skips resolving threads not in the openThreads allowlist', async () => {
