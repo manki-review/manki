@@ -7,7 +7,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { extractCurrentCodeWindow } from './code-window';
 import { changedKeys, loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, filterDiff, filterRawDiff, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
-import { ApprovalHeld, buildRepoContext, configFailed, loadBaseConfig, RepoFiles, titleToSlug } from './github';
+import { ApprovalHeld, brokenConfig, buildRepoContext, loadBaseConfig, RepoFiles, titleToSlug } from './github';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { MAX_LOCKFILE_BYTES } from './static-signals';
 import type { ProviderInputs } from './providers';
@@ -117,7 +117,7 @@ export interface LocalReview {
   /** The commit the change starts from: the merge base, or `head` for a patch. */
   base: string;
   head: string;
-  /** Set to `config` when the base config did not load, which holds a pull request round's approval. */
+  /** Set to `config` when the base config, or a head copy that differs from the base's, did not load, which holds a pull request round's approval. */
   approvalHeld: ApprovalHeld;
 }
 
@@ -141,17 +141,28 @@ function gitRepoFiles(root: string, commit: string): RepoFiles {
 }
 
 /**
- * Loads the config at `base` the way a pull request round does, and logs the keys `head` changes. With `overrides`, they
- * are set on top, and a config that does not load throws instead of falling back to the defaults.
+ * Loads the config at `base` the way a pull request round does, and logs the keys `head` changes. A config at `head` that
+ * does not load gives a warning and `brokenHead`, which says whether it differs from the copy at `base`. With `overrides`,
+ * they are set on top, and a base config that does not load throws instead of falling back to the defaults.
  */
 async function loadLocalConfig(
   root: string, base: string, head: string, configPath: string, overrides?: ConfigOverrides,
-): Promise<{ config: ReviewConfig; source: ConfigSource }> {
-  const headConfig = loadConfig(await gitRepoFiles(root, head).read(configPath) ?? undefined, configPath);
+): Promise<{ config: ReviewConfig; source: ConfigSource; brokenHead?: { changed: boolean } }> {
+  const describe = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  let headContent: string | null | undefined;
+  let headConfig: ReviewConfig | undefined;
+  try {
+    headContent = await gitRepoFiles(root, head).read(configPath);
+    headConfig = loadConfig(headContent ?? undefined, configPath);
+  } catch (error) {
+    core.warning(`Could not load ${configPath} at the head, this review uses the base's settings: ${describe(error)}`);
+  }
   const read = () => gitRepoFiles(root, base).read(configPath);
   const loaded = overrides
     ? loadOverlaidConfig(await read(), configPath, overrides)
-    : await loadBaseConfig(read, configPath, error => (error instanceof Error ? error.message : String(error)));
+    : await loadBaseConfig(read, configPath, describe);
+  // A copy that cannot be read or compared counts as changed, so its approval is held.
+  if (!headConfig) return { ...loaded, brokenHead: { changed: headContent === undefined || headContent !== await read().catch(() => undefined) } };
   // A key the overrides set differs from the head's whatever the change did, so it is left out.
   const changed = changedKeys(headConfig, loaded.config).filter(key => !(overrides && key in overrides));
   if (changed.length > 0) {
@@ -260,7 +271,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
   const configPath = input.configPath ?? DEFAULT_CONFIG_PATH;
   const head = (await runGit(repoRoot, ['rev-parse', '--verify', `${input.head}^{commit}`])).trim();
   const base = patch === undefined ? (await runGit(repoRoot, ['merge-base', input.base, head])).trim() : head;
-  const loaded = input.config ? { config: input.config, source: 'base' as const } : await loadLocalConfig(repoRoot, base, head, configPath, input.configOverrides);
+  const loaded: Awaited<ReturnType<typeof loadLocalConfig>> = input.config ? { config: input.config, source: 'base' } : await loadLocalConfig(repoRoot, base, head, configPath, input.configOverrides);
   const { config } = loaded;
   const raw = patch ?? await runGit(repoRoot, [...DIFF_ARGS, base, head]);
   const { fullDiff, diff, excludedFiles, rawDiff } = reviewableDiff(raw, config.exclude_paths);
@@ -321,7 +332,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       priorRoundCount: followUp?.priorRounds.length ?? 0, maxAutoRounds: 0, diff, changeDigest: changeDigest(fullDiff), excludedFiles,
       openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled',
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
-    return { result, context, base, head, approvalHeld: configFailed(loaded.source) ? 'config' : false };
+    return { result, context, base, head, approvalHeld: brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config' : false };
   } finally {
     if (workspace) rmSync(workspace, { recursive: true, force: true });
   }

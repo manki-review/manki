@@ -37,7 +37,7 @@ const OUTCOME_REPORTS: Record<RoundOutcome, Omit<CheckReport, 'summary'>> = {
 const HELD_TITLES: Record<Exclude<ApprovalHeld, false>, string> = {
   conflict: 'Approval held: the PR conflicts with its base',
   draft: 'Approval held: the PR is a draft',
-  config: 'Approval held: the base branch config did not load',
+  config: 'Approval held: a config file did not load',
   unread: 'Approval held: some changed files were not read',
 };
 

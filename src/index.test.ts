@@ -34,6 +34,7 @@ const mockPullsGet = jest.fn().mockResolvedValue({
 });
 
 const mockListReviews = jest.fn().mockResolvedValue({ data: [] });
+const mockCompareCommits = jest.fn().mockResolvedValue({ data: { merge_base_commit: { sha: 'merge-base' } } });
 
 const mockListReactionsForIssueComment = jest.fn().mockResolvedValue({ data: [] });
 
@@ -57,6 +58,7 @@ const mockOctokitInstance = {
     issues: { deleteComment: jest.fn().mockResolvedValue(undefined), listComments: mockListComments, createComment: jest.fn().mockResolvedValue({ data: { id: 999 } }), updateComment: jest.fn().mockResolvedValue({}) },
     reactions: { listForIssueComment: mockListReactionsForIssueComment },
     checks: { create: mockChecksCreate, update: mockChecksUpdate, get: mockChecksGet },
+    repos: { compareCommits: mockCompareCommits },
   },
   graphql: mockGraphql,
   hook: { wrap: jest.fn((_name: string, hook: RequestHook) => { requestHooks.push(hook); }) },
@@ -198,6 +200,7 @@ jest.mock('./github', () => ({
   fetchConfigFile: jest.fn().mockResolvedValue(null),
   readConfigFile: jest.fn().mockResolvedValue(null),
   loadBaseConfig: jest.requireActual('./github').loadBaseConfig,
+  brokenConfig: jest.requireActual('./github').brokenConfig,
   configFailed: jest.requireActual('./github').configFailed,
   fetchRepoContext: jest.fn().mockResolvedValue(''),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
@@ -242,7 +245,6 @@ jest.mock('./github', () => ({
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
   REVIEW_INCOMPLETE_LINE: jest.requireActual('./github').REVIEW_INCOMPLETE_LINE,
   PAUSE_NOTICE_MARKER: jest.requireActual('./github').PAUSE_NOTICE_MARKER,
-  postConfigErrorComment: jest.fn().mockResolvedValue(undefined),
   latestSettings: jest.requireActual('./github').latestSettings,
   retireSettingsBlocks: jest.fn().mockResolvedValue(undefined),
   setSettingsBlock: jest.fn().mockResolvedValue(undefined),
@@ -1952,7 +1954,7 @@ describe('runFullReview orchestration', () => {
     it.each([
       ['conflict', 'Approval held: the PR conflicts with its base'],
       ['draft', 'Approval held: the PR is a draft'],
-      ['config', 'Approval held: the base branch config did not load'],
+      ['config', 'Approval held: a config file did not load'],
       ['unread', 'Approval held: some changed files were not read'],
     ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {
       jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld: held });
@@ -2075,19 +2077,39 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(reviewedConfig()).toEqual(actualLoadConfig(base));
-      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configFailed: false }));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: undefined }));
       expect(jest.mocked(core.info)).toHaveBeenCalledWith(
         'This PR changes `auto_review`, `auto_approve`, `exclude_paths`, `max_diff_lines`, `reviewers`, `instructions`, `memory`, `models`, `planner`, `review`, `static_analysis`, `related_repos`, `noise_level`, `drafts`, `review_passes`, `convergence`, `metrics` in .manki.yml. The change applies after merge: this round uses the base branch\'s settings.',
       );
     });
 
-    it('fails the run on a PR whose own config does not load, even when the base branch\'s does', async () => {
-      configFiles('review_passes: 9\n', async () => null);
+    it.each([
+      ['does not load', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5', 'same', undefined],
+      ['is in a format this version no longer reads', 'review:\n  classes:\n    payments:\n      critical: true\n', '`review.classes.payments.critical`', 'same', undefined],
+      ['does not load after the PR\'s own change to it', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5', 'changed', 'head'],
+      ['does not load and its merge base cannot be read', 'review_passes: 9\n', '`review_passes` must be an integer between 1 and 5', 'unknown', 'head'],
+    ] as const)('reviews with the base branch\'s settings and a warning when the PR\'s own config %s', async (_label, head, reason, mergeBase, configHold) => {
+      const base = 'review_passes: 2\n';
+      configFiles(head, async () => base);
+      // Only a copy the PR changed since the merge base holds the approval. One that merely predates the base's copy does not.
+      if (mergeBase === 'changed') {
+        jest.mocked(ghUtils.readConfigFile).mockImplementation(async (_o, _ow, _r, ref) => (ref === 'abc123' ? head : base));
+      }
+      if (mergeBase === 'unknown') mockCompareCommits.mockRejectedValueOnce(new Error('API 500'));
 
       await callRunFullReview();
 
-      expect(jest.mocked(ghUtils.postConfigErrorComment)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 42, expect.stringContaining('`review_passes` must be an integer between 1 and 5'));
-      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+      expect(reviewedConfig()).toEqual(actualLoadConfig(base));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold }));
+      expect(mockCompareCommits).toHaveBeenCalledWith(expect.objectContaining({ base: 'main', head: 'abc123' }));
+      const warnings = jest.mocked(core.warning).mock.calls.map(([message]) => String(message)).filter(m => m.includes('.manki.yml'));
+      expect(warnings).toEqual([
+        expect.stringMatching(/^Could not read or load the PR's \.manki\.yml, this round uses the base branch's settings: .*/),
+        ...(mergeBase === 'unknown' ? ['Could not read .manki.yml at the merge base, so the PR counts as changing it: API 500'] : []),
+      ]);
+      expect(warnings[0]).toContain(reason);
+      expect(jest.mocked(core.info).mock.calls.map(([message]) => String(message))).not.toContainEqual(expect.stringContaining('This PR changes'));
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -2100,7 +2122,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(reviewedConfig()).toEqual(actualLoadConfig(undefined));
-      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configFailed: true }));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: 'base' }));
       expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining(warning));
       expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
     });
@@ -6443,6 +6465,7 @@ describe('runFullReview orchestration', () => {
     afterEach(() => {
       jest.mocked(ghUtils.fetchStandingVerdict).mockResolvedValue(undefined);
       jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue('');
+      jest.mocked(ghUtils.readConfigFile).mockResolvedValue(null);
     });
 
     function expectNoRound(): void {
@@ -6573,6 +6596,23 @@ describe('runFullReview orchestration', () => {
 
       expect(jest.mocked(ghUtils.fetchStandingVerdict)).toHaveBeenCalled();
       expect(jest.mocked(ghUtils.fetchInterRoundDiff)).not.toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'main', 'abc123');
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+      expect(mockCreateReview).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the base branch\'s', 'main'],
+      ['the PR\'s own', 'abc123'],
+    ])('runs a normal round while %s config file does not load, so the round decides the hold', async (_label, brokenRef) => {
+      seedPush('APPROVE', REBASED_DIFF);
+      jest.mocked(ghUtils.readConfigFile).mockImplementation(async (_o, _ow, _r, ref) => {
+        if (ref === brokenRef) throw new Error('socket hang up');
+        return null;
+      });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(ghUtils.fetchStandingVerdict)).not.toHaveBeenCalled();
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
       expect(mockCreateReview).not.toHaveBeenCalled();
     });
@@ -7355,21 +7395,6 @@ describe('runFullReview config and dedupe', () => {
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenCalled();
     const [, , , commentIdArg] = jest.mocked(ghUtils.updateProgressComment).mock.calls[0];
     expect(commentIdArg).toBe(1);
-  });
-
-  it('fails the run and posts the error on the PR when the config cannot be loaded', async () => {
-    jest.mocked(configModule.loadConfig).mockImplementationOnce(() => {
-      throw new Error('Invalid YAML in /repo/.manki.yml: Flow sequence in block collection must be sufficiently indented');
-    });
-
-    await expect(callRunFullReview()).resolves.toBeUndefined();
-
-    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Invalid YAML in /repo/.manki.yml'));
-    expect(jest.mocked(ghUtils.postConfigErrorComment)).toHaveBeenCalledWith(
-      mockOctokitInstance, 'test-owner', 'test-repo', 42, expect.stringContaining('Invalid YAML in /repo/.manki.yml: Flow sequence'),
-    );
-    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
-    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
   });
 
   it('bails when the bot already reviewed the head SHA', async () => {

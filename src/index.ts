@@ -37,6 +37,8 @@ import { ConfigSource, DashboardData, Finding, FindingSeverity, FullReviewOption
 import {
   fetchPRDiff,
   fetchConfigFile,
+  brokenConfig,
+  ConfigHold,
   configFailed,
   loadBaseConfig,
   readConfigFile,
@@ -74,7 +76,6 @@ import {
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
   markProgressCommentSuperseded,
-  postConfigErrorComment,
   latestSettings,
   PAUSE_NOTICE_MARKER,
   REVIEW_COMPLETE_MARKER,
@@ -701,6 +702,7 @@ const MAX_REVIEW_CHARS = 4_000_000;
 
 /** What a review round works on. Built once its inputs are collected, then passed to the stages that review, post and record. */
 interface ReviewRun extends RunTarget, RoundRecordInput {
+  configHold?: ConfigHold;
   /** The lockfiles a model reads as a package list, so they hold no approval. */
   lockfiles: LockfileDiff[];
   commentId: number;
@@ -724,36 +726,56 @@ function cancelDashboardFlush(progress: RunProgress): void {
 }
 
 /**
- * Loads the round's config from the base branch, so a PR cannot weaken its own review. The PR's own `.manki.yml` is still
- * loaded, so one that does not load fails the run, and the keys it changes are logged as applying after merge.
- * Returns `undefined` after reporting a config that does not load.
+ * Loads the round's config from the base branch, so a PR cannot weaken its own review. The keys the PR's own `.manki.yml`
+ * changes are logged as applying after merge. A PR file that does not load gives a warning and `brokenHead`, which says
+ * whether the PR changed it.
  */
-async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ config: ReviewConfig; reviewSource: ConfigSource } | undefined> {
-  const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
+async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ config: ReviewConfig; reviewSource: ConfigSource; brokenHead?: { changed: boolean } }> {
+  const { octokit, owner, repo, commitSha, baseRef } = target;
   // The contents API takes a repo-relative path, so `./`, absolute and outside paths are normalised first.
   const cwd = path.resolve(process.cwd());
   const repoRelative = path.relative(cwd, path.resolve(cwd, configPath));
   const outside = repoRelative.startsWith('..') || path.isAbsolute(repoRelative);
   if (outside) core.warning('`config_path` points outside the repository, reading `.manki.yml`');
   const repoConfigPath = outside ? '.manki.yml' : repoRelative.split(path.sep).join('/');
+  let headContent: string | null | undefined;
+  let headConfig: ReviewConfig | undefined;
   try {
-    const headConfig = loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath);
-    const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, repoConfigPath), repoConfigPath, failureReason);
-    const changed = changedKeys(headConfig, config);
-    if (changed.length > 0) {
-      core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${repoConfigPath}. The change applies after merge: this round uses the base branch's settings.`);
-    }
-    return { config, reviewSource: source };
+    headContent = await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath);
+    headConfig = loadConfig(headContent ?? undefined, repoConfigPath);
   } catch (error) {
-    const reason = failureReason(error);
-    core.setFailed(reason);
-    await postConfigErrorComment(octokit, owner, repo, prNumber, reason);
-    return undefined;
+    core.warning(`Could not read or load the PR's ${repoConfigPath}, this round uses the base branch's settings: ${failureReason(error)}`);
+  }
+  const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, repoConfigPath), repoConfigPath, failureReason);
+  if (!headConfig) return { config, reviewSource: source, brokenHead: { changed: await changesConfig(target, repoConfigPath, headContent) } };
+  const changed = changedKeys(headConfig, config);
+  if (changed.length > 0) {
+    core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${repoConfigPath}. The change applies after merge: this round uses the base branch's settings.`);
+  }
+  return { config, reviewSource: source };
+}
+
+/**
+ * Whether the PR changed its config file: the copy at its head differs from the copy at the merge base. A copy that cannot
+ * be read or compared counts as changed, so its approval is held.
+ */
+async function changesConfig(target: RunTarget, configPath: string, headContent: string | null | undefined): Promise<boolean> {
+  if (headContent === undefined) return true;
+  const { octokit, owner, repo, commitSha, baseRef } = target;
+  try {
+    const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base: baseRef, head: commitSha, per_page: 1 });
+    return await readConfigFile(octokit, owner, repo, data.merge_base_commit.sha, configPath) !== headContent;
+  } catch (error) {
+    core.warning(`Could not read ${configPath} at the merge base, so the PR counts as changing it: ${failureReason(error)}`);
+    return true;
   }
 }
 
-/** Whether the run stops before posting a progress comment: the commit is reviewed or stale, or nothing changed. */
-async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, { forceReview, settings = NO_SETTINGS, draft }: FullReviewOptions): Promise<boolean> {
+/**
+ * Whether the run stops before posting a progress comment: the commit is reviewed or stale, or nothing changed. With
+ * `configBroken`, an unchanged PR is reviewed again, so the full round decides whether the config holds its approval.
+ */
+async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, { forceReview, settings = NO_SETTINGS, draft }: FullReviewOptions, configBroken: boolean): Promise<boolean> {
   const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
 
   // A run queued behind another can find its commit reviewed already. `forceReview` reviews it again, as a box tick asks.
@@ -773,7 +795,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
     return true;
   }
 
-  if (trigger.event === 'pull_request:synchronize' && config.auto_review) {
+  if (trigger.event === 'pull_request:synchronize' && config.auto_review && !configBroken) {
     const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, baseRef, commitSha);
     if (standing) {
       const shortSha = standing.commitSha.slice(0, 7);
@@ -1544,7 +1566,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, withLockfiles(diff, run.lockfiles), context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
     draft: run.options.draft,
-    configFailed: configFailed(run.reviewSource),
+    configHold: run.configHold,
     memorySkip: run.memorySkip?.message,
     restart,
     ...(unreadRecords && { unreadRecords }),
@@ -1734,10 +1756,8 @@ async function runFullReview(
   let checkReport: CheckReport | undefined;
 
   try {
-    const loaded = await loadRunConfig(target, configPath);
-    if (!loaded) return;
-    const { config, reviewSource } = loaded;
-    if (await skipsRound(target, config, trigger, options)) return;
+    const { config, reviewSource, brokenHead } = await loadRunConfig(target, configPath);
+    if (await skipsRound(target, config, trigger, options, configFailed(reviewSource) || brokenHead !== undefined)) return;
 
     const commentId = await postRunProgress(target, progress, options);
     progress.commentId = commentId;
@@ -1830,7 +1850,7 @@ async function runFullReview(
     ]);
 
     const run: ReviewRun = {
-      ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,
+      ...target, options, trigger, config, reviewSource, configHold: brokenConfig(reviewSource, brokenHead?.changed ?? false), models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
       diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
       commentId, dashboard, progress, startTime, parseEndTime,

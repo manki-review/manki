@@ -1,8 +1,8 @@
 # Configuration
 
-Create `.manki.yml` in your repository root. If the file is not valid YAML or has an invalid setting, the run fails, and a review run posts the error on the PR instead of reviewing with the defaults.
+Create `.manki.yml` in your repository root. A file that is not valid YAML or has an invalid setting holds Manki's approval, as described below.
 
-A review uses `.manki.yml` from the PR's base branch, so a PR cannot change its own review, such as by hiding files, picking weaker models or turning approval on. A PR that changes the file is reviewed with the base branch's settings, and the change applies after merge. The PR's own file must still load, so a broken file never lands. When the base branch's file cannot be read or does not load, Manki reviews with the defaults and never approves, so the PR that fixes it still gets a review.
+A review uses `.manki.yml` from the PR's base branch, so a PR cannot change its own review, such as by hiding files, picking weaker models or turning approval on. A PR that changes the file is reviewed with the base branch's settings, and the change applies after merge. When the PR's own file does not load, Manki logs a warning and still reviews with the base branch's settings. If the PR itself changes the file, Manki also holds its approval until the file loads, so Manki never approves a broken file. When the base branch's file cannot be read or does not load, Manki reviews with the defaults and never approves, so the PR that fixes it still gets a review.
 
 Every setting is in the [reference](#reference) below the example.
 

@@ -166,11 +166,14 @@ export interface SkippedFiles {
   binary: BinaryFile[];
 }
 
+/** The config file that holds an approval because it does not load: the base branch's, or the PR's own copy. */
+export type ConfigHold = 'base' | 'head';
+
 /**
- * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, the base branch's config did not
- * load, or no model read some of its files.
+ * Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, a config file did not load, or no
+ * model read some of its files.
  */
-export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config' } | { reason: 'unread'; skipped: SkippedFiles };
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config'; file: ConfigHold } | { reason: 'unread'; skipped: SkippedFiles };
 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
@@ -209,7 +212,11 @@ export function withheldSummary(summary: string): string {
 /** Returns the line that says why Manki does not approve. */
 export function approvalHoldLine(hold: ApprovalHold): string {
   if (hold.reason === 'draft') return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.';
-  if (hold.reason === 'config') return '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.';
+  if (hold.reason === 'config') {
+    return hold.file === 'base'
+      ? '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.'
+      : '**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit.';
+  }
   if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
   return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
 }
@@ -365,9 +372,19 @@ export async function readConfigFile(
   }
 }
 
-/** Whether the base branch config could not be read or loaded, which holds the round's approval. */
+/** Whether the base branch config could not be read or loaded. */
 export function configFailed(source: ConfigSource): boolean {
   return source === 'base_unreadable' || source === 'base_invalid';
+}
+
+/**
+ * Returns the config file that holds the round's approval: the base branch's when it could not be read or loaded, else the
+ * PR's own when `brokenOwnCopy` says the PR changed it and it does not load. A PR that only predates the base's copy
+ * holds nothing.
+ */
+export function brokenConfig(source: ConfigSource, brokenOwnCopy: boolean): ConfigHold | undefined {
+  if (configFailed(source)) return 'base';
+  return brokenOwnCopy ? 'head' : undefined;
 }
 
 /**
@@ -1465,8 +1482,8 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, configFailed = false, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords }: {
-    existingThreads?: PreviousFinding[]; draft?: boolean; configFailed?: boolean; noVerdict?: boolean;
+  { existingThreads = [], draft = false, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords }: {
+    existingThreads?: PreviousFinding[]; draft?: boolean; configHold?: ConfigHold; noVerdict?: boolean;
     /** The reviews whose round record could not be read while a thread stays open, named in the review's first line. */
     unreadRecords?: string[];
     /** Why the round ran without memory, with the fix. */
@@ -1576,12 +1593,14 @@ export async function postReview(
   const blockingFindings = result.findings.filter(isBlockingFinding);
   const earlier = carriedThreadIds.size + (result.verdictTrace?.unresolvedPriors.length ?? 0);
   const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (context?.meta.round ?? 1) > 1 };
-  const standingHold: ApprovalHold | undefined = configFailed ? { reason: 'config' }
+  const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
   const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
+  // A config hold outlasts this round, since it also stops a later auto-approve, so a round that requests changes names it too.
+  const lineHold = hold ?? (standingHold?.reason === 'config' ? standingHold : undefined);
   // An approval held for unread files says so in its verdict line, so only the other holds get a line of their own.
-  const heldLine = hold && hold.reason !== 'unread' && approvalHoldLine(hold);
+  const heldLine = lineHold && lineHold.reason !== 'unread' && approvalHoldLine(lineHold);
 
   const limitWarning = formatLimitWarning(latestLimits(result.llmCalls ?? []));
 
@@ -1638,7 +1657,7 @@ export async function postReview(
   const postedVerdict = approvalHeld ? 'COMMENT' : result.verdict;
   if (approvalHeld) {
     const why = hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}`
-      : hold?.reason === 'config' ? 'The base branch config did not load'
+      : hold?.reason === 'config' ? (hold.file === 'base' ? 'The base branch config did not load' : 'The PR\'s own config does not load')
       : hold?.reason === 'unread' ? 'No model read some of the changed files' : 'The PR is a draft';
     core.info(`${why}, so the approval is posted as a comment`);
   }
@@ -3114,28 +3133,6 @@ async function fetchStandingVerdict(
   return undefined;
 }
 
-const CONFIG_ERROR_MARKER = '<!-- manki-config-error -->';
-
-/**
- * Posts a config load error on the PR. Uses its own marker instead of `BOT_MARKER`,
- * so the progress-comment scans never treat it as a run in progress or a stale one.
- */
-async function postConfigErrorComment(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  prNumber: number,
-  message: string,
-): Promise<void> {
-  const fence = dynamicFence(message);
-  const body = withMarkers(`**Manki** could not load its config, so no review ran. Fix the file and push again.\n\n${fence}\n${message}\n${fence}`, CONFIG_ERROR_MARKER);
-  try {
-    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
-  } catch (error) {
-    core.warning(`Failed to post config error comment: ${error instanceof Error ? error.message : error}`);
-  }
-}
-
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };
