@@ -1536,12 +1536,17 @@ describe('postReview body lead', () => {
 
     // A round that requests changes over an unread earlier review record says so first, and names the review.
     const url = 'https://github.com/owner/repo/pull/1#pullrequestreview-7';
-    const withheld = { ...ready, verdict: 'REQUEST_CHANGES' as const, outcome: 'ADDRESS_FIRST' as const };
-    const plain = await postedBody(withheld);
+    // It names no open thread a blocker and quotes the judge's summary as a summary, not as what blocks.
+    const open = { file: 'src/a.ts', title: 'Stale cache', fingerprint: 'src/a.ts:3:3:stale-cache', line: 3 };
+    const withheld = {
+      ...ready, verdict: 'REQUEST_CHANGES' as const, outcome: 'ADDRESS_FIRST' as const, verdictReason: 'prior_unaddressed' as const,
+      summary: 'Nothing blocks merge.', verdictTrace: { survivingBlockers: [], unresolvedPriors: [open] },
+    };
     const records = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', withheld, diff, undefined, undefined, { unreadRecords: [url] });
     const held = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
     expect([held.event, records.approvalHeld]).toEqual(['REQUEST_CHANGES', false]);
-    expect(held.body).toBe(`${unreadRecordsLine([url])}\n\n${plain.body}`);
+    expect(held.body.startsWith(`${unreadRecordsLine([url])}\n\n**Summary:** Nothing blocks merge.\n\n---\n\n**Still open from earlier reviews:**\n- \`src/a.ts:3\`: Stale cache`)).toBe(true);
+    expect(held.body).not.toMatch(/Changes requested|What blocks|blocker/);
     expect(unreadRecordsLine([url])).toBe(`**Approval withheld:** an earlier review record could not be read ([review 1](${url})), so Manki cannot tell how serious the open threads are and does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.`);
     // When the reviews could not even be listed, the line names none.
     expect(unreadRecordsLine([])).toBe('**Approval withheld:** an earlier review record could not be read, so Manki cannot tell how serious the open threads are and does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.');

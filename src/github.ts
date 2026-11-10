@@ -200,6 +200,12 @@ export function unreadRecordsLine(reviews: readonly string[]): string {
   return `**Approval withheld:** an earlier review record could not be read${named ? ` (${named})` : ''}, so Manki cannot tell how serious the open threads are and does not approve while one is open. Once a maintainer has checked and resolved them, the next review can approve.`;
 }
 
+/** Returns the judge's summary of a round an unread round record kept from approving, labelled as no reason it blocks. */
+export function withheldSummary(summary: string): string {
+  const text = sanitizeMarkdown(summary.trim());
+  return text ? `**Summary:** ${asSentence(text)}` : '';
+}
+
 /** Returns the line that says why Manki does not approve. */
 export function approvalHoldLine(hold: ApprovalHold): string {
   if (hold.reason === 'draft') return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.';
@@ -1581,8 +1587,8 @@ export async function postReview(
    */
   const renderBody = (withoutLineThreads = false): string => {
     const threads = threadFindings.filter(f => !(withoutLineThreads && lineThreads.has(f)));
-    const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: bodyFindings, hold }, limitWarning);
-    let head = [heldLine, unreadRecords && unreadRecordsLine(unreadRecords), lead].filter(Boolean).join('\n\n');
+    const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: bodyFindings, hold }, limitWarning, unreadRecords);
+    let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
     }
@@ -1910,9 +1916,13 @@ function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string 
   return top ? sanitizeMarkdown(top.description.trim()).split(/(?<=[.!?])\s+/).slice(0, 2).join(' ') : '';
 }
 
-/** Returns what opens the review body: the verdict line, the `limitWarning` box and the summary. */
-function formatLead(result: ReviewResult, blocking: Finding[], blockers: BlockerCounts, posted: PostedFindings, limitWarning?: string): string {
+/**
+ * Returns what opens the review body: the verdict line, the `limitWarning` box and the summary. A round that only the
+ * round records of `unreadRecords` kept from approving leads with that, since none of its open threads is a known blocker.
+ */
+function formatLead(result: ReviewResult, blocking: Finding[], blockers: BlockerCounts, posted: PostedFindings, limitWarning?: string, unreadRecords?: string[]): string {
   if (!result.outcome) return [sanitizeMarkdown(result.summary.trim()), limitWarning].filter(Boolean).join('\n\n');
+  if (unreadRecords) return [unreadRecordsLine(unreadRecords), limitWarning, withheldSummary(result.summary)].filter(Boolean).join('\n\n');
   const detail = formatVerdictDetail(result, blocking);
   const label = result.outcome === 'ADDRESS_FIRST' ? 'What blocks' : 'Summary';
   return [VERDICT_LINES[result.outcome](result, blockers, posted), limitWarning, detail && `**${label}:** ${detail}`].filter(Boolean).join('\n\n');
