@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'f
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { BenchCase, buildReport, candidateFindings, formatBenchSummary, formatGate, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, buildReport, candidateFindings, formatBenchSummary, formatGate, formatUnmatchedBlockers, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
 import type { Finding, FindingSeverity, RoundContext, RoundOutcome } from './types';
@@ -364,6 +364,17 @@ describe('scoreRun on a follow-up case', () => {
     expect(await scoreRun(followUp, review(false), matcher)).not.toHaveProperty('followUp');
     const reworded = await scoreRun(followUp, review(), async item => (item.id === 'P2' ? { verdict: 'PARTIAL', findings: [0], reason: 'other mechanism' } : decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' }));
     expect(reworded).toMatchObject({ falseBlockers: 1, extraFindings: 1, followUp: { repeats: 1 } });
+    const incomplete = await scoreRun(followUp, review(false), matcher);
+    const listed = (benchCase: BenchCase) => formatUnmatchedBlockers(buildReport(
+      { startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a' },
+      [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [score, reworded, incomplete] }] }],
+    ).variants);
+    expect(listed(followUp)).toBe([
+      '### Unmatched blockers on tuning cases', '',
+      "Blockers that match no key item. Add each real defect to its case's `must_catch` and bump the case's `key_version`.", '',
+      '```text', 'base demo-1 key v2 run 2: src/conn.rs:1: Write has no timeout', '```', '',
+    ].join('\n'));
+    expect(listed({ ...followUp, set: 'holdout' })).toBe('');
 
     const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase: followUp, runs: [score] }] }]);
     expect(report.variants[0].cases[0].items.slice(3)).toEqual([

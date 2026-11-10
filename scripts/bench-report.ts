@@ -11,7 +11,7 @@
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-import { BenchCase, BenchReport, CaseSet, formatBenchSummary, formatComparison, formatGate, gateReports, loadCases, mergeReports, parseCase } from '../src/bench';
+import { BenchCase, BenchReport, CaseSet, formatBenchSummary, formatComparison, formatGate, formatUnmatchedBlockers, gateReports, loadCases, mergeReports, parseCase } from '../src/bench';
 
 const SET_DIRS: Record<CaseSet, string> = { tuning: 'bench/cases', holdout: 'bench/holdout' };
 const SET_CHOICES: Record<string, CaseSet[]> = { holdout: ['holdout'], tuning: ['tuning'], both: ['tuning', 'holdout'] };
@@ -48,7 +48,10 @@ export function benchMatrix(cases: BenchCase[], root = '.'): MatrixEntry[] {
   return cases.map(({ id, set, repo, base, head, priorRound }) => ({ id, set, repo, base, head, prior: priorRound?.head ?? '', file: files.get(id)! }));
 }
 
-/** Returns the Markdown summary of a merged report: the comparison table, then every case and run in a fold. */
+/**
+ * Returns the Markdown summary of a merged report: the comparison table, the unmatched blockers on tuning cases, then
+ * every case and run in a fold.
+ */
 export function formatReportSummary(report: BenchReport): string {
   const cases = report.variants[0]?.cases ?? [];
   const count = (set: CaseSet) => cases.filter(c => c.set === set).length;
@@ -59,6 +62,7 @@ export function formatReportSummary(report: BenchReport): string {
     '',
     formatComparison(report.variants),
     '',
+    ...[formatUnmatchedBlockers(report.variants)].filter(Boolean),
     '<details><summary>Every case and run</summary>',
     '',
     '```text',

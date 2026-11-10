@@ -400,6 +400,15 @@ function repeatItems(benchCase: BenchCase): KeyItem[] {
   })];
 }
 
+/**
+ * Returns the indexes of the findings that name a key item, or restate an earlier finding the key lists, which `isRepeat`
+ * tells apart. Every other finding is extra. A finding on an earlier finding's code with another mechanism is new, so
+ * only a restatement counts.
+ */
+function matchedFindings(matches: ItemMatch[], isRepeat: (item: string) => boolean): Set<number> {
+  return new Set(matches.flatMap(m => (!isRepeat(m.item) || m.verdict === 'MATCH' ? m.findings : [])));
+}
+
 /** Whether the run matched `item` at its grade or above. */
 function foundAtGrade(item: Pick<KeyItem, 'id' | 'severity'>, run: Pick<RunScore, 'matches'>): boolean {
   return run.matches.some(m => m.item === item.id && m.verdict === 'MATCH' && severityCredit(m.severity, item.severity) === 1);
@@ -421,11 +430,10 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
     const severity = named.map(i => findings[i].severity).sort((a, b) => SEVERITY_ORDER.indexOf(a) - SEVERITY_ORDER.indexOf(b))[0];
     matches.push({ item: item.id, verdict: decision.verdict, findings: named, ...(severity && { severity }), reason: decision.reason });
   }
-  const isRepeatItem = (m: ItemMatch) => repeats.some(item => item.id === m.item);
-  const keyMatches = matches.filter(m => !isRepeatItem(m));
-  // A finding on an earlier finding's code with another mechanism is new, so only a restatement leaves the extra findings.
-  const restated = new Set(matches.filter(m => isRepeatItem(m) && m.verdict === 'MATCH').flatMap(m => m.findings));
-  const matched = new Set([...keyMatches.flatMap(m => m.findings), ...restated]);
+  const isRepeat = (id: string) => repeats.some(item => item.id === id);
+  const keyMatches = matches.filter(m => !isRepeat(m.item));
+  const restated = new Set(matches.filter(m => isRepeat(m.item) && m.verdict === 'MATCH').flatMap(m => m.findings));
+  const matched = matchedFindings(matches, isRepeat);
   const strict = (item: KeyItem) => matches.find(m => m.item === item.id && m.verdict === 'MATCH');
   const { mustCatch, priorRound } = benchCase;
   const totalWeight = mustCatch.reduce((sum, item) => sum + SEVERITY_WEIGHT[item.severity], 0);
@@ -832,6 +840,28 @@ function minutes(ms: number | null): string {
   return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
 }
 
+/**
+ * Lists each blocker finding on a tuning case that matched no key item, by variant, case and complete run, so the owner
+ * can confirm which are real defects. A confirmed one becomes a key item, and the case's key version goes up. Hold-out
+ * keys never grow this way. Returns an empty string when there is none.
+ */
+export function formatUnmatchedBlockers(variants: VariantReport[]): string {
+  const lines = variants.flatMap(v => v.cases.filter(c => c.set === 'tuning').flatMap((c) => {
+    const repeatIds = new Set(c.items.filter(item => item.tier === 'must_keep_open' || item.tier === 'must_not_repeat').map(item => item.id));
+    return c.runs.flatMap((run, i) => {
+      if (!run.complete) return [];
+      const matched = matchedFindings(run.matches, id => repeatIds.has(id));
+      return run.findings.flatMap((f, n) => (f.severity === 'blocker' && !matched.has(n) ? [`${v.name} ${c.id} key v${c.keyVersion} run ${i + 1}: ${f.file}:${f.line}: ${f.title}`] : []));
+    });
+  }));
+  if (lines.length === 0) return '';
+  return [
+    '### Unmatched blockers on tuning cases', '',
+    "Blockers that match no key item. Add each real defect to its case's `must_catch` and bump the case's `key_version`.", '',
+    '```text', ...lines, '```', '',
+  ].join('\n');
+}
+
 /** Names each set's summary by its set, unless every case is a tuning case. */
 function setSummaries(variant: VariantReport): Array<{ label: string; set: CaseSet; summary: VariantSummary }> {
   const sets = Object.entries(variant.sets) as Array<[CaseSet, VariantSummary]>;
@@ -1113,6 +1143,8 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     const report = buildReport(meta, results);
     writeJson(outPath, report);
     out(formatBenchSummary(report));
+    const unmatched = formatUnmatchedBlockers(report.variants);
+    if (unmatched) out(`\n${unmatched}`);
     out(`Report: ${outPath}\n`);
     // A set with no completed review leaves the comparison without one of its columns.
     return report.variants.some(v => Object.values(v.sets).some(s => s.incompleteRuns === s.runs)) ? 2 : 0;

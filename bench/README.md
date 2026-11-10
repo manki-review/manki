@@ -49,6 +49,10 @@ The **Benchmark** workflow (`.github/workflows/bench.yml`) runs the bench withou
 
 Each ref scores with its own bench code. After a change to the matcher, run the baseline's ref again rather than compare with an older report. To compare downloaded reports locally, run `npm run bench-report -- gate --baseline old.json --candidate new.json`.
 
+### Unmatched blockers on tuning cases
+
+A false blocker is either a wrong blocker or a real defect the key does not list. So the summary of a run with tuning cases, local or on GitHub, lists every blocker that matched no key item, by case and run. Check each against the code at the case's head. Add each real defect to the case's `must_catch` and bump its `key_version`, so the next run counts it as a find. Never grow a hold-out key this way: its cases are not read while working on Manki.
+
 ## Comparing setups
 
 `--variant <name>=<file>` scores one setup: the YAML file holds config set on top of each case's base `.manki.yml`, where mappings merge key by key and any other value replaces. `--variant <name>` without a file runs the base config as it is. Repeat it to score several setups on the same cases in one run. `--set <key.path>=<value>` sets one value, read as YAML, on top of every variant. Paths are relative to this checkout, since `npm run` starts there.
@@ -58,7 +62,7 @@ npm run bench -- $CHECKOUTS --variant base --variant opus-pair=bench/variants/op
 npm run bench -- $CHECKOUTS --set models.judge=claude-sonnet-5-5
 ```
 
-Before the first review, every variant's config is loaded on every case. A variant whose overrides make a config invalid, or name a key the config does not know, stops the bench there, so no variant runs on the defaults or on the base setup by mistake. The bench exits 2 when a variant completes no review of one of the sets. The report holds one entry per variant, and the printed summary ends with a Markdown table that sets the variants side by side: recall, verdict accuracy, false blockers, extra findings, duplicates, incomplete runs, cost and wall time per run, and each key item's catch rate. The matcher cache is shared, so the same findings are matched once.
+Before the first review, every variant's config is loaded on every case. A variant whose overrides make a config invalid, or name a key the config does not know, stops the bench there, so no variant runs on the defaults or on the base setup by mistake. The bench exits 2 when a variant completes no review of one of the sets. The report holds one entry per variant, and the printed summary ends with a Markdown table that sets the variants side by side: recall, verdict accuracy, false blockers, extra findings, duplicates, incomplete runs, cost and wall time per run, and each key item's catch rate. After it come the unmatched blockers on tuning cases (see below). The matcher cache is shared, so the same findings are matched once.
 
 ## Case files
 

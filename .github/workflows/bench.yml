@@ -2,7 +2,7 @@ name: Benchmark
 
 # Runs the recall benchmark (bench/README.md) on Manki at `ref`, one job per case, and applies the release gate in
 # RELEASE.md against earlier runs. Every review spends the Claude subscription behind CLAUDE_CODE_OAUTH_TOKEN, so it
-# only runs when started by hand. The defaults are the release gate: the hold-out set, the base setup, one run.
+# only runs when started by hand. The defaults are the release gate: the hold-out set, the base setup, two runs.
 on:
   workflow_dispatch:
     inputs:
@@ -25,7 +25,7 @@ on:
       runs:
         description: Reviews per case, 1 to 5
         required: true
-        default: 1
+        default: 2
         type: number
       cases:
         description: Only these case ids, space-separated. Empty runs the whole set.
