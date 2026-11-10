@@ -2902,13 +2902,15 @@ describe('buildDashboard', () => {
     expect(md).toContain('**Planner** (1s)');
   });
 
-  it('renders planner duration without plannerInfo', () => {
+  it('renders planner duration without plannerInfo, and the judge effort when it is known', () => {
     const data: DashboardData = {
       phase: 'started', lineCount: 100, agentCount: 3,
       plannerDurationMs: 850,
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Planner** (850ms)');
+    expect(md).not.toContain('judge effort');
+    expect(buildDashboard({ ...data, judgeEffort: 'xhigh' })).toContain(`${INDENT}judge effort: xhigh`);
   });
 
   it('omits planner duration when plannerDurationMs is not set', () => {

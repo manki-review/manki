@@ -1190,6 +1190,7 @@ async function reviewRound(
             };
           }
           dashboard.agentCount = event.teamAgentNames.length;
+          dashboard.judgeEffort = event.judgeEffort;
           dashboard.agentProgress = event.teamAgentNames.map(name => ({ name, status: 'reviewing' as const }));
           dashboard.routing = event.routing;
           dashboard.plannerDurationMs = event.plannerDurationMs;

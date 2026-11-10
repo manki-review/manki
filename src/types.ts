@@ -569,6 +569,8 @@ export interface ReviewResult {
   leads?: RoundLead[];
   threadEvaluations?: ThreadEvaluation[];
   plannerResult?: PlannerResult;
+  /** The effort the judge and its refuter ran at: a set `judge.effort`, else the planner's pick, else `high`. */
+  judgeEffort?: EffortLevel;
   failedAgents?: string[];
   agentFailureReasons?: Record<string, string>;
   staticDedupCount?: number;
@@ -1126,6 +1128,8 @@ export interface DashboardData {
   keptCount?: number;
   droppedCount?: number;
   agentProgress?: AgentProgressEntry[];
+  /** The effort the judge runs at. Shown when there is no planner result, which shows it otherwise. */
+  judgeEffort?: EffortLevel;
   plannerInfo?: {
     /** Number of agents that read the diff. */
     agentCount: number;
@@ -1612,6 +1616,8 @@ export interface RoundAgentMetric {
 export interface RoundJudge {
   /** Narrative summary written by the judge. */
   summary: string;
+  /** The effort the judge ran at, set or picked by the planner. */
+  effort?: EffortLevel;
   /** Findings the judge dropped. The kept ones are in `RoundFindings.entries`. */
   dropped?: RoundJudgeDrop[];
   confidenceDistribution?: { high: number; medium: number; low: number };

@@ -366,6 +366,8 @@ export interface ReviewProgress {
   retryCount?: number;
   /** Names of the agents that read the diff. Emitted with the `planning` event that follows team selection. */
   teamAgentNames?: string[];
+  /** The judge's effort. Emitted with `teamAgentNames`. */
+  judgeEffort?: EffortLevel;
   /** Review class and group those agents came from. Emitted with `teamAgentNames`. */
   routing?: TeamRouting;
   /** True when the planner failed or timed out, so the fail-safe triage was used. */
@@ -680,6 +682,7 @@ export async function runReview(
     onProgress({
       phase: 'planning',
       teamAgentNames: team.finders.map(f => f.name),
+      judgeEffort,
       routing,
       ...(plannerResult && { plannerResult }),
       ...(plannerSource === 'heuristic_fallback' && { heuristicFallback: true }),
@@ -1453,6 +1456,7 @@ export async function runReview(
     ...(leads.length > 0 && { leads }),
     threadEvaluations,
     plannerResult: plannerResult ?? undefined,
+    judgeEffort,
     staticDedupCount,
     llmDedupCount,
     ...(duplicateMatches.length > 0 && { duplicateMatches }),

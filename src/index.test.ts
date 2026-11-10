@@ -2795,6 +2795,7 @@ describe('runFullReview orchestration', () => {
       plannerDurationMs: 500,
       judgeDurationMs: 800,
       judgeRetryCount: 2,
+      judgeEffort: 'xhigh',
       dedupDurationMs: 200,
       llmCalls,
       outcome: 'ADDRESS_FIRST',
@@ -2822,6 +2823,7 @@ describe('runFullReview orchestration', () => {
     expect(ctx!.usage.perModel!['gpt-5']).toMatchObject({ calls: 1, unpricedCalls: 1, estimatedCostUsd: 0 });
 
     expect(ctx!.judge.retryCount).toBe(2);
+    expect(ctx!.judge.effort).toBe('xhigh');
     expect(ctx!.dedup.durationMs).toBe(200);
 
     expect(ctx!.reviewers.agentMetrics).toEqual([

@@ -4227,11 +4227,17 @@ describe('runReview', () => {
     const fixed = await review('max', true);
     expect(mockedRunJudgeAgent.mock.calls[0][2].effort).toBe('max');
     expect(fixed.plannerResult?.judgeEffort).toBe('max');
-    await review('xhigh', false);
+    const onProgress = jest.fn();
+    const withoutPlanner = await runReview(makeClients(), {
+      config: makeConfig({ judge: { tool_steps: 0, effort: 'xhigh' } }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', onProgress,
+    });
     expect(mockedRunJudgeAgent.mock.calls[1][2].effort).toBe('xhigh');
+    expect(withoutPlanner.judgeEffort).toBe('xhigh');
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: 'planning', teamAgentNames: expect.any(Array), judgeEffort: 'xhigh' }));
     const auto = await review('auto', true);
     expect(mockedRunJudgeAgent.mock.calls[2][2].effort).toBe('low');
     expect(auto.plannerResult?.judgeEffort).toBe('low');
+    expect([fixed.judgeEffort, auto.judgeEffort]).toEqual(['max', 'low']);
   });
 
   it('triages each round fresh, without prior-round agents or outcomes', async () => {
