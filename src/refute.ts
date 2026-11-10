@@ -12,7 +12,7 @@ import { LLMClient } from './providers';
 import { parseProof, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
 import { Finding, FindingSeverity, gradeStep, ParsedDiff, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
-import { mapWithConcurrency, sendWithParseRetry } from './utils';
+import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
 const REFUTE_STEPS = 15;
@@ -152,8 +152,8 @@ function parseRefutation(text: string, workspace: string, file: string, diff?: P
   const parsed = JSON.parse(extractJSON(text)) as Record<string, unknown>;
   const outcome = OUTCOMES.find(o => o === parsed.outcome);
   if (!outcome) throw new Error(`refutation outcome is ${JSON.stringify(parsed.outcome)}, not one of ${OUTCOMES.join(', ')}`);
-  const reason = typeof parsed.reason === 'string' ? parsed.reason.trim().slice(0, MAX_REASON_CHARS) : '';
-  const rule = typeof parsed.rule === 'string' ? parsed.rule.trim().slice(0, MAX_REASON_CHARS) : '';
+  const reason = typeof parsed.reason === 'string' ? safeTruncate(parsed.reason.trim(), MAX_REASON_CHARS) : '';
+  const rule = typeof parsed.rule === 'string' ? safeTruncate(parsed.rule.trim(), MAX_REASON_CHARS) : '';
   const proof = existingLocations(workspace, parseProof(parsed.proof));
   // Either verdict has to cite the code that decides it, so one without real proving lines settles nothing.
   const settled = proof.length === 0 || (outcome === 'disproved' && !citesFindingCode(file, proof, diff)) ? 'unsettled' : outcome;

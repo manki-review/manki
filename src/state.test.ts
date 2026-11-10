@@ -1204,6 +1204,10 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     expect(updatedBody).toContain(ghActual.CANCELLED_MARKER);
     expect(updatedBody).toContain('API rate limited for [REDACTED]');
     expect(updatedBody).not.toContain('ghs_secret123');
+
+    // A long reason is cut with an ellipsis, so the comment never ends mid-word without a mark.
+    await ghActual.markProgressCommentFailed(octokit, 'o', 'r', 1, 'Review', `The model timed out ${'again '.repeat(60)}`);
+    expect(updatedBody).toContain(`**Review failed:** ${`The model timed out ${'again '.repeat(60)}`.slice(0, 300)}...`);
   });
 });
 

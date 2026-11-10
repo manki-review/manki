@@ -56,7 +56,7 @@ describe('refuteBlockers', () => {
       'Disproved': { outcome: 'disproved', reason: 'Both inputs are checked at src/api.ts:9.', proof: ['src/api.ts:9'] },
       'Confirmed': { outcome: 'confirmed', reason: 'Any caller can pass a huge number.', proof: ['src/math.ts:2', 'src/api.ts:4'] },
       'Confirmed without proof': { outcome: 'confirmed', reason: 'Trust me.' },
-      'Unsettled': { outcome: 'unsettled', reason: 'The callers are generated.' },
+      'Unsettled': { outcome: 'unsettled', reason: `The callers are generated${' and long'.repeat(60)}.`, rule: 'r'.repeat(501) },
       'Lead confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
       'Unproven lead confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
       'Unproven and contradicted': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
@@ -132,6 +132,8 @@ describe('refuteBlockers', () => {
       ['Dropped lead', 'ignore', undefined],
     ]);
     expect(result[0].judgeNotes).toBe('Refutation disproved: Both inputs are checked at src/api.ts:9.');
+    // A cut reason or rule ends in an ellipsis, so the next text never reads as its continuation.
+    expect(result[3].judgeNotes).toBe(`Refutation unsettled: ${`The callers are generated${' and long'.repeat(60)}`.slice(0, 500)}... Rule checked: ${'r'.repeat(500)}...`);
     // Each severity change the refutation makes is a step of the grade path, with the refuter's reason.
     expect(Object.fromEntries(result.filter(f => f.gradePath).map(f => [f.title, f.gradePath]))).toEqual({
       'Unproven lead confirmed': [{ from: 'warning', to: 'blocker', by: 'refutation', reason: 'It overflows.' }],

@@ -844,7 +844,7 @@ export async function markProgressCommentFailed(
   settings?: SettingsView,
 ): Promise<void> {
   const body = withMarkers(
-    `🔴 **${action} failed:** ${sanitizeMarkdown(sanitizeTokens(String(reason))).slice(0, 300)}`,
+    `🔴 **${action} failed:** ${safeTruncate(sanitizeMarkdown(sanitizeTokens(String(reason))), 300)}`,
     ...BOT_MARKERS,
     CANCELLED_MARKER,
   );
