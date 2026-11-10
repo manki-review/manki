@@ -8,7 +8,7 @@ import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, Bot
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, foundAgainAsBlocker, isOverrideCandidate, partlyFixedGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
+import { fetchPriorRoundContexts, isOverrideCandidate, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
 import { formatApprovalRecord } from './review-record';
 import { ApprovalRecord, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
 import { withMarkers } from './utils';
@@ -128,17 +128,15 @@ async function fetchBotReviewThreads(
     return isBotLogin(bot, firstComment?.author?.login) &&
       (firstComment.body?.includes('manki:') || firstComment.body?.includes(BOT_MARKER));
   });
-  // Only a partial fix lowers a blocking thread, and the round records hold its grade, so they are read only when one could be lowered.
-  const lowerable = botThreads.some(t => !t.isResolved && threadBlocks({ severity: threadSeverity(t.comments.nodes[0]?.body ?? '') }));
-  const grades = lowerable ? partlyFixedGrades((await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber)).priorRounds) : new Map<string, never>();
+  // The round records hold each thread's grade since its first comment, so they are read whenever a thread is open.
+  const grades = botThreads.some(t => !t.isResolved) ? recordedThreadGrades((await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber)).priorRounds) : new Map<string, never>();
   return botThreads
     .map(thread => {
       const body = thread.comments.nodes[0]?.body ?? '';
       const severity = threadSeverity(body);
       const isSecurity = isSecurityThread(body);
-      const foundAgain = foundAgainAsBlocker(bot, thread.comments.nodes);
-      const partly = foundAgain ? undefined : grades.get(thread.id);
-      const isBlocking = threadBlocks({ severity: foundAgain ? 'blocker' : severity, ...(partly && { partlyFixedGrade: partly }), isSecurity });
+      const recorded = grades.get(thread.id);
+      const isBlocking = threadBlocks({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity });
       // The marker's slug turned every other character into a hyphen, so the finding data keeps the real title.
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
       const findingTitle = parseFindingData(body)?.title?.trim() || (titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown');

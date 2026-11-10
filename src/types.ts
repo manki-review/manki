@@ -1008,8 +1008,8 @@ export interface OpenThread extends FindingMetadata {
   file: string;
   line: number;
   severity: FindingSeverity | 'unknown';
-  /** The grade an earlier round's partly-fixed reply gave what remains. The thread blocks only when it is `blocker`. */
-  partlyFixedGrade?: FindingSeverity;
+  /** The grade the round records last gave the thread, which `threadBlocks` reads before its own severity. */
+  recordedGrade?: FindingSeverity;
   isSecurity?: boolean;
   /**
    * Snippet of the current source around `line` (line ± a small window). Lets
@@ -1040,11 +1040,13 @@ export interface ThreadEvaluation {
 }
 
 /**
- * Whether an open thread blocks: by the grade Manki's latest partly-fixed reply gave what remains, or else by its own
- * severity. A partial fix never lowers a security thread. A thread without a severity marker predates them and blocks.
+ * Whether an open thread blocks: by the grade the round records last gave it, or else by its own severity. A recorded
+ * blocker always blocks, and a lower recorded grade never lowers a security thread. A thread without a severity marker
+ * predates them and blocks.
  */
-export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; partlyFixedGrade?: FindingSeverity; isSecurity?: boolean }): boolean {
-  return t.partlyFixedGrade && !t.isSecurity ? t.partlyFixedGrade === 'blocker' : t.severity === 'blocker' || t.severity === 'unknown';
+export function threadBlocks(t: { severity: FindingSeverity | 'unknown'; recordedGrade?: FindingSeverity; isSecurity?: boolean }): boolean {
+  if (t.recordedGrade === 'blocker') return true;
+  return t.recordedGrade && !t.isSecurity ? false : t.severity === 'blocker' || t.severity === 'unknown';
 }
 
 

@@ -549,8 +549,8 @@ describe('determineOutcome', () => {
       expect(evaluate('not_addressed').verdictReason).toBe('prior_unaddressed');
 
       // A partly fixed thread blocks while what remains earns a blocker, this round or as an earlier round graded it.
-      const partly = (grade: ThreadEvaluation['grade'], partlyFixedGrade?: ThreadEvaluation['grade'], status: ThreadEvaluation['status'] = 'partly_addressed') => determineOutcome(
-        [nitpick], fingerprintEntriesFromLegacy(priors), [{ ...open[0], ...(partlyFixedGrade && { partlyFixedGrade }) }], undefined,
+      const partly = (grade: ThreadEvaluation['grade'], recordedGrade?: ThreadEvaluation['grade'], status: ThreadEvaluation['status'] = 'partly_addressed') => determineOutcome(
+        [nitpick], fingerprintEntriesFromLegacy(priors), [{ ...open[0], ...(recordedGrade && { recordedGrade }) }], undefined,
         [{ threadId: 'T_BLOCKER', status, reason: 'r', remaining: 'No timeout yet.', ...(grade && { grade }) }],
       ).verdictReason;
       expect(partly('blocker')).toBe('prior_unaddressed');
@@ -2816,14 +2816,14 @@ describe('runReview', () => {
     delete openThread.isSecurity;
 
     // A thread an earlier partial fix lowered can rise again, up to its own grade, with or without a push to its file.
-    openThread.partlyFixedGrade = 'suggestion';
+    openThread.recordedGrade = 'suggestion';
     expect(await gradeAfter(partly('warning'), touching)).toEqual(['warning', 'READY']);
     expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['warning', 'READY']);
     // Dropping below the grade it carries still needs a push to its file.
-    openThread.partlyFixedGrade = 'warning';
+    openThread.recordedGrade = 'warning';
     expect(await gradeAfter(partly('nitpick'), elsewhere)).toEqual(['warning', 'READY']);
     expect(await gradeAfter(partly('nitpick'), touching)).toEqual(['nitpick', 'READY']);
-    openThread.partlyFixedGrade = 'suggestion';
+    openThread.recordedGrade = 'suggestion';
     // It gets its own grade back when a push to its file leaves it open, or when this round names its blocker again.
     const open: ThreadEvaluation = { threadId: 'T1', status: 'not_addressed', reason: 'The timeout is gone again.' };
     expect(await gradeAfter(open, touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
@@ -2836,8 +2836,16 @@ describe('runReview', () => {
     // A blocker this round only links to the thread by folding it there after grading raises it too.
     const restated: Finding = { severity: 'blocker', title: 'Old issue', file: 'src/x.ts', line: 10, description: 'd', reviewers: ['r'] };
     expect(await gradeAfter(open, elsewhere, [restated])).toEqual(['blocker', 'ADDRESS_FIRST']);
+    // A warning thread a later round raised to blocker keeps that grade: finding it open again never drops it to its
+    // own, and a partial fix lowers it only after a push to its file.
+    openThread.severity = 'warning';
+    openThread.recordedGrade = 'blocker';
+    expect(await gradeAfter(open, touching)).toEqual([undefined, 'ADDRESS_FIRST']);
+    expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    expect(await gradeAfter(partly('warning'), touching)).toEqual(['warning', 'READY']);
+    openThread.severity = 'blocker';
     // A grade the judge gives a thread that is not open is dropped, so it can never lower a blocker.
-    delete openThread.partlyFixedGrade;
+    delete openThread.recordedGrade;
     expect(await gradeAfter({ ...partly('nitpick'), threadId: 'T9' }, touching)).toEqual([undefined, 'ADDRESS_FIRST']);
   });
 

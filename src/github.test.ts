@@ -1016,8 +1016,8 @@ describe('formatBlockingPriorThreads', () => {
   });
 
   it('lists the open threads that block, a partly fixed one by the grade what remains earns', () => {
-    const thread = (title: string, severity: 'blocker' | 'warning' | 'unknown', partlyFixedGrade?: 'blocker' | 'warning') => ({
-      title, file: 'a.ts', line: 1, severity, status: 'open' as const, ...(partlyFixedGrade && { partlyFixedGrade }),
+    const thread = (title: string, severity: 'blocker' | 'warning' | 'unknown', recordedGrade?: 'blocker' | 'warning') => ({
+      title, file: 'a.ts', line: 1, severity, status: 'open' as const, ...(recordedGrade && { recordedGrade }),
     });
     expect(formatOpenBlockers([thread('Blocker', 'blocker'), thread('No marker', 'unknown'), thread('Warning', 'warning'), thread('Partly fixed', 'blocker', 'warning'), thread('Still blocking', 'blocker', 'blocker')]))
       .toBe('**Still open from earlier reviews:**\n- `a.ts:1`: Blocker\n- `a.ts:1`: No marker\n- `a.ts:1`: Still blocking');

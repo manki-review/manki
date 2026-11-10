@@ -165,7 +165,7 @@ describe('fetchBotReviewThreads', () => {
     expect(graphqlMock).toHaveBeenNthCalledWith(2, expect.any(String), expect.objectContaining({ cursor: 'p2' }));
   });
 
-  it('treats suggestion and warning threads, security ones included, as not blocking auto-approve, unless Manki said the problem came back as a blocker, and a partly fixed blocker by what remains', async () => {
+  it('treats suggestion and warning threads, security ones included, as not blocking auto-approve, unless a round record raised them, and a partly fixed blocker by what remains', async () => {
     const finding = (severity: Finding['severity'], title: string, tags?: string[]): Finding => ({
       severity, title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
     });
@@ -176,25 +176,30 @@ describe('fetchBotReviewThreads', () => {
         makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security']), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug'), TEST_LINKS) }),
-        makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now'), TEST_LINKS), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
-        makeGraphqlFetchThreadNode({ id: 'h', body: formatFindingComment(finding('warning', 'Pasted marker'), TEST_LINKS), replies: [{ body: '<!-- manki-found-again-blocker -->', author: { login: 'developer' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now'), TEST_LINKS), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->', author: { login: 'manki-review[bot]' } }] }),
+        // A reply never decides blocking, even one of Manki's that reads like an old marker.
+        makeGraphqlFetchThreadNode({ id: 'h', body: formatFindingComment(finding('warning', 'Old marker'), TEST_LINKS), replies: [{ body: '<!-- manki -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
         makeGraphqlFetchThreadNode({ id: 'pw', body: formatFindingComment(finding('blocker', 'Partly fixed'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'pb', body: formatFindingComment(finding('blocker', 'Partly fixed, still blocking'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'pf', body: formatFindingComment(finding('blocker', 'Forged partial fix'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'ps', body: formatFindingComment(finding('blocker', 'Security, partly fixed', ['security']), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'pr', body: formatFindingComment(finding('blocker', 'Open again'), TEST_LINKS) }),
-        makeGraphqlFetchThreadNode({ id: 'pa', body: formatFindingComment(finding('blocker', 'Came back'), TEST_LINKS), replies: [{ body: 'Came back.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } }] }),
+        makeGraphqlFetchThreadNode({ id: 'pa', body: formatFindingComment(finding('blocker', 'Came back'), TEST_LINKS) }),
       ]),
     );
     // The round records keep the grade a partial fix left each thread, and only Manki's records count.
     const partly = (threadId: string, grade: ThreadEvaluation['grade'], status: ThreadEvaluation['status'] = 'partly_addressed'): ThreadEvaluation => ({ threadId, status, reason: 'r', remaining: 'r', grade });
-    const record = (round: number, threadEvaluations: ThreadEvaluation[], login = 'manki-review[bot]') => ({
-      id: round, user: { login }, body: `<!-- manki-context: ${JSON.stringify(makeRoundContext(round, { judge: { summary: '', threadEvaluations } }))} -->`,
+    // A blocker a round carried on a thread raises it, whatever grade the thread had.
+    const record = (round: number, threadEvaluations: ThreadEvaluation[], carried: string[] = [], login = 'manki-review[bot]') => ({
+      id: round, user: { login }, body: `<!-- manki-context: ${JSON.stringify(makeRoundContext(round, {
+        judge: { summary: '', threadEvaluations },
+        findings: { count: carried.length, severityCounts: {}, entries: carried.map(threadId => ({ fingerprint: { file: 'src/a.ts', lineStart: 3, lineEnd: 3, slug: 'x' }, severity: 'blocker' as const, threadId })) },
+      }))} -->`,
     });
     const reviews = [
       record(1, [partly('pw', 'warning'), partly('pb', 'blocker'), partly('ps', 'warning'), partly('pr', 'warning'), partly('pa', 'warning')]),
-      record(2, [partly('pr', 'blocker', 'not_addressed')]),
-      record(3, [partly('pf', 'nitpick')], 'developer'),
+      record(2, [partly('pr', 'blocker', 'not_addressed')], ['f', 'pa']),
+      record(3, [partly('pf', 'nitpick')], ['h'], 'developer'),
     ];
     const octokit = { graphql: graphqlMock, paginate: jest.fn().mockResolvedValue(reviews), rest: { pulls: { listReviews: jest.fn() } } } as unknown as Octokit;
 

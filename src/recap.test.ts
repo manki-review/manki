@@ -1,7 +1,7 @@
 import { Finding, FindingFingerprintEntry, RoundContext, ThreadEvaluation, threadBlocks } from './types';
 import { classifyAuthorReply, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
-import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
+import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
 import { applyCrossRoundSuppression } from './judge';
 
@@ -749,8 +749,11 @@ describe('fetchRecapState', () => {
   });
 
   it('treats last non-bot comment body as author reply text, and the latest Manki outcome or found-again reply as its answer', async () => {
-    const record = (round: number, threadEvaluations: ThreadEvaluation[]) => ({
-      id: round, user: { login: 'manki-review[bot]' }, body: `<!-- manki-context: ${JSON.stringify(makeRoundContext(round, { judge: { summary: '', threadEvaluations } }))} -->`,
+    const record = (round: number, threadEvaluations: ThreadEvaluation[], carried: string[] = []) => ({
+      id: round, user: { login: 'manki-review[bot]' }, body: `<!-- manki-context: ${JSON.stringify(makeRoundContext(round, {
+        judge: { summary: '', threadEvaluations },
+        findings: { count: carried.length, severityCounts: {}, entries: carried.map(threadId => makeFindingFingerprintEntry({ title: 'Came back', severity: 'blocker', threadId })) },
+      }))} -->`,
     });
     const octokit = mockOctokit([
       makeThread({
@@ -787,7 +790,7 @@ describe('fetchRecapState', () => {
           nodes: [
             { body: '<!-- manki:warning:Bug --> **Warning**: Bug found\n\nDesc.', author: { login: 'manki-review[bot]' } },
             { body: 'Agreed. Handling it later is fine.\n\n<!-- manki -->', author: { login: 'manki-review[bot]' } },
-            { body: 'This came up again.\n\nDetails.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } },
+            { body: 'This came up again.\n\nDetails.\n\n<!-- manki -->\n<!-- manki-found-again -->', author: { login: 'manki-review[bot]' } },
           ],
         },
       }),
@@ -813,7 +816,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [
             { body: '<!-- manki:blocker:Upload --> **Blocker**: Upload\n\nDesc.', author: { login: 'manki-review[bot]' } },
-            { body: 'This came up again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } },
+            { body: 'This came up again.\n\n<!-- manki -->\n<!-- manki-found-again-blocker -->', author: { login: 'manki-review[bot]' } },
           ],
         },
       }),
@@ -825,17 +828,18 @@ describe('fetchRecapState', () => {
         { threadId: 't5', status: 'partly_addressed', reason: 'r', remaining: 'A slow log.', grade: 'suggestion' },
         { threadId: 't6', status: 'partly_addressed', reason: 'r', remaining: 'One log line.', grade: 'warning' },
       ]),
-      record(3, [{ threadId: 't4', status: 'not_addressed', reason: 'r' }]),
+      // A blocker a round carried on a thread raises it, after any partial fix in that round or before.
+      record(3, [{ threadId: 't4', status: 'not_addressed', reason: 'r' }, { threadId: 't3', status: 'partly_addressed', reason: 'r', remaining: 'r', grade: 'suggestion' }], ['t3', 't5']),
       { ...record(4, [{ threadId: 't1', status: 'partly_addressed', reason: 'r', remaining: 'r', grade: 'nitpick' }]), user: { login: 'developer' } },
     ]);
 
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
     expect(state.previousFindings.slice(0, 3).map(f => f.answer)).toEqual([undefined, '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
-    expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'blocker', 'blocker', 'blocker', 'blocker']);
-    // A reply that found the problem again as a blocker outranks a recorded grade. A security thread keeps its grade
-    // too, which `threadBlocks` never lets lower it.
-    expect(state.previousFindings.map(f => f.partlyFixedGrade)).toEqual([undefined, undefined, undefined, 'suggestion', 'warning', undefined]);
+    // A severity comes from the first comment only, and no reply marker raises it, not even a pasted one.
+    expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'warning', 'blocker', 'blocker', 'blocker']);
+    // A security thread keeps a recorded lower grade too, which `threadBlocks` never lets lower it.
+    expect(state.previousFindings.map(f => f.recordedGrade)).toEqual([undefined, undefined, 'blocker', 'suggestion', 'warning', 'blocker']);
     expect(state.previousFindings.map(f => threadBlocks(f))).toEqual([true, true, true, false, true, true]);
     // Only a thread that still blocks needs someone other than the PR author to clear it.
     expect(state.previousFindings.map(f => isGuarded(f))).toEqual([true, true, true, false, true, true]);
