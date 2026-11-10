@@ -36,6 +36,12 @@ const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
   ...overrides,
 });
 
+
+/** An octokit that serves review threads from `graphql` and lists `reviews`, whose round records grade the threads. */
+function threadsOctokit(graphql: jest.Mock, reviews: unknown[] = []): Octokit {
+  return { graphql, paginate: jest.fn().mockResolvedValue(reviews), rest: { pulls: { listReviews: jest.fn() } } } as unknown as Octokit;
+}
+
 describe('areAllFindingsResolved', () => {
   it('returns true for an empty array', () => {
     expect(areAllFindingsResolved([], TEST_BOT)).toBe(true);
@@ -142,7 +148,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(3);
@@ -157,7 +163,7 @@ describe('fetchBotReviewThreads', () => {
       .mockResolvedValueOnce({ repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: true, endCursor: 'p2' }, nodes: nodes.slice(0, 100) } } } })
       .mockResolvedValueOnce(makeGraphqlFetchResponse(nodes.slice(100)));
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads.map(t => t.id)).toEqual(nodes.map(n => n.id));
@@ -201,15 +207,22 @@ describe('fetchBotReviewThreads', () => {
       record(2, [partly('pr', 'blocker', 'not_addressed')], ['f', 'pa']),
       record(3, [partly('pf', 'nitpick')], ['h'], 'developer'),
     ];
-    const octokit = { graphql: graphqlMock, paginate: jest.fn().mockResolvedValue(reviews), rest: { pulls: { listReviews: jest.fn() } } } as unknown as Octokit;
-
-    const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(threadsOctokit(graphqlMock, reviews), TEST_BOT, 'owner', 'repo', 1);
 
     // A blocker thread Manki found partly fixed blocks only while what remains is a blocker.
     expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true], ['ps', true], ['pr', true], ['pa', true]]);
     expect(threads.find(t => t.id === 'x')?.isSecurity).toBe(true);
     expect(areAllFindingsResolved(threads.filter(t => !['b', 'f', 'pb', 'pf', 'ps', 'pr', 'pa'].includes(t.id)), TEST_BOT)).toBe(true);
     expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(false);
+
+    // A raised thread the PR author resolved still blocks, though no thread is open any more.
+    const resolved = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now'), TEST_LINKS), isResolved: true })])), reviews);
+    expect((await fetchBotReviewThreads(resolved, TEST_BOT, 'owner', 'repo', 1)).map(t => [t.id, t.isBlocking])).toEqual([['f', true]]);
+
+    // Without the round records a raise could hide, so every thread blocks and auto-approve waits.
+    const unread = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('suggestion', 'Extract helper'), TEST_LINKS), isResolved: true })])));
+    jest.mocked(unread.paginate).mockRejectedValueOnce(new Error('rate limited'));
+    expect((await fetchBotReviewThreads(unread, TEST_BOT, 'owner', 'repo', 1)).map(t => [t.id, t.isBlocking])).toEqual([['s', true]]);
   });
 
   it('filters out non-bot threads', async () => {
@@ -225,7 +238,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(1);
@@ -244,7 +257,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const threads = await fetchBotReviewThreads({ graphql: graphqlMock } as unknown as Octokit, TEST_BOT, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(threadsOctokit(graphqlMock), TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads.map(t => t.recordedOverride)).toEqual([{ login: 'jdoe_acme', via: 'dismiss' }, undefined]);
   });
@@ -256,7 +269,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(1);
@@ -274,7 +287,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(4);
@@ -292,7 +305,7 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(2);
@@ -305,7 +318,7 @@ describe('fetchBotReviewThreads', () => {
       makeGraphqlFetchResponse([]),
     );
 
-    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const octokit = threadsOctokit(graphqlMock);
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(0);

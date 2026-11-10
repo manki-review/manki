@@ -1029,6 +1029,7 @@ async function collectOpenThreads(
       line: currentFindingLine(f),
       severity: f.severity,
       ...(f.recordedGrade && { recordedGrade: f.recordedGrade }),
+      ...(f.peakGrade && { peakGrade: f.peakGrade }),
       ...(f.isSecurity && { isSecurity: true }),
       description: f.description,
       suggestedFix: f.suggestedFix,

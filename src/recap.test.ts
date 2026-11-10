@@ -840,6 +840,8 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'warning', 'blocker', 'blocker', 'blocker']);
     // A security thread keeps a recorded lower grade too, which `threadBlocks` never lets lower it.
     expect(state.previousFindings.map(f => f.recordedGrade)).toEqual([undefined, undefined, 'blocker', 'suggestion', 'warning', 'blocker']);
+    // The peak keeps the highest grade the records ever gave, so a lowered thread can get it back.
+    expect(state.previousFindings.map(f => f.peakGrade)).toEqual([undefined, undefined, 'blocker', 'warning', 'warning', 'blocker']);
     expect(state.previousFindings.map(f => threadBlocks(f))).toEqual([true, true, true, false, true, true]);
     // Only a thread that still blocks needs someone other than the PR author to clear it.
     expect(state.previousFindings.map(f => isGuarded(f))).toEqual([true, true, true, false, true, true]);

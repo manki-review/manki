@@ -1010,6 +1010,8 @@ export interface OpenThread extends FindingMetadata {
   severity: FindingSeverity | 'unknown';
   /** The grade the round records last gave the thread, which `threadBlocks` reads before its own severity. */
   recordedGrade?: FindingSeverity;
+  /** The highest grade the round records ever gave the thread. */
+  peakGrade?: FindingSeverity;
   isSecurity?: boolean;
   /**
    * Snippet of the current source around `line` (line ± a small window). Lets

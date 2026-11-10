@@ -8,7 +8,7 @@ import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
 import { isSecurityFinding } from './review';
-import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN, threadBlocks } from './types';
+import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -68,18 +68,25 @@ const FOUND_AGAIN_MARKER = '<!-- manki-found-again -->';
  * round carried a blocker on it. A blocker outranks a partial fix in the same round. The record posts with its review,
  * so a grade holds exactly while a review stands that decided it. A thread no record graded keeps its first comment's.
  */
-function recordedThreadGrades(priorRounds: readonly RoundContext[]): Map<string, FindingSeverity> {
-  const grades = new Map<string, FindingSeverity>();
+function recordedThreadGrades(priorRounds: readonly RoundContext[]): Map<string, RecordedGrade> {
+  const grades = new Map<string, RecordedGrade>();
+  const record = (threadId: string, grade: FindingSeverity): void => {
+    const peak = grades.get(threadId)?.peak;
+    grades.set(threadId, { grade, peak: peak && SEVERITY_ORDER.indexOf(peak) < SEVERITY_ORDER.indexOf(grade) ? peak : grade });
+  };
   for (const round of [...priorRounds].sort((a, b) => a.meta.round - b.meta.round)) {
     for (const { threadId, grade } of round.judge.threadEvaluations ?? []) {
-      if (grade) grades.set(threadId, grade);
+      if (grade) record(threadId, grade);
     }
     for (const { threadId, severity } of round.findings.entries ?? []) {
-      if (threadId && severity === 'blocker') grades.set(threadId, 'blocker');
+      if (threadId && severity === 'blocker') record(threadId, 'blocker');
     }
   }
   return grades;
 }
+
+/** The grade the round records last gave a thread, and the highest one they ever gave it. */
+interface RecordedGrade { grade: FindingSeverity; peak: FindingSeverity }
 
 // The outcome a Manki reply to a developer starts with.
 const REPLY_OUTCOME_RE = /^\**(Fixed|Withdrawn|Agreed|Kept|Unverified)\./;
@@ -281,6 +288,8 @@ interface PreviousFinding extends FindingMetadata {
   severity: FindingSeverity | 'unknown';
   /** The grade the round records last gave the thread, from `recordedThreadGrades`. It decides whether the thread blocks. */
   recordedGrade?: FindingSeverity;
+  /** The highest grade the round records ever gave the thread. */
+  peakGrade?: FindingSeverity;
   /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open. */
   status: 'open' | 'resolved' | 'replied' | 'auto-resolved';
   /** Resolved because the judge of an earlier round marked the thread `addressed`. */
@@ -499,7 +508,7 @@ async function fetchRecapState(
   const grades = recordedThreadGrades(priorRounds);
   const threads = fetched.map(t => {
     const grade = t.isBotThread ? grades.get(t.threadId) : undefined;
-    return grade ? { ...t, recordedGrade: grade } : t;
+    return grade ? { ...t, recordedGrade: grade.grade, peakGrade: grade.peak } : t;
   });
   const botThreads = threads.filter(t => t.isBotThread);
   const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isOverrideCandidate(t, prAuthorLogin))
@@ -517,6 +526,7 @@ async function fetchRecapState(
       lineStart: t.lineStart,
       severity: t.severity,
       ...(t.recordedGrade && { recordedGrade: t.recordedGrade }),
+      ...(t.peakGrade && { peakGrade: t.peakGrade }),
       status: threadStatus(t, addressedThreadIds, bot, prAuthorLogin, !!securityOverride),
       ...(t.isResolved && addressedThreadIds.has(t.threadId) && { fixed: true }),
       threadId: t.threadId,
@@ -681,7 +691,7 @@ async function fetchPriorRoundContexts(
   owner: string,
   repo: string,
   prNumber: number,
-): Promise<Pick<RecapState, 'priorRounds' | 'lastApprovalAt'>> {
+): Promise<Pick<RecapState, 'priorRounds' | 'lastApprovalAt'> & { failed?: true }> {
   try {
     const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
       owner,
@@ -698,7 +708,7 @@ async function fetchPriorRoundContexts(
     return { priorRounds: parseContextBlocks(candidates, owner, repo, prNumber), ...(lastApprovalAt && { lastApprovalAt }) };
   } catch (error) {
     core.warning(`Failed to fetch prior round contexts: ${error}`);
-    return { priorRounds: [] };
+    return { priorRounds: [], failed: true };
   }
 }
 
@@ -722,6 +732,7 @@ interface ReviewThread extends FindingMetadata {
   lineStart: number;
   severity: FindingSeverity | 'unknown';
   recordedGrade?: FindingSeverity;
+  peakGrade?: FindingSeverity;
   authorReplyText?: string;
   authorReplyLogin?: string;
   authorReplyAssociation?: string;

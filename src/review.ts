@@ -2280,7 +2280,8 @@ function partialFixGrade(evaluation: ThreadEvaluation, thread: OpenThread | unde
   const rank = (grade: FindingSeverity): number => SEVERITY_ORDER.indexOf(grade);
   const own = thread.severity === 'unknown' ? 'blocker' : thread.severity;
   const earlier = thread.recordedGrade;
-  const top = earlier && rank(earlier) < rank(own) ? earlier : own;
+  const peak = thread.peakGrade ?? earlier;
+  const top = peak && rank(peak) < rank(own) ? peak : own;
   // A recorded grade below its own never lowers a security thread.
   const carried = earlier && !(thread.isSecurity && rank(earlier) > rank(own)) ? earlier : own;
   const named = namedThreadIds.has(evaluation.threadId);

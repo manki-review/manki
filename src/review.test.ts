@@ -2843,6 +2843,11 @@ describe('runReview', () => {
     expect(await gradeAfter(open, touching)).toEqual([undefined, 'ADDRESS_FIRST']);
     expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['blocker', 'ADDRESS_FIRST']);
     expect(await gradeAfter(partly('warning'), touching)).toEqual(['warning', 'READY']);
+    // Once a partial fix lowered it again, finding it open after a push gives back the blocker it had reached.
+    openThread.recordedGrade = 'warning';
+    openThread.peakGrade = 'blocker';
+    expect(await gradeAfter(open, touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    delete openThread.peakGrade;
     openThread.severity = 'blocker';
     // A grade the judge gives a thread that is not open is dropped, so it can never lower a blocker.
     delete openThread.recordedGrade;
