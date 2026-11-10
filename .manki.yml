@@ -1,10 +1,6 @@
 auto_review: true
 auto_approve: true
 
-exclude_paths:
-  - "*.lock"
-  - "dist/**"
-
 instructions: |
   This is a TypeScript GitHub Action project.
   Focus on: correct GitHub API usage, proper error handling, TypeScript type safety.

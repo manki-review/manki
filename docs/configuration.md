@@ -15,11 +15,13 @@ auto_review: true
 # Auto-approve when all blocking issues are resolved (default: true)
 auto_approve: true
 
-# File filtering (defaults: ["*.lock", "dist/**", "*.generated.*"])
+# File filtering (defaults: the known package lockfiles that end in ".lock", such as
+# "Cargo.lock" and "poetry.lock", then "dist/**" and "*.generated.*"). The list
+# replaces the defaults, so repeat the ones you keep. [] excludes nothing.
 exclude_paths:
-  - "*.lock"
+  - "Cargo.lock"
   - "dist/**"
-  - "*.generated.*"
+  - "vendor/**"
 
 # PRs that get no automatic review (default: none). Read from the base branch
 # only, so a PR cannot skip itself. Labels and authors compare case-insensitively,
@@ -138,7 +140,7 @@ memory:
 |---------|------|---------|--------------|
 | `auto_review` | boolean | `true` | Review a PR automatically when it opens and on every push. With `false`, Manki reviews only on request, such as `@manki review`. |
 | `auto_approve` | boolean | `true` | Approve the PR once every blocking thread is resolved, without a new review. |
-| `exclude_paths` | list of globs | `["*.lock", "dist/**", "*.generated.*"]` | Files the reviewers never read. Manki never approves a PR that changes such a file: a person must approve it. A `Cargo.lock`, `package-lock.json`, `yarn.lock` or `pnpm-lock.yaml` is the exception: the reviewers read it as a package list. Some analyzers still check them, see [Running Manki's analyzers](how-reviews-work.md#running-mankis-analyzers). |
+| `exclude_paths` | list of globs | `["yarn.lock", "bun.lock", "Cargo.lock", "poetry.lock", "Pipfile.lock", "pdm.lock", "uv.lock", "Gemfile.lock", "composer.lock", "pubspec.lock", "mix.lock", "renv.lock", "conan.lock", "Podfile.lock", "deno.lock", "pixi.lock", "paket.lock", "shard.lock", "rebar.lock", "Berksfile.lock", "Puppetfile.lock", "MODULE.bazel.lock", "Gopkg.lock", "glide.lock", "Chart.lock", "stack.yaml.lock", "requirements.lock", "requirements-dev.lock", "nimble.lock", "spago.lock", "dist/**", "*.generated.*"]` | Files the reviewers never read. Your list replaces the defaults, so repeat a default you want to keep, and `[]` excludes nothing. Manki never approves a PR that changes such a file: a person must approve it. A `Cargo.lock`, `package-lock.json`, `yarn.lock` or `pnpm-lock.yaml` is the exception: the reviewers read it as a package list. The defaults name the known package lockfiles that end in `.lock`, so any other `.lock` file, such as `.github/workflows/actions.lock` or `flake.lock`, is read as text. Some analyzers still check them, see [Running Manki's analyzers](how-reviews-work.md#running-mankis-analyzers). |
 | `skip_labels` | list of strings | none | PRs with any of these labels get no automatic review. Compared case-insensitively, and read from the base branch. See [Skipping PRs](how-reviews-work.md#skipping-prs). |
 | `skip_authors` | list of strings | none | PRs by any of these authors, such as `dependabot[bot]`, get no automatic review. Compared case-insensitively, and read from the base branch. |
 | `skip_branches` | list of globs | none | PRs whose head branch in the repo itself matches, such as `dependabot/**`, get no automatic review. Never matches a fork's branch. Read from the base branch. |

@@ -30,7 +30,8 @@ const MAX_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024;
 // The names are compared in lower case, because macOS and Windows runners open `.GitleaksIgnore` as `.gitleaksignore`.
 const TOOL_CONFIG_FILES = new Set(['.gitleaks.toml', '.gitleaksignore', '.semgrepignore', '.gitignore', 'osv-scanner.toml']);
 
-const LOCKFILES = new Set([
+/** The package lockfiles osv-scanner reads, by file name. */
+export const LOCKFILES: ReadonlySet<string> = new Set([
   'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock',
   'Cargo.lock', 'go.mod', 'poetry.lock', 'Pipfile.lock', 'pdm.lock', 'uv.lock', 'requirements.txt',
   'Gemfile.lock', 'gems.locked', 'composer.lock', 'pubspec.lock', 'mix.lock', 'packages.lock.json',

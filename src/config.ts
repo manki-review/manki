@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import { parse as parseYaml } from 'yaml';
 
+import { LOCKFILES } from './binary-analyzers';
 import { parseModelSpec } from './providers';
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, canonicalJson, floorShortfall, resolveRouting, routeClass } from './routing';
 import { ANALYZERS, PairedPin, ReviewConfig, StaticAnalysisConfig } from './types';
@@ -11,10 +12,20 @@ const HAIKU_MODEL = 'claude-haiku-5-5';
 const SONNET_MODEL = 'claude-sonnet-5-5';
 const OPUS_MODEL = 'claude-opus-5-5';
 
+/**
+ * The known package lockfiles that end in `.lock`: those osv-scanner reads, and others it does not. They are excluded by
+ * name, so any other `.lock` file, such as `.github/workflows/actions.lock`, is read as text.
+ */
+const PACKAGE_LOCKFILES = [...new Set([
+  ...[...LOCKFILES].filter(name => name.endsWith('.lock')),
+  'Podfile.lock', 'deno.lock', 'pixi.lock', 'paket.lock', 'shard.lock', 'rebar.lock', 'Berksfile.lock', 'Puppetfile.lock', 'MODULE.bazel.lock',
+  'Gopkg.lock', 'glide.lock', 'Chart.lock', 'stack.yaml.lock', 'requirements.lock', 'requirements-dev.lock', 'nimble.lock', 'spago.lock',
+])];
+
 export const DEFAULT_CONFIG: ReviewConfig = {
   auto_review: true,
   auto_approve: true,
-  exclude_paths: ['*.lock', 'dist/**', '*.generated.*'],
+  exclude_paths: [...PACKAGE_LOCKFILES, 'dist/**', '*.generated.*'],
   skip_labels: [],
   skip_authors: [],
   skip_branches: [],
@@ -664,11 +675,6 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
       result.static_analysis = { ...defaults.static_analysis, ...(value as Record<string, unknown>) } as ReviewConfig['static_analysis'];
     } else if (key === 'convergence' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.convergence = { ...defaults.convergence, ...(value as Record<string, unknown>) } as ReviewConfig['convergence'];
-    } else if (key === 'exclude_paths' && Array.isArray(value)) {
-      // Union with defaults so users adding a single pattern don't lose
-      // built-in skips (`*.lock`, `dist/**`, `*.generated.*`).
-      const userPatterns = value.filter((p): p is string => typeof p === 'string');
-      result.exclude_paths = Array.from(new Set([...defaults.exclude_paths, ...userPatterns]));
     } else {
       (result as Record<string, unknown>)[key] = value;
     }

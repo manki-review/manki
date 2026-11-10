@@ -10,11 +10,14 @@
 # auto_approve: true
 
 # File filtering
-# Defaults: ["*.lock", "dist/**", "*.generated.*"]
+# Defaults: the known package lockfiles that end in ".lock", such as "Cargo.lock" and
+# "poetry.lock", then "dist/**" and "*.generated.*". Any other ".lock" file, such
+# as ".github/workflows/actions.lock", is read. The list replaces the defaults,
+# so repeat the ones you keep. [] excludes nothing.
 # exclude_paths:
-#   - "*.lock"
+#   - "Cargo.lock"
 #   - "dist/**"
-#   - "*.generated.*"
+#   - "vendor/**"
 
 # PRs that get no automatic review (default: none). Read from the base branch
 # only. Labels and authors compare case-insensitively. Branches are globs on the

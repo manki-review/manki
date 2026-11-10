@@ -321,19 +321,9 @@ reviewers:
       expect(config.reviewers[0].focus).toBe('custom focus area');
     });
 
-    it('merges user exclude_paths with defaults and dedupes', () => {
-      const yaml = `
-exclude_paths:
-  - "vendor/**"
-  - "dist/**"
-`;
-      const config = loadConfigFromContent(yaml);
-      for (const pattern of DEFAULT_CONFIG.exclude_paths) {
-        expect(config.exclude_paths).toContain(pattern);
-      }
-      expect(config.exclude_paths).toContain('vendor/**');
-      const distOccurrences = config.exclude_paths.filter(p => p === 'dist/**').length;
-      expect(distOccurrences).toBe(1);
+    it('replaces the default exclude_paths with the repository\'s list, so an empty list excludes nothing', () => {
+      expect(loadConfigFromContent('exclude_paths:\n  - "vendor/**"\n  - "dist/**"\n').exclude_paths).toEqual(['vendor/**', 'dist/**']);
+      expect(loadConfigFromContent('exclude_paths: []').exclude_paths).toEqual([]);
     });
 
     it('deep-merges memory object', () => {
@@ -803,11 +793,6 @@ models:
     it('throws when exclude_paths contains a boolean element', () => {
       expect(() => loadConfigFromContent('exclude_paths:\n  - true\n'))
         .toThrow(/exclude_paths\[0\]/);
-    });
-
-    it('keeps default exclude_paths when user supplies an empty array', () => {
-      const config = loadConfigFromContent('exclude_paths: []');
-      expect(config.exclude_paths).toEqual(DEFAULT_CONFIG.exclude_paths);
     });
   });
 
