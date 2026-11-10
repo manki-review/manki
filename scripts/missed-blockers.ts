@@ -211,12 +211,12 @@ export interface BodyEdit {
 
 /**
  * Returns the body as it was at `time`: the latest version edited at or before it. A body never edited, with an empty
- * history, is the same at any time. Without the history, or a version from before `time`, the body cannot be recovered,
- * and `known` is false.
+ * history, is the same at any time, so it needs no `time`. Without the history, a `time`, or a version from before
+ * `time`, the body cannot be recovered, and `known` is false.
  */
 export function bodyAt(current: string | null, edits: BodyEdit[] | undefined, time: string | undefined): { body: string | null; known: boolean } {
+  if (edits?.length === 0) return { body: current, known: true };
   if (!edits || time === undefined) return { body: current, known: false };
-  if (edits.length === 0) return { body: current, known: true };
   const version = [...edits].sort((a, b) => b.editedAt.localeCompare(a.editedAt)).find(e => e.editedAt <= time);
   return typeof version?.diff === 'string' ? { body: version.diff, known: true } : { body: current, known: false };
 }

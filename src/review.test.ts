@@ -3065,6 +3065,7 @@ describe('runReview', () => {
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.verdict).toBe('COMMENT');
     expect(result.summary).toContain('verdict reader failed');
+    expect(result.judgeEffort).toBe('high');
     expect(result.findings).toEqual([]);
     expect(infoSpy).toHaveBeenCalledWith('Verdict reader: 65536 output tokens');
     infoSpy.mockRestore();
@@ -3815,6 +3816,7 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(false);
     expect(result.verdict).toBe('COMMENT');
     expect(result.summary).toContain('judge failed');
+    expect(result.judgeEffort).toBe('high');
 
     mockedRunJudgeAgent.mockRejectedValueOnce(new QuotaError('429', 'Anthropic API rate limit reached', undefined, 'key'));
     const limited = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
