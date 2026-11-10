@@ -1329,7 +1329,8 @@ export async function runReview(
   const earlier = earlierFindings(sortedPriorRounds, openThreads ?? [], threadEvaluations);
   const earlierWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
   // Unlinked before the outcome, so the verdict and the threads it lists already see the finding on its own.
-  const guard = (f: Finding): Finding => withoutUnguardedThread(f, openThreadIndex, previousFindings);
+  const priorThreads = new Map(priorFindingsFlat.flatMap(e => e.threadId ? [[stringifyFindingFingerprint(e.fingerprint), e.threadId] as const] : []));
+  const guard = (f: Finding): Finding => withoutUnguardedThread(f, openThreadIndex, previousFindings, priorThreads);
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
   threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
@@ -2471,24 +2472,35 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
       const { variantOf: _, ...restating } = f;
       return link.variant ? { ...f, threadId: link.earlier.threadId } : { ...restating, threadId: link.earlier.threadId };
     }
-    // No security thread carries it, so a plain thread with its title must not stop it from being posted.
-    const own = !f.threadId && !f.answeredIn && isSecurityFinding(f.tags, f.reviewers) ? { ...f, ownThread: true } : f;
+    const own = postedOnItsOwn(f);
     if (!link || link.variant) return own;
     core.info(`"${f.title}" restates "${link.earlier.finding.title}", which round ${link.earlier.raisedIn} listed`);
     return { ...own, raisedIn: link.earlier.raisedIn };
   });
 }
 
+/** Returns `f` marked `ownThread` when it is a security finding no thread carries, so a plain thread with its title does not drop it. */
+function postedOnItsOwn(f: Finding): Finding {
+  return !f.threadId && !f.answeredIn && isSecurityFinding(f.tags, f.reviewers) ? { ...f, ownThread: true } : f;
+}
+
 /**
- * Returns `f` taken out of the thread that carries it when `f` is a security finding and that thread is not a security
- * thread. A thread is a security thread by its first comment, so another one would lose the finding's guard.
+ * Returns the security finding `f` kept apart from threads that are not security threads. It leaves a plain thread
+ * that carries it, since a thread is a security thread by its first comment and another would lose the finding's guard.
+ * It drops a `sameAs` that names a finding of a plain open thread, which would leave that thread out of the open ones in
+ * the verdict. `priorThreads` gives the thread of each earlier finding by its key.
  */
-function withoutUnguardedThread(f: Finding, openThreadIndex: Map<string, OpenThread>, previousFindings: PreviousFinding[] | undefined): Finding {
+function withoutUnguardedThread(f: Finding, openThreadIndex: Map<string, OpenThread>, previousFindings: PreviousFinding[] | undefined, priorThreads: ReadonlyMap<string, string>): Finding {
+  if (!isSecurityFinding(f.tags, f.reviewers)) return f;
+  const named = f.sameAs ? priorThreads.get(f.sameAs) : undefined;
+  const namesPlain = !!named && openThreadIndex.has(named) && !openThreadIndex.get(named)?.isSecurity;
   const carrier = f.threadId ?? f.answeredIn?.threadId;
-  if (!carrier || !isSecurityFinding(f.tags, f.reviewers)) return f;
-  if (openThreadIndex.get(carrier)?.isSecurity ?? previousFindings?.find(t => t.threadId === carrier)?.isSecurity) return f;
-  const { threadId: _thread, variantOf: _variant, answeredIn: _answered, ...own } = f;
-  return { ...own, ownThread: true };
+  const guarded = !!carrier && !!(openThreadIndex.get(carrier)?.isSecurity ?? previousFindings?.find(t => t.threadId === carrier)?.isSecurity);
+  const { sameAs: _same, ...unnamed } = f;
+  const kept = namesPlain ? unnamed : f;
+  if (!carrier || guarded) return postedOnItsOwn(kept);
+  const { threadId: _thread, variantOf: _variant, answeredIn: _answered, ...own } = kept;
+  return postedOnItsOwn(own);
 }
 
 /** What the same-problem checks read of a finding. */
