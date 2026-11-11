@@ -2076,7 +2076,7 @@ describe('runJudgeAgent', () => {
       'Field without migration': yes,
       'Advice quoted': { ruleBroken: true },
       'Rule kept': { ruleIsRequirement: true },
-      'Doubted': { ...yes, doubts: [{ premise: 'No migration exists outside the diff', decides: 'defect' }] },
+      'Doubted': { ...yes, doubts: [{ premise: 'The deploy script fails on a model without a migration', decides: 'defect' }] },
       'No line cited': yes,
       'Dropped': { ...yes, row: 'ignore' },
       'Real defect too': { ...yes, row: 'wrong' },
@@ -2099,8 +2099,8 @@ describe('runJudgeAgent', () => {
       ['Field without migration', grade, 'confirmed', `rule: ${grade}`],
       ['Advice quoted', 'note', 'no_requirement', undefined],
       ['Rule kept', 'note', 'not_broken', undefined],
-      // A doubt whether the defect exists goes to the refuter, with the rule's grade as the grade a confirmation gives.
-      ['Doubted', 'note', 'unproven', undefined, grade, undefined, ['No migration exists outside the diff']],
+      // A doubt of the judge is about the damage, so the rule is confirmed with it.
+      ['Doubted', grade, 'confirmed', `rule: ${grade}`, 'note', undefined, ['The deploy script fails on a model without a migration']],
       ['No line cited', 'note', 'unproven', undefined],
       ['Dropped', 'ignore', 'unproven', 'judge: ignore'],
       // The cell already gives a blocker, so the rule changes nothing.
@@ -2131,7 +2131,7 @@ describe('runJudgeAgent', () => {
     expect(mockSendMessage.mock.calls.at(-1)![0]).not.toMatch(/Rule Findings|ruleBroken|ruleUnseen|Quoted rule/);
   });
 
-  it('confirms an unproven rule only when the refuter confirms the fact the judge could not see, and drops the finding when it disproves it', async () => {
+  it('confirms an unproven rule only when the refuter confirms the fact the judge could not see, drops the finding when it disproves that fact, and keeps a confirmed rule finding whose damage it disproves', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
@@ -2145,7 +2145,8 @@ describe('runJudgeAgent', () => {
       'Fact confirmed without a search': unseen,
       // The fact is no premise of a finding graded by its own damage, so the judge's other doubt cannot stand in for it.
       'Another premise confirmed': { ...unseen, row: 'degraded', doubts: [{ premise: 'The loop reads the variable on each request', decides: 'defect' }] },
-      'Judge doubt confirmed': { ruleIsRequirement: true, ruleBroken: true, doubts: [{ premise: 'No other file lists the variable', decides: 'defect' }] },
+      // The judge's own doubt is about the damage. A disproof of it leaves the confirmed rule broken.
+      'Damage disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
     };
     const titles = Object.keys(answers);
     const findings = titles.map((title, i) => makeFinding({
@@ -2154,7 +2155,7 @@ describe('runJudgeAgent', () => {
     const premise = (outcome: string) => ({ reason: `It is ${outcome}.`, premises: [{ outcome, reason: `It is ${outcome}.`, proof: ['src/index.ts:3'] }] });
     const replies: Record<string, unknown> = {
       'Fact confirmed': premise('confirmed'), 'Fact disproved': premise('disproved'), 'Fact unsettled': premise('unsettled'),
-      'Fact confirmed without a search': premise('confirmed'), 'Another premise confirmed': premise('confirmed'), 'Judge doubt confirmed': premise('confirmed'),
+      'Fact confirmed without a search': premise('confirmed'), 'Another premise confirmed': premise('confirmed'), 'Damage disproved': premise('disproved'),
     };
     const refuterMessages: string[] = [];
     const refuter: LLMClient = {
@@ -2178,7 +2179,7 @@ describe('runJudgeAgent', () => {
         ['Fact unsettled', 'note', 'unproven', undefined],
         ['Fact confirmed without a search', grade, 'confirmed', `refutation: ${grade}`],
         ['Another premise confirmed', 'warning', 'unproven', 'judge: warning'],
-        ['Judge doubt confirmed', grade, 'confirmed', `refutation: ${grade}`],
+        ['Damage disproved', grade, 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning'],
       ];
       expect(await graded()).toEqual(expected('warning'));
       expect(await graded('block')).toEqual(expected('blocker'));
