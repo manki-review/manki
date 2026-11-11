@@ -16,7 +16,7 @@ import * as github from '@actions/github';
 import { parsePRDiff } from '../src/diff';
 import { postedFindings, touchesFinding } from '../src/fix-rate';
 import { fetchInterRoundDiff, fetchReviewThreadNodes } from '../src/github';
-import { classifyAuthorReply, findingFile, judgeAddressedThreadIds } from '../src/recap';
+import { classifyAuthorReply, findingFile, judgeAddressedThreadIds, threadMarkerSlug } from '../src/recap';
 import { FindingFingerprintEntry, migrateStoredSeverities, ParsedDiff, RoundContext } from '../src/types';
 import { aggregate } from './fix-rate-report';
 import { githubToken, HistoryLine as RecordLine } from './review-history';
@@ -87,7 +87,6 @@ const REPLY_OUTCOME = /^\**(Fixed|Agreed|Withdrawn|Unverified|Still open|Kept)\b
 // A person's reply that opens with one of these says the finding was acted on, or turned down.
 const AUTHOR_FIXED = /^\**(Fixed|Applied|Added|Adopted|Addressed|Done|Switched|Restructured)\b/i;
 const AUTHOR_DECLINED = /^\**(Pushing back|Declin|Skipping|Not applied|Not fixing|Won't fix|Keeping|Leaving)/i;
-const FINDING_MARKER = /<!-- manki:[a-z]+:(\S+) -->/;
 // The posted grade would anchor a replayed judge, so the export drops the severity header, a cap note under it and the
 // `AI context` block.
 const SEVERITY_HEADER = /^[^\n]*\*\*(Blocker|Warning|Note|Suggestion|Nitpick)\b[^\n]*\n*(<sub>\[[^\]\n]*\]<\/sub>\n*)?/;
@@ -146,7 +145,7 @@ export function roundsByPullRequest(lines: HistoryLine[]): Map<string, RoundCont
  */
 export function findThread(threads: Thread[], entry: FindingFingerprintEntry): Thread | undefined {
   return (entry.threadId ? threads.find(t => t.id === entry.threadId) : undefined) ?? threads.find(t =>
-    t.comments[0]?.bot && findingFile(t.comments[0].body, t.path) === entry.fingerprint.file && FINDING_MARKER.exec(t.comments[0].body)?.[1] === entry.fingerprint.slug);
+    t.comments[0]?.bot && findingFile(t.comments[0].body, t.path) === entry.fingerprint.file && threadMarkerSlug(t.comments[0].body) === entry.fingerprint.slug);
 }
 
 function percent(part: number, whole: number): string {

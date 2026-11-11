@@ -198,6 +198,16 @@ export function sanitizeHtmlCommentJson(json: string): string {
 }
 
 /**
+ * Returns what Manki's own hidden marker with `opener` holds in `body`, without the opener and the close: the last line
+ * that starts with `opener`, up to the first close. Manki writes each marker on a line of its own below all text of a
+ * finder, a record or the PR, and JSON in a marker holds no line break or close. An earlier match is quoted text.
+ */
+export function ownMarker(body: string, opener: string): string | undefined {
+  const line = body.split('\n').filter(l => l.startsWith(opener) && l.includes('-->', opener.length)).at(-1);
+  return line?.slice(opener.length, line.indexOf('-->', opener.length)).trimEnd();
+}
+
+/**
  * Maps `items` through `fn` with at most `limit` calls in flight, keeping the order of `items`. After a call
  * rejects, no further call starts and the first rejection is thrown.
  */

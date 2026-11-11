@@ -79,16 +79,16 @@ describe('review stats', () => {
       usage: { estimatedCostUsd: 0.25, llmCalls: [{ ...call('gpt-5', 3), stage: 'judge', agent: 'refute_pair', costUsd: null }] },
     });
     const threadComments = [
-      { id: 10, body: '**Blocker**: Bug <!-- manki:blocker:Bug -->', user: bot },
+      { id: 10, body: '**Blocker**: Bug\n\n<!-- manki:blocker:Bug -->', user: bot },
       { id: 11, in_reply_to_id: 10, body: 'Fixed in abc1234.\n\n<!-- manki -->', user: bot },
-      { id: 20, body: '**Blocker**: Wrong <!-- manki:blocker:Wrong -->', user: bot },
+      { id: 20, body: '**Blocker**: Wrong\n\n<!-- manki:blocker:Wrong -->', user: bot },
       { id: 21, in_reply_to_id: 20, body: 'Fixed', user: person },
       { id: 22, in_reply_to_id: 20, body: '**Withdrawn.** The value is checked above.', user: bot },
-      { id: 30, body: '**Blocker**: Open <!-- manki:blocker:Open -->', user: bot },
+      { id: 30, body: '**Blocker**: Open\n\n<!-- manki:blocker:Open -->', user: bot },
       { id: 31, in_reply_to_id: 30, body: 'Fixed in def5678.', user: person },
-      { id: 40, body: '**Warning**: Minor <!-- manki:warning:Minor -->', user: bot, pull_request_review_id: 1, path: 'src/a.ts', line: null, original_line: 10 },
+      { id: 40, body: '**Warning**: Minor\n\n<!-- manki:warning:Minor -->', user: bot, pull_request_review_id: 1, path: 'src/a.ts', line: null, original_line: 10 },
       { id: 41, in_reply_to_id: 40, body: 'Withdrawn.', user: bot },
-      { id: 50, body: 'A person\'s comment <!-- manki:blocker:Pasted -->', user: person },
+      { id: 50, body: 'A person\'s comment\n\n<!-- manki:blocker:Pasted -->', user: person },
     ];
     const one = prRecords('o/r', 1, { reviews: [review(1, first), { id: 2, body: 'A person\'s review.', user: person }, review(3, second)], threadComments });
 
@@ -128,7 +128,7 @@ describe('review stats', () => {
       findings: { count: 1, severityCounts: {}, entries: [{ ...makeFindingFingerprintEntry({ severity: 'blocker' }), origin: 'reviewed' }] },
       usage: { estimatedCostUsd: 9 },
     });
-    const earlierThread = { id: 80, body: '**Warning**: Minor <!-- manki:warning:Minor -->', user: bot, pull_request_review_id: 100, path: 'src/a.ts', line: 10 };
+    const earlierThread = { id: 80, body: '**Warning**: Minor\n\n<!-- manki:warning:Minor -->', user: bot, pull_request_review_id: 100, path: 'src/a.ts', line: 10 };
     const two = prRecords('o/r', 2, { reviews: [reader, later[0], failed, ...later.slice(1)].map((context, i) => review(100 + i, context)), threadComments: [earlierThread] });
     expect([two.rounds.length, two.incompleteRounds]).toEqual([5, [failed]]);
 

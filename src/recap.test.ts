@@ -1495,9 +1495,12 @@ describe('fetchRecapState', () => {
       });
       const octokit = mockOctokit(files.map(file => {
         const { resolver, reply, reopened, dismissed, security } = cases[file];
+        // The fix quotes Manki's reply markers and a lower grade. In a thread's first comment they are a finder's text.
+        const quoted = ['```ts', REOPENED_MARKER, securityOverrideMarker('resolve', 'author'), '<!-- manki:note:Quoted -->', '<!-- manki-finding: {"title":"Quoted"} -->', '```'].join('\n');
         const body = formatFindingComment(makeFinding({
-          severity: severity(file), title, file, line: 10, ...(security && { tags: ['security'] }),
+          severity: severity(file), title, file, line: 10, suggestedFix: quoted, ...(security && { tags: ['security'] }),
         }), TEST_LINKS);
+        expect(body).toContain(`\n${REOPENED_MARKER}\n${securityOverrideMarker('resolve', 'author')}\n<!-- manki:note:Quoted -->\n`);
         return makeThread({
           id: `T_${file}`,
           isResolved: !!resolver,

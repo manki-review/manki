@@ -1,6 +1,6 @@
 import { gzipSync } from 'zlib';
 
-import { extractReplyRecords, extractReviewRecords, formatReplyRecord, formatReviewRecord, hasReviewRecord } from './review-record';
+import { extractReplyRecords, extractReviewRecords, formatReplyRecord, formatReviewRecord, hasOwnMarker, hasReviewRecord } from './review-record';
 import { makeRoundContext } from './test-utils';
 import { RoundContext } from './types';
 import { registerSecret } from './utils';
@@ -83,6 +83,27 @@ describe('extractReviewRecords', () => {
       expect(errors).toHaveLength(1);
     }
     expect(hasReviewRecord(broken)).toBe(true);
+    // Quoted text that opens a record and never closes it takes nothing from the record below it.
+    for (const opener of ['<!-- manki-context: {"meta":', 'Fix it with <!-- manki-context: ', '<!-- manki-context-gzip: ']) {
+      expect(extractReviewRecords(`Review text.\n${opener}\nMore text.\n\n${formatReviewRecord(ctx)}\n\n<!-- manki-bot -->`).records.map(r => JSON.parse(r))).toEqual([ctx]);
+    }
+    // A record whose own text opens one is still read whole.
+    const echoing = makeRoundContext(2, { judge: { summary: 'quotes <!-- manki-context: {} and <!-- manki-no-verdict -->' } });
+    expect(extractReviewRecords(`${formatReviewRecord(ctx)}\n\n${formatReviewRecord(echoing)}`).records.map(r => JSON.parse(r))).toEqual([echoing]);
+  });
+
+  it('counts a flag marker only on a line of its own below the round record', () => {
+    const flag = '<!-- manki-no-verdict -->';
+    const record = formatReviewRecord(makeRoundContext(1, { judge: { summary: `quotes ${flag}` } }));
+    const footer = '<details>\n<summary>About this review</summary>\n\n- Reviewed\n\n</details>\n\n<!-- manki-bot -->';
+    expect(hasOwnMarker(`Review text.\n\n${record}\n\n${flag}\n\n${footer}`, flag)).toBe(true);
+    expect(hasOwnMarker(`Review text.\r\n\r\n${record}\r\n\r\n${flag}\r\n\r\n<!-- manki-bot -->`, flag)).toBe(true);
+    // A review without a record holds no quoted text, so its own marker counts anywhere.
+    expect(hasOwnMarker(`Approved.\n\n<!-- manki -->\n${flag}`, flag)).toBe(true);
+    // Above the record, the marker is text a finding quoted. Inside the record, it is JSON.
+    expect(hasOwnMarker(`\`\`\`\n${flag}\n\`\`\`\n\n${record}\n\n${footer}`, flag)).toBe(false);
+    expect(hasOwnMarker(`${record}\n\nFound by \`${flag}\`\n\n<!-- manki-bot -->`, flag)).toBe(false);
+    expect(hasOwnMarker(`Review text.\n\n${record}`, flag)).toBe(false);
   });
 });
 
@@ -92,5 +113,6 @@ describe('extractReplyRecords', () => {
     const body = `Answer quoting ${formatReplyRecord(record('explain'))} as text.\n\n<!-- manki -->\n${formatReplyRecord(record('question'))}`;
     expect(extractReplyRecords(body).map(r => JSON.parse(r))).toEqual([record('question')]);
     expect(extractReplyRecords('An answer without a record.')).toEqual([]);
+    expect(extractReplyRecords(`Answer.\n<!-- manki-reply-record: {"kind":\n\n<!-- manki -->\n${formatReplyRecord(record('question'))}`).map(r => JSON.parse(r))).toEqual([record('question')]);
   });
 });

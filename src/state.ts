@@ -9,10 +9,10 @@ import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
 import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingFile } from './recap';
-import { formatApprovalRecord, hasReviewRecord } from './review-record';
+import { formatApprovalRecord, hasOwnMarker, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
-import { withMarkers } from './utils';
+import { ownMarker, withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 type PullHead = { head: { sha: string }; base: { ref: string } };
@@ -84,12 +84,12 @@ interface ReviewThread {
   fixedOn?: string[];
 }
 
+const FIXED_MARKER_OPENER = '<!-- manki-fixed:';
+
 /** Marks Manki's reply that confirms a fix on `commitSha`, so a thread gets one such reply per head. */
 function fixedMarker(commitSha: string): string {
-  return `<!-- manki-fixed:${commitSha} -->`;
+  return `${FIXED_MARKER_OPENER}${commitSha} -->`;
 }
-
-const FIXED_MARKER_RE = /<!-- manki-fixed:([0-9a-f]{40}) -->/;
 
 const THREAD_COMMENTS_LIMIT = 100;
 
@@ -169,10 +169,9 @@ async function fetchBotReviewThreads(
       // An unreadable record could hide a raise, so the thread blocks rather than let auto-approve pass it.
       const isBlocking = 'priorRoundsIncomplete' in records || threadBlocks({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity });
       // The marker's slug turned every other character into a hyphen, so the finding data keeps the real title.
-      const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
-      const data = parseFindingData(body);
-      const findingTitle = data?.title?.trim() || (titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown');
       const markerSlug = threadMarkerSlug(body);
+      const data = parseFindingData(body);
+      const findingTitle = data?.title?.trim() || (markerSlug?.replace(/-/g, ' ') ?? 'Unknown');
       const file = findingFile(body, thread.path);
       const findingLine = data && data.file === file ? data.line : undefined;
       const commit = thread.comments.nodes[0]?.originalCommit?.oid;
@@ -186,7 +185,7 @@ async function fetchBotReviewThreads(
       const threadUrl = thread.comments.nodes[0]?.url;
       const recordedOverride = isSecurity || isBlocking ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       const fixedOn = thread.comments.nodes.slice(1).flatMap(c => {
-        const sha = isBotLogin(bot, c.author?.login) ? c.body?.match(FIXED_MARKER_RE)?.[1] : undefined;
+        const sha = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', FIXED_MARKER_OPENER)?.match(/^[0-9a-f]{40}$/)?.[0] : undefined;
         return sha ? [sha] : [];
       });
       return {
@@ -460,7 +459,7 @@ async function coveredCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
   pr: PullHead, reviews: ReviewEntry[],
 ): Promise<string | undefined> {
-  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha && !r.body?.includes(NO_VERDICT_MARKER))) return pr.head.sha;
+  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha && !hasOwnMarker(r.body ?? '', NO_VERDICT_MARKER))) return pr.head.sha;
   const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha);
   if (standing) core.info(`No change since the reviewed commit ${standing.commitSha.slice(0, 7)}, so its review covers ${pr.head.sha.slice(0, 7)}`);
   return standing?.commitSha;
@@ -491,7 +490,7 @@ function blockOf(
 ): { held?: string; named: Set<string> } {
   const sha = `\`${commitSha.slice(0, 7)}\``;
   // An auto-approval and a round without a verdict decide nothing about blockers, so the round before them stands.
-  const review = reviews.filter(r => isBotReview(bot, r) && r.commit_id === commitSha && !r.body?.includes(NO_VERDICT_MARKER) && !r.body?.includes(AUTO_APPROVE_MARKER)).at(-1);
+  const review = reviews.filter(r => isBotReview(bot, r) && r.commit_id === commitSha && !hasOwnMarker(r.body ?? '', NO_VERDICT_MARKER) && !hasOwnMarker(r.body ?? '', AUTO_APPROVE_MARKER)).at(-1);
   if (review && restatesApproval(review)) return { named: new Set() };
   const round = review && parseContextBlocks([{ body: review.body ?? '', id: review.id }], owner, repo, prNumber).rounds.at(0);
   if (!round || round.meta.commitSha !== commitSha) {
@@ -751,7 +750,7 @@ async function approveOrSayWhy(
   }
 
   // The review that covers the head is the latest one, or any on the head, as when a no-verdict round follows it.
-  const held = (r?: ReviewEntry) => !!r?.body?.includes(HELD_FOR_PERSON_MARKER);
+  const held = (r?: ReviewEntry) => hasOwnMarker(r?.body ?? '', HELD_FOR_PERSON_MARKER);
   if (held(latestBotReview) || botReviews.some(r => r.commit_id === pr.head.sha && held(r))) {
     core.info('The review that covers the head holds its approval for a person, such as for unread files — skipping auto-approve');
     return withheld('Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.');

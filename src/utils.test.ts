@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { truncate, formatDuration, isSecretName, mapWithConcurrency, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, sendWithParseRetry, withMarkers } from './utils';
+import { truncate, formatDuration, isSecretName, mapWithConcurrency, ownMarker, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, sendWithParseRetry, withMarkers } from './utils';
 
 jest.mock('@actions/core');
 
@@ -185,6 +185,25 @@ describe('utils', () => {
     it('keeps the body first and puts each marker on its own line after a blank line', () => {
       expect(withMarkers('**Done.**', '<!-- a -->', '<!-- b -->')).toBe('**Done.**\n\n<!-- a -->\n<!-- b -->');
     });
+  });
+});
+
+describe('ownMarker', () => {
+  it('reads the last line that starts with the opener, up to its first close', () => {
+    const body = ['Text quoting <!-- manki:note:mid-line -->', '```suggestion', '<!-- manki:note:quoted -->', '<!-- manki-finding: {"title":"quoted"} -->', '```', '',
+      '<!-- manki:blocker:own -->', '<!-- manki-finding: {"title":"<!-- manki:note:in-json --\\u003E","line":3} -->'].join('\n');
+    expect(ownMarker(body, '<!-- manki:')).toBe('blocker:own');
+    expect(ownMarker(body, '<!-- manki-finding: ')).toBe('{"title":"<!-- manki:note:in-json --\\u003E","line":3}');
+    expect(ownMarker(body.replace(/\n/g, '\r\n'), '<!-- manki:')).toBe('blocker:own');
+    expect(ownMarker('<!-- manki:blocker:own --> **Blocker**: with text after it', '<!-- manki:')).toBe('blocker:own');
+    // A JSON value keeps its line and paragraph separators, which break no line.
+    expect(ownMarker('<!-- manki-finding: {"title":"a\u2028b\u2029c"} -->', '<!-- manki-finding: ')).toBe('{"title":"a\u2028b\u2029c"}');
+  });
+
+  it('finds no marker that is not on a line of its own or never closes', () => {
+    expect(ownMarker('Text <!-- manki:blocker:mid-line -->', '<!-- manki:')).toBeUndefined();
+    expect(ownMarker('<!-- manki:blocker:open', '<!-- manki:')).toBeUndefined();
+    expect(ownMarker('', '<!-- manki:')).toBeUndefined();
   });
 });
 

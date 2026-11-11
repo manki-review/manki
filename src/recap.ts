@@ -6,8 +6,9 @@ import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
-import { extractReviewRecords, hasReviewRecord } from './review-record';
+import { extractReviewRecords, hasOwnMarker, hasReviewRecord } from './review-record';
 import { AuthorClearRole, AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, isSecurityFinding } from './types';
+import { ownMarker } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -16,15 +17,22 @@ const BOT_MARKER = '<!-- manki';
 /** Shared prefix that identifies a severity title line in a manki comment body. */
 const FINDING_TITLE_RE = /\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*/;
 
-/** The hidden finding data in a thread comment. Comments without it use the older `**Severity**: title` layout. */
-const FINDING_DATA_RE = /<!-- manki-finding: (.+?) -->/;
+/** Opens the hidden finding data in a thread comment. Comments without it use the older `**Severity**: title` layout. */
+const FINDING_DATA_OPENER = '<!-- manki-finding: ';
+
+/** The severity token and the title slug inside the severity marker of a thread's first comment. */
+const SEVERITY_MARKER_RE = new RegExp(`^(${SEVERITY_TOKEN_PATTERN}):(.*)$`);
+
+function severityMarker(body: string): RegExpMatchArray | null {
+  return ownMarker(body, '<!-- manki:')?.match(SEVERITY_MARKER_RE) ?? null;
+}
 
 /** `detached` marks a thread posted on another file than its finding's, where `file` and `line` name the finding's own place. */
 export function parseFindingData(body: string): { title?: string; fix?: string; howToFix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number; detached?: boolean } | undefined {
-  const match = body.match(FINDING_DATA_RE);
-  if (!match) return undefined;
+  const json = ownMarker(body, FINDING_DATA_OPENER);
+  if (json === undefined) return undefined;
   try {
-    const parsed: unknown = JSON.parse(match[1]);
+    const parsed: unknown = JSON.parse(json);
     if (!parsed || typeof parsed !== 'object') return undefined;
     const { title, fix, howToFix, tags, flaggedBy, file, line, detached } = parsed as { title?: unknown; fix?: unknown; howToFix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown; detached?: unknown };
     return {
@@ -63,13 +71,13 @@ function isSecurityThread(body: string): boolean {
 
 /** The severity in the marker of a Manki thread's first comment, or `unknown` for a thread from before the markers. */
 function threadSeverity(body: string): FindingSeverity | 'unknown' {
-  const token = body.match(new RegExp(`<!-- manki:(${SEVERITY_TOKEN_PATTERN}):`))?.[1];
+  const token = severityMarker(body)?.[1];
   return token ? migrateLegacySeverity(token) as FindingSeverity : 'unknown';
 }
 
 /** The title slug in the marker of a Manki thread's first comment, or `undefined` for a comment without the marker. */
 function threadMarkerSlug(body: string): string | undefined {
-  return body.match(new RegExp(`<!-- manki:(?:${SEVERITY_TOKEN_PATTERN}):(.+?) -->`))?.[1];
+  return severityMarker(body)?.[2] || undefined;
 }
 
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
@@ -116,11 +124,11 @@ function latestAnswer(bot: BotIdentity, comments: ThreadCommentNode[]): string |
 /** A reply that opens with a `dismiss` command. */
 const DISMISS_COMMAND_RE = /^\s*(?:@manki-review|@manki|\/manki)\s+dismiss\b/i;
 
-const SECURITY_OVERRIDE_MARKER_RE = /<!-- manki-security-override:(resolve|dismiss):([\w-]+) -->/;
+const SECURITY_OVERRIDE_OPENER = '<!-- manki-security-override:';
 
 /** Marks Manki's reply on a guarded thread the PR author cleared with a role that allows it, with how and by whom. */
 function securityOverrideMarker(via: SecurityOverride['via'], login: string): string {
-  return `<!-- manki-security-override:${via}:${login} -->`;
+  return `${SECURITY_OVERRIDE_OPENER}${via}:${login} -->`;
 }
 
 /** How the PR author cleared a guarded thread, and the repository role that allowed it. */
@@ -130,12 +138,12 @@ interface ThreadSecurityOverride extends Omit<SecurityOverride, 'thread'> {
   announced: boolean;
 }
 
-/** Returns the override recorded in one of Manki's own comments on a thread, if any. */
+/** Returns the override recorded in one of Manki's own replies on a thread, if any. The first comment holds a finder's text, so it records none. */
 function recordedSecurityOverride(
   bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author: { login: string } | null }>,
 ): Omit<SecurityOverride, 'thread'> | undefined {
-  for (const c of comments) {
-    const match = isBotLogin(bot, c.author?.login) ? c.body?.match(SECURITY_OVERRIDE_MARKER_RE) : null;
+  for (const c of comments.slice(1)) {
+    const match = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', SECURITY_OVERRIDE_OPENER)?.match(/^(resolve|dismiss):([\w-]+)$/) : null;
     if (match) return { via: match[1] as SecurityOverride['via'], login: match[2] };
   }
   return undefined;
@@ -211,7 +219,7 @@ function mayClearSecurityThread(login: string | undefined, bot: BotIdentity, prA
 /** Matches the title line of a thread comment in any layout: after the label, or on its own line below the header. */
 function matchTitleLine(body: string): RegExpMatchArray | null {
   return body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'))
-    ?? (FINDING_DATA_RE.test(body)
+    ?? (ownMarker(body, FINDING_DATA_OPENER) !== undefined
       ? body.match(/^\S+ \*\*\w+(?:, not blocking)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
         ?? body.match(/^\S+ \*\*\w+(?:, not blocking)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
       : null);
@@ -808,7 +816,7 @@ async function fetchPriorRoundContexts(
     const candidates = botReviews.filter(r => hasReviewRecord(r.body)).map(r => ({ body: r.body, id: r.id }));
     // A round review quotes model text, which could echo the marker, so only a review without a round context counts.
     const lastApprovalAt = botReviews
-      .filter(r => !hasReviewRecord(r.body) && r.body.startsWith(APPROVED_LINE) && r.body.includes(AUTO_APPROVE_MARKER))
+      .filter(r => !hasReviewRecord(r.body) && r.body.startsWith(APPROVED_LINE) && hasOwnMarker(r.body, AUTO_APPROVE_MARKER))
       .at(-1)?.submitted_at;
     const { rounds, unread } = parseContextBlocks(candidates, owner, repo, prNumber);
     return { priorRounds: rounds, ...(lastApprovalAt && { lastApprovalAt }), ...(unread.length > 0 && { priorRoundsIncomplete: true as const, unreadRecords: unread }) };
@@ -1032,7 +1040,7 @@ async function fetchReviewThreads(
         resolvedByHuman: !!thread.resolvedBy?.login && !isBotLogin(bot, thread.resolvedBy.login),
         ...(thread.resolvedBy?.login && { resolvedByLogin: thread.resolvedBy.login }),
         isSecurity: isBotThread && isSecurityThread(body),
-        reopenedByManki: thread.comments.nodes.some(c => isBotLogin(bot, c.author?.login) && c.body?.includes(REOPENED_MARKER)),
+        reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && c.body?.includes(REOPENED_MARKER)),
         ...(recordedOverride && { recordedOverride }),
         hasHumanReply,
         findingTitle,
