@@ -2064,10 +2064,27 @@ describe('sanitizeMarkdown', () => {
     expect(sanitizeMarkdown('a <!-- multi\nline\ncomment --> b')).toBe('a  b');
   });
 
-  it('leaves no comment mark that stripping a comment, a tag or a link put together', () => {
-    for (const nested of ['<<<!-- a -->!-- b -->!-- manki:blocker:x --->->', '<!<b>-- manki:blocker:x --<b>>', '<![](x)!-- manki:blocker:x --[](y)>', 'a\n<!<b>-- manki-no-verdict --<b>>\nb', '<!<!<b>--<i>-- x --<b>-<i>>>']) {
-      expect(sanitizeMarkdown(nested)).not.toMatch(/<!--|-->/);
-    }
+  it('strips again after every removal, so no removal leaves a comment mark, a tag or a link it put together', () => {
+    // Every comment mark, tag and link form the inputs below could leave behind.
+    const markup = /<!--|-->|<\/?(?:img|script|a|b|i)(?:\s[^>]*)?\s*\/?>|!?\[[^\]]*\]\([^)]*\)|\[[^\]]*\]\[[^\]]*\]/i;
+    // The tags around the comment marks go first, then the marks, and the `img` tag they sat in goes in the same round.
+    const joinedTag = '<im<!<b>--<b>-<b>->g src="//evil.example/p.png">';
+    // Three rounds: the links go and leave tags, the tags go and leave a comment, the comment goes and leaves a tag.
+    const threeRounds = '<im<!<[](u)b>--<[](u)b>-<[](u)b>->g src=x>';
+    // Deeper than the rounds allow, so what could still form markup is encoded.
+    const tooDeep = [`${'['.repeat(30)}a${'](u)'.repeat(30)}`, `${'<b'.repeat(30)}${'>'.repeat(30)}<img src=x>`];
+    const inputs = [
+      joinedTag, threeRounds, ...tooDeep,
+      '<<<!-- a -->!-- b -->!-- manki:blocker:x --->->', '<!<b>-- manki:blocker:x --<b>>', '<![](x)!-- manki:blocker:x --[](y)>', 'a\n<!<b>-- manki-no-verdict --<b>>\nb', '<!<!<b>--<i>-- x --<b>-<i>>>',
+      '<img--<b>> src=x onerror=alert(1)>', '<scr<!---->ipt>alert(1)</scr<!---->ipt>', '<scr<b>ipt>alert(1)</scr</b>ipt>', '<a hr<i>ef="//x">t</a>', '<b\n[x](y)>', '<i<![x][y]-- -->mg src=x>',
+      '[a]([b](c)d)', '[[a][b]](c)', '[t](<b>u)', '![a](x<!-- -->)', '[a]<!-- -->(u)', '[a]<b>[b]', '&lt;im&lt;b&gt;g src=x&gt;', '&#60;!&#60;b&#62;-- x --&#60;b&#62;&#62;',
+    ];
+    for (const input of inputs) expect([input, markup.test(sanitizeMarkdown(input))]).toEqual([input, false]);
+    expect([joinedTag, threeRounds].map(sanitizeMarkdown)).toEqual(['', '']);
+    for (const input of tooDeep) expect(sanitizeMarkdown(input)).not.toMatch(/[<>[\]]/);
+    expect(sanitizeMarkdown(tooDeep[0])).toContain('&#91;a&#93;(u)');
+    // Plain text keeps the characters that only look like markup.
+    expect(sanitizeMarkdown('a < b and b > c, see items[0] and Map<string, number>')).toBe('a < b and b > c, see items[0] and Map<string, number>');
   });
 
   it('preserves bold and emphasis', () => {

@@ -2292,6 +2292,23 @@ function formatReadyReport(result: ReviewResult): { whatThisDoes?: string; whatT
   };
 }
 
+/** How often `sanitizeMarkdown` strips before it gives up and encodes what could still form markup. Model text needs two or three rounds. */
+const MAX_STRIP_ROUNDS = 20;
+
+/** Removes each HTML comment, comment mark, known HTML tag and link from `text` once, keeping the text of a link. */
+function stripMarkup(text: string): string {
+  return text
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+    .replace(/<!--|-->/g, '')
+    .replace(HTML_TAG_REGEX, '')
+    .replace(HTML_UNCLOSED_TAG_REGEX, '')  // Unclosed tags at end of string
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Images: keep alt text only
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Links: keep text only
+    .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
+    .replace(/^\[[^\]]*\]:\s+.*$/gm, '');                            // Link/image definitions
+}
+
 // Sanitizes LLM-generated text (titles, descriptions, summaries) before embedding
 // it into the GitHub comment body. Our own structural markup (<details>, <summary>,
 // collapsible sections, etc.) is added AFTER sanitization and is never passed through here.
@@ -2305,27 +2322,15 @@ function sanitizeMarkdown(text: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
     .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
-  // Run comment stripping twice to handle nested comments like <!-- <!-- --> -->,
-  // then clean up any dangling close markers left behind.
-  result = result.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
-  result = result.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
-  result = result.replace(/-->/g, '');
-
-  // Run tag stripping twice to handle nesting like <div<div>>
-  result = result.replace(HTML_TAG_REGEX, '');
-  result = result.replace(HTML_TAG_REGEX, '');
-
-  result = result
-    .replace(HTML_UNCLOSED_TAG_REGEX, '')  // Unclosed tags at end of string
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Images: keep alt text only
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Links: keep text only
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Second pass for nested brackets
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Second pass for nested brackets
-    .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
-    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
-    .replace(/^\[[^\]]*\]:\s+.*$/gm, '');                            // Link/image definitions
-  // Each removal above can join the halves of a comment mark, so the marks go until none is left.
-  while (/<!--|-->/.test(result)) result = result.replace(/<!--|-->/g, '');
+  // A removal can join two halves into a comment mark, a tag or a link, so every removal runs again until none changes the text.
+  let rounds = 0;
+  for (let next = stripMarkup(result); next !== result; next = stripMarkup(result)) {
+    result = next;
+    if (++rounds === MAX_STRIP_ROUNDS) {
+      result = result.replace(/[<>[\]]/g, c => `&#${c.charCodeAt(0)};`);
+      break;
+    }
+  }
 
   return fenceOwnCode(result
     // A zero-width space keeps GitHub from turning a bare URL into a link.
