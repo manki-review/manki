@@ -1164,6 +1164,21 @@ function parseDoubts(value: unknown): Doubt[] {
   });
 }
 
+/** Returns the thread evaluations in the `threadEvaluations` of a judge reply, or undefined when it is no list. */
+function parseThreadEvaluations(value: unknown): ThreadEvaluation[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return (value as Array<Record<string, unknown>>)
+    .filter(t => typeof t.threadId === 'string' && t.threadId.length > 0)
+    .map((t): ThreadEvaluation => {
+      const evaluation = { threadId: String(t.threadId), status: validateThreadStatus(t.status), reason: typeof t.reason === 'string' ? t.reason : '' };
+      if (evaluation.status !== 'partly_addressed') return evaluation;
+      const remaining = typeof t.remaining === 'string' ? safeTruncate(t.remaining.trim(), MAX_REMAINING_CHARS) : '';
+      const grade = SEVERITY_ORDER.find(s => s === t.grade && s !== 'ignore');
+      // A partial fix that names nothing left over gives the reply nothing to say, so the thread counts as not addressed.
+      return remaining ? { ...evaluation, remaining, ...(grade && { grade }) } : { ...evaluation, status: 'not_addressed' };
+    });
+}
+
 export function parseJudgeResponse(responseText: string): JudgeResult {
   const parsed = JSON.parse(extractJSON(responseText));
 
@@ -1214,19 +1229,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
     const summary = typeof parsed.summary === 'string' && parsed.summary
       ? parsed.summary
       : 'Review complete.';
-    const threadEvaluations = Array.isArray(parsed.threadEvaluations)
-      ? (parsed.threadEvaluations as Array<Record<string, unknown>>)
-        .filter(t => typeof t.threadId === 'string' && t.threadId.length > 0)
-        .map((t): ThreadEvaluation => {
-          const evaluation = { threadId: String(t.threadId), status: validateThreadStatus(t.status), reason: typeof t.reason === 'string' ? t.reason : '' };
-          if (evaluation.status !== 'partly_addressed') return evaluation;
-          const remaining = typeof t.remaining === 'string' ? safeTruncate(t.remaining.trim(), MAX_REMAINING_CHARS) : '';
-          const grade = SEVERITY_ORDER.find(s => s === t.grade && s !== 'ignore');
-          // A partial fix that names nothing left over gives the reply nothing to say, so the thread counts as not addressed.
-          return remaining ? { ...evaluation, remaining, ...(grade && { grade }) } : { ...evaluation, status: 'not_addressed' };
-        })
-      : undefined;
-    return { summary, findings, threadEvaluations };
+    return { summary, findings, threadEvaluations: parseThreadEvaluations(parsed.threadEvaluations) };
   }
 
   // Backward compat: plain JSON array
