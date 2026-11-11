@@ -1196,7 +1196,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       };
     });
     const ungraded = judged.filter(f => !f.row).length;
-    if (ungraded > 0) core.warning(`The judge named no known \`row\` for ${ungraded} of ${judged.length} findings, which keep the grade their reviewer gave`);
+    if (ungraded > 0 && ungraded < judged.length) core.warning(`The judge named no known \`row\` for ${ungraded} of ${judged.length} findings, which keep the grade their reviewer gave`);
     return judged;
   };
 
@@ -1374,6 +1374,10 @@ export async function runJudgeAgent(
       const parsed = parseJudgeResponse(reply.content);
       if (parsed.findings.length === 0 && findings.length > 0) {
         throw new Error(`Judge returned no results for ${findings.length} findings`);
+      }
+      // A reply that grades nothing would post every finding at its reviewer's grade.
+      if (parsed.findings.length > 0 && parsed.findings.every(f => !f.row)) {
+        throw new Error(`Judge named no known \`row\` for any of its ${parsed.findings.length} findings`);
       }
       return parsed;
     },

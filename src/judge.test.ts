@@ -1529,6 +1529,8 @@ describe('runJudgeAgent', () => {
       { content: 'not json {broken' },
       { content: JSON.stringify({ summary: 'Nothing.', findings: [] }) },
       { content: valid, truncated: true },
+      // A reply that names no known `row` grades nothing, such as one that still returns a `severity`.
+      { content: valid.replace('"row":"wrong"', '"severity":"blocker"') },
     ];
     for (const reply of unusable) {
       mockSendMessage.mockReset();
