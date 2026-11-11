@@ -15,12 +15,14 @@ import { summarizeCalls } from '../src/providers';
 import type { LLMCall } from '../src/providers';
 import { threadSeverity } from '../src/recap';
 import { extractApprovalRecords } from '../src/review-record';
+import { SEVERITY_ORDER } from '../src/types';
 import type { ApprovalRecord, Refutation, ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
 import { githubToken, historyLines } from './review-history';
 
 const DEFAULT_LAST = 40;
 const MANY_ROUNDS = 5;
-const SEVERITIES = ['blocker', 'warning', 'suggestion', 'nitpick'] as const;
+// A finding graded `ignore` is dropped, so no round posts one.
+const SEVERITIES: readonly string[] = SEVERITY_ORDER.filter(s => s !== 'ignore');
 const LIMIT_MARKS = [70, 80, 90] as const;
 
 type Posted = Parameters<typeof historyLines>[2]['reviews'][number];
@@ -394,7 +396,7 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     '',
     '| severity | total | per round |',
     '| --- | ---: | ---: |',
-    ...[...SEVERITIES, ...Object.keys(stats.severityCounts).filter(s => !(SEVERITIES as readonly string[]).includes(s))]
+    ...[...SEVERITIES, ...Object.keys(stats.severityCounts).filter(s => !SEVERITIES.includes(s))]
       .map(s => `| ${s} | ${stats.severityCounts[s] ?? 0} | ${perRound(stats.severityCounts[s] ?? 0)} |`),
     '',
     `- On code an earlier round reviewed: ${share(stats.onReviewedCode, stats.findings)}`,
