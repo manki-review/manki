@@ -29,7 +29,8 @@ describe('review stats', () => {
           {
             ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: disprovedBlocker, pairRefutation: confirmedBlocker,
           },
-          { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'new' },
+          // The thread this finding opens belongs to its own review, so the finding counts as posted.
+          { ...makeFindingFingerprintEntry({ severity: 'warning', title: 'Minor' }), origin: 'new' },
         ],
       },
       reviewers: {
@@ -66,6 +67,8 @@ describe('review stats', () => {
           { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'earlier' },
           { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed', threadId: 'T1' },
           { ...makeFindingFingerprintEntry({ severity: 'nitpick' }), origin: 'new', threadId: 'T2' },
+          // Neither is one that matches a thread the first review opened, a few lines away.
+          { ...makeFindingFingerprintEntry({ severity: 'warning', title: 'Minor', lineStart: 12 }), origin: 'reviewed' },
         ],
         unposted: [{ ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: disprovedBlocker, pairRefutation: confirmedBlocker }],
       },
@@ -83,7 +86,7 @@ describe('review stats', () => {
       { id: 22, in_reply_to_id: 20, body: '**Withdrawn.** The value is checked above.', user: bot },
       { id: 30, body: '**Blocker**: Open <!-- manki:blocker:Open -->', user: bot },
       { id: 31, in_reply_to_id: 30, body: 'Fixed in def5678.', user: person },
-      { id: 40, body: '**Warning**: Minor <!-- manki:warning:Minor -->', user: bot },
+      { id: 40, body: '**Warning**: Minor <!-- manki:warning:Minor -->', user: bot, pull_request_review_id: 1, path: 'src/a.ts', line: null, original_line: 10 },
       { id: 41, in_reply_to_id: 40, body: 'Withdrawn.', user: bot },
       { id: 50, body: 'A person\'s comment <!-- manki:blocker:Pasted -->', user: person },
     ];
@@ -103,12 +106,13 @@ describe('review stats', () => {
       judge: { summary: '', ...(round === 2 && { interRoundDiffState: 'changed', interRoundDiffTruncated: true }), ...(round >= 4 && { interRoundDiffState: 'empty' }) },
     }));
     // An incomplete round is counted apart: none of its findings, cost or round number reaches another figure.
+    // It follows the approval and is no round after it, and its finding on reviewed code counts nowhere.
     const failed = makeRoundContext(2, {
       meta: { prNumber: 2, commitSha: 'f', round: 2, timestamp: 't', mankiVersion: '7', outcome: 'INCOMPLETE', incomplete: true },
-      findings: { count: 1, severityCounts: {}, entries: [makeFindingFingerprintEntry({ severity: 'blocker' })] },
+      findings: { count: 1, severityCounts: {}, entries: [{ ...makeFindingFingerprintEntry({ severity: 'blocker' }), origin: 'reviewed' }] },
       usage: { estimatedCostUsd: 9 },
     });
-    const two = prRecords('o/r', 2, { reviews: [reader, failed, ...later].map((context, i) => review(100 + i, context)), threadComments: [] });
+    const two = prRecords('o/r', 2, { reviews: [reader, later[0], failed, ...later.slice(1)].map((context, i) => review(100 + i, context)), threadComments: [] });
     expect([two.rounds.length, two.incompleteRounds]).toEqual([5, [failed]]);
 
     const unreviewed = prRecords('o/r', 3, { reviews: [{ id: 200, body: 'A person\'s review.', user: person }], threadComments: [] });

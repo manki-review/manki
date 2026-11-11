@@ -12,10 +12,11 @@
 import * as github from '@actions/github';
 import { readFileSync } from 'fs';
 
+import { findPriorThreadId } from '../src/finding-fingerprint';
 import { replyOutcome } from '../src/interaction';
 import { summarizeCalls } from '../src/providers';
 import type { LLMCall } from '../src/providers';
-import { threadSeverity } from '../src/recap';
+import { parseFindingData, threadMarkerSlug, threadSeverity } from '../src/recap';
 import { extractApprovalRecords } from '../src/review-record';
 import { SEVERITY_ORDER } from '../src/types';
 import type { ApprovalRecord, Refutation, ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
@@ -32,12 +33,20 @@ type Posted = Parameters<typeof historyLines>[2]['reviews'][number];
 
 interface ThreadComment extends Posted {
   in_reply_to_id?: number | null;
+  pull_request_review_id?: number | null;
+  path?: string;
+  line?: number | null;
+  original_line?: number | null;
 }
+
+type PostedThread = Parameters<typeof findPriorThreadId>[1][number];
 
 /** One merged pull request: the records of its completed rounds in posting order, and the comments of its review threads. */
 export interface PrRecords {
   number: number;
   rounds: RoundContext[];
+  /** The id of the review that holds each of `rounds`. */
+  reviewIds: number[];
   /** The records of its incomplete rounds, which no later round read as an earlier round. */
   incompleteRounds: RoundContext[];
   /** The records of Manki's thread replies. */
@@ -59,7 +68,10 @@ interface FinderStats {
   wrapUps: number;
 }
 
-/** The findings the rounds posted at one severity. A finding the round put under an earlier thread counts in none of the fields. */
+/**
+ * The findings the rounds posted at one severity. A finding the round put under an earlier thread, or one that matches a
+ * thread an earlier review opened, counts in none of the fields.
+ */
 interface SeverityStats {
   posted: number;
   /** Findings posted by a round that ended `READY`. */
@@ -180,11 +192,13 @@ export function prRecords(
         return [];
       }
     }));
-  const rounds = lines.filter(line => line.kind === 'round').map(line => line.record as RoundContext);
+  const rounds = lines.filter(line => line.kind === 'round').map(line => ({ record: line.record as RoundContext, reviewId: line.sourceId }));
+  const completed = rounds.filter(round => !round.record.meta?.incomplete);
   return {
     number,
-    rounds: rounds.filter(round => !round.meta?.incomplete),
-    incompleteRounds: rounds.filter(round => round.meta?.incomplete),
+    rounds: completed.map(round => round.record),
+    reviewIds: completed.map(round => round.reviewId),
+    incompleteRounds: rounds.filter(round => round.record.meta?.incomplete).map(round => round.record),
     replies: lines.filter(line => line.kind === 'reply').map(line => line.record as ReplyRecord),
     approvals,
     threadComments: posted.threadComments,
@@ -205,6 +219,19 @@ function blockerOutcomes(comments: ThreadComment[]): ReviewStats['blockerOutcome
     else outcomes.other++;
   }
   return outcomes;
+}
+
+/** Returns the threads Manki opened, each with the id of the review that posted it. */
+function mankiThreads(comments: ThreadComment[]): (PostedThread & { reviewId: number })[] {
+  return comments.flatMap(c => {
+    const markerSlug = c.user?.type === 'Bot' && !c.in_reply_to_id && c.body ? threadMarkerSlug(c.body) : undefined;
+    if (!markerSlug || !c.path || !c.pull_request_review_id) return [];
+    const data = parseFindingData(c.body ?? '');
+    return [{
+      threadId: String(c.id), file: c.path, line: c.line ?? 0, markerSlug, reviewId: c.pull_request_review_id,
+      ...(c.original_line && { originalLine: c.original_line }), ...(data?.file === c.path && data.line && { findingLine: data.line }),
+    }];
+  });
 }
 
 function finder(stats: ReviewStats, model: string): FinderStats {
@@ -240,16 +267,20 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
     if (firstApproval >= 0 && firstApproval < pr.rounds.length - 1) stats.roundsAfterApproval.push(pr.rounds.length - 1 - firstApproval);
     let prCost = 0;
     const answers = new Set<string>();
-    for (const round of pr.rounds) {
+    const threads = mankiThreads(pr.threadComments);
+    for (const [index, round] of pr.rounds.entries()) {
       stats.rounds++;
       const cost = round.usage?.estimatedCostUsd ?? 0;
       prCost += cost;
       stats.costPerRound.push(cost);
       const approved = round.meta.outcome === 'READY';
       if (approved) stats.approvedRounds++;
+      // A review's id grows with the order the reviews were posted in.
+      const earlierThreads = threads.filter(thread => thread.reviewId < pr.reviewIds[index]);
       for (const entry of round.findings?.entries ?? []) {
-        // An entry's `threadId` names the earlier thread the finding restates or adds to. The review opens no thread for it.
-        if (entry.threadId) continue;
+        // An entry's `threadId` names the earlier thread the finding restates or adds to. The review opens no thread for it,
+        // and none for a finding that matches a thread an earlier review opened.
+        if (entry.threadId || findPriorThreadId(entry.fingerprint, earlierThreads)) continue;
         const severity = stats.severities[entry.severity] ??= noFindings();
         severity.posted++;
         if (approved) severity.inApprovedRounds++;
@@ -459,6 +490,8 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     '| --- | ---: | ---: | ---: | ---: | ---: |',
     ...[...SEVERITIES, ...Object.keys(stats.severities).filter(s => !SEVERITIES.includes(s))].map(s => findingsRow(s, stats.severities[s])),
     findingsRow('all', all),
+    '',
+    'The table leaves out a finding the round put under an earlier Manki thread, or that matches one by file, title and line. The script cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved, and another instance of a finding that went into its thread as a reply.',
     '',
     `- Blocker threads: ${blockerThreads}, fixed ${stats.blockerOutcomes.fixed}, withdrawn ${stats.blockerOutcomes.withdrawn}, other ${stats.blockerOutcomes.other}`,
     `- Verdict reader blockers: ${stats.readerBlockers} in ${stats.readerRounds} rounds`,
