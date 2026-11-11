@@ -12,7 +12,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, damageDisproof, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -2747,12 +2747,13 @@ function refutationPart(label: string, lead: string, check: Refutation, linkTo: 
 function refutationParts(finding: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
   const pairLead = pairRefutation && REFUTATION_SUMMARY[outcomeOf(pairRefutation)];
-  // The refuter's own answer that the defect does not exist drops such a warning, so only a disproved premise of the judge's keeps it.
-  const keptByRule = refutation?.outcome === 'disproved' && refutation.defect !== 'disproved' && finding.severity !== 'blocker' && breaksRule(finding);
-  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : keptByRule ? DISPROVED_DAMAGE_TEXT : REFUTATION_PART[outcomeOf(refutation)].text);
+  const keptByRule = !!damageDisproof(finding);
+  // Each check that disproved the damage of a finding its rule keeps says why the finding stays.
+  const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? DISPROVED_DAMAGE_TEXT : plain);
+  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[outcomeOf(refutation)].text));
   return [
     ...(refutation && lead ? [refutationPart(REFUTATION_PART[outcomeOf(refutation)].label, lead, refutation, linkTo, known)] : []),
-    ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`, pairRefutation, linkTo, known)] : []),
+    ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`), pairRefutation, linkTo, known)] : []),
   ];
 }
 
@@ -2772,13 +2773,13 @@ const NOT_CHECKED: FindingChecks = {
 
 /**
  * Returns the part that names the rule a confirmed rule finding breaks, and says when that rule is why the finding
- * blocks: the cell its damage is graded by gives no blocker. The file name and the quote are repository text, so each
- * shows as a code span or not at all.
+ * blocks: a step of its `gradePath` shows the rule made it a blocker. The file name and the quote are repository text,
+ * so each shows as a code span or not at all.
  */
 function rulePart(finding: Finding): FoldPart | undefined {
   if (!breaksRule(finding) || !finding.rule) return undefined;
   const quote = codeLine(finding.rule.quote);
-  const blocks = finding.severity === 'blocker' && isGradeCell(finding.cell) && cellGrade(finding.cell.row, finding.cell.column) !== 'blocker';
+  const blocks = finding.severity === 'blocker' && !!finding.gradePath?.some(step => step.by === 'rule' && step.to === 'blocker');
   const text = `This PR breaks a required rule of ${codeLine(finding.rule.file) || 'an instruction file'}${quote ? `: ${quote}` : '.'}`
     + (blocks ? ' It blocks because this repository sets `review.rules: block`.' : '');
   return { label: 'Repository rule', text, open: `**Repository rule:** ${text}` };

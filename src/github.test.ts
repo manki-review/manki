@@ -134,12 +134,18 @@ describe('formatFindingComment', () => {
     // A confirmed rule finding names the rule first, as code spans, and says when the rule is why it blocks.
     const rule = { file: 'CONTRIBUTING.md', quote: 'Every new endpoint must be\nlisted in `docs/api.md`. @everyone <!-- x --> <b>' };
     const ruleLine = 'This PR breaks a required rule of `CONTRIBUTING.md`: `` Every new endpoint must be listed in `docs/api.md`. @everyone <\u200B!\u200B-\u200B- x -\u200B-\u200B> <b> ``';
-    // The cell its damage is graded by gives a note, so only the rule makes it a blocker.
-    const byRule = { cell: { row: 'improvement' as const, column: 'normal' as const } };
+    // The rule raised it to a blocker, so the rule is why it blocks.
+    const byRule = { cell: { row: 'improvement' as const, column: 'normal' as const }, gradePath: [{ from: 'note' as const, to: 'blocker' as const, by: 'rule' as const }] };
+    const blocksByRule = `${ruleLine} It blocks because this repository sets \`review.rules: block\`.`;
     const ruleBlocker = render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...byRule });
-    expect(ruleBlocker).toContain(`<summary>How this was checked: 1 place read, breaks a repository rule</summary>\n\n**Repository rule**\n${ruleLine} It blocks because this repository sets \`review.rules: block\`.\n\n**Checked in the code**\n`);
+    expect(ruleBlocker).toContain(`<summary>How this was checked: 1 place read, breaks a repository rule</summary>\n\n**Repository rule**\n${blocksByRule}\n\n**Checked in the code**\n`);
+    // So it is for a blocker cell a doubt held at a warning, and for a rule blocker a check gave back after a cap for want of proof.
+    const held = { cell: { row: 'wrong' as const, column: 'normal' as const }, gradeIfConfirmed: 'blocker' as const, gradePath: [{ from: 'warning' as const, to: 'blocker' as const, by: 'rule' as const }] };
+    expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...held })).toContain(blocksByRule);
+    const givenBack = [...byRule.gradePath, { from: 'blocker' as const, to: 'warning' as const, by: 'unproven' as const }, { from: 'warning' as const, to: 'blocker' as const, by: 'refutation' as const }];
+    expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: givenBack })).toContain(blocksByRule);
     // A warning, and a blocker whose own damage blocks, name the rule without the reason for blocking.
-    expect(render({ ...baseFinding, severity: 'warning', rule: { ...rule, verdict: 'confirmed' }, ...byRule })).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
+    expect(render({ ...baseFinding, severity: 'warning', rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] })).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
     expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, cell: { row: 'severe', column: 'normal' } })).toContain(`**Repository rule**\n${ruleLine}\n\n**Checked in the code**`);
     // A quote with a hidden character is not printed, and a rule the judge did not confirm gives no line.
     expect(render({ ...baseFinding, severity: 'warning', rule: { file: 'AGENTS.md', quote: 'Every\u202E change needs a test.', verdict: 'confirmed' } })).toContain('**Repository rule:** This PR breaks a required rule of `AGENTS.md`.\n');
@@ -417,8 +423,18 @@ describe('formatFindingComment', () => {
     expect(render({ ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } }))
       .toContain('**Doubt found**\nManki found a reason the failure may not happen. The finding stays, since the repository rule is broken either way. A comment says it is intended.');
     // A second check can keep one whose first check answered that the defect does not exist, and that answer can be about the rule.
-    expect(render({ ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' }, refutation: { ...disprovedFinding.refutation!, defect: 'disproved' } }))
+    const ruleWarning: Finding = { ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } };
+    expect(render({ ...ruleWarning, refutation: { ...disprovedFinding.refutation!, defect: 'disproved' } }))
       .toContain('Manki found a reason this may not happen, but a disproof alone');
+    // The check that disproved the damage says why the finding stays, also when it is the second one.
+    const unsettled = { outcome: 'unsettled' as const, reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' };
+    const keptBySecond = render({ ...ruleWarning, refutation: unsettled, pairRefutation: disprovedFinding.refutation });
+    expect(keptBySecond).toContain('**Not settled**\nManki tried to disprove this by reading the code and could not decide. The caller is generated.');
+    expect(keptBySecond).toContain('**Second check, on another model**\nManki found a reason the failure may not happen. The finding stays, since the repository rule is broken either way. A comment says it is intended.');
+    // A check that confirmed a premise settles the disproof of the other, so nothing was dropped and no check says the rule kept it.
+    const backed = { outcome: 'unsettled' as const, reason: 'One premise holds.', premises: [{ premise: 'A caller passes it', outcome: 'confirmed' as const, reason: 'r' }], files: ['src/main.ts'], codeDigest: 'abc' };
+    expect(render({ ...ruleWarning, pairRefutation: backed })).not.toContain('The finding stays');
+    expect(render({ ...ruleWarning, pairRefutation: backed })).toContain('**Doubt found**\nManki found a reason this may not happen, but a disproof alone');
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
 
