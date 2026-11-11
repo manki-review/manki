@@ -5240,16 +5240,19 @@ describe('runJudgeAgent cross-round suppression', () => {
 
     // The refuter runs before the ratchet, so a `rare` claim is checked even when the author agreed with the finding
     // earlier: a confirmed one blocks, and the other is hidden after the one check it cost. A check on a doubt whether
-    // the defect exists or on a lead never raises a grade, so a finding the ratchet hides gets no such check.
+    // the defect exists or on a lead never raises a grade, so a finding the ratchet hides gets no such check. Neither
+    // does a doubted warning the round records without posting it: one a memory suppression matches, and one on code
+    // the PR did not change unless the judge is highly confident in it.
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
-    fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
-    const titles = ['Stale cache read', 'Lost update', 'Handle leak', 'Open lead', 'Leaky retry'];
+    for (const file of ['index.ts', 'old.ts']) fs.writeFileSync(path.join(workspace, 'src', file), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
+    const unchanged = ['Old loop', 'Old loop the judge is sure of'];
+    const titles = ['Stale cache read', 'Lost update', 'Handle leak', 'Open lead', 'Leaky retry', 'Remembered pattern', ...unchanged];
     const leak = [{ premise: 'Nothing closes the handle', decides: 'defect' }];
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({
-        id: i + 1, title, reasoning: 'r', confidence: 'medium',
-        ...(['Handle leak', 'Leaky retry'].includes(title) ? { row: 'degraded', doubts: leak } : title === 'Open lead' ? { row: 'degraded' } : { row: 'wrong', column: 'rare' }),
+        id: i + 1, title, reasoning: 'r', confidence: title === unchanged[1] ? 'high' : 'medium', preExisting: unchanged.includes(title),
+        ...(i === 2 || i > 3 ? { row: 'degraded', doubts: leak } : title === 'Open lead' ? { row: 'degraded' } : { row: 'wrong', column: 'rare' }),
       })),
     }) });
     const refuterCalls: string[] = [];
@@ -5269,7 +5272,9 @@ describe('runJudgeAgent cross-round suppression', () => {
         findings: titles.map((title, i) => makeFinding({
           title, file: 'src/index.ts', line: 10 + i, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`] },
           ...(title === 'Open lead' && { lead: { checked: 'read src/index.ts:13', left: 'find the callers' } }),
+          ...(unchanged.includes(title) && { file: 'src/old.ts', evidence: { checks: [], proof: [`src/old.ts:${10 + i}`] }, preExisting: 'The loop predates this PR.' }),
         })),
+        memory: makeMemory({ suppressions: [makeSuppression({ pattern: 'Remembered pattern' })] }),
         priorRounds: [roundContextFromLegacy({
           round: 1, commitSha: 'abc', timestamp: 't',
           findings: titles.slice(0, 4).map((title, i) => ({ fingerprint: { file: 'src/index.ts', lineStart: 10 + i, lineEnd: 10 + i, slug: titleToSlug(title) }, severity: 'warning' as const, title, authorReply: 'agree' as const })),
@@ -5282,12 +5287,16 @@ describe('runJudgeAgent cross-round suppression', () => {
         ['Handle leak', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-by-ratchet']],
         ['Open lead', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-by-ratchet']],
         ['Leaky retry', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-in-pr']],
+        ['Remembered pattern', 'warning', { row: 'degraded', column: 'normal' }, undefined],
+        ['Old loop', 'warning', { row: 'degraded', column: 'normal' }, undefined],
+        ['Old loop the judge is sure of', 'warning', { row: 'degraded', column: 'normal' }, undefined],
       ]);
-      expect(refuterCalls.sort()).toEqual(['Lost update', 'Stale cache read']);
+      expect(refuterCalls.sort()).toEqual(['Lost update', 'Old loop the judge is sure of', 'Stale cache read']);
       expect(checked.findings[2].doubts).toEqual(leak);
       expect([checked.crossRoundSuppressed, checked.inPrSuppressedCount]).toEqual([3, 1]);
       // Asking whether a finding will be hidden logs nothing, so the log names each hidden finding once.
       expect(infoSpy.mock.calls.filter(([line]) => String(line).startsWith('In-PR suppression'))).toHaveLength(1);
+      expect(infoSpy.mock.calls.filter(([line]) => String(line).startsWith('Suppressed finding'))).toHaveLength(0);
     } finally {
       infoSpy.mockRestore();
       fs.rmSync(workspace, { recursive: true, force: true });

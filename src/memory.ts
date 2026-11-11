@@ -262,6 +262,7 @@ const SUPPRESSIBLE_SEVERITIES: ReadonlySet<FindingSeverity> = new Set<FindingSev
 export function applySuppressions(
   findings: Finding[],
   suppressions: Suppression[],
+  quiet = false,
 ): { kept: Finding[]; suppressed: Finding[] } {
   const kept: Finding[] = [];
   const suppressed: Finding[] = [];
@@ -275,7 +276,7 @@ export function applySuppressions(
 
     const match = suppressions.find(s => matchesSuppression(finding, s));
     if (match) {
-      core.info(`Suppressed finding "${finding.title}" — matched suppression "${match.id}": ${match.reason}`);
+      if (!quiet) core.info(`Suppressed finding "${finding.title}" — matched suppression "${match.id}": ${match.reason}`);
       suppressed.push({ ...finding, suppressedBy: match.id });
     } else {
       kept.push(finding);

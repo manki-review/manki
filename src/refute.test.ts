@@ -505,6 +505,9 @@ describe('refuteBlockers', () => {
       { ...doubted('Doubt in a deleted file', 'warning'), file: 'src/deleted.ts' },
       { ...doubted('Doubt with no file', 'warning'), file: '' },
       finding('No proof in a deleted file', { severity: 'warning', file: 'src/deleted.ts', ...noProof }),
+      // Neither does a warning a later step records without posting it.
+      doubted('Left out later with a doubt', 'warning'),
+      finding('Left out later without proof', { severity: 'warning', ...noProof }),
       doubted('Doubted warning 1', 'warning'),
       doubted('Doubted warning 2', 'warning'),
       doubted('Doubted warning 3', 'warning'),
@@ -529,7 +532,7 @@ describe('refuteBlockers', () => {
     ];
     const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, unsettled])));
 
-    const result = await refuteBlockers(client, findings, { workspace, diff });
+    const result = await refuteBlockers(client, findings, { workspace, diff, unpostedLater: f => f.title.startsWith('Left out later') });
 
     expect(client.calls.map(([title]) => title).sort()).toEqual([
       'Doubted blocker', 'Doubted warning 1', 'Doubted warning 2', 'Doubted warning 3', 'Doubted warning 4', 'Doubted warning 5', 'Doubted warning 6', 'Doubted warning 7',
@@ -546,11 +549,12 @@ describe('refuteBlockers', () => {
       'Doubted warning 5': 'unsettled_check', 'Doubted warning 6': 'unsettled_check', 'Doubted warning 7': 'unsettled_check', 'Warning without proof': 'unsettled_check',
       'Doubted warning 8': 'not_checked', 'Second warning without proof': 'not_checked',
       'Doubt in a deleted file': undefined, 'Doubt with no file': undefined, 'No proof in a deleted file': 'no_proof',
+      'Left out later with a doubt': undefined, 'Left out later without proof': 'no_proof',
       'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof',
     });
     // Before any check, as on a round without tools, only the cited lines decide.
     expect(Object.entries(reasons(findings)).filter(([, reason]) => reason)).toEqual([
-      ['No proof in a deleted file', 'no_proof'], ['Warning without proof', 'no_proof'], ['Tool alert without proof', 'no_proof'], ['Security warning without proof', 'no_proof'],
+      ['No proof in a deleted file', 'no_proof'], ['Left out later without proof', 'no_proof'], ['Warning without proof', 'no_proof'], ['Tool alert without proof', 'no_proof'], ['Security warning without proof', 'no_proof'],
       ['Second warning without proof', 'no_proof'],
     ]);
   });

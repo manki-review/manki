@@ -6,6 +6,7 @@ import { resolveInRoot } from './mcp-server';
 import { LLMClient, LLMResponse, QuotaError, RefusalError, SendMessageOptions } from './providers';
 import { extractJSON } from './json';
 import {
+  applySuppressions,
   filterLearningsForFinding,
   filterSuppressionsForFinding,
   sanitizeForPromptEmbed,
@@ -19,7 +20,7 @@ import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, fencePrText, filesChangedByPush, parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff } from './review';
+import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, preExistingCheck, stringifyFindingFingerprint, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
@@ -1483,6 +1484,8 @@ export async function runJudgeAgent(
     workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
     blockingThreads: (openThreads ?? input.evaluatedThreads?.openThreads ?? []).filter(threadBlocks),
     hiddenLater: finding => suppress([finding], true).findings[0].severity === 'ignore',
+    unpostedLater: finding => (staysPreExisting(finding) && !postedWhenPreExisting(finding))
+      || applySuppressions([finding], memory?.suppressions ?? [], true).suppressed.length > 0,
   }) : mapped;
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked);
 
