@@ -62,11 +62,15 @@ export function preExistingCheck(f: Finding, diff: ParsedDiff, excludedPaths: Re
   return touchesChangedCode(f, diff) ? 'touches_diff' : 'pre_existing';
 }
 
+/** Whether a finding on code the PR did not change is worth an author's time: a security finding, a blocker, or a warning the judge is highly confident in. */
+export function postedWhenPreExisting(f: Finding): boolean {
+  return isSecurityFinding(f.tags, f.reviewers) || f.severity === 'blocker' || (f.severity === 'warning' && f.judgeConfidence === 'high');
+}
+
 /**
  * Tags each finding on code this PR did not change as pre-existing. A non-security blocker among them becomes a
  * warning, so no check that reads the severity, in this round or a later one, lets it block.
- * Only the pre-existing findings worth an author's time are `posted`: blockers, warnings the judge is highly confident
- * in, and security findings. The rest are `unposted`, for the round record only.
+ * Only the findings `postedWhenPreExisting` accepts are `posted`. The rest are `unposted`, for the round record only.
  */
 function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: ReadonlySet<string>): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
@@ -79,16 +83,14 @@ function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: R
       continue;
     }
     const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG], preExistingCheck: check };
-    if (isSecurityFinding(f.tags, f.reviewers)) {
-      posted.push(tagged);
-    } else if (f.severity === 'blocker') {
-      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the PR did not change that line`);
-      posted.push({ ...tagged, ...gradeStep(f, 'warning', 'pre_existing', f.preExisting), originalSeverity: f.originalSeverity ?? 'blocker' });
-    } else if (f.severity === 'warning' && f.judgeConfidence === 'high') {
-      posted.push(tagged);
-    } else {
+    if (!postedWhenPreExisting(f)) {
       core.info(`Recording pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it`);
       unposted.push(tagged);
+    } else if (f.severity === 'blocker' && !isSecurityFinding(f.tags, f.reviewers)) {
+      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the PR did not change that line`);
+      posted.push({ ...tagged, ...gradeStep(f, 'warning', 'pre_existing', f.preExisting), originalSeverity: f.originalSeverity ?? 'blocker' });
+    } else {
+      posted.push(tagged);
     }
   }
   return { posted, unposted };
