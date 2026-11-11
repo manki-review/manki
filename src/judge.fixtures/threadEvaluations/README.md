@@ -4,16 +4,18 @@ Each `*.json` file in this directory captures a single "prior open thread + new
 inter-round diff + current code window" scenario along with the
 `expectedStatus` the judge should return.
 
-The corpus is consumed by `judge.test.ts` to assert two things:
+The corpus is consumed by `judge.test.ts` to assert three things:
 
 1. Every fixture is structurally valid (shape matches `ThreadFixture`).
 2. Every fixture has a non-empty `expectedStatus` of `addressed`,
    `partly_addressed`, `not_addressed`, or `uncertain`.
+3. The corpus covers each required scenario class.
 
-A live-replay harness (gated on `RUN_JUDGE_LIVE_FIXTURES=1`) feeds each fixture
-through `runJudgeAgent` against a real LLM and asserts the returned status
-matches `expectedStatus`. This runs locally with an API key; CI does not
-exercise it.
+A live-replay harness (gated on `RUN_JUDGE_LIVE_FIXTURES=1`) builds the judge
+prompt for each fixture, sends it to a real LLM with `client.sendMessage`, and
+asserts the returned status matches `expectedStatus`. It does not go through
+`runJudgeAgent`. This runs locally through the logged-in `claude` CLI, with no
+API key. CI does not exercise it.
 
 ## Coverage
 
