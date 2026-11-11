@@ -352,8 +352,8 @@ describe('refuteBlockers', () => {
       // The finder graded it a warning too, and the judge would grade it a blocker if the code it could not see holds.
       finding('Unseen confirmed', { ...byJudge('warning', 'blocker'), judgeNotes: 'warning. The lock path sits outside the diff.' }),
       finding('Unseen and contradicted', {
-        ...byJudge('note', 'warning', 'warning'), severity: 'note',
-        gradePath: [{ from: 'warning', to: 'note', by: 'judge' }, { from: 'note', to: 'note', by: 'contradiction' }],
+        ...byJudge('warning', 'blocker', 'blocker'), severity: 'note',
+        gradePath: [{ from: 'blocker', to: 'warning', by: 'judge' }, { from: 'warning', to: 'note', by: 'contradiction' }],
       }),
       finding('Unseen disproved', byJudge('note', 'warning', 'warning')),
       finding('Unseen unsettled', byJudge('warning', 'blocker', 'blocker')),
@@ -370,7 +370,7 @@ describe('refuteBlockers', () => {
       // A confirmation gives the grade the judge would give if the code it could not see holds, above the finder's.
       ['Unseen confirmed', 'blocker', 'blocker'],
       // A later step lowered it further, so the confirmation does not lift it.
-      ['Unseen and contradicted', 'note', 'warning'],
+      ['Unseen and contradicted', 'note', 'blocker'],
       ['Unseen disproved', 'ignore', 'warning'],
       ['Unseen unsettled', 'warning', 'blocker'],
       // Reading code never confirms a build failure, so such a claim stays a warning at most.
