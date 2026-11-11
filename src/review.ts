@@ -2080,15 +2080,18 @@ function preExistingOf(f: Record<string, unknown>): Pick<Finding, 'preExisting'>
 // Longer than a single requirement word, so a word the file happens to hold does not pass for a quoted rule.
 const MIN_RULE_QUOTE_CHARS = 10;
 
-/** Returns `text` in lower case, without Markdown emphasis and code marks and with each run of whitespace as one space. */
+/**
+ * Returns `text` in lower case, with each Markdown link or image as its text alone, without emphasis and code marks, and
+ * with each run of whitespace as one space.
+ */
 function plainText(text: string): string {
-  return text.toLowerCase().replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+  return text.toLowerCase().replace(/!?\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])/g, '$1').replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 /**
  * Reads `rule` with its `ruleFile`. The mark is kept only when `instructionFiles` holds that file and the file holds the
- * quote, so a rule the reviewer made up or read in a file the PR edits is no rule finding. Whether the quote states a
- * requirement is not checked.
+ * quote, so a rule the reviewer made up or read in a file the PR edits is no rule finding. The judge says whether the
+ * quote states a requirement.
  */
 function ruleOf(f: Record<string, unknown>, instructionFiles: readonly InstructionFile[]): Pick<Finding, 'rule'> {
   const file = textOf(f.ruleFile);

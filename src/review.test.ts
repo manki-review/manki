@@ -162,13 +162,16 @@ describe('parseFindings', () => {
 
     const instructionFiles = [
       { path: 'services/api/AGENTS.md', text: 'A change to a handler **must** come with an\n  integration test.\n\n---\n\n## notes.md\n\nNames must be short.' },
-      { path: 'CONTRIBUTING.md', text: 'Every model change needs a `migration`.' },
+      { path: 'CONTRIBUTING.md', text: 'Every model change needs a `migration`.\n\nPR titles must use [Conventional Commits](https://www.conventionalcommits.org/) and the ![badge](badge.svg) [style][guide].' },
     ];
     const rules = [
       ['Every model change needs a migration.', 'CONTRIBUTING.md'],
       // Line wraps, emphasis and case do not count, and a heading inside a file starts no new file.
       ['a change to a handler must come with an integration test.', 'services/api/AGENTS.md'],
       ['Names must be short.', 'services/api/AGENTS.md'],
+      // A link or an image counts as its text, whether or not the quote keeps the markup.
+      ['PR titles must use Conventional Commits and the badge style.', 'CONTRIBUTING.md'],
+      ['PR titles must use [Conventional Commits](https://www.conventionalcommits.org/)', 'CONTRIBUTING.md'],
       ['Names must be short.', 'notes.md'],
       // The quote is in another loaded file, in no loaded file, in a file that is not loaded, or too short to be a rule.
       ['Every model change needs a migration.', 'services/api/AGENTS.md'],
@@ -180,9 +183,9 @@ describe('parseFindings', () => {
     const replies = JSON.stringify(rules.map(([rule, ruleFile]) => ({ severity: 'warning', title: 'Rule', file: 'shop/models.py', line: 4, description: 'd', rule, ruleFile })));
     const marked = parseFindings(replies, 'R', instructionFiles);
     expect(marked[0].rule).toEqual({ file: 'CONTRIBUTING.md', quote: 'Every model change needs a migration.' });
-    expect(marked.map(f => f.rule?.file)).toEqual(['CONTRIBUTING.md', 'services/api/AGENTS.md', 'services/api/AGENTS.md', ...Array(6).fill(undefined)]);
+    expect(marked.map(f => f.rule?.file)).toEqual(['CONTRIBUTING.md', 'services/api/AGENTS.md', 'services/api/AGENTS.md', 'CONTRIBUTING.md', 'CONTRIBUTING.md', ...Array(6).fill(undefined)]);
     // Without the instruction files no rule can be checked.
-    expect(parseFindings(replies, 'R').map(f => f.rule)).toEqual(Array(9).fill(undefined));
+    expect(parseFindings(replies, 'R').map(f => f.rule)).toEqual(Array(11).fill(undefined));
   });
 
   it('parses markdown-wrapped JSON', () => {
