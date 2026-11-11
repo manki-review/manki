@@ -11,7 +11,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, ParsedDiff, PremiseCheck, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
+import { columnDecidesBlock, Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -209,6 +209,11 @@ function confirmedGrade(finding: Finding): FindingSeverity | undefined {
   return capped && SEVERITY_ORDER.indexOf(capped) < SEVERITY_ORDER.indexOf(finding.severity) ? capped : undefined;
 }
 
+/** Whether a check that confirms its finding confirmed `REACH_DOUBT`, the claim that keeps a finding in the `rare` column. */
+function reachConfirmed(checks: readonly Refutation[]): boolean {
+  return checks.some(r => r.outcome === 'confirmed' && r.premises?.some(p => p.premise === REACH_DOUBT.premise && p.outcome === 'confirmed'));
+}
+
 /** Returns the outcome `checks` agree on. An unsettled check abstains, and a confirmation against a disproof settles nothing. */
 function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
   const votes = new Set(checks.map(r => r.outcome).filter(o => o !== 'unsettled'));
@@ -229,7 +234,7 @@ function refutationNote(label: string, { outcome, reason, rule, premises = [] }:
  * Grades `finding` by the outcome its refutations agree on. A disproof drops a finding graded below blocker, such as an
  * open lead or a capped blocker, but never lowers a blocker, lead or not, however many refuters disprove it, since PR
  * content they read could steer them all. An unsettled outcome keeps the grade, and a security finding changes only
- * when confirmed. A confirmation moves a finding the judge put in the `rare` column to the `normal` one.
+ * when confirmed. A confirmation that raises a finding out of the `rare` column moves it to the `normal` one.
  */
 function applyRefutation(finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined): Finding {
   const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
@@ -245,13 +250,13 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
   if (outcome === 'confirmed') {
     const proof = [...new Set([...(finding.evidence?.proof ?? []), ...checks.flatMap(r => r.outcome === 'confirmed' ? r.proof ?? [] : [])])];
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
-    const restored = confirmedGrade(finding);
+    const rareClaim = !!finding.cell && columnDecidesBlock(finding.cell.row) && finding.cell.column === 'rare';
+    // The `rare` column is all that keeps such a finding from blocking, so it rises only when `REACH_DOUBT` itself is confirmed.
+    const restored = rareClaim && !reachConfirmed(checks) ? undefined : confirmedGrade(finding);
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
-    // Every premise held, so the state the judge called rare is one normal use or outside input produces.
-    const moved = finding.cell?.column === 'rare' && finding.doubts?.some(d => d.decides === 'grade');
     return {
       ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', decided!.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
-      ...(tags && { tags }), ...(moved && { cell: { ...finding.cell!, column: 'normal' as const, judgeColumn: 'rare' as const } }),
+      ...(tags && { tags }), ...(rareClaim && restored && { cell: { ...finding.cell!, column: 'normal' as const, judgeColumn: 'rare' as const } }),
     };
   }
   return graded;
@@ -283,7 +288,8 @@ function doubtsToCheck(findings: readonly Finding[]): Finding[] {
 /**
  * Returns `finding` with the `gradeIfConfirmed`, doubts and cell of the latest earlier finding it matches, when a doubt capped
  * that earlier grade, no check settled it, and the judge kept the grade without naming a doubt of its own. Such a grade
- * is no anchor, so the refuter checks it.
+ * is no anchor, so the refuter checks it. An earlier finding without a cell leaves `finding` none, since the cell the
+ * judge stated this round does not give the grade a confirmation restores.
  */
 function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[]): Finding {
   if (finding.gradeIfConfirmed || finding.severity === 'ignore' || finding.severity === 'blocker') return finding;
@@ -293,7 +299,8 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
   const settled = [prior.refutation, prior.pairRefutation].some(r => r && (r.outcome !== 'unsettled' || r.premises?.some(p => p.outcome === 'disproved')));
   if (settled) return finding;
   core.info(`"${finding.title}" keeps a grade an earlier round capped with an open doubt, so it is checked again`);
-  return { ...finding, gradeIfConfirmed: prior.gradeIfConfirmed, ...(prior.doubts && { doubts: prior.doubts }), ...(prior.cell && { cell: prior.cell }) };
+  const { cell: _cell, ...kept } = finding;
+  return { ...kept, gradeIfConfirmed: prior.gradeIfConfirmed, ...(prior.doubts && { doubts: prior.doubts }), ...(prior.cell && { cell: prior.cell }) };
 }
 
 export interface RefuteOptions {

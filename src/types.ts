@@ -31,6 +31,11 @@ export function cellGrade(row: CellRow, column: CellColumn): FindingSeverity {
   return CELL_GRADES[row][column];
 }
 
+/** Whether the column decides if a finding on `row` blocks. Only there is the `rare` column a claim the refuter checks. */
+export function columnDecidesBlock(row: CellRow): boolean {
+  return cellGrade(row, 'normal') === 'blocker' && cellGrade(row, 'rare') !== 'blocker';
+}
+
 /** The kind of problem a finding names, as the judge classifies it, with the label a reader sees. */
 export const FINDING_CATEGORIES = {
   correctness: 'Correctness',
@@ -471,6 +476,12 @@ export interface Doubt {
   premise: string;
   decides: 'defect' | 'grade';
 }
+
+/**
+ * The claim the `rare` column makes on a row where `columnDecidesBlock`, as a premise for the refuter. Manki adds it to
+ * every finding in such a cell, and only its confirmation moves the finding to the `normal` column.
+ */
+export const REACH_DOUBT: Doubt = { premise: 'Normal use or outside input can produce the state this failure needs', decides: 'grade' };
 
 /** How a refuter answered one premise the judge doubts. */
 export interface PremiseCheck {
