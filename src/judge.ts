@@ -1479,13 +1479,17 @@ export async function runJudgeAgent(
     const crossRound = applyCrossRoundSuppression(list, priorRounds, crossRoundOptions);
     return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet) };
   };
+  // Each step after the refuter that keeps a warning out of the review whatever a check says belongs here: the
+  // suppressions above, which drop it or make it a note, the memory suppressions and `markPreExisting`.
+  const unpostedLater = (finding: Finding): boolean => suppress([finding], true).findings[0].severity !== finding.severity
+    || applySuppressions([finding], memory?.suppressions ?? [], true).suppressed.length > 0
+    || (staysPreExisting(finding) && !postedWhenPreExisting(finding));
   // The suppressions hide findings by grade, so the refuter settles each grade first.
   const checked = refutation ? await refuteBlockers(refutation.client, mapped, {
     workspace: refutation.workspace, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
     blockingThreads: (openThreads ?? input.evaluatedThreads?.openThreads ?? []).filter(threadBlocks),
     hiddenLater: finding => suppress([finding], true).findings[0].severity === 'ignore',
-    unpostedLater: finding => (staysPreExisting(finding) && !postedWhenPreExisting(finding))
-      || applySuppressions([finding], memory?.suppressions ?? [], true).suppressed.length > 0,
+    unpostedLater,
   }) : mapped;
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked);
 

@@ -2182,6 +2182,82 @@ describe('runReview', () => {
     expect(result.agentNames).not.toContain(reviewer);
   });
 
+  it('gives none of the eight checks to a warning a later step keeps out of the review', async () => {
+    const lines = (word: string) => Array.from({ length: 30 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
+    const { root, diff } = gitWorkspace({ 'src/app.ts': lines('old'), 'src/old.ts': lines('kept') }, { 'src/app.ts': lines('new') });
+    const agreed = (title: string, line: number): LegacyHandoverFindingFixture =>
+      ({ fingerprint: { file: 'src/app.ts', lineStart: line, lineEnd: line, slug: titleToSlug(title) }, severity: 'warning', title, authorReply: 'agree' });
+    const judged = (r: ReviewResult, title: string) => r.allJudgedFindings?.filter(f => f.title === title).map(f => [f.severity, f.tags]);
+    // One row per step that keeps a warning out of the review whatever a check says: the warning, what makes the step
+    // hide it, and how the round ends for it. A new such step gets a row here.
+    const hidden: Array<{ step: string; title: string; finding?: object; verdict?: object; options?: Partial<Parameters<typeof runReview>[1]>; ends: (r: ReviewResult) => unknown; as: unknown }> = [
+      {
+        step: 'cross-round suppression', title: 'Agreed last round',
+        options: { priorRounds: [roundContextFromLegacy({ round: 1, commitSha: 'abc', timestamp: 't', findings: [agreed('Agreed last round', 11), agreed('Reverses the agreed fix', 12)] })] },
+        ends: r => judged(r, 'Agreed last round'), as: [['ignore', ['suppressed-by-ratchet']]],
+      },
+      {
+        step: 'contradiction of an agreed finding', title: 'Reverses the agreed fix', finding: { description: 'Remove the guard again.' },
+        ends: r => r.findings.filter(f => f.title === 'Reverses the agreed fix').map(f => [f.severity, f.tags?.includes('contradicts-prior-round')]), as: [['note', true]],
+      },
+      {
+        // A finder's blocker passes the dedup against the resolved thread, so only the suppression after the judge drops it.
+        step: 'in-PR suppression', title: 'Resolved in its thread', finding: { severity: 'blocker' },
+        options: { previousFindings: [{ title: 'Resolved in its thread', file: 'src/app.ts', line: 13, severity: 'warning', status: 'resolved', threadId: 'T1' }] },
+        ends: r => judged(r, 'Resolved in its thread'), as: [['ignore', ['suppressed-in-pr']]],
+      },
+      {
+        step: 'memory suppression', title: 'Remembered pattern',
+        options: { memory: { learnings: [], suppressions: [{ id: 'sup-1', pattern: 'Remembered pattern', reason: 'Intended.', created_by: 'dev', created_at: '2025-01-01', pr_ref: 'o/r#1' }] } },
+        ends: r => r.memorySuppressed?.map(f => [f.title, f.suppressedBy]), as: [['Remembered pattern', 'sup-1']],
+      },
+      {
+        step: 'unposted pre-existing warning', title: 'Old loop', finding: { file: 'src/old.ts', proof: ['src/old.ts:15'], preExisting: true, preExistingReason: 'The loop predates this PR.' },
+        verdict: { preExisting: true },
+        ends: r => r.unpostedPreExisting?.map(f => [f.title, f.preExistingCheck]), as: [['Old loop', 'pre_existing']],
+      },
+      {
+        // No check can run on a file the refuter cannot read, so the cited lines decide.
+        step: 'unreadable file', title: 'In a file the head lacks', finding: { file: 'src/gone.ts', proof: ['src/gone.ts:16'] },
+        ends: r => r.findings.filter(f => f.title === 'In a file the head lacks').map(f => f.severity), as: ['warning'],
+      },
+    ];
+    // Behind them, eight warnings the review posts once a check confirms them. The eighth is checked only when no row took a check.
+    const postable = Array.from({ length: 8 }, (_, i) => `Postable ${i + 1}`);
+    const titles = [...hidden.map(row => row.title), ...postable];
+    const found = titles.map((title, i) => ({
+      severity: 'warning', title, file: 'src/app.ts', line: 11 + i, description: 'd', evidence: [`src/app.ts:${11 + i} shows it`], proof: [`src/app.ts:${11 + i}`],
+      ...hidden.find(row => row.title === title)?.finding,
+    }));
+    const doubt = [{ premise: 'Nothing closes the handle', decides: 'defect' }];
+    const refuterCalls: string[] = [];
+    const clients = makeClients(JSON.stringify(found));
+    Object.assign(clients.judge, { repoTools: true });
+    jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
+      if (system.startsWith('You are a code review judge')) {
+        // Both finders report every finding, so the judge answers for each copy.
+        return { content: JSON.stringify({ summary: 's', findings: [...titles, ...titles].map((title, i) => ({ id: i + 1, title, row: 'degraded', doubts: doubt, reasoning: 'r', confidence: 'medium', ...hidden.find(row => row.title === title)?.verdict })) }) };
+      }
+      if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
+      refuterCalls.push(titles.find(title => user.includes(`: ${title}\n`))!);
+      return { content: JSON.stringify({ reason: 'It leaks.', premises: [{ outcome: 'confirmed', reason: 'It leaks.', proof: ['src/app.ts:1'] }] }) };
+    });
+    mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+    mockedApplySuppressions.mockImplementation(jest.requireActual<typeof import('./memory')>('./memory').applySuppressions);
+    let result: ReviewResult;
+    try {
+      result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, isFollowUp: true, ...Object.assign({}, ...hidden.map(row => row.options)) });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(result.reviewComplete).toBe(true);
+    expect(refuterCalls.sort()).toEqual(postable);
+    expect(hidden.map(row => [row.step, row.ends(result)])).toEqual(hidden.map(row => [row.step, row.as]));
+    expect(result.findings.filter(f => postable.includes(f.title)).map(f => f.severity)).toEqual(postable.map(() => 'warning'));
+    expect(result.unposted).toBeUndefined();
+  });
+
   it('sweeps the diff for other instances of each kept blocker\'s class with `review.sweep`, and judges what it finds', async () => {
     const original = { severity: 'blocker', title: 'Cache key misses the locale', file: 'src/cache.ts', line: 10, description: 'd', evidence: ['src/cache.ts:10 builds the key'], proof: ['src/cache.ts:10'] };
     const elsewhere = { ...original, title: 'Search key misses the tenant', file: 'src/search.ts', line: 40, evidence: ['src/search.ts:40 builds the key'], proof: ['src/search.ts:40'] };

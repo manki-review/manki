@@ -327,12 +327,12 @@ const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.len
  * Returns the warnings to check with tools because nothing proves them yet, at most `limit`, in the order
  * given, and those `over` that limit: one the judge kept with a doubt whether the defect exists, and one no cited line
  * proves. A finding the judge would grade higher if its doubts hold is always checked, since that check is how a
- * warning becomes a blocker. A tool alert and a finding `hidden` accepts are left out, and a security finding is
- * checked only for a doubt. So is a warning `checkable` rejects, which therefore takes none of the checks.
+ * warning becomes a blocker. A tool alert is left out, and a security finding is checked only for a doubt. A warning
+ * `noCheck` accepts takes none of the checks, since a check could not run on it or could not change what the review shows.
  */
-function doubtsToCheck(findings: readonly Finding[], limit: number, checkable: (finding: Finding) => boolean, hidden: (finding: Finding) => boolean): { checked: Finding[]; over: Finding[] } {
+function doubtsToCheck(findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean): { checked: Finding[]; over: Finding[] } {
   const unproven = findings.filter(f => f.severity === 'warning' && !alwaysChecked(f) && !f.toolSource
-    && (doubtsDefect(f) || (citesNoProof(f) && !isSecurityFinding(f.tags, f.reviewers))) && !hidden(f) && checkable(f));
+    && (doubtsDefect(f) || (citesNoProof(f) && !isSecurityFinding(f.tags, f.reviewers))) && !noCheck(f));
   const over = unproven.slice(limit);
   for (const skipped of over) {
     core.info(`Not checking "${skipped.title}", since ${MAX_DOUBT_CHECKS} other unproven warnings took this round's checks`);
@@ -401,9 +401,9 @@ export interface RefuteOptions {
   pair?: LLMClient;
   /** The open threads that block. No disproof lowers a blocker that restates one. */
   blockingThreads?: readonly OpenThread[];
-  /** Whether a later step hides `finding` at its grade. Such a finding is checked only when a confirmation can raise it, and takes none of the `MAX_DOUBT_CHECKS` checks. */
+  /** Whether a later step drops `finding` at its grade. Such a finding is checked only when a confirmation can raise it. */
   hiddenLater?: (finding: Finding) => boolean;
-  /** Whether a later step records `finding` without posting it while no check ran on it. Such a warning takes none of the `MAX_DOUBT_CHECKS` checks. */
+  /** Whether a later step keeps the warning `finding` out of the review whatever a check says. Such a warning takes none of the `MAX_DOUBT_CHECKS` checks. */
   unpostedLater?: (finding: Finding) => boolean;
   /** How many of the round's `MAX_DOUBT_CHECKS` checks are left. Each one this call makes lowers it, so the judge calls of one round share them. */
   doubtBudget?: { left: number };
@@ -443,7 +443,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   };
   const reopened = findings.map(f => reopenCappedGrade(f, priorRounds));
   const checkable = (finding: Finding): boolean => !!codeDigest(workspace, [finding.file]);
-  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, checkable, finding => !!hiddenLater?.(finding) || !!unpostedLater?.(finding));
+  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, finding => !!unpostedLater?.(finding) || !checkable(finding));
   if (doubtBudget) doubtBudget.left -= picked.checked.length;
   const doubtChecks = new Set(picked.checked);
   const overLimit = new Set(picked.over);
