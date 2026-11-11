@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { BenchCase, BenchReport, buildReport, candidateFindings, formatBenchSummary, formatGate, formatUnmatchedBlockers, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
 import type { Finding, FindingSeverity, RoundContext, RoundOutcome } from './types';
@@ -160,15 +161,19 @@ describe('parseCase', () => {
     expect(() => parseCase(`${CASE_YAML}must_not_repeat: [P1]\n`, 'bad.yml')).toThrow('`must_resolve`, `must_keep_open` and `must_not_repeat` need a `prior_round`');
   });
 
-  it('reads a clean case without key items', () => {
+  it('reads a clean case without key items, and a case with its own config', () => {
     const clean = parseCase(CASE_YAML.slice(0, CASE_YAML.indexOf('must_catch:')), 'clean.yml');
     expect([clean.mustCatch, clean.niceToHave]).toEqual([[], []]);
+    expect(parseCase(`${CASE_YAML}config:\n  review_passes: 2\n  models: { reviewer: claude-opus-5-5 }\n`, 'own.yml').config).toEqual({ review_passes: 2, models: { reviewer: 'claude-opus-5-5' } });
+    expect(parseCase(`${CASE_YAML}config: {}\n`, 'own.yml').config).toEqual({});
   });
 
   it.each([
     ['repo: owner/demo', 'repo: demo', '`repo` must be `owner/name`'],
     [`base: ${SHA_A}`, 'base: abc', '`base` must be a full commit SHA'],
     ['key_version: 2', 'key_version: two', '`key_version` must be a number'],
+    ['key_version: 2', 'key_version: 2\nconfig: [review_passes]', '`config` must be a mapping of config keys'],
+    ['key_version: 2', 'key_version: 2\nconfig:', '`config` must be a mapping of config keys'],
     ['title: "fix: bound the reader"', 'title: ""', '`title` must be a non-empty string'],
     ['severity: warning', 'severity: major', 'must_catch[1].severity must be one of blocker, warning, suggestion, nitpick'],
     ['locations: [unlock]', 'locations: unlock', 'must_catch[1].locations must be a list of strings'],
@@ -179,11 +184,14 @@ describe('parseCase', () => {
     expect(() => parseCase(CASE_YAML.replace(from, to), 'bad.yml')).toThrow(message);
   });
 
-  it('parses every tuning and hold-out case, with unique ids and no linked reference to a repository outside the forks', () => {
+  it('parses every tuning and hold-out case, with unique ids, a config of its own that loads and no linked reference to a repository outside the forks', async () => {
     const files = [CASES_DIR, HOLDOUT_DIR].flatMap(dir => readdirSync(dir).filter(f => f.endsWith('.yml')).map(f => join(dir, f)));
     const cases = loadCases({ tuning: CASES_DIR, holdout: HOLDOUT_DIR });
     expect(cases).toHaveLength(files.length);
     expect(cases.filter(c => c.set === 'holdout' && c.repo !== 'xdustinface/rust-dashcore').length).toBeGreaterThanOrEqual(8);
+    const unloadable: string[] = [];
+    for (const c of cases.filter(own => own.config)) await loadConfigWithOverrides('', '', {}, c.config).catch(() => unloadable.push(c.id));
+    expect(unloadable).toEqual([]);
     for (const file of files) {
       const text = readFileSync(file, 'utf-8');
       expect(text).not.toMatch(/dashpay\//i);
@@ -409,9 +417,10 @@ describe('runBench and buildReport', () => {
   let checkout: string;
   let benchCase: BenchCase;
 
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf-8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }).trim();
+
   beforeAll(() => {
     checkout = mkdtempSync(join(tmpdir(), 'manki-bench-'));
-    const git = (...args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf-8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }).trim();
     git('init', '-q');
     git('commit', '-q', '--allow-empty', '-m', 'base');
     const base = git('rev-parse', 'HEAD');
@@ -456,6 +465,10 @@ describe('runBench and buildReport', () => {
       repoRoot: checkout, base: benchCase.base, head: benchCase.head, title: 'fix: bound the reader', body: 'Reads lengths with a bound.\n', configOverrides: overrides,
     })]);
     expect(variant).toEqual({ name: 'opus', overrides });
+    const ownReview = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
+    await runBench([{ ...benchCase, config: { review_passes: 2 } }], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: ownReview, variants: [{ name: 'opus', overrides }] });
+    expect(ownReview.mock.calls[0][0].config).toMatchObject({ review_passes: 2, models: { reviewer: 'claude-opus-5-5' } });
+    expect(ownReview.mock.calls[0][0]).not.toHaveProperty('configOverrides');
     expect(onCase).toHaveBeenCalledWith([{ variant, results }]);
     expect(results[0].runs[1]).toMatchObject({ outcome: 'FAILED', complete: false, error: 'provider down', mustCatchRecall: null, verdictCorrect: null });
 
@@ -499,6 +512,7 @@ describe('runBench and buildReport', () => {
       '| Resolved wrong | n/a | n/a |',
       '| Repeats | n/a | n/a |',
       '| Incomplete runs | 2 of 5 | 2 of 5 |',
+      '| Config invalid | none | none |',
       '| Cost per run | $1.25 | $1.25 |',
       '| Wall time per run | 0m 00s | 0m 00s |',
       '| demo-1 K1 (must blocker) | 2/3, 1 partial | 2/3, 1 partial |',
@@ -566,6 +580,36 @@ describe('runBench and buildReport', () => {
     await expect(runBench([{ ...benchCase, priorRound: { head: 'd'.repeat(40), findings: [] } }], { ...options, checkouts: new Map([['owner/demo', checkout]]) }))
       .rejects.toThrow(`Commit ${'d'.repeat(40)} of case demo-1 is not in`);
     expect(review).not.toHaveBeenCalled();
+  });
+
+  it('reviews no case whose config does not load, records each of its runs as config invalid, and still reviews the other cases', async () => {
+    writeFileSync(join(checkout, '.manki.yml'), 'review:\n  classes:\n    wallet: { rank: 86, critical: true, match: { paths_any: ["wallet/**"] } }\n');
+    git('add', '.manki.yml');
+    git('commit', '-q', '-m', 'old config format');
+    const held = { ...benchCase, id: 'held', base: git('rev-parse', 'HEAD') };
+    git('commit', '-q', '--allow-empty', '-m', 'head on the old config');
+    held.head = git('rev-parse', 'HEAD');
+    const own = { ...benchCase, id: 'own', config: { review_passes: 9 } };
+    const translated = { ...held, id: 'translated', config: { review: { critical_paths: ['wallet/**'] } } };
+    const review = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
+    const variants = [{ name: 'base', overrides: {} }, { name: 'passes', overrides: { review_passes: 2 } }];
+
+    const results = await runBench([held, own, translated, benchCase], { runs: 2, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher: async () => ({ verdict: 'NONE', findings: [], reason: 'none' }), review, variants });
+
+    for (const { results: [heldRuns, ownRuns, translatedRuns, plainRuns] } of results) {
+      expect(heldRuns.runs).toEqual([1, 2].map(() => expect.objectContaining({
+        outcome: 'CONFIG_INVALID', complete: false, costUsd: 0,
+        error: 'The config at the base does not load: Invalid config in .manki.yml: `review.classes.wallet.critical` is not a class setting. List the critical paths in `review.critical_paths`',
+      })));
+      expect(ownRuns.runs.map(run => [run.outcome, run.error])).toEqual([1, 2].map(() => ['CONFIG_INVALID', expect.stringContaining('The config of the case does not load: Invalid config in the config given:')]));
+      expect([...translatedRuns.runs, ...plainRuns.runs].map(run => run.outcome)).toEqual(['READY', 'READY', 'READY', 'READY']);
+    }
+    expect(review).toHaveBeenCalledTimes(8);
+    expect(review.mock.calls.map(([input]) => input.config?.review?.critical_paths)).toEqual([['wallet/**'], ['wallet/**'], undefined, undefined, ['wallet/**'], ['wallet/**'], undefined, undefined]);
+    const summary = formatBenchSummary(buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, results));
+    expect(summary).toContain('  run 1: CONFIG_INVALID: The config at the base does not load: Invalid config in .manki.yml:');
+    expect(summary).toContain('| Config invalid | held, own | held, own |\n');
+    expect(summary).toContain('| Cost per run | $1.25 | $1.25 |\n');
   });
 });
 

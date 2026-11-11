@@ -24,6 +24,8 @@ const CASE_SETS = ['tuning', 'holdout'] as const;
 /** Tuning cases are what changes are developed against. Hold-out cases are run only before a release. */
 export type CaseSet = typeof CASE_SETS[number];
 const DEFAULT_MATCHER_MODEL = 'claude-sonnet-5-5';
+/** The outcome of a run that got no review because the config of its case does not load. */
+const CONFIG_INVALID = 'CONFIG_INVALID';
 const MAX_MATCHER_DESCRIPTION = 2000;
 
 /** One defect a review of the case should report. */
@@ -51,6 +53,8 @@ export interface BenchCase {
   head: string;
   title: string;
   body: string;
+  /** The config the case is reviewed with, in place of the `.manki.yml` its repository holds at `base`. */
+  config?: ConfigOverrides;
   keyVersion: number;
   /** Defects a review must report. A case without any is clean, and a review of it should approve. */
   mustCatch: KeyItem[];
@@ -184,6 +188,8 @@ export function parseCase(text: string, file: string, set: CaseSet = 'tuning'): 
   });
   if (typeof doc.key_version !== 'number') throw caseError(file, '`key_version` must be a number');
   if (doc.body !== undefined && typeof doc.body !== 'string') throw caseError(file, '`body` must be a string');
+  const { config } = doc;
+  if (config !== undefined && (!config || typeof config !== 'object' || Array.isArray(config))) throw caseError(file, '`config` must be a mapping of config keys');
   const mustCatch = parseItems(doc.must_catch, 'must_catch', file);
   const niceToHave = parseItems(doc.nice_to_have, 'nice_to_have', file);
   const ids = [...mustCatch, ...niceToHave].map(item => item.id);
@@ -195,7 +201,8 @@ export function parseCase(text: string, file: string, set: CaseSet = 'tuning'): 
   const mustKeepOpen = checkFollowUp(priorRound, { mustResolve, mustKeepOpen: parseItems(doc.must_keep_open, 'must_keep_open', file), mustNotRepeat }, ids, file);
   return {
     id: requireString(doc, 'id', file), set, repo, source: requireString(doc, 'source', file), base, head,
-    title: requireString(doc, 'title', file), body: typeof doc.body === 'string' ? doc.body : '', keyVersion: doc.key_version, mustCatch, niceToHave,
+    title: requireString(doc, 'title', file), body: typeof doc.body === 'string' ? doc.body : '', ...(config !== undefined && { config: config as ConfigOverrides }),
+    keyVersion: doc.key_version, mustCatch, niceToHave,
     ...(priorRound && { priorRound }), mustResolve, mustKeepOpen, mustNotRepeat,
   };
 }
@@ -555,7 +562,7 @@ interface VariantSummary {
   wallTimePerRunMs: number | null;
 }
 
-/** One setup the bench scores: a name and the config it sets on top of each case's base `.manki.yml`. */
+/** One setup the bench scores: a name and the config it sets on top of each case's own config, or its base `.manki.yml`. */
 interface Variant {
   name: string;
   overrides: ConfigOverrides;
@@ -630,7 +637,7 @@ function summarize(cases: CaseReport[]): VariantSummary {
     entry.total += item.runs;
   }
   const verdicts = runs.map(r => r.verdictCorrect).filter((v): v is boolean => v !== null);
-  const reviewed = runs.filter(r => r.outcome !== 'FAILED');
+  const reviewed = runs.filter(r => r.outcome !== 'FAILED' && r.outcome !== CONFIG_INVALID);
   const followUps = runs.flatMap(r => (r.followUp ? [r.followUp] : []));
   const sum = (value: (score: FollowUpScore) => number) => (followUps.length > 0 ? followUps.reduce((total, f) => total + value(f), 0) : null);
   return {
@@ -907,6 +914,7 @@ export function formatComparison(variants: VariantReport[]): string {
     figure('Resolved wrong', s => count(s.resolvedWrong)),
     figure('Repeats', s => count(s.repeats)),
     figure('Incomplete runs', s => `${s.incompleteRuns} of ${s.runs}`),
+    row('Config invalid', columns.map(column => column.cases.filter(c => c.runs.some(run => run.outcome === CONFIG_INVALID)).map(c => c.id).join(', ') || 'none')),
     figure('Cost per run', s => (s.costPerRunUsd === null ? 'n/a' : `$${s.costPerRunUsd.toFixed(2)}`)),
     figure('Wall time per run', s => minutes(s.wallTimePerRunMs)),
     ...items.map(({ caseId, item }) => row(`${caseId} ${item.id} (${TIER_LABELS[item.tier]} ${item.severity})`, columns.map((column) => {
@@ -963,12 +971,12 @@ interface BenchOptions {
 }
 
 /**
- * A run whose review or matching failed. It counts in no recall, verdict or catch rate. When only the matching failed,
- * it keeps the review's findings and cost.
+ * A run whose review or matching failed, or that got no review for the reason `outcome` names. It counts in no recall,
+ * verdict or catch rate. When only the matching failed, it keeps the review's findings and cost.
  */
-function failedRun(error: unknown, review?: LocalReview): RunScore {
+function failedRun(error: unknown, review?: LocalReview, outcome = 'FAILED'): RunScore {
   return {
-    outcome: 'FAILED', findings: [], finders: [], costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0,
+    outcome, findings: [], finders: [], costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0,
     ...(review && reviewFacts(review)),
     complete: false, error: error instanceof Error ? error.message : String(error), matches: [],
     mustCatchRecall: null, weightedRecall: null, verdictCorrect: null, falseBlockers: 0, extraFindings: 0, duplicates: 0,
@@ -978,7 +986,9 @@ function failedRun(error: unknown, review?: LocalReview): RunScore {
 /**
  * Reviews each case `runs` times per variant and scores every review. First checks that every case's commits are in
  * its checkout and that every variant's config loads on every case, so nothing is spent on a setup that cannot run.
- * A run that fails is recorded with its error, and the next one starts. Only an abort through `signal` stops the bench.
+ * A case whose own config, or the one its repository holds, does not load without any override gets no review, and
+ * each of its runs is recorded as `CONFIG_INVALID`. A run that fails is recorded with its error, and the next one
+ * starts. Only an abort through `signal` stops the bench.
  */
 export async function runBench(cases: BenchCase[], options: BenchOptions): Promise<VariantResults[]> {
   const { checkouts, review = reviewLocal, variants = [{ name: 'base', overrides: {} }] } = options;
@@ -991,11 +1001,24 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
       });
     }
   }
-  for (const { name, overrides } of variants) {
-    if (Object.keys(overrides).length === 0) continue;
-    for (const c of cases) {
-      await loadConfigWithOverrides(checkouts.get(c.repo)!, c.base, overrides).catch((error: Error) => {
-        throw new Error(`Variant ${name} does not load on case ${c.id}: ${error.message}`);
+  const load = async (c: BenchCase, overrides: ConfigOverrides) => {
+    const checkout = checkouts.get(c.repo)!;
+    // The review reads the repository's config at the merge base. Without a merge base the review fails on its own.
+    const base = (await runGit(checkout, ['merge-base', c.base, c.head]).catch(() => c.base)).trim();
+    return loadConfigWithOverrides(checkout, base, overrides, c.config);
+  };
+  /** Why the config of a case does not load without any override, by case id. */
+  const invalid = new Map<string, Error>();
+  for (const c of cases) {
+    const error = await load(c, {}).then(() => undefined, (reason: Error) => reason);
+    if (error) {
+      invalid.set(c.id, new Error(`${c.config ? 'The config of the case' : 'The config at the base'} does not load: ${error.message}`));
+      continue;
+    }
+    for (const { name, overrides } of variants) {
+      if (Object.keys(overrides).length === 0) continue;
+      await load(c, overrides).catch((reason: Error) => {
+        throw new Error(`Variant ${name} does not load on case ${c.id}: ${reason.message}`);
       });
     }
   }
@@ -1004,14 +1027,21 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
     const results: CaseResults = [];
     for (const benchCase of cases) {
       const runs: RunScore[] = [];
+      const configError = invalid.get(benchCase.id);
       for (let i = 0; i < options.runs; i++) {
+        if (configError) {
+          runs.push(failedRun(configError, undefined, CONFIG_INVALID));
+          continue;
+        }
         let local: LocalReview | undefined;
         try {
           local = await review({
             repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
             ...(benchCase.priorRound && { earlier: benchCase.priorRound }), providerInputs: options.providerInputs, signal: options.signal,
-            // A variant without overrides reviews like a pull request round, falling back to the defaults on a broken base config.
-            ...(Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
+            // The case's own config replaces the repository's. Without one, the overrides are set on the repository's.
+            ...(benchCase.config
+              ? { config: await load(benchCase, variant.overrides) }
+              : Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
           });
           const reviewed = local;
           // The matcher is tried twice before a finished review is given up, and the cache keeps what it already decided.
@@ -1057,8 +1087,8 @@ Options:
                                  tuning cases. Only before a release.
   --case <id>                    Run only this case. Repeatable.
   --runs <n>                     Reviews per case (default ${DEFAULT_RUNS}).
-  --variant <name>[=<file>]      Score a setup: the YAML file's config is set on top of each case's base
-                                 .manki.yml, and nested mappings merge. No file runs the base config.
+  --variant <name>[=<file>]      Score a setup: the YAML file's config is set on top of each case's own config,
+                                 or its base .manki.yml, and nested mappings merge. No file runs that config.
                                  Repeat to compare setups side by side (default: one variant, base).
   --set <key.path>=<value>       Set one config value, a YAML value, on top of every variant. Repeatable.
   --matcher-model <model>        Model that matches findings to key items (default ${DEFAULT_MATCHER_MODEL}).

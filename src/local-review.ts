@@ -52,7 +52,7 @@ function loadOverlaidConfig(content: string | null, configPath: string, override
     throw new Error(`Invalid YAML in ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (parsed !== null && parsed !== undefined && !isMapping(parsed)) throw new Error(`Invalid config in ${configPath}: the top level must be a mapping of keys to values`);
-  const config = loadConfig(stringifyYaml(overlayConfig(parsed ?? {}, overrides)), `${configPath} with the overrides`);
+  const config = loadConfig(stringifyYaml(overlayConfig(parsed ?? {}, overrides)), Object.keys(overrides).length > 0 ? `${configPath} with the overrides` : configPath);
   return { config, source: config.review ? 'base' : 'builtin' };
 }
 
@@ -171,9 +171,13 @@ async function loadLocalConfig(
   return loaded;
 }
 
-/** Loads the config at `base` in `repoRoot` with `overrides` set on top, as a review with them does. Throws when it does not load. */
-export async function loadConfigWithOverrides(repoRoot: string, base: string, overrides: ConfigOverrides, configPath = DEFAULT_CONFIG_PATH): Promise<ReviewConfig> {
-  return loadOverlaidConfig(await gitRepoFiles(repoRoot, base).read(configPath), configPath, overrides).config;
+/**
+ * Loads the config at `base` in `repoRoot` with `overrides` set on top, as a review with them does. `own`, if given, is
+ * read in place of the file the repository holds. Throws when the config does not load.
+ */
+export async function loadConfigWithOverrides(repoRoot: string, base: string, overrides: ConfigOverrides, own?: ConfigOverrides, configPath = DEFAULT_CONFIG_PATH): Promise<ReviewConfig> {
+  const content = own ? stringifyYaml(own) : await gitRepoFiles(repoRoot, base).read(configPath);
+  return loadOverlaidConfig(content, own ? 'the config given' : configPath, overrides).config;
 }
 
 /** Applies `patch` to the checkout at `dir`. Throws when it does not apply. */
