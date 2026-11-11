@@ -506,6 +506,11 @@ async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: rev
   };
 }
 
+/** Runs `score` again when it fails. One unusable matcher reply does not give up a finished review, and the matcher's cache keeps what it already decided. */
+function twice<T>(score: () => Promise<T>): Promise<T> {
+  return score().catch(() => score());
+}
+
 /** Matches the findings of one review to the case's key and scores it. */
 export async function scoreRun(benchCase: BenchCase, review: LocalReview, matcher: Matcher): Promise<RunScore> {
   const { findings, outcome, reviewComplete: complete } = review.result;
@@ -798,7 +803,7 @@ function unscorable(benchCase: BenchCase, runs: RunScore[]): string | undefined 
 /**
  * Scores the stored runs of `report` again for each case of `cases` whose key version is not the report's. The matcher
  * reads the findings each run stored, so a changed key costs matcher calls and no review. Only complete runs are scored
- * again. A case that `unscorable` names, or that is not among `cases`, stays as scored and is listed in `left`, and so
+ * again, and the matcher is tried twice on each, as in a bench run. A case that `unscorable` names, or that is not among `cases`, stays as scored and is listed in `left`, and so
  * stays out of a gate against a report with the new key version.
  */
 export async function rescoreReport(report: BenchReport, cases: BenchCase[], matcher: Matcher): Promise<Rescored> {
@@ -824,7 +829,7 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
       const runs: RunScore[] = [];
       for (const run of c.runs) {
         const review = { findings: run.findings as MatchedFinding[], outcome: run.outcome, complete: true, ...(run.followUp && { resolved: run.followUp.resolved }) };
-        const score = () => scoreKey(benchCase, review, matcher).catch((error: Error) => {
+        const score = () => twice(() => scoreKey(benchCase, review, matcher)).catch((error: Error) => {
           throw new Error(`The matcher failed on case ${c.id}${caseDetail(benchCase, error)}`);
         });
         runs.push(run.complete ? { ...run, ...await score() } : run);
@@ -1248,8 +1253,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
             ...(benchCase.config ? { config } : Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
           });
           const reviewed = local;
-          // The matcher is tried twice before a finished review is given up, and the cache keeps what it already decided.
-          runs.push(await scoreRun(benchCase, reviewed, options.matcher).catch(() => scoreRun(benchCase, reviewed, options.matcher)));
+          runs.push(await twice(() => scoreRun(benchCase, reviewed, options.matcher)));
         } catch (error) {
           options.signal?.throwIfAborted();
           runs.push(failedRun(error, local));

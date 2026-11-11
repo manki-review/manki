@@ -969,6 +969,15 @@ describe('mergeReports and gateReports', () => {
     expect(changed.runs[1]).toBe(stored.variants[0].cases[1].runs[1]);
     expect(scored).toMatchObject({ startedAt: stored.startedAt, matcherModel: 'model-a', variants: [{ name: 'base', summary: { unexpectedWarnings: 1 }, sets: { holdout: { runs: 3 } } }] });
     expect(await rescoreReport(scored, [first, rekeyed], matcher)).toMatchObject({ rescored: [], left: [] });
+    // One unusable matcher reply does not end the scoring: each run is tried twice.
+    let failures = 1;
+    const flaky: Matcher = async (...args) => {
+      if (failures-- > 0) throw new Error('unusable reply');
+      return matcher(...args);
+    };
+    expect((await rescoreReport(stored, [first, rekeyed], flaky)).report).toEqual(scored);
+    failures = 2;
+    await expect(rescoreReport(stored, [first, rekeyed], flaky)).rejects.toThrow(/^The matcher failed on case demo-2$/);
 
     const complete = (r: BenchReport): BenchReport => ({ ...r, variants: r.variants.map(v => ({ ...v, cases: v.cases.map(c => ({ ...c, runs: c.runs.filter(one => one.complete) })) })) });
     const candidate = report([[first, [await run(first, 'blocker')]], [rekeyed, [await run(rekeyed, 'blocker')]]]);
