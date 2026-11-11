@@ -2058,12 +2058,12 @@ function formatBlockerCounts({ fresh, earlier, followUp }: BlockerCounts): strin
 }
 
 /**
- * Returns the sentence a round says about itself: the judge's summary, or else the first two sentences of the description
- * of the top finding posted as a thread, a blocker before a warning. The judge writes its summary before later steps take findings out of the round, so the summary
- * is left out when the judge kept a finding and `result.findings` holds none of the findings it kept. Later steps also
- * make blockers the summary never saw and lower blockers it names. So it is left out unless the findings the judge graded
- * a blocker in that call are exactly the findings that block. An incomplete round's summary says why the round did not
- * finish, so it is returned as it is.
+ * Returns the sentence a round says about itself: the judge's summary, or else the first two sentences of the top
+ * blocker's description, or nothing when no finding blocks. The judge writes its summary before later steps take
+ * findings out of the round, so the summary is left out when the judge kept a finding and `result.findings` holds none
+ * of the findings it kept. Later steps also make blockers the summary never saw and lower blockers it names. So it is
+ * left out unless the findings the judge graded a blocker in that call are exactly the findings that block. An
+ * incomplete round's summary says why the round did not finish, so it is returned as it is.
  */
 export function roundSentence(result: ReviewResult): string {
   if (!result.reviewComplete) return result.summary;
@@ -2083,8 +2083,8 @@ export function roundSentence(result: ReviewResult): string {
   // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
   const stands = result.verdictReason !== 'verdict_reader' && (kept.length === 0 || kept.some(f => listed.has(findingKey(f)))) && sameBlockers;
   if (stands && result.summary.trim()) return result.summary;
-  const blocking = result.findings.filter(isBlockingFinding);
-  const top = blocking.find(f => f.severity === 'blocker') ?? blocking[0];
+  // Only a blocker stands in for the summary, so a round nothing blocks then has no sentence.
+  const top = result.findings.find(f => f.severity === 'blocker');
   return top ? top.description.trim().split(/(?<=[.!?])\s+/).slice(0, 2).join(' ') : '';
 }
 

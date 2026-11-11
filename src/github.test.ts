@@ -1690,7 +1690,7 @@ describe('postReview body lead', () => {
       verdictReason: 'required_present',
       verdictReport: undefined,
       summary: 'A list request with a partial last page drops its items',
-      findings: [{ ...blocker, severity: 'warning', title: 'Retry drops the error', cell: { row: 'degraded', column: 'normal' } }, blocker],
+      findings: [{ ...blocker, title: 'Retry drops the error' }, blocker],
     });
     expect(event).toBe('REQUEST_CHANGES');
     // What blocks follows the verdict right away, since each finding has its thread under the review.
@@ -1842,7 +1842,7 @@ describe('postReview body lead', () => {
     // One such blocker is enough, next to one the judge graded.
     expect(roundSentence(blocked([lowered, confirmed]))).toBe('The first item is read unchecked.');
     // A finding the judge graded below blocker changes nothing, and neither does a blocker cell held down by a doubt nobody confirmed.
-    const below = (more: Partial<Finding>): Finding => ({ ...blocker, title: 'Offset is off by one', line: 30, description: 'The offset skips a row.', severity: 'warning', ...more });
+    const below = (more: Partial<Finding>): Finding => ({ ...blocker, title: 'Offset is off by one', line: 30, description: 'The offset skips a row.', severity: 'warning', tags: ['follow-up'], ...more });
     expect(roundSentence(blocked([lowered, kept, below({ gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge']) })]))).toBe('Nothing blocks merge.');
     // The judge graded a blocker and a later step lowered it for good, so the summary may still call it a blocker:
     // a cap that stayed, a blocker in code the PR left alone, or one two refuters lowered, which keeps the judge's cell as `judgeCell`.
@@ -1851,9 +1851,9 @@ describe('postReview body lead', () => {
       below({ cell: undefined, judgeCell: blocker.cell, ...path(['warning', 'blocker', 'judge'], ['blocker', 'warning', 'refutation']) }),
     ];
     expect(loweredLater.map(f => roundSentence(blocked([lowered, f])))).toEqual(loweredLater.map(() => 'The first item is read unchecked.'));
-    // With nothing left that blocks, the sentence is the top warning's, or none when a disproof dropped the finding after the cap.
+    // With nothing left that blocks, the round has no sentence, whether the finding is still listed as a warning or a disproof dropped it after the cap.
     const approved = (findings: Finding[], all = findings): ReviewResult => round({ summary: 'The offset blocks merge.', allJudgedFindings: all, findings });
-    expect(loweredLater.map(f => roundSentence(approved([kept, f])))).toEqual(loweredLater.map(() => 'The offset skips a row.'));
+    expect(loweredLater.map(f => roundSummary(approved([kept, f])))).toEqual(loweredLater.map(() => ''));
     const cappedThenDisproved = below({ severity: 'ignore', ...path(['blocker', 'warning', 'unproven'], ['warning', 'ignore', 'refutation']) });
     expect([roundSentence(approved([kept], [kept, cappedThenDisproved])), roundSentence(approved([kept]))]).toEqual(['', 'The offset blocks merge.']);
     // A lowered blocker the round records without listing it counts too.
