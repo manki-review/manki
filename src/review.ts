@@ -102,15 +102,15 @@ function wouldBlockIfTrue(f: Finding): boolean {
 /**
  * Splits off the warnings nothing proves, by `unprovenReason`, as `unposted` with that reason, for the round record
  * only. A warning is left out only when it is certain that no rule keeps it, so these stay `posted`: a security finding,
- * a tool alert, a finding linked to one an earlier round already shows, and a finding that `wouldBlock`, which is
- * marked `unconfirmed`.
+ * a tool alert, a finding `foldIntoEarlierFindings` or the judge put under one an earlier round still shows, and a
+ * finding that `wouldBlock`, which is marked `unconfirmed`.
  */
 function hideUnprovenWarnings(findings: Finding[], wouldBlock = wouldBlockIfTrue): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
   const unposted: Finding[] = [];
   for (const f of findings) {
     const unpostedReason = f.severity === 'warning' && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) ? unprovenReason(f) : undefined;
-    if (!unpostedReason || f.threadId || f.answeredIn || f.raisedIn !== undefined || f.sameAs || f.variantOf) {
+    if (!unpostedReason || f.threadId || f.answeredIn || f.raisedIn !== undefined) {
       posted.push(f);
     } else if (wouldBlock(f)) {
       posted.push({ ...f, unconfirmed: true });

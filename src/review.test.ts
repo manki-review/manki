@@ -2509,6 +2509,8 @@ describe('runReview', () => {
         // No check could decide, as when the refuter's call fails or it cannot read the file, so the cited lines do.
         'Doubted and no check could run': { ...proof, doubts },
         'No cited lines and no check could run': {},
+        // A link the judge named counts only once an earlier finding the review still shows carries it.
+        'Names an earlier finding no round still shows': { sameAs: 'src/gone.ts:1:1:gone' },
         // Only a warning is left out.
         'A doubted note': { severity: 'note', doubts },
         'A blocker': { severity: 'blocker', ...proof },
@@ -2522,6 +2524,7 @@ describe('runReview', () => {
         ['The check settled nothing', 'warning', 'unsettled_check'],
         ['Doubted and past the limit of checks', 'warning', 'not_checked'],
         ['No cited lines and no check could run', 'warning', 'no_proof'],
+        ['Names an earlier finding no round still shows', 'warning', 'no_proof'],
       ]);
       // The judged list still holds each one, so the progress comment can name it.
       expect(result.allJudgedFindings?.map(f => f.title)).toEqual(expect.arrayContaining(['The check settled nothing', 'No cited lines and no check could run']));
