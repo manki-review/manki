@@ -11,7 +11,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { columnDecidesBlock, Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
+import { columnDecidesBlock, Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, isGradeCell, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -293,8 +293,8 @@ function doubtsToCheck(findings: readonly Finding[]): Finding[] {
 /**
  * Returns `finding` with the `gradeIfConfirmed`, doubts and cell of the latest earlier finding it matches, when a doubt capped
  * that earlier grade, no check settled it, and the judge kept the grade without naming a doubt of its own. Such a grade
- * is no anchor, so the refuter checks it. An earlier finding without a cell leaves `finding` none, since the cell the
- * judge stated this round does not give the grade a confirmation restores.
+ * is no anchor, so the refuter checks it. An earlier finding without a cell the table knows leaves `finding` none, since
+ * the cell the judge stated this round does not give the grade a confirmation restores.
  */
 function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[]): Finding {
   if (finding.gradeIfConfirmed || finding.severity === 'ignore' || finding.severity === 'blocker') return finding;
@@ -305,7 +305,7 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
   if (settled) return finding;
   core.info(`"${finding.title}" keeps a grade an earlier round capped with an open doubt, so it is checked again`);
   const { cell: _cell, ...kept } = finding;
-  return { ...kept, gradeIfConfirmed: prior.gradeIfConfirmed, ...(prior.doubts && { doubts: prior.doubts }), ...(prior.cell && { cell: prior.cell }) };
+  return { ...kept, gradeIfConfirmed: prior.gradeIfConfirmed, ...(prior.doubts && { doubts: prior.doubts }), ...(isGradeCell(prior.cell) && { cell: prior.cell }) };
 }
 
 export interface RefuteOptions {

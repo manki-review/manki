@@ -31,6 +31,11 @@ export function cellGrade(row: CellRow, column: CellColumn): FindingSeverity {
   return CELL_GRADES[row][column];
 }
 
+/** Whether `cell` names a row and a column of the table. A stored record can hold a cell another Manki version wrote. */
+export function isGradeCell(cell: GradeCell | undefined): cell is GradeCell {
+  return !!cell && Object.hasOwn(CELL_GRADES, cell.row) && (cell.column === 'normal' || cell.column === 'rare');
+}
+
 /** Whether the column decides if a finding on `row` blocks. Only there is the `rare` column a claim the refuter checks. */
 export function columnDecidesBlock(row: CellRow): boolean {
   return cellGrade(row, 'normal') === 'blocker' && cellGrade(row, 'rare') !== 'blocker';

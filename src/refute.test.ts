@@ -530,6 +530,11 @@ describe('refuteBlockers', () => {
       workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'rare' } }), diff,
     });
     expect([unclaimed.severity, unclaimed.cell, unclaimed.refutation?.outcome]).toEqual(['warning', { row: 'wrong', column: 'rare' }, 'confirmed']);
+    // A stored cell the table does not know, as another Manki version could write, counts as none.
+    const [unknown] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
+      workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'serious', column: 'rare' } }), diff,
+    });
+    expect([unknown.severity, unknown.cell]).toEqual(['blocker', undefined]);
     client.calls.splice(1);
 
     // A grade with no doubt behind it, one a check settled, or one the judge changed is no capped grade.
