@@ -617,8 +617,8 @@ function formatRelatedUses(kind: RelatedRepoKind, names: string[], found: Map<st
       const nth = seen.get(key) ?? 0;
       seen.set(key, nth + 1);
       const { word, declaration } = searchedAs(hit);
-      // A line the diff's own name finds comes before one only a translated name finds, which is a guess.
-      return { hit, rank: [Number(VENDORED_PATH.test(hit.file)), Number(TEST_PATH.test(hit.file)), Number(!!hit.as), Number(!declaration?.test(hit.text)), -namesIn(key), proseRank(word, hit), nth] };
+      // Every line the diff's own name finds comes before one only a translated name finds, which is a guess.
+      return { hit, rank: [Number(!!hit.as), Number(VENDORED_PATH.test(hit.file)), Number(TEST_PATH.test(hit.file)), Number(!declaration?.test(hit.text)), -namesIn(key), proseRank(word, hit), nth] };
     }).sort((a, b) => compareRanks(a.rank, b.rank) || a.hit.repo.localeCompare(b.hit.repo) || a.hit.file.localeCompare(b.hit.file) || a.hit.line - b.hit.line);
     const shown = ranked.slice(0, Math.min(MAX_USES_PER_SYMBOL, MAX_REFERENCE_LINES - total)).map(({ hit }) => hit);
     total += shown.length;
