@@ -2188,7 +2188,7 @@ describe('runJudgeAgent', () => {
 
       // The kept warning drops the damage the check disproved, so the next round's judge reads a warning with no cell to restate and no open doubt.
       const kept = (await run()).find(f => f.title === 'Damage disproved')!;
-      expect([kept.cell, kept.judgeCell, kept.doubts, kept.gradeIfConfirmed, kept.refutation?.outcome]).toEqual([undefined, { row: 'wrong', column: 'normal' }, undefined, undefined, 'disproved']);
+      expect([kept.cell, kept.judgeCell, kept.doubts, kept.gradeIfConfirmed, kept.refutation?.outcome]).toEqual([undefined, undefined, undefined, undefined, 'disproved']);
       const { cell, judgeCell, doubts, gradeIfConfirmed, refutation, rule: keptRule } = kept;
       const entry = { ...makeFindingFingerprintEntry({ title: kept.title, severity: kept.severity }), cell, judgeCell, doubts, gradeIfConfirmed, refutation, rule: keptRule };
       const next = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [entry] } })]);

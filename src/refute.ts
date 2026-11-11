@@ -307,11 +307,11 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
   if (outcome !== 'confirmed' && finding.tags?.includes(SECURITY_TAG)) return graded;
   const dropped = finding.severity === 'blocker' ? undefined : disproof(graded);
   if (dropped && breaksRule(finding) && finding.doubts?.length && checks.every(check => check.defect !== 'disproved')) {
-    // A doubt of the judge is about the damage, and a rule the judge confirmed is broken either way. A refuter's own answer
-    // that the defect does not exist can be about the rule, so it still drops the finding. The cell and the grade it
-    // promised state that damage, so they go.
-    const { cell, gradeIfConfirmed: _gradeIfConfirmed, doubts: _doubts, ...kept } = graded;
-    return { ...kept, ...(cell && { judgeCell: cell }) };
+    // The judge's doubts are about the damage, and a rule it confirmed is broken either way. The refuter's own answer that
+    // the defect does not exist can be about the rule, so that still drops the finding. The cell and the grade it promised
+    // state the damage, so they go, and the cell is no `judgeCell`, since a doubt kept the judge from grading a blocker.
+    const { cell: _cell, gradeIfConfirmed: _gradeIfConfirmed, doubts: _doubts, ...kept } = graded;
+    return kept;
   }
   if (dropped) return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', dropped.reason) };
   if (outcome === 'disproved') {
