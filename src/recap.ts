@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, titleToSlug } from './github';
 import { ISSUE_BOX_ANCHOR } from './issue-box';
-import { findPriorThreadId } from './finding-fingerprint';
+import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
@@ -367,16 +367,6 @@ interface PreviousFinding extends FindingMetadata {
  * other than the PR author with write access. `resolved-thread` suppressions are
  * unaffected because resolving a thread already requires repository write access.
  */
-/**
- * Returns the line a thread's finding sits on now. GitHub moves `line` with the code, so it is the answer unless the
- * thread was posted on a fallback line, in which case the gap to the finding's own line is added. An outdated thread
- * keeps `line` 0.
- */
-function currentFindingLine(t: { line: number; originalLine?: number; findingLine?: number }): number {
-  if (!t.line || !t.findingLine || !t.originalLine || t.findingLine === t.originalLine) return t.line;
-  return t.line + (t.findingLine - t.originalLine);
-}
-
 function collectInPrSuppressions(
   previousFindings: PreviousFinding[],
   prAuthorLogin?: string,
