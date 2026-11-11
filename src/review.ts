@@ -20,7 +20,7 @@ import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { disproof, refuteBlockers } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
-import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listRelatedUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
@@ -1781,6 +1781,7 @@ Your role: ${reviewer.name}`;
     prompt += '.';
   }
 
+  const repositoryRules = buildRepositoryRules(config, 'finder');
   prompt += `
 
 Review the provided pull request diff carefully through that focus. Return your findings as a JSON array.
@@ -1851,7 +1852,7 @@ Set \`severity\` to the grade of the cell that fits the finding: the row is what
 ${SEVERITY_TABLE}
 
 ${OUTSIDE_INPUT_RULE}
-
+${repositoryRules && `\n${repositoryRules}\n`}
 ## Rules
 
 - Report defects the PR causes: in lines it adds, changes or removes, or in unchanged code whose behavior the change breaks. Also report real defects you find in unchanged code the change does not affect, marked \`"preExisting": true\` with the reason.

@@ -672,7 +672,7 @@ The flagged thread \`line\` is GitHub-anchored from when the thread was created 
 ` : ''}
 Return one entry per finding, in the same order as the input. Set \`id\` to the N of the finding's "Finding N" heading. State the cell before the reasoning.`;
 
-  const repositoryRules = buildRepositoryRules(config);
+  const repositoryRules = buildRepositoryRules(config, 'judge');
   if (repositoryRules) {
     prompt += `\n\n${repositoryRules}`;
   }

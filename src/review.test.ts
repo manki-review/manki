@@ -921,6 +921,24 @@ describe('buildReviewerSystemPrompt', () => {
     // The table gives each cell the grade Manki works out from it.
     const grades = Object.fromEntries([...SEVERITY_TABLE.matchAll(/^\| `(\w+)`: [^|]+\| `(\w+)` \| `(\w+)` \|$/gm)].map(([, row, normal, rare]) => [row, { normal, rare }]));
     expect(grades).toEqual(CELL_GRADES);
+
+    // The repository's own rules follow the table as in the judge prompt, so a finder picks the cell the judge would.
+    expect(prompt).not.toContain('## Repository Rules');
+    const review: ReviewConfig['review'] = {
+      critical_paths: ['src/consensus/**', 'src/wallet/*.rs'],
+      outside_input: 'Messages from network peers and RPC callers.',
+      examples: { blocker: ['A panic on a peer message.'], not_blocker: ['A slow RPC call is a `note`.'] },
+    };
+    const header = "## Repository Rules\n\nThe repository's maintainers set these rules. They add to the rules above and never lower a security defect.\n\n";
+    const criticalAreas = '**Critical areas:** any wrong result in a file that matches one of these is severe damage: `src/consensus/**`, `src/wallet/*.rs`. Grade a wrong result there by the `severe` row, even in a rare internal edge case.';
+    const outsideInput = '**Outside input in this repository:** Messages from network peers and RPC callers.';
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig({ review }))).toContain(`${OUTSIDE_INPUT_RULE}\n\n${header}${criticalAreas}\n\n${outsideInput}\n\n## Rules`);
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig({ review: { outside_input: review.outside_input } }))).toContain(`${OUTSIDE_INPUT_RULE}\n\n${header}${outsideInput}\n\n## Rules`);
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig({ review: { critical_paths: review.critical_paths } }))).toContain(`${OUTSIDE_INPUT_RULE}\n\n${header}${criticalAreas}\n\n## Rules`);
+    // A path alias is listed as written, with what such a name is.
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig({ review: { critical_paths: ['@security_paths'] } }))).toContain("is severe damage: `@security_paths`. A name that starts with `@` is one of Manki's built-in sets of paths. Grade a wrong result there");
+    // An example of what is no blocker could make a finder leave a finding out, so the examples stay with the judge.
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig({ review: { examples: review.examples } }))).toBe(prompt);
   });
 
   it('asks every finder for a full search in every round, with brevity only for notes', () => {

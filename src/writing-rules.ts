@@ -45,15 +45,22 @@ A rare internal edge case needs a state that only the code's own logic produces,
 /** What counts as outside input in the severity table. The finders and the judge both get it. */
 export const OUTSIDE_INPUT_RULE = "**Outside input** is anything the code does not produce itself: requests and messages from users or network peers, files and data read from disk or other services, and, for code that handles pull requests, anything a PR author or commenter can write. Values the code's own logic produces and checks are internal. A failure that outside input can trigger is never hypothetical, however unlikely it looks. For a library, outside input is also anything a caller of its public API can pass, such as arguments, readers and byte streams. No caller inside the repository is needed.";
 
-/** Returns the judge rules the base branch's `review` block adds, or an empty string when it adds none. */
-export function buildRepositoryRules(config: ReviewConfig): string {
-  const { outside_input: outsideInput, examples, critical_paths: criticalPaths } = config.review ?? {};
+/**
+ * Returns the grading rules the base branch's `review` block adds for the judge or a finder, or an empty string when
+ * it adds none. A finder sees no **Critical area** mark on a finding, so it gets the paths themselves. It gets no
+ * examples, since an example of what is no blocker could make it leave a finding out.
+ */
+export function buildRepositoryRules(config: ReviewConfig, reader: 'judge' | 'finder'): string {
+  const { outside_input: outsideInput, critical_paths: criticalPaths } = config.review ?? {};
+  const examples = reader === 'judge' ? config.review?.examples : undefined;
   const hasCriticalAreas = !!criticalPaths?.length;
   if (!hasCriticalAreas && !outsideInput && !examples) return '';
   const exampleList = (label: string, list: string[] | undefined) => (list ? ['', label, ...list.map(e => `- ${e.trim()}`)] : []);
   const parts = ['## Repository Rules', '', 'The repository\'s maintainers set these rules. They add to the rules above and never lower a security defect.'];
   if (hasCriticalAreas) {
-    parts.push('', '**Critical areas:** a finding marked **Critical area** sits in a path where any wrong result is severe damage. State the `severe` row for a wrong result there, even in a rare internal edge case. The other tests still apply.');
+    parts.push('', reader === 'judge'
+      ? '**Critical areas:** a finding marked **Critical area** sits in a path where any wrong result is severe damage. State the `severe` row for a wrong result there, even in a rare internal edge case. The other tests still apply.'
+      : `**Critical areas:** any wrong result in a file that matches one of these is severe damage: ${criticalPaths.map(path => `\`${path}\``).join(', ')}.${criticalPaths.some(path => path.startsWith('@')) ? ' A name that starts with `@` is one of Manki\'s built-in sets of paths.' : ''} Grade a wrong result there by the \`severe\` row, even in a rare internal edge case.`);
   }
   if (outsideInput) {
     parts.push('', `**Outside input in this repository:** ${outsideInput.trim()}`);
