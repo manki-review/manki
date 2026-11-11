@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
-import { canLeaveOut, findingKey, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, findingKey, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
@@ -94,11 +94,6 @@ function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: R
     }
   }
   return { posted, unposted };
-}
-
-/** Whether the judge or a finder graded `f` a blocker at any point, or the judge would if the premises it doubts hold. */
-function wouldBlockIfTrue(f: Finding): boolean {
-  return f.gradeIfConfirmed === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
 }
 
 /**

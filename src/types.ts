@@ -576,6 +576,11 @@ export function finderGrade(finding: Pick<Finding, 'reviewerSeverity' | 'gradePa
   return finding.reviewerSeverity ?? finding.gradePath?.[0]?.from ?? finding.severity;
 }
 
+/** Whether the judge or a finder graded `f` a blocker at any point, or the judge would if the premises it doubts hold. */
+export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'reviewerSeverity' | 'gradePath'>): boolean {
+  return f.gradeIfConfirmed === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
+}
+
 /** Whether `applyRefutation` put the blocker the judge alone made of `finding` back at its finders' grade. Nothing else lowers a blocker by a refutation. */
 export function isDisprovedRaise(finding: Pick<Finding, 'gradePath'>): boolean {
   return !!finding.gradePath?.some(step => step.by === 'refutation' && step.from === 'blocker');
