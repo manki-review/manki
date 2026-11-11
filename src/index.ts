@@ -15,7 +15,7 @@ import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, 
 import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
-import { addCodeContext, changeDigest, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
+import { addCodeContext, changeDigest, hideSeenNotes, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { findingKey, isEmptyInterRoundDiff } from './judge';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
@@ -33,7 +33,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, Finding, FindingSeverity, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, isNote, roundContextToFlatAliases, SECURITY_TAG, SEVERITY_ORDER, threadBlocks } from './types';
+import { ConfigSource, DashboardData, Finding, FindingSeverity, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -1540,32 +1540,6 @@ async function reopenThreads(octokit: Octokit, threads: OpenThread[]): Promise<v
       core.warning(`Failed to reopen thread ${threadId} after the review did not post: ${error}`);
     }
   }
-}
-
-/**
- * Moves the notes the review leaves out from `result.findings` to `result.unpostedNotes`: a note on code an earlier
- * round reviewed, and a note that restates a finding an earlier round listed. A security finding, a tool alert and a
- * note that goes into an earlier thread are never left out.
- */
-function hideSeenNotes(result: ReviewResult): void {
-  const reasonFor = (f: Finding): UnpostedReason | undefined => {
-    if (!isNote(f.severity) || f.threadId || f.answeredIn || f.toolSource || f.tags?.includes(SECURITY_TAG)) return undefined;
-    return f.origin === 'reviewed' ? 'reviewed_code' : f.origin === 'earlier' ? 'listed_earlier' : undefined;
-  };
-  const shown: Finding[] = [];
-  const hidden: Finding[] = [];
-  for (const f of result.findings) {
-    const unpostedReason = reasonFor(f);
-    if (!unpostedReason) {
-      shown.push(f);
-      continue;
-    }
-    core.info(`Recording ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it: ${unpostedReason}`);
-    hidden.push({ ...f, unpostedReason });
-  }
-  if (hidden.length === 0) return;
-  result.findings = shown;
-  result.unpostedNotes = hidden;
 }
 
 /** Turns an approval into a request for changes when a blocker thread it counted as fixed could not be resolved. */

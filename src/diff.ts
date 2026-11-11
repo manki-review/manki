@@ -1,9 +1,10 @@
 import { createHash } from 'crypto';
 
+import * as core from '@actions/core';
 import parseDiff from 'parse-diff';
 import { minimatch } from 'minimatch';
 
-import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, RoundDiffExcludedFile } from './types';
+import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, ReviewResult, RoundDiffExcludedFile, SECURITY_TAG, UnpostedReason, isNote } from './types';
 
 /**
  * Parse a unified diff string into structured data.
@@ -321,6 +322,32 @@ export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: 
       || (finding.line > 0 ? lines.some(line => Math.abs(line - finding.line) <= NEW_CODE_WINDOW) : lines.length > 0);
     finding.origin = finding.raisedIn ? 'earlier' : isNew ? 'new' : 'reviewed';
   }
+}
+
+/**
+ * Moves the notes the review leaves out from `result.findings` to `result.unpostedNotes`: a note on code an earlier
+ * round reviewed, and a note that restates a finding an earlier round listed. A security finding, a tool alert and a
+ * note that goes into an earlier thread are never left out.
+ */
+export function hideSeenNotes(result: ReviewResult): void {
+  const reasonFor = (f: Finding): UnpostedReason | undefined => {
+    if (!isNote(f.severity) || f.threadId || f.answeredIn || f.toolSource || f.tags?.includes(SECURITY_TAG)) return undefined;
+    return f.origin === 'reviewed' ? 'reviewed_code' : f.origin === 'earlier' ? 'listed_earlier' : undefined;
+  };
+  const shown: Finding[] = [];
+  const hidden: Finding[] = [];
+  for (const f of result.findings) {
+    const unpostedReason = reasonFor(f);
+    if (!unpostedReason) {
+      shown.push(f);
+      continue;
+    }
+    core.info(`Recording ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it: ${unpostedReason}`);
+    hidden.push({ ...f, unpostedReason });
+  }
+  if (hidden.length === 0) return;
+  result.findings = shown;
+  result.unpostedNotes = hidden;
 }
 
 /** Sets each finding's `codeContext` to the hunk lines around its line, when that line is in the diff. */

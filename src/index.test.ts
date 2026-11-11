@@ -133,6 +133,7 @@ jest.mock('./diff', () => {
     addCodeContext: jest.requireActual('./diff').addCodeContext,
     addedLines: jest.requireActual('./diff').addedLines,
     tagFindingOrigins: jest.requireActual('./diff').tagFindingOrigins,
+    hideSeenNotes: jest.requireActual('./diff').hideSeenNotes,
     compareChanges: jest.requireActual('./diff').compareChanges,
     changeDigest: jest.requireActual('./diff').changeDigest,
     rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,

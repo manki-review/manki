@@ -110,7 +110,11 @@ describe('reviewLocal', () => {
     lines[19] = 'const v20 = 0;';
     const fixed = commit(repo, 'Fix b', { 'src/b.ts': `${lines.join('\n')}\n` });
     git(repo, 'checkout', '-q', 'main');
-    const findings = [{ ...finding }, { ...finding, file: 'src/b.ts', line: 2 }, { ...finding, file: 'src/b.ts', line: 20 }];
+    const note = { ...finding, severity: 'suggestion' as const, file: 'src/b.ts' };
+    const findings = [
+      { ...finding }, { ...finding, file: 'src/b.ts', line: 2 }, { ...finding, file: 'src/b.ts', line: 20 },
+      { ...note, title: 'Rename', line: 3 }, { ...note, title: 'Name the constant', file: 'src/a.ts', line: 1, raisedIn: 1 }, { ...note, title: 'New name', line: 19 },
+    ];
     jest.mocked(runReview).mockResolvedValue({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: 'Still wrong', findings, highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
     const earlier = {
       head: reviewed,
@@ -141,7 +145,10 @@ describe('reviewLocal', () => {
     ]);
     // The earlier round's cell and doubts come back with its conditional grade, and an earlier finding without them has none.
     expect(record.findings.entries.map(e => [e.cell, e.doubts]).slice(-2)).toEqual([[undefined, undefined], [{ row: 'wrong', column: 'rare' }, [REACH_DOUBT]]]);
-    expect(review.result.findings.map(f => [f.file, f.line, f.origin])).toEqual([['src/a.ts', 2, 'reviewed'], ['src/b.ts', 2, 'reviewed'], ['src/b.ts', 20, 'new']]);
+    // A note on code the earlier round reviewed, or one it listed, is left out as in a pull request round.
+    expect(review.result.findings.map(f => [f.file, f.line, f.origin])).toEqual([['src/a.ts', 2, 'reviewed'], ['src/b.ts', 2, 'reviewed'], ['src/b.ts', 20, 'new'], ['src/b.ts', 19, 'new']]);
+    expect(review.context.findings.unposted?.map(e => [e.title, e.unpostedReason])).toEqual([['Rename', 'reviewed_code'], ['Name the constant', 'listed_earlier']]);
+    expect(review.context.findings.count).toBe(4);
     expect(review.context.meta).toMatchObject({ round: 2, commitSha: fixed });
   });
 
