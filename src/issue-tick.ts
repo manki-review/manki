@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { BotIdentity, buildLineLink, findingLocation, linked, sanitizeMarkdown } from './github';
 import { FILED_ISSUE_OPENER, filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
-import { findingFile, isGuarded, parseFindingData } from './recap';
+import { findingFile, findingLineOf, isGuarded, parseFindingData } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
 import { ownMarker, withMarkers } from './utils';
 
@@ -96,7 +96,7 @@ export async function handleIssueBoxTick(
     text: comment.body,
     file: findingFile(comment.body, comment.path),
     // A finding outside the diff is posted on another line, so the finding data names its own line.
-    line: finding?.line ?? comment.original_line ?? 0,
+    line: finding?.line ?? findingLineOf(comment.body, comment.original_line),
     commit: comment.original_commit_id,
     postedAt: comment.html_url,
     postedIn: 'review thread',

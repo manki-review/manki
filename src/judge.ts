@@ -723,7 +723,7 @@ Return one entry per finding, in the same order as the input. Set \`id\` to the 
 
 /** Returns where an open thread's finding is, for the judge prompt. A thread on another file than its finding's can name no file. */
 function threadPlace(thread: OpenThread): string {
-  return thread.file ? `${sanitize(thread.file)}:${thread.line}` : 'not tied to a file';
+  return thread.file ? `${sanitize(thread.file)}${thread.line > 0 ? `:${thread.line}` : ''}` : 'not tied to a file';
 }
 
 /** Returns how to grade a finding about a related repo that reviewers read with their tools. */

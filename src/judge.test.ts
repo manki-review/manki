@@ -780,6 +780,8 @@ describe('buildJudgeUserMessage', () => {
     const nowhere = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [{ ...openThreads[0], file: '', line: 1 }], rounds, '');
     expect(nowhere).toContain('"Null check missing" not tied to a file (earlier blocker, stays open: only a person can clear a thread that is not tied to a file)\n');
     expect(nowhere).toContain(`### ${openThreads[0].threadId} — not tied to a file\n`);
+    // A thread on a whole file names its file and no line.
+    expect(buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [{ ...openThreads[0], line: 0 }], rounds, '')).toContain('"Null check missing" at src/foo.ts (earlier blocker');
 
     const pushed = 'diff --git a/src/foo.ts b/src/foo.ts\n--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -10,1 +10,1 @@\n-a\n+b\n';
     expect(followUp(pushed)).toMatch(/"Null check missing" at src\/foo\.ts:10 \(earlier blocker\)\n/);

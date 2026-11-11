@@ -59,6 +59,15 @@ export function findingFile(body: string, path: string | null | undefined): stri
   return data?.detached ? data.file ?? '' : path ?? '';
 }
 
+/**
+ * Returns the line of the finding in a Manki thread's first comment `body`, posted on `line`. A `detached` thread sits
+ * on a line of another file, so only its finding data names a line, and none for a finding that is not tied to one.
+ */
+export function findingLineOf(body: string, line: number | null | undefined): number {
+  const data = parseFindingData(body);
+  return data?.detached ? data.line ?? 0 : line ?? 0;
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(v => typeof v === 'string');
 }
@@ -1030,7 +1039,7 @@ async function fetchReviewThreads(
         ? parseFindingFromComment(firstComment.body)
         : {};
 
-      const line = thread.line ?? 0;
+      const line = data?.detached ? data.line ?? 0 : thread.line ?? 0;
       const lineStart = thread.startLine ?? line;
       const recordedOverride = isBotThread ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
@@ -1053,7 +1062,7 @@ async function fetchReviewThreads(
         file,
         line,
         lineStart,
-        ...(thread.originalLine && { originalLine: thread.originalLine }),
+        ...(thread.originalLine && !data?.detached && { originalLine: thread.originalLine }),
         ...(firstComment?.originalCommit?.oid && { originalCommit: firstComment.originalCommit.oid }),
         ...(findingLine && { findingLine }),
         ...(markerSlug && { markerSlug }),

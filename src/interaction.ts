@@ -8,7 +8,7 @@ import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, MAN
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, findingFile } from './recap';
+import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, findingFile, findingLineOf } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
 import { AuthorClearRole, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
@@ -367,7 +367,7 @@ export async function handleReviewCommentReply(
       root.comment.body,
       comment.body,
       filePath,
-      root.comment.line,
+      findingLineOf(root.comment.body ?? '', root.comment.line),
       root.id !== inReplyTo && isBotComment(parentComment.body ?? '') ? parentComment.body : undefined,
     );
 
