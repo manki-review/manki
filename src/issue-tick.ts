@@ -2,10 +2,10 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { BotIdentity, buildLineLink, findingLocation, sanitizeMarkdown } from './github';
-import { filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
+import { FILED_ISSUE_OPENER, filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
 import { findingFile, isGuarded, parseFindingData } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
-import { withMarkers } from './utils';
+import { ownMarker, withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -42,10 +42,9 @@ interface IssueSource {
 
 /** Returns the open issue Manki already filed for the finding `id`, if any. A closed one tracks nothing, so a tick files a new one. */
 async function findFiledIssue(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, id: string): Promise<number | undefined> {
-  const marker = filedIssueMarker(id);
   for (const creator of bot.logins) {
     const issues = await octokit.paginate(octokit.rest.issues.listForRepo, { owner, repo, creator, state: 'open', per_page: 100 });
-    const filed = issues.find(issue => !issue.pull_request && issue.body?.includes(marker));
+    const filed = issues.find(issue => !issue.pull_request && ownMarker(issue.body ?? '', FILED_ISSUE_OPENER) === id);
     if (filed) return filed.number;
   }
   return undefined;

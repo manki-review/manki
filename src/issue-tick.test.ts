@@ -153,6 +153,8 @@ describe('handleIssueBoxTick', () => {
     const id = ticked(finding()).match(/manki-box:issue:(\S+) -->/)?.[1];
     const octokit = makeOctokit([
       { number: 4, body: `A pull request <!-- manki-issue:${id} -->`, pull_request: {} },
+      // An issue filed for another finding, whose fix quotes this finding's marker.
+      { number: 7, body: `Other.\n\n\`\`\`\n<!-- manki-issue:${id} -->\n\`\`\`\n\n<!-- manki-issue:src/other.ts:1:abc -->` },
       { number: 9, body: `Old.\n\n<!-- manki-issue:${id} -->` },
     ]);
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, isBlocking: false, findingTitle: 'x' }]);
