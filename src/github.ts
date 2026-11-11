@@ -1721,7 +1721,8 @@ export async function postReview(
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
       formatCarriedWarnings(carried),
-      formatUnprovenLine(result.unposted ?? []),
+      // The line points at the progress comment's "Judge decisions", which an incomplete round does not have.
+      result.reviewComplete && formatUnprovenLine(result.unposted ?? []),
       formatNotesSection(notes, result.unposted ?? [], links),
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),

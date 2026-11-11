@@ -4465,6 +4465,9 @@ describe('postReview non-blocking findings', () => {
     expect(one).toMatch(/^Summary\n\n---\n\n<sub>1 warning is not listed, since nothing proves it\. The progress comment names it under "Judge decisions"\.<\/sub>\n\n---\n\n<sub>2 notes are not listed\.<\/sub>/);
     expect(three).toMatch(/^Summary\n\n---\n\n<sub>3 warnings are not listed, since nothing proves them\. The progress comment names each under "Judge decisions"\.<\/sub>/);
     expect(`${one}${three}`).not.toMatch(/Unsettled|Unchecked|Uncited/);
+    // An incomplete round's progress comment names no judge decisions, so its review points at none.
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), reviewComplete: false, unposted: unproven }, diff);
+    expect(createReview.mock.calls.at(-1)![0].body).not.toContain('Judge decisions');
   });
 
   it('posts at most five non-blocking findings inline, most severe first, and lists the rest', async () => {
