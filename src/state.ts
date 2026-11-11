@@ -231,7 +231,7 @@ async function deleteThreadReply(octokit: Octokit, commentId: string): Promise<v
 function reopenReply(isSecurity: boolean, halt: Awaited<ReturnType<typeof autoReviewHalt>>): string {
   const next = halt
     ? `A reviewer with write access can resolve it. Automatic review is ${halt.cause === 'auto_review_off' ? 'off' : 'paused'}, so after pushing a fix comment \`@manki review\` and Manki will check it.`
-    : 'A reviewer with write access can resolve it, or push a fix and Manki will check it.';
+    : 'A reviewer with write access can resolve it, or push a fix and the next Manki review will check it.';
   return `Reopened. A ${isSecurity ? 'security' : 'blocking'} finding needs a maintainer or a fix: the PR author cannot resolve it. ${next}`;
 }
 

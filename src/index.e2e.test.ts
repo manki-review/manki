@@ -484,7 +484,7 @@ function reviewCommand(): Promise<void> {
 }
 
 const REOPENED = 'Reopened. A blocking finding needs a maintainer or a fix: the PR author cannot resolve it.';
-const PUSH_A_FIX = 'A reviewer with write access can resolve it, or push a fix and Manki will check it.';
+const PUSH_A_FIX = 'A reviewer with write access can resolve it, or push a fix and the next Manki review will check it.';
 
 /** Resolves `thread` as `login` and runs Manki on the event GitHub sends for that. */
 async function resolveThread(thread: FakeThread, login: string): Promise<void> {
