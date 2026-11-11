@@ -3273,8 +3273,9 @@ describe('runReview', () => {
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
     const diff = diffChanging('src/x.ts');
     const openThread = makePriorOpenThread({ severity: 'blocker', threadUrl: 'https://github.com/o/r/pull/1#t1' });
-    const thread = (status: PreviousFinding['status']): PreviousFinding => ({ title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'blocker', status, threadId: 'T1' });
-    const runOn = (clients: ReviewClients, headSha: string, openThreads = [openThread], previousFindings = [thread('open')]) => runReview(
+    const thread = (status: PreviousFinding['status'], reopen = false): PreviousFinding => (
+      { title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'blocker', status, threadId: 'T1', ...(reopen && { reopen }) });
+    const runOn = (clients: ReviewClients, headSha: string, openThreads: OpenThread[] | null = [openThread], previousFindings = [thread('open')], priorRounds = [prior]) => runReview(
       clients, {
         config: makeConfig(),
         diff,
@@ -3283,7 +3284,7 @@ describe('runReview', () => {
         isFollowUp: true,
         openThreads,
         previousFindings,
-        priorRounds: [prior],
+        priorRounds,
         headSha,
       },
     );
@@ -3296,27 +3297,60 @@ describe('runReview', () => {
     expect(rebased.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', threadId: 'T1' })]);
     expect(rebased.fixClaimedThreadIds).toEqual([]);
 
-    const replied = await runOn(makeClients(), 'sha2', [openThread], [thread('replied')]);
-    expect(replied.outcome).toBe('NOT_CONVERGING');
-    // The round records the threads where someone claimed a fix.
-    expect(replied.fixClaimedThreadIds).toEqual(['T1']);
-    expect(replied.verdict).toBe('REQUEST_CHANGES');
-    expect(replied.needsHuman).toEqual({
-      cause: 'repeated',
-      blockers: [expect.objectContaining({ title: 'Old issue', file: 'src/x.ts', line: 10, round: 1, threadUrl: 'https://github.com/o/r/pull/1#t1' })],
-    });
+    // Nobody claims a fix by replying in the thread, nor does the PR author by resolving it, which leaves a blocker
+    // thread open. Each still requests changes, and none pauses automatic review. That holds for a dismissal on a
+    // security thread too, when the PR author or someone without write access wrote it, for the author's "Fixed." on a
+    // thread graded below blocker since, and for a maintainer's reply that does not agree.
+    const dismissed = { isSecurity: true, authorReplyText: '@manki dismiss' };
+    const notCleared: Partial<PreviousFinding>[] = [
+      { ...dismissed, authorReplyLogin: 'author' }, { ...dismissed, authorReplyLogin: 'reader' },
+      { recordedGrade: 'warning', authorReplyText: 'Fixed.', authorReplyLogin: 'author' },
+      { isSecurity: true, authorReplyText: 'This still leaks the token.', authorReplyLogin: 'maintainer', authorReplyMayClear: true },
+    ];
+    for (const [status, authorResolved, reply] of [['replied', false, {}], ['open', true, {}], ['replied', true, {}], ...notCleared.map(r => ['replied', false, r] as const)] as const) {
+      const unclaimed = await runOn(makeClients(), 'sha2', [openThread], [{ ...thread(status, authorResolved), ...reply }]);
+      expect([status, authorResolved, unclaimed.outcome, unclaimed.verdict]).toEqual([status, authorResolved, 'ADDRESS_FIRST', 'REQUEST_CHANGES']);
+      expect(unclaimed.needsHuman).toBeUndefined();
+      expect(unclaimed.fixClaimedThreadIds).toEqual([]);
+      expect(unclaimed.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', threadId: 'T1' })]);
+    }
 
-    // A resolved thread is a fix claim too. Its blocker is posted again, since no open thread carries it.
+    // A thread that counts as resolved, as when a maintainer other than the author resolved it, is a fix claim. Its
+    // blocker is posted again, since no open thread carries it. So is a thread Manki resolved for a maintainer, which
+    // is how a maintainer's answer or dismissal clears a thread the PR author had resolved.
+    // With the open threads unknown, only the status says so. A security thread cleared that way keeps the status
+    // `replied` and stays among the open threads, so the reply of someone who may clear it says so.
+    const clearedSecurity = { ...thread('replied'), ...dismissed, authorReplyLogin: 'maintainer', authorReplyMayClear: true };
+    for (const [openThreads, previous] of [[[], thread('auto-resolved')], [null, thread('auto-resolved')], [[openThread], clearedSecurity], [null, clearedSecurity]] as const) {
+      const cleared = await runOn(makeClients(), 'sha2', openThreads && [...openThreads], [previous]);
+      expect([cleared.outcome, cleared.needsHuman?.cause, cleared.fixClaimedThreadIds]).toEqual(['NOT_CONVERGING', 'repeated', ['T1']]);
+    }
     const resolved = await runOn(makeClients(), 'sha2', [], [thread('resolved')]);
     expect(resolved.outcome).toBe('NOT_CONVERGING');
+    // The round records the threads where a fix was claimed.
+    expect(resolved.fixClaimedThreadIds).toEqual(['T1']);
+    expect(resolved.verdict).toBe('REQUEST_CHANGES');
+    expect(resolved.needsHuman).toEqual({
+      cause: 'repeated',
+      blockers: [expect.objectContaining({ title: 'Old issue', file: 'src/x.ts', line: 10, round: 1 })],
+    });
     expect(resolved.findings[0].threadId).toBeUndefined();
 
-    const samePush = await runOn(makeClients(), 'sha1', [openThread], [thread('replied')]);
+    // So is a fix an earlier round confirmed, also when the thread is open again.
+    const confirmed: RoundContext = { ...buildPriorRound(2, []), judge: { summary: 'Fixed.', threadEvaluations: [{ threadId: 'T1', status: 'addressed', reason: 'The check is in place.' }] } };
+    const cameBack = await runOn(makeClients(), 'sha3', [openThread], [thread('open')], [prior, confirmed]);
+    expect(cameBack.outcome).toBe('NOT_CONVERGING');
+    expect(cameBack.needsHuman).toEqual({
+      cause: 'repeated',
+      blockers: [expect.objectContaining({ title: 'Old issue', round: 1, threadUrl: 'https://github.com/o/r/pull/1#t1' })],
+    });
+
+    const samePush = await runOn(makeClients(), 'sha1', [], [thread('resolved')]);
     expect(samePush.outcome).toBe('ADDRESS_FIRST');
     expect(samePush.needsHuman).toBeUndefined();
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...repeat, sameAs: undefined }], summary: 'New bug.' });
-    const unrelated = await runOn(makeClients(), 'sha2', [openThread], [thread('replied')]);
+    const unrelated = await runOn(makeClients(), 'sha2', [], [thread('resolved')]);
     expect(unrelated.outcome).toBe('ADDRESS_FIRST');
     expect(unrelated.findings[0].threadId).toBeUndefined();
 
@@ -3372,6 +3406,15 @@ describe('runReview', () => {
       const guarded = await runWith(elsewhere, { ...openThread, postedCode: '>>> 10: old', postedCommit: 'sha0', currentCode: '>>> 10: near', ...outdated });
       expect([guarded.outcome, guarded.threadEvaluations?.[0].status]).toEqual(['ADDRESS_FIRST', 'uncertain']);
     }
+
+    // A security thread graded below blocker does not block, but the PR author cannot clear it either. So its fix
+    // needs a push to its file too, while a plain warning thread is the judge's to clear.
+    const securityWarning = { ...openThread, severity: 'warning' as const, isSecurity: true };
+    expect((await runWith(elsewhere, securityWarning)).threadEvaluations)
+      .toEqual([{ ...addressed, status: 'uncertain', reason: 'The push did not change `src/x.ts`, so the fix is not confirmed.' }]);
+    expect((await runWith(undefined, securityWarning)).threadEvaluations?.[0].status).toBe('uncertain');
+    expect((await runWith(touching, securityWarning)).threadEvaluations).toEqual([addressed]);
+    expect((await runWith(elsewhere, { ...openThread, severity: 'warning' })).threadEvaluations).toEqual([addressed]);
 
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.', threadEvaluations: [addressed] });

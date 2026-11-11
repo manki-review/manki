@@ -384,7 +384,7 @@ describe('reopenAuthorResolvedThreads', () => {
       ['addPullRequestReviewThreadReply', 'T_author'],
     ]);
     expect(graphql.mock.calls[1][1].body).toMatch(/^Reopened\. A security finding needs a maintainer or a fix/);
-    expect(graphql.mock.calls[1][1].body).toContain('push a fix and Manki will check it');
+    expect(graphql.mock.calls[1][1].body).toContain('push a fix and the next Manki review will check it');
     expect(graphql.mock.calls[1][1].body.endsWith(`\n\n${BOT_MARKER}\n${REOPENED_MARKER}`)).toBe(true);
 
     graphql.mockClear();
@@ -410,7 +410,7 @@ describe('reopenAuthorResolvedThreads', () => {
 
     const reply = graphql.mock.calls[1][1].body;
     expect(reply).toContain(`Automatic review is ${word}, so after pushing a fix comment \`@manki review\` and Manki will check it.`);
-    expect(reply).not.toContain('push a fix and Manki will check it');
+    expect(reply).not.toContain('push a fix and the next Manki review will check it');
   });
 
   // The reply's marker stops every later reopen, so a thread that stayed resolved must not get it.

@@ -775,7 +775,7 @@ export type RoundOutcome = 'READY' | 'ADDRESS_FIRST' | 'INCOMPLETE' | 'NOT_CONVE
 
 /** Blockers a human has to settle, posted with a `NOT_CONVERGING` outcome. */
 export interface NeedsHuman {
-  /** `repeated`: a blocker came back after a fix push. `budget`: the last automatic round the round cap allows still has one open. */
+  /** `repeated`: a blocker came back after a fix was claimed for it. `budget`: the last automatic round the round cap allows still has one open. */
   cause: 'repeated' | 'budget';
   blockers: VerdictTraceEntry[];
 }
@@ -865,7 +865,7 @@ export interface ReviewResult {
   sweeps?: RoundSweep[];
   /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
   changedSinceLastRoundCount?: number;
-  /** The open or earlier threads where someone claimed a fix: resolved, answered by a person, or confirmed by a round. */
+  /** The threads where a fix was claimed: confirmed by an earlier round, counted as resolved, agreed away by someone who may clear them, or gone. */
   fixClaimedThreadIds?: string[];
   inPrSuppressedCount?: number;
   agentResponseLengths?: Map<string, number>;
@@ -1310,6 +1310,11 @@ export interface OpenThread extends FindingMetadata {
   currentCode?: string;
   /** Manki's latest answer to a developer in the thread, such as a "Fixed." reply with its evidence. */
   answer?: string;
+  /**
+   * The latest reply in a guarded thread, when the PR author or someone with write access wrote it. It is untrusted
+   * text: a claim the judge answers, never evidence.
+   */
+  authorReplyText?: string;
   /**
    * For an outdated thread, the code around its finding on the commit it was posted on, `postedCommit`. `currentCode`
    * then shows where that code sits now, in the file `movedTo` names when the code left the thread's own. When
@@ -1989,7 +1994,7 @@ export interface RoundJudge {
   interRoundDiffBytes?: number;
   /** True when the inter-round diff exceeded `MAX_INTER_ROUND_DIFF_CHARS` and was truncated before being passed to the judge prompt. */
   interRoundDiffTruncated?: boolean;
-  /** The threads where someone claimed a fix, which a blocker coming back counts against. Empty when none did. */
+  /** The threads where a fix was claimed, which a blocker coming back counts against. Empty when there is none. */
   fixClaimedThreads?: string[];
   /** Counts from the post-judge thread-resolution loop: `addressed` evaluations dropped, `not_addressed` evaluations synthesised by the empty-diff override, and `uncertain` evaluations emitted. */
   threadResolutionOverrides?: ThreadResolutionOverrides;
