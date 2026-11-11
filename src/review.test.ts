@@ -1944,7 +1944,6 @@ jest.mock('./judge', () => ({
   collectPriorBlockers: jest.requireActual('./judge').collectPriorBlockers,
   foldInto: jest.requireActual('./judge').foldInto,
   capUnconfirmedBuildClaim: jest.requireActual('./judge').capUnconfirmedBuildClaim,
-  findingKey: jest.requireActual('./judge').findingKey,
 }));
 
 // The pinned ast-grep build is downloaded at run time, so tests parse with the installed one.
