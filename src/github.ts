@@ -2909,6 +2909,22 @@ export function fileLines(content: string): string[] {
   return content.replace(/\r?\n$/, '').split(/\r?\n/);
 }
 
+/**
+ * Returns a reader for the lines of the files in `files` that reads each file once. A file that is gone has no lines.
+ * A file that cannot be read gives undefined, after a warning that ends with `consequence`.
+ */
+export function cachedFileLines(files: Pick<RepoFiles, 'read'>, consequence: string): (path: string) => Promise<string[] | undefined> {
+  const read = new Map<string, Promise<string[] | undefined>>();
+  return path => {
+    const lines = read.get(path) ?? files.read(path).then(content => content === null ? [] : fileLines(content), error => {
+      core.warning(`Failed to read ${path}, ${consequence}: ${error}`);
+      return undefined;
+    });
+    read.set(path, lines);
+    return lines;
+  };
+}
+
 export interface LinkedIssue {
   number: number;
   title: string;

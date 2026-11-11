@@ -208,6 +208,7 @@ jest.mock('./github', () => ({
   configFailed: jest.requireActual('./github').configFailed,
   capNotes: jest.requireActual('./github').capNotes,
   fileLines: jest.requireActual('./github').fileLines,
+  cachedFileLines: jest.requireActual('./github').cachedFileLines,
   fetchRepoContext: jest.fn().mockResolvedValue({ text: '', files: [] }),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),

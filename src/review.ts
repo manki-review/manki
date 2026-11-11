@@ -7,7 +7,7 @@ import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, r
 import { mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
-import { dynamicFence, fenceText, fileLines, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
+import { cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
 import { canLeaveOut, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
@@ -2621,16 +2621,7 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
     ['judge_dropped', (result.allJudgedFindings ?? []).filter(f => f.severity === 'ignore')],
     ['left_out', result.allJudgedFindings ?? []],
   ];
-  const read = new Map<string, Promise<string[] | undefined>>();
-  // A file that is gone has no lines. A file that cannot be read gives undefined, which ends no warning.
-  const linesOf = (file: string): Promise<string[] | undefined> => {
-    const lines = read.get(file) ?? head.read(file).then(content => content === null ? [] : fileLines(content), error => {
-      core.warning(`Failed to read ${file}, so the warnings carried on it stay listed: ${error}`);
-      return undefined;
-    });
-    read.set(file, lines);
-    return lines;
-  };
+  const linesOf = cachedFileLines(head, 'so the warnings carried on it stay listed');
   const carried: FindingFingerprintEntry[] = [];
   const ended: CarriedEnd[] = [];
   for (const entry of warnings) {
