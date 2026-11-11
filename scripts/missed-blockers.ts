@@ -21,7 +21,7 @@ import { replyOutcome } from '../src/interaction';
 import type { EarlierFinding } from '../src/local-review';
 import { FOUND_AGAIN_MARKER, isSecurityThread, parseFindingData, parseFindingFromComment, recordedThreadGrades, titlesOverlap } from '../src/recap';
 import { fixedMarker } from '../src/state';
-import { FindingFingerprintEntry, FindingSeverity, PRE_EXISTING_TAG, RoundContext } from '../src/types';
+import { FindingFingerprintEntry, FindingSeverity, isGradeCell, PRE_EXISTING_TAG, RoundContext } from '../src/types';
 import { githubToken } from './review-history';
 import { fetchPrRecords, listMergedPrs, PrRecords } from './review-stats';
 
@@ -143,7 +143,7 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
       followUp.findings.push({
         // A file-level finding has line 0, and a case line starts at 1.
         id, severity, title, file: entry.fingerprint.file, line: Math.max(1, entry.fingerprint.lineStart),
-        ...(entry.gradeIfConfirmed && { gradeIfConfirmed: entry.gradeIfConfirmed }), ...(entry.cell && { cell: entry.cell }), ...(entry.doubts && { doubts: entry.doubts }),
+        ...(entry.gradeIfConfirmed && { gradeIfConfirmed: entry.gradeIfConfirmed }), ...(isGradeCell(entry.cell) && { cell: entry.cell }), ...(entry.doubts && { doubts: entry.doubts }),
         ...(meta.description && { description: meta.description }), ...(meta.howToFix && { howToFix: meta.howToFix }),
         ...((meta.suggestedFix ?? entry.suggestedFix) && { suggestedFix: meta.suggestedFix ?? entry.suggestedFix }),
         ...(thread && isSecurityThread(thread.root.body!) && { security: true }), ...(thread && { thread: open ? 'open' : fixed ? 'fixed' : 'resolved' }),

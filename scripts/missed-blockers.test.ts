@@ -63,7 +63,8 @@ describe('collectFollowUps', () => {
     round(1, [
       entry('Lock order', { file: 'src/a.go', fingerprint: { file: 'src/a.go', lineStart: 0, lineEnd: 0, slug: '-Lock-order' } }),
       entry('Missing timeout', { file: 'src/b.go', severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'A request can reach it', decides: 'grade' }] }),
-      entry('Name the helper', { file: 'src/c.go', severity: 'suggestion', suggestedFix: 'func name() {}' }),
+      // A cell the table does not know, as another Manki version could record, is left out of the follow-up.
+      entry('Name the helper', { file: 'src/c.go', severity: 'suggestion', suggestedFix: 'func name() {}', cell: { row: 'serious', column: 'normal' } as never }),
       entry('Old style', { file: 'src/d.go', severity: 'nitpick' }), entry('Overflow', { file: 'src/e.go' }), entry('Dropped', { severity: 'ignore' }),
       entry('Stale cache', { file: 'src/g.go', severity: 'warning' }), entry('Unbounded retry', { file: 'src/h.go' }), entry('Old lock', { file: 'src/i.go', severity: 'warning' }),
       entry('Leaked handle', { file: 'src/j.go', severity: 'warning' }), entry('Missing index', { file: 'src/k.go', severity: 'warning' }),
