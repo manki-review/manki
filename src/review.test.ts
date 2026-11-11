@@ -3298,9 +3298,17 @@ describe('runReview', () => {
     expect(rebased.fixClaimedThreadIds).toEqual([]);
 
     // Nobody claims a fix by replying in the thread, nor does the PR author by resolving it, which leaves a blocker
-    // thread open. Each still requests changes, and none pauses automatic review.
-    for (const [status, authorResolved] of [['replied', false], ['open', true], ['replied', true]] as const) {
-      const unclaimed = await runOn(makeClients(), 'sha2', [openThread], [thread(status, authorResolved)]);
+    // thread open. Each still requests changes, and none pauses automatic review. That holds for a dismissal on a
+    // security thread too, when the PR author or someone without write access wrote it, for the author's "Fixed." on a
+    // thread graded below blocker since, and for a maintainer's reply that does not agree.
+    const dismissed = { isSecurity: true, authorReplyText: '@manki dismiss' };
+    const notCleared: Partial<PreviousFinding>[] = [
+      { ...dismissed, authorReplyLogin: 'author' }, { ...dismissed, authorReplyLogin: 'reader' },
+      { recordedGrade: 'warning', authorReplyText: 'Fixed.', authorReplyLogin: 'author' },
+      { isSecurity: true, authorReplyText: 'This still leaks the token.', authorReplyLogin: 'maintainer', authorReplyMayClear: true },
+    ];
+    for (const [status, authorResolved, reply] of [['replied', false, {}], ['open', true, {}], ['replied', true, {}], ...notCleared.map(r => ['replied', false, r] as const)] as const) {
+      const unclaimed = await runOn(makeClients(), 'sha2', [openThread], [{ ...thread(status, authorResolved), ...reply }]);
       expect([status, authorResolved, unclaimed.outcome, unclaimed.verdict]).toEqual([status, authorResolved, 'ADDRESS_FIRST', 'REQUEST_CHANGES']);
       expect(unclaimed.needsHuman).toBeUndefined();
       expect(unclaimed.fixClaimedThreadIds).toEqual([]);
@@ -3310,9 +3318,11 @@ describe('runReview', () => {
     // A thread that counts as resolved, as when a maintainer other than the author resolved it, is a fix claim. Its
     // blocker is posted again, since no open thread carries it. So is a thread Manki resolved for a maintainer, which
     // is how a maintainer's answer or dismissal clears a thread the PR author had resolved.
-    // With the open threads unknown, only the status says so.
-    for (const openThreads of [[], null]) {
-      const cleared = await runOn(makeClients(), 'sha2', openThreads, [thread('auto-resolved')]);
+    // With the open threads unknown, only the status says so. A security thread cleared that way keeps the status
+    // `replied` and stays among the open threads, so the reply of someone who may clear it says so.
+    const clearedSecurity = { ...thread('replied'), ...dismissed, authorReplyLogin: 'maintainer', authorReplyMayClear: true };
+    for (const [openThreads, previous] of [[[], thread('auto-resolved')], [null, thread('auto-resolved')], [[openThread], clearedSecurity], [null, clearedSecurity]] as const) {
+      const cleared = await runOn(makeClients(), 'sha2', openThreads && [...openThreads], [previous]);
       expect([cleared.outcome, cleared.needsHuman?.cause, cleared.fixClaimedThreadIds]).toEqual(['NOT_CONVERGING', 'repeated', ['T1']]);
     }
     const resolved = await runOn(makeClients(), 'sha2', [], [thread('resolved')]);

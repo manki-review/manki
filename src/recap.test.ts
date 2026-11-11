@@ -1,5 +1,5 @@
 import { Finding, FindingFingerprintEntry, RoundContext, ThreadEvaluation, threadBlocks } from './types';
-import { classifyAuthorReply, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
+import { classifyAuthorReply, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -1449,6 +1449,9 @@ describe('fetchRecapState', () => {
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(state.previousFindings.filter(f => f.reopen).map(f => f.file)).toEqual(['src/author-resolved.ts', 'src/blocker-author-resolved.ts']);
       expect(state.previousFindings.filter(f => f.securityOverride)).toEqual([]);
+      // A thread someone with write access agreed away or dismissed stays `replied`, also once Manki resolved it.
+      expect(state.previousFindings.filter(f => f.authorReplyMayClear).map(f => [f.file, f.status, replyClassOf(f)])).toEqual(
+        ['src/collaborator-agreed.ts', 'src/collaborator-dismissed.ts', 'src/private-member-agreed.ts'].map(file => [file, 'replied', 'agree']));
       const openThreads = state.previousFindings
         .filter(f => f.status === 'open' || f.status === 'replied')
         .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));

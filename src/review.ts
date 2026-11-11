@@ -8,7 +8,7 @@ import { mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
-import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
+import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, replyClassOf, titleOverlapType } from './recap';
 import { canLeaveOut, findingKey, isBlockingSeverity, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { translateNames } from './name-translation';
@@ -2400,16 +2400,17 @@ function findRepeatedBlockers(findings: Finding[], priorBlockers: PriorFinding[]
 }
 
 /**
- * Returns the IDs of the threads where a fix was claimed: an earlier round confirmed the fix, or the thread counts as
- * resolved or is gone. A reply in a thread claims no fix, whoever wrote it. Neither does the PR author resolving a
- * guarded thread, which keeps the status `open` or `replied`. With `openThreads` unknown, a thread missing from it
- * proves nothing.
+ * Returns the IDs of the threads where a fix was claimed: an earlier round confirmed the fix, the thread counts as
+ * resolved or is gone, or someone who may clear it agreed it away, which leaves a security thread `replied`. No other
+ * reply claims a fix. Neither does the PR author resolving a guarded thread, which keeps the status `open` or `replied`.
+ * With `openThreads` unknown, a thread missing from it proves nothing.
  */
 function fixClaimedThreadIds(previousFindings: PreviousFinding[] | undefined, openThreads: OpenThread[] | null | undefined, priorRounds: RoundContext[]): Set<string> {
   const claimed = judgeAddressedThreadIds(priorRounds);
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   for (const f of previousFindings ?? []) {
-    if (f.threadId && f.status !== 'open' && f.status !== 'replied') claimed.add(f.threadId);
+    const cleared = (f.status !== 'open' && f.status !== 'replied') || (!!f.authorReplyMayClear && replyClassOf(f) === 'agree');
+    if (f.threadId && cleared) claimed.add(f.threadId);
   }
   if (openThreads) {
     for (const p of priorRounds.flatMap(r => r.findings.entries)) {
