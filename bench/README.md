@@ -114,6 +114,10 @@ prior_round:
       file: path/to/file.rs
       line: 42
       grade_if_confirmed: blocker        # optional, the judge's grade if its doubt holds
+      cell: { row: wrong, column: rare } # optional, the severity table cell the earlier round recorded
+      doubts:                            # optional, the premises the earlier round left open
+        - premise: A caller passes it.
+          decides: grade                 # defect or grade
       posted: thread                     # thread or body
       state: open                        # a thread's state before the push: open, resolved by a person, or fixed (resolved by a round)
       description: What goes wrong.      # optional, as the thread shows it

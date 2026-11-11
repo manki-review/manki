@@ -8,6 +8,7 @@ import * as core from '@actions/core';
 import { formatLockfileChanges } from './lockfile';
 import { overlayConfig, reviewLocal } from './local-review';
 import { runReview } from './review';
+import { REACH_DOUBT } from './types';
 import type { Finding, ReviewResult, RoundOutcome } from './types';
 
 jest.mock('@actions/core');
@@ -117,6 +118,7 @@ describe('reviewLocal', () => {
         { id: 'P2', severity: 'warning' as const, title: 'Unused constant', file: 'src/a.ts', line: 1, thread: 'resolved' as const },
         { id: 'P4', severity: 'blocker' as const, title: 'Missing check', file: 'src/a.ts', line: 2, thread: 'fixed' as const },
         { id: 'P3', severity: 'suggestion' as const, title: 'Name the constant', file: 'src/a.ts', line: 1, gradeIfConfirmed: 'warning' as const },
+        { id: 'P5', severity: 'warning' as const, title: 'Stale read', file: 'src/a.ts', line: 3, gradeIfConfirmed: 'blocker' as const, cell: { row: 'wrong' as const, column: 'rare' as const }, doubts: [REACH_DOUBT] },
       ],
     };
 
@@ -133,8 +135,10 @@ describe('reviewLocal', () => {
     expect(record.judge.threadEvaluations).toEqual([{ threadId: 'P4', status: 'addressed', reason: 'Fixed by an earlier push.' }]);
     expect(record.findings.entries.map(e => [e.title, e.threadId, e.severity, e.tags, e.gradeIfConfirmed])).toEqual([
       ['Wrong value', 'P1', 'blocker', ['security'], undefined], ['Unused constant', 'P2', 'warning', undefined, undefined], ['Missing check', 'P4', 'blocker', undefined, undefined],
-      ['Name the constant', undefined, 'suggestion', undefined, 'warning'],
+      ['Name the constant', undefined, 'suggestion', undefined, 'warning'], ['Stale read', undefined, 'warning', undefined, 'blocker'],
     ]);
+    // The earlier round's cell and doubts come back with its conditional grade, and an earlier finding without them has none.
+    expect(record.findings.entries.map(e => [e.cell, e.doubts]).slice(-2)).toEqual([[undefined, undefined], [{ row: 'wrong', column: 'rare' }, [REACH_DOUBT]]]);
     expect(review.result.findings.map(f => [f.file, f.line, f.origin])).toEqual([['src/a.ts', 2, 'reviewed'], ['src/b.ts', 2, 'reviewed'], ['src/b.ts', 20, 'new']]);
     expect(review.context.meta).toMatchObject({ round: 2, commitSha: fixed });
   });
