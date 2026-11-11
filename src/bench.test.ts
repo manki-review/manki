@@ -749,13 +749,12 @@ describe('runBench and buildReport', () => {
       // Scoring a stored report again asks the matcher too. An error about a hold-out case names the case and nothing the case, its config or a model's reply holds.
       const rekeyed = cases.map(c => ({ ...c, keyVersion: 3 }));
       expect((await rescoreReport(report, rekeyed, matching(true))).rescored).toEqual(['shown-1', 'held-1']);
-      await expect(rescoreReport(report, [rekeyed[0]], matching(false))).rejects.toThrow(/^The matcher failed on case shown-1: The matcher's answer for N1 is not a JSON object$/);
-      await expect(rescoreReport(report, [rekeyed[1]], matching(false))).rejects.toThrow(/^The matcher failed on case held-1$/);
+      const leftBy = async (matcher: Matcher) => (await rescoreReport(report, rekeyed, matcher)).left;
+      expect(await leftBy(matching(false))).toEqual([{ id: 'shown-1', reason: "the matcher failed: The matcher's answer for N1 is not a JSON object" }, { id: 'held-1', reason: 'the matcher failed' }]);
       const quoting: Matcher = async (_item, findings) => {
         throw new Error(`reply about ${findings[0].title}`);
       };
-      await expect(rescoreReport(report, [rekeyed[0]], quoting)).rejects.toThrow(/^The matcher failed on case shown-1: reply about title SHOWN-TEXT$/);
-      await expect(rescoreReport(report, [rekeyed[1]], quoting)).rejects.toThrow(/^The matcher failed on case held-1$/);
+      expect(await leftBy(quoting)).toEqual([{ id: 'shown-1', reason: 'the matcher failed: reply about title SHOWN-TEXT' }, { id: 'held-1', reason: 'the matcher failed' }]);
       await expect(runBench([cases[1]], { ...options, runs: 1, review: reviewing(false), matcher: matching(true), variants: [{ name: 'bad', overrides: { [SECRET]: true } }] })).rejects.toThrow(/^Variant bad does not load on case held-1$/);
       expect(() => parseCase(`id: [${SECRET}`, 'held.yml', 'holdout')).toThrow(/^held\.yml: is not valid YAML$/);
       expect(() => parseCase('id: [SHOWN-TEXT', 'shown.yml')).toThrow(/^shown\.yml: .*SHOWN-TEXT/s);
@@ -1035,8 +1034,15 @@ describe('mergeReports and gateReports', () => {
       return matcher(...args);
     };
     expect((await rescoreReport(stored, [first, rekeyed], flaky)).report).toEqual(scored);
-    failures = 2;
-    await expect(rescoreReport(stored, [first, rekeyed], flaky)).rejects.toThrow(/^The matcher failed on case demo-2$/);
+    // A case whose matcher fails both times stays as scored and is named. The other cases are still scored again.
+    const failing: Matcher = async (item, ...rest) => {
+      if (item.id === 'K3') throw new Error('unusable reply');
+      return matcher(item, ...rest);
+    };
+    const rekeyedFirst: BenchCase = { ...first, keyVersion: 3 };
+    const partly = await rescoreReport(stored, [rekeyedFirst, rekeyed], failing);
+    expect(partly).toMatchObject({ rescored: ['demo-1'], left: [{ id: 'demo-2', reason: 'the matcher failed' }] });
+    expect(partly.report.variants[0].cases[1]).toBe(stored.variants[0].cases[1]);
 
     const complete = (r: BenchReport): BenchReport => ({ ...r, variants: r.variants.map(v => ({ ...v, cases: v.cases.map(c => ({ ...c, runs: c.runs.filter(one => one.complete) })) })) });
     const candidate = report([[first, [await run(first, 'blocker')]], [rekeyed, [await run(rekeyed, 'blocker')]]]);

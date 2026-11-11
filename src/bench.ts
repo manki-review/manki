@@ -827,8 +827,9 @@ function unscorable(benchCase: BenchCase, runs: RunScore[]): string | undefined 
 /**
  * Scores the stored runs of `report` again for each case of `cases` whose key version is not the report's. The matcher
  * reads the findings each run stored, so a changed key costs matcher calls and no review. Only complete runs are scored
- * again, and the matcher is tried twice on each, as in a bench run. A case that `unscorable` names, or that is not among `cases`, stays as scored and is listed in `left`, and so
- * stays out of a gate against a report with the new key version.
+ * again, and the matcher is tried twice on each, as in a bench run. A case that `unscorable` names, that is not among
+ * `cases`, or whose matcher fails both times stays as scored and is listed in `left`, and so stays out of a gate against
+ * a report with the new key version.
  */
 export async function rescoreReport(report: BenchReport, cases: BenchCase[], matcher: Matcher): Promise<Rescored> {
   const rescored = new Set<string>();
@@ -850,13 +851,21 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
         again.push(c);
         continue;
       }
-      const runs: RunScore[] = [];
-      for (const run of c.runs) {
-        const review = { findings: run.findings as MatchedFinding[], outcome: run.outcome, complete: true, ...(run.followUp && { resolved: run.followUp.resolved }) };
-        const score = () => twice(() => scoreKey(benchCase, review, matcher)).catch((error: Error) => {
-          throw new Error(`The matcher failed on case ${c.id}${caseDetail(benchCase, error)}`);
-        });
-        runs.push(run.complete ? { ...run, ...await score() } : run);
+      const scoreAgain = async (): Promise<RunScore[]> => {
+        const runs: RunScore[] = [];
+        for (const run of c.runs) {
+          const review = { findings: run.findings as MatchedFinding[], outcome: run.outcome, complete: true, ...(run.followUp && { resolved: run.followUp.resolved }) };
+          runs.push(run.complete ? { ...run, ...await twice(() => scoreKey(benchCase, review, matcher)) } : run);
+        }
+        return runs;
+      };
+      const runs = await scoreAgain().catch((error: Error) => {
+        left.set(c.id, `the matcher failed${oneLine(caseDetail(benchCase, error))}`);
+        return undefined;
+      });
+      if (!runs) {
+        again.push(c);
+        continue;
       }
       rescored.add(c.id);
       again.push(caseReport(benchCase, runs));
