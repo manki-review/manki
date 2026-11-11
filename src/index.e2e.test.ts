@@ -1339,11 +1339,12 @@ describe('runFullReview end to end', () => {
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
     });
 
-    it.each<[string, string, boolean, boolean]>([
-      ['clears the thread and approves when a maintainer', 'bob', false, true],
-      ['clears the thread and approves when, after Manki reopened it once, a maintainer', 'bob', true, true],
-      ['reopens the thread when the PR author', 'alice', false, false],
-    ])('%s agrees in a blocker thread the author resolved', async (_label, login, reopenedBefore, clears) => {
+    it.each<[string, string, boolean, string, boolean]>([
+      ['clears the thread and approves when a maintainer agrees', 'bob', false, 'Every caller bounds both inputs.', true],
+      ['clears the thread and approves when, after Manki reopened it once, a maintainer agrees', 'bob', true, 'Every caller bounds both inputs.', true],
+      ['clears the thread and approves when, after Manki reopened it once, a maintainer dismisses the finding', 'bob', true, '@manki dismiss', true],
+      ['reopens the thread when the PR author agrees', 'alice', false, 'Every caller bounds both inputs.', false],
+    ])('%s in a blocker thread the author resolved', async (_label, login, reopenedBefore, body, clears) => {
       Object.assign(mockLLM.replies, BLOCKER_REPLIES);
       await reviewRound();
       const [thread] = mockGitHub.threads;
@@ -1353,12 +1354,15 @@ describe('runFullReview end to end', () => {
 
       // Alice resolves the thread, and the reply reaches Manki before the resolve does.
       Object.assign(thread, { isResolved: true, resolvedBy: { login: 'alice' } });
-      await replyInThread(thread, 'Every caller bounds both inputs.', agreed, login);
+      await replyInThread(thread, body, agreed, login);
       await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: String(PR_NUMBER) });
 
       expect(core.setFailed).not.toHaveBeenCalled();
       const note = clears ? '' : `\n\n${REOPENED} ${PUSH_A_FIX}`;
-      expect(thread.comments.slice(before + 1).map(c => c.body.replace(/\n<!-- manki-reply-record: .+ -->/, ''))).toEqual([`${agreed}${note}\n\n<!-- manki -->${clears ? '' : `\n${REOPENED_MARKER}`}`]);
+      // A dismissal that resolves the thread gets no answer.
+      expect(thread.comments.slice(before + 1).map(c => c.body.replace(/\n<!-- manki-reply-record: .+ -->/, ''))).toEqual(
+        body.startsWith('@manki') ? [] : [`${agreed}${note}\n\n<!-- manki -->${clears ? '' : `\n${REOPENED_MARKER}`}`],
+      );
       // Manki resolves the thread itself, since alice's own resolve never counts for the approval.
       expect([thread.isResolved, thread.resolvedBy?.login]).toEqual(clears ? [true, 'manki-review'] : [false, undefined]);
       expect(postedReviews().map(r => r.state)).toEqual(clears ? ['DISMISSED', 'APPROVED'] : ['CHANGES_REQUESTED']);
