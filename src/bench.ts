@@ -1019,6 +1019,16 @@ function failedRun(error: unknown, review?: LocalReview, outcome = 'FAILED'): Ru
 }
 
 /**
+ * Returns the time the related repos of a case are read at: the oldest author date among the commits of its change,
+ * from `base` to `head`. A commit replayed into another repository keeps its author date, and the head of a follow-up
+ * case can be newer than the merge of the change it follows up, so the head's own dates can come too late.
+ */
+async function changeDate(checkout: string, c: BenchCase): Promise<string | undefined> {
+  const dates = (await runGit(checkout, ['log', '--format=%aI', `${c.base}..${c.head}`])).split('\n').filter(Boolean);
+  return dates.sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+}
+
+/**
  * Reviews each case `runs` times per variant and scores every review. First checks that every case's commits are in
  * its checkout and that every variant's config loads on every case, so nothing is spent on a setup that cannot run.
  * A case whose own config, or the one its repository holds, does not load without any override gets no review, and
@@ -1063,6 +1073,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
     for (const benchCase of cases) {
       const runs: RunScore[] = [];
       const configError = invalid.get(benchCase.id);
+      const relatedReposAsOf = await changeDate(checkouts.get(benchCase.repo)!, benchCase);
       for (let i = 0; i < options.runs; i++) {
         if (configError) {
           runs.push(failedRun(configError, undefined, CONFIG_INVALID));
@@ -1072,7 +1083,8 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
         try {
           local = await review({
             repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
-            ...(benchCase.priorRound && { earlier: benchCase.priorRound }), providerInputs: options.providerInputs, signal: options.signal,
+            ...(benchCase.priorRound && { earlier: benchCase.priorRound }), ...(relatedReposAsOf && { relatedReposAsOf }),
+            providerInputs: options.providerInputs, signal: options.signal,
             // The case's own config replaces the repository's. Without one, the overrides are set on the repository's.
             ...(benchCase.config
               ? { config: await load(benchCase, variant.overrides) }

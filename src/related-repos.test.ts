@@ -27,8 +27,11 @@ describe('relatedRepoLoader', () => {
   let calls: Array<{ cwd: string; args: string[] }>;
   let log: jest.Mock<void, [string]>;
 
-  /** A git that succeeds, except that `failing[repo][command]` fails that command with its stderr. `init` makes `.git/objects`, as git does. */
-  function fakeGit(failing: Record<string, Record<string, string>> = {}): jest.MockedFunction<Run> {
+  /**
+   * A git that succeeds, except that `failing[repo][command]` fails that command with its stderr. `init` makes
+   * `.git/objects`, as git does, and `output` gives what a command prints.
+   */
+  function fakeGit(failing: Record<string, Record<string, string>> = {}, output: (args: string[]) => string = () => ''): jest.MockedFunction<Run> {
     return jest.fn(async (binary, args, cwd, options) => {
       expect(binary).toBe('git');
       expect(options?.env).toEqual(ENV);
@@ -37,7 +40,7 @@ describe('relatedRepoLoader', () => {
       const stderr = Object.entries(failing).find(([repo]) => cwd.endsWith(join(...repo.split('/'))))?.[1][command];
       if (stderr) return { code: 128, stdout: '', stderr: `${stderr}\nnotice: No default references\n` };
       if (command === 'init') mkdirSync(join(cwd, '.git', 'objects'), { recursive: true });
-      return { code: 0, stdout: '', stderr: '' };
+      return { code: 0, stdout: output(args), stderr: '' };
     });
   }
 
@@ -93,6 +96,51 @@ describe('relatedRepoLoader', () => {
     expect(otherRun).not.toHaveBeenCalled();
 
     await expect(load('dashpay/other')).rejects.toThrow('dashpay/other is not a related repo');
+  });
+
+  it('checks out the newest first-parent commit made by the as-of time, fetching older history in growing chunks', async () => {
+    const [tip, cut, older, oldest, found, root] = ['a', 'b', 'c', 'd', 'e', 'f'].map(c => c.repeat(40));
+    const asOf = '2026-10-03T11:20:50+10:00';
+    const before = `--before=${Date.parse(asOf) / 1000}`;
+    // Each fetched history, by the commit it is walked from, and the parents each commit object names.
+    const fetched: Record<string, string[]> = { FETCH_HEAD: [tip], [cut]: [cut, older], [oldest]: [oldest, root] };
+    const parents: Record<string, string[]> = { [tip]: [cut, oldest], [older]: [oldest], [root]: [] };
+    const history = (oldEnough: string) => (args: string[]): string => {
+      const from = args.at(-1)!;
+      if (args[0] === 'rev-list') return args[1] === '-1' ? (from === oldEnough ? `${found}\n` : '') : `${fetched[from].join('\n')}\n`;
+      if (args[0] === 'cat-file') return `tree ${'0'.repeat(40)}\n${parents[from].map(p => `parent ${p}\n`).join('')}author A <a@b> 1 +0000\n\nMessage\nparent ${'9'.repeat(40)}\n`;
+      return '';
+    };
+    const dipsDir = join(cacheDir, 'dashpay', 'dips');
+    const load = (output: (args: string[]) => string, at = asOf) => {
+      rmSync(stateDir, { recursive: true });
+      mkdirSync(stateDir);
+      calls = [];
+      return relatedRepoLoader({ repos: [DIPS], cacheDir, stateDir, asOf: at }, { run: fakeGit({}, output), log })('dashpay/dips');
+    };
+    const fetch = (depth: string, commit: string) => ['fetch', '-q', '--depth', depth, '--filter=blob:none', '--no-tags', 'origin', commit];
+    const fromFetch = () => calls.map(c => c.args).slice(calls.findIndex(c => c.args[0] === 'fetch'));
+    const walk = (from: string) => [['rev-list', '-1', '--first-parent', before, from], ['rev-list', '--first-parent', from]];
+
+    expect(await load(history(oldest))).toBe(dipsDir);
+    expect(fromFetch()).toEqual([
+      fetch('1', 'HEAD'), ...walk('FETCH_HEAD'), ['cat-file', 'commit', tip],
+      fetch('64', cut), ...walk(cut), ['cat-file', 'commit', older],
+      fetch('128', oldest), walk(oldest)[0],
+      ['checkout', '-q', '--force', '--detach', found],
+      ['repack', '-a', '-d', '-q'],
+    ]);
+    expect(log).toHaveBeenCalledWith(`Fetched related repo dashpay/dips as of ${asOf}`);
+
+    // A newest commit that is old enough is checked out without another fetch.
+    expect(await load(history('FETCH_HEAD'))).toBe(dipsDir);
+    expect(fromFetch()).toEqual([fetch('1', 'HEAD'), walk('FETCH_HEAD')[0], ['checkout', '-q', '--force', '--detach', found], ['repack', '-a', '-d', '-q']]);
+
+    // A history without a commit that old fails the repo, and so does a time that is no date.
+    await expect(load(history('none'))).rejects.toThrow(`it has no commit as old as ${asOf}`);
+    expect(calls.map(c => c.args).slice(-2)).toEqual([walk(oldest)[1], ['cat-file', 'commit', root]]);
+    await expect(load(history('none'), 'last week')).rejects.toThrow('`last week` is not a date');
+    expect(existsSync(dipsDir)).toBe(false);
   });
 
   it('waits for another tool server that is fetching the repo, takes its outcome, and records a failure when it stops or hangs', async () => {

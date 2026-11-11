@@ -11,6 +11,8 @@ import { gitEnv } from './workspace';
 const FETCH_TIMEOUT_MS = 60_000;
 const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
+/** Commits the first fetch of an older history reaches back. Each further fetch reaches twice as far. */
+const AS_OF_DEPTH = 64;
 // Git sends no credential, so a private repo fails, and runs no hook or fsmonitor of a clone.
 const GIT_CONFIG = { 'credential.helper': '', 'core.hooksPath': devNull, 'core.fsmonitor': 'false' };
 /** The files that can be a repo's guide, at its root. The first one found is the guide. */
@@ -35,7 +37,7 @@ export function relatedReposCacheDir(): string {
  * the others of the round wait for it.
  */
 export function relatedRepoLoader(
-  { repos, cacheDir, stateDir }: RelatedRepoTools,
+  { repos, cacheDir, stateDir, asOf }: RelatedRepoTools,
   { timeoutMs = FETCH_TIMEOUT_MS, run = runTool, log = message => process.stderr.write(`${message}\n`) }: RelatedRepoLoaderOptions = {},
 ): (name: string) => Promise<string> {
   const checkouts = new Map<string, Promise<string>>();
@@ -44,7 +46,7 @@ export function relatedRepoLoader(
     if (!repo) return Promise.reject(new Error(`${name} is not a related repo`));
     let checkout = checkouts.get(name);
     if (!checkout) {
-      checkout = sharedCheckout(repo, join(stateDir, encodeURIComponent(name)), timeoutMs, () => checkoutRelatedRepo(repo, cacheDir, timeoutMs, run, log));
+      checkout = sharedCheckout(repo, join(stateDir, encodeURIComponent(name)), timeoutMs, () => checkoutRelatedRepo(repo, cacheDir, timeoutMs, run, log, asOf));
       checkouts.set(name, checkout);
     }
     return checkout;
@@ -158,21 +160,47 @@ export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guid
   });
 }
 
+type Git = (...args: string[]) => Promise<string>;
+
+/**
+ * Returns the newest commit made at or before `asOf` on the first-parent history of the fetched commit. A shallow
+ * fetch holds only that commit, so the history is fetched in chunks, each from the commit the last one stopped at and
+ * twice as deep. Throws when `asOf` is no date or no commit is that old.
+ */
+async function commitAsOf(git: Git, asOf: string): Promise<string> {
+  const seconds = Math.floor(Date.parse(asOf) / 1000);
+  if (Number.isNaN(seconds)) throw new Error(`\`${asOf}\` is not a date`);
+  let from = 'FETCH_HEAD';
+  for (let depth = AS_OF_DEPTH; ; depth *= 2) {
+    const found = (await git('rev-list', '-1', '--first-parent', `--before=${seconds}`, from)).trim();
+    if (found) return found;
+    const oldest = (await git('rev-list', '--first-parent', from)).trim().split('\n').at(-1)!;
+    // The shallow fetch hides the parents of `oldest` from `rev-list`, and the commit object still names them.
+    const parent = /^parent ([0-9a-f]+)$/m.exec((await git('cat-file', 'commit', oldest)).split('\n\n', 1)[0])?.[1];
+    if (!parent) throw new Error(`it has no commit as old as ${asOf}`);
+    // A fetch with a depth asks the server even for a commit the cache holds, so the history always ends at a commit `rev-list` stops at.
+    await git('fetch', '-q', '--depth', String(depth), '--filter=blob:none', '--no-tags', 'origin', parent);
+    from = parent;
+  }
+}
+
 /**
  * Fetches one commit of `repo`, with only its `paths` and `GUIDE_FILES`, into its directory under `cacheDir`, reusing the objects of a
- * clone already there, and returns that directory. Throws when it cannot be fetched in time, as a private or missing
- * repo cannot.
+ * clone already there, and returns that directory. The commit is the newest of its `ref`, or with `asOf` the one
+ * `commitAsOf` returns. Throws when it cannot be fetched in time, as a private or missing repo cannot.
  */
-async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutMs: number, run: typeof runTool, log: (message: string) => void): Promise<string> {
+async function checkoutRelatedRepo(
+  repo: RelatedRepo, cacheDir: string, timeoutMs: number, run: typeof runTool, log: (message: string) => void, asOf?: string,
+): Promise<string> {
   const dir = resolve(cacheDir, ...repo.repo.split('/'));
   if (!dir.startsWith(resolve(cacheDir) + sep)) throw new Error('not an "owner/name" repo');
   const deadline = Date.now() + timeoutMs;
-  const git = async (...args: string[]): Promise<void> => {
+  const git: Git = async (...args) => {
     const remaining = deadline - Date.now();
-    const { code, stderr } = remaining > 0
+    const { code, stdout, stderr } = remaining > 0
       ? await run('git', args, dir, { env: gitEnv(GIT_CONFIG), timeoutMs: remaining })
-      : { code: -1, stderr: '' };
-    if (code === 0) return;
+      : { code: -1, stdout: '', stderr: '' };
+    if (code === 0) return stdout;
     if (Date.now() >= deadline) throw new Error(`git did not finish within ${timeoutMs / 1000}s`);
     throw new Error(stderr.trim().split('\n').filter(line => !line.startsWith('notice:')).at(-1) || `\`git ${args.find(arg => /^[a-z][a-z-]*$/.test(arg))}\` exited with ${code}`);
   };
@@ -191,10 +219,10 @@ async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutM
     await initReusingObjects(dir, init, git, log);
     await git(...(repo.paths ? ['sparse-checkout', 'set', '--no-cone', ...[...GUIDE_FILES, ...repo.paths].map(sparsePattern)] : ['sparse-checkout', 'disable']));
     await git('fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', repo.ref ?? 'HEAD');
-    await git('checkout', '-q', '--force', '--detach', 'FETCH_HEAD');
+    await git('checkout', '-q', '--force', '--detach', asOf ? await commitAsOf(git, asOf) : 'FETCH_HEAD');
     // With no refs to negotiate from, the fetch sends every tree of a new commit again. Repacking keeps one copy in the cache.
     await git('repack', '-a', '-d', '-q').catch(error => log(`Could not repack ${dir}: ${messageOf(error)}`));
-    log(`Fetched related repo ${repo.repo}${repo.ref ? ` at ${repo.ref}` : ''}`);
+    log(`Fetched related repo ${repo.repo}${repo.ref ? ` at ${repo.ref}` : ''}${asOf ? ` as of ${asOf}` : ''}`);
     return dir;
   } catch (error) {
     if ([cacheDir, dirname(dir)].every(isRealDirectory)) removeQuietly(dir, log);
@@ -207,7 +235,7 @@ async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutM
  * once `git fsck` finds every object intact. Whoever can write the cache can write the rest of `.git`, such as its config.
  */
 async function initReusingObjects(
-  dir: string, init: () => Promise<void>, git: (...args: string[]) => Promise<void>, log: (message: string) => void,
+  dir: string, init: () => Promise<void>, git: Git, log: (message: string) => void,
 ): Promise<void> {
   const objects = join(dir, '.git', 'objects');
   // `@` cannot occur in a repo name, so the stash never collides with another repo's directory.

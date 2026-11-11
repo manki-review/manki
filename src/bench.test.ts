@@ -496,6 +496,11 @@ describe('runBench and buildReport', () => {
     const followUp = { ...benchCase, priorRound: { head: benchCase.base, findings: [] } };
     await runBench([followUp], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: baseReview });
     expect(baseReview.mock.calls[1][0].earlier).toBe(followUp.priorRound);
+    // The related repos are read as of the oldest author date of the change, which a replayed commit keeps.
+    git('commit', '-q', '--allow-empty', '--date=2026-01-05T10:00:00Z', '-m', 'replayed change');
+    git('commit', '-q', '--allow-empty', '--date=2026-03-01T10:00:00Z', '-m', 'fix after the review');
+    await runBench([{ ...benchCase, base: benchCase.head, head: git('rev-parse', 'HEAD') }], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: baseReview });
+    expect(Date.parse(baseReview.mock.calls[2][0].relatedReposAsOf!)).toBe(Date.parse('2026-01-05T10:00:00Z'));
     const [{ variant, results }] = await runBench([benchCase], { runs: 5, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review, onCase, variants: [{ name: 'opus', overrides }] });
 
     expect(review).toHaveBeenCalledTimes(5);

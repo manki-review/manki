@@ -640,6 +640,8 @@ export interface ReviewOptions {
   relatedWork?: RelatedWork;
   /** The changed lockfiles Manki parsed into package lists. `exclude_paths` can leave their files out of `diff`. */
   lockfiles?: LockfileDiff[];
+  /** Reads the related repos as they were at this ISO 8601 time. A pull request round sets none and reads their newest commit. */
+  relatedReposAsOf?: string;
 }
 
 export async function runReview(
@@ -733,7 +735,7 @@ export async function runReview(
   const memoryContext = memory ? buildMemoryContext(memory, new Set(diff.files.map(f => f.path))) : '';
   const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f.model), 'reviewer', f.name)]));
   const related: RelatedRepoTools | undefined = workspace && config.related_repos?.length && [...finderClients.values()].some(c => c.repoTools)
-    ? { repos: config.related_repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related') }
+    ? { repos: config.related_repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(options.relatedReposAsOf && { asOf: options.relatedReposAsOf }) }
     : undefined;
   const changedSinceLastRound = filesChangedSinceLastRound(diffWithLockfiles, priorRounds, interRoundDiff);
   if (changedSinceLastRound) recorded.changedSinceLastRoundCount = changedSinceLastRound.length;

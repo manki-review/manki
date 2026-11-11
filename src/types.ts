@@ -1077,6 +1077,11 @@ export interface RelatedRepoTools {
   stateDir: string;
   /** The guide file at the root of each repo fetched before the finders run, by `owner/name`. Only the prompt uses it. */
   guides?: Record<string, string>;
+  /**
+   * Reads each repo as it was at this ISO 8601 time: the newest commit made by then on the first-parent history of
+   * its `ref`. Unset reads the newest commit, as a pull request round does.
+   */
+  asOf?: string;
 }
 
 export interface StaticAnalysisConfig {

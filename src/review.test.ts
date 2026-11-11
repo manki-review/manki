@@ -2062,9 +2062,12 @@ describe('runReview', () => {
       // No related repo was fetched before the finders ran, so the prompt gets no guide to name.
       expect(first?.related).not.toHaveProperty('guides');
       expect(rest).toEqual([undefined, undefined, { root: '/work/pr-head', steps: 40 }, { root: '/work/pr-head', steps: 40 }]);
+      // A review of a change made earlier reads the related repos as they were then.
+      await runReview(clients, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head', relatedReposAsOf: '2026-10-03T11:20:50Z' });
+      expect(jest.mocked(clients.reviewer.sendMessage).mock.calls.at(-1)![2]?.repoTools?.related).toEqual({ ...first!.related, stateDir: expect.stringContaining('manki-related-'), asOf: '2026-10-03T11:20:50Z' });
       expect(jest.mocked(withoutTools.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools)).toEqual([undefined, undefined]);
       // The judge gets the related repo rules only for a round whose finders could read them.
-      expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].relatedRepos)).toEqual([related_repos, undefined, undefined, undefined]);
+      expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].relatedRepos)).toEqual([related_repos, undefined, undefined, undefined, related_repos]);
       expect(warnSpy).toHaveBeenCalledWith('Could not fetch related repo o/r, which must be public on github.com: fatal: repository not found');
       const notes = mockedRunJudgeAgent.mock.calls.map(call => call[2].findings[0]?.toolEvidence?.note);
       expect(notes[0]).toContain('`o/s:lib.rs:1` is in the fetched checkout, `o/r:x.rs:3` is unchecked: o/r was not fetched this round');
