@@ -325,7 +325,7 @@ export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: 
 }
 
 /**
- * Moves the notes the review leaves out from `result.findings` to `result.unpostedNotes`: a note that restates a finding
+ * Moves the notes the review leaves out from `result.findings` to `result.unposted`: a note that restates a finding
  * an earlier round listed, and a note on code an earlier round reviewed. `compared` is the PR's change when the round
  * read both the earlier round's change and the diff since. A note on reviewed code is left out only in one of its files,
  * since no other line was compared. A security finding, a tool alert and a note that goes into an earlier thread stay.
@@ -349,7 +349,7 @@ export function hideSeenNotes(result: ReviewResult, compared: ParsedDiff | undef
   }
   if (hidden.length === 0) return;
   result.findings = shown;
-  result.unpostedNotes = hidden;
+  result.unposted = [...(result.unposted ?? []), ...hidden];
 }
 
 /** Sets each finding's `codeContext` to the hunk lines around its line, when that line is in the diff. */

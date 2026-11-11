@@ -2610,7 +2610,7 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
   const warnings = [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => e.citedLine && !e.threadId);
   const judged: Array<[CarriedEndReason, Finding[]]> = [
     ['restated', result.findings],
-    ['hidden_note', result.unpostedNotes ?? []],
+    ['hidden_note', result.unposted ?? []],
     ['judge_dropped', (result.allJudgedFindings ?? []).filter(f => f.severity === 'ignore')],
     ['left_out', result.allJudgedFindings ?? []],
   ];

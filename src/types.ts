@@ -801,8 +801,8 @@ export interface ReviewResult {
   memoryLoaded?: { learnings: number; suppressions: number };
   /** Pre-existing findings not worth posting, such as notes. Only the round record keeps them. */
   unpostedPreExisting?: Finding[];
-  /** The notes the review leaves out, each with `unpostedReason`. Only the round record keeps them. */
-  unpostedNotes?: Finding[];
+  /** The findings the review leaves out, each with `unpostedReason`. Only the round record keeps them. */
+  unposted?: Finding[];
   /**
    * The warnings an earlier round listed only in its review body, which this round lists again in one short list. No
    * finding of this round names them, and the line each points at still reads as it did. They are no findings of the

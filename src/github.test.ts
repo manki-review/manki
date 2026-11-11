@@ -4435,13 +4435,13 @@ describe('postReview non-blocking findings', () => {
 
     // A line says how many notes are over the limit, under the listed notes or alone when the review lists none.
     const leftOut = [nonBlocking('note', 'Left out', 11, { unpostedReason: 'note_cap' }), nonBlocking('note', 'Also left out', 12, { unpostedReason: 'note_cap' })];
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([nonBlocking('note', 'Typo in name', 7)]), unpostedNotes: leftOut }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([nonBlocking('note', 'Typo in name', 7)]), unposted: leftOut }, diff);
     // A note left out for another reason is not counted.
     const seen = [nonBlocking('note', 'Reviewed', 13, { unpostedReason: 'reviewed_code' }), nonBlocking('note', 'Listed', 14, { unpostedReason: 'listed_earlier' })];
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([nonBlocking('note', 'Typo in name', 7)]), unpostedNotes: [leftOut[0], ...seen] }, diff);
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unpostedNotes: [leftOut[0], ...seen] }, diff);
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unpostedNotes: leftOut }, diff);
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unpostedNotes: seen }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([nonBlocking('note', 'Typo in name', 7)]), unposted: [leftOut[0], ...seen] }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: [leftOut[0], ...seen] }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: leftOut }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: seen }, diff);
     const [, under, underOne, alone, aloneMany, uncapped] = createReview.mock.calls.map(call => call[0].body as string);
     expect(under).toMatch(/ -->\n\n<\/details>\n\n<sub>2 more notes are not listed\.<\/sub>/);
     expect(underOne).toContain('</details>\n\n<sub>1 more note is not listed.</sub>');
@@ -4512,34 +4512,34 @@ describe('postReview non-blocking findings', () => {
     const hidden = nonBlocking('note', 'Hidden by another rule', 90);
 
     // Without an order from the judge, the notes keep the order they came in.
-    const unranked: ReviewResult = { ...buildResult([...findings]), unpostedNotes: [hidden] };
+    const unranked: ReviewResult = { ...buildResult([...findings]), unposted: [hidden] };
     capNotes(unranked, existingThreads);
     expect(titles(unranked.findings)).toEqual([...others, 'Note one', 'Note two', 'Note three']);
-    expect(unranked.unpostedNotes).toEqual([hidden, { ...findings[7], unpostedReason: 'note_cap' }, { ...findings[8], unpostedReason: 'note_cap' }]);
+    expect(unranked.unposted).toEqual([hidden, { ...findings[7], unpostedReason: 'note_cap' }, { ...findings[8], unpostedReason: 'note_cap' }]);
 
     // The judge's order decides which notes are listed. A note it did not rank comes after the ranked ones.
     const ranks: Record<string, number> = { 'Note five': 0, 'Note three': 1, 'Deferred warning': 2, 'Note one': 4 };
     const ranked = buildResult(findings.map(f => (f.title in ranks ? { ...f, noteRank: ranks[f.title] } : f)));
     capNotes(ranked, existingThreads);
     expect(titles(ranked.findings)).toEqual([...others, 'Note five', 'Note three', 'Note one']);
-    expect(titles(ranked.unpostedNotes)).toEqual(['Note two', 'Note four']);
+    expect(titles(ranked.unposted)).toEqual(['Note two', 'Note four']);
 
     const none = buildResult([...findings]);
     capNotes(none, existingThreads, 0);
     expect(titles(none.findings)).toEqual(others);
-    expect(titles(none.unpostedNotes)).toEqual(['Note one', 'Note two', 'Note three', 'Note four', 'Note five']);
+    expect(titles(none.unposted)).toEqual(['Note one', 'Note two', 'Note three', 'Note four', 'Note five']);
 
     const all = buildResult([...findings]);
     capNotes(all, existingThreads, 5);
     expect(titles(all.findings)).toEqual([...others, 'Note one', 'Note two', 'Note three', 'Note four', 'Note five']);
-    expect(all.unpostedNotes).toBeUndefined();
+    expect(all.unposted).toBeUndefined();
 
     // A tool alert is listed in the judge's order with the notes, takes no place and is never left out.
     const alerts = [nonBlocking('note', 'Unused import', 12, { toolSource: 'eslint', noteRank: 2 }), nonBlocking('note', 'Shadowed name', 13, { toolSource: 'eslint' })];
     const withAlerts = buildResult([alerts[0], ...findings.map(f => (f.title in ranks ? { ...f, noteRank: ranks[f.title] } : f)), alerts[1]]);
     capNotes(withAlerts, existingThreads, 2);
     expect(titles(withAlerts.findings)).toEqual([...others, 'Note five', 'Note three', 'Unused import', 'Shadowed name']);
-    expect(titles(withAlerts.unpostedNotes)).toEqual(['Note one', 'Note two', 'Note four']);
+    expect(titles(withAlerts.unposted)).toEqual(['Note one', 'Note two', 'Note four']);
     const onlyAlerts = buildResult([...alerts, ...findings]);
     capNotes(onlyAlerts, existingThreads, 0);
     expect(titles(onlyAlerts.findings)).toEqual([...others, 'Unused import', 'Shadowed name']);

@@ -1622,7 +1622,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   // Kept findings are copies of the judged ones, so a judged finding counts as kept by its file, line and title.
   const keptKeys = new Set(result.findings.map(findingKey));
   const unpostedReasons = new Map<string, UnpostedReason | undefined>([
-    ...(result.unpostedNotes ?? []).map(f => [findingKey(f), f.unpostedReason] as const),
+    ...(result.unposted ?? []).map(f => [findingKey(f), f.unpostedReason] as const),
     ...(result.unpostedPreExisting ?? []).map(f => [findingKey(f), 'pre_existing'] as const),
     ...(result.memorySuppressed ?? []).map(f => [findingKey(f), 'memory_suppression'] as const),
     ...(result.staticSignalMatches ?? []).map(m => [findingKey({ ...m, title: m.droppedTitle }), 'static_signal_match'] as const),

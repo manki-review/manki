@@ -1497,7 +1497,7 @@ function carriedBy(finding: Finding, existingThreads: PreviousFinding[]): string
 
 /**
  * Puts the notes of `result.findings` last, in the judge's order, and keeps the first `limit` of them. The others move
- * to `result.unpostedNotes`, marked `note_cap`. A note the judge did not rank follows the ranked ones, in the order
+ * to `result.unposted`, marked `note_cap`. A note the judge did not rank follows the ranked ones, in the order
  * returned. A tool alert is listed with the notes and counts toward no limit. A note an earlier thread carries is not
  * listed, so it stays in place and counts toward no limit.
  */
@@ -1507,7 +1507,7 @@ export function capNotes(result: ReviewResult, existingThreads: PreviousFinding[
   const ordered = [...listable].sort((a, b) => rank(a) - rank(b));
   const capped = new Set(ordered.filter(canLeaveOut).slice(limit));
   result.findings = [...result.findings.filter(f => !listable.has(f)), ...ordered.filter(f => !capped.has(f))];
-  if (capped.size > 0) result.unpostedNotes = [...(result.unpostedNotes ?? []), ...[...capped].map((f): Finding => ({ ...f, unpostedReason: 'note_cap' }))];
+  if (capped.size > 0) result.unposted = [...(result.unposted ?? []), ...[...capped].map((f): Finding => ({ ...f, unpostedReason: 'note_cap' }))];
 }
 
 /** Whether the review lists the finding as a note. A security finding below `warning` keeps its thread instead. */
@@ -1708,7 +1708,7 @@ export async function postReview(
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
       formatCarriedWarnings(carried),
-      formatNotesSection(notes, result.unpostedNotes ?? [], links),
+      formatNotesSection(notes, result.unposted ?? [], links),
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
       formatRelatedWork(result.relatedWork, owner, repo),

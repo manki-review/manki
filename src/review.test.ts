@@ -6131,7 +6131,7 @@ describe('carryBodyWarnings', () => {
   it('ends a carried warning that a finding of the round names, and records how that finding ended', async () => {
     const named = await carry([first], then, {
       findings: [finding('Loop has no cap', 80, { sameAs: keyOf(retry) })],
-      unpostedNotes: [finding('Nothing is returned', 3, { severity: 'note' })],
+      unposted: [finding('Nothing is returned', 3, { severity: 'note' })],
       allJudgedFindings: [finding('Check runs twice', 2, { severity: 'ignore', file: 'src/y.ts' })],
     });
     expect([named.titles, named.ended]).toEqual([undefined, ['restated', 'hidden_note', 'judge_dropped']]);
