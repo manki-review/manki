@@ -861,13 +861,13 @@ export function buildJudgeUserMessage(
             ...(isGradeCell(f.cell) && { row: f.cell.row, column: f.cell.column }),
             title: (f.title ?? '').replace(/[\r\n]/g, ' ').replace(/`/g, '').slice(0, 200),
             authorReply: f.authorReplyClass ?? 'none',
-            ...(f.gradeIfConfirmed && f.gradeIfConfirmed !== f.severity && { gradeIfConfirmed: f.gradeIfConfirmed }),
+            ...(f.gradeIfConfirmed && f.gradeIfConfirmed !== f.severity && !unprovenRuleFact(f) && { gradeIfConfirmed: f.gradeIfConfirmed }),
             ...(f.doubts && {
-              doubts: f.doubts.map((d, i) => ({
+              doubts: f.doubts.flatMap((d, i) => d.premise === unprovenRuleFact(f) ? [] : [{
                 premise: d.premise.replace(/[\r\n]/g, ' ').replace(/`/g, '').slice(0, MAX_DOUBT_CHARS),
                 decides: d.decides,
                 check: premiseCheck([f.refutation, f.pairRefutation], i),
-              })),
+              }]),
             }),
           })),
       }))
@@ -890,7 +890,7 @@ export function buildJudgeUserMessage(
     priorFindings.forEach(({ entry, round }, i) => {
       const cell = isGradeCell(entry.cell) ? `, row ${entry.cell.row}, column ${entry.cell.column}` : '';
       // A doubt capped this grade below its cell's, and an entry older than the recent rounds is listed only here.
-      const pending = entry.gradeIfConfirmed && entry.gradeIfConfirmed !== entry.severity ? `, gradeIfConfirmed ${entry.gradeIfConfirmed}` : '';
+      const pending = entry.gradeIfConfirmed && entry.gradeIfConfirmed !== entry.severity && !unprovenRuleFact(entry) ? `, gradeIfConfirmed ${entry.gradeIfConfirmed}` : '';
       parts.push(`- **P${i + 1}** (round ${round}, ${entry.severity}${pending}${cell}): "${sanitize(entry.title ?? '')}" at ${sanitize(entry.fingerprint.file)}:${entry.fingerprint.lineStart}`);
     });
     parts.push('');
@@ -1705,6 +1705,14 @@ function doubtUnprovenRule(finding: Finding, rules?: RulesMode): Finding {
   const { rule } = finding;
   if (rule?.verdict !== 'unproven' || !rule.unseen || !isNote(finding.severity)) return finding;
   return { ...finding, gradeIfConfirmed: ruleGrade(rules), doubts: [...(finding.doubts ?? []), { premise: rule.unseen, decides: 'defect' }] };
+}
+
+/**
+ * Returns the fact `doubtUnprovenRule` made a doubt of an earlier round's note, whose `gradeIfConfirmed` is then the rule's grade.
+ * The damage earned neither, so a later judge is shown neither and answers the rule in its own fields.
+ */
+function unprovenRuleFact(entry: Pick<FindingFingerprintEntry, 'severity' | 'rule'>): string | undefined {
+  return entry.severity === 'note' && entry.rule?.verdict === 'unproven' ? entry.rule.unseen : undefined;
 }
 
 /** Returns the rule a merged finding keeps: a confirmed one before any other, and the survivor's before the copy's. */
