@@ -119,7 +119,7 @@ export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', '
 /** How many notes a review lists when `review.notes` is not set. */
 export const DEFAULT_NOTES = 3;
 
-export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'critical_paths', 'outside_input', 'examples', 'sweep', 'notes']);
+export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'critical_paths', 'outside_input', 'examples', 'sweep', 'notes', 'rules']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus', 'role']);
 const EFFORT_CHOICES = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
@@ -592,6 +592,7 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
   }
   if ('sweep' in review && typeof review.sweep !== 'boolean') errors.push('`review.sweep` must be true or false');
   if ('notes' in review && !(Number.isInteger(review.notes) && (review.notes as number) >= 0)) errors.push('`review.notes` must be a non-negative integer');
+  if ('rules' in review && review.rules !== 'warn' && review.rules !== 'block') errors.push('`review.rules` must be `warn` or `block`');
   if ('examples' in review) {
     const examples = review.examples;
     if (!isObject(examples) || Object.keys(examples).length === 0) {

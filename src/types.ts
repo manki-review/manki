@@ -358,9 +358,30 @@ export interface Finding {
   preExisting?: string;
   /** How a claim in `preExisting` was checked against the diff: held, or the condition that failed. */
   preExistingCheck?: PreExistingCheck;
-  /** The required rule the reviewer says the change breaks: the loaded instruction file and the rule quoted from it. */
-  rule?: { file: string; quote: string };
+  /** The rule of an instruction file the reviewer says the change breaks. Only a `confirmed` one counts in the grade. */
+  rule?: RuleMark;
 }
+
+/**
+ * What the judge said about a quoted rule: `confirmed` when the quote states a requirement, this PR breaks it, the
+ * judge names no doubt that the defect exists and a proving line is cited. Any other answer names the first check that failed.
+ */
+export type RuleVerdict = 'confirmed' | 'no_requirement' | 'not_broken' | 'unproven';
+
+/** A rule quoted from an instruction file of the base branch, with the judge's answer once the judge saw the finding. */
+export interface RuleMark {
+  file: string;
+  quote: string;
+  verdict?: RuleVerdict;
+}
+
+/** Whether the judge confirmed that `finding` breaks a required rule of the instruction files. */
+export function breaksRule(finding: Pick<Finding, 'rule'>): boolean {
+  return finding.rule?.verdict === 'confirmed';
+}
+
+/** How a broken required rule is graded, the `review.rules` setting: `warn` posts a warning, `block` a blocker. */
+export type RulesMode = 'warn' | 'block';
 
 /**
  * How a pre-existing claim the reviewer made and the judge kept was checked: `pre_existing` when it held, or the
@@ -546,7 +567,7 @@ export interface RoundSlicing {
 
 /** What changed a finding's severity. */
 export type GradeChange =
-  | 'judge' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'contradiction' | 'ratchet'
+  | 'judge' | 'rule' | 'unproven' | 'build_claim' | 'refutation' | 'in_pr_suppression' | 'own_proposal' | 'contradiction' | 'ratchet'
   | 'resolved_thread' | 'pre_existing';
 
 /** One change of a finding's severity. */
@@ -1032,6 +1053,8 @@ export interface ReviewRoutingConfig {
   sweep?: boolean;
   /** How many notes a review lists at most. */
   notes?: number;
+  /** Whether a broken required rule of the instruction files is posted as a warning (`warn`) or blocks (`block`). */
+  rules?: RulesMode;
 }
 
 /** How a round's review group was picked. */

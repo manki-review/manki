@@ -1,0 +1,97 @@
+{
+  "name": "flag-docs-and-unseen-file",
+  "repoContext": "## AGENTS.md\n\n# fetchq agent guide\n\n## Rules for changes\n\n- Every new command-line flag must be listed in `docs/cli.md`, with its default.\n- Every environment variable the binary reads must be listed in `.env.example`.\n\n## Tests\n\nFlag parsing is covered by the tests in `tests/cli.rs`, which run the binary with `assert_cmd`.\n",
+  "findings": [
+    {
+      "title": "The new `--timeout` flag is not listed in `docs/cli.md`",
+      "file": "src/cli.rs",
+      "line": 18,
+      "description": "The PR adds the `--timeout` flag with a default of 30 and changes only `src/cli.rs` and `src/client.rs`. `AGENTS.md` requires every new flag to be listed in `docs/cli.md` with its default. Add the flag to `docs/cli.md`.",
+      "severity": "warning",
+      "reviewers": [
+        "Correctness"
+      ],
+      "rule": {
+        "file": "AGENTS.md",
+        "quote": "Every new command-line flag must be listed in `docs/cli.md`, with its default."
+      },
+      "evidence": {
+        "checks": [
+          "The diff changes `src/cli.rs` and `src/client.rs` only"
+        ],
+        "proof": [
+          "src/cli.rs:16-18"
+        ],
+        "emptySearch": "The PR's changed files do not include `docs/cli.md`"
+      }
+    },
+    {
+      "title": "`FETCHQ_TOKEN` is not listed in `.env.example`",
+      "file": "src/client.rs",
+      "line": 14,
+      "description": "The client now reads `FETCHQ_TOKEN`. `AGENTS.md` requires every environment variable the binary reads to be listed in `.env.example`, and the PR does not change that file.",
+      "severity": "warning",
+      "reviewers": [
+        "Correctness"
+      ],
+      "rule": {
+        "file": "AGENTS.md",
+        "quote": "Every environment variable the binary reads must be listed in `.env.example`."
+      },
+      "evidence": {
+        "checks": [],
+        "proof": []
+      }
+    },
+    {
+      "title": "The new flag has no test in `tests/cli.rs`",
+      "file": "src/cli.rs",
+      "line": 17,
+      "description": "`AGENTS.md` says flag parsing is covered by `tests/cli.rs`, and the PR adds `--timeout` without a test there.",
+      "severity": "note",
+      "reviewers": [
+        "Correctness"
+      ],
+      "rule": {
+        "file": "AGENTS.md",
+        "quote": "Flag parsing is covered by the tests in `tests/cli.rs`, which run the binary with `assert_cmd`."
+      },
+      "evidence": {
+        "checks": [],
+        "proof": [
+          "src/cli.rs:17"
+        ]
+      }
+    }
+  ],
+  "prDiff": "diff --git a/src/cli.rs b/src/cli.rs\nindex 4444444..5555555 100644\n--- a/src/cli.rs\n+++ b/src/cli.rs\n@@ -12,6 +12,10 @@ pub struct Args {\n     /// Number of parallel downloads.\n     #[arg(long, default_value_t = 4)]\n     pub jobs: usize,\n+\n+    /// Seconds to wait for a response before giving up.\n+    #[arg(long, default_value_t = 30)]\n+    pub timeout: u64,\n \n     /// URLs to fetch.\n     pub urls: Vec<String>,\ndiff --git a/src/client.rs b/src/client.rs\nindex 6666666..7777777 100644\n--- a/src/client.rs\n+++ b/src/client.rs\n@@ -8,7 +8,11 @@ pub fn build(args: &Args) -> Result<Client, Error> {\n     let mut builder = Client::builder()\n-        .user_agent(USER_AGENT);\n+        .user_agent(USER_AGENT)\n+        .timeout(Duration::from_secs(args.timeout));\n     if let Ok(proxy) = std::env::var(\"FETCHQ_PROXY\") {\n         builder = builder.proxy(Proxy::all(proxy)?);\n     }\n+    if let Ok(token) = std::env::var(\"FETCHQ_TOKEN\") {\n+        builder = builder.default_headers(bearer(&token)?);\n+    }\n     builder.build()\n }\n",
+  "expected": {
+    "The new `--timeout` flag is not listed in `docs/cli.md`": {
+      "verdicts": [
+        "confirmed"
+      ],
+      "grades": [
+        "warning"
+      ]
+    },
+    "`FETCHQ_TOKEN` is not listed in `.env.example`": {
+      "verdicts": [
+        "not_broken",
+        "unproven"
+      ],
+      "grades": [
+        "note",
+        "ignore"
+      ]
+    },
+    "The new flag has no test in `tests/cli.rs`": {
+      "verdicts": [
+        "no_requirement"
+      ],
+      "grades": [
+        "note",
+        "ignore"
+      ]
+    }
+  }
+}

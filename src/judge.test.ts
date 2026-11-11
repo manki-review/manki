@@ -30,7 +30,7 @@ import { unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation, isNote } from './types';
+import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, ThreadEvaluation, isNote } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -2058,6 +2058,69 @@ describe('runJudgeAgent', () => {
     ]);
   });
 
+  it('grades a finding that quotes a rule by the judge\'s two answers: a warning by default, a blocker with `review.rules: block`, and by its cell alone when not confirmed', async () => {
+    const rule = { file: 'CONTRIBUTING.md', quote: 'Every model change\nneeds a `migration`.' };
+    const titles = [
+      'Field without migration', 'Advice quoted', 'Rule kept', 'Doubted', 'No line cited', 'Dropped', 'Real defect too',
+      'Missing without a search', 'No rule quoted', 'Schema drift', 'Schema drift, second finder',
+    ];
+    const findings = titles.map(title => makeFinding({
+      title,
+      ...(title !== 'No rule quoted' && title !== 'Schema drift' && { rule }),
+      ...(title === 'No line cited' && { evidence: { checks: [], proof: [] } }),
+      ...(title === 'Missing without a search' && { evidence: { checks: [], proof: ['src/index.ts:10'], emptySearch: '' } }),
+    }));
+    const yes = { ruleIsRequirement: true, ruleBroken: true };
+    const answers: Record<string, Record<string, unknown>> = {
+      'Field without migration': yes,
+      'Advice quoted': { ruleBroken: true },
+      'Rule kept': { ruleIsRequirement: true },
+      'Doubted': { ...yes, doubts: [{ premise: 'No migration exists outside the diff', decides: 'defect' }] },
+      'No line cited': yes,
+      'Dropped': { ...yes, row: 'ignore' },
+      'Real defect too': { ...yes, row: 'wrong' },
+      'Missing without a search': yes,
+      'No rule quoted': yes,
+      'Schema drift': {},
+      'Schema drift, second finder': { ...yes, duplicateOf: 10 },
+    };
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({
+      summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', confidence: 'high', ...answers[title] })),
+    }) });
+    const input: JudgeInput = { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 2 };
+    const graded = async (rules?: 'warn' | 'block') => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), input)).findings
+      .map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', ')]);
+
+    const expected = (grade: 'warning' | 'blocker') => [
+      ['Field without migration', grade, 'confirmed', `rule: ${grade}`],
+      ['Advice quoted', 'note', 'no_requirement', undefined],
+      ['Rule kept', 'note', 'not_broken', undefined],
+      ['Doubted', 'note', 'unproven', undefined],
+      ['No line cited', 'note', 'unproven', undefined],
+      ['Dropped', 'ignore', 'unproven', 'judge: ignore'],
+      // The cell already gives a blocker, so the rule changes nothing.
+      ['Real defect too', 'blocker', 'confirmed', 'judge: blocker'],
+      // A rule blocker passes the caps of any blocker, so one that says something is missing without a search is a warning.
+      ['Missing without a search', 'warning', 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning' : 'rule: warning'],
+      ['No rule quoted', 'note', undefined, undefined],
+      // A folded copy's confirmed rule goes to the finding that stays.
+      ['Schema drift', grade, 'confirmed', `rule: ${grade}`],
+    ];
+    expect(await graded()).toEqual(expected('warning'));
+    expect(await graded('warn')).toEqual(expected('warning'));
+    expect(await graded('block')).toEqual(expected('blocker'));
+
+    const [system, user] = mockSendMessage.mock.calls[0];
+    expect(user.split("- **Quoted rule**, from `CONTRIBUTING.md`: Every model change needs a 'migration'.")).toHaveLength(10);
+    expect(system).toContain('## Rule Findings');
+    expect(system).toContain('"ruleIsRequirement": false,\n      "ruleBroken": false,');
+    // A round without a rule finding gets neither the section nor the fields.
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'No rule quoted', row: 'improvement', reasoning: 'r', confidence: 'high', ...yes }] }) });
+    const plain = await runJudgeAgent(mockClient, makeConfig({ review: { rules: 'block' } }), { ...input, findings: [findings[8]] });
+    expect(plain.findings.map(f => [f.severity, f.rule])).toEqual([['note', undefined]]);
+    expect(mockSendMessage.mock.calls.at(-1)![0]).not.toMatch(/Rule Findings|ruleBroken|Quoted rule/);
+  });
+
   it('calls judge with only openThreads when findings are empty', async () => {
     const judgedResponse = JSON.stringify({
       summary: 'Threads evaluated.',
@@ -3089,7 +3152,8 @@ describe('runJudgeAgent', () => {
       expect(result[0].severity).toBe('warning');
       expect(result[0].reviewers).toEqual(['Correctness', 'Reliability']);
       expect(result[1].reviewers).toEqual(['Style']);
-      expect(result.map(f => f.rule)).toEqual([rule, undefined]);
+      // The judge answered nothing about the rule, so it is not confirmed.
+      expect(result.map(f => f.rule)).toEqual([{ ...rule, verdict: 'no_requirement' }, undefined]);
     });
 
     it('follows a chain of duplicates to the first finding', async () => {
@@ -4394,6 +4458,10 @@ describe('deduplicateFindings', () => {
     expect(result[0].rule).toBeUndefined();
     expect(deduplicateFindings([findings[0], { ...findings[1], rule }])[0].rule).toEqual(rule);
     expect(deduplicateFindings([{ ...findings[0], rule }, { ...findings[1], rule: other }, findings[1]])[0].rule).toEqual(rule);
+    // A rule the judge confirmed on a dropped copy comes before one it did not confirm.
+    const confirmed = { ...other, verdict: 'confirmed' as const };
+    expect(deduplicateFindings([{ ...findings[0], rule: { ...rule, verdict: 'not_broken' } }, { ...findings[1], rule: confirmed }])[0].rule).toEqual(confirmed);
+    expect(deduplicateFindings([{ ...findings[0], rule: confirmed }, { ...findings[1], rule: { ...rule, verdict: 'confirmed' } }])[0].rule).toEqual(confirmed);
 
     // A dropped copy on a changed line, or citing one as proof, ties the finding to this PR, so the mark goes.
     const diff = makeDiff([makeDiffFile({ path: 'src/a.ts', hunks: [{ oldStart: 18, oldLines: 5, newStart: 18, newLines: 5, content: '' }] })]);
@@ -5691,5 +5759,60 @@ describe('judge note order fixture corpus', () => {
     expect(noteOrder).toHaveLength(notes.length);
     expect(notes.map(f => f.noteRank).sort()).toEqual(notes.map((_, i) => i));
     expect(notes.find(f => f.title === fixture.formatting)?.noteRank).toBe(notes.length - 1);
+  }, 600_000);
+});
+
+interface RuleFixture {
+  name: string;
+  rules?: RulesMode;
+  /** The instruction files, as the judge gets them under Repository Context. */
+  repoContext: string;
+  findings: Finding[];
+  prDiff: string;
+  /** Per finding title, the rule verdicts and grades a correct judge may end with. */
+  expected: Record<string, { verdicts: RuleVerdict[]; grades: FindingSeverity[] }>;
+}
+
+describe('judge rule finding fixture corpus', () => {
+  const fixtures = loadFixtures<RuleFixture>('rules');
+
+  it.each(fixtures)('fixture $name points each finding at a diff line, quotes a rule its file holds, and expects a verdict for each', (fixture) => {
+    const diff = parsePRDiff(fixture.prDiff);
+    for (const finding of fixture.findings) {
+      expect(extractCodeContext(finding, diff)).toContain(`>>> ${finding.line}:`);
+      expect(fixture.repoContext).toContain(`## ${finding.rule?.file}\n`);
+      expect(fixture.repoContext).toContain(finding.rule?.quote);
+    }
+    expect(Object.keys(fixture.expected).sort()).toEqual(fixture.findings.map(f => f.title).sort());
+  });
+
+  it('covers a confirmed rule finding under both settings, and each way a quote fails', () => {
+    const expected = fixtures.flatMap(f => Object.values(f.expected).map(e => ({ rules: f.rules ?? 'warn', ...e })));
+    expect(expected).toContainEqual({ rules: 'warn', verdicts: ['confirmed'], grades: ['warning'] });
+    expect(expected).toContainEqual({ rules: 'block', verdicts: ['confirmed'], grades: ['blocker'] });
+    expect(expected.map(e => e.verdicts[0])).toEqual(expect.arrayContaining(['no_requirement', 'not_broken']));
+  });
+
+  // Live replay against a real LLM, gated like the thread-evaluation corpus above.
+  const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
+  const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-5-5';
+  (runLive ? it : it.skip).each(fixtures)('live judge answers the two rule questions of $name as expected', async (fixture) => {
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: '' }, model: liveModel });
+    const result = await runJudgeAgent(client, makeConfig({ review: { rules: fixture.rules } }), {
+      findings: fixture.findings,
+      diff: parsePRDiff(fixture.prDiff),
+      rawDiff: fixture.prDiff,
+      repoContext: fixture.repoContext,
+      agentCount: 1,
+      isFollowUp: false,
+    });
+
+    // A finding the judge drops is left out of the result, so only its grade is known.
+    const graded = fixture.findings.map(({ title }) => ({ title, finding: result.findings.find(f => f.title === title) }));
+    console.log(`[live-judge] ${fixture.name}: ${JSON.stringify(graded.map(({ title, finding }) => [title, finding?.rule?.verdict, finding?.severity]))}`);
+    for (const { title, finding } of graded) {
+      if (finding) expect(fixture.expected[title].verdicts).toContain(finding.rule?.verdict);
+      expect(fixture.expected[title].grades).toContain(finding?.severity ?? 'ignore');
+    }
   }, 600_000);
 });

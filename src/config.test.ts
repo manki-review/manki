@@ -181,7 +181,7 @@ describe('config', () => {
 
     it('loads groups, classes and routing as written and leaves the built-ins when unset', () => {
       expect(loadConfigFromContent('').review).toBeUndefined();
-      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n  critical_paths: ["src/consensus/**", "@security_paths"]\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n  sweep: true\n  notes: 0\n`);
+      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n  critical_paths: ["src/consensus/**", "@security_paths"]\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n  sweep: true\n  notes: 0\n  rules: block\n`);
       expect(config.review).toEqual({
         groups: { deep: { reviewers: [{ model: 'claude-opus-5-5', effort: 'high' }, { model: 'gpt-5.5', effort: 'xhigh' }] } },
         classes: {
@@ -195,6 +195,7 @@ describe('config', () => {
         examples: { blocker: ['A panic on a peer message.'], not_blocker: ['A slow RPC call.'] },
         sweep: true,
         notes: 0,
+        rules: 'block',
       });
       expect(core.warning).not.toHaveBeenCalled();
     });
@@ -226,6 +227,8 @@ describe('config', () => {
       ['a negative number of notes', 'review:\n  notes: -1\n', '`review.notes` must be a non-negative integer'],
       ['a fractional number of notes', 'review:\n  notes: 2.5\n', '`review.notes` must be a non-negative integer'],
       ['notes that are no number', 'review:\n  notes: "3"\n', '`review.notes` must be a non-negative integer'],
+      ['an unknown rules mode', 'review:\n  rules: error\n', '`review.rules` must be `warn` or `block`'],
+      ['a rules mode that is no string', 'review:\n  rules: true\n', '`review.rules` must be `warn` or `block`'],
       ['examples as a plain list', 'review:\n  examples: [A panic.]\n', '`review.examples` must set `blocker`, `not_blocker` or both'],
       ['empty examples', 'review:\n  examples: {}\n', '`review.examples` must set `blocker`, `not_blocker` or both'],
       ['an unknown example side', 'review:\n  examples:\n    warning: [A slow call.]\n', '`review.examples.warning` is not a known side'],
