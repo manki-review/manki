@@ -337,10 +337,11 @@ function emptyCliCwd(): string {
   return emptyCwd;
 }
 
-// Besides `SYSTEM_ENV`, a CLI needs a home, the locale and the CA bundles a proxy may need.
+// Besides `SYSTEM_ENV`, a CLI needs a home, the user's name, the locale and the CA bundles a proxy may need.
+// On macOS a CLI finds its stored login in the keychain by the user's name.
 // Upper case, because Windows names some of them in mixed case, such as `Path`.
 const CLI_ENV = new Set([
-  ...SYSTEM_ENV, 'ALL_PROXY', 'NODE_USE_ENV_PROXY', 'HOME', 'LANG', 'RUNNER_TEMP', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+  ...SYSTEM_ENV, 'ALL_PROXY', 'NODE_USE_ENV_PROXY', 'HOME', 'USER', 'LOGNAME', 'LANG', 'RUNNER_TEMP', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
   'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PATHEXT', 'COMSPEC',
 ].map((name) => name.toUpperCase()));
 const CLI_ENV_PREFIX = /^(?:LC|XDG)_/i;

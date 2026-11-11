@@ -50,6 +50,8 @@ describe('cliEnv', () => {
     const env = {
       PATH: '/usr/bin',
       HOME: '/home/runner',
+      USER: 'runner',
+      LOGNAME: 'runner',
       LANG: 'C.UTF-8',
       LC_ALL: 'C.UTF-8',
       XDG_CONFIG_HOME: '/home/runner/.config',
@@ -83,6 +85,8 @@ describe('cliEnv', () => {
     expect(cliEnv('codex', {}, undefined, env)).toEqual({
       PATH: '/usr/bin',
       HOME: '/home/runner',
+      USER: 'runner',
+      LOGNAME: 'runner',
       LANG: 'C.UTF-8',
       LC_ALL: 'C.UTF-8',
       XDG_CONFIG_HOME: '/home/runner/.config',
