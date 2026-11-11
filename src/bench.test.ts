@@ -289,7 +289,7 @@ describe('scoreRun', () => {
   const benchCase = parseCase(CASE_YAML, 'demo.yml');
   const stub = (decisions: Record<string, MatchDecision>): Matcher & jest.Mock => jest.fn(async (item: KeyItem) => decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' });
 
-  it('scores recall, severity credit, extra findings, false blockers and duplicates, and counts finder reads and cost', async () => {
+  it('scores recall, severity credit, extra findings, false blockers, unexpected warnings and duplicates, and counts finder reads and cost', async () => {
     const findings = [
       makeFinding({ severity: 'warning', file: 'src/read.rs', title: 'Peer length allocation' }),
       makeFinding({ severity: 'blocker', file: 'src/lock.rs', title: 'Lock dropped', description: 'Calls `unlock` early.' }),
@@ -310,11 +310,21 @@ describe('scoreRun', () => {
       { item: 'N1', verdict: 'NONE', findings: [], reason: 'none' },
     ]);
     expect(score).toMatchObject({
-      outcome: 'ADDRESS_FIRST', complete: true, mustCatchRecall: 0.5, weightedRecall: 3 / 5, verdictCorrect: true, falseBlockers: 1, extraFindings: 1, duplicates: 1,
+      outcome: 'ADDRESS_FIRST', complete: true, mustCatchRecall: 0.5, weightedRecall: 3 / 5, verdictCorrect: true, falseBlockers: 1, unexpectedWarnings: 0, extraFindings: 1, duplicates: 1,
       finders: [{ name: 'finder-a', model: 'claude-sonnet-5-5', toolSteps: 4, filesRead: 3 }],
       costUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 90,
     });
     expect(score.findings[2]).toEqual({ severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1 });
+
+    const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted' }), makeFinding({ severity: 'suggestion', title: 'A note' })];
+    const warned = await scoreRun(benchCase, makeReview('READY', warnings), stub({ N1: { verdict: 'MATCH', findings: [0], reason: 'same' } }));
+    expect(warned).toMatchObject({ falseBlockers: 0, unexpectedWarnings: 1, extraFindings: 2 });
+    const unscored = buildReport(
+      { startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' },
+      [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [{ ...warned, unexpectedWarnings: undefined }] }] }],
+    );
+    expect(unscored.variants[0].summary.unexpectedWarnings).toBe(1);
+    expect(formatBenchSummary(unscored)).toContain('0 false blockers, 1 unexpected warnings, 2 extra');
   });
 
   it('gives half credit one tier low and none two tiers low, skips the matcher without candidates, and calls an approval of a blocker case wrong', async () => {
@@ -359,7 +369,7 @@ describe('scoreRun on a follow-up case', () => {
 
     expect(score.matches.map(m => [m.item, m.verdict, m.findings])).toEqual([['K1', 'MATCH', [2]], ['K2', 'NONE', []], ['N1', 'NONE', []], ['P2', 'MATCH', [0]], ['P3', 'MATCH', [1]]]);
     expect(score).toMatchObject({
-      verdictCorrect: true, falseBlockers: 0, extraFindings: 0, duplicates: 0, followUp: { resolved: ['P1', 'P2'], resolvedRight: 1, resolvedWrong: 1, repeats: 2 },
+      verdictCorrect: true, falseBlockers: 0, unexpectedWarnings: 0, extraFindings: 0, duplicates: 0, followUp: { resolved: ['P1', 'P2'], resolvedRight: 1, resolvedWrong: 1, repeats: 2 },
     });
     expect(await scoreRun(followUp, review(false), matcher)).not.toHaveProperty('followUp');
     const reworded = await scoreRun(followUp, review(), async item => (item.id === 'P2' ? { verdict: 'PARTIAL', findings: [0], reason: 'other mechanism' } : decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' }));
@@ -472,7 +482,7 @@ describe('runBench and buildReport', () => {
     expect(report.variants[0].summary).toEqual({
       runs: 5, incompleteRuns: 2, mustCatchRecall: 1 / 3, weightedRecall: expect.closeTo(0.4), atGradeRecall: 1 / 3, verdictAccuracy: 2 / 3,
       bySeverity: { blocker: { caught: 2, partial: 1, total: 3 }, warning: { caught: 0, partial: 0, total: 3 } },
-      falseBlockers: 0, extraFindings: 0, duplicates: 0, resolvedRight: null, resolvedWrong: null, repeats: null, costUsd: 5, costPerRunUsd: 1.25, wallTimePerRunMs: 90,
+      falseBlockers: 0, unexpectedWarnings: 0, extraFindings: 0, duplicates: 0, resolvedRight: null, resolvedWrong: null, repeats: null, costUsd: 5, costPerRunUsd: 1.25, wallTimePerRunMs: 90,
     });
     expect(JSON.parse(JSON.stringify(report))).toStrictEqual(report);
     const summary = formatBenchSummary(report);
@@ -481,10 +491,10 @@ describe('runBench and buildReport', () => {
     expect(summary).toContain('  K1 must blocker: 2/3, 1 partial\n');
     expect(summary).toContain('  run 2: FAILED: provider down\n');
     expect(summary).toContain('  run 4: INCOMPLETE: The review did not complete.\n');
-    expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 extra, 0 duplicates, files read finder-a 3, $1.25\n');
+    expect(summary).toContain('  run 3: READY, recall 0%, 0 false blockers, 0 unexpected warnings, 0 extra, 0 duplicates, files read finder-a 3, $1.25\n');
     expect(summary).toContain('5 runs (2 incomplete). Must-catch recall 33%, weighted 40%, at grade 33%, verdicts 67%.');
     expect(summary).not.toContain('Follow-up rounds');
-    expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, extra findings 0, duplicates 0, cost $5.00.');
+    expect(summary).toContain('By severity: blocker 2/3, warning 0/3. False blockers 0, unexpected warnings 0, extra findings 0, duplicates 0, cost $5.00.');
     expect(summary.slice(summary.indexOf('| Metric'))).toBe([
       '| Metric | base | opus |',
       '| --- | --- | --- |',
@@ -493,6 +503,7 @@ describe('runBench and buildReport', () => {
       '| Must-catch at grade | 33% | 33% |',
       '| Verdict accuracy | 67% | 67% |',
       '| False blockers | 0 | 0 |',
+      '| Unexpected warnings | 0 | 0 |',
       '| Extra findings | 0 | 0 |',
       '| Duplicates | 0 | 0 |',
       '| Resolved right | n/a | n/a |',
@@ -575,11 +586,12 @@ describe('mergeReports and gateReports', () => {
   const [first, second] = ['demo-1', 'demo-2'].map(id => parseCase(CASE_YAML.replace('id: demo-1', `id: ${id}`), `${id}.yml`, 'holdout'));
   const tuning = parseCase(CASE_YAML.replace('id: demo-1', 'id: demo-3'), 'demo-3.yml');
 
-  /** A run that reports K1 at `k1`, if given, and `falseBlockers` blockers that match no item. */
-  async function run(benchCase: BenchCase, k1?: FindingSeverity, falseBlockers = 0, complete = true): Promise<Run> {
+  /** A run that reports K1 at `k1`, if given, and `falseBlockers` blockers and `warnings` warnings that match no item. */
+  async function run(benchCase: BenchCase, k1?: FindingSeverity, falseBlockers = 0, complete = true, warnings = 0): Promise<Run> {
     const findings = [
       ...(k1 ? [makeFinding({ severity: k1, file: 'src/read.rs' })] : []),
       ...Array.from({ length: falseBlockers }, () => makeFinding({ severity: 'blocker', file: 'src/other.rs' })),
+      ...Array.from({ length: warnings }, () => makeFinding({ severity: 'warning', file: 'src/other.rs' })),
     ];
     const matcher: Matcher = async item => (item.id === 'K1' && k1 ? { verdict: 'MATCH', findings: [0], reason: 'same' } : { verdict: 'NONE', findings: [], reason: 'none' });
     return scoreRun(benchCase, makeReview(k1 === 'blocker' ? 'ADDRESS_FIRST' : 'READY', findings, complete), matcher);
@@ -607,15 +619,15 @@ describe('mergeReports and gateReports', () => {
     expect(() => mergeReports([], [first], {})).toThrow('No report to merge');
   });
 
-  it('passes, fails or asks for a rerun on the shared hold-out cases, counting only matches at the key grade', async () => {
+  it('passes, fails or asks for a rerun on the shared hold-out cases, counting only matches at the key grade, and counts the warnings of a report that does not score them', async () => {
     const baseline = report([[first, [await run(first, 'blocker')]], [second, [await run(second, 'blocker')]], [tuning, [await run(tuning, 'blocker')]]]);
-    const gate = async (firstK1?: FindingSeverity, secondK1?: FindingSeverity, falseBlockers = 0) => gateReports([baseline, again(baseline)], [
-      report([[first, [await run(first, firstK1, falseBlockers)]], [second, [await run(second, secondK1)]], [tuning, [await run(tuning)]]]),
+    const gate = async (firstK1?: FindingSeverity, secondK1?: FindingSeverity, falseBlockers = 0, warnings = 0) => gateReports([baseline, again(baseline)], [
+      report([[first, [await run(first, firstK1, falseBlockers, true, warnings)]], [second, [await run(second, secondK1)]], [tuning, [await run(tuning)]]]),
     ])[0];
 
     expect(await gate('blocker', 'blocker')).toMatchObject({
       variant: 'base', verdict: 'PASS', shared: ['demo-1', 'demo-2'],
-      baseline: { runs: 2, found: 2, falseBlockers: 0 }, candidate: { runs: 1, found: 2, falseBlockers: 0 },
+      baseline: { runs: 2, found: 2, falseBlockers: 0, unexpectedWarnings: 0 }, candidate: { runs: 1, found: 2, falseBlockers: 0, unexpectedWarnings: 0 },
     });
     expect(gateReports([baseline], [baseline])[0]).toMatchObject({
       verdict: 'NO DECISION', baseline: { runs: 1 },
@@ -625,6 +637,16 @@ describe('mergeReports and gateReports', () => {
       verdict: 'RERUN', reason: 'False blockers rose from 0 to 1 per run, within the margin of 1. Run the candidate once more and decide on the mean of both runs.',
     });
     expect(await gate('blocker', 'blocker', 2)).toMatchObject({ verdict: 'FAIL', reason: 'False blockers rose from 0 to 2 per run, by more than 1.' });
+    expect(await gate('blocker', 'blocker', 0, 1)).toMatchObject({
+      verdict: 'RERUN', reason: 'Unexpected warnings rose from 0 to 1 per run, within the margin of 1. Run the candidate once more and decide on the mean of both runs.',
+    });
+    expect(await gate('blocker', 'blocker', 0, 2)).toMatchObject({ verdict: 'FAIL', reason: 'Unexpected warnings rose from 0 to 2 per run, by more than 1.' });
+    const warned = report([[first, [await run(first, 'warning', 0, true, 2)]], [second, [await run(second, 'blocker')]]]);
+    const unscored: BenchReport = JSON.parse(JSON.stringify(warned, (key, value: unknown) => (key === 'unexpectedWarnings' ? undefined : value)));
+    expect(unscored.variants[0].cases[0].runs[0]).not.toHaveProperty('unexpectedWarnings');
+    expect(gateReports([unscored, again(unscored)], [report([[first, [await run(first, 'warning', 0, true, 4)]], [second, [await run(second, 'blocker')]]])])[0]).toMatchObject({
+      verdict: 'FAIL', baseline: { unexpectedWarnings: 2 }, candidate: { unexpectedWarnings: 4 }, reason: 'Unexpected warnings rose from 2 to 4 per run, by more than 1.',
+    });
     const followUps = async (scores: Partial<NonNullable<Run['followUp']>>) => report([
       [first, [{ ...await run(first, 'blocker'), followUp: { resolved: [], resolvedRight: 0, resolvedWrong: 0, repeats: 0, ...scores } }]], [second, [await run(second, 'blocker')]],
     ]);
@@ -676,7 +698,7 @@ describe('mergeReports and gateReports', () => {
       '### Release gate, base: PASS', '',
       'No figure got worse.',
       '', '| Figure | Baseline | Candidate |', '| --- | --- | --- |', '| Runs per case | 2 | 1 |', '| Must-catch found at grade | 2 | 2 |', '| Resolved right | 0 | 0 |',
-      '| False blockers | 0 | 0 |', '| Resolved wrong | 0 | 0 |', '| Repeats | 0 | 0 |', '',
+      '| False blockers | 0 | 0 |', '| Unexpected warnings | 0 | 0 |', '| Resolved wrong | 0 | 0 |', '| Repeats | 0 | 0 |', '',
     ].join('\n'));
     expect(text).toContain('Shared hold-out cases (2): demo-1, demo-2');
   });

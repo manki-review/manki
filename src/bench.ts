@@ -358,6 +358,8 @@ interface RunScore {
   verdictCorrect: boolean | null;
   /** Blocker findings that match no key item. */
   falseBlockers: number;
+  /** Warning findings that match no key item, neither a must-catch nor a nice-to-have one. A report from a ref that does not score them has none. */
+  unexpectedWarnings?: number;
   /** Findings that match no key item. */
   extraFindings: number;
   /** Findings past the first that name a key item another finding already names. */
@@ -448,6 +450,7 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
     weightedRecall: mustCatch.length > 0 && reviewComplete ? mustCatch.reduce((sum, item) => sum + SEVERITY_WEIGHT[item.severity] * severityCredit(strict(item)?.severity, item.severity), 0) / totalWeight : null,
     verdictCorrect: expected && reviewComplete ? (outcome !== 'READY') === (expected === 'block') : null,
     falseBlockers: findings.filter((f, i) => f.severity === 'blocker' && !matched.has(i)).length,
+    unexpectedWarnings: findings.filter((f, i) => f.severity === 'warning' && !matched.has(i)).length,
     extraFindings: findings.filter((_, i) => !matched.has(i)).length,
     duplicates: keyMatches.reduce((sum, m) => sum + Math.max(0, m.findings.length - 1), 0),
     ...(resolved && {
@@ -542,6 +545,7 @@ interface VariantSummary {
   /** Must-catch catches per key severity, over the complete runs. */
   bySeverity: Partial<Record<KeySeverity, SeverityRecall>>;
   falseBlockers: number;
+  unexpectedWarnings: number;
   extraFindings: number;
   duplicates: number;
   /** Sums over the complete runs of follow-up cases, `null` without one. */
@@ -645,6 +649,7 @@ function summarize(cases: CaseReport[]): VariantSummary {
     verdictAccuracy: verdicts.length > 0 ? verdicts.filter(Boolean).length / verdicts.length : null,
     bySeverity,
     falseBlockers: runs.reduce((total, r) => total + r.falseBlockers, 0),
+    unexpectedWarnings: cases.reduce((total, c) => total + c.runs.reduce((sum, run) => sum + unexpectedWarnings(c, run), 0), 0),
     extraFindings: runs.reduce((total, r) => total + r.extraFindings, 0),
     duplicates: runs.reduce((total, r) => total + r.duplicates, 0),
     resolvedRight: sum(f => f.resolvedRight),
@@ -661,6 +666,11 @@ function unmatchedFindings(c: CaseReport, run: RunScore): RunScore['findings'] {
   const repeatIds = new Set(c.items.filter(item => item.tier === 'must_keep_open' || item.tier === 'must_not_repeat').map(item => item.id));
   const matched = matchedFindings(run.matches, id => repeatIds.has(id));
   return run.findings.filter((_, n) => !matched.has(n));
+}
+
+/** The warning findings of a reported run that match no key item. They are counted from the run's findings and matches when its ref did not score them. */
+function unexpectedWarnings(c: CaseReport, run: RunScore): number {
+  return run.unexpectedWarnings ?? unmatchedFindings(c, run).filter(f => f.severity === 'warning').length;
 }
 
 export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' | 'matcherModel'>, variants: VariantResults[]): BenchReport {
@@ -709,6 +719,8 @@ interface GateSide {
   resolvedRight: number;
   /** Blocker findings that match no key item. */
   falseBlockers: number;
+  /** Warning findings that match no key item. */
+  unexpectedWarnings: number;
   /** Earlier threads resolved that the key says stay open. */
   resolvedWrong: number;
   /** Findings that restate an earlier finding the key says must not be posted again. */
@@ -722,6 +734,7 @@ const GATE_FIGURES: Array<{ key: GateFigure; label: string; row: string; better:
   { key: 'found', label: "Must-catch items found at the key's grade", row: 'Must-catch found at grade', better: 'more' },
   { key: 'resolvedRight', label: 'Earlier threads resolved as the key says', row: 'Resolved right', better: 'more' },
   { key: 'falseBlockers', label: 'False blockers', row: 'False blockers', better: 'less' },
+  { key: 'unexpectedWarnings', label: 'Unexpected warnings', row: 'Unexpected warnings', better: 'less' },
   { key: 'resolvedWrong', label: 'Earlier threads resolved that the key keeps open', row: 'Resolved wrong', better: 'less' },
   { key: 'repeats', label: 'Earlier findings posted again', row: 'Repeats', better: 'less' },
 ];
@@ -747,6 +760,7 @@ function gateSide(variants: VariantReport[], shared: string[]): GateSide {
     found: meanPerRun((c, run) => c.items.filter(item => item.tier === 'must_catch' && foundAtGrade(item, run)).length),
     resolvedRight: meanPerRun((_, run) => run.followUp?.resolvedRight ?? 0),
     falseBlockers: meanPerRun((_, run) => run.falseBlockers),
+    unexpectedWarnings: meanPerRun(unexpectedWarnings),
     resolvedWrong: meanPerRun((_, run) => run.followUp?.resolvedWrong ?? 0),
     repeats: meanPerRun((_, run) => run.followUp?.repeats ?? 0),
   };
@@ -904,6 +918,7 @@ export function formatComparison(variants: VariantReport[]): string {
     figure('Must-catch at grade', s => percent(s.atGradeRecall)),
     figure('Verdict accuracy', s => percent(s.verdictAccuracy)),
     figure('False blockers', s => String(s.falseBlockers)),
+    figure('Unexpected warnings', s => String(s.unexpectedWarnings)),
     figure('Extra findings', s => String(s.extraFindings)),
     figure('Duplicates', s => String(s.duplicates)),
     figure('Resolved right', s => count(s.resolvedRight)),
@@ -936,13 +951,13 @@ export function formatBenchSummary(report: BenchReport): string {
         const reads = run.finders.map(f => `${f.name} ${f.filesRead}`).join(', ') || 'none';
         lines.push(run.error
           ? `  run ${i + 1}: ${run.outcome}: ${run.error}`
-          : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}, $${run.costUsd.toFixed(2)}`);
+          : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}, $${run.costUsd.toFixed(2)}`);
       }
     }
     for (const { label, summary: s } of setSummaries(variant)) {
       const severities = KEY_SEVERITIES.flatMap(sev => (s.bySeverity[sev] ? [`${sev} ${s.bySeverity[sev]!.caught}/${s.bySeverity[sev]!.total}`] : []));
       lines.push(`${label ? `${label}: ` : ''}${s.runs} runs (${s.incompleteRuns} incomplete). Must-catch recall ${percent(s.mustCatchRecall)}, weighted ${percent(s.weightedRecall)}, at grade ${percent(s.atGradeRecall)}, verdicts ${percent(s.verdictAccuracy)}.`);
-      lines.push(`By severity: ${severities.join(', ') || 'n/a'}. False blockers ${s.falseBlockers}, extra findings ${s.extraFindings}, duplicates ${s.duplicates}, cost $${s.costUsd.toFixed(2)}.`);
+      lines.push(`By severity: ${severities.join(', ') || 'n/a'}. False blockers ${s.falseBlockers}, unexpected warnings ${s.unexpectedWarnings}, extra findings ${s.extraFindings}, duplicates ${s.duplicates}, cost $${s.costUsd.toFixed(2)}.`);
       if (s.repeats !== null) lines.push(`Follow-up rounds: resolved ${s.resolvedRight} right and ${s.resolvedWrong} wrong, ${s.repeats} repeats.`);
     }
     lines.push('');
@@ -974,7 +989,7 @@ function failedRun(error: unknown, review?: LocalReview): RunScore {
     outcome: 'FAILED', findings: [], finders: [], costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0,
     ...(review && reviewFacts(review)),
     complete: false, error: error instanceof Error ? error.message : String(error), matches: [],
-    mustCatchRecall: null, weightedRecall: null, verdictCorrect: null, falseBlockers: 0, extraFindings: 0, duplicates: 0,
+    mustCatchRecall: null, weightedRecall: null, verdictCorrect: null, falseBlockers: 0, unexpectedWarnings: 0, extraFindings: 0, duplicates: 0,
   };
 }
 
