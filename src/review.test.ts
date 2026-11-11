@@ -3391,6 +3391,15 @@ describe('runReview', () => {
       expect([guarded.outcome, guarded.threadEvaluations?.[0].status]).toEqual(['ADDRESS_FIRST', 'uncertain']);
     }
 
+    // A security thread graded below blocker does not block, but the PR author cannot clear it either. So its fix
+    // needs a push to its file too, while a plain warning thread is the judge's to clear.
+    const securityWarning = { ...openThread, severity: 'warning' as const, isSecurity: true };
+    expect((await runWith(elsewhere, securityWarning)).threadEvaluations)
+      .toEqual([{ ...addressed, status: 'uncertain', reason: 'The push did not change `src/x.ts`, so the fix is not confirmed.' }]);
+    expect((await runWith(undefined, securityWarning)).threadEvaluations?.[0].status).toBe('uncertain');
+    expect((await runWith(touching, securityWarning)).threadEvaluations).toEqual([addressed]);
+    expect((await runWith(elsewhere, { ...openThread, severity: 'warning' })).threadEvaluations).toEqual([addressed]);
+
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.', threadEvaluations: [addressed] });
     const namedAgain = await runWith(touching);

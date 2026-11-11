@@ -8,7 +8,7 @@ import { mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
-import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
+import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
 import { canLeaveOut, findingKey, isBlockingSeverity, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { translateNames } from './name-translation';
@@ -2435,9 +2435,12 @@ export function filesChangedByPush(interRoundDiff: string | undefined): Set<stri
   return new Set(interRoundDiff ? parsePRDiff(interRoundDiff).files.map(f => f.path) : []);
 }
 
-/** Whether `thread` is a blocker thread that stays open whatever the judge decides, because the push did not change its file. */
-export function blockerThreadStaysOpen(thread: OpenThread, pushChangedFiles: ReadonlySet<string>): boolean {
-  return threadBlocks(thread) && !pushChangedFiles.has(thread.file);
+/**
+ * Whether `thread` is a guarded thread that stays open whatever the judge decides, because the push did not change its
+ * file: a blocker, or a security finding of any severity.
+ */
+export function guardedThreadStaysOpen(thread: OpenThread, pushChangedFiles: ReadonlySet<string>): boolean {
+  return isGuarded(thread) && !pushChangedFiles.has(thread.file);
 }
 
 /**
@@ -2466,7 +2469,7 @@ function partialFixGrade(evaluation: ThreadEvaluation, thread: OpenThread | unde
 
 /**
  * Returns `evaluations` with `addressed` kept only where the round confirms the fix, and with the grade
- * `partialFixGrade` gives. A thread whose blocker this round names again is not fixed. A thread that blocks counts as
+ * `partialFixGrade` gives. A thread whose blocker this round names again is not fixed. A guarded thread counts as
  * fixed only when the push changed its file, so a judge reading unchanged code cannot clear it. The judge's cell stays
  * as `cell` only when it gives that grade, and as `judgeCell` otherwise.
  */
@@ -2479,7 +2482,7 @@ function confirmFixes(
   const confirm = (e: ThreadEvaluation, thread: OpenThread | undefined): ThreadEvaluation => {
     if (e.status !== 'addressed') return e;
     if (namedThreadIds.has(e.threadId)) return { ...e, status: 'not_addressed', reason: 'This round names the same blocker again.' };
-    if (thread && blockerThreadStaysOpen(thread, pushChangedFiles)) {
+    if (thread && guardedThreadStaysOpen(thread, pushChangedFiles)) {
       return { ...e, status: 'uncertain', reason: `The push did not change \`${thread.file}\`, so the fix is not confirmed.` };
     }
     return e;

@@ -20,7 +20,7 @@ import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
+import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
@@ -739,7 +739,7 @@ export function buildJudgeUserMessage(
     for (const t of openThreads) {
       const linkSuffix = t.threadUrl ? ` ([view](${t.threadUrl}))` : '';
       const blocks = !earlierBlockers.has(t.threadId) ? ''
-        : blockerThreadStaysOpen(t, pushChangedFiles) ? ` (earlier blocker, stays open: ${staysOpenReason})` : ' (earlier blocker)';
+        : guardedThreadStaysOpen(t, pushChangedFiles) ? ` (earlier blocker, stays open: ${staysOpenReason})` : ' (earlier blocker)';
       parts.push(`- **${t.threadId}**${linkSuffix}: [${t.severity}] "${sanitize(t.title)}" at ${sanitize(t.file)}:${t.line}${blocks}`);
     }
     parts.push('');
