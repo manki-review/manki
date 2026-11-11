@@ -1785,6 +1785,25 @@ describe('postReview body lead', () => {
   it('opens an INCOMPLETE review with the verdict line and the reason', async () => {
     const { body } = await postedBody({ ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary: 'The judge failed', findings: [] });
     expect(lead(body)).toBe(`\u23F8\uFE0F **Review incomplete:** The judge failed.\n\n${aboutFold('[`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)')}`);
+
+    // With its record the round shows the same text, where a complete round's record adds its round and models to the fold.
+    const incomplete = { ...ready, verdict: 'COMMENT' as const, outcome: 'INCOMPLETE' as const, verdictReport: undefined, summary: 'The judge failed', findings: [] };
+    const record = makeContext({ meta: { ...makeContext().meta, round: 2, outcome: 'INCOMPLETE', incomplete: true } });
+    const post = async (context?: RoundContext): Promise<string> => {
+      mockCreateReview.mockClear();
+      await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', incomplete, diff, context, context && 1000, { noVerdict: true });
+      return (mockCreateReview.mock.calls[0][0] as { body: string }).body;
+    };
+    const [bare, recorded] = [await post(), await post(record)];
+    const hidden = (text: string) => text.replace(/\n*<!--[\s\S]*?-->\n*/g, '');
+    expect(hidden(recorded)).toBe(hidden(bare));
+    expect(recorded).toContain('<!-- manki-no-verdict -->');
+    expect(JSON.parse(extractReviewRecords(recorded).records[0])).toMatchObject({ meta: { round: 2, incomplete: true } });
+    // The review still gives no verdict on its commit, so a later run reviews it.
+    const posted = { state: 'COMMENTED', commit_id: 'abcdef1234', body: recorded, user: { login: BOT_LOGIN, type: 'Bot' } };
+    const reviews = { paginate: jest.fn().mockResolvedValue([posted]), rest: { pulls: { listReviews: {} } } } as unknown as typeof mockOctokit;
+    expect(await hasBotReviewOnCommit(reviews, TEST_BOT, 'owner', 'repo', 1, 'abcdef1234')).toBe(false);
+    expect(await fetchStandingVerdict(reviews, TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
   });
 
   it('lists follow-up warnings off the diff with the other findings, security ones included, most severe first', async () => {

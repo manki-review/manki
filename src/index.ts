@@ -1296,16 +1296,16 @@ async function reviewRound(
 }
 
 /**
- * Fails the run and posts the incomplete round as a COMMENT. An earlier request for changes stays standing, while an
+ * Fails the run and posts the incomplete round as a COMMENT with its record. An earlier request for changes stays standing, while an
  * approval of an older commit is dismissed, since nothing approved the code since. Returns the report for the PR check.
  */
-async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promise<CheckReport> {
+async function postIncompleteRound(run: ReviewRun, result: ReviewResult, buildContext: () => RoundContext, reviewTimeMs: number): Promise<CheckReport> {
   const { octokit, owner, repo, prNumber, commitSha, commentId, dashboard, diff } = run;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   cancelDashboardFlush(run.progress);
   core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
   result.verdict = 'COMMENT';
-  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, undefined, undefined, { noVerdict: true });
+  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, buildContext(), reviewTimeMs, { noVerdict: true });
   await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId, 'APPROVED', commitSha);
   dashboard.phase = 'complete';
   await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: Date.now() - run.startTime }, undefined, progressSettings(run, run.progress, 'review incomplete'));
@@ -1889,19 +1889,20 @@ async function runFullReview(
     stop.signal.throwIfAborted();
     const { result } = stage;
 
-    if (!result.reviewComplete) {
-      checkReport = await postIncompleteRound(run, result);
-      return;
-    }
-
-    addCodeContext(result.findings, withLockfiles(diff, lockfiles));
-    tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
     const reviewTimeMs = Date.now() - startTime;
     const buildContext = () => buildRoundContext({ ...run, tokenServiceCalls: tokenServiceCalls() }, result, {
       plannerDurationMs: dashboard.plannerDurationMs,
       judgeDurationMs: stage.judgeEndTime - stage.reviewEndTime,
       wallClockMs: reviewTimeMs,
     });
+
+    if (!result.reviewComplete) {
+      checkReport = await postIncompleteRound(run, result, buildContext, reviewTimeMs);
+      return;
+    }
+
+    addCodeContext(result.findings, withLockfiles(diff, lockfiles));
+    tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.

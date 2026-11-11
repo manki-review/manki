@@ -29,10 +29,12 @@ interface ThreadComment extends Posted {
   in_reply_to_id?: number | null;
 }
 
-/** One merged pull request: its round records in posting order, and the comments of its review threads. */
+/** One merged pull request: the records of its completed rounds in posting order, and the comments of its review threads. */
 export interface PrRecords {
   number: number;
   rounds: RoundContext[];
+  /** The records of its incomplete rounds, which no later round read as an earlier round. */
+  incompleteRounds: RoundContext[];
   /** The records of Manki's thread replies. */
   replies: ReplyRecord[];
   /** The decisions of the review state checks, from their approval reviews and the notices still standing. */
@@ -70,14 +72,16 @@ const DECISIONS = [
 type Decision = (typeof DECISIONS)[number];
 
 export interface ReviewStats {
-  /** PRs with at least one round record. Only they count in the statistics. */
+  /** PRs with the record of at least one completed round. Only they count in the statistics. */
   prs: number;
-  /** Merged PRs without a round record, such as one Manki never reviewed. */
+  /** Merged PRs without such a record, such as one Manki never reviewed. */
   unreviewed: number;
   roundsPerPr: number[];
   passedFirstRound: number;
   manyRounds: number;
   rounds: number;
+  /** Rounds that ended incomplete. They count in no other figure. */
+  incompleteRounds: number;
   severityCounts: Record<string, number>;
   findings: number;
   onReviewedCode: number;
@@ -154,9 +158,11 @@ export function prRecords(
         return [];
       }
     }));
+  const rounds = lines.filter(line => line.kind === 'round').map(line => line.record as RoundContext);
   return {
     number,
-    rounds: lines.filter(line => line.kind === 'round').map(line => line.record as RoundContext),
+    rounds: rounds.filter(round => !round.meta?.incomplete),
+    incompleteRounds: rounds.filter(round => round.meta?.incomplete),
     replies: lines.filter(line => line.kind === 'reply').map(line => line.record as ReplyRecord),
     approvals,
     threadComments: posted.threadComments,
@@ -188,13 +194,14 @@ function finder(stats: ReviewStats, model: string): FinderStats {
 /** Adds up the statistics over `prs`. A finder is keyed by the model it ran on, or by its name in records without one. */
 export function computeStats(prs: PrRecords[]): ReviewStats {
   const stats: ReviewStats = {
-    prs: 0, unreviewed: 0, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, severityCounts: {}, findings: 0, onReviewedCode: 0,
+    prs: 0, unreviewed: 0, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, incompleteRounds: 0, severityCounts: {}, findings: 0, onReviewedCode: 0,
     blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), readerRounds: 0, readerBlockers: 0,
     refutations: new Map(), pairRefutations: new Map(), pairRefutationCalls: [], costPerPr: [], costPerRound: [], followUpRounds: 0, interRoundDiffCutOrUnknown: 0,
     decisions: new Map(), learningsLoaded: [], suppressionsLoaded: [], slicesPerRound: [], changedSinceLastRound: [], fixClaims: [],
     relatedRepos: new Map(), limits: new Map(),
   };
   for (const pr of prs) {
+    stats.incompleteRounds += pr.incompleteRounds.length;
     if (pr.rounds.length === 0) {
       stats.unreviewed++;
       continue;
@@ -374,13 +381,14 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     `# Review statistics${repo ? ` for ${repo}` : ''} over ${stats.prs} merged PRs and ${stats.rounds} rounds`,
     '',
     ...(stats.unreviewed > 0
-      ? [`${stats.unreviewed} more merged ${stats.unreviewed === 1 ? 'PR has no round record and is' : 'PRs have no round record and are'} left out.`, '']
+      ? [`${stats.unreviewed} more merged ${stats.unreviewed === 1 ? 'PR has no record of a completed round and is' : 'PRs have no record of a completed round and are'} left out.`, '']
       : []),
     '## Rounds',
     '',
     `- Rounds per PR: ${summary(stats.roundsPerPr)}`,
     `- Passed after one round: ${share(stats.passedFirstRound, stats.prs)}`,
     `- Needed ${MANY_ROUNDS} or more rounds: ${share(stats.manyRounds, stats.prs)}`,
+    `- Rounds that ended incomplete, counted in no other figure: ${stats.incompleteRounds}`,
     '',
     '## Findings',
     '',

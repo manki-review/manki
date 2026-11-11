@@ -939,7 +939,8 @@ describe('checkAndAutoApprove', () => {
         createReviewFn: createReviewMock,
         existingReviews: [
           { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'old-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
-          { body: '**Not reviewed**\n\n<!-- manki-no-verdict --><!-- manki -->', state: 'COMMENTED', commit_id: 'head-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
+          // An incomplete round carries its record, which makes it no more of a verdict.
+          { body: '**Review incomplete**\n\n<!-- manki-context: {"meta":{"round":1,"mankiVersion":"7","incomplete":true}} -->\n\n<!-- manki-no-verdict --><!-- manki -->', state: 'COMMENTED', commit_id: 'head-sha', user: { login: 'manki-review[bot]', type: 'Bot' } },
         ],
       });
 

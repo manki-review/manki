@@ -430,7 +430,8 @@ const REQUIRED_ROUND_CONTEXT_KEYS = ['meta', 'config', 'diff', 'models', 'planne
  * reads. Unknown future fields on `RoundContext`
  * are preserved opaquely. Duplicates on `meta.round` are deduped by keeping
  * the entry with the highest review id (latest-posted). Result is sorted
- * ascending by `meta.round`.
+ * ascending by `meta.round`. The record of an incomplete round is left out: it holds
+ * diagnostics only, and the next round takes its number.
  */
 function parseContextBlocks(
   reviews: Array<{ body: string; id: number }>,
@@ -492,6 +493,7 @@ function parseContextBlocks(
       }
 
       const ctx = parsed as RoundContext;
+      if (ctx.meta.incomplete) continue;
       const existing = byRound.get(round);
       if (existing) {
         duplicateRounds.add(round);
