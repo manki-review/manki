@@ -12,7 +12,7 @@ import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, d
 import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { translateNames } from './name-translation';
-import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
+import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
@@ -741,6 +741,8 @@ export async function runReview(
   if (changedSinceLastRound) recorded.changedSinceLastRoundCount = changedSinceLastRound.length;
   const earlierBlockers = blockersToRecheck(previousFindings ?? [], changedSinceLastRound);
   const uses = await usesPromise;
+  // A round that reads its related repos as of a time fails here, before any finder runs, when one of them cannot be read as of then.
+  if (related?.asOf) await requireRelatedRepos(related);
   // Asked alongside the finders on the reviewer model, at the effort of its finder. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonModel = resolveReviewerModel(config, undefined);
   const comparisonEffort = (team.finders.find(f => f.model === comparisonModel) ?? team.finders[0]).effort;
@@ -1117,7 +1119,7 @@ export async function runReview(
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
   // Every configured related repo is recorded: fetched, failed, unused, or skipped when no finder could read it.
   const relatedRepos: RoundRelatedRepo[] | undefined = related
-    ? relatedRepoOutcomes(related.repos, related.stateDir, guides)
+    ? relatedRepoOutcomes(related.repos, related.stateDir, guides, related.asOf)
     : config.related_repos?.map(({ repo, ref }) => ({
       repo, ...(ref && { ref }), status: 'skipped' as const,
       reason: workspace ? 'no finder has repository tools' : 'the PR head was not checked out for the tools',

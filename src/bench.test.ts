@@ -499,8 +499,23 @@ describe('runBench and buildReport', () => {
     // The related repos are read as of the oldest author date of the change, which a replayed commit keeps.
     git('commit', '-q', '--allow-empty', '--date=2026-01-05T10:00:00Z', '-m', 'replayed change');
     git('commit', '-q', '--allow-empty', '--date=2026-03-01T10:00:00Z', '-m', 'fix after the review');
-    await runBench([{ ...benchCase, base: benchCase.head, head: git('rev-parse', 'HEAD') }], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: baseReview });
-    expect(Date.parse(baseReview.mock.calls[2][0].relatedReposAsOf!)).toBe(Date.parse('2026-01-05T10:00:00Z'));
+    const replayed = { ...benchCase, base: benchCase.head, head: git('rev-parse', 'HEAD') };
+    const asOf = '2026-01-05T10:00:00Z';
+    baseReview.mockImplementationOnce(async () => {
+      const local = makeReview('READY', []);
+      local.context.relatedRepos = [{ repo: 'o/ref', ref: 'v1', status: 'fetched', commit: SHA_C, asOf, durationMs: 5, reads: 2 }, { repo: 'o/other', status: 'unused', asOf }];
+      return local;
+    });
+    const [{ results: [{ runs: [dated] }] }] = await runBench([replayed], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: baseReview });
+    expect(Date.parse(baseReview.mock.calls[2][0].relatedReposAsOf!)).toBe(Date.parse(asOf));
+    expect(dated.relatedRepos).toEqual([{ repo: 'o/ref', ref: 'v1', status: 'fetched', commit: SHA_C, asOf }, { repo: 'o/other', status: 'unused', asOf }]);
+    // A case whose change cannot be dated fails without a review, so it never reads the newest related code.
+    const orphan = git('commit-tree', git('rev-parse', 'HEAD^{tree}'), '-m', 'unrelated history');
+    const undated = await runBench([{ ...replayed, base: replayed.head }, { ...replayed, id: 'demo-2', base: orphan }], { runs: 1, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review: baseReview });
+    expect(baseReview).toHaveBeenCalledTimes(3);
+    expect(undated[0].results.map(r => [r.runs[0].outcome, r.runs[0].complete])).toEqual([['FAILED', false], ['FAILED', false]]);
+    expect(undated[0].results[0].runs[0].error).toBe('Case demo-1 has no date to read its related repos at: its head holds no commit past the merge base.');
+    expect(undated[0].results[1].runs[0].error).toContain('Case demo-2 has no date to read its related repos at: the merge base of its base and head cannot be read. Git said: ');
     const [{ variant, results }] = await runBench([benchCase], { runs: 5, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher, review, onCase, variants: [{ name: 'opus', overrides }] });
 
     expect(review).toHaveBeenCalledTimes(5);

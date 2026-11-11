@@ -2062,9 +2062,21 @@ describe('runReview', () => {
       // No related repo was fetched before the finders ran, so the prompt gets no guide to name.
       expect(first?.related).not.toHaveProperty('guides');
       expect(rest).toEqual([undefined, undefined, { root: '/work/pr-head', steps: 40 }, { root: '/work/pr-head', steps: 40 }]);
-      // A review of a change made earlier reads the related repos as they were then.
-      await runReview(clients, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head', relatedReposAsOf: '2026-10-03T11:20:50Z' });
-      expect(jest.mocked(clients.reviewer.sendMessage).mock.calls.at(-1)![2]?.repoTools?.related).toEqual({ ...first!.related, stateDir: expect.stringContaining('manki-related-'), asOf: '2026-10-03T11:20:50Z' });
+      // A review of a change made earlier reads the related repos as they were then, and fetches every one before the finders run.
+      const requireSpy = jest.spyOn(relatedRepos, 'requireRelatedRepos').mockResolvedValue();
+      const asOf = '2026-10-03T11:20:50Z';
+      const dated = await runReview(clients, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head', relatedReposAsOf: asOf });
+      const datedTools = { ...first!.related, stateDir: expect.stringContaining('manki-related-'), asOf };
+      expect(requireSpy).toHaveBeenCalledTimes(1);
+      expect(requireSpy).toHaveBeenCalledWith(datedTools);
+      expect(jest.mocked(clients.reviewer.sendMessage).mock.calls.at(-1)![2]?.repoTools?.related).toEqual(datedTools);
+      expect(dated.relatedRepos).toEqual(related_repos.map(({ repo }) => expect.objectContaining({ repo, asOf })));
+      // A repo that cannot be read as of that time fails the round before any finder is asked.
+      const asked = jest.mocked(clients.reviewer.sendMessage).mock.calls.length;
+      requireSpy.mockRejectedValueOnce(new Error('Could not read every related repo as of then. o/r: it has no commit as old as then'));
+      await expect(runReview(clients, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head', relatedReposAsOf: asOf })).rejects.toThrow('o/r: it has no commit as old as then');
+      expect(clients.reviewer.sendMessage).toHaveBeenCalledTimes(asked);
+      requireSpy.mockRestore();
       expect(jest.mocked(withoutTools.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools)).toEqual([undefined, undefined]);
       // The judge gets the related repo rules only for a round whose finders could read them.
       expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].relatedRepos)).toEqual([related_repos, undefined, undefined, undefined, related_repos]);

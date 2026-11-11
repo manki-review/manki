@@ -10,7 +10,7 @@ import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides,
 import { hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { buildLLMClient } from './review-clients';
-import { CELL_GRADES, Doubt, Finding, FindingSeverity, GradeCell, isGradeCell, SEVERITY_ORDER } from './types';
+import { CELL_GRADES, Doubt, Finding, FindingSeverity, GradeCell, isGradeCell, RoundRelatedRepo, SEVERITY_ORDER } from './types';
 import { runGit } from './workspace';
 
 export const BENCH_COMMAND = 'bench';
@@ -384,6 +384,8 @@ interface RunScore {
   /** Set on a complete run of a follow-up case. A report from a ref without follow-up cases has none. */
   followUp?: FollowUpScore;
   finders: FinderSteps[];
+  /** What the review could read of each related repo: the commit it checked out, and the time it read the repo as of. A report from a ref that records neither has none. */
+  relatedRepos?: Array<Pick<RoundRelatedRepo, 'repo' | 'ref' | 'status' | 'commit' | 'asOf'>>;
   costUsd: number;
   inputTokens: number;
   outputTokens: number;
@@ -504,12 +506,13 @@ function resolvedThreads(benchCase: BenchCase, review: LocalReview): string[] {
 }
 
 /** What a run records about its review whether or not the findings could be matched. */
-function reviewFacts(review: LocalReview): Pick<RunScore, 'outcome' | 'findings' | 'finders' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+function reviewFacts(review: LocalReview): Pick<RunScore, 'outcome' | 'findings' | 'finders' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
   const usage = review.context.usage ?? {};
   return {
     outcome: review.result.outcome,
     findings: review.result.findings.map(({ severity, title, file, line }) => ({ severity, title, file, line })),
     finders: finderSteps(review),
+    ...(review.context.relatedRepos && { relatedRepos: review.context.relatedRepos.map(({ repo, ref, status, commit, asOf }) => ({ repo, ...(ref && { ref }), status, ...(commit && { commit }), ...(asOf && { asOf }) })) }),
     costUsd: usage.estimatedCostUsd ?? 0,
     inputTokens: usage.inputTokens ?? 0,
     outputTokens: usage.outputTokens ?? 0,
@@ -1020,11 +1023,21 @@ function failedRun(error: unknown, review?: LocalReview, outcome = 'FAILED'): Ru
 
 /**
  * Returns the time the related repos of a case are read at: the oldest author date among the commits of its change,
- * from `base` to `head`. A commit replayed into another repository keeps its author date, and the head of a follow-up
- * case can be newer than the merge of the change it follows up, so the head's own dates can come too late.
+ * from the merge base of `base` and `head` to `head`. A commit replayed into another repository keeps its author date,
+ * and the head of a follow-up case can be newer than the merge of the change it follows up, so the head's own dates can
+ * come too late. Throws when the commits or one of their dates cannot be read, so a case never reads newer related code
+ * for want of a date.
  */
-async function changeDate(checkout: string, c: BenchCase): Promise<string | undefined> {
-  const dates = (await runGit(checkout, ['log', '--format=%aI', `${c.base}..${c.head}`])).split('\n').filter(Boolean);
+async function changeDate(checkout: string, c: BenchCase): Promise<string> {
+  const undated = (reason: string) => new Error(`Case ${c.id} has no date to read its related repos at: ${reason}`);
+  const git = (args: string[], what: string) => runGit(checkout, args).catch((error: Error) => {
+    throw undated(`${what} cannot be read. Git said: ${error.message.trim()}`);
+  });
+  const mergeBase = (await git(['merge-base', c.base, c.head], 'the merge base of its base and head')).trim();
+  const dates = (await git(['log', '--format=%aI', `${mergeBase}..${c.head}`], 'the commits of its change')).split('\n').filter(Boolean);
+  if (dates.length === 0) throw undated('its head holds no commit past the merge base.');
+  const unread = dates.find(date => Number.isNaN(Date.parse(date)));
+  if (unread) throw undated(`\`${unread}\` is not a date.`);
   return dates.sort((a, b) => Date.parse(a) - Date.parse(b))[0];
 }
 
@@ -1073,7 +1086,6 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
     for (const benchCase of cases) {
       const runs: RunScore[] = [];
       const configError = invalid.get(benchCase.id);
-      const relatedReposAsOf = await changeDate(checkouts.get(benchCase.repo)!, benchCase);
       for (let i = 0; i < options.runs; i++) {
         if (configError) {
           runs.push(failedRun(configError, undefined, CONFIG_INVALID));
@@ -1083,7 +1095,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
         try {
           local = await review({
             repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
-            ...(benchCase.priorRound && { earlier: benchCase.priorRound }), ...(relatedReposAsOf && { relatedReposAsOf }),
+            ...(benchCase.priorRound && { earlier: benchCase.priorRound }), relatedReposAsOf: await changeDate(checkouts.get(benchCase.repo)!, benchCase),
             providerInputs: options.providerInputs, signal: options.signal,
             // The case's own config replaces the repository's. Without one, the overrides are set on the repository's.
             ...(benchCase.config

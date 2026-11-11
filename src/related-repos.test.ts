@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { devNull, tmpdir } from 'os';
 import { join } from 'path';
 
-import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
+import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
 import { RelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -76,6 +76,7 @@ describe('relatedRepoLoader', () => {
       ['sparse-checkout', 'set', '--no-cone', '/AGENTS.md', '/CLAUDE.md', '/src/consensus', '/doc/*.md'],
       ['fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', 'v23.0.0'],
       ['checkout', '-q', '--force', '--detach', 'FETCH_HEAD'],
+      ['rev-parse', 'HEAD'],
       ['repack', '-a', '-d', '-q'],
     ]);
     expect(calls.filter(c => c.cwd === dipsDir).map(c => c.args)).toEqual([
@@ -84,9 +85,10 @@ describe('relatedRepoLoader', () => {
       ['sparse-checkout', 'disable'],
       ['fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', 'HEAD'],
       ['checkout', '-q', '--force', '--detach', 'FETCH_HEAD'],
+      ['rev-parse', 'HEAD'],
       ['repack', '-a', '-d', '-q'],
     ]);
-    expect(run).toHaveBeenCalledTimes(12);
+    expect(run).toHaveBeenCalledTimes(14);
     expect(existsSync(join(cacheDir, 'dashpay', 'platform'))).toBe(false);
     expect(log).toHaveBeenCalledWith('Fetched related repo dashpay/dash at v23.0.0');
 
@@ -108,6 +110,7 @@ describe('relatedRepoLoader', () => {
     const history = (oldEnough: string) => (args: string[]): string => {
       const from = args.at(-1)!;
       if (args[0] === 'rev-list') return args[1] === '-1' ? (from === oldEnough ? `${found}\n` : '') : `${fetched[from].join('\n')}\n`;
+      if (args[0] === 'rev-parse') return `${found}\n`;
       if (args[0] === 'cat-file') return `tree ${'0'.repeat(40)}\n${parents[from].map(p => `parent ${p}\n`).join('')}author A <a@b> 1 +0000\n\nMessage\nparent ${'9'.repeat(40)}\n`;
       return '';
     };
@@ -128,19 +131,22 @@ describe('relatedRepoLoader', () => {
       fetch('64', cut), ...walk(cut), ['cat-file', 'commit', older],
       fetch('128', oldest), walk(oldest)[0],
       ['checkout', '-q', '--force', '--detach', found],
+      ['rev-parse', 'HEAD'],
       ['repack', '-a', '-d', '-q'],
     ]);
-    expect(log).toHaveBeenCalledWith(`Fetched related repo dashpay/dips as of ${asOf}`);
+    expect(log).toHaveBeenCalledWith(`Fetched related repo dashpay/dips as of ${asOf}, commit ${found}`);
+    expect(relatedRepoOutcomes([DIPS], stateDir, {}, asOf)).toEqual([{ repo: DIPS.repo, asOf, status: 'fetched', commit: found, durationMs: expect.any(Number) }]);
 
     // A newest commit that is old enough is checked out without another fetch.
     expect(await load(history('FETCH_HEAD'))).toBe(dipsDir);
-    expect(fromFetch()).toEqual([fetch('1', 'HEAD'), walk('FETCH_HEAD')[0], ['checkout', '-q', '--force', '--detach', found], ['repack', '-a', '-d', '-q']]);
+    expect(fromFetch()).toEqual([fetch('1', 'HEAD'), walk('FETCH_HEAD')[0], ['checkout', '-q', '--force', '--detach', found], ['rev-parse', 'HEAD'], ['repack', '-a', '-d', '-q']]);
 
     // A history without a commit that old fails the repo, and so does a time that is no date.
     await expect(load(history('none'))).rejects.toThrow(`it has no commit as old as ${asOf}`);
     expect(calls.map(c => c.args).slice(-2)).toEqual([walk(oldest)[1], ['cat-file', 'commit', root]]);
     await expect(load(history('none'), 'last week')).rejects.toThrow('`last week` is not a date');
     expect(existsSync(dipsDir)).toBe(false);
+    expect(relatedRepoOutcomes([DIPS], stateDir, {}, 'last week')).toEqual([expect.objectContaining({ asOf: 'last week', status: 'failed', reason: '`last week` is not a date' })]);
   });
 
   it('waits for another tool server that is fetching the repo, takes its outcome, and records a failure when it stops or hangs', async () => {
@@ -212,6 +218,7 @@ describe('relatedRepoLoader', () => {
       ['sparse-checkout', 'set', '--no-cone', '/AGENTS.md', '/CLAUDE.md', '/src/consensus', '/doc/*.md'],
       ['fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', 'v23.0.0'],
       ['checkout', '-q', '--force', '--detach', 'FETCH_HEAD'],
+      ['rev-parse', 'HEAD'],
       ['repack', '-a', '-d', '-q'],
     ]);
     expect(readFileSync(join(dashDir, '.git', 'objects', 'pack', 'pack-1.pack'), 'utf-8')).toBe('objects');
@@ -226,7 +233,7 @@ describe('relatedRepoLoader', () => {
 
     expect(await loader([DASH], { run: fakeGit({ 'dashpay/dash': { fsck: 'error: index CRC mismatch for object 0931' } }) })('dashpay/dash')).toBe(dashDir);
 
-    expect(calls.map(c => c.args[0] === '-c' ? 'fsck' : c.args[0])).toEqual(['init', 'remote', 'fsck', 'init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'repack']);
+    expect(calls.map(c => c.args[0] === '-c' ? 'fsck' : c.args[0])).toEqual(['init', 'remote', 'fsck', 'init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'rev-parse', 'repack']);
     expect(existsSync(join(dashDir, '.git', 'objects', 'pack'))).toBe(false);
     expect(log).toHaveBeenCalledWith(`Discarding the cached objects of ${dashDir}: error: index CRC mismatch for object 0931`);
   });
@@ -239,7 +246,7 @@ describe('relatedRepoLoader', () => {
 
       await loader([DASH])('dashpay/dash');
 
-      expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'repack']);
+      expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'rev-parse', 'repack']);
       expect(lstatSync(join(cacheDir, 'dashpay')).isSymbolicLink()).toBe(false);
       expect(existsSync(join(outside, 'dash', 'stale.txt'))).toBe(true);
 
@@ -251,7 +258,7 @@ describe('relatedRepoLoader', () => {
 
       await loader([DIPS])('dashpay/dips');
 
-      expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'repack']);
+      expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'rev-parse', 'repack']);
       expect(existsSync(join(dipsDir, '.git', 'objects', 'pack'))).toBe(false);
       expect(readFileSync(join(outside, 'dash', '.git', 'objects', 'pack', 'pack-1.pack'), 'utf-8')).toBe('objects');
     } finally {
@@ -296,7 +303,7 @@ describe('relatedRepoLoader', () => {
     expect(existsSync(join(cacheDir, 'dashpay', 'dips'))).toBe(false);
     expect(calls.filter(c => c.cwd.endsWith('dips')).map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch']);
     expect(log).toHaveBeenCalledWith(`Could not repack ${join(cacheDir, 'dashpay', 'dash')}: fatal: out of memory`);
-    expect(readdirSync(stateDir).sort()).toEqual(['dashpay%2Fdash.done', 'dashpay%2Fdash.lock', 'dashpay%2Fdips.failed', 'dashpay%2Fdips.lock']);
+    expect(readdirSync(stateDir).sort()).toEqual(['dashpay%2Fdash.commit', 'dashpay%2Fdash.done', 'dashpay%2Fdash.lock', 'dashpay%2Fdips.failed', 'dashpay%2Fdips.lock']);
     expect(fetchedRelatedRepos(stateDir)).toEqual(new Map([['dashpay/dash', join(cacheDir, 'dashpay', 'dash')]]));
 
     expect(relatedRepoOutcomes([DASH, DIPS], stateDir).map(o => o.status)).toEqual(['fetched', 'failed']);
@@ -311,6 +318,14 @@ describe('relatedRepoLoader', () => {
     expect(await fetchRelatedRepos({ repos: [DASH, DIPS, PLATFORM], cacheDir, stateDir }, { run, log })).toEqual([DASH, PLATFORM].map(r => ({ repo: r.repo, kind: r.kind, dir: dirOf(r) })));
     expect(calls.length).toBeGreaterThan(before);
     expect(calls.slice(before).every(c => c.cwd === dirOf(PLATFORM))).toBe(true);
+
+    // Requiring every repo takes the same outcomes, and names each repo that could not be fetched with its reason.
+    const fetched = calls.length;
+    await expect(requireRelatedRepos({ repos: [DASH, PLATFORM], cacheDir, stateDir }, { run, log })).resolves.toBeUndefined();
+    await expect(requireRelatedRepos({ repos: [DASH, DIPS], cacheDir, stateDir, asOf: '2026-10-03T00:00:00Z' }, { run, log })).rejects.toThrow(
+      "Could not read every related repo as of 2026-10-03T00:00:00Z. dashpay/dips: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    );
+    expect(calls).toHaveLength(fetched);
 
     // A repo's guide is its root `AGENTS.md`, else its root `CLAUDE.md`, and only a regular file. The round record names it.
     const [both, linked, none] = [DASH, DIPS, PLATFORM].map(({ repo, kind }) => ({ repo, kind, dir: mkdtempSync(join(tempDir, 'checkout-')) }));

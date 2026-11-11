@@ -55,9 +55,10 @@ export function relatedRepoLoader(
 
 /**
  * Runs `checkout` in the one process that creates the lock `<marker>.lock`, holding its PID, which records the outcome
- * in `<marker>.done` or `<marker>.failed`. Any other process waits for that outcome.
+ * in `<marker>.done` or `<marker>.failed`, and the commit it checked out in `<marker>.commit`. Any other process waits
+ * for that outcome.
  */
-async function sharedCheckout(repo: RelatedRepo, marker: string, timeoutMs: number, checkout: () => Promise<string>): Promise<string> {
+async function sharedCheckout(repo: RelatedRepo, marker: string, timeoutMs: number, checkout: () => Promise<{ dir: string; commit: string }>): Promise<string> {
   try {
     writeFileSync(`${marker}.lock`, String(process.pid), { flag: 'wx' });
   } catch (error) {
@@ -65,7 +66,8 @@ async function sharedCheckout(repo: RelatedRepo, marker: string, timeoutMs: numb
     return waitForCheckout(repo, marker, timeoutMs);
   }
   try {
-    const dir = await checkout();
+    const { dir, commit } = await checkout();
+    writeMarker(`${marker}.commit`, commit);
     writeMarker(`${marker}.done`, dir);
     return dir;
   } catch (error) {
@@ -121,6 +123,17 @@ export async function fetchRelatedRepos(related: RelatedRepoTools, options: Rela
 }
 
 /**
+ * Fetches every repo of `related` before a tool call asks for one. Throws when a repo cannot be fetched, with each
+ * such repo and its reason, so no finder of the round reads without it.
+ */
+export async function requireRelatedRepos(related: RelatedRepoTools, options: RelatedRepoLoaderOptions = {}): Promise<void> {
+  const load = relatedRepoLoader(related, { log: message => core.info(message), ...options });
+  const fetched = await Promise.allSettled(related.repos.map(({ repo }) => load(repo)));
+  const failed = fetched.flatMap((result, i) => (result.status === 'rejected' ? [`${related.repos[i].repo}: ${messageOf(result.reason)}`] : []));
+  if (failed.length > 0) throw new Error(`Could not read every related repo${related.asOf ? ` as of ${related.asOf}` : ''}. ${failed.join('. ')}`);
+}
+
+/**
  * Returns the guide file at the root of each of `checkouts` that has one, by `owner/name`, or `undefined` when none
  * has. Only a regular file counts, so a guide is never a link that leaves the checkout.
  */
@@ -142,17 +155,21 @@ const MAX_REASON_CHARS = 300;
 
 /**
  * Returns how each of `repos` fared in the round in `stateDir`: fetched, failed with the reason, or unused when nothing
- * asked for it, with how long a fetch took from its lock to its outcome, and the guide of `guides` the finders were
- * pointed to. Warns about each repo it could not fetch.
+ * asked for it, with how long a fetch took from its lock to its outcome, the commit a fetch checked out, the guide of
+ * `guides` the finders were pointed to, and the `asOf` time the round read the repos at. Warns about each repo it could
+ * not fetch.
  */
-export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guides: Record<string, string> = {}): RoundRelatedRepo[] {
+export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guides: Record<string, string> = {}, asOf?: string): RoundRelatedRepo[] {
   const files = new Set(readdirSync(stateDir));
   return repos.map(({ repo, ref }) => {
     const marker = encodeURIComponent(repo);
-    const base = { repo, ...(ref && { ref }), ...(guides[repo] && { guide: guides[repo] }) };
+    const base = { repo, ...(ref && { ref }), ...(asOf && { asOf }), ...(guides[repo] && { guide: guides[repo] }) };
     if (!files.has(`${marker}.lock`)) return { ...base, status: 'unused' as const };
     const took = (outcome: string) => ({ durationMs: Math.max(0, Math.round(statSync(join(stateDir, outcome)).mtimeMs - statSync(join(stateDir, `${marker}.lock`)).mtimeMs)) });
-    if (files.has(`${marker}.done`)) return { ...base, status: 'fetched' as const, ...took(`${marker}.done`) };
+    if (files.has(`${marker}.done`)) {
+      const commit = files.has(`${marker}.commit`) ? readFileSync(join(stateDir, `${marker}.commit`), 'utf-8') : '';
+      return { ...base, status: 'fetched' as const, ...(commit && { commit }), ...took(`${marker}.done`) };
+    }
     const failed = files.has(`${marker}.failed`);
     const reason = failed ? readFileSync(join(stateDir, `${marker}.failed`), 'utf-8') : 'the fetch never finished';
     core.warning(`Could not fetch related repo ${repo}, which must be public on github.com: ${reason}`);
@@ -186,12 +203,12 @@ async function commitAsOf(git: Git, asOf: string): Promise<string> {
 
 /**
  * Fetches one commit of `repo`, with only its `paths` and `GUIDE_FILES`, into its directory under `cacheDir`, reusing the objects of a
- * clone already there, and returns that directory. The commit is the newest of its `ref`, or with `asOf` the one
+ * clone already there, and returns that directory and the commit. The commit is the newest of its `ref`, or with `asOf` the one
  * `commitAsOf` returns. Throws when it cannot be fetched in time, as a private or missing repo cannot.
  */
 async function checkoutRelatedRepo(
   repo: RelatedRepo, cacheDir: string, timeoutMs: number, run: typeof runTool, log: (message: string) => void, asOf?: string,
-): Promise<string> {
+): Promise<{ dir: string; commit: string }> {
   const dir = resolve(cacheDir, ...repo.repo.split('/'));
   if (!dir.startsWith(resolve(cacheDir) + sep)) throw new Error('not an "owner/name" repo');
   const deadline = Date.now() + timeoutMs;
@@ -220,10 +237,11 @@ async function checkoutRelatedRepo(
     await git(...(repo.paths ? ['sparse-checkout', 'set', '--no-cone', ...[...GUIDE_FILES, ...repo.paths].map(sparsePattern)] : ['sparse-checkout', 'disable']));
     await git('fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', repo.ref ?? 'HEAD');
     await git('checkout', '-q', '--force', '--detach', asOf ? await commitAsOf(git, asOf) : 'FETCH_HEAD');
+    const commit = (await git('rev-parse', 'HEAD')).trim();
     // With no refs to negotiate from, the fetch sends every tree of a new commit again. Repacking keeps one copy in the cache.
     await git('repack', '-a', '-d', '-q').catch(error => log(`Could not repack ${dir}: ${messageOf(error)}`));
-    log(`Fetched related repo ${repo.repo}${repo.ref ? ` at ${repo.ref}` : ''}${asOf ? ` as of ${asOf}` : ''}`);
-    return dir;
+    log(`Fetched related repo ${repo.repo}${repo.ref ? ` at ${repo.ref}` : ''}${asOf ? ` as of ${asOf}` : ''}${commit ? `, commit ${commit}` : ''}`);
+    return { dir, commit };
   } catch (error) {
     if ([cacheDir, dirname(dir)].every(isRealDirectory)) removeQuietly(dir, log);
     throw error;
