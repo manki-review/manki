@@ -648,7 +648,7 @@ export const UNPOSTED_REASONS = {
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
 /** Why nothing proves a warning: a check ran and settled nothing, the round's checks did not reach it, or no check could decide and no line is cited. */
-export const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof'] as const satisfies readonly UnpostedReason[];
+const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof'] as const satisfies readonly UnpostedReason[];
 export type UnprovenReason = typeof UNPROVEN_REASONS[number];
 
 /** Whether the review leaves `finding` out because nothing proves it. */
