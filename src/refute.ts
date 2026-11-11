@@ -289,7 +289,8 @@ function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefi
 /**
  * Grades `finding` by the outcome its refutations agree on. A `disproof` drops a finding graded below blocker, such as an
  * open lead or a capped blocker, and no check raises a finding beside one that disproves it. A finding that `breaksRule`
- * stays when the disproof lies only in premises the judge doubts, which are about the damage. A disproof lowers a
+ * stays when the disproof lies only in premises the judge doubts, which are about the damage, without its `cell`,
+ * `doubts` and `gradeIfConfirmed`. A disproof lowers a
  * blocker only to the grade `gradeBeforeJudgeRaise` gives, never one that `restates` an earlier blocker, and such a
  * finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
  * grade, and a security finding changes only when confirmed. A confirmation that raises a finding out of the `rare`
@@ -305,9 +306,13 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
   };
   if (outcome !== 'confirmed' && finding.tags?.includes(SECURITY_TAG)) return graded;
   const dropped = finding.severity === 'blocker' ? undefined : disproof(graded);
-  // A doubt of the judge is about the damage, and a rule the judge confirmed is broken either way. A refuter's own answer
-  // that the defect does not exist can be about the rule, so it still drops the finding.
-  if (dropped && breaksRule(finding) && finding.doubts?.length && checks.every(check => check.defect !== 'disproved')) return graded;
+  if (dropped && breaksRule(finding) && finding.doubts?.length && checks.every(check => check.defect !== 'disproved')) {
+    // A doubt of the judge is about the damage, and a rule the judge confirmed is broken either way. A refuter's own answer
+    // that the defect does not exist can be about the rule, so it still drops the finding. The cell and the grade it
+    // promised state that damage, so they go.
+    const { cell, gradeIfConfirmed: _gradeIfConfirmed, doubts: _doubts, ...kept } = graded;
+    return { ...kept, ...(cell && { judgeCell: cell }) };
+  }
   if (dropped) return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', dropped.reason) };
   if (outcome === 'disproved') {
     const filed = restates ? undefined : gradeBeforeJudgeRaise(finding, refutation, pairRefutation);

@@ -2168,9 +2168,10 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', confidence: 'high', ...answers[title] })),
     }) });
-    const graded = async (rules?: 'block') => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), {
+    const run = async (rules?: 'block') => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), {
       findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace },
-    })).findings.map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', ')]);
+    })).findings;
+    const graded = async (rules?: 'block') => (await run(rules)).map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', ')]);
 
     try {
       const expected = (grade: 'warning' | 'blocker') => [
@@ -2184,6 +2185,17 @@ describe('runJudgeAgent', () => {
       expect(await graded()).toEqual(expected('warning'));
       expect(await graded('block')).toEqual(expected('blocker'));
       expect(refuterMessages).toHaveLength(12);
+
+      // The kept warning drops the damage the check disproved, so the next round's judge reads a warning with no cell to restate and no open doubt.
+      const kept = (await run()).find(f => f.title === 'Damage disproved')!;
+      expect([kept.cell, kept.judgeCell, kept.doubts, kept.gradeIfConfirmed, kept.refutation?.outcome]).toEqual([undefined, { row: 'wrong', column: 'normal' }, undefined, undefined, 'disproved']);
+      const { cell, judgeCell, doubts, gradeIfConfirmed, refutation, rule: keptRule } = kept;
+      const entry = { ...makeFindingFingerprintEntry({ title: kept.title, severity: kept.severity }), cell, judgeCell, doubts, gradeIfConfirmed, refutation, rule: keptRule };
+      const next = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [entry] } })]);
+      expect(next).toContain('- **P1** (round 1, warning): "Damage disproved" at src/a.ts:10');
+      const recent = next.slice(next.indexOf('## Prior Round Findings'), next.indexOf('## Prior Findings'));
+      expect(recent).toContain('"severity": "warning"');
+      expect(recent).not.toMatch(/"row"|"gradeIfConfirmed"|"doubts"/);
       expect(refuterMessages[0]).toMatch(/^## Finding the judge could not settle without tools: Fact confirmed\n/);
       expect(refuterMessages[0]).toContain("- **Premises the judge doubts**, to answer in order:\n  1. '.env.example' has no entry for the variable");
       expect(refuterMessages.find(m => m.includes(': Another premise confirmed\n'))).not.toContain('.env.example');

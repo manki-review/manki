@@ -2487,10 +2487,11 @@ const LINKABLE_PATH_RE = /^[\w@+.-]+(?:\/[\w@+.-]+)*$/;
 const REFUTATION_PART: Record<RefutationOutcome, { label: string; text: string }> = {
   confirmed: { label: 'Double-checked', text: 'Manki tried to disprove this by reading the code and could not.' },
   unsettled: { label: 'Not settled', text: 'Manki tried to disprove this by reading the code and could not decide.' },
-  // A posted disproved finding is a blocker, a security finding, one a second check confirmed or one `isDisprovedRaise` names, since a disproof drops any other.
+  // A posted disproved finding is a blocker, a security finding, one a second check confirmed, one `isDisprovedRaise` names or one that `breaksRule`, since a disproof drops any other.
   disproved: { label: 'Doubt found', text: 'Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself.' },
 };
 const DISPROVED_RAISE_TEXT = 'Manki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself.';
+const DISPROVED_DAMAGE_TEXT = 'Manki found a reason the failure may not happen. The finding stays, since the repository rule is broken either way.';
 const PAIR_REFUTATION_LABEL = 'Second check, on another model';
 
 /** Opens the fold under a finding comment, so reading the comment back stops its description there. */
@@ -2746,7 +2747,9 @@ function refutationPart(label: string, lead: string, check: Refutation, linkTo: 
 function refutationParts(finding: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
   const pairLead = pairRefutation && REFUTATION_SUMMARY[outcomeOf(pairRefutation)];
-  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : REFUTATION_PART[outcomeOf(refutation)].text);
+  // The refuter's own answer that the defect does not exist drops such a warning, so only a disproved premise of the judge's keeps it.
+  const keptByRule = refutation?.outcome === 'disproved' && refutation.defect !== 'disproved' && finding.severity !== 'blocker' && breaksRule(finding);
+  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : keptByRule ? DISPROVED_DAMAGE_TEXT : REFUTATION_PART[outcomeOf(refutation)].text);
   return [
     ...(refutation && lead ? [refutationPart(REFUTATION_PART[outcomeOf(refutation)].label, lead, refutation, linkTo, known)] : []),
     ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`, pairRefutation, linkTo, known)] : []),

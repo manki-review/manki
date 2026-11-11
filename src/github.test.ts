@@ -413,6 +413,12 @@ describe('formatFindingComment', () => {
       expect(render(noDefect)).toContain(`so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
       expect(render(noDefect)).toContain('**Doubt found:** Manki found a reason this may not happen');
     }
+    // A warning that breaks a confirmed rule outlives a disproof of its damage, and says why it stays.
+    expect(render({ ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } }))
+      .toContain('**Doubt found**\nManki found a reason the failure may not happen. The finding stays, since the repository rule is broken either way. A comment says it is intended.');
+    // A second check can keep one whose first check answered that the defect does not exist, and that answer can be about the rule.
+    expect(render({ ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' }, refutation: { ...disprovedFinding.refutation!, defect: 'disproved' } }))
+      .toContain('Manki found a reason this may not happen, but a disproof alone');
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
 
