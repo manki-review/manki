@@ -5417,12 +5417,12 @@ function loadFixtures<T>(corpus: string): T[] {
 describe('judge thread-evaluation fixture corpus', () => {
   const fixtures = loadFixtures<ThreadFixture>('threadEvaluations');
 
-  it('loads at least the eight required fixtures', () => {
-    expect(fixtures.length).toBeGreaterThanOrEqual(8);
+  it('loads at least the nine required fixtures', () => {
+    expect(fixtures.length).toBeGreaterThanOrEqual(9);
   });
 
   it.each(fixtures)('fixture $name is structurally valid', (fixture) => {
-    expect(['addressed', 'not_addressed', 'uncertain']).toContain(fixture.expectedStatus);
+    expect(['addressed', 'partly_addressed', 'not_addressed', 'uncertain']).toContain(fixture.expectedStatus);
     // Fixture thread IDs use the PRRT_ sentinel prefix to distinguish them from real GitHub IDs.
     expect(fixture.openThread.threadId).toMatch(/^PRRT_/);
     expect(fixture.openThread.file).not.toHaveLength(0);
@@ -5438,6 +5438,7 @@ describe('judge thread-evaluation fixture corpus', () => {
     }
     // Three addressed variants (obvious fix, file deleted, refactor-mooted) plus one rewrite.
     expect(byStatus.get('addressed')?.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(byStatus.get('partly_addressed')?.length ?? 0).toBeGreaterThanOrEqual(1);
     // not_addressed must include the adversarial injection case and the
     // empty-inter-round-diff case (judge returns `not_addressed` directly
     // for an empty diff, matching the `runJudgeAgent` override).

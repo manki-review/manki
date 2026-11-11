@@ -1,0 +1,16 @@
+{
+  "name": "one-of-two-failures-fixed",
+  "expectedStatus": "partly_addressed",
+  "expectedReasonHint": "status still unchecked",
+  "openThread": {
+    "threadId": "PRRT_one_of_two",
+    "title": "Response body is never closed and the status code is ignored",
+    "file": "internal/profile/client.go",
+    "line": 26,
+    "severity": "warning",
+    "description": "`fetchProfile` never closes `resp.Body`, so every call leaks a connection. It also decodes the body whatever the status code, so a 404 or 500 reply with a JSON error body is returned as a profile with no error.",
+    "suggestedFix": "Add `defer resp.Body.Close()` after the error check, and return an error when `resp.StatusCode` is not `http.StatusOK`.",
+    "currentCode": "  21: func fetchProfile(ctx context.Context, client *http.Client, url string) (*Profile, error) {\n  22: \treq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)\n  23: \tif err != nil {\n  24: \t\treturn nil, err\n  25: \t}\n>>>26: \tresp, err := client.Do(req)\n  27: \tif err != nil {\n  28: \t\treturn nil, err\n  29: \t}\n  30: \tdefer resp.Body.Close()\n  31: \tvar profile Profile\n  32: \tif err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {\n  33: \t\treturn nil, err\n  34: \t}\n  35: \treturn &profile, nil\n  36: }\n"
+  },
+  "interRoundDiff": "diff --git a/internal/profile/client.go b/internal/profile/client.go\nindex 1111111..2222222 100644\n--- a/internal/profile/client.go\n+++ b/internal/profile/client.go\n@@ -27,6 +27,7 @@ func fetchProfile(ctx context.Context, client *http.Client, url string) (*Profile, error) {\n \tif err != nil {\n \t\treturn nil, err\n \t}\n+\tdefer resp.Body.Close()\n \tvar profile Profile\n \tif err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {\n \t\treturn nil, err\n"
+}
