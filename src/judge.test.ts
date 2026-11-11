@@ -5256,6 +5256,7 @@ describe('runJudgeAgent cross-round suppression', () => {
       })),
     }) });
     const refuterCalls: string[] = [];
+    const doubtBudget = { left: 8 };
     const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
     const refuter: LLMClient = {
       repoTools: true,
@@ -5268,7 +5269,7 @@ describe('runJudgeAgent cross-round suppression', () => {
     };
     try {
       const checked = await runJudgeAgent(mockClient, makeConfig(), {
-        ...input, refutation: { client: refuter, workspace },
+        ...input, refutation: { client: refuter, workspace, doubtBudget },
         findings: titles.map((title, i) => makeFinding({
           title, file: 'src/index.ts', line: 10 + i, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`] },
           ...(title === 'Open lead' && { lead: { checked: 'read src/index.ts:13', left: 'find the callers' } }),
@@ -5292,6 +5293,8 @@ describe('runJudgeAgent cross-round suppression', () => {
         ['Old loop the judge is sure of', 'warning', { row: 'degraded', column: 'normal' }, undefined],
       ]);
       expect(refuterCalls.sort()).toEqual(['Lost update', 'Old loop the judge is sure of', 'Stale cache read']);
+      // Only the check of the doubted warning counts against the round's eight.
+      expect(doubtBudget.left).toBe(7);
       expect(checked.findings[2].doubts).toEqual(leak);
       expect([checked.crossRoundSuppressed, checked.inPrSuppressedCount]).toEqual([3, 1]);
       // Asking whether a finding will be hidden logs nothing, so the log names each hidden finding once.

@@ -552,6 +552,14 @@ describe('refuteBlockers', () => {
       'Left out later with a doubt': undefined, 'Left out later without proof': 'no_proof',
       'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof',
     });
+    // The judge calls of one round share the eight, so a later call checks only what an earlier one left.
+    const doubtBudget = { left: 3 };
+    const pairOf = (name: string) => [doubted(`${name} 1`, 'warning'), doubted(`${name} 2`, 'warning')];
+    const shared = fakeClient({ 'First call 1': unsettled, 'First call 2': unsettled, 'Second call 1': unsettled, 'Second call 2': unsettled });
+    await refuteBlockers(shared, pairOf('First call'), { workspace, diff, doubtBudget });
+    const later = await refuteBlockers(shared, pairOf('Second call'), { workspace, diff, doubtBudget });
+    expect(shared.calls.map(([title]) => title).sort()).toEqual(['First call 1', 'First call 2', 'Second call 1']);
+    expect([reasons(later), doubtBudget]).toEqual([{ 'Second call 1': 'unsettled_check', 'Second call 2': 'not_checked' }, { left: 0 }]);
     // Before any check, as on a round without tools, only the cited lines decide.
     expect(Object.entries(reasons(findings)).filter(([, reason]) => reason)).toEqual([
       ['No proof in a deleted file', 'no_proof'], ['Left out later without proof', 'no_proof'], ['Warning without proof', 'no_proof'], ['Tool alert without proof', 'no_proof'], ['Security warning without proof', 'no_proof'],

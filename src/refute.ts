@@ -324,20 +324,20 @@ const doubtsDefect = (finding: Finding): boolean => !!finding.doubts?.some(d => 
 const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.length;
 
 /**
- * Returns the warnings to check with tools because nothing proves them yet, at most `MAX_DOUBT_CHECKS`, in the order
+ * Returns the warnings to check with tools because nothing proves them yet, at most `limit`, in the order
  * given, and those `over` that limit: one the judge kept with a doubt whether the defect exists, and one no cited line
  * proves. A finding the judge would grade higher if its doubts hold is always checked, since that check is how a
  * warning becomes a blocker. A tool alert and a finding `hidden` accepts are left out, and a security finding is
  * checked only for a doubt. So is a warning `checkable` rejects, which therefore takes none of the checks.
  */
-function doubtsToCheck(findings: readonly Finding[], checkable: (finding: Finding) => boolean, hidden: (finding: Finding) => boolean): { checked: Finding[]; over: Finding[] } {
+function doubtsToCheck(findings: readonly Finding[], limit: number, checkable: (finding: Finding) => boolean, hidden: (finding: Finding) => boolean): { checked: Finding[]; over: Finding[] } {
   const unproven = findings.filter(f => f.severity === 'warning' && !alwaysChecked(f) && !f.toolSource
     && (doubtsDefect(f) || (citesNoProof(f) && !isSecurityFinding(f.tags, f.reviewers))) && !hidden(f) && checkable(f));
-  const over = unproven.slice(MAX_DOUBT_CHECKS);
+  const over = unproven.slice(limit);
   for (const skipped of over) {
     core.info(`Not checking "${skipped.title}", since ${MAX_DOUBT_CHECKS} other unproven warnings took this round's checks`);
   }
-  return { checked: unproven.slice(0, MAX_DOUBT_CHECKS), over };
+  return { checked: unproven.slice(0, limit), over };
 }
 
 /** Whether `check` confirms that the defect of `finding` exists: the whole finding, or every premise the defect rests on. */
@@ -405,6 +405,8 @@ export interface RefuteOptions {
   hiddenLater?: (finding: Finding) => boolean;
   /** Whether a later step records `finding` without posting it while no check ran on it. Such a warning takes none of the `MAX_DOUBT_CHECKS` checks. */
   unpostedLater?: (finding: Finding) => boolean;
+  /** How many of the round's `MAX_DOUBT_CHECKS` checks are left. Each one this call makes lowers it, so the judge calls of one round share them. */
+  doubtBudget?: { left: number };
 }
 
 /**
@@ -414,7 +416,7 @@ export interface RefuteOptions {
  * finding is reused without a new check while the files it rests on are unchanged, except for a finding with a
  * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, doubtBudget }: RefuteOptions): Promise<Finding[]> {
   const check = async (refuter: LLMClient, field: RefutationField, finding: Finding): Promise<Refutation | undefined> => {
     const label = field === 'pairRefutation' ? 'second refutation' : 'refutation';
     // Unseen code or a caller can change in a file the stored outcome does not cover, so such a finding is checked afresh.
@@ -441,7 +443,8 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   };
   const reopened = findings.map(f => reopenCappedGrade(f, priorRounds));
   const checkable = (finding: Finding): boolean => !!codeDigest(workspace, [finding.file]);
-  const picked = doubtsToCheck(reopened, checkable, finding => !!hiddenLater?.(finding) || !!unpostedLater?.(finding));
+  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, checkable, finding => !!hiddenLater?.(finding) || !!unpostedLater?.(finding));
+  if (doubtBudget) doubtBudget.left -= picked.checked.length;
   const doubtChecks = new Set(picked.checked);
   const overLimit = new Set(picked.over);
   return mapWithConcurrency(reopened, MAX_PARALLEL_REFUTATIONS, async finding => {

@@ -279,9 +279,9 @@ export interface JudgeInput {
   /**
    * A client with `repoTools` and the checked-out PR head. The judge reads the code findings cite outside the diff from
    * the head, and the client tries to refute each blocker, open lead and finding lowered for want of proof, and up to
-   * `MAX_DOUBT_CHECKS` warnings nothing proves yet.
+   * `MAX_DOUBT_CHECKS` warnings nothing proves yet. The judge calls of one round share those checks through `doubtBudget`.
    */
-  refutation?: { client: LLMClient; workspace: string; pair?: LLMClient };
+  refutation?: { client: LLMClient; workspace: string; pair?: LLMClient; doubtBudget?: { left: number } };
   /** Read-only tool calls the judge itself may make on the `refutation` workspace while it grades. 0 or unset gives it none. */
   toolSteps?: number;
   /** The section `listUsesOutsideDiff` builds, shown to the judge and the refuter. */
@@ -1481,7 +1481,7 @@ export async function runJudgeAgent(
   };
   // The suppressions hide findings by grade, so the refuter settles each grade first.
   const checked = refutation ? await refuteBlockers(refutation.client, mapped, {
-    workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
+    workspace: refutation.workspace, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
     blockingThreads: (openThreads ?? input.evaluatedThreads?.openThreads ?? []).filter(threadBlocks),
     hiddenLater: finding => suppress([finding], true).findings[0].severity === 'ignore',
     unpostedLater: finding => (staysPreExisting(finding) && !postedWhenPreExisting(finding))
