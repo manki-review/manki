@@ -15,6 +15,7 @@
 import { readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
+import { printableError } from '../src/cli';
 import { BenchCase, BenchReport, CASE_DIRS, CaseSet, formatBenchSummary, formatComparison, formatGate, formatRemoved, formatUnmatched, gateReports, loadCases, mergeReports, readReport, readReportFile } from '../src/bench';
 
 const SET_CHOICES: Record<string, CaseSet[]> = { holdout: ['holdout'], tuning: ['tuning'], both: ['tuning', 'holdout'] };
@@ -123,7 +124,7 @@ if (require.main === module) {
   try {
     process.exit(main(process.argv.slice(2)));
   } catch (error) {
-    console.error(error instanceof Error ? error.message : error);
+    console.error(printableError(error));
     process.exit(1);
   }
 }

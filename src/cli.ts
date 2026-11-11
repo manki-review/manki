@@ -4,7 +4,7 @@ import { outcomeReport } from './check-run';
 import { loadConfig } from './config';
 import { CHECKS_MARKER, formatFindingBlock } from './github';
 import { LocalReview, reviewLocal } from './local-review';
-import { hasAnyProviderCredentials, readProviderInputsFromEnv, removeSeededAuthFiles } from './providers';
+import { cutLegacyCommands, hasAnyProviderCredentials, readProviderInputsFromEnv, removeSeededAuthFiles } from './providers';
 import { makeScratchDir } from './tool-install';
 import { runGit } from './workspace';
 
@@ -106,6 +106,16 @@ async function defaultBase(root: string): Promise<string> {
 }
 
 /**
+ * Returns an error's message as a job log can take it. The message can quote a file, a model or a tool. A runner reads
+ * `::name::` as a workflow command where it starts a line, after whitespace, so such a line goes behind a bar. A bare
+ * `\r` ends a line for a runner as `\n` does. `cutLegacyCommands` cuts the `##[name]` form.
+ */
+export function printableError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return cutLegacyCommands(message).split(/\r\n|\r|\n/).map(line => (/^[\s\p{Cc}]*::/u.test(line) ? `| ${line}` : line)).join('\n');
+}
+
+/**
  * Runs a subcommand's `body` and returns its exit code, 2 when it throws. `out` writes the result to stdout, and every
  * log line goes to stderr. `signal` aborts on the first Ctrl-C.
  */
@@ -136,7 +146,7 @@ export async function runCliCommand(name: string, body: (out: (text: string) => 
   try {
     return await body(text => out(text), cancel.signal);
   } catch (error) {
-    process.stderr.write(`manki ${name}: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`manki ${name}: ${printableError(error)}\n`);
     return 2;
   } finally {
     process.off('SIGINT', onSignal);

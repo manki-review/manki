@@ -391,7 +391,7 @@ describe('scoreRun', () => {
       '### Unexpected warnings on tuning cases', '',
       "Warnings that match no key item. Add each real defect to its case's `must_catch`, or to `nice_to_have` when a good review may leave it out, and bump the case's `key_version`.", '',
       // A line break in the title, or a bare carriage return in the description, starts no line of its own that could close the block.
-      '```text', 'base demo-1 key v2 run 1: src/other.rs:1: Unlisted ```', '    Drops the lock.', '    ```rust', '    unlock();', '    ```', '```', '',
+      '```text', 'base demo-1 key v2 run 1: src/other.rs:1: Unlisted ```', '    | Drops the lock.', '    | ```rust', '    | unlock();', '    | ```', '```', '',
     ].join('\n'));
   });
 
@@ -450,7 +450,7 @@ describe('scoreRun on a follow-up case', () => {
     const blockers = (on: string) => [
       `### Unmatched blockers on ${on} cases`, '',
       "Blockers that match no key item. Add each real defect to its case's `must_catch` and bump the case's `key_version`.", '',
-      '```text', 'base demo-1 key v2 run 2: src/conn.rs:1: Write has no timeout', '    Something.', '```', '',
+      '```text', 'base demo-1 key v2 run 2: src/conn.rs:1: Write has no timeout', '    | Something.', '```', '',
     ].join('\n');
     expect(listed(followUp)).toBe(blockers('tuning'));
     expect(listed({ ...followUp, set: 'holdout' })).toBe('');
@@ -723,7 +723,7 @@ describe('runBench and buildReport', () => {
       const printed = () => [
         formatBenchSummary(report), formatUnmatched(report.variants), formatGate(gateReports([report, { ...report, startedAt: '2026-11-09T01:00:00.000Z' }], [report])),
       ].join('\n');
-      for (const text of ['shown-1 (source SHOWN-TEXT)', 'run 2: FAILED: failed on SHOWN-TEXT', 'src/SHOWN-TEXT.rs:1: title SHOWN-TEXT', '    description SHOWN-TEXT']) expect(printed()).toContain(text);
+      for (const text of ['shown-1 (source SHOWN-TEXT)', 'run 2: FAILED: failed on SHOWN-TEXT', 'src/SHOWN-TEXT.rs:1: title SHOWN-TEXT', '    | description SHOWN-TEXT']) expect(printed()).toContain(text);
       expect(printed()).toContain('\nheld-1\n');
       expect(printed()).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates');
       expect(printed()).toContain('  run 2: FAILED: the reason is in the report\n');
@@ -769,6 +769,26 @@ describe('runBench and buildReport', () => {
       } finally {
         warned.mockRestore();
       }
+
+      // Text of a tuning case is printed, and it comes from a model reading outside code. No line of it may run as a workflow command
+      // in a job log or leave its block in the step summary.
+      const hostile = 'It calls `Peer::connect` twice.\n::error::RUN\n   ::warning file=a::RUN\nok\r::stop-commands::RUN\nmid ##[add-mask]RUN\n```\n</details>';
+      const injected: BenchReport = {
+        ...report,
+        variants: report.variants.map(v => ({
+          ...v,
+          cases: v.cases.map(c => ({ ...c, source: `source\r::notice::RUN ${c.source}`, runs: c.runs.map(run => ({ ...run, ...(run.error && { error: `${run.error}\n::error::RUN\n##[error]RUN` }), findings: run.findings.map(f => ({ ...f, title: `${f.title}\n::error::RUN`, file: `${f.file}\r::error::RUN`, description: hostile })) })) })),
+        })),
+      };
+      for (const output of [formatUnmatched(injected.variants), formatBenchSummary(injected)]) {
+        const lines = output.split(/\r\n|\r|\n/);
+        expect(lines.filter(line => /^\s*::|##\[/.test(line))).toEqual([]);
+        expect(lines.filter(line => /^ {0,3}(```|<)/.test(line)).every(line => line === '```text' || line === '```')).toBe(true);
+      }
+      expect(formatUnmatched(injected.variants)).toContain('run 1: src/SHOWN-TEXT.rs ::error::RUN:1: title SHOWN-TEXT ::error::RUN\n    | It calls `Peer::connect` twice.\n    | ::error::RUN\n    |    ::warning file=a::RUN\n    | ok\n    | ::stop-commands::RUN\n    | mid [redacted-workflow-cmd]\n    | ```\n    | </details>\n');
+      expect(formatBenchSummary(injected)).toContain('shown-1 (source ::notice::RUN source SHOWN-TEXT)\n');
+      expect(formatBenchSummary(injected)).toContain('  run 2: FAILED: failed on SHOWN-TEXT ::error::RUN [redacted-workflow-cmd]\n');
+      expect(formatBenchSummary(injected)).not.toContain(SECRET);
 
       // A stored report that calls the hold-out case a tuning case is refused by the case's id, before anything of it is printed.
       const root = mkdtempSync(join(tmpdir(), 'manki-bench-sets-'));
@@ -1148,6 +1168,11 @@ describe('runBenchCommand', () => {
 
       expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--cache', cache, '--matcher-model', 'claude-opus-5-5'], dir)).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('The report was matched by claude-sonnet-5-5. Pass --matcher-model claude-sonnet-5-5 to score it again.'));
+      // An error message can quote a file. No line of it runs as a workflow command in a job log.
+      writeFileSync(join(dir, 'hostile.json'), JSON.stringify({ ...stored, matcherModel: 'model\r::error::RUN\n  ::add-mask::RUN ##[error]RUN' }));
+      expect(await runBenchCommand(['--rescore', join(dir, 'hostile.json'), '--cases', cases, '--cache', cache], dir)).toBe(2);
+      const quoted = '\n| ::error::RUN\n|   ::add-mask::RUN [redacted-workflow-cmd]';
+      expect(stderr).toHaveBeenLastCalledWith(`manki bench: The report was matched by model${quoted}${quoted}\n`);
       expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--case', 'demo-1'], dir)).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('--case does not apply to --rescore'));
       writeFileSync(join(dir, 'cut.json'), '{"variants": [{"title": "HOLDOUT-TEXT');

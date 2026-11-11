@@ -7,7 +7,7 @@ import { runCliCommand } from './cli';
 import { MANKI_VERSION } from './github';
 import { extractJSON } from './json';
 import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides, LocalReview, LocalReviewInput, overlayConfig, reviewLocal } from './local-review';
-import { hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
+import { cutLegacyCommands, hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { buildLLMClient } from './review-clients';
 import { CELL_GRADES, Doubt, Finding, FindingSeverity, GradeCell, isGradeCell, RoundRelatedRepo, SEVERITY_ORDER } from './types';
@@ -1053,6 +1053,20 @@ function minutes(ms: number | null): string {
 
 const SET_LABELS: Record<CaseSet, string> = { tuning: 'tuning', holdout: 'hold-out' };
 
+/**
+ * Returns text of a model or a case as lines, each to be printed behind text of the bench's own. A runner reads
+ * `::name::` as a workflow command only where it starts a line, so behind other text it reads none. A bare `\r` ends a
+ * line for a runner as `\n` does. `cutLegacyCommands` cuts the `##[name]` form, which a runner reads anywhere in a line.
+ */
+function outsideLines(text: string): string[] {
+  return cutLegacyCommands(text).split(/\r\n|\r|\n/);
+}
+
+/** Puts text of a model or a case on one line, so all of it stays behind the text printed before it and inside its Markdown block. */
+function oneLine(text: string): string {
+  return outsideLines(text).map(line => line.trim()).filter(Boolean).join(' ');
+}
+
 /** Whether this runs in a GitHub Actions job, whose log and summary anyone can read. */
 function inWorkflowJob(): boolean {
   return process.env.GITHUB_ACTIONS === 'true';
@@ -1065,13 +1079,12 @@ function inWorkflowJob(): boolean {
  */
 export function formatUnmatched(variants: VariantReport[], sets: CaseSet[] = ['tuning']): string {
   if (sets.includes('holdout') && inWorkflowJob()) throw new Error('The findings of hold-out cases are not listed in a workflow job, whose log and summary are public');
-  const oneLine = (text: string) => text.replace(/\s*[\r\n]+\s*/g, ' ');
   const list = (severity: FindingSeverity) => variants.flatMap(v => v.cases.filter(c => sets.includes(c.set)).flatMap(c => c.runs.flatMap((run, i) => {
     if (!run.complete) return [];
     return unmatchedFindings(c, run).filter(f => f.severity === severity).flatMap(f => [
       `${v.name} ${c.id} key v${c.keyVersion} run ${i + 1}: ${oneLine(f.file)}:${f.line}: ${oneLine(f.title)}`,
-      // The text comes from a model reading outside code. Every line of it starts inside the block, and the indent keeps a code fence in it from closing the block.
-      ...(f.description?.trim().split(/\r\n|\r|\n/).map(line => `    ${line}`) ?? []),
+      // The text comes from a model reading outside code. The indent keeps a code fence in it from closing the block.
+      ...(f.description === undefined ? [] : outsideLines(f.description.trim()).map(line => `    | ${line}`)),
     ]);
   })));
   const on = `on ${sets.map(set => SET_LABELS[set]).join(' and ')} cases`;
@@ -1138,14 +1151,14 @@ export function formatBenchSummary(report: BenchReport): string {
     for (const c of variant.cases) {
       // A hold-out case is printed as its id and counts only: its source and the reason of a failed run are free text.
       const shown = c.set !== 'holdout';
-      lines.push(shown ? `${c.id} (${c.source})` : c.id);
+      lines.push(shown ? `${c.id} (${oneLine(c.source)})` : c.id);
       for (const item of c.items) {
         lines.push(`  ${item.id} ${TIER_LABELS[item.tier]} ${item.severity}: ${item.caught}/${item.runs}${item.partial ? `, ${item.partial} partial` : ''}`);
       }
       for (const [i, run] of c.runs.entries()) {
         const reads = run.finders.map(f => `${f.name} ${f.filesRead}`).join(', ') || 'none';
         lines.push(run.error
-          ? `  run ${i + 1}: ${run.outcome}: ${shown ? run.error : 'the reason is in the report'}`
+          ? `  run ${i + 1}: ${run.outcome}: ${shown ? oneLine(run.error) : 'the reason is in the report'}`
           : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}, $${run.costUsd.toFixed(2)}`);
       }
     }

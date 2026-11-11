@@ -50,7 +50,7 @@ describe('formatReportSummary and the commands on a stored report', () => {
     };
     const summaryOf = (benchCase: BenchCase, text: string) => formatReportSummary(reportOf(benchCase, text));
     const shown = summaryOf(tuning, 'SHOWN-TEXT');
-    for (const text of ['(source SHOWN-TEXT)', 'src/SHOWN-TEXT.rs:3: title SHOWN-TEXT', '    description SHOWN-TEXT', 'run 2: FAILED: failed on SHOWN-TEXT']) expect(shown).toContain(text);
+    for (const text of ['(source SHOWN-TEXT)', 'src/SHOWN-TEXT.rs:3: title SHOWN-TEXT', '    | description SHOWN-TEXT', 'run 2: FAILED: failed on SHOWN-TEXT']) expect(shown).toContain(text);
     const held = summaryOf({ ...tuning, set: 'holdout' }, 'HOLDOUT-TEXT');
     expect(held).toContain('\nrdc-1295\n');
     expect(held).toContain('  run 2: FAILED: the reason is in the report\n');
@@ -79,7 +79,7 @@ describe('formatReportSummary and the commands on a stored report', () => {
       const [right, wrong] = [stored('right', 'holdout'), stored('wrong', 'tuning')];
 
       expect(main(['unmatched', '--report', right], root)).toBe(0);
-      expect(printed()).toContain('src/SHOWN-TEXT.rs:3: title SHOWN-TEXT\n    description SHOWN-TEXT');
+      expect(printed()).toContain('src/SHOWN-TEXT.rs:3: title SHOWN-TEXT\n    | description SHOWN-TEXT');
       expect(out).toHaveBeenLastCalledWith('Not listed, in another set: held-1');
       expect(printed()).not.toContain('HOLDOUT-TEXT');
       expect(main(['unmatched', '--report', right, '--set', 'holdout'], root)).toBe(0);
