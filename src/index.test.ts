@@ -231,6 +231,8 @@ jest.mock('./github', () => ({
   formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
   unreadRecordsLine: jest.requireActual('./github').unreadRecordsLine,
   withheldSummary: jest.requireActual('./github').withheldSummary,
+  roundSentence: jest.requireActual('./github').roundSentence,
+  roundSummary: jest.requireActual('./github').roundSummary,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   hasWriteAccess: jest.fn().mockResolvedValue(true),
@@ -1920,6 +1922,32 @@ describe('runFullReview orchestration', () => {
       });
       expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, {
         reviewed: { commit: 'abc123' }, approval: { commit: 'abc123', held: false }, pause: null,
+      });
+
+      // The check leaves out a summary about a finding the round no longer lists, and shows its title instead.
+      const disproved: Finding = { severity: 'ignore', title: 'Retry drops the error', file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'], gradePath: [{ from: 'warning', to: 'ignore', by: 'refutation' }] };
+      jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
+        verdict: 'APPROVE', outcome: 'READY', summary: 'A retry that fails is never reported.', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'], allJudgedFindings: [disproved],
+      });
+      mockChecksUpdate.mockClear();
+      await callRunFullReview();
+      expect(completedCheck()).toMatchObject({ conclusion: 'success', output: { title: 'Approved', summary: 'Approved' } });
+
+      // A round that requests changes then says what blocks: its top blocker, or the earlier threads still open.
+      const blocking = { verdict: 'REQUEST_CHANGES' as const, outcome: 'ADDRESS_FIRST' as const, summary: 'A retry that fails is never reported.', highlights: [], reviewComplete: true, agentNames: ['general'], allJudgedFindings: [disproved] };
+      const blocker: Finding = { severity: 'blocker', title: 'Off by one', file: 'src/app.ts', line: 1, description: 'Reads past the end. The last item is lost. Stop one earlier.', reviewers: ['Verdict reader'] };
+      const open = { file: 'src/app.ts', title: 'Stale cache', fingerprint: 'src/app.ts:3:3:stale-cache', line: 3 };
+      const checkOf = async (more: Partial<Awaited<ReturnType<typeof reviewModule.runReview>>>) => {
+        jest.mocked(reviewModule.runReview).mockResolvedValueOnce({ ...blocking, findings: [], ...more });
+        mockChecksUpdate.mockClear();
+        await callRunFullReview();
+        return completedCheck();
+      };
+      expect(await checkOf({ findings: [blocker], verdictReason: 'verdict_reader' })).toMatchObject({
+        conclusion: 'failure', output: { title: 'Changes requested', summary: 'Reads past the end. The last item is lost.' },
+      });
+      expect(await checkOf({ verdictReason: 'prior_unaddressed', verdictTrace: { survivingBlockers: [], unresolvedPriors: [open] } })).toMatchObject({
+        conclusion: 'failure', output: { title: 'Changes requested', summary: '**Still open from earlier reviews:**\n- `src/app.ts:3`: Stale cache' },
       });
     });
 

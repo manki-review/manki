@@ -130,6 +130,10 @@ export function isBlockingSeverity(severity: FindingSeverity): boolean {
   return severity === 'blocker' || severity === 'warning';
 }
 
+export function findingKey(f: Pick<Finding, 'file' | 'line' | 'title'>): string {
+  return `${f.file}:${f.line}:${f.title}`;
+}
+
 /** Whether a finding of this severity is a note: the review lists it, and it never blocks. */
 export function isNote(severity: FindingSeverity): boolean {
   return severity === 'note';

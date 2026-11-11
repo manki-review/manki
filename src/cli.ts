@@ -2,7 +2,7 @@ import { readFileSync, rmSync, writeFileSync } from 'fs';
 
 import { outcomeReport } from './check-run';
 import { loadConfig } from './config';
-import { CHECKS_MARKER, formatFindingBlock } from './github';
+import { CHECKS_MARKER, formatFindingBlock, roundSummary } from './github';
 import { LocalReview, reviewLocal } from './local-review';
 import { cutLegacyCommands, hasAnyProviderCredentials, readProviderInputsFromEnv, removeSeededAuthFiles } from './providers';
 import { makeScratchDir } from './tool-install';
@@ -84,7 +84,7 @@ export function exitCodeOf({ result, approvalHeld }: LocalReview): number {
  * DEL and the C1 control characters raw, so they are escaped too and never reach a terminal as escapes.
  */
 export function formatReviewJson({ result, base, head }: LocalReview): string {
-  const json = JSON.stringify({ outcome: result.outcome, verdict: result.verdict, summary: result.summary, base, head, findings: result.findings }, null, 2);
+  const json = JSON.stringify({ outcome: result.outcome, verdict: result.verdict, summary: roundSummary(result), base, head, findings: result.findings }, null, 2);
   return `${json.replace(/(?![\n])\p{Cc}/gu, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)}\n`;
 }
 
@@ -96,7 +96,7 @@ export function formatReviewText({ result, base, head, approvalHeld }: LocalRevi
   const links = { linkTo: (file: string, line: number, end?: number) => `${file}:${line}${end && end !== line ? `-${end}` : ''}`, files: new Map() };
   const title = outcomeReport(result.outcome, result.summary, approvalHeld).title;
   const blocks = result.findings.map(f => formatFindingBlock(f, links));
-  const lead = [`## ${title}: ${base.slice(0, 7)}..${head.slice(0, 7)}`, result.summary].filter(Boolean).join('\n\n');
+  const lead = [`## ${title}: ${base.slice(0, 7)}..${head.slice(0, 7)}`, roundSummary(result)].filter(Boolean).join('\n\n');
   const text = [lead, ...blocks].join('\n\n---\n\n');
   return `${text.split(`${CHECKS_MARKER}\n`).join('').replace(/(?![\t\n])\p{Cc}/gu, '')}\n`;
 }

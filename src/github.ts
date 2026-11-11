@@ -12,7 +12,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { isDisprovedRaise, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
+import { findingKey, isDisprovedRaise, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -1689,7 +1689,7 @@ export async function postReview(
    */
   const renderBody = (withoutLineThreads = false): string => {
     const threads = threadFindings.filter(f => !(withoutLineThreads && lineThreads.has(f)));
-    const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: [...bodyFindings, ...notes], carried, hold }, limitWarning, unreadRecords);
+    const lead = formatLead(result, blockerCounts, { threads, listed: [...bodyFindings, ...notes], carried, hold }, limitWarning, unreadRecords);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
@@ -2022,25 +2022,50 @@ function formatBlockerCounts({ fresh, earlier, followUp }: BlockerCounts): strin
   return `${countOf(fresh, 'new blocker')} and ${earlier} still open`;
 }
 
-/** Returns what goes wrong in practice, from the judge summary or else the top blocker's description. */
-function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string {
-  const summary = sanitizeMarkdown(result.summary.trim());
-  if (result.outcome === 'READY') return result.verdictReport ? '' : summary;
-  if (result.outcome !== 'ADDRESS_FIRST') return '';
+/**
+ * Returns the sentence a round says about itself: the judge's summary, or else the first two sentences of the top
+ * blocker's description. The judge writes its summary before later steps take findings out of the round, so the summary
+ * is left out when the judge kept a finding and `result.findings` holds none of the findings it kept. An incomplete
+ * round's summary says why the round did not finish, so it is returned as it is.
+ */
+export function roundSentence(result: ReviewResult): string {
+  if (!result.reviewComplete) return result.summary;
+  // A finding the judge kept and a later step dropped is `ignore` by a step that is not the judge's. One filed as `ignore` has no step.
+  const droppedLater = (f: Finding) => f.gradePath?.length ? f.gradePath.at(-1)!.by !== 'judge' : false;
+  const kept = (result.allJudgedFindings ?? []).filter(f => f.severity !== 'ignore' || droppedLater(f));
+  const listed = new Set(result.findings.map(findingKey));
   // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
-  if (summary && result.verdictReason !== 'verdict_reader') return asSentence(summary);
+  const stands = result.verdictReason !== 'verdict_reader' && (kept.length === 0 || kept.some(f => listed.has(findingKey(f))));
+  if (stands && result.summary.trim()) return result.summary;
+  const blocking = result.findings.filter(isBlockingFinding);
   const top = blocking.find(f => f.severity === 'blocker') ?? blocking[0];
-  return top ? sanitizeMarkdown(top.description.trim()).split(/(?<=[.!?])\s+/).slice(0, 2).join(' ') : '';
+  return top ? top.description.trim().split(/(?<=[.!?])\s+/).slice(0, 2).join(' ') : '';
+}
+
+/**
+ * Returns what a check or a terminal shows for a round: `roundSentence`, or the earlier threads still open when only
+ * they block, which the review body lists in its own section.
+ */
+export function roundSummary(result: ReviewResult): string {
+  return roundSentence(result) || formatBlockingPriorThreads(result) || '';
+}
+
+/** Returns what follows the verdict line in the review body. A READY round with a verdict reader report shows that report instead. */
+function formatVerdictDetail(result: ReviewResult): string {
+  if (result.outcome === 'READY' && result.verdictReport) return '';
+  if (result.outcome !== 'READY' && result.outcome !== 'ADDRESS_FIRST') return '';
+  const sentence = sanitizeMarkdown(roundSentence(result).trim());
+  return sentence && result.outcome === 'ADDRESS_FIRST' ? asSentence(sentence) : sentence;
 }
 
 /**
  * Returns what opens the review body: the verdict line, the `limitWarning` box and the summary. A round that only the
  * round records of `unreadRecords` kept from approving leads with that, since none of its open threads is a known blocker.
  */
-function formatLead(result: ReviewResult, blocking: Finding[], blockers: BlockerCounts, posted: PostedFindings, limitWarning?: string, unreadRecords?: string[]): string {
-  if (!result.outcome) return [sanitizeMarkdown(result.summary.trim()), limitWarning].filter(Boolean).join('\n\n');
-  if (unreadRecords) return [unreadRecordsLine(unreadRecords), limitWarning, withheldSummary(result.summary)].filter(Boolean).join('\n\n');
-  const detail = formatVerdictDetail(result, blocking);
+function formatLead(result: ReviewResult, blockers: BlockerCounts, posted: PostedFindings, limitWarning?: string, unreadRecords?: string[]): string {
+  if (!result.outcome) return [sanitizeMarkdown(roundSentence(result).trim()), limitWarning].filter(Boolean).join('\n\n');
+  if (unreadRecords) return [unreadRecordsLine(unreadRecords), limitWarning, withheldSummary(roundSentence(result))].filter(Boolean).join('\n\n');
+  const detail = formatVerdictDetail(result);
   const label = result.outcome === 'ADDRESS_FIRST' ? 'What blocks' : 'Summary';
   return [VERDICT_LINES[result.outcome](result, blockers, posted), limitWarning, detail && `**${label}:** ${detail}`].filter(Boolean).join('\n\n');
 }
