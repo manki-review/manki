@@ -17,7 +17,7 @@ import { parsePRDiff } from '../src/diff';
 import { postedFindings, touchesFinding } from '../src/fix-rate';
 import { fetchInterRoundDiff, fetchReviewThreadNodes } from '../src/github';
 import { classifyAuthorReply, judgeAddressedThreadIds } from '../src/recap';
-import { FindingFingerprintEntry, ParsedDiff, RoundContext } from '../src/types';
+import { FindingFingerprintEntry, migrateStoredSeverities, ParsedDiff, RoundContext } from '../src/types';
 import { aggregate } from './fix-rate-report';
 import { githubToken, HistoryLine as RecordLine } from './review-history';
 
@@ -83,7 +83,7 @@ export interface SetEntry {
 const PRECISION_TARGET = 0.8;
 const DEFAULT_SET_LIMIT = 60;
 const MIN_SET_SIZE = 40;
-const SEVERITIES = ['blocker', 'warning', 'suggestion', 'nitpick', 'unknown'];
+const SEVERITIES = ['blocker', 'warning', 'note', 'unknown'];
 const REPLY_OUTCOME = /^\**(Fixed|Agreed|Withdrawn|Unverified|Still open|Kept)\b/;
 // A person's reply that opens with one of these says the finding was acted on, or turned down.
 const AUTHOR_FIXED = /^\**(Fixed|Applied|Added|Adopted|Addressed|Done|Switched|Restructured)\b/i;
@@ -315,7 +315,7 @@ async function main(args: string[]): Promise<number> {
     console.error('Usage: npm run calibration -- <history.jsonl> [--fix-rate <fix-rate.jsonl>] [--export <set.jsonl>] [--limit <n>]');
     return 1;
   }
-  const lines = readFileSync(historyPath, 'utf-8').split('\n').filter(l => l.trim()).map(l => JSON.parse(l) as HistoryLine);
+  const lines = readFileSync(historyPath, 'utf-8').split('\n').filter(l => l.trim()).map(l => migrateStoredSeverities(JSON.parse(l) as HistoryLine));
   const octokit = github.getOctokit(githubToken());
   const findings: LabelledFinding[] = [];
   const skipped: string[] = [];

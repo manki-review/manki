@@ -101,7 +101,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
   const { skipCap, forceReview, bypassHint } = options;
   const { plannerDurationMs, judgeDurationMs, wallClockMs } = durations;
   const filteredFiles = diff.files;
-  const severityMap: Record<string, number> = { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 };
+  const severityMap: Record<string, number> = { blocker: 0, warning: 0, note: 0 };
   for (const f of result.findings) {
     if (f.severity in severityMap) severityMap[f.severity]++;
   }

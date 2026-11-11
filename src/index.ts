@@ -1714,7 +1714,7 @@ function setReviewOutputs(reviewId: number, context: RoundContext, result: Revie
   setOutput('judge_model', flatAliases.judgeModel);
 
   core.info(`Review complete: ${result.verdict} with ${flatAliases.findingsKept} findings`);
-  core.info(`Severity breakdown: ${severityMap.blocker} blocker, ${severityMap.warning} warning, ${severityMap.suggestion} suggestion, ${severityMap.nitpick} nitpick`);
+  core.info(`Severity breakdown: ${severityMap.blocker} blocker, ${severityMap.warning} warning, ${severityMap.note} note`);
 }
 
 /**

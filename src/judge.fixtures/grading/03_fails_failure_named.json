@@ -3,8 +3,7 @@
   "case": "fails-failure-named",
   "allowed": [
     "warning",
-    "suggestion",
-    "nitpick",
+    "note",
     "ignore"
   ],
   "finding": {

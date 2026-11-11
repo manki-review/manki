@@ -20,7 +20,7 @@ import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { disproof, refuteBlockers } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
-import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listRelatedUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
@@ -1395,9 +1395,9 @@ export async function runReview(
   finalFindings = posted;
 
   // Mechanism B: drop low-severity findings on test files starting at round 2.
-  // Test scaffolding nits are the most common runaway-feedback driver in late
-  // rounds. The filter runs post-judge so that any nit the judge escalates to
-  // warning/blocker is correctly preserved; only suggestion/nitpick are dropped.
+  // Notes on test scaffolding are the most common runaway-feedback driver in late
+  // rounds. The filter runs post-judge so that any finding the judge grades
+  // warning/blocker is correctly preserved; only notes are dropped.
   let testNitSuppressedCount = 0;
   const roundNumber = (priorRounds?.length ?? 0) + 1;
   if (roundNumber >= 2) {
@@ -1408,7 +1408,7 @@ export async function runReview(
         if (!canLeaveOut(f)) return true;
         const onTestFile = patterns.some(p => minimatch(f.file, p));
         if (onTestFile) {
-          core.info(`Test-nit suppression: dropping ${f.severity} "${f.title}" on ${f.file}:${f.line}`);
+          core.info(`Dropping the note "${f.title}" on the test file ${f.file}:${f.line}`);
         }
         return !onTestFile;
       });
@@ -1536,7 +1536,7 @@ export async function runReview(
   core.info(`Verdict: ${verdict}`);
   core.info(`Findings: ${finalFindings.length}`);
   for (const f of finalFindings) {
-    const icon = f.severity === 'blocker' ? '\u2717' : f.severity === 'warning' ? '\u26A0' : f.severity === 'suggestion' ? '\u25CB' : f.severity === 'nitpick' ? '\u00B7' : '\u2205';
+    const icon = f.severity === 'blocker' ? '\u2717' : f.severity === 'warning' ? '\u26A0' : f.severity === 'note' ? '\u25CB' : '\u2205';
     core.info(`  ${icon} [${f.severity}] ${f.title}`);
     core.info(`    ${f.file}:${f.line}`);
   }
@@ -1792,7 +1792,7 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
 \`\`\`
 [
   {
-    "severity": "blocker" | "warning" | "suggestion" | "nitpick" | "ignore",
+    "severity": "blocker" | "warning" | "note" | "ignore",
     "title": "The defect in one plain line",
     "file": "path/to/file.ext",
     "line": <line number in the NEW file>,
@@ -1838,27 +1838,19 @@ These rules hold in every round. A later round searches the whole PR as fully as
 - Report every blocker, every warning and every security issue you find in this pass, not only the strongest. A defect you leave for a later round costs the author another round.
 - Follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome, such as a second function that writes the same state.
 - When you find a defect, search the whole PR for the same kind of defect before you report it. Report one finding at the first location, and list every location in \`proof\` and \`evidence\`. Never stop at the first instance.
-- Quality over quantity applies to suggestions and nitpicks only. Never leave out a blocker, a warning or a security issue you can back with code.
+- Quality over quantity applies to notes only. Never leave out a blocker, a warning or a security issue you can back with code.
 
-## Severity Guidelines
+## Grades
 
-- **blocker**: Correctness bug, data loss risk, or security issue. Must be fixed before merge.
-  - SQL injection via unsanitized user input in a database query
-  - Null/undefined dereference in an error handling path that will crash at runtime
-  - Off-by-one in array bounds causing data corruption or out-of-bounds access
-- **warning**: Real behavioral concern: an edge case that will fail, misuse of an API that produces wrong output, a race condition. Not catastrophic but shouldn't ship.
-  - Missing timeout on a network request that could hang indefinitely
-  - Race condition on shared state without synchronization
-  - Error message lacks context that would help debugging a real failure
-- **suggestion**: Improvement open to discussion: refactoring, deduplication, API clarity, code style. Works today but could be cleaner.
-  - Variable could be \`const\` instead of \`let\` since it is never reassigned
-  - Function could be simplified by extracting a reusable helper
-  - Duplicate logic that could be deduplicated
-- **nitpick**: Minor cosmetic: wording, formatting, tiny naming tweaks. Purely optional.
-  - Variable name could be more descriptive (e.g., \`x\` → \`connectionCount\`)
-  - Inconsistent import ordering compared to rest of file
-  - Missing JSDoc on an exported function
-- **ignore**: Not a real issue: a false positive or intentional pattern. Use this to explicitly dismiss a potential finding.
+${GRADE_DEFINITIONS}
+
+## Severity Table
+
+Set \`severity\` to the grade of the cell that fits the finding: the row is what goes wrong, and the column is when it happens.
+
+${SEVERITY_TABLE}
+
+${OUTSIDE_INPUT_RULE}
 
 ## Rules
 
@@ -1870,7 +1862,7 @@ These rules hold in every round. A later round searches the whole PR as fully as
 - Keep descriptions concrete and actionable. Never write "consider as a follow-up": a problem in this PR's own code is fixed in this PR.
 - If you find NO issues, respond with an empty array: []
 - When full file contents are provided, use them to follow the paths the change affects: variable definitions, imports, callers and surrounding logic.
-- When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one. Memory is the maintainers' recorded decision, not a claim to check.
+- When review memory is provided, respect its learnings. Leave out a warning or a note that matches a suppression, but report a blocker or a security issue even when it matches one. Memory is the maintainers' recorded decision, not a claim to check.
 - ${tools ? SPLIT_RULE : NO_SPLIT_RULE}
 
 ${WRITING_RULES}`;
@@ -1879,7 +1871,7 @@ ${WRITING_RULES}`;
 
 ## What Not to Report
 
-Frame every potential suggestion or nitpick through this lens: would a senior engineer mention this in a review where their time is the bottleneck? If the answer is no, do not include it. This lens never drops a blocker, a warning or a security issue.
+Frame every potential note through this lens: would a senior engineer mention this in a review where their time is the bottleneck? If the answer is no, do not include it. This lens never drops a blocker, a warning or a security issue.
 
 ### Categories that are NEVER findings
 
@@ -1892,7 +1884,7 @@ Do not flag any of the following as a style point:
 - Anything a formatter (Prettier, gofmt, rustfmt, black, etc.) or default-config linter (ESLint recommended, clippy default, etc.) would catch automatically
 - Restating type information that a reader can see from the signature
 
-If a potential finding falls into any of these categories, omit it from your response entirely. Do not downgrade it to \`nitpick\` or \`ignore\`. Just drop it.
+If a potential finding falls into any of these categories, omit it from your response entirely. Do not downgrade it to \`note\` or \`ignore\`. Just drop it.
 
 Two cases are exempt from this list. One that changes behavior, such as indentation in Python or YAML, is a defect. One that breaks a rule of the repository's own instruction files, such as \`AGENTS.md\`, \`CLAUDE.md\` or \`CONTRIBUTING.md\`, is reported with the rule quoted.`;
 
@@ -2149,11 +2141,9 @@ function recordLeads(leads: Finding[], listed: Finding[], judged: Finding[], pos
   });
 }
 
+/** Returns the severity a model stated, or `note` for a value that is none. */
 export function validateSeverity(severity: unknown): Finding['severity'] {
-  if (severity === 'blocker' || severity === 'warning' || severity === 'suggestion' || severity === 'nitpick' || severity === 'ignore') {
-    return severity;
-  }
-  return 'suggestion';
+  return severity === 'blocker' || severity === 'warning' || severity === 'note' || severity === 'ignore' ? severity : 'note';
 }
 
 /**
@@ -2231,7 +2221,7 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  *   1. any surviving `blocker` finding → ADDRESS_FIRST / required_present
  *   2. any prior-round `blocker` still unresolved → ADDRESS_FIRST / prior_unaddressed
  *   3. otherwise, with a `warning` among the findings → READY / warnings_present
- *   4. otherwise (only suggestions and nitpicks, or empty) → READY / only_nit_or_suggestion
+ *   4. otherwise (only notes, or empty) → READY / only_notes
  *
  * `verdictTrace.unresolvedPriors` lists the unresolved priors under either reason. A prior that
  * a surviving blocker names again (`sameAs`) or sits on, by thread, is left out: that blocker carries it.
@@ -2345,7 +2335,7 @@ function remainderBlocks(p: FindingFingerprintEntry, openThreadIndex: Map<string
 
 /** Returns why a round where nothing blocks is `READY`: warnings among its findings, or only smaller ones. */
 function readyReason(findings: Finding[]): VerdictReason {
-  return findings.some(f => f.severity === 'warning') ? 'warnings_present' : 'only_nit_or_suggestion';
+  return findings.some(f => f.severity === 'warning') ? 'warnings_present' : 'only_notes';
 }
 
 /**

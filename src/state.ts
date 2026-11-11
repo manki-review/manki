@@ -251,8 +251,8 @@ async function announceSecurityOverrides(octokit: Octokit, overrides: SecurityOv
 }
 
 /**
- * Check if every blocking bot review thread is resolved. Suggestion and nitpick
- * threads posted by older versions never block, matching the verdict's bar.
+ * Check if every blocking bot review thread is resolved. Note threads
+ * posted by older versions never block, matching the verdict's bar.
  * A resolved thread counts only when Manki resolved it, which it does after the judge marks it
  * addressed or a maintainer agrees, when `mayClearSecurityThread` accepts the resolver,
  * or when the PR author resolved it as a repo admin (`prAuthorIsAdmin`).

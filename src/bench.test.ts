@@ -151,9 +151,13 @@ describe('parseCase', () => {
         { id: 'K1', severity: 'blocker', mechanism: 'The reader allocates from a peer length.', locations: ['src/read.rs', 'read_len'], fix: 'abc1234', source: 'owner review' },
         { id: 'K2', severity: 'warning', mechanism: 'The error path drops the lock.', locations: ['unlock'] },
       ],
-      niceToHave: [{ id: 'N1', severity: 'suggestion', mechanism: 'The test duplicates a helper.', locations: [] }],
+      // The key says `suggestion`. A level an older key names reads as the level it became.
+      niceToHave: [{ id: 'N1', severity: 'note', mechanism: 'The test duplicates a helper.', locations: [] }],
       mustResolve: [], mustKeepOpen: [], mustNotRepeat: [],
     });
+    for (const old of ['suggestion', 'nitpick', 'nit']) {
+      expect(parseCase(CASE_YAML.replace('severity: suggestion', `severity: ${old}`), 'demo.yml').niceToHave[0].severity).toBe('note');
+    }
   });
 
   it('reads a follow-up case with the earlier round and the items that name its findings', () => {
@@ -167,7 +171,7 @@ describe('parseCase', () => {
           description: 'A peer picks the size.', howToFix: 'Cap the length.', suggestedFix: 'let len = len.min(MAX);', security: true,
         },
         { id: 'P2', severity: 'warning', title: 'No timeout on the connection', file: 'src/conn.rs', line: 40, thread: 'open' },
-        { id: 'P3', severity: 'suggestion', title: 'The retry loop has no test', file: 'src/conn.rs', line: 70 },
+        { id: 'P3', severity: 'note', title: 'The retry loop has no test', file: 'src/conn.rs', line: 70 },
         { id: 'P4', severity: 'warning', title: 'Stale comment', file: 'src/conn.rs', line: 90, thread: 'resolved' },
       ],
     });
@@ -212,7 +216,7 @@ describe('parseCase', () => {
     ['key_version: 2', 'key_version: 2\nconfig: [review_passes]', '`config` must be a mapping of config keys'],
     ['key_version: 2', 'key_version: 2\nconfig:', '`config` must be a mapping of config keys'],
     ['title: "fix: bound the reader"', 'title: ""', '`title` must be a non-empty string'],
-    ['severity: warning', 'severity: major', 'must_catch[1].severity must be one of blocker, warning, suggestion, nitpick'],
+    ['severity: warning', 'severity: major', 'must_catch[1].severity must be one of blocker, warning, note'],
     ['locations: [unlock]', 'locations: unlock', 'must_catch[1].locations must be a list of strings'],
     ['source: owner review', 'source: [owner]', 'must_catch[0].source must be a string'],
     ['  - id: N1', '  - id: K1', 'item id K1 is used twice'],
@@ -384,7 +388,7 @@ describe('scoreRun', () => {
       { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.' },
     ]);
 
-    const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted\n```', description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' }), makeFinding({ severity: 'suggestion', title: 'A note' })];
+    const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted\n```', description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' }), makeFinding({ severity: 'note', title: 'A note' })];
     const warned = await scoreRun(benchCase, makeReview('READY', warnings), stub({ N1: { verdict: 'MATCH', findings: [0], reason: 'same' } }));
     expect(warned).toMatchObject({ falseBlockers: 0, unexpectedWarnings: 1, extraFindings: 2 });
     const unscored = buildReport(
@@ -406,7 +410,7 @@ describe('scoreRun', () => {
     const run = (severity: Finding['severity']) => scoreRun(benchCase, makeReview('READY', [makeFinding({ severity, file: 'src/read.rs' })]), stub({ K1: { verdict: 'MATCH', findings: [0], reason: 'same' } }));
 
     expect(await run('warning')).toMatchObject({ mustCatchRecall: 0.5, weightedRecall: 1.5 / 5 });
-    const score = await run('nitpick');
+    const score = await run('note');
     expect(score.matches[1]).toEqual({ item: 'K2', verdict: 'NONE', findings: [], reason: 'No finding names its files or symbols.' });
     expect(score).toMatchObject({ mustCatchRecall: 0.5, weightedRecall: 0, verdictCorrect: false, extraFindings: 0, duplicates: 0 });
   });
@@ -423,7 +427,7 @@ describe('scoreRun on a follow-up case', () => {
   const followUp = parseCase(FOLLOW_UP_YAML, 'follow.yml');
   const findings = [
     makeFinding({ severity: 'blocker', file: 'src/conn.rs', title: 'Write has no timeout' }),
-    makeFinding({ severity: 'suggestion', file: 'src/conn.rs', title: 'Retry loop untested' }),
+    makeFinding({ severity: 'note', file: 'src/conn.rs', title: 'Retry loop untested' }),
     makeFinding({ severity: 'blocker', file: 'src/read.rs', title: 'Peer length allocation' }),
   ];
   const decisions: Record<string, MatchDecision> = {
@@ -468,7 +472,7 @@ describe('scoreRun on a follow-up case', () => {
     expect(report.variants[0].cases[0].items.slice(3)).toEqual([
       { id: 'P1', tier: 'must_resolve', severity: 'blocker', caught: 1, partial: 0, runs: 1 },
       { id: 'P2', tier: 'must_keep_open', severity: 'warning', caught: 0, partial: 0, runs: 1 },
-      { id: 'P3', tier: 'must_not_repeat', severity: 'suggestion', caught: 0, partial: 0, runs: 1 },
+      { id: 'P3', tier: 'must_not_repeat', severity: 'note', caught: 0, partial: 0, runs: 1 },
     ]);
     expect(report.variants[0].summary).toMatchObject({ atGradeRecall: 0.5, resolvedRight: 1, resolvedWrong: 1, repeats: 2 });
     const summary = formatBenchSummary(report);
@@ -476,7 +480,7 @@ describe('scoreRun on a follow-up case', () => {
     expect(summary).toContain(', 0 duplicates, resolved 1 right and 1 wrong, 2 repeats, files read');
     expect(summary).toContain('\nFollow-up rounds: resolved 1 right and 1 wrong, 2 repeats.\n');
     expect(summary).toContain('| Resolved right | 1 |\n| Resolved wrong | 1 |\n| Repeats | 2 |\n');
-    expect(summary).toContain('| demo-1 P3 (no repeat suggestion) | 0/1 |');
+    expect(summary).toContain('| demo-1 P3 (no repeat note) | 0/1 |');
   });
 
   it('expects a block while an earlier blocker or a kept-open blocker is still in the code, and an approval once nothing is left', async () => {
@@ -602,7 +606,7 @@ describe('runBench and buildReport', () => {
     expect(report.variants[0].cases[0].items).toEqual([
       { id: 'K1', tier: 'must_catch', severity: 'blocker', caught: 2, partial: 1, runs: 3 },
       { id: 'K2', tier: 'must_catch', severity: 'warning', caught: 0, partial: 0, runs: 3 },
-      { id: 'N1', tier: 'nice_to_have', severity: 'suggestion', caught: 0, partial: 0, runs: 3 },
+      { id: 'N1', tier: 'nice_to_have', severity: 'note', caught: 0, partial: 0, runs: 3 },
     ]);
     expect(report.variants[0].summary).toEqual({
       runs: 5, incompleteRuns: 2, mustCatchRecall: 1 / 3, weightedRecall: expect.closeTo(0.4), atGradeRecall: 1 / 3, verdictAccuracy: 2 / 3,
@@ -640,7 +644,7 @@ describe('runBench and buildReport', () => {
       '| Wall time per run | 0m 00s | 0m 00s |',
       '| demo-1 K1 (must blocker) | 2/3, 1 partial | 2/3, 1 partial |',
       '| demo-1 K2 (must warning) | 0/3 | 0/3 |',
-      '| demo-1 N1 (nice suggestion) | 0/3 | 0/3 |',
+      '| demo-1 N1 (nice note) | 0/3 | 0/3 |',
       '',
     ].join('\n'));
     expect(report.variants[0].sets).toEqual({ tuning: report.variants[0].summary });
@@ -819,6 +823,12 @@ describe('runBench and buildReport', () => {
         expect(() => readReport(stored('tuning'), root)).toThrow(new Error(`The report ${join(root, 'report.json')} calls held-1 a tuning case, and bench/holdout holds a case file for it.`));
         // A case the report calls a hold-out case stays one, although only `bench/cases` holds its file.
         expect(sets(stored('holdout', 'holdout'))).toEqual({ sets: [['shown-1', 'holdout'], ['held-1', 'holdout']], removed: [] });
+        // A report an older version stored names that version's levels, and they are read as the levels they became.
+        const older = { ...report, variants: report.variants.map(v => ({ ...v, cases: v.cases.map(c => ({ ...c, items: c.items.map(item => ({ ...item, severity: 'nitpick' })) })) })) };
+        writeFileSync(join(root, 'report.json'), JSON.stringify(older));
+        const levels = readReport(join(root, 'report.json'), root).report.variants.flatMap(v => v.cases.flatMap(c => c.items.map(item => item.severity)));
+        expect(levels.length).toBeGreaterThan(0);
+        expect(new Set(levels)).toEqual(new Set(['note']));
         // A case no case file holds is no contradiction. It is left out and named, and nothing of it is read as a tuning case.
         rmSync(join(root, 'bench', 'holdout', 'held-1.yml'));
         expect(sets(stored('tuning'))).toEqual({ sets: [['shown-1', 'tuning']], removed: ['held-1'] });

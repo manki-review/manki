@@ -7,7 +7,7 @@
       "file": "billing/retry.py",
       "line": 4,
       "description": "`RateLimited,TransientError` has no space after the comma. Write `RateLimited, TransientError`, as PEP 8 asks.",
-      "severity": "nitpick",
+      "severity": "note",
       "reviewers": [
         "Correctness"
       ]
@@ -27,7 +27,7 @@
       "file": "billing/retry.py",
       "line": 10,
       "description": "The docstring says `fetch_with_retry` returns None when every attempt fails. Line 20 raises `TransientError` instead. A caller that trusts the docstring checks for None and never catches the error.",
-      "severity": "suggestion",
+      "severity": "note",
       "reviewers": [
         "Correctness"
       ]
@@ -37,7 +37,7 @@
       "file": "billing/retry.py",
       "line": 15,
       "description": "Both new tests in `tests/test_retry.py` raise only `TransientError`. Nothing runs the `RateLimited` branch on lines 15 and 16, so a change to how `retry_after` is read breaks rate-limited calls with no failing test. Add a test whose session raises `RateLimited` once.",
-      "severity": "suggestion",
+      "severity": "note",
       "reviewers": [
         "Correctness"
       ]

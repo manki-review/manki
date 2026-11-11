@@ -471,7 +471,7 @@ describe('ownChangeSince', () => {
 describe('tagFindingOrigins', () => {
   const change = (path: string, start: number, lines: string[], oldPath?: string): string =>
     `diff --git a/${oldPath ?? path} b/${path}\n--- a/${oldPath ?? path}\n+++ b/${path}\n@@ -${start},1 +${start},${lines.length + 1} @@\n ctx\n${lines.map(l => `+${l}`).join('\n')}\n`;
-  const finding = (file: string, line: number): Finding => ({ severity: 'suggestion', title: 't', file, line, description: 'd', reviewers: [] });
+  const finding = (file: string, line: number): Finding => ({ severity: 'note', title: 't', file, line, description: 'd', reviewers: [] });
   const tag = (findings: Finding[], current: string, prior?: string) => {
     tagFindingOrigins(findings, parsePRDiff(current), prior === undefined ? undefined : parsePRDiff(prior));
     return findings.map(f => f.origin);

@@ -80,7 +80,7 @@ describe('refuteBlockers', () => {
       finding('Unsettled'),
       finding('Lead confirmed', { severity: 'warning', notChecked: true, lead }),
       finding('Unproven lead confirmed', { severity: 'warning', notChecked: true, lead, tags: ['unproven-blocker'] }),
-      finding('Unproven and contradicted', { severity: 'nitpick', notChecked: true, lead, tags: ['unproven-blocker', 'contradicts-prior-round'] }),
+      finding('Unproven and contradicted', { severity: 'note', notChecked: true, lead, tags: ['unproven-blocker', 'contradicts-prior-round'] }),
       finding('Disproved without proof'),
       finding('Disproved on made-up lines'),
       finding('Disproved in its own file', { notChecked: true, lead }),
@@ -110,7 +110,7 @@ describe('refuteBlockers', () => {
       ['Lead confirmed', 'warning', 'confirmed'],
       ['Unproven lead confirmed', 'blocker', 'confirmed'],
       // A cross-round contradiction lowered it after the cap, so the proving lines do not lift it.
-      ['Unproven and contradicted', 'nitpick', 'confirmed'],
+      ['Unproven and contradicted', 'note', 'confirmed'],
       ['Disproved without proof', 'blocker', 'unsettled'],
       // A citation of a file the workspace lacks, or of a line past its end, settles nothing.
       ['Disproved on made-up lines', 'blocker', 'unsettled'],
@@ -257,7 +257,7 @@ describe('refuteBlockers', () => {
       // An earlier finding that never blocked, in a thread that does not block, is no blocker to restate.
       ['Same as an earlier warning', { ...raised(), sameAs: 'src/old.ts:3:3:old-warning' }],
       // When finders disagree the highest grade counts, and a merged duplicate a finder filed as a blocker makes it a finder's blocker.
-      ['Highest finder grade', { ...raised('suggestion'), reviewerSeverity: 'warning' }],
+      ['Highest finder grade', { ...raised('note'), reviewerSeverity: 'warning' }],
       ['Merged finder blocker', { ...raised(), reviewerSeverity: 'blocker' }],
       ['Finder blocker', {}],
       // Any second answer but a disproof keeps the blocker.
@@ -276,7 +276,7 @@ describe('refuteBlockers', () => {
       ['Variant of a finding in a blocking thread', { ...raised(), variantOf: 'src/old.ts:2:2:in-thread' }],
       ['Same as a finding no record holds', { ...raised(), sameAs: 'src/old.ts:9:9:gone' }],
       // A later step on the grade means more than the judge's raise decided it.
-      ['Raised by a check', { reviewerSeverity: 'suggestion', gradePath: [{ from: 'suggestion', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }], cell }],
+      ['Raised by a check', { reviewerSeverity: 'note', gradePath: [{ from: 'note', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }], cell }],
     ];
     const first = fakeClient(Object.fromEntries(cases.map(([title]) => [title, disproved('Both inputs are checked.')])), 'claude-opus-5-5');
     const replies = Object.fromEntries(cases.map(([title, , reply]) => [title, reply ?? disproved('Only checked inputs reach it.')]));
@@ -352,15 +352,15 @@ describe('refuteBlockers', () => {
       // The finder graded it a warning too, and the judge would grade it a blocker if the code it could not see holds.
       finding('Unseen confirmed', { ...byJudge('warning', 'blocker'), judgeNotes: 'warning. The lock path sits outside the diff.' }),
       finding('Unseen and contradicted', {
-        ...byJudge('suggestion', 'warning', 'warning'), severity: 'nitpick',
-        gradePath: [{ from: 'warning', to: 'suggestion', by: 'judge' }, { from: 'suggestion', to: 'nitpick', by: 'contradiction' }],
+        ...byJudge('note', 'warning', 'warning'), severity: 'note',
+        gradePath: [{ from: 'warning', to: 'note', by: 'judge' }, { from: 'note', to: 'note', by: 'contradiction' }],
       }),
-      finding('Unseen disproved', byJudge('suggestion', 'warning', 'warning')),
+      finding('Unseen disproved', byJudge('note', 'warning', 'warning')),
       finding('Unseen unsettled', byJudge('warning', 'blocker', 'blocker')),
       finding('Unseen build claim', { ...byJudge('warning', 'blocker', 'blocker'), buildClaim: true, toolEvidence: none }),
       finding('Unbuilt confirmed', { severity: 'warning', buildClaim: true, toolEvidence: none, tags: ['unconfirmed-build-claim'] }),
       // The judge doubted the path is reached, as on xdustinface/rust-dashcore#194, so it named the grade if it is.
-      finding('Reached through the public API', { ...byJudge('warning', 'blocker', 'suggestion'), judgeNotes: 'warning. The builder itself only creates v2 payloads through `new()`.' }),
+      finding('Reached through the public API', { ...byJudge('warning', 'blocker', 'note'), judgeNotes: 'warning. The builder itself only creates v2 payloads through `new()`.' }),
     ];
 
     const outsideInput = 'Anything a caller of the public `TransactionBuilder` API passes.';
@@ -370,7 +370,7 @@ describe('refuteBlockers', () => {
       // A confirmation gives the grade the judge would give if the code it could not see holds, above the finder's.
       ['Unseen confirmed', 'blocker', 'blocker'],
       // A later step lowered it further, so the confirmation does not lift it.
-      ['Unseen and contradicted', 'nitpick', 'warning'],
+      ['Unseen and contradicted', 'note', 'warning'],
       ['Unseen disproved', 'ignore', 'warning'],
       ['Unseen unsettled', 'warning', 'blocker'],
       // Reading code never confirms a build failure, so such a claim stays a warning at most.
@@ -495,12 +495,11 @@ describe('refuteBlockers', () => {
     const doubted = (title: string, severity: Finding['severity']) => finding(title, { severity, gradeIfConfirmed: severity, doubts: exists });
     const findings = [
       // A check that can raise a finding is how a warning becomes a blocker, so it is never capped.
-      finding('Nitpick to suggestion', { severity: 'nitpick', gradeIfConfirmed: 'suggestion' }),
-      finding('Suggestion to warning', { severity: 'suggestion', gradeIfConfirmed: 'warning' }),
+      finding('Note to warning', { severity: 'note', gradeIfConfirmed: 'warning' }),
       finding('Warning to blocker', { severity: 'warning', gradeIfConfirmed: 'blocker' }),
       // A finding in the `rare` column of the `wrong` row is such a check.
       finding('Second warning to blocker', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'Any client reaches it', decides: 'grade' }] }),
-      doubted('Doubted suggestion', 'suggestion'),
+      doubted('Doubted suggestion', 'note'),
       doubted('Doubted warning 1', 'warning'),
       doubted('Doubted warning 2', 'warning'),
       doubted('Doubted warning 3', 'warning'),
@@ -517,7 +516,7 @@ describe('refuteBlockers', () => {
 
     expect(client.calls.map(([title]) => title).sort()).toEqual([
       'Doubted blocker', 'Doubted warning 1', 'Doubted warning 2', 'Doubted warning 3', 'Doubted warning 4',
-      'Nitpick to suggestion', 'Second warning to blocker', 'Suggestion to warning', 'Warning to blocker',
+      'Note to warning', 'Second warning to blocker', 'Warning to blocker',
     ]);
   });
 
@@ -629,7 +628,7 @@ describe('refuteBlockers', () => {
       [{ pairRefutation: premise('disproved') }, {}],
       // A disproof a security finding outlived settles the doubt too.
       [{ refutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: '' } }, {}],
-      [{}, { severity: 'suggestion' }],
+      [{}, { severity: 'note' }],
       [{}, { title: 'Unrelated finding' }],
     ] as [Record<string, unknown>, Partial<Finding>][]) {
       const [kept] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', ...current })], { workspace, priorRounds: rounds(entry), diff });

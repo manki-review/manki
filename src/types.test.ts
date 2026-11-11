@@ -1,15 +1,15 @@
-import { isBlockingSeverity, migrateLegacySeverity, RoundContext, roundContextToFlatAliases } from './types';
+import { isBlockingSeverity, migrateLegacySeverity, migrateStoredSeverities, RoundContext, roundContextToFlatAliases } from './types';
 
 describe('migrateLegacySeverity', () => {
   it('maps `required` to `blocker`', () => {
     expect(migrateLegacySeverity('required')).toBe('blocker');
   });
 
-  it('maps `nit` to `nitpick`', () => {
-    expect(migrateLegacySeverity('nit')).toBe('nitpick');
+  it.each(['suggestion', 'nitpick', 'nit'])('maps `%s` to `note`', severity => {
+    expect(migrateLegacySeverity(severity)).toBe('note');
   });
 
-  it.each(['blocker', 'warning', 'suggestion', 'nitpick', 'ignore'])(
+  it.each(['blocker', 'warning', 'note', 'ignore'])(
     'passes through current severity `%s` unchanged',
     severity => {
       expect(migrateLegacySeverity(severity)).toBe(severity);
@@ -25,12 +25,47 @@ describe('migrateLegacySeverity', () => {
   });
 });
 
+describe('migrateStoredSeverities', () => {
+  it('rewrites every stored severity of an older record, at any depth, and adds up the counts of merged levels', () => {
+    const record = {
+      meta: { round: 2, to: 5 },
+      findings: {
+        severityCounts: { blocker: 1, warning: 0, suggestion: 2, nitpick: 3 },
+        entries: [
+          { title: 'A suggestion to rename', severity: 'suggestion', reviewerSeverity: 'nitpick', originalSeverity: 'required', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'nit', to: 'suggestion', by: 'judge' }] },
+          { severity: 'warning', cell: { row: 'style', column: 'normal' } },
+        ],
+        unposted: [{ severity: 'nitpick', unpostedReason: 'note_cap' }],
+      },
+      threads: [{ threadId: 'T1', severity: 'nit', recordedGrade: 'suggestion', peakGrade: 'required', evaluation: { status: 'partly_addressed', grade: 'nitpick' } }],
+      staticSignals: [{ severity: 'note', tool: 'suggestion' }],
+    };
+    expect(migrateStoredSeverities(record)).toBe(record);
+    expect(record).toEqual({
+      meta: { round: 2, to: 5 },
+      findings: {
+        severityCounts: { blocker: 1, warning: 0, note: 5 },
+        entries: [
+          { title: 'A suggestion to rename', severity: 'note', reviewerSeverity: 'note', originalSeverity: 'blocker', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'note', to: 'note', by: 'judge' }] },
+          { severity: 'warning', cell: { row: 'style', column: 'normal' } },
+        ],
+        unposted: [{ severity: 'note', unpostedReason: 'note_cap' }],
+      },
+      threads: [{ threadId: 'T1', severity: 'note', recordedGrade: 'note', peakGrade: 'blocker', evaluation: { status: 'partly_addressed', grade: 'note' } }],
+      staticSignals: [{ severity: 'note', tool: 'suggestion' }],
+    });
+    // A record of the current version, and a value that is no record, come back as they are.
+    const current = { findings: { severityCounts: { blocker: 0, warning: 1, note: 2 }, entries: [{ severity: 'note' }] } };
+    expect(migrateStoredSeverities(structuredClone(current))).toEqual(current);
+    for (const value of [null, undefined, 'suggestion', 3]) expect(migrateStoredSeverities(value)).toBe(value);
+  });
+});
+
 describe('isBlockingSeverity', () => {
   it.each([
     ['blocker', true],
     ['warning', true],
-    ['suggestion', false],
-    ['nitpick', false],
+    ['note', false],
     ['ignore', false],
   ] as const)('treats `%s` as blocking: %s', (severity, blocking) => {
     expect(isBlockingSeverity(severity)).toBe(blocking);
@@ -104,7 +139,7 @@ function fullyPopulatedContext(): RoundContext {
     memory: { suppressionsApplied: 1 },
     findings: {
       count: 3,
-      severityCounts: { blocker: 0, warning: 1, suggestion: 1, nitpick: 1 },
+      severityCounts: { blocker: 0, warning: 1, note: 2 },
       entries: [
         {
           fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'missing-null-check' },
@@ -114,11 +149,11 @@ function fullyPopulatedContext(): RoundContext {
         },
         {
           fingerprint: { file: 'src/bar.ts', lineStart: 20, lineEnd: 25, slug: 'rename-helper' },
-          severity: 'suggestion',
+          severity: 'note',
         },
         {
           fingerprint: { file: 'src/baz.ts', lineStart: 5, lineEnd: 5, slug: 'trailing-space' },
-          severity: 'nitpick',
+          severity: 'note',
           authorReplyClass: 'agree',
         },
       ],
@@ -174,7 +209,7 @@ describe('RoundContext', () => {
   it('carries judge per-finding state on `FindingFingerprintEntry`', () => {
     const entry: RoundContext['findings']['entries'][number] = {
       fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'race-condition' },
-      severity: 'nitpick',
+      severity: 'note',
       judgeNotes: 'Reachable only under shutdown',
       judgeConfidence: 'medium',
       tags: ['own-proposal-followup'],
@@ -189,7 +224,7 @@ describe('RoundContext', () => {
   it('omits all new optional fields gracefully on minimal entry', () => {
     const entry: RoundContext['findings']['entries'][number] = {
       fingerprint: { file: 'x', lineStart: 1, lineEnd: 1, slug: 's' },
-      severity: 'suggestion',
+      severity: 'note',
     };
     expect(entry.judgeNotes).toBeUndefined();
     expect(entry.judgeConfidence).toBeUndefined();
@@ -293,7 +328,7 @@ describe('roundContextToFlatAliases', () => {
       findingsRaw: 6,
       findingsKept: 3,
       findingsDropped: 3,
-      severity: { blocker: 0, warning: 1, suggestion: 1, nitpick: 1 },
+      severity: { blocker: 0, warning: 1, note: 2 },
       model: 'claude-sonnet-4-6',
       reviewerModel: 'claude-sonnet-4-6',
       judgeModel: 'claude-opus-4-6',

@@ -63,10 +63,10 @@ describe('review stats', () => {
         // A finding that restates an earlier one was not first raised in this round. One under an earlier thread is not posted either.
         entries: [
           { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed' },
-          { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'new' },
-          { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'earlier' },
+          { ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'new' },
+          { ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'earlier' },
           { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed', threadId: 'T1' },
-          { ...makeFindingFingerprintEntry({ severity: 'nitpick' }), origin: 'new', threadId: 'T2' },
+          { ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'new', threadId: 'T2' },
           // Neither is one that matches a thread the first review opened, a few lines away.
           { ...makeFindingFingerprintEntry({ severity: 'warning', title: 'Minor', lineStart: 12 }), origin: 'reviewed' },
         ],
@@ -109,7 +109,7 @@ describe('review stats', () => {
         count: 3, severityCounts: {},
         entries: [
           { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed', posted: 'body' },
-          { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'new', posted: 'earlier_thread' },
+          { ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'new', posted: 'earlier_thread' },
           { ...makeFindingFingerprintEntry({ severity: 'warning', title: 'Minor', lineStart: 10 }), origin: 'reviewed', posted: 'thread' },
         ],
       },
@@ -142,7 +142,7 @@ describe('review stats', () => {
       severities: {
         blocker: { posted: 1, inApprovedRounds: 0, raisedLater: 0, onReviewedCode: 0 },
         warning: { posted: 5, inApprovedRounds: 1, raisedLater: 3, onReviewedCode: 3 },
-        suggestion: { posted: 2, inApprovedRounds: 2, raisedLater: 1, onReviewedCode: 0 },
+        note: { posted: 2, inApprovedRounds: 2, raisedLater: 1, onReviewedCode: 0 },
       },
       blockerOutcomes: { fixed: 1, withdrawn: 1, other: 1 },
       readerRounds: 1, readerBlockers: 2,
@@ -168,8 +168,7 @@ describe('review stats', () => {
       '| --- | ---: | ---: | ---: | ---: | ---: |',
       '| blocker | 1 | 0.14 | 0 | 0.00 | - |',
       '| warning | 5 | 0.71 | 1 | 0.50 | 100% (3 of 3) |',
-      '| suggestion | 2 | 0.29 | 2 | 1.00 | 0% (0 of 1) |',
-      '| nitpick | 0 | 0.00 | 0 | 0.00 | - |',
+      '| note | 2 | 0.29 | 2 | 1.00 | 0% (0 of 1) |',
       '| all | 8 | 1.14 | 3 | 1.50 | 75% (3 of 4) |',
     ].join('\n'));
     expect(report).toContain('whether or not that commit fixed it.\n\n| severity | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| warning | 2 | 1 | 0 | 1 | 50% | 0% |\n\n## Finders');
@@ -204,12 +203,12 @@ describe('review stats', () => {
         entries: [{ ...makeFindingFingerprintEntry({ severity: 'warning' }), gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] }],
         // An unposted finding of a record that says nothing about why still counts.
         unposted: [{
-          ...makeFindingFingerprintEntry({ severity: 'suggestion' }), preExisting: { reason: 'Old.', check: 'pre_existing' },
-          gradePath: [{ from: 'warning', to: 'suggestion', by: 'judge' }],
-        }, makeFindingFingerprintEntry({ severity: 'nitpick' }), {
+          ...makeFindingFingerprintEntry({ severity: 'note' }), preExisting: { reason: 'Old.', check: 'pre_existing' },
+          gradePath: [{ from: 'warning', to: 'note', by: 'judge' }],
+        }, makeFindingFingerprintEntry({ severity: 'note' }), {
           // The reason a note was left out counts ahead of a pre-existing claim the diff contradicted.
-          ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'reviewed', unpostedReason: 'reviewed_code', preExisting: { reason: 'Old.', check: 'touches_diff' },
-        }, { ...makeFindingFingerprintEntry({ severity: 'nitpick' }), origin: 'earlier', raisedIn: 1, unpostedReason: 'listed_earlier' }, { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), unpostedReason: 'note_cap', posted: 'record' }],
+          ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'reviewed', unpostedReason: 'reviewed_code', preExisting: { reason: 'Old.', check: 'touches_diff' },
+        }, { ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'earlier', raisedIn: 1, unpostedReason: 'listed_earlier' }, { ...makeFindingFingerprintEntry({ severity: 'note' }), unpostedReason: 'note_cap', posted: 'record' }],
         carried: [{ ...makeFindingFingerprintEntry({ severity: 'warning' }), raisedIn: 1 }],
         carriedEnded: [{ key: 'src/a.ts:3:3:x', reason: 'line_changed' }, { key: 'src/a.ts:4:4:y', reason: 'line_changed' }, { key: 'src/a.ts:5:5:z', reason: 'judge_dropped' }],
       },
@@ -220,13 +219,13 @@ describe('review stats', () => {
         dropped: [
           { title: 't', file: 'a', line: 1, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'r' }] },
           { title: 't', file: 'a', line: 2, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'in_pr_suppression' }] },
-          { title: 't', file: 'a', line: 3, reviewers: [], gradePath: [{ from: 'suggestion', to: 'warning', by: 'judge' }, { from: 'warning', to: 'ignore', by: 'ratchet' }] },
+          { title: 't', file: 'a', line: 3, reviewers: [], gradePath: [{ from: 'note', to: 'warning', by: 'judge' }, { from: 'warning', to: 'ignore', by: 'ratchet' }] },
           { title: 't', file: 'a', line: 4, reviewers: [] },
         ],
       },
       dedup: { testNitSuppressedCount: 5, staticSignalMatches: [{ droppedTitle: 't', file: 'a', line: 1, tool: 'eslint', ruleId: 'r' }] },
       diff: { lines: 1, additions: 1, deletions: 0, filesReviewed: 1, fileTypes: {}, changedSinceLastRound: 3 },
-      memory: { loaded: { learnings: 4, suppressions: 2 }, suppressed: [{ title: 't', file: 'a', line: 1, severity: 'nitpick', suppressionId: 'sup-1' }] },
+      memory: { loaded: { learnings: 4, suppressions: 2 }, suppressed: [{ title: 't', file: 'a', line: 1, severity: 'note', suppressionId: 'sup-1' }] },
       slicing: { files: [2, 1], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] },
       approval: { held: 'conflict' },
       tokenService: [{ endpoint: 'token', status: 200, durationMs: 1 }, { endpoint: 'state', status: 429, error: 'Too many requests', durationMs: 1 }],
@@ -262,14 +261,14 @@ describe('review stats', () => {
         'checks ran': 1, 'code_scanning skipped: the token cannot read it (HTTP 403)': 1, 'dependency_review skipped: Bad\n| injected | row': 1, 'secrets ran': 1,
       },
       'Grade changes': {
-        'unproven: blocker to warning': 1, 'judge: warning to suggestion': 1, 'refutation: warning to ignore': 1, 'in_pr_suppression: warning to ignore': 1,
-        'judge: suggestion to warning': 1, 'ratchet: warning to ignore': 1,
+        'unproven: blocker to warning': 1, 'judge: warning to note': 1, 'refutation: warning to ignore': 1, 'in_pr_suppression: warning to ignore': 1,
+        'judge: note to warning': 1, 'ratchet: warning to ignore': 1,
       },
       'Pre-existing claims (how each was checked)': { pre_existing: 1, touches_diff: 1 },
       'Memory suppressions (findings hidden per suppression)': { 'sup-1': 1 },
       'Findings recorded without posting (per reason and severity)': {
-        'memory_suppression, nitpick': 1, 'pre_existing, suggestion': 1, 'no reason recorded, nitpick': 1,
-        'reviewed_code, suggestion': 1, 'listed_earlier, nitpick': 1, 'note_cap, suggestion': 1,
+        'memory_suppression, note': 1, 'pre_existing, note': 1, 'no reason recorded, note': 1,
+        'reviewed_code, note': 1, 'listed_earlier, note': 1, 'note_cap, note': 1,
         'in_pr_suppression, warning': 1, 'ratchet, warning': 1, 'ratchet, severity not recorded': 1, 'resolved_thread, severity not recorded': 3,
         'own_proposal, severity not recorded': 4, 'test_file, severity not recorded': 5, 'static_signal, severity not recorded': 1,
       },

@@ -3,8 +3,7 @@
   "case": "unconfirmed-build-claim",
   "allowed": [
     "warning",
-    "suggestion",
-    "nitpick",
+    "note",
     "ignore"
   ],
   "finding": {

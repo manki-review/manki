@@ -138,7 +138,7 @@ describe('fetchBotReviewThreads', () => {
           id: 't3', body: `<!-- manki:warning:-parse--drops-a-field --> **Warning**\n\n<!-- manki-finding: ${JSON.stringify({ title: '`parse` drops a field' })} -->`,
         }),
         makeGraphqlFetchThreadNode({
-          id: 't2', body: '<!-- manki:suggestion:rename-var --> **Suggestion**: rename var', isResolved: true,
+          id: 't2', body: '<!-- manki:note:rename-var --> **Suggestion**: rename var', isResolved: true,
           // Only Manki's own reply counts as a fix confirmation, not a developer who copies its marker.
           replies: [
             { body: `Fixed in abababa.\n\n${fixedMarker('ab'.repeat(20))}`, author: { login: 'manki-review' } },
@@ -177,7 +177,7 @@ describe('fetchBotReviewThreads', () => {
     });
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
-        makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('suggestion', 'Extract helper'), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('note', 'Extract helper'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'w', body: formatFindingComment(finding('warning', 'Deferred warning', ['follow-up']), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security']), TEST_LINKS) }),
@@ -205,7 +205,7 @@ describe('fetchBotReviewThreads', () => {
     const reviews = [
       record(1, [partly('pw', 'warning'), partly('pb', 'blocker'), partly('ps', 'warning'), partly('pr', 'warning'), partly('pa', 'warning')]),
       record(2, [partly('pr', 'blocker', 'not_addressed')], ['f', 'pa']),
-      record(3, [partly('pf', 'nitpick')], ['h'], 'developer'),
+      record(3, [partly('pf', 'note')], ['h'], 'developer'),
     ];
     const threads = await fetchBotReviewThreads(threadsOctokit(graphqlMock, reviews), TEST_BOT, 'owner', 'repo', 1);
 
@@ -220,7 +220,7 @@ describe('fetchBotReviewThreads', () => {
     expect((await fetchBotReviewThreads(resolved, TEST_BOT, 'owner', 'repo', 1)).map(t => [t.id, t.isBlocking])).toEqual([['f', true]]);
 
     // Without the round records a raise could hide, so every thread blocks and auto-approve waits.
-    const unread = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('suggestion', 'Extract helper'), TEST_LINKS), isResolved: true })])));
+    const unread = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('note', 'Extract helper'), TEST_LINKS), isResolved: true })])));
     jest.mocked(unread.paginate).mockRejectedValueOnce(new Error('rate limited'));
     expect((await fetchBotReviewThreads(unread, TEST_BOT, 'owner', 'repo', 1)).map(t => [t.id, t.isBlocking])).toEqual([['s', true]]);
   });
@@ -280,7 +280,7 @@ describe('fetchBotReviewThreads', () => {
   it('parses blocker as blocking and plain warning, nit and ignore as non-blocking', async () => {
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
-        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:nitpick:style-issue --> nit' }),
+        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:note:style-issue --> nit' }),
         makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:ignore:false-positive --> ignore' }),
         makeGraphqlFetchThreadNode({ id: 't3', body: '<!-- manki:warning:race --> warning' }),
         makeGraphqlFetchThreadNode({ id: 't4', body: '<!-- manki:blocker:crash --> blocker' }),
@@ -439,7 +439,7 @@ describe('checkAndAutoApprove', () => {
     const octokit = makeMockOctokit({
       threads: [
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true }),
-        makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:suggestion:style --> style', isResolved: true }),
+        makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:note:style --> style', isResolved: true }),
       ],
       prHeadSha: 'sha-456',
       createReviewFn: createReviewMock,
@@ -558,7 +558,7 @@ describe('checkAndAutoApprove', () => {
     const octokit = makeMockOctokit({
       threads: [
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true }),
-        makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:suggestion:style --> style', isResolved: false }),
+        makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:note:style --> style', isResolved: false }),
         makeGraphqlFetchThreadNode({ id: 't3', body: '<!-- manki:nit:naming --> naming', isResolved: false }),
       ],
       createReviewFn: createReviewMock,
@@ -604,7 +604,7 @@ describe('checkAndAutoApprove', () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
       threads: [
-        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:suggestion:style --> style', isResolved: true }),
+        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:note:style --> style', isResolved: true }),
       ],
       createReviewFn: createReviewMock,
     });

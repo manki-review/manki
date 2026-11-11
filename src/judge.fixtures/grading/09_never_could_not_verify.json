@@ -3,8 +3,7 @@
   "case": "never-could-not-verify",
   "allowed": [
     "ignore",
-    "suggestion",
-    "nitpick"
+    "note"
   ],
   "finding": {
     "title": "Could not verify the new migration runs in CI",

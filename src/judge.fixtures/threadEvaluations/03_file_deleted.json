@@ -7,7 +7,7 @@
     "title": "Unused legacy helper",
     "file": "src/legacy/helper.ts",
     "line": 12,
-    "severity": "suggestion",
+    "severity": "note",
     "description": "`legacyTransform` is no longer called by any active code path. Either remove it or document why it must stay.",
     "suggestedFix": "Delete `src/legacy/helper.ts` if nothing imports it.",
     "currentCode": "(file removed)"

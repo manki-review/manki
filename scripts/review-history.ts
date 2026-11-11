@@ -15,6 +15,7 @@ import * as github from '@actions/github';
 
 import { extractReplyRecords, extractReviewRecords, hasReviewRecord } from '../src/review-record';
 import type { LLMCall } from '../src/providers';
+import { migrateStoredSeverities } from '../src/types';
 
 interface PostedLike {
   id: number;
@@ -41,7 +42,7 @@ export interface HistoryLine {
 function parseRecords(texts: string[], where: string): unknown[] {
   return texts.flatMap(text => {
     try {
-      return [JSON.parse(text) as unknown];
+      return [migrateStoredSeverities(JSON.parse(text) as unknown)];
     } catch {
       console.error(`Skipping a record that is not JSON in ${where}`);
       return [];

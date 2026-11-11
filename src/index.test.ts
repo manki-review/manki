@@ -2120,7 +2120,7 @@ describe('runFullReview orchestration', () => {
         'convergence: { max_auto_rounds: 0, suppress_resolved_threads: false }', 'metrics: { fix_rate: true }',
       ].join('\n');
       configFiles(head, async () => base);
-      const note = (title: string) => ({ severity: 'suggestion' as const, title, file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'] });
+      const note = (title: string) => ({ severity: 'note' as const, title, file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'] });
       const rule = { file: 'AGENTS.md', quote: 'A constant must be named after its unit.' };
       jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
         verdict: 'APPROVE', outcome: 'READY', summary: 's', findings: [note('Reuse the helper'), { ...note('Name the constant'), rule }], highlights: [], reviewComplete: true, agentNames: ['general'],
@@ -2290,10 +2290,10 @@ describe('runFullReview orchestration', () => {
 
     it('leaves out the notes of earlier rounds, and counts every finding as new code on a full review', async () => {
       seedPriorRounds([{ round: 1, commitSha: 'abc123', timestamp: '2025-01-01T00:00:00Z', findings: [] }]);
-      const finding = { severity: 'suggestion' as const, title: 'Rename', file: 'src/app.ts', line: 2, description: 'd', reviewers: ['general'] };
+      const finding = { severity: 'note' as const, title: 'Rename', file: 'src/app.ts', line: 2, description: 'd', reviewers: ['general'] };
       const findings: Finding[] = [
         finding,
-        { ...finding, severity: 'nitpick' as const, title: 'Listed before', raisedIn: 1 },
+        { ...finding, severity: 'note' as const, title: 'Listed before', raisedIn: 1 },
         { ...finding, severity: 'warning' as const, title: 'Warning' },
         { ...finding, severity: 'warning' as const, title: 'Warning listed before', raisedIn: 1 },
         { ...finding, severity: 'blocker' as const, title: 'Blocker' },
@@ -2314,7 +2314,7 @@ describe('runFullReview orchestration', () => {
       // The progress comment lists a note left out as not kept, with the reason, and counts it as dropped.
       const [, , , , dashboard, metadata] = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)!;
       expect(metadata?.judgeDecisions.filter(d => !d.kept).map(d => [d.title, d.unpostedReason])).toEqual([['Rename', 'reviewed_code'], ['Listed before', 'listed_earlier']]);
-      expect([dashboard.keptCount, dashboard.droppedCount, dashboard.droppedSeverities]).toEqual([10, 2, { suggestion: 1, nitpick: 1 }]);
+      expect([dashboard.keptCount, dashboard.droppedCount, dashboard.droppedSeverities]).toEqual([10, 2, { note: 2 }]);
       await runWith({ fullReview: true });
       expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![5]?.judgeDecisions.filter(d => !d.kept).map(d => [d.title, d.unpostedReason])).toEqual([['Also outside', 'note_cap']]);
       // Without the PR's change at the last reviewed commit no code counts as reviewed, so only the restated note is left out.
@@ -2336,21 +2336,21 @@ describe('runFullReview orchestration', () => {
         ['Warning', 'reviewed'], ['Warning listed before', 'earlier'], ['Blocker', 'reviewed'], ['Security note', 'reviewed'],
         ['In a thread', 'reviewed'], ['Answered', 'reviewed'], ['Old reviewer', 'reviewed'], ['Tool alert', 'reviewed'], ['Outside the diff', 'reviewed'], ['Also outside', 'reviewed'],
       ]);
-      expect(later.unposted).toEqual([['Rename', 'suggestion', 'reviewed', 'reviewed_code'], ['Listed before', 'nitpick', 'earlier', 'listed_earlier']]);
+      expect(later.unposted).toEqual([['Rename', 'note', 'reviewed', 'reviewed_code'], ['Listed before', 'note', 'earlier', 'listed_earlier']]);
       expect(later.count).toBe(10);
       // A full review hides no note for its origin, so four notes meet the default `review.notes` of three. The tool alert takes no place.
       expect(again.posted).toEqual([
         ['Warning', 'new'], ['Warning listed before', 'earlier'], ['Blocker', 'new'], ['Security note', 'new'],
         ['In a thread', 'new'], ['Answered', 'new'], ['Old reviewer', 'new'], ['Rename', 'new'], ['Listed before', 'earlier'], ['Tool alert', 'new'], ['Outside the diff', 'new'],
       ]);
-      expect(again.unposted).toEqual([['Also outside', 'suggestion', 'new', 'note_cap']]);
+      expect(again.unposted).toEqual([['Also outside', 'note', 'new', 'note_cap']]);
       expect(unknown.posted.map(([title]) => title)).toEqual([
         'Warning', 'Warning listed before', 'Blocker', 'Security note', 'In a thread', 'Answered', 'Old reviewer', 'Rename', 'Tool alert', 'Outside the diff', 'Also outside',
       ]);
       expect(unknown.posted.every(([title, origin]) => origin === (title === 'Warning listed before' ? 'earlier' : 'new'))).toBe(true);
-      expect(unknown.unposted).toEqual([['Listed before', 'nitpick', 'earlier', 'listed_earlier']]);
+      expect(unknown.unposted).toEqual([['Listed before', 'note', 'earlier', 'listed_earlier']]);
       expect(unmoved.posted).toEqual(unknown.posted.map(([title, origin]) => [title, origin === 'new' ? 'reviewed' : origin]));
-      expect(unmoved.unposted).toEqual([['Listed before', 'nitpick', 'earlier', 'listed_earlier']]);
+      expect(unmoved.unposted).toEqual([['Listed before', 'note', 'earlier', 'listed_earlier']]);
       // The record says when the origins were tagged without the PR's change at the last reviewed commit.
       expect([later, again, unknown, unmoved].map(round => round.originsWithoutPrior)).toEqual([undefined, true, true, undefined]);
     });
@@ -2378,7 +2378,7 @@ describe('runFullReview orchestration', () => {
       expect(result.carried?.map(e => e.currentLine)).toEqual([2]);
 
       // A note that names a carried warning ends it as a hidden note when `review.notes` leaves the note out.
-      const note = (title: string, line: number): Finding => ({ severity: 'suggestion', title, file: 'src/app.ts', line, description: 'd', reviewers: ['general'] });
+      const note = (title: string, line: number): Finding => ({ severity: 'note', title, file: 'src/app.ts', line, description: 'd', reviewers: ['general'] });
       const notes = [note('One', 1), note('Two', 3), note('Three', 4), note('Retry never ends', 2)];
       jest.mocked(reviewModule.runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 's', findings: notes, highlights: [], reviewComplete: true, agentNames: ['general'], allJudgedFindings: notes });
       await runWith({ fullReview: true });
@@ -2660,7 +2660,7 @@ describe('runFullReview orchestration', () => {
     const severityCountsCall = setOutputCalls.find(c => c[0] === 'severity_counts');
     expect(severityCountsCall).toBeTruthy();
     const counts = JSON.parse(severityCountsCall![1] as string);
-    expect(counts).toEqual({ blocker: 1, warning: 0, suggestion: 0, nitpick: 0 });
+    expect(counts).toEqual({ blocker: 1, warning: 0, note: 0 });
     expect(counts).not.toHaveProperty('required');
     expect(counts).not.toHaveProperty('nit');
     const findingsJson = setOutputCalls.find(c => c[0] === 'findings_json')![1] as string;
@@ -2680,21 +2680,21 @@ describe('runFullReview orchestration', () => {
     const findings = [
       { severity: 'blocker' as const, reviewerSeverity: 'warning' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'confirmed' },
       // A merged duplicate was filed at the judge's grade, which is no regrade.
-      { severity: 'suggestion' as const, reviewerSeverity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
-      { severity: 'nitpick' as const, originalSeverity: 'warning' as const, reviewerSeverity: 'suggestion' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'], judgeConfidence: 'low' as const },
+      { severity: 'note' as const, reviewerSeverity: 'note' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
+      { severity: 'note' as const, originalSeverity: 'warning' as const, reviewerSeverity: 'note' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'], judgeConfidence: 'low' as const },
     ];
     const unsettledLead = { severity: 'warning' as const, title: 'Token may not read the repo', file: 'src/app.ts', line: 3, description: 'd', reviewers: ['general'], lead: { checked: 'read it', left: 'check the repo' } };
     // The judge kept these, and a later step took each out without posting it.
-    const later = (title: string, line: number) => ({ severity: 'suggestion' as const, title, file: 'src/old.ts', line, description: 'd', reviewers: ['general'] });
+    const later = (title: string, line: number) => ({ severity: 'note' as const, title, file: 'src/old.ts', line, description: 'd', reviewers: ['general'] });
     const [oldCode, hidden, toolLine, testNit] = [later('Old helper name', 4), later('Hidden by memory', 5), later('Tool reports it', 6), later('Test nit', 7)];
     const allJudged = [
       ...findings,
-      { severity: 'ignore' as const, reviewerSeverity: 'nitpick' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'not relevant' },
+      { severity: 'ignore' as const, reviewerSeverity: 'note' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'not relevant' },
       unsettledLead, oldCode, hidden, toolLine, testNit,
     ];
     const rawFindings = [
       ...findings,
-      { severity: 'nitpick' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'] },
+      { severity: 'note' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'] },
     ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2736,8 +2736,8 @@ describe('runFullReview orchestration', () => {
     }));
     expect(statsArg!.findings.entries.map(e => [e.severity, e.originalSeverity, e.reviewerSeverity])).toEqual([
       ['blocker', undefined, 'warning'],
-      ['suggestion', undefined, 'suggestion'],
-      ['nitpick', 'warning', 'suggestion'],
+      ['note', undefined, 'note'],
+      ['note', 'warning', 'note'],
     ]);
     // A pre-existing finding Manki did not post is recorded apart, so nothing that reads posted findings counts it.
     expect(statsArg!.findings.unposted?.map(e => [e.title, e.tags])).toEqual([['Old helper name', ['pre-existing']]]);
@@ -2753,8 +2753,8 @@ describe('runFullReview orchestration', () => {
     // keptSeverities/droppedSeverities passed to dashboard use original severity for dropped findings, and a lead left
     // unsettled is listed, not dropped.
     const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4];
-    expect(dashboardArg?.keptSeverities).toEqual({ blocker: 1, suggestion: 1, nitpick: 1 });
-    expect(dashboardArg?.droppedSeverities).toEqual({ nitpick: 1, suggestion: 4 });
+    expect(dashboardArg?.keptSeverities).toEqual({ blocker: 1, note: 2 });
+    expect(dashboardArg?.droppedSeverities).toEqual({ note: 5 });
     expect(dashboardArg?.droppedCount).toBe(5);
     const decisions = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[5]?.judgeDecisions;
     // A finding a later step took out says which step, and one the judge dropped says none. A test file nit is only counted, so it has no reason.
@@ -2783,8 +2783,8 @@ describe('runFullReview orchestration', () => {
       { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
       { severity: 'blocker' as const, title: 'Dup1', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'] },
       { severity: 'blocker' as const, title: 'Dup2', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] },
-      { severity: 'suggestion' as const, title: 'Judge-merged', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] },
-      { severity: 'suggestion' as const, title: 'Judge-merged-2', file: 'src/app.ts', line: 9, description: 'desc', reviewers: ['general'] },
+      { severity: 'note' as const, title: 'Judge-merged', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] },
+      { severity: 'note' as const, title: 'Judge-merged-2', file: 'src/app.ts', line: 9, description: 'desc', reviewers: ['general'] },
     ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2830,9 +2830,9 @@ describe('runFullReview orchestration', () => {
     ];
     const rawFindings = [
       { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
-      { severity: 'nitpick' as const, title: 'Suppressed1', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'] },
-      { severity: 'nitpick' as const, title: 'Suppressed2', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] },
-      { severity: 'suggestion' as const, title: 'Judge-merged', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] },
+      { severity: 'note' as const, title: 'Suppressed1', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'] },
+      { severity: 'note' as const, title: 'Suppressed2', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] },
+      { severity: 'note' as const, title: 'Judge-merged', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] },
     ];
     // Memory suppressions run after the judge, so the judge saw both suppressed findings.
     const allJudged = [...findings, rawFindings[1], rawFindings[2]];
@@ -2912,7 +2912,7 @@ describe('runFullReview orchestration', () => {
     };
     const allJudged = [
       survivingFinding,
-      { severity: 'suggestion' as const, title: 'Test nit (suppressed)', file: 'src/app.ts', line: 8,
+      { severity: 'note' as const, title: 'Test nit (suppressed)', file: 'src/app.ts', line: 8,
         description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
     ];
 
@@ -3182,7 +3182,7 @@ describe('runFullReview orchestration', () => {
     const primaryName = 'Claude Sonnet 5.5 · high';
     const pairName = 'Claude Opus 5.5 · high';
     const pairOnly = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: [pairName] };
-    const primaryOnly = { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'd', reviewers: [primaryName] };
+    const primaryOnly = { severity: 'note' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'd', reviewers: [primaryName] };
     const both = { severity: 'warning' as const, title: 'Race', file: 'src/app.ts', line: 9, description: 'd', reviewers: [primaryName, pairName] };
     const reader = { severity: 'blocker' as const, title: 'Leak', file: 'src/app.ts', line: 3, description: 'd', reviewers: ['Verdict reader'] };
     const findings = [pairOnly, primaryOnly, both, reader];
@@ -3250,12 +3250,12 @@ describe('runFullReview orchestration', () => {
     expect(ctx!.routing!.configDigest).not.toBe(routingDigest(undefined));
   });
 
-  it('passes nitpick findings through to postReview', async () => {
+  it('passes notes through to postReview', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
-    const nitFinding = { severity: 'nitpick' as const, title: 'Style nit', file: 'src/app.ts', line: 3, description: 'nit desc', reviewers: ['general'] };
+    const nitFinding = { severity: 'note' as const, title: 'Style nit', file: 'src/app.ts', line: 3, description: 'nit desc', reviewers: ['general'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'Minor nits',
       findings: [nitFinding], highlights: [], reviewComplete: true,
@@ -3267,7 +3267,7 @@ describe('runFullReview orchestration', () => {
 
     const resultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
     expect(resultArg).toEqual(expect.objectContaining({
-      findings: expect.arrayContaining([expect.objectContaining({ severity: 'nitpick' })]),
+      findings: expect.arrayContaining([expect.objectContaining({ severity: 'note' })]),
     }));
   });
 
@@ -3375,7 +3375,7 @@ describe('runFullReview orchestration', () => {
       priorRounds: [],
     });
 
-    const finding2 = { severity: 'nitpick' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] };
+    const finding2 = { severity: 'note' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'Issues',
       findings: [finding2], highlights: [], reviewComplete: true,
@@ -3815,7 +3815,7 @@ describe('runFullReview orchestration', () => {
         staticSignalMatches: [{ droppedTitle: 'Unused import', file: 'src/app.ts', line: 3, tool: 'lint', ruleId: 'no-unused-vars' }],
         toolAlertCount: 1,
         allJudgedFindings: [
-          { severity: 'nitpick', title: 'A', file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'] },
+          { severity: 'note', title: 'A', file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'] },
           { severity: 'ignore', title: 'js/redos: slow regex', file: 'src/app.ts', line: 2, description: 'd', reviewers: ['CodeQL'], toolSource: 'CodeQL' },
         ],
       });
@@ -3940,7 +3940,7 @@ describe('runFullReview orchestration', () => {
       const call = (stage: string, promptDigest: string, extra: Partial<LLMCall> = {}): LLMCall => ({
         stage, attempt: 1, promptDigest, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0, ...extra,
       });
-      const hidden = { severity: 'suggestion' as const, title: 'Rename the helper', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['general'], suppressedBy: 'sup-1' };
+      const hidden = { severity: 'note' as const, title: 'Rename the helper', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['general'], suppressedBy: 'sup-1' };
       const limit = { account: 'Claude subscription', window: 'weekly', usedPercent: 81 };
       const comparisons = [
         { kind: 'field' as const, reviewer: 'Sibling field: utxos vs spent', at: ['src/app.ts:5'], status: 'answered' as const, findings: 0 },
@@ -3970,7 +3970,7 @@ describe('runFullReview orchestration', () => {
         memoryLoaded: { learnings: 4, suppressions: 2 },
         memorySuppressed: [hidden],
         allJudgedFindings: [{
-          ...hidden, severity: 'ignore', gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }],
+          ...hidden, severity: 'ignore', gradePath: [{ from: 'note', to: 'ignore', by: 'refutation', reason: 'r' }],
           refutation: { outcome: 'unsettled', reason: 'Could not tell.', files: ['src/app.ts'], codeDigest: 'a' },
           pairRefutation: { outcome: 'disproved', reason: 'r', proof: ['src/app.ts:9'], files: ['src/app.ts'], codeDigest: 'a' },
         }],
@@ -3998,11 +3998,11 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![5]?.limits).toEqual([limit]);
       expect(rc.memory).toMatchObject({
         loaded: { learnings: 4, suppressions: 2 },
-        suppressed: [{ title: 'Rename the helper', file: 'src/app.ts', line: 9, severity: 'suggestion', suppressionId: 'sup-1' }],
+        suppressed: [{ title: 'Rename the helper', file: 'src/app.ts', line: 9, severity: 'note', suppressionId: 'sup-1' }],
       });
       expect(rc.tokenService).toEqual(tokenService);
       expect(rc.judge.dropped).toEqual([expect.objectContaining({
-        gradePath: [{ from: 'suggestion', to: 'ignore', by: 'refutation', reason: 'r' }],
+        gradePath: [{ from: 'note', to: 'ignore', by: 'refutation', reason: 'r' }],
         refutation: expect.objectContaining({ outcome: 'unsettled' }), pairRefutation: expect.objectContaining({ outcome: 'disproved' }),
       })]);
       // The second refuter's disproof drops it while the first abstains, so its reason is the one listed.
@@ -4280,7 +4280,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'Issues',
       findings: [{
-        severity: 'nitpick' as const,
+        severity: 'note' as const,
         title: 'Hypothetical race',
         file: 'src/app.ts',
         line: 5,
@@ -4311,12 +4311,12 @@ describe('runFullReview orchestration', () => {
         severity: 'warning' as const, title: 'Hypothetical race', file: 'src/app.ts', line: 5,
         description: 'Race condition that needs a strict ordering.', reviewers: ['Concurrency'], suggestedFix: 'Take the lock first.', codeContext: 'code',
       }, {
-        severity: 'suggestion' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', howToFix: 'Rename it to what it returns.', reviewers: ['Concurrency'],
+        severity: 'note' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', howToFix: 'Rename it to what it returns.', reviewers: ['Concurrency'],
       }],
       allJudgedFindings: [{
         severity: 'ignore' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', reviewers: ['Concurrency'],
-        reviewerSeverity: 'suggestion' as const, judgeConfidence: 'high' as const, judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
-        gradeIfConfirmed: 'suggestion' as const, doubts: [{ premise: 'Callers read the old name', decides: 'defect' as const }],
+        reviewerSeverity: 'note' as const, judgeConfidence: 'high' as const, judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
+        gradeIfConfirmed: 'note' as const, doubts: [{ premise: 'Callers read the old name', decides: 'defect' as const }],
         cell: { row: 'improvement' as const, column: 'normal' as const },
         rule: { file: 'AGENTS.md', quote: 'A helper is named after what it returns.' },
       }],
@@ -4330,12 +4330,12 @@ describe('runFullReview orchestration', () => {
       severity: 'warning', title: 'Hypothetical race', file: 'src/app.ts', line: 5,
       description: 'Race condition that needs a strict ordering.', reviewers: ['Concurrency'], suggestedFix: 'Take the lock first.',
     }, {
-      severity: 'suggestion', title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', howToFix: 'Rename it to what it returns.', reviewers: ['Concurrency'],
+      severity: 'note', title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', howToFix: 'Rename it to what it returns.', reviewers: ['Concurrency'],
     }]);
     expect(rc!.judge.dropped).toEqual([{
       title: 'Rename helper', file: 'src/app.ts', line: 7, reviewers: ['Concurrency'],
-      reviewerSeverity: 'suggestion', judgeConfidence: 'high', judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
-      gradeIfConfirmed: 'suggestion', doubts: [{ premise: 'Callers read the old name', decides: 'defect' }],
+      reviewerSeverity: 'note', judgeConfidence: 'high', judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
+      gradeIfConfirmed: 'note', doubts: [{ premise: 'Callers read the old name', decides: 'defect' }],
       cell: { row: 'improvement', column: 'normal' },
       rule: { file: 'AGENTS.md', quote: 'A helper is named after what it returns.' },
     }]);
@@ -4367,7 +4367,7 @@ describe('runFullReview orchestration', () => {
     const tagged = (
       title: string,
       tag: string,
-      severity: 'ignore' | 'nitpick' = 'ignore',
+      severity: 'ignore' | 'note' = 'ignore',
     ) => ({
       severity,
       title,
@@ -4384,9 +4384,9 @@ describe('runFullReview orchestration', () => {
         tagged('A', 'suppressed-by-ratchet'),
         tagged('B', 'suppressed-by-ratchet'),
         tagged('C', 'suppressed-by-resolved-thread'),
-        tagged('D', 'contradicts-prior-round', 'nitpick'),
-        tagged('E', 'own-proposal-followup', 'nitpick'),
-        tagged('F', 'own-proposal-followup', 'nitpick'),
+        tagged('D', 'contradicts-prior-round', 'note'),
+        tagged('E', 'own-proposal-followup', 'note'),
+        tagged('F', 'own-proposal-followup', 'note'),
       ],
       highlights: [], reviewComplete: true, agentNames: ['A'],
       interRoundDiffEmptyOverride: { applied: true, affectedThreadCount: 3 },
@@ -4475,14 +4475,14 @@ describe('runFullReview orchestration', () => {
       verdict: 'APPROVE', outcome: 'READY' as const, summary: 'Looks good',
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
-      verdictReason: 'only_nit_or_suggestion',
+      verdictReason: 'only_notes',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
 
     await callRunFullReview();
 
     const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    expect(statsArg?.judge.verdictReason).toBe('only_nit_or_suggestion');
+    expect(statsArg?.judge.verdictReason).toBe('only_notes');
   });
 
   it('enriches findings with code context from diff hunks', async () => {
@@ -4497,7 +4497,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const finding = {
-      severity: 'suggestion' as const, title: 'Improvement', file: 'src/app.ts',
+      severity: 'note' as const, title: 'Improvement', file: 'src/app.ts',
       line: 5, description: 'desc', reviewers: ['general'],
     };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -4904,8 +4904,8 @@ describe('runFullReview orchestration', () => {
     };
     jest.mocked(memoryModule.loadMemory).mockResolvedValue(memory);
 
-    const finding1 = { severity: 'suggestion' as const, title: 'Real issue', file: 'src/app.ts', line: 3, description: 'desc', reviewers: ['general'] };
-    const finding2 = { severity: 'nitpick' as const, title: 'Noise', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] };
+    const finding1 = { severity: 'note' as const, title: 'Real issue', file: 'src/app.ts', line: 3, description: 'desc', reviewers: ['general'] };
+    const finding2 = { severity: 'note' as const, title: 'Noise', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] };
 
     jest.mocked(reviewModule.runReview).mockImplementation(
       async (_clients, { onProgress }) => {
@@ -4947,7 +4947,7 @@ describe('runFullReview orchestration', () => {
 
     const previousFindings = [
       { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'resolved' as const },
-      { title: 'Bug B', file: 'src/app.ts', line: 2, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_123' },
+      { title: 'Bug B', file: 'src/app.ts', line: 2, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_123' },
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
@@ -4969,7 +4969,7 @@ describe('runFullReview orchestration', () => {
         title: 'Bug B',
         file: 'src/app.ts',
         line: 2,
-        severity: 'suggestion',
+        severity: 'note',
         currentCode: '(file content unavailable)',
       },
     ]);
@@ -4998,7 +4998,7 @@ describe('runFullReview orchestration', () => {
     });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', outcome: 'READY' as const, verdictReason: 'only_nit_or_suggestion', summary: 'Fixed',
+      verdict: 'APPROVE', outcome: 'READY' as const, verdictReason: 'only_notes', summary: 'Fixed',
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [{ threadId: 'PRRT_OPEN', status: 'addressed', reason: 'fixed in diff' }],
@@ -5008,7 +5008,7 @@ describe('runFullReview orchestration', () => {
 
     const reviewResultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
     expect(reviewResultArg?.verdict).toBe('APPROVE');
-    expect(reviewResultArg?.verdictReason).toBe('only_nit_or_suggestion');
+    expect(reviewResultArg?.verdictReason).toBe('only_notes');
   });
 
   it('passes `null` open threads to `runReview` when the thread fetch failed', async () => {
@@ -5180,7 +5180,7 @@ describe('runFullReview orchestration', () => {
     // Two open threads: one in a changed file (must not duplicate) and one in
     // an unchanged file (must be added to the fetch list).
     const previousFindings = [
-      { title: 'Issue in changed', file: 'src/app.ts', line: 3, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_dup' },
+      { title: 'Issue in changed', file: 'src/app.ts', line: 3, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_dup' },
       { title: 'Issue in unchanged', file: 'src/other.ts', line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_new' },
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
@@ -5210,7 +5210,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [deletedFile], excluded: [] });
 
     const previousFindings = [
-      { title: 'Live thread', file: 'src/live.ts', line: 1, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_live' },
+      { title: 'Live thread', file: 'src/live.ts', line: 1, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_live' },
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
@@ -5674,8 +5674,8 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug C', file: 'src/app.ts', line: 8, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
         { title: 'Bug D', file: 'src/app.ts', line: 3, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_jkl' },
         { title: 'Bug E', file: 'src/app.ts', line: 7, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_mno' },
-        { title: 'Bug F', file: 'src/app.ts', line: 9, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_pqr' },
-        { title: 'Bug H', file: 'src/app.ts', line: 6, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_vwx' },
+        { title: 'Bug F', file: 'src/app.ts', line: 9, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_pqr' },
+        { title: 'Bug H', file: 'src/app.ts', line: 6, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_vwx' },
         { title: 'Bug I', file: 'src/app.ts', line: 2, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_yza', recordedGrade: 'warning' as const },
       ],
     );
@@ -5801,8 +5801,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
-        { title: 'Bug B', file: 'src/app.ts', line: 2, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_def' },
-        { title: 'Bug C', file: 'src/app.ts', line: 3, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
+        { title: 'Bug B', file: 'src/app.ts', line: 2, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_def' },
+        { title: 'Bug C', file: 'src/app.ts', line: 3, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
       ],
       priorRounds: [],
     });
@@ -6005,8 +6005,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_open' },
-        { title: 'Bug B', file: 'src/app.ts', line: 2, severity: 'suggestion' as const, status: 'replied' as const, threadId: 'PRRT_replied' },
-        { title: 'Bug C', file: 'src/app.ts', line: 3, severity: 'nitpick' as const, status: 'resolved' as const, threadId: 'PRRT_resolved' },
+        { title: 'Bug B', file: 'src/app.ts', line: 2, severity: 'note' as const, status: 'replied' as const, threadId: 'PRRT_replied' },
+        { title: 'Bug C', file: 'src/app.ts', line: 3, severity: 'note' as const, status: 'resolved' as const, threadId: 'PRRT_resolved' },
       ],
       priorRounds: [],
     });
@@ -6388,14 +6388,14 @@ describe('runFullReview orchestration', () => {
 
     it('skips review and posts notice when prior rounds reach the cap on auto trigger', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
-      const thread = (title: string, severity: 'blocker' | 'warning' | 'suggestion' | 'unknown', status: 'open' | 'replied' | 'resolved', n: number) => ({
+      const thread = (title: string, severity: 'blocker' | 'warning' | 'note' | 'unknown', status: 'open' | 'replied' | 'resolved', n: number) => ({
         title, file: 'src/app.ts', line: n, severity, status, threadId: `T_${n}`, threadUrl: `https://github.com/test-owner/test-repo/pull/42#discussion_r${n}`,
       });
       seedPriorRounds(priorRounds(5), [
         thread('Null check missing', 'blocker', 'open', 1),
         thread('Retry never stops', 'warning', 'replied', 2),
         thread('Fixed already', 'blocker', 'resolved', 3),
-        thread('Name could be clearer', 'suggestion', 'open', 4),
+        thread('Name could be clearer', 'note', 'open', 4),
         { ...thread('Token logged', 'blocker', 'resolved', 5), reopen: true },
         thread('Posted before severity markers', 'unknown', 'open', 6),
         { ...thread('Token in error message', 'warning', 'open', 7), isSecurity: true },

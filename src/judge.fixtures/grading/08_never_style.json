@@ -2,8 +2,7 @@
   "name": "never-style",
   "case": "never-style",
   "allowed": [
-    "nitpick",
-    "suggestion",
+    "note",
     "ignore"
   ],
   "finding": {

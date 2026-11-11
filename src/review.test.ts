@@ -35,7 +35,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
+import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
 import { citedLine } from './finding-fingerprint';
 import { fingerprintEntriesFromLegacy, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -44,7 +44,7 @@ import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundUsage } from './round-context';
-import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, withRefusalFallback, wrapClientForUsage } from './providers';
 
 const READY_VERDICT = JSON.stringify({
@@ -86,7 +86,7 @@ const diffChanging = (...paths: string[]): ParsedDiff => makeDiff({
 });
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
-  severity: 'suggestion',
+  severity: 'note',
   title: 'Test finding',
   file: 'src/a.ts',
   line: 10,
@@ -186,19 +186,19 @@ describe('parseFindings', () => {
   });
 
   it('parses markdown-wrapped JSON', () => {
-    const json = '```json\n[{"severity":"suggestion","title":"Naming","file":"a.ts","line":1,"description":"Rename this."}]\n```';
+    const json = '```json\n[{"severity":"note","title":"Naming","file":"a.ts","line":1,"description":"Rename this."}]\n```';
 
     const findings = parseFindings(json, 'Reviewer');
     expect(findings).toHaveLength(1);
-    expect(findings[0].severity).toBe('suggestion');
+    expect(findings[0].severity).toBe('note');
   });
 
   it('parses markdown-wrapped JSON without language tag', () => {
-    const json = '```\n[{"severity":"nitpick","title":"Why?","file":"b.ts","line":5,"description":"Unclear code."}]\n```';
+    const json = '```\n[{"severity":"note","title":"Why?","file":"b.ts","line":5,"description":"Unclear code."}]\n```';
 
     const findings = parseFindings(json, 'Reviewer');
     expect(findings).toHaveLength(1);
-    expect(findings[0].severity).toBe('nitpick');
+    expect(findings[0].severity).toBe('note');
   });
 
   it.each<[string, string, RegExp]>([
@@ -235,7 +235,7 @@ describe('parseFindings', () => {
     expect(findings[0].suggestedFix).toBeUndefined();
   });
 
-  it('defaults unknown severity to suggestion', () => {
+  it('defaults unknown severity to note', () => {
     const json = JSON.stringify([{
       severity: 'critical',
       title: 'Test',
@@ -245,34 +245,24 @@ describe('parseFindings', () => {
     }]);
 
     const findings = parseFindings(json, 'Reviewer');
-    expect(findings[0].severity).toBe('suggestion');
+    expect(findings[0].severity).toBe('note');
   });
 });
 
 describe('validateSeverity', () => {
-  it('accepts required', () => {
-    expect(validateSeverity('blocker')).toBe('blocker');
+  it.each(['blocker', 'warning', 'note', 'ignore'] as const)('accepts %s', (severity) => {
+    expect(validateSeverity(severity)).toBe(severity);
   });
 
-  it('accepts suggestion', () => {
-    expect(validateSeverity('suggestion')).toBe('suggestion');
-  });
-
-  it('accepts nit', () => {
-    expect(validateSeverity('nitpick')).toBe('nitpick');
-  });
-
-  it('accepts ignore', () => {
-    expect(validateSeverity('ignore')).toBe('ignore');
-  });
-
-  it('defaults to suggestion for unknown values', () => {
-    expect(validateSeverity('critical')).toBe('suggestion');
-    expect(validateSeverity('blocking')).toBe('suggestion');
-    expect(validateSeverity('question')).toBe('suggestion');
-    expect(validateSeverity(undefined)).toBe('suggestion');
-    expect(validateSeverity(null)).toBe('suggestion');
-    expect(validateSeverity(42)).toBe('suggestion');
+  it('defaults to note for unknown values, such as a level of an older version', () => {
+    expect(validateSeverity('suggestion')).toBe('note');
+    expect(validateSeverity('nitpick')).toBe('note');
+    expect(validateSeverity('critical')).toBe('note');
+    expect(validateSeverity('blocking')).toBe('note');
+    expect(validateSeverity('question')).toBe('note');
+    expect(validateSeverity(undefined)).toBe('note');
+    expect(validateSeverity(null)).toBe('note');
+    expect(validateSeverity(42)).toBe('note');
   });
 });
 
@@ -291,21 +281,21 @@ describe('determineOutcome', () => {
     expect(determineOutcome(findings)).toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'warnings_present' }));
   });
 
-  it('returns READY when there are only nitpicks', () => {
-    const findings: Finding[] = [makeFinding({ severity: 'nitpick' })];
+  it('returns READY when there are only notes', () => {
+    const findings: Finding[] = [makeFinding({ severity: 'note' })];
     expect(determineOutcome(findings).outcome).toBe('READY');
-    expect(determineOutcome(findings).verdictReason).toBe('only_nit_or_suggestion');
+    expect(determineOutcome(findings).verdictReason).toBe('only_notes');
   });
 
   it('returns READY when there are only ignores', () => {
     const findings: Finding[] = [makeFinding({ severity: 'ignore' })];
     expect(determineOutcome(findings).outcome).toBe('READY');
-    expect(determineOutcome(findings).verdictReason).toBe('only_nit_or_suggestion');
+    expect(determineOutcome(findings).verdictReason).toBe('only_notes');
   });
 
   it('returns READY when there are no findings', () => {
     expect(determineOutcome([]).outcome).toBe('READY');
-    expect(determineOutcome([]).verdictReason).toBe('only_nit_or_suggestion');
+    expect(determineOutcome([]).verdictReason).toBe('only_notes');
   });
 
   describe('unresolved prior findings', () => {
@@ -325,14 +315,14 @@ describe('determineOutcome', () => {
       severity: 'blocker',
       ...overrides,
     });
-    const nitpick: Finding = {
-      severity: 'nitpick', title: 'Tiny thing', file: 'src/y.ts', line: 1, description: 'd', reviewers: ['r'],
+    const note: Finding = {
+      severity: 'note', title: 'Tiny thing', file: 'src/y.ts', line: 1, description: 'd', reviewers: ['r'],
     };
 
-    it('blocks APPROVE on a nit-only round when a prior warning is still open', () => {
+    it('blocks APPROVE on a round with only notes when a prior warning is still open', () => {
       const priors = [makePriorBlocker()];
       const open = [makeOpenThread()];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), open);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), open);
       expect(result.outcome).toBe('ADDRESS_FIRST');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -340,9 +330,9 @@ describe('determineOutcome', () => {
     it('approves when the prior warning was author-agreed', () => {
       const priors = [makePriorBlocker({ authorReply: 'agree' })];
       const open = [makeOpenThread()];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), open);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), open);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     it.each([
@@ -355,22 +345,22 @@ describe('determineOutcome', () => {
       // with an unresolved prior warning. The unknown sentinel forces a
       // conservative block until the caller passes an explicit list.
       const priors = [makePriorBlocker()];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), sentinel);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), sentinel);
       expect(result.outcome).toBe('ADDRESS_FIRST');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
     it('approves when the prior thread is no longer in openThreads (fetched, none open)', () => {
       const priors = [makePriorBlocker()];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), []);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), []);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     it('blocks APPROVE on an unresolved prior blocker', () => {
       const priors = [makePriorBlocker({ severity: 'blocker' })];
       const open = [makeOpenThread({ severity: 'blocker' })];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), open);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), open);
       expect(result.outcome).toBe('ADDRESS_FIRST');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -385,7 +375,7 @@ describe('determineOutcome', () => {
       ];
       for (const prior of priorWarnings) {
         for (const open of [[makeOpenThread({ severity: 'warning' })], null]) {
-          expect(determineOutcome([warning, securityWarning, nitpick], prior, open))
+          expect(determineOutcome([warning, securityWarning, note], prior, open))
             .toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'warnings_present' }));
         }
       }
@@ -396,44 +386,44 @@ describe('determineOutcome', () => {
     });
 
     it('first review round (no priors) falls through to existing rules', () => {
-      const result = determineOutcome([nitpick], [], []);
+      const result = determineOutcome([note], [], []);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     it('does not block on a prior warning posted without a thread, even while other threads are open', () => {
       const priors = [makePriorBlocker({ severity: 'warning', threadId: undefined })];
       const open = [makeOpenThread({ threadId: 'OTHER' })];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), open);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), open);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     it('blocks on a prior blocker posted without a thread only while the PR still changes its file', () => {
       const priors = fingerprintEntriesFromLegacy([makePriorBlocker({ severity: 'blocker', threadId: undefined })]);
-      const stillChanged = determineOutcome([nitpick], priors, [], undefined, undefined, undefined, new Set(['src/x.ts']));
+      const stillChanged = determineOutcome([note], priors, [], undefined, undefined, undefined, new Set(['src/x.ts']));
       expect(stillChanged.outcome).toBe('ADDRESS_FIRST');
       expect(stillChanged.verdictReason).toBe('prior_unaddressed');
 
-      const noLongerChanged = determineOutcome([nitpick], priors, [], undefined, undefined, undefined, new Set(['src/other.ts']));
+      const noLongerChanged = determineOutcome([note], priors, [], undefined, undefined, undefined, new Set(['src/other.ts']));
       expect(noLongerChanged.outcome).toBe('READY');
       expect(noLongerChanged.verdictTrace.unresolvedPriors).toEqual([]);
     });
 
-    it('ignores prior findings that are not warning or blocker (e.g. suggestion)', () => {
-      const priorSuggestion = makePriorBlocker({ severity: 'suggestion' });
+    it('ignores prior findings that are not warning or blocker (e.g. note)', () => {
+      const priorNote = makePriorBlocker({ severity: 'note' });
       const open = [makeOpenThread()];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy([priorSuggestion]), open);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy([priorNote]), open);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     it('treats prior findings with severity "unknown" as non-blocking (falls through to APPROVE)', () => {
       const priorUnknown = makePriorBlocker({ severity: 'unknown' });
       const open = [makeOpenThread()];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy([priorUnknown]), open);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy([priorUnknown]), open);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     it('current-round blocker takes precedence over unresolved prior (required_present wins)', () => {
@@ -457,7 +447,7 @@ describe('determineOutcome', () => {
     it.each(['disagree', 'partial'] as const)('blocks APPROVE when authorReply is %s', (reply) => {
       const priors = [makePriorBlocker({ authorReply: reply })];
       const open = [makeOpenThread()];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), open);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), open);
       expect(result.outcome).toBe('ADDRESS_FIRST');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -466,7 +456,7 @@ describe('determineOutcome', () => {
       const resolved = makePriorBlocker({ threadId: 'T_RESOLVED', authorReply: 'agree' });
       const unresolved = makePriorBlocker({ threadId: 'T_OPEN' });
       const open = [makeOpenThread({ threadId: 'T_OPEN' })];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy([resolved, unresolved]), open);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy([resolved, unresolved]), open);
       expect(result.outcome).toBe('ADDRESS_FIRST');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -479,21 +469,21 @@ describe('determineOutcome', () => {
       // verdict moves to APPROVE. Prompt-injection resistance lives at three
       // other layers: input sanitization in `buildJudgeUserMessage`, the
       // adversarial fixture corpus, and `applyCrossRoundSuppression` only
-      // letting `addressed` ratchet `suggestion`/`nitpick` priors (never
+      // letting `addressed` ratchet `note` priors (never
       // `blocker`/`warning`).
       const priors = [makePriorBlocker({ threadId: 'T_FIXED' })];
       const open = [makeOpenThread({ threadId: 'T_FIXED' })];
       const evaluations: ThreadEvaluation[] = [{ threadId: 'T_FIXED', status: 'addressed', reason: 'fix landed in diff' }];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     it.each(['uncertain', 'not_addressed'] as const)('keeps `prior_unaddressed` when the judge returns `%s` (conservative collapse)', (status) => {
       const priors = [makePriorBlocker({ threadId: 'T_OPEN' })];
       const open = [makeOpenThread({ threadId: 'T_OPEN' })];
       const evaluations: ThreadEvaluation[] = [{ threadId: 'T_OPEN', status, reason: 'no evidence' }];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
       expect(result.outcome).toBe('ADDRESS_FIRST');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -502,16 +492,16 @@ describe('determineOutcome', () => {
       const priors = [makePriorBlocker({ severity: 'blocker', threadId: undefined })];
       const open = [makeOpenThread()];
       const evaluations: ThreadEvaluation[] = [{ threadId: 'SOME_OTHER', status: 'addressed', reason: 'irrelevant' }];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
       expect(result.outcome).toBe('ADDRESS_FIRST');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
     it('approves when a prior warning has no `threadId` and GitHub reports zero open threads', () => {
       const priors = [makePriorBlocker({ severity: 'warning', threadId: undefined })];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), []);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), []);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     it('keeps `prior_unaddressed` when a prior has no `threadId` and `openThreads` is unknown (conservative fallback preserved)', () => {
@@ -519,7 +509,7 @@ describe('determineOutcome', () => {
       // the prior has no id to match against, so a failed fetch cannot
       // silently approve a legacy-handover prior.
       const priors = [makePriorBlocker({ threadId: undefined })];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), null);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), null);
       expect(result.outcome).toBe('ADDRESS_FIRST');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -527,9 +517,9 @@ describe('determineOutcome', () => {
     it('approves a prior whose `threadId` is in `resolvedThreadIds` (regression check on the cached-resolved path)', () => {
       const priors = [makePriorBlocker({ threadId: 'T_RESOLVED' })];
       const resolved = new Set(['T_RESOLVED']);
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), [], resolved);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), [], resolved);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     it('approves a PR-149-Round-5-shaped snapshot (11 threadless priors, 0 open threads, 24 resolved)', () => {
@@ -545,9 +535,9 @@ describe('determineOutcome', () => {
         authorReply: 'none',
       }));
       const resolved = new Set(Array.from({ length: 24 }, (_, i) => `T${i}`));
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), [], resolved);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), [], resolved);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
       expect(result.verdictTrace.unresolvedPriors).toEqual([]);
     });
 
@@ -559,7 +549,7 @@ describe('determineOutcome', () => {
         authorReply: 'none',
       }];
       // null openThreads signals openThreadsUnknown — the conservative guard must block retirement
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), null);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), null);
       expect(result.outcome).toBe('ADDRESS_FIRST');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -568,7 +558,7 @@ describe('determineOutcome', () => {
       const priors = [makePriorBlocker({ severity: 'blocker', title: 'Null deref', threadId: 'T_BLOCKER' })];
       const open = [makeOpenThread({ threadId: 'T_BLOCKER', severity: 'blocker', title: 'Null deref' })];
       const evaluate = (status: ThreadEvaluation['status']) => determineOutcome(
-        [nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, [{ threadId: 'T_BLOCKER', status, reason: 'r' }],
+        [note], fingerprintEntriesFromLegacy(priors), open, undefined, [{ threadId: 'T_BLOCKER', status, reason: 'r' }],
       );
       expect(evaluate('addressed').outcome).toBe('READY');
       expect(evaluate('uncertain').verdictReason).toBe('prior_unaddressed');
@@ -576,19 +566,19 @@ describe('determineOutcome', () => {
 
       // A partly fixed thread blocks while what remains earns a blocker, this round or as an earlier round graded it.
       const partly = (grade: ThreadEvaluation['grade'], recordedGrade?: ThreadEvaluation['grade'], status: ThreadEvaluation['status'] = 'partly_addressed') => determineOutcome(
-        [nitpick], fingerprintEntriesFromLegacy(priors), [{ ...open[0], ...(recordedGrade && { recordedGrade }) }], undefined,
+        [note], fingerprintEntriesFromLegacy(priors), [{ ...open[0], ...(recordedGrade && { recordedGrade }) }], undefined,
         [{ threadId: 'T_BLOCKER', status, reason: 'r', remaining: 'No timeout yet.', ...(grade && { grade }) }],
       ).verdictReason;
       expect(partly('blocker')).toBe('prior_unaddressed');
       expect(partly(undefined)).toBe('prior_unaddressed');
-      expect(partly('warning')).toBe('only_nit_or_suggestion');
-      expect(partly(undefined, 'warning', 'not_addressed')).toBe('only_nit_or_suggestion');
+      expect(partly('warning')).toBe('only_notes');
+      expect(partly(undefined, 'warning', 'not_addressed')).toBe('only_notes');
       expect(partly(undefined, 'blocker', 'not_addressed')).toBe('prior_unaddressed');
       // This round's grade for what remains decides over an earlier one.
       expect(partly('blocker', 'warning')).toBe('prior_unaddressed');
       // With the open threads unknown, a grade for a thread never lowers its blocker.
       const evaluations: ThreadEvaluation[] = [{ threadId: 'T_BLOCKER', status: 'partly_addressed', reason: 'r', remaining: 'r', grade: 'warning' }];
-      expect(determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), null, undefined, evaluations).verdictReason).toBe('prior_unaddressed');
+      expect(determineOutcome([note], fingerprintEntriesFromLegacy(priors), null, undefined, evaluations).verdictReason).toBe('prior_unaddressed');
     });
 
     it('lists a thread once when two priors point at it', () => {
@@ -596,7 +586,7 @@ describe('determineOutcome', () => {
         makePriorBlocker({ severity: 'blocker', threadId: 'T1' }),
         makePriorBlocker({ severity: 'blocker', threadId: 'T1', title: 'Same bug, new words', fingerprint: { file: 'src/x.ts', lineStart: 30, lineEnd: 30, slug: 'same-bug' } }),
       ];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), [makeOpenThread({ severity: 'blocker' })]);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy(priors), [makeOpenThread({ severity: 'blocker' })]);
       expect(result.verdictTrace.unresolvedPriors.map(p => p.title)).toEqual(['Old issue']);
     });
 
@@ -611,9 +601,9 @@ describe('determineOutcome', () => {
       const round2: LegacyHandoverFindingFixture = { ...round1, authorReply: 'agree' };
       const open = [makeOpenThread()];
       // Flat priors come in chronological order (round 1 first, round 2 last).
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy([round1, round2]), open);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy([round1, round2]), open);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     it('collapses multi-round priors by fingerprint when threadId is absent (latest round wins)', () => {
@@ -624,9 +614,9 @@ describe('determineOutcome', () => {
         authorReply: 'none',
       };
       const round2: LegacyHandoverFindingFixture = { ...round1, authorReply: 'agree' };
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy([round1, round2]), []);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy([round1, round2]), []);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     it('keeps the round 2 unresolved state when round 1 had agree and round 2 reopened with none', () => {
@@ -639,7 +629,7 @@ describe('determineOutcome', () => {
       };
       const round2: LegacyHandoverFindingFixture = { ...round1, authorReply: 'none' };
       const open = [makeOpenThread()];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy([round1, round2]), open);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy([round1, round2]), open);
       expect(result.outcome).toBe('ADDRESS_FIRST');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -660,9 +650,9 @@ describe('determineOutcome', () => {
       };
       const round2: LegacyHandoverFindingFixture = { ...round1, authorReply: 'agree', threadId: 'T1' };
       const open = [makeOpenThread()];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy([round1, round2]), open);
+      const result = determineOutcome([note], fingerprintEntriesFromLegacy([round1, round2]), open);
       expect(result.outcome).toBe('READY');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictReason).toBe('only_notes');
     });
 
     describe('`resolvedThreadIds` honors GitHub `isResolved` state', () => {
@@ -677,7 +667,7 @@ describe('determineOutcome', () => {
           new Set(['T1']),
         );
         expect(result.outcome).toBe('READY');
-        expect(result.verdictReason).toBe('only_nit_or_suggestion');
+        expect(result.verdictReason).toBe('only_notes');
       });
 
       it('blocks when a prior thread is not in `resolvedThreadIds` and is still in `openThreads`', () => {
@@ -702,7 +692,7 @@ describe('determineOutcome', () => {
           open,
         );
         expect(result.outcome).toBe('READY');
-        expect(result.verdictReason).toBe('only_nit_or_suggestion');
+        expect(result.verdictReason).toBe('only_notes');
       });
 
       it('blocks on a prior blocker without `threadId` whatever `resolvedThreadIds` holds', () => {
@@ -810,7 +800,7 @@ describe('determineOutcome', () => {
       const priors = fingerprintEntriesFromLegacy([priorBlocker()]);
       const lookup = new Map<string, number>([[stringifyFindingFingerprint(priors[0].fingerprint), 4]]);
       const { verdictTrace, verdictReason } = determineOutcome(
-        [{ severity: 'nitpick', title: 'tiny', file: 'src/y.ts', line: 1, description: 'd', reviewers: ['r'] }],
+        [{ severity: 'note', title: 'tiny', file: 'src/y.ts', line: 1, description: 'd', reviewers: ['r'] }],
         priors,
         [{ ...openThreadFor('T1'), threadUrl: 'https://github.com/o/r/pull/1#discussion_r1' }],
         undefined,
@@ -833,9 +823,9 @@ describe('determineOutcome', () => {
       expect(verdictTrace.survivingBlockers).toEqual([]);
     });
 
-    it('returns all-empty arrays on `only_nit_or_suggestion`', () => {
+    it('returns all-empty arrays on `only_notes`', () => {
       const { verdictTrace } = determineOutcome([
-        { severity: 'nitpick', title: 'Tiny thing', file: 'src/y.ts', line: 1, description: 'd', reviewers: ['r'] },
+        { severity: 'note', title: 'Tiny thing', file: 'src/y.ts', line: 1, description: 'd', reviewers: ['r'] },
       ]);
       expect(verdictTrace).toEqual({ survivingBlockers: [], unresolvedPriors: [] });
     });
@@ -919,42 +909,34 @@ describe('buildReviewerSystemPrompt', () => {
 
   it('mentions review memory in the rules, and lets no suppression hold back a blocker or a security issue', () => {
     const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
-    expect(prompt).toContain('When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one. Memory is the maintainers\' recorded decision, not a claim to check.');
+    expect(prompt).toContain('When review memory is provided, respect its learnings. Leave out a warning or a note that matches a suppression, but report a blocker or a security issue even when it matches one. Memory is the maintainers\' recorded decision, not a claim to check.');
     expect(prompt).not.toContain('intentionally suppressed');
   });
 
-  it('includes severity examples for each level', () => {
+  it('grades by the definitions and the severity table the judge uses, with no examples of its own', () => {
     const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
-    // blocker examples
-    expect(prompt).toContain('SQL injection');
-    expect(prompt).toContain('Null/undefined dereference');
-    expect(prompt).toContain('Off-by-one');
-    // warning examples
-    expect(prompt).toContain('Race condition');
-    expect(prompt).toContain('Missing timeout');
-    // suggestion examples
-    expect(prompt).toContain('const');
-    expect(prompt).toContain('reusable helper');
-    // nitpick examples
-    expect(prompt).toContain('connectionCount');
-    expect(prompt).toContain('import ordering');
-    expect(prompt).toContain('JSDoc');
+    expect(prompt).toContain(`## Grades\n\n${GRADE_DEFINITIONS}\n\n## Severity Table\n\nSet \`severity\` to the grade of the cell that fits the finding: the row is what goes wrong, and the column is when it happens.\n\n${SEVERITY_TABLE}\n\n${OUTSIDE_INPUT_RULE}\n\n## Rules`);
+    expect(prompt).toContain('"severity": "blocker" | "warning" | "note" | "ignore",');
+    expect(prompt).not.toMatch(/Severity Guidelines|SQL injection|suggestion|nitpick/);
+    // The table gives each cell the grade Manki works out from it.
+    const grades = Object.fromEntries([...SEVERITY_TABLE.matchAll(/^\| `(\w+)`: [^|]+\| `(\w+)` \| `(\w+)` \|$/gm)].map(([, row, normal, rare]) => [row, { normal, rare }]));
+    expect(grades).toEqual(CELL_GRADES);
   });
 
-  it('asks every finder for a full search in every round, with brevity only for suggestions and nitpicks', () => {
+  it('asks every finder for a full search in every round, with brevity only for notes', () => {
     const prompt = buildReviewerSystemPrompt(buildFinderAgent([]), makeConfig(), undefined, true);
     expect(prompt).toContain('These rules hold in every round. A later round searches the whole PR as fully as the first one.');
     expect(prompt).toContain('Report every blocker, every warning and every security issue you find in this pass, not only the strongest.');
     expect(prompt).toContain('Follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome');
     expect(prompt).toContain('search the whole PR for the same kind of defect before you report it. Report one finding at the first location, and list every location in `proof` and `evidence`. Never stop at the first instance.');
-    expect(prompt).toContain('Quality over quantity applies to suggestions and nitpicks only. Never leave out a blocker, a warning or a security issue you can back with code.');
+    expect(prompt).toContain('Quality over quantity applies to notes only. Never leave out a blocker, a warning or a security issue you can back with code.');
     expect(prompt).toContain('in unchanged code whose behavior the change breaks');
     expect(prompt).toContain('Look for all of them, not only the first or the worst.');
     // The proof requirement stays.
     expect(prompt).toContain('A `blocker` must list in `proof` the `file:line` of each line that shows the failure.');
     expect(prompt).toContain('Start each line with its `file:line` and quote the key code it refers to in backticks');
     expect(prompt).not.toMatch(/not to explore|Don't comment on unchanged code|only flag issues in the changed code|not pedantic/);
-    expect(buildReviewerSystemPrompt(reviewer, makeConfig())).toContain('Frame every potential suggestion or nitpick through this lens');
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig())).toContain('Frame every potential note through this lens');
     expect(buildReviewerSystemPrompt(reviewer, makeConfig())).toContain('This lens never drops a blocker, a warning or a security issue.');
   });
 
@@ -994,8 +976,8 @@ describe('buildReviewerSystemPrompt', () => {
         expect(prompt).toContain(category);
       }
       expect(prompt).toContain('omit it from your response entirely');
-      expect(prompt).toContain('Do not downgrade it to `nitpick` or `ignore`');
-      for (const grade of ['**blocker**', '**warning**', '**suggestion**', '**nitpick**', '**ignore**']) expect(prompt).toContain(grade);
+      expect(prompt).toContain('Do not downgrade it to `note` or `ignore`');
+      for (const grade of ['**blocker**', '**warning**', '**note**', '**ignore**']) expect(prompt).toContain(grade);
     });
 
     it('matches the prompt snapshot', () => {
@@ -2193,7 +2175,7 @@ describe('runReview', () => {
     const citedElsewhere = { ...elsewhere, title: 'Index key misses the region', line: 70, evidence: ['src/search.ts:70 builds the key'], proof: ['src/search.ts:70'] };
     // Two lines off a cited line, or cited only by a finding the judge dropped, is no place the round judged.
     const nearCited = { ...elsewhere, title: 'Shard key misses the region', line: 72, evidence: ['src/search.ts:72 builds the key'], proof: ['src/search.ts:72'] };
-    const dropped = { severity: 'suggestion', title: 'Rename the helper', file: 'src/retry.ts', line: 9, description: 'd', evidence: ['src/retry.ts:9 names it'], proof: ['src/search.ts:80'] };
+    const dropped = { severity: 'note', title: 'Rename the helper', file: 'src/retry.ts', line: 9, description: 'd', evidence: ['src/retry.ts:9 names it'], proof: ['src/search.ts:80'] };
     const citedByDropped = { ...elsewhere, title: 'Page key misses the region', line: 80, evidence: ['src/search.ts:80 builds the key'], proof: ['src/search.ts:80'] };
     const sweeping = (system: string) => system.startsWith('A code review found the blocker');
     const openThread: OpenThread = { threadId: 'T1', title: 'Search is slow', file: 'src/search.ts', line: 90, severity: 'warning' };
@@ -2208,12 +2190,12 @@ describe('runReview', () => {
       // The sweep's judge call grades one finding as a note and ranks it first of its own notes.
       mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => {
         if (sweepJudgeError) throw sweepJudgeError;
-        return { findings: input.findings.map((f, i) => (i === 1 ? { ...f, severity: 'suggestion' as const, noteRank: 0 } : f)), summary: 'ok' };
+        return { findings: input.findings.map((f, i) => (i === 1 ? { ...f, severity: 'note' as const, noteRank: 0 } : f)), summary: 'ok' };
       });
       // The judge merges the finders' copies of the blocker into one, which the refuters may have disproved.
       const refutation = { outcome: 'disproved' as const, reason: 'Bounded.', files: [], codeDigest: '' };
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
-        findings: input.findings.slice(0, 3).map(f => (disproved && f.severity === 'blocker' ? { ...f, refutation } : f.severity === 'suggestion' ? { ...f, severity: 'ignore' as const } : { ...f, noteRank: 1 })),
+        findings: input.findings.slice(0, 3).map(f => (disproved && f.severity === 'blocker' ? { ...f, refutation } : f.severity === 'note' ? { ...f, severity: 'ignore' as const } : { ...f, noteRank: 1 })),
         summary: 'ok', threadEvaluations: [evaluation],
       }));
       const result = await runReview(clients, { config: makeConfig({ review: { sweep } }), diff: diffChanging('src/cache.ts', 'src/search.ts', 'src/retry.ts'), rawDiff: 'raw diff', repoContext: '', isFollowUp: true, openThreads: [openThread] });
@@ -2243,7 +2225,7 @@ describe('runReview', () => {
     expect(second[2].evaluatedThreads).toEqual({ openThreads: [openThread], evaluations: [evaluation] });
     expect(result.findings.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Search key misses the tenant', 'Shard key misses the region', 'Page key misses the region']);
     // A rank from the sweep's judge call is on another scale, so only the first call's ranks stay.
-    expect(result.findings.map(f => [f.severity, f.noteRank])).toEqual([['blocker', 1], ['warning', 1], ['blocker', undefined], ['suggestion', undefined], ['blocker', undefined]]);
+    expect(result.findings.map(f => [f.severity, f.noteRank])).toEqual([['blocker', 1], ['warning', 1], ['blocker', undefined], ['note', undefined], ['blocker', undefined]]);
     expect(result.allJudgedFindings?.filter(f => f.reviewers.includes(reviewer)).map(f => f.noteRank)).toEqual([undefined, undefined, undefined]);
     expect(result.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
     expect(result.llmCalls?.filter(c => c.stage === 'sweep').map(c => c.agent)).toEqual([reviewer]);
@@ -2299,7 +2281,7 @@ describe('runReview', () => {
     expect(checkpoint).toHaveBeenCalledTimes(2);
     expect(result.verdict).toBe('APPROVE');
     expect(result.outcome).toBe('READY');
-    expect(result.verdictReason).toBe('only_nit_or_suggestion');
+    expect(result.verdictReason).toBe('only_notes');
     expect(result.reviewComplete).toBe(true);
     expect(result.findings).toEqual([]);
     expect(result.verdictReport).toEqual(expect.objectContaining({
@@ -2398,7 +2380,7 @@ describe('runReview', () => {
         leadOf('warning', 'The token may not read the other repository', 'src/a.ts', 1),
         leadOf('warning', 'The retry may loop forever on a 404', 'src/b.ts', 2),
         leadOf('warning', 'The cache may go stale after a deploy', 'src/c.ts', 3),
-        leadOf('suggestion', 'The helper name may confuse a reader', 'src/d.ts', 4),
+        leadOf('note', 'The helper name may confuse a reader', 'src/d.ts', 4),
         leadOf('warning', 'The token may leak into the job log', 'src/c.ts', 9),
         leadOf('blocker', 'The sum may overflow on large input', 'src/b.ts', 8),
       ], true);
@@ -2455,7 +2437,7 @@ describe('runReview', () => {
       const last = buildPriorRound(2, []);
       last.leads = [
         earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'unsettled'),
-        earlier('The helper name may confuse a reader', 'src/d.ts', 'suggestion', 'not_checked'),
+        earlier('The helper name may confuse a reader', 'src/d.ts', 'note', 'not_checked'),
         earlier('The cache may go stale after a deploy', 'src/c.ts', 'warning', 'confirmed', { posted: true }),
         earlier('The file is gone from the pull request', 'src/gone.ts', 'warning', 'unsettled'),
         earlier('The author changed this file since then', 'src/b.ts', 'warning', 'unsettled'),
@@ -2463,7 +2445,7 @@ describe('runReview', () => {
         earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'unsettled'),
       ];
       last.leads.unshift(earlier('The token may not read the other repository', 'src/a.ts', 'warning', 'confirmed', { posted: true }));
-      const clients = leadClients([leadOf('suggestion', 'The helper name may confuse a reader', 'src/d.ts', 7)], true);
+      const clients = leadClients([leadOf('note', 'The helper name may confuse a reader', 'src/d.ts', 7)], true);
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings.map(f => ({ ...f, refutation: refuted('unsettled') })) }));
 
       const result = await runReview(clients, {
@@ -2549,7 +2531,7 @@ describe('runReview', () => {
           severity: 'warning', title: '`join` holds the `tasks` lock while joining, against its doc comment', file: 'src/a.ts', line: 6, description: 'Deadlock.',
           suggestedFix: 'let tasks = take(&mut *lock);', reviewers: ['Finder A', 'Finder B'], evidence: { checks: ['src/a.ts:6 takes the lock'], proof: ['src/a.ts:6', 'src/a.ts:12'] },
         },
-        { severity: 'suggestion', title: 'Rename the helper', file: 'src/a.ts', line: 9, description: 'Clearer.', reviewers: ['Finder A'] },
+        { severity: 'note', title: 'Rename the helper', file: 'src/a.ts', line: 9, description: 'Clearer.', reviewers: ['Finder A'] },
         { severity: 'warning', title: 'The `tasks` lock is never released on error', file: 'src/a.ts', line: 14, description: 'Leaks.', reviewers: ['Finder B'] },
         {
           severity: 'warning', title: '`join` retries the `tasks` lock forever', file: 'src/a.ts', line: 30, description: 'Spins.', reviewers: ['Finder B'],
@@ -2566,7 +2548,7 @@ describe('runReview', () => {
     });
     const folded = await runReview(sameCause, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(folded.findings).toEqual([
-      expect.objectContaining({ severity: 'suggestion', title: 'Rename the helper' }),
+      expect.objectContaining({ severity: 'note', title: 'Rename the helper' }),
       expect.objectContaining({ severity: 'warning', title: 'The `tasks` lock is never released on error' }),
       expect.objectContaining({ severity: 'warning', title: '`join` retries the `tasks` lock forever' }),
       expect.objectContaining({
@@ -2776,7 +2758,7 @@ describe('runReview', () => {
     const run = (clients: ReviewClients) => runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', excludedPaths: ['gen/client.ts'] });
 
     // Only blockers and warnings the judge is highly confident in are posted. The rest stay in the round record.
-    const oldSuggestion = blocker('Old helper could be shorter', 'src/a.ts', 60, { severity: 'suggestion' });
+    const oldSuggestion = blocker('Old helper could be shorter', 'src/a.ts', 60, { severity: 'note' });
     const oldUnsure = blocker('Old retry may spin', 'src/a.ts', 70, { severity: 'warning', judgeConfidence: 'medium' });
     const oldSure = blocker('Old timeout is never cleared', 'src/a.ts', 80, { severity: 'warning', judgeConfidence: 'high' });
     mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile, oldSuggestion, oldUnsure, oldSure], summary: 'Old defects.' });
@@ -2855,7 +2837,7 @@ describe('runReview', () => {
 
     const injection: Finding = { ...warning, title: 'Reply prompt takes injected instructions', line: 7, tags: ['security'] };
     const specialist: Finding = { ...warning, title: 'Token in log', line: 9, reviewers: ['r', 'Security & Safety'] };
-    const specialistNit: Finding = { ...warning, severity: 'nitpick', title: 'Log wording', line: 11, reviewers: ['Security & Safety'] };
+    const specialistNit: Finding = { ...warning, severity: 'note', title: 'Log wording', line: 11, reviewers: ['Security & Safety'] };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning, injection, specialist, specialistNit], summary: 'One security warning.' });
     const secure = await runAtRound(makeClients(), 1);
     expect(secure.outcome).toBe('READY');
@@ -2880,7 +2862,7 @@ describe('runReview', () => {
       },
     );
     expect(priorSecurity.outcome).toBe('READY');
-    expect(priorSecurity.verdictReason).toBe('only_nit_or_suggestion');
+    expect(priorSecurity.verdictReason).toBe('only_notes');
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
     const refusing = makeClients();
@@ -3049,14 +3031,14 @@ describe('runReview', () => {
     expect(await cellsAfter(degraded, touching, 'T9')).toEqual({});
 
     // A thread an earlier partial fix lowered can rise again, up to its own grade, with or without a push to its file.
-    openThread.recordedGrade = 'suggestion';
+    openThread.recordedGrade = 'note';
     expect(await gradeAfter(partly('warning'), touching)).toEqual(['warning', 'READY']);
     expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['warning', 'READY']);
     // Dropping below the grade it carries still needs a push to its file.
     openThread.recordedGrade = 'warning';
-    expect(await gradeAfter(partly('nitpick'), elsewhere)).toEqual(['warning', 'READY']);
-    expect(await gradeAfter(partly('nitpick'), touching)).toEqual(['nitpick', 'READY']);
-    openThread.recordedGrade = 'suggestion';
+    expect(await gradeAfter(partly('note'), elsewhere)).toEqual(['warning', 'READY']);
+    expect(await gradeAfter(partly('note'), touching)).toEqual(['note', 'READY']);
+    openThread.recordedGrade = 'note';
     // It gets its own grade back when a push to its file leaves it open, or when this round names its blocker again.
     const open: ThreadEvaluation = { threadId: 'T1', status: 'not_addressed', reason: 'The timeout is gone again.' };
     expect(await gradeAfter(open, touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
@@ -3084,14 +3066,14 @@ describe('runReview', () => {
     openThread.severity = 'blocker';
     // A grade the judge gives a thread that is not open is dropped, so it can never lower a blocker.
     delete openThread.recordedGrade;
-    expect(await gradeAfter({ ...partly('nitpick'), threadId: 'T9' }, touching)).toEqual([undefined, 'ADDRESS_FIRST']);
+    expect(await gradeAfter({ ...partly('note'), threadId: 'T9' }, touching)).toEqual([undefined, 'ADDRESS_FIRST']);
   });
 
   it('points a finding that restates an earlier finding still open at it, and a variant at its open thread', async () => {
     const prior = buildPriorRound(1, [
       makePriorWarningFinding({ title: 'Retry never ends', fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'retry-never-ends' } }),
       makePriorWarningFinding({ title: 'Cache never cleared', threadId: 'T2', fingerprint: { file: 'src/x.ts', lineStart: 40, lineEnd: 40, slug: 'cache-never-cleared' } }),
-      makePriorWarningFinding({ severity: 'suggestion', title: 'Name is vague', threadId: undefined, fingerprint: { file: 'src/y.ts', lineStart: 5, lineEnd: 5, slug: 'name-is-vague' } }),
+      makePriorWarningFinding({ severity: 'note', title: 'Name is vague', threadId: undefined, fingerprint: { file: 'src/y.ts', lineStart: 5, lineEnd: 5, slug: 'name-is-vague' } }),
     ]);
     const finding = (severity: Finding['severity'], title: string, file: string, line: number, link: Partial<Finding> = {}): Finding => ({ severity, title, file, line, description: 'd', reviewers: ['r'], ...link });
     const findings = [
@@ -3101,9 +3083,9 @@ describe('runReview', () => {
       finding('blocker', 'Retry spins the CPU', 'src/x.ts', 30, { sameAs: 'src/x.ts:10:10:retry-never-ends' }),
       // The static same-problem check links an unlinked finding, in a thread or in an earlier review body.
       finding('warning', 'Retry never ends', 'src/x.ts', 10),
-      finding('suggestion', 'Name is vague', 'src/y.ts', 5),
+      finding('note', 'Name is vague', 'src/y.ts', 5),
       // The dedup model decides a nearby pair the static check leaves apart.
-      finding('suggestion', 'Helper is misnamed', 'src/y.ts', 7),
+      finding('note', 'Helper is misnamed', 'src/y.ts', 7),
       finding('warning', 'File handle leaks', 'src/x.ts', 14),
       // A thread the judge finds addressed takes nothing, and a judge link to it is ignored.
       finding('warning', 'Cache never cleared', 'src/x.ts', 40, { variantOf: 'src/x.ts:40:40:cache-never-cleared' }),
@@ -3171,7 +3153,7 @@ describe('runReview', () => {
       summary: 'Findings.',
       findings: [
         finding('warning', 'Retry also ignores the backoff field', 'src/x.ts', 11, { variantOf: 'src/x.ts:10:10:retry-never-ends' }),
-        finding('suggestion', 'Retry also ignores the backoff field', 'src/x.ts', 12),
+        finding('note', 'Retry also ignores the backoff field', 'src/x.ts', 12),
         finding('warning', 'Retry also ignores the jitter field', 'src/x.ts', 30, { variantOf: 'src/x.ts:10:10:retry-never-ends' }),
       ],
     });
@@ -3451,7 +3433,7 @@ describe('runReview', () => {
     await runReview(firstClients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', memory: null, fileContents, lockfiles });
 
     const laterClients = makeClients();
-    const prior = makePriorWarningFinding({ severity: 'suggestion', title: 'Prior round concern' });
+    const prior = makePriorWarningFinding({ severity: 'note', title: 'Prior round concern' });
     await runReview(
       laterClients, {
         config: makeConfig(),
@@ -3464,7 +3446,7 @@ describe('runReview', () => {
         linkedIssues: [{ number: 7, title: 'Linked issue', body: 'Issue body' }],
         isFollowUp: true,
         openThreads: [],
-        previousFindings: [{ title: 'Prior round concern', file: 'src/x.ts', line: 10, severity: 'suggestion', status: 'resolved', threadId: 'T1' }],
+        previousFindings: [{ title: 'Prior round concern', file: 'src/x.ts', line: 10, severity: 'note', status: 'resolved', threadId: 'T1' }],
         priorRounds: [buildPriorRound(1, [prior]), buildPriorRound(2, [prior])],
         prAuthorLogin: 'author',
         interRoundDiff: 'inter-round delta',
@@ -3550,7 +3532,7 @@ describe('runReview', () => {
 
   it('fires onProgress callback per agent and for judging phase', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'suggestion', title: 'Test', file: 'a.ts', line: 1, description: 'Desc' },
+      { severity: 'note', title: 'Test', file: 'a.ts', line: 1, description: 'Desc' },
     ]);
     const clients = makeClients(findingJson);
     const config = makeConfig();
@@ -3769,7 +3751,7 @@ describe('runReview', () => {
   it('applies memory suppressions after the judge, and never to blockers, security findings or tool alerts', async () => {
     const finder = (title: string, severity: string, file: string) => ({ severity, title, file, line: 10, description: 'Desc.' });
     const findingJson = JSON.stringify([
-      finder('Rename the option flag', 'suggestion', 'src/a.ts'),
+      finder('Rename the option flag', 'note', 'src/a.ts'),
       finder('SQL injection in the query builder', 'warning', 'src/b.ts'),
       // The finder grades it a warning, and the judge a blocker.
       finder('Session cookie survives logout', 'warning', 'src/c.ts'),
@@ -3786,7 +3768,7 @@ describe('runReview', () => {
       ({ severity, title, file, line: 10, description: 'Desc.', reviewers: ['R1'], ...extra });
     mockedRunJudgeAgent.mockResolvedValueOnce({
       findings: [
-        judged('Rename the option flag', 'suggestion', 'src/a.ts'),
+        judged('Rename the option flag', 'note', 'src/a.ts'),
         judged('SQL injection in the query builder', 'warning', 'src/b.ts', { tags: ['security'] }),
         judged('Session cookie survives logout', 'blocker', 'src/c.ts'),
         judged('js/sql-injection: Query built from input', 'warning', 'src/d.ts', { toolSource: 'CodeQL' }),
@@ -3812,15 +3794,15 @@ describe('runReview', () => {
     const memory = { suppressions: [], learnings: [] };
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
-        { severity: 'nitpick', title: 'Missing await', file: 'src/a.ts', line: 3, description: 'd', reviewers: ['R1'] },
-        { severity: 'nitpick', title: 'Typo', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['R1'] },
+        { severity: 'note', title: 'Missing await', file: 'src/a.ts', line: 3, description: 'd', reviewers: ['R1'] },
+        { severity: 'note', title: 'Typo', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['R1'] },
       ],
       summary: 'Two nits.',
     });
 
     const result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', memory });
 
-    expect(result.findings.map(f => f.severity)).toEqual(['nitpick', 'nitpick']);
+    expect(result.findings.map(f => f.severity)).toEqual(['note', 'note']);
     expect(result).not.toHaveProperty('escalationsApplied');
     expect(result.verdict).toBe('APPROVE');
   });
@@ -3979,7 +3961,7 @@ describe('runReview', () => {
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const previousFindings = [
-      { title: 'Unused variable', file: 'src/a.ts', line: 10, severity: 'suggestion' as const, status: 'resolved' as const },
+      { title: 'Unused variable', file: 'src/a.ts', line: 10, severity: 'note' as const, status: 'resolved' as const },
     ];
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'All clear.', inPrSuppressedCount: 1 });
@@ -4023,7 +4005,7 @@ describe('runReview', () => {
         title: 'Unused variable',
         file: 'src/a.ts',
         line: 10,
-        severity: 'suggestion' as const,
+        severity: 'note' as const,
         status: 'replied' as const,
         authorReplyText: 'Fixed, thanks!',
         authorReplyLogin: 'pr-author',
@@ -4091,7 +4073,7 @@ describe('runReview', () => {
 
   it('returns reviewComplete false when judge fails', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'suggestion', title: 'Some code improvement', file: 'src/a.ts', line: 10, description: 'Improve this.' },
+      { severity: 'note', title: 'Some code improvement', file: 'src/a.ts', line: 10, description: 'Improve this.' },
     ]);
     const clients = makeClients(findingJson);
     const config = makeConfig();
@@ -4155,7 +4137,7 @@ describe('runReview', () => {
 
   it('filters out ignored findings from judge result', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'suggestion', title: 'Real finding issue here', file: 'src/a.ts', line: 10, description: 'Desc.' },
+      { severity: 'note', title: 'Real finding issue here', file: 'src/a.ts', line: 10, description: 'Desc.' },
     ]);
     const clients = makeClients(findingJson);
     const config = makeConfig();
@@ -4184,7 +4166,7 @@ describe('runReview', () => {
     expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high']);
   });
 
-  it('returns APPROVE when priorRounds agreed suggestion matches current finding (verdict ceiling)', async () => {
+  it('returns APPROVE when priorRounds agreed note matches current finding (verdict ceiling)', async () => {
     const findingTitle = 'Missing null check';
     const findingFile = 'src/handler.ts';
     const findingLine = 10;
@@ -4193,12 +4175,12 @@ describe('runReview', () => {
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
 
-    // Judge returns the suggestion (it has no visibility into priorRounds for suppression)
+    // Judge returns the note (it has no visibility into priorRounds for suppression)
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
-        { severity: 'suggestion', title: findingTitle, file: findingFile, line: findingLine, description: 'desc', reviewers: ['Security & Safety'] },
+        { severity: 'note', title: findingTitle, file: findingFile, line: findingLine, description: 'desc', reviewers: ['Security & Safety'] },
       ],
-      summary: 'One prior-dismissed suggestion surviving judge.',
+      summary: 'One prior-dismissed note surviving judge.',
     });
 
     const priorRounds: LegacyHandoverRoundFixture[] = [{
@@ -4207,7 +4189,7 @@ describe('runReview', () => {
       timestamp: '2025-01-01T00:00:00Z',
       findings: [{
         fingerprint: { file: findingFile, lineStart: findingLine, lineEnd: findingLine, slug: titleToSlug(findingTitle) },
-        severity: 'suggestion',
+        severity: 'note',
         title: findingTitle,
         authorReply: 'agree',
       }],
@@ -4224,7 +4206,7 @@ describe('runReview', () => {
     );
 
     expect(result.verdict).toBe('APPROVE');
-    expect(result.verdictReason).toBe('only_nit_or_suggestion');
+    expect(result.verdictReason).toBe('only_notes');
     expect(result.reviewComplete).toBe(true);
   });
 
@@ -4259,7 +4241,7 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
   });
 
-  it('returns APPROVE / only_nit_or_suggestion when the prior thread is no longer open on GitHub, ignoring the judge addressed signal', async () => {
+  it('returns APPROVE / only_notes when the prior thread is no longer open on GitHub, ignoring the judge addressed signal', async () => {
     const clients = makeClients('[]');
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -4288,11 +4270,11 @@ describe('runReview', () => {
     );
 
     expect(result.verdict).toBe('APPROVE');
-    expect(result.verdictReason).toBe('only_nit_or_suggestion');
+    expect(result.verdictReason).toBe('only_notes');
     expect(result.reviewComplete).toBe(true);
   });
 
-  it('returns APPROVE / only_nit_or_suggestion when `authorReply` is `agree` even with the prior thread still open', async () => {
+  it('returns APPROVE / only_notes when `authorReply` is `agree` even with the prior thread still open', async () => {
     // Covers the integration path where APPROVE is unblocked by `authorReply`
     // rather than by the thread being absent from `openThreads`. Guards
     // against the `authorReply` field being silently dropped or renamed
@@ -4325,11 +4307,11 @@ describe('runReview', () => {
     );
 
     expect(result.verdict).toBe('APPROVE');
-    expect(result.verdictReason).toBe('only_nit_or_suggestion');
+    expect(result.verdictReason).toBe('only_notes');
     expect(result.reviewComplete).toBe(true);
   });
 
-  it('returns APPROVE / only_nit_or_suggestion when the judge marks a still-open prior warning thread as `addressed` (silent-fix shape)', async () => {
+  it('returns APPROVE / only_notes when the judge marks a still-open prior warning thread as `addressed` (silent-fix shape)', async () => {
     const clients = makeClients('[]');
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -4361,7 +4343,7 @@ describe('runReview', () => {
     );
 
     expect(result.verdict).toBe('APPROVE');
-    expect(result.verdictReason).toBe('only_nit_or_suggestion');
+    expect(result.verdictReason).toBe('only_notes');
     expect(result.reviewComplete).toBe(true);
   });
 
@@ -4442,7 +4424,7 @@ describe('runReview', () => {
     expect(judgeInput.resolvedThreadIds?.has('T1')).toBe(true);
     expect(judgeInput.resolvedThreadIds?.has('T2')).toBe(false);
     expect(result.verdict).toBe('APPROVE');
-    expect(result.verdictReason).toBe('only_nit_or_suggestion');
+    expect(result.verdictReason).toBe('only_notes');
   });
 
   it('uses the planner triage for team size and effort and the judge effort', async () => {
@@ -4686,7 +4668,7 @@ describe('runReview', () => {
 
   it('records every LLM call with its stage, agent, model, tokens and cost, and per-agent durations', async () => {
     const response = JSON.stringify([
-      { severity: 'suggestion', title: 'Test', file: 'a.ts', line: 1, description: 'Desc' },
+      { severity: 'note', title: 'Test', file: 'a.ts', line: 1, description: 'Desc' },
     ]);
     const reviewerSend = jest.fn().mockResolvedValue({
       content: response,
@@ -4735,7 +4717,7 @@ describe('runReview', () => {
     const reviewerSend = jest.fn().mockImplementation(async (_system: string, user: string) => {
       await new Promise(resolve => setTimeout(resolve, 20));
       return {
-        content: JSON.stringify([{ severity: 'suggestion', title: user.includes('+++ b/src/b.ts') ? 'In b' : 'In a', file: user.includes('+++ b/src/b.ts') ? 'src/b.ts' : 'src/a.ts', line: 1, description: 'Desc' }]),
+        content: JSON.stringify([{ severity: 'note', title: user.includes('+++ b/src/b.ts') ? 'In b' : 'In a', file: user.includes('+++ b/src/b.ts') ? 'src/b.ts' : 'src/a.ts', line: 1, description: 'Desc' }]),
         usage: { inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
         latencyMs: 1,
       };
@@ -4862,7 +4844,7 @@ describe('runReview', () => {
 
   it('includes agentResponseLengths in result', async () => {
     const response = JSON.stringify([
-      { severity: 'suggestion', title: 'Test', file: 'a.ts', line: 1, description: 'Desc' },
+      { severity: 'note', title: 'Test', file: 'a.ts', line: 1, description: 'Desc' },
     ]);
     const clients = makeClients(response);
     const config = makeConfig();
@@ -4870,7 +4852,7 @@ describe('runReview', () => {
 
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
-        { severity: 'suggestion', title: 'Test', file: 'a.ts', line: 1, description: 'Desc', reviewers: ['Security & Safety'] },
+        { severity: 'note', title: 'Test', file: 'a.ts', line: 1, description: 'Desc', reviewers: ['Security & Safety'] },
       ],
       summary: 'One finding.',
     });
@@ -4895,7 +4877,7 @@ describe('runReview', () => {
 
   it('retries a failed finder and completes when the retry succeeds', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'suggestion', title: 'Found something', file: 'src/a.ts', line: 5, description: 'Desc.' },
+      { severity: 'note', title: 'Found something', file: 'src/a.ts', line: 5, description: 'Desc.' },
     ]);
     const pair = jest.fn()
       .mockRejectedValueOnce(new Error('Timeout'))
@@ -5167,12 +5149,12 @@ describe('runReview post-judge suppression', () => {
     jest.mocked(applySuppressions).mockReturnValue({ kept: [], suppressed: [] });
   });
 
-  it('drops a suggestion finding on a test file in round 2, never a security finding or a tool alert', async () => {
+  it('drops a note on a test file in round 2, never a security finding or a tool alert', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
-        makeFinding({ severity: 'suggestion', file: 'src/foo.test.ts', title: 'Could simplify' }),
-        makeFinding({ severity: 'suggestion', file: 'src/foo.test.ts', title: 'Token logged in a fixture', tags: ['security'] }),
-        makeFinding({ severity: 'nitpick', file: 'src/foo.test.ts', title: 'Unused import', toolSource: 'eslint' }),
+        makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Could simplify' }),
+        makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Token logged in a fixture', tags: ['security'] }),
+        makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Unused import', toolSource: 'eslint' }),
       ],
       summary: 'ok',
     });
@@ -5189,9 +5171,9 @@ describe('runReview post-judge suppression', () => {
     expect(result.testNitSuppressedCount).toBe(1);
   });
 
-  it('keeps a suggestion finding on a test file in round 1', async () => {
+  it('keeps a note on a test file in round 1', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
-      findings: [makeFinding({ severity: 'suggestion', file: 'src/foo.test.ts', title: 'Could simplify' })],
+      findings: [makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Could simplify' })],
       summary: 'ok',
     });
     const result = await runReview(
@@ -5224,9 +5206,9 @@ describe('runReview post-judge suppression', () => {
     expect(result.findings[0].severity).toBe('blocker');
   });
 
-  it('keeps a suggestion finding on a non-test file in round 2', async () => {
+  it('keeps a note on a non-test file in round 2', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
-      findings: [makeFinding({ severity: 'suggestion', file: 'src/app.ts', title: 'Could simplify' })],
+      findings: [makeFinding({ severity: 'note', file: 'src/app.ts', title: 'Could simplify' })],
       summary: 'ok',
     });
     const result = await runReview(
@@ -5243,7 +5225,7 @@ describe('runReview post-judge suppression', () => {
 
   it('honours configurable test_path_patterns', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
-      findings: [makeFinding({ severity: 'nitpick', file: 'spec/integration.rb', title: 'Style nit' })],
+      findings: [makeFinding({ severity: 'note', file: 'spec/integration.rb', title: 'Style nit' })],
       summary: 'ok',
     });
     const result = await runReview(
@@ -5262,7 +5244,7 @@ describe('runReview post-judge suppression', () => {
 
   it('does not suppress when test_path_patterns is empty', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
-      findings: [makeFinding({ severity: 'suggestion', file: 'src/foo.test.ts', title: 'Could simplify' })],
+      findings: [makeFinding({ severity: 'note', file: 'src/foo.test.ts', title: 'Could simplify' })],
       summary: 'ok',
     });
     const result = await runReview(
@@ -5278,17 +5260,17 @@ describe('runReview post-judge suppression', () => {
     expect(result.findings).toHaveLength(1);
   });
 
-  it('drops a suggestion or nitpick a CI tool already reports on the same line, and keeps warnings, blockers, security findings and those an analyzer reports', async () => {
+  it('drops a note a CI tool already reports on the same line, and keeps warnings, blockers, security findings and those an analyzer reports', async () => {
     const lint = { tool: 'lint', ruleId: 'no-unused-vars', severity: 'error' as const, file: 'src/a.ts', line: 10, message: 'x is unused', source: 'checks' as const };
     const astGrep = { ...lint, tool: 'ast-grep', ruleId: 'self-assignment', severity: 'warning' as const, line: 11, message: 'Assigns a value to itself', source: 'ast_grep' as const };
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
-        makeFinding({ severity: 'suggestion', title: 'Unused variable' }),
-        makeFinding({ severity: 'nitpick', title: 'Unused import' }),
+        makeFinding({ severity: 'note', title: 'Unused variable' }),
+        makeFinding({ severity: 'note', title: 'Unused import' }),
         makeFinding({ severity: 'warning', title: 'Off-by-one in loop' }),
         makeFinding({ severity: 'blocker', title: 'Null dereference' }),
-        makeFinding({ severity: 'suggestion', title: 'Token in log', tags: [SECURITY_TAG] }),
-        makeFinding({ severity: 'suggestion', title: 'Rename', line: 11 }),
+        makeFinding({ severity: 'note', title: 'Token in log', tags: [SECURITY_TAG] }),
+        makeFinding({ severity: 'note', title: 'Rename', line: 11 }),
       ],
       summary: 'ok',
     });
@@ -5324,7 +5306,7 @@ describe('runReview post-judge suppression', () => {
     ]) });
     const judgeGrades: Record<string, Finding['severity']> = { 'js/redos: Inefficient regular expression': 'ignore' };
     mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
-      findings: input.findings.map(f => ({ ...f, severity: judgeGrades[f.title] ?? (f.toolSource ? 'suggestion' : f.severity) })),
+      findings: input.findings.map(f => ({ ...f, severity: judgeGrades[f.title] ?? (f.toolSource ? 'note' : f.severity) })),
       summary: 'ok',
     }));
 
@@ -5347,7 +5329,7 @@ describe('runReview post-judge suppression', () => {
     ]);
     // The kept alert sits on the same line as its own signal and stays, the refuted one is never posted.
     expect(result.findings.map(f => [f.title, f.severity])).toEqual([
-      ['js/sql-injection: Query built from user input', 'suggestion'],
+      ['js/sql-injection: Query built from user input', 'note'],
       ['Unchecked result', 'warning'],
       ['Stale cache', 'warning'],
     ]);
@@ -6131,7 +6113,7 @@ describe('carryBodyWarnings', () => {
   it('ends a carried warning that a finding of the round names, and records how that finding ended', async () => {
     const named = await carry([first], then, {
       findings: [finding('Loop has no cap', 80, { sameAs: keyOf(retry) })],
-      unpostedNotes: [finding('Nothing is returned', 3, { severity: 'suggestion' })],
+      unpostedNotes: [finding('Nothing is returned', 3, { severity: 'note' })],
       allJudgedFindings: [finding('Check runs twice', 2, { severity: 'ignore', file: 'src/y.ts' })],
     });
     expect([named.titles, named.ended]).toEqual([undefined, ['restated', 'hidden_note', 'judge_dropped']]);
