@@ -525,11 +525,12 @@ describe('refuteBlockers', () => {
       workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'rare' }, doubts: [REACH_DOUBT] }), diff,
     });
     expect([recelled.severity, recelled.cell]).toEqual(['blocker', { row: 'wrong', column: 'normal', judgeColumn: 'rare' }]);
-    // An earlier `rare` cell stored without the claim of that column never rises on another confirmed doubt.
+    // An earlier `rare` cell stored without the claim of that column gets it, and never rises on another confirmed doubt alone.
     const [unclaimed] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
       workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'rare' } }), diff,
     });
-    expect([unclaimed.severity, unclaimed.cell, unclaimed.refutation?.outcome]).toEqual(['warning', { row: 'wrong', column: 'rare' }, 'confirmed']);
+    expect([unclaimed.severity, unclaimed.cell, unclaimed.doubts]).toEqual(['warning', { row: 'wrong', column: 'rare' }, [...doubts, REACH_DOUBT]]);
+    expect(unclaimed.refutation?.premises?.map(p => p.outcome)).toEqual(['confirmed', 'unsettled']);
     // A stored cell the table does not know, as another Manki version could write, counts as none.
     const [unknown] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
       workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'serious', column: 'rare' } }), diff,

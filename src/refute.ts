@@ -11,7 +11,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { cellGrade, columnDecidesBlock, Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, isGradeCell, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
+import { cellGrade, columnDecidesBlock, Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, isGradeCell, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -307,7 +307,10 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
   if (settled) return finding;
   core.info(`"${finding.title}" keeps a grade an earlier round capped with an open doubt, so it is checked again`);
   const { cell: _cell, ...kept } = finding;
-  return { ...kept, gradeIfConfirmed: prior.gradeIfConfirmed, ...(prior.doubts && { doubts: prior.doubts }), ...(isGradeCell(prior.cell) && { cell: prior.cell }) };
+  const cell = isGradeCell(prior.cell) ? prior.cell : undefined;
+  // Only `REACH_DOUBT` lifts the `rare` column, and an earlier record can lack it.
+  const doubts = cell && columnDecidesBlock(cell.row) && cell.column === 'rare' ? withReachDoubt(prior.doubts) : prior.doubts;
+  return { ...kept, gradeIfConfirmed: prior.gradeIfConfirmed, ...(doubts && { doubts }), ...(cell && { cell }) };
 }
 
 export interface RefuteOptions {

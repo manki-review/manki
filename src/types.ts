@@ -488,6 +488,11 @@ export interface Doubt {
  */
 export const REACH_DOUBT: Doubt = { premise: 'Normal use or outside input can produce the state this failure needs', decides: 'grade' };
 
+/** Returns `doubts` with `REACH_DOUBT` in place of any doubt that words the same premise. */
+export function withReachDoubt(doubts: readonly Doubt[] = []): Doubt[] {
+  return [...doubts.filter(d => d.premise !== REACH_DOUBT.premise), REACH_DOUBT];
+}
+
 /** How a refuter answered one premise the judge doubts. */
 export interface PremiseCheck {
   premise: string;

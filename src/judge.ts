@@ -25,7 +25,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, IN_PR_SUPPRESSED_TAG, isGradeCell, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG } from './types';
+import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, IN_PR_SUPPRESSED_TAG, isGradeCell, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1587,7 +1587,7 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const checkedRare = columnDecidesBlock(row) && column === 'rare';
   const counted = columnDecidesBlock(row) ? named : named.filter(d => d.decides === 'defect');
   // A doubt the judge names can be about anything, so only `REACH_DOUBT` stands for the claim the `rare` column makes.
-  const doubts = checkedRare ? [...counted.filter(d => d.premise !== REACH_DOUBT.premise), REACH_DOUBT] : counted;
+  const doubts = checkedRare ? withReachDoubt(counted) : counted;
   if (doubts.length === 0) return { ...gradeStep(o, stated, 'judge'), cell };
   const heldDown = stated === 'blocker' && !isSecurity;
   return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge'), cell, gradeIfConfirmed: cellGrade(row, checkedRare ? 'normal' : column), doubts };
