@@ -2334,6 +2334,9 @@ describe('parseFindingFromComment', () => {
   it('extracts the description of a not-blocking, low-confidence comment from `formatFindingComment`', () => {
     const body = formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], judgeConfidence: 'low' }, TEST_LINKS);
     expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+    const unconfirmed = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], unconfirmed: true }, TEST_LINKS);
+    expect(unconfirmed).toContain('_Manki could not confirm this, so please check it._');
+    expect(parseFindingFromComment(unconfirmed)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     // The issue box, and the link that replaces it once ticked, are not part of the description.
     expect(body).toContain('Create an issue for this');
     const filed = body.replace(/- \[ \] Create an issue for this[^\n]*/, 'Issue #12 created by @bob');

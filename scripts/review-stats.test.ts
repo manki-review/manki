@@ -208,7 +208,9 @@ describe('review stats', () => {
         }, makeFindingFingerprintEntry({ severity: 'note' }), {
           // The reason a note was left out counts ahead of a pre-existing claim the diff contradicted.
           ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'reviewed', unpostedReason: 'reviewed_code', preExisting: { reason: 'Old.', check: 'touches_diff' },
-        }, { ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'earlier', raisedIn: 1, unpostedReason: 'listed_earlier' }, { ...makeFindingFingerprintEntry({ severity: 'note' }), unpostedReason: 'note_cap', posted: 'record' }],
+        }, { ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'earlier', raisedIn: 1, unpostedReason: 'listed_earlier' }, { ...makeFindingFingerprintEntry({ severity: 'note' }), unpostedReason: 'note_cap', posted: 'record' },
+        // A warning nothing proves counts under what kept it unproven.
+        ...(['unsettled_check', 'not_checked', 'not_checked', 'no_proof'] as const).map(unpostedReason => ({ ...makeFindingFingerprintEntry({ severity: 'warning' }), unpostedReason, posted: 'record' as const }))],
         carried: [{ ...makeFindingFingerprintEntry({ severity: 'warning' }), raisedIn: 1 }],
         carriedEnded: [{ key: 'src/a.ts:3:3:x', reason: 'line_changed' }, { key: 'src/a.ts:4:4:y', reason: 'line_changed' }, { key: 'src/a.ts:5:5:z', reason: 'judge_dropped' }],
       },
@@ -269,6 +271,7 @@ describe('review stats', () => {
       'Findings recorded without posting (per reason and severity)': {
         'memory_suppression, note': 1, 'pre_existing, note': 1, 'no reason recorded, note': 1,
         'reviewed_code, note': 1, 'listed_earlier, note': 1, 'note_cap, note': 1,
+        'unsettled_check, warning': 1, 'not_checked, warning': 2, 'no_proof, warning': 1,
         'in_pr_suppression, warning': 1, 'ratchet, warning': 1, 'ratchet, severity not recorded': 1, 'resolved_thread, severity not recorded': 3,
         'own_proposal, severity not recorded': 4, 'test_file, severity not recorded': 5, 'static_signal, severity not recorded': 1,
       },

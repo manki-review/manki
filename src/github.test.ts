@@ -87,6 +87,10 @@ describe('formatFindingComment', () => {
     const comment = render({ ...baseFinding, severity: 'warning', judgeConfidence: 'low' });
     expect(comment.startsWith(`\u26A0\uFE0F **Warning**\n\n**${baseFinding.title}**\n\n_Manki is not sure this applies, so please check it._\n\n**What goes wrong:** ${baseFinding.description}`)).toBe(true);
     expect(comment).not.toMatch(/\u{1F534}|\u{1F7E0}|\u{1F7E1}/u);
+    // A warning nothing confirmed says that in place of the confidence note.
+    const unconfirmed = render({ ...baseFinding, severity: 'warning', judgeConfidence: 'low', unconfirmed: true });
+    expect(unconfirmed.startsWith(`\u26A0\uFE0F **Warning**\n\n**${baseFinding.title}**\n\n_Manki could not confirm this, so please check it._\n\n**What goes wrong:** ${baseFinding.description}`)).toBe(true);
+    expect(unconfirmed).not.toContain('is not sure this applies');
   });
 
   it('renders a short code fix as a suggestion block', () => {
@@ -3227,6 +3231,7 @@ describe('updateProgressComment', () => {
       { title: 'Null dereference', severity: 'blocker', reasoning: 'Valid bug', confidence: 'high', kept: true },
       { title: 'Style nitpick', severity: 'ignore', reasoning: 'Intentional pattern', confidence: 'medium', kept: false },
       { title: 'Rename', severity: 'note', reasoning: 'Clearer', confidence: 'high', kept: false, unpostedReason: 'reviewed_code' },
+      { title: 'Slow path', severity: 'warning', reasoning: 'May be slow', confidence: 'medium', kept: false, unpostedReason: 'unsettled_check' },
     ],
     timing: {
       parseMs: 500,
@@ -3315,6 +3320,7 @@ describe('updateProgressComment', () => {
     expect(body).toContain('- Dropped: "Style nitpick"');
     expect(body).toContain('(ignore, medium confidence)');
     expect(body).toContain('- Not listed, on code an earlier round reviewed: "Rename" (note, high confidence): "Clearer"');
+    expect(body).toContain('- Not listed, a tool check could not confirm it: "Slow path" (warning, medium confidence): "May be slow"');
   });
 
   it('does not render recap section in metadata', async () => {
@@ -4450,6 +4456,15 @@ describe('postReview non-blocking findings', () => {
     expect(uncapped).not.toContain('not listed');
     expect(`${under}${alone}`).not.toContain('Left out');
     expect(review.body).not.toContain('not listed');
+
+    // A line of its own counts the warnings left out because nothing proves them, and says where each is named.
+    const unproven = [nonBlocking('warning', 'Unsettled', 15, { unpostedReason: 'unsettled_check' }), nonBlocking('warning', 'Unchecked', 16, { unpostedReason: 'not_checked' }), nonBlocking('warning', 'Uncited', 17, { unpostedReason: 'no_proof' })];
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: [unproven[0], ...leftOut] }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: unproven }, diff);
+    const [one, three] = createReview.mock.calls.slice(-2).map(call => call[0].body as string);
+    expect(one).toMatch(/^Summary\n\n---\n\n<sub>1 warning is not listed, since nothing proves it\. The progress comment names it under "Judge decisions"\.<\/sub>\n\n---\n\n<sub>2 notes are not listed\.<\/sub>/);
+    expect(three).toMatch(/^Summary\n\n---\n\n<sub>3 warnings are not listed, since nothing proves them\. The progress comment names each under "Judge decisions"\.<\/sub>/);
+    expect(`${one}${three}`).not.toMatch(/Unsettled|Unchecked|Uncited/);
   });
 
   it('posts at most five non-blocking findings inline, most severe first, and lists the rest', async () => {

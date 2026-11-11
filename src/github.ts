@@ -6,7 +6,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { DEFAULT_NOTES, loadConfig } from './config';
-import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, UNPROVEN_REASONS, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -1180,6 +1180,12 @@ const SEVERITY_EMOJI: Record<FindingSeverity, string> = {
 
 /** Shown under a finding the judge kept with low confidence. */
 const LOW_CONFIDENCE_NOTE = '_Manki is not sure this applies, so please check it._';
+const UNCONFIRMED_NOTE = '_Manki could not confirm this, so please check it._';
+
+/** Returns the line that tells a reader how far to trust `finding`, when one applies. A warning nothing proves says so first. */
+function trustNote(finding: Finding): string | undefined {
+  return finding.unconfirmed ? UNCONFIRMED_NOTE : finding.judgeConfidence === 'low' ? LOW_CONFIDENCE_NOTE : undefined;
+}
 
 /** Non-blocking findings posted as line comments per review. The rest go in the body list. A note is never one of them. */
 const MAX_NON_BLOCKING_INLINE = 5;
@@ -1268,7 +1274,8 @@ function labelDescription(finding: Finding, description: string): string {
 
 /** Returns the low confidence note and what goes wrong, as listed under a finding in the review body. */
 function formatFindingDescription(finding: Finding): string[] {
-  const lines = finding.judgeConfidence === 'low' ? [LOW_CONFIDENCE_NOTE] : [];
+  const note = trustNote(finding);
+  const lines = note ? [note] : [];
   const description = sanitizeMarkdown(finding.description).trim();
   if (description) lines.push(labelDescription(finding, description));
   return lines;
@@ -1515,6 +1522,12 @@ function isListedNote(finding: Finding): boolean {
   return isNote(finding.severity) && !isSecurityFinding(finding.tags, finding.reviewers);
 }
 
+/** Returns the line that says how many warnings of `unposted` the review leaves out because nothing proves them, and where to find them. */
+function formatUnprovenLine(unposted: Finding[]): string | null {
+  const unproven = unposted.filter(f => UNPROVEN_REASONS.some(reason => reason === f.unpostedReason)).length;
+  return unproven > 0 ? `<sub>${unproven} ${unproven === 1 ? 'warning is' : 'warnings are'} not listed, since nothing proves ${unproven === 1 ? 'it' : 'them'}. The progress comment names ${unproven === 1 ? 'it' : 'each'} under "Judge decisions".</sub>` : null;
+}
+
 /**
  * Returns the notes of a review as one collapsed section, a fold per note, in the order given. A line under it says
  * how many notes of `unposted` are over the `review.notes` limit.
@@ -1708,6 +1721,7 @@ export async function postReview(
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
       formatCarriedWarnings(carried),
+      formatUnprovenLine(result.unposted ?? []),
       formatNotesSection(notes, result.unposted ?? [], links),
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
@@ -2761,7 +2775,8 @@ function issueBoxFor(finding: Finding): string {
 
 function formatFindingComment(finding: Finding, links: CodeLinks): string {
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
-  if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
+  const note = trustNote(finding);
+  if (note) comment += `${note}\n\n`;
   // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold.
   const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
   const suggestion = suggestionBlock(fixParts);
@@ -3277,5 +3292,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

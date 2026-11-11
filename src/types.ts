@@ -167,7 +167,7 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
   return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
 }
 
-/** Whether a step may leave the finding out of the review. Only a note can be left out, and never a security finding or a tool alert. */
+/** Whether a step that leaves out notes may leave the finding out of the review: only a note, and never a security finding or a tool alert. */
 export function canLeaveOut(f: Finding): boolean {
   return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers);
 }
@@ -347,8 +347,10 @@ export interface Finding {
   pairRefutation?: Refutation;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;
-  /** Why the review leaves the note out. Only the round record keeps such a note. */
+  /** Why the review leaves the finding out. Only the round record keeps such a finding. */
   unpostedReason?: UnpostedReason;
+  /** Set on a warning nothing proves that is posted all the same, because it would be a blocker if it holds. */
+  unconfirmed?: true;
   /** The finding's place in the judge's order of the notes, 0 for the one the author gains most from. Unset when the judge did not rank it. */
   noteRank?: number;
   /** Why the defect exists without this PR's change, when the reviewer says so. The judge must keep it, or it is cleared. */
@@ -630,7 +632,7 @@ export interface Refutation {
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note, and the last three on a warning nothing proves. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
@@ -638,8 +640,14 @@ export const UNPOSTED_REASONS = {
   pre_existing: 'on code this PR did not change',
   memory_suppression: 'hidden by a memory suppression',
   static_signal_match: 'a CI tool reports the same line',
+  unsettled_check: 'a tool check could not confirm it',
+  not_checked: 'nothing proves it and no tool check ran on it',
+  no_proof: 'it cites no lines that prove it',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
+/** Why nothing proves a warning: a check ran and settled nothing, no check ran, or the round checks nothing and no line is cited. */
+export const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof'] as const satisfies readonly UnpostedReason[];
+export type UnprovenReason = typeof UNPROVEN_REASONS[number];
 
 /** Where a round put a finding: a thread of its own, the review body, an earlier thread that carries it, or the round record only. */
 export type PostedPlace = 'thread' | 'body' | 'earlier_thread' | 'record';

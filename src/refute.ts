@@ -12,7 +12,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { cellGrade, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
+import { cellGrade, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -28,14 +28,17 @@ const OUTCOMES: readonly RefutationOutcome[] = ['disproved', 'confirmed', 'unset
 const LINE_TOLERANCE = 5;
 // Blockers posted as warnings for want of proof a tool could find.
 const CHECKED_TAGS: readonly string[] = [UNPROVEN_TAG, UNBUILT_TAG];
-// Findings checked for a doubt whether the defect exists, at the grade the judge kept. Every other check runs uncapped.
-const MAX_DOUBT_CHECKS = 4;
+/**
+ * The warnings a round checks because nothing proves them yet, one refuter call each. Every other check runs uncapped.
+ * A round posts about one warning on average, so this binds only on a round with many unproven ones.
+ */
+export const MAX_DOUBT_CHECKS = 8;
 
 type RefutationField = 'refutation' | 'pairRefutation';
 
 const REFUTE_SYSTEM_PROMPT = `You check one finding a code review raised on a pull request, using read-only tools on the PR's head commit.
 
-The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, or a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade. Try to refute it, then follow the failure path from its trigger to the damage.
+The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, a warning no cited line proves, or a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade. Try to refute it, then follow the failure path from its trigger to the damage.
 
 To refute it:
 - Look for a concrete reason the failure cannot happen, such as an earlier check, a type or an existing test.
@@ -130,6 +133,7 @@ function findingKind(finding: Finding): string {
   if (finding.lead) return 'Open lead';
   if (finding.gradeIfConfirmed) return 'Finding the judge could not settle without tools';
   if (finding.tags?.includes(UNBUILT_TAG)) return 'Claimed build failure';
+  if (finding.severity === 'warning' && !finding.tags?.includes(UNPROVEN_TAG)) return 'Warning no cited line proves';
   return 'Blocker';
 }
 
@@ -316,21 +320,44 @@ function alwaysChecked(finding: Finding): boolean {
     || (!!finding.gradeIfConfirmed && rank(finding.gradeIfConfirmed) < rank(finding.severity));
 }
 
+const doubtsDefect = (finding: Finding): boolean => !!finding.doubts?.some(d => d.decides === 'defect');
+const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.length;
+
 /**
- * Returns the findings the judge kept at their grade with a doubt whether the defect exists, to check with tools: those
- * at `warning` or above, at most `MAX_DOUBT_CHECKS`, the highest grade first. A finding the judge would grade higher if
- * its doubts hold is always checked, since that check is how a warning becomes a blocker. A finding `hidden` accepts
- * is left out.
+ * Returns the warnings to check with tools because nothing proves them yet, at most `MAX_DOUBT_CHECKS`, in the order
+ * given: one the judge kept with a doubt whether the defect exists, and one no cited line proves. A finding the judge
+ * would grade higher if its doubts hold is always checked, since that check is how a warning becomes a blocker. A tool
+ * alert and a finding `hidden` accepts are left out, and a security finding is checked only for a doubt.
  */
 function doubtsToCheck(findings: readonly Finding[], hidden?: (finding: Finding) => boolean): Finding[] {
-  const doubted = findings
-    .filter(f => f.severity !== 'ignore' && !alwaysChecked(f) && f.gradeIfConfirmed && rank(f.gradeIfConfirmed) <= rank('warning')
-      && !!f.doubts?.some(d => d.decides === 'defect') && !hidden?.(f))
-    .sort((a, b) => rank(a.severity) - rank(b.severity));
-  for (const skipped of doubted.slice(MAX_DOUBT_CHECKS)) {
-    core.info(`Not checking the doubt on "${skipped.title}", since ${MAX_DOUBT_CHECKS} findings with higher grades took this round's checks`);
+  const unproven = findings.filter(f => f.severity === 'warning' && !alwaysChecked(f) && !f.toolSource
+    && (doubtsDefect(f) || (citesNoProof(f) && !isSecurityFinding(f.tags, f.reviewers))) && !hidden?.(f));
+  for (const skipped of unproven.slice(MAX_DOUBT_CHECKS)) {
+    core.info(`Not checking "${skipped.title}", since ${MAX_DOUBT_CHECKS} other unproven warnings took this round's checks`);
   }
-  return doubted.slice(0, MAX_DOUBT_CHECKS);
+  return unproven.slice(0, MAX_DOUBT_CHECKS);
+}
+
+/** Whether `check` confirms that the defect of `finding` exists: the whole finding, or every premise the defect rests on. */
+function confirmsDefect(finding: Finding, check: Refutation): boolean {
+  if (check.outcome === 'confirmed') return true;
+  const decisive = (check.premises ?? []).filter(p => finding.doubts?.some(d => d.premise === p.premise && d.decides === 'defect'));
+  return decisive.length > 0 && decisive.every(p => p.outcome === 'confirmed');
+}
+
+/**
+ * Returns why nothing proves the warning `finding`, or undefined when something does. One check that confirms the
+ * defect proves it, whatever a second check says. Otherwise, on a round whose findings a refuter checks, a warning is
+ * unproven when the judge doubts its defect exists or no cited line proves it. On a round without one, only the cited
+ * lines decide. A blocker posted as a warning for want of proof stays unproven until a check confirms it.
+ */
+export function unprovenReason(finding: Finding, refuterRan: boolean): UnprovenReason | undefined {
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
+  if (checks.some(check => confirmsDefect(finding, check))) return undefined;
+  const capped = !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag));
+  if (!refuterRan) return capped || citesNoProof(finding) ? 'no_proof' : undefined;
+  if (!capped && !doubtsDefect(finding) && !citesNoProof(finding)) return undefined;
+  return checks.length > 0 ? 'unsettled_check' : 'not_checked';
 }
 
 /**

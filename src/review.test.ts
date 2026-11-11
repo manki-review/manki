@@ -2482,6 +2482,85 @@ describe('runReview', () => {
     });
   });
 
+  describe('unproven warnings', () => {
+    const diff = { ...diffChanging('src/a.ts', 'src/b.ts'), totalAdditions: 10, totalDeletions: 5 };
+    const doubts = [{ premise: 'The caller holds no lock', decides: 'defect' as const }];
+    const checked = (outcome: 'confirmed' | 'unsettled') => ({ refutation: { outcome, reason: `It is ${outcome}.`, files: ['src/a.ts'], codeDigest: 'abc' } });
+    const proof = { evidence: { checks: [], proof: ['src/a.ts:1'] } };
+    /** Runs a round whose judge returns one finding per entry of `judged`, by title, with or without repository tools. */
+    const review = async (judged: Record<string, Partial<Finding>>, tools: boolean) => {
+      const clients = makeClients();
+      if (tools) Object.assign(clients.judge, { repoTools: true });
+      const reported = Object.keys(judged).map((title, i) => ({ severity: 'warning', title, file: i % 2 ? 'src/b.ts' : 'src/a.ts', line: 10 * (i + 1), description: `${title}.` }));
+      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(reported) });
+      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings.map(f => ({ ...f, ...judged[f.title] })) }));
+      return runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', ...(tools && { workspace: '/work/pr-head' }) });
+    };
+    const shown = (result: Awaited<ReturnType<typeof runReview>>) => result.findings.map(f => [f.title, f.unconfirmed]);
+    const recordedOnly = (result: Awaited<ReturnType<typeof runReview>>) => result.unposted?.map(f => [f.title, f.severity, f.unpostedReason]);
+
+    it('posts a warning only when cited lines or a tool check prove it, and records the others with the reason', async () => {
+      const result = await review({
+        'Cited lines show it': proof,
+        'The check confirmed the doubt': { ...proof, doubts, ...checked('confirmed') },
+        'The check confirmed it without cited lines': checked('confirmed'),
+        'The check settled nothing': { ...proof, doubts, ...checked('unsettled') },
+        'Doubted and past the limit of checks': { ...proof, doubts },
+        'No cited lines and never checked': {},
+        // Only a warning is left out.
+        'A doubted note': { severity: 'note', doubts },
+        'A blocker': { severity: 'blocker', ...proof },
+      }, true);
+
+      expect(shown(result)).toEqual([
+        ['Cited lines show it', undefined], ['The check confirmed the doubt', undefined], ['The check confirmed it without cited lines', undefined],
+        ['A doubted note', undefined], ['A blocker', undefined],
+      ]);
+      expect(recordedOnly(result)).toEqual([
+        ['The check settled nothing', 'warning', 'unsettled_check'],
+        ['Doubted and past the limit of checks', 'warning', 'not_checked'],
+        ['No cited lines and never checked', 'warning', 'not_checked'],
+      ]);
+      // The judged list still holds each one, so the progress comment can name it.
+      expect(result.allJudgedFindings?.map(f => f.title)).toEqual(expect.arrayContaining(['The check settled nothing', 'No cited lines and never checked']));
+      // A warning never blocks, so leaving one out changes no outcome.
+      expect(result.outcome).toBe('ADDRESS_FIRST');
+    });
+
+    it('never leaves out a finding that would be a blocker if true, a security finding or a tool alert', async () => {
+      const lowered = (by: 'unproven' | 'build_claim' | 'refutation' | 'judge') => ({ gradePath: [{ from: 'blocker' as const, to: 'warning' as const, by }] });
+      const result = await review({
+        'The judge held a blocker cell down': { ...proof, doubts, gradeIfConfirmed: 'blocker', ...checked('unsettled') },
+        'A blocker without cited lines': { tags: ['unproven-blocker'], ...lowered('unproven'), ...checked('unsettled') },
+        'A build failure no CI result reports': { ...proof, tags: ['unconfirmed-build-claim'], ...lowered('build_claim') },
+        'A finder filed it as a blocker': { doubts, reviewerSeverity: 'blocker' },
+        'A blocker the judge lowered': { doubts, ...lowered('judge') },
+        'A security finding': { tags: [SECURITY_TAG], doubts },
+        'A tool alert': { toolSource: 'CodeQL' },
+        'A warning nothing proves': { doubts },
+      }, true);
+
+      expect(shown(result)).toEqual([
+        ['The judge held a blocker cell down', true], ['A blocker without cited lines', true], ['A build failure no CI result reports', true],
+        ['A finder filed it as a blocker', true], ['A blocker the judge lowered', true], ['A security finding', undefined], ['A tool alert', undefined],
+      ]);
+      expect(recordedOnly(result)).toEqual([['A warning nothing proves', 'warning', 'not_checked']]);
+      expect(result.outcome).toBe('READY');
+    });
+
+    it('lets the cited lines decide on a round without repository tools', async () => {
+      const result = await review({
+        'Cited lines with a doubt': { ...proof, doubts },
+        'No cited lines': { doubts },
+        'A blocker without cited lines': { tags: ['unproven-blocker'], gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] },
+        'A security finding without cited lines': { tags: [SECURITY_TAG] },
+      }, false);
+
+      expect(shown(result)).toEqual([['Cited lines with a doubt', undefined], ['A blocker without cited lines', true], ['A security finding without cited lines', undefined]]);
+      expect(recordedOnly(result)).toEqual([['No cited lines', 'warning', 'no_proof']]);
+    });
+  });
+
   it('requests changes with the verdict reader\'s blockers as blocking findings', async () => {
     const clients = makeClients();
     jest.mocked(clients.judge.sendMessage).mockResolvedValue({
@@ -2550,7 +2629,7 @@ describe('runReview', () => {
           suggestedFix: 'let tasks = take(&mut *lock);', reviewers: ['Finder A', 'Finder B'], evidence: { checks: ['src/a.ts:6 takes the lock'], proof: ['src/a.ts:6', 'src/a.ts:12'] },
         },
         { severity: 'note', title: 'Rename the helper', file: 'src/a.ts', line: 9, description: 'Clearer.', reviewers: ['Finder A'] },
-        { severity: 'warning', title: 'The `tasks` lock is never released on error', file: 'src/a.ts', line: 14, description: 'Leaks.', reviewers: ['Finder B'] },
+        { severity: 'warning', title: 'The `tasks` lock is never released on error', file: 'src/a.ts', line: 14, description: 'Leaks.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:14'] } },
         {
           severity: 'warning', title: '`join` retries the `tasks` lock forever', file: 'src/a.ts', line: 30, description: 'Spins.', reviewers: ['Finder B'],
           evidence: { checks: [], proof: ['src/a.ts:12', 'src/a.ts:30'] },
@@ -2778,7 +2857,7 @@ describe('runReview', () => {
     // Only blockers and warnings the judge is highly confident in are posted. The rest stay in the round record.
     const oldSuggestion = blocker('Old helper could be shorter', 'src/a.ts', 60, { severity: 'note' });
     const oldUnsure = blocker('Old retry may spin', 'src/a.ts', 70, { severity: 'warning', judgeConfidence: 'medium' });
-    const oldSure = blocker('Old timeout is never cleared', 'src/a.ts', 80, { severity: 'warning', judgeConfidence: 'high' });
+    const oldSure = blocker('Old timeout is never cleared', 'src/a.ts', 80, { severity: 'warning', judgeConfidence: 'high', evidence: { checks: [], proof: ['src/a.ts:80'] } });
     mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile, oldSuggestion, oldUnsure, oldSure], summary: 'Old defects.' });
     const pre = await run(makeClients());
     expect(pre.outcome).toBe('READY');
@@ -2830,7 +2909,7 @@ describe('runReview', () => {
   });
 
   it('turns every warning into a follow-up in every round, security ones included, while a verdict reader blocker still blocks', async () => {
-    const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
+    const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'], evidence: { checks: [], proof: ['src/a.ts:4'] } };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
     const diff = diffChanging('src/a.ts');
     const runAtRound = (clients: ReviewClients, round: number) => runReview(
@@ -3093,18 +3172,18 @@ describe('runReview', () => {
       makePriorWarningFinding({ title: 'Cache never cleared', threadId: 'T2', fingerprint: { file: 'src/x.ts', lineStart: 40, lineEnd: 40, slug: 'cache-never-cleared' } }),
       makePriorWarningFinding({ severity: 'note', title: 'Name is vague', threadId: undefined, fingerprint: { file: 'src/y.ts', lineStart: 5, lineEnd: 5, slug: 'name-is-vague' } }),
     ]);
-    const finding = (severity: Finding['severity'], title: string, file: string, line: number, link: Partial<Finding> = {}): Finding => ({ severity, title, file, line, description: 'd', reviewers: ['r'], ...link });
+    const finding = (severity: Finding['severity'], title: string, file: string, line: number, link: Partial<Finding> = {}): Finding => ({ severity, title, file, line, description: 'd', reviewers: ['r'], evidence: { checks: [], proof: [`${file}:${line}`] }, ...link });
     const findings = [
       // The judge links these. A blocker in an open warning thread still blocks, and is listed under that thread.
-      finding('warning', 'Retry loop has no cap', 'src/x.ts', 12, { sameAs: 'src/x.ts:10:10:retry-never-ends' }),
-      finding('warning', 'Retry also ignores the backoff field', 'src/x.ts', 11, { variantOf: 'src/x.ts:10:10:retry-never-ends' }),
+      finding('warning', 'Retry loop has no cap', 'src/x.ts', 12, { sameAs: 'src/x.ts:10:10:retry-never-ends', evidence: undefined }),
+      finding('warning', 'Retry also ignores the backoff field', 'src/x.ts', 11, { variantOf: 'src/x.ts:10:10:retry-never-ends', evidence: undefined }),
       finding('blocker', 'Retry spins the CPU', 'src/x.ts', 30, { sameAs: 'src/x.ts:10:10:retry-never-ends' }),
       // The static same-problem check links an unlinked finding, in a thread or in an earlier review body.
       finding('warning', 'Retry never ends', 'src/x.ts', 10),
       finding('note', 'Name is vague', 'src/y.ts', 5),
       // The dedup model decides a nearby pair the static check leaves apart.
       finding('note', 'Helper is misnamed', 'src/y.ts', 7),
-      finding('warning', 'File handle leaks', 'src/x.ts', 14),
+      finding('warning', 'File handle leaks', 'src/x.ts', 14, { evidence: undefined }),
       // A thread the judge finds addressed takes nothing, and a judge link to it is ignored.
       finding('warning', 'Cache never cleared', 'src/x.ts', 40, { variantOf: 'src/x.ts:40:40:cache-never-cleared' }),
     ];
@@ -3129,11 +3208,12 @@ describe('runReview', () => {
       ['Retry never ends', 'T1', undefined, undefined],
       ['Name is vague', undefined, undefined, 1],
       ['Helper is misnamed', undefined, undefined, 1],
-      ['File handle leaks', undefined, undefined, undefined],
       ['Cache never cleared', undefined, 'src/x.ts:40:40:cache-never-cleared', undefined],
     ]);
     // A restatement of a review body finding names it, whichever check made the link.
     expect(result.findings.filter(f => f.raisedIn).map(f => f.sameAs)).toEqual(['src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague']);
+    // Three warnings cite no proving line. Only the one no earlier finding is linked to is left out for it.
+    expect(result.unposted?.map(f => [f.title, f.unpostedReason])).toEqual([['File handle leaks', 'no_proof']]);
     expect(result.outcome).toBe('ADDRESS_FIRST');
     expect(result.verdictTrace?.unresolvedPriors).toEqual([]);
     const calls = jest.mocked(dedup.sendMessage).mock.calls;
@@ -3292,7 +3372,7 @@ describe('runReview', () => {
   });
 
   it('ends the last automatic round READY when nothing blocks, otherwise NOT_CONVERGING', async () => {
-    const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
+    const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'], evidence: { checks: [], proof: ['src/a.ts:4'] } };
     const diff = diffChanging('src/a.ts');
     const runFinal = (clients: ReviewClients) => runReview(
       clients, {
@@ -3329,7 +3409,7 @@ describe('runReview', () => {
 
   it('turns a round 1 warning into a follow-up and approves', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
-      findings: [{ severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] }],
+      findings: [{ severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'], evidence: { checks: [], proof: ['src/a.ts:4'] } }],
       summary: 'One warning.',
     });
     const result = await runReview(
@@ -5319,8 +5399,8 @@ describe('runReview post-judge suppression', () => {
     const diff = makeDiff({ files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 12, content: '' }] }], totalAdditions: 12 });
     const clients = makeClients();
     jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify([
-      { severity: 'warning', title: 'Unchecked result', file: 'src/a.ts', line: 10, description: 'The query result is never checked.' },
-      { severity: 'warning', title: 'Stale cache', file: 'src/gone.ts', line: 3, description: 'The cache is never cleared.' },
+      { severity: 'warning', title: 'Unchecked result', file: 'src/a.ts', line: 10, description: 'The query result is never checked.', proof: ['src/a.ts:10'] },
+      { severity: 'warning', title: 'Stale cache', file: 'src/gone.ts', line: 3, description: 'The cache is never cleared.', proof: ['src/gone.ts:3'] },
     ]) });
     const judgeGrades: Record<string, Finding['severity']> = { 'js/redos: Inefficient regular expression': 'ignore' };
     mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({

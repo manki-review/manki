@@ -209,7 +209,15 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toContain('Your grade is final');
     expect(prompt).toContain('Any other code the PR did not touch and does not affect is never a finding');
     expect(prompt).toContain('- `blocker`: when you cannot settle one of the five tests, state the cell all the same, list what you could not settle in `doubts`, and say in `reasoning` which test it is. Manki grades it `warning` at most.');
-    expect(prompt).toContain('- `warning`: keep it');
+    expect(prompt).toContain('- `warning`: state the cell all the same, list the premise you could not settle in `doubts` with `decides` set to `defect`, and say it in `reasoning`. No tool check runs on this review, so Manki posts the warning only when `proof` cites the lines that show the failure.');
+    expect(prompt).not.toMatch(/keep it, list|costs a single fix/);
+    const warningTests = (p: string) => p.slice(p.indexOf('## Warning Tests'), p.indexOf('## Severity Table')).trim();
+    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Manki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
+    expect(prompt).toContain('"proof": ["file:line of each line that shows the failure, for a blocker or a warning"]');
+    const withTools = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true, 8);
+    expect(warningTests(withTools)).toContain('For one you cannot prove from the code shown or your tools, follow When You Are Unsure.');
+    expect(withTools).toContain('and say it in `reasoning`. Manki checks the premise with tools and posts the warning only when the check confirms it.\n');
+    expect(withTools).not.toContain('No tool check runs on this review');
     expect(prompt).toContain('- `note`: drop it (`ignore`)');
     expect(prompt).toContain('Agreement never raises or protects a finding\'s severity.');
     expect(prompt).not.toMatch(/trust (the )?(reviewer )?severity/i);
@@ -315,7 +323,7 @@ describe('buildJudgeSystemPrompt', () => {
   it('never drops or caps a finding for code the judge cannot see or a path it doubts is reached, asks for the cell every finding earns if its doubts hold, and says tools check it only when they do', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     const section = prompt.slice(prompt.indexOf('## Code You Cannot See'), prompt.indexOf('## Grade Stability'));
-    expect(section).toContain('Code you cannot see and a path you cannot follow are no evidence against a finding, so on their own they never drop a finding and never lower its row. State the cell such a finding earns if that code is as the finding says and the path exists, and list what you could not see in `doubts`, by When You Are Unsure: a `blocker` cell whose failure you cannot follow in the code shown is graded `warning`, and a `warning` stays.');
+    expect(section).toContain('Code you cannot see and a path you cannot follow are no evidence against a finding, so on their own they never drop a finding and never lower its row. State the cell such a finding earns if that code is as the finding says and the path exists, and list what you could not see in `doubts`, by When You Are Unsure: a `blocker` cell whose failure you cannot follow in the code shown is graded `warning`, and a `warning` cell is posted only once it is proven.');
     expect(section).toContain('A finding that cites a line listed under Uses Outside the Diff rests on code shown, so grade it on its merits like any finding.');
     expect(section).toContain('A doubt that the failure is reached is the same kind of gap: no caller in the code shown passes the value that triggers it, the path looks latent, or a real input may never take it.');
     expect(section).toContain("A path through a library's public API is reached, since any caller of that API can pass a value it accepts, with no caller inside the repository.");
@@ -325,7 +333,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(unsure).toContain('A doubt is only a premise that the code shown and your tool calls leave open. A premise your reasoning settles from lines you cite is not a doubt, so never list it. List each doubt in `doubts`, as a fact the code can confirm or disprove: "a public request handler passes `index` to `getItem` unchecked", not "callers probably validate `index`". Set `decides` to `defect` when the defect does not exist if the premise is false, and to `grade` when the finding stands either way and only its cell depends on the premise. Manki counts a `grade` doubt only on the `wrong` row, where the column decides whether the finding blocks. When you doubt nothing, leave `doubts` empty.');
     expect(prompt).not.toContain('Manki checks each premise with tools');
     expect(prompt).toContain('"doubts": [{"premise": "A fact the code can confirm or disprove", "decides": "defect" | "grade"}],');
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki checks each premise with tools when confirming it would raise the grade: on a `blocker` cell with a doubt, and on the `rare` column of the `wrong` row. On a finding whose doubts hold no grade down, it checks a doubt whether the defect exists on at most four findings a round at `warning` or above, the highest grades first. A finding gets the higher grade only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki checks each premise with tools when confirming it would raise the grade: on a `blocker` cell with a doubt, and on the `rare` column of the `wrong` row. It also checks each `warning` with a `defect` doubt, and each one whose `proof` is empty, on up to 8 findings a round. A warning the check confirms is posted. One it cannot settle or does not reach is recorded and not posted, unless it would be a blocker if true. A finding gets the higher grade only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.');
   });
 
   it('blocks on a claimed build, type or test failure only when CI confirms it', () => {
