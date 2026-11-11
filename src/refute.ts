@@ -324,6 +324,16 @@ function alwaysChecked(finding: Finding): boolean {
 }
 
 const doubtsDefect = (finding: Finding): boolean => !!finding.doubts?.some(d => d.decides === 'defect');
+
+/**
+ * Returns `finding` as its check asks about it. A check `doubtsToCheck` picks is there to say whether the defect exists.
+ * Premises that only decide the grade do not say that, so such a finding is asked about as a whole, without them.
+ */
+function asked(finding: Finding): Finding {
+  if (!finding.doubts || alwaysChecked(finding) || doubtsDefect(finding)) return finding;
+  const { doubts: _doubts, ...whole } = finding;
+  return whole;
+}
 const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.length;
 
 /** Whether the review posts `finding` only when something proves it. A tool alert and a security finding are posted either way. */
@@ -366,10 +376,14 @@ function doubtsToCheck(
   return { checked: ordered.slice(0, limit), reused, over };
 }
 
-/** Whether `check` confirms that the defect of `finding` exists: the whole finding, or every premise the defect rests on. */
+/**
+ * Whether `check` confirms that the defect of `finding` exists: it confirmed the whole finding, or it answered premises
+ * and confirmed every one the defect rests on. A check that answered only premises about the grade tested no defect, so
+ * it confirms none, whatever its outcome.
+ */
 function confirmsDefect(finding: Finding, check: Refutation): boolean {
-  if (check.outcome === 'confirmed') return true;
-  const decisive = (check.premises ?? []).filter(p => finding.doubts?.some(d => d.premise === p.premise && d.decides === 'defect'));
+  if (!check.premises) return check.outcome === 'confirmed';
+  const decisive = check.premises.filter(p => finding.doubts?.some(d => d.premise === p.premise && d.decides === 'defect'));
   return decisive.length > 0 && decisive.every(p => p.outcome === 'confirmed');
 }
 
@@ -476,11 +490,11 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     }
     try {
       const refutation = await sendWithParseRetry(
-        buildRefuteMessage(finding, !!preExisting?.(finding), usesOutsideDiff, outsideInput, diff),
+        buildRefuteMessage(asked(finding), !!preExisting?.(finding), usesOutsideDiff, outsideInput, diff),
         message => refuter.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
           ...(effort && { effort }), repoTools: { root: workspace, steps: REFUTE_STEPS }, timeoutMs: REFUTE_TIMEOUT_MS,
         }),
-        reply => ({ ...parseRefutation(reply.content, workspace, finding, diff), ...(reply.model && { model: reply.model }) }),
+        reply => ({ ...parseRefutation(reply.content, workspace, asked(finding), diff), ...(reply.model && { model: reply.model }) }),
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
       );
       core.info(`The ${label} of "${finding.title}": ${refutation.outcome}`);

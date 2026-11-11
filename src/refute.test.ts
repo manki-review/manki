@@ -663,6 +663,7 @@ describe('refuteBlockers', () => {
 
   it('gives each kind of finding the refuter checks the status its check leaves it', async () => {
     const exists = [{ premise: 'The copy is never dropped', decides: 'defect' as const }];
+    const reach = [{ premise: 'Any client reaches it', decides: 'grade' as const }];
     const noProof = { evidence: { checks: [], proof: [] } };
     const buildClaim = { severity: 'warning' as const, buildClaim: true, toolEvidence: { status: 'none' as const, note: '' } };
     // One row per kind: the finding, then its grade and status after a check that confirms it and after one that settles nothing.
@@ -679,9 +680,13 @@ describe('refuteBlockers', () => {
       // Reading code never confirms a build failure, capped from a blocker or graded a warning.
       ['Capped build claim', { ...buildClaim, tags: ['unconfirmed-build-claim'] }, ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
       ['Build claim graded a warning', { ...buildClaim, gradeIfConfirmed: 'warning', doubts: exists }, ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
+      // A confirmed premise about the grade raises the finding, and checks no defect: the cited lines still carry it.
+      ['Blocker a doubt about the grade holds at a warning', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: reach }, ['blocker', 'proven'], ['warning', 'proven']],
       ['Warning the judge doubts', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
       ['Warning no cited line proves', { severity: 'warning', ...noProof }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
       ['Warning on unchanged code', { severity: 'warning', preExisting: 'The loop predates this PR.' }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
+      // Its check has to say whether the defect exists, so it asks about the whole finding, not about the grade.
+      ['Warning on unchanged code with a doubt about the grade', { severity: 'warning', preExisting: 'The loop predates this PR.', doubts: reach }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
       ['Security warning the judge doubts', { severity: 'warning', tags: ['security'], doubts: exists }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
     ];
     const findings = kinds.map(([title, more]) => finding(title, more));
@@ -725,11 +730,16 @@ describe('refuteBlockers', () => {
     expect(client.calls.map(([title]) => title).sort()).toEqual(['Old and the call fails', 'Old confirmed', 'Old with a doubt', ...Array.from({ length: 5 }, (_, i) => `Unproven ${i + 1}`)]);
     expect(client.messages.find(([, user]) => user.includes(': Old with a doubt\n'))![1]).toMatch(/^## Warning on code the PR did not change: Old with a doubt\n/);
     expect(client.messages[0][0]).toContain('a warning no cited line proves, a warning on code the pull request did not change, or a finding that rests on premises the judge doubts');
+    // A premise about the grade does not say whether the defect exists, so the check asks about the whole finding.
+    expect(client.messages.every(([, user]) => !user.includes('Premises the judge doubts'))).toBe(true);
     // Only the confirmed one is `confirmed`, the status that posts a warning on unchanged code.
     expect(result.slice(0, 7).map(f => [f.title, f.severity, checkStatus(f)])).toEqual([
-      ['Old without proof', 'warning', 'unconfirmed'], ['Old plain', 'warning', 'proven'], ['Old with a doubt', 'warning', 'proven'], ['Old confirmed', 'warning', 'confirmed'], ['Old security', 'warning', 'proven'],
+      ['Old without proof', 'warning', 'unconfirmed'], ['Old plain', 'warning', 'proven'], ['Old with a doubt', 'warning', 'unconfirmed'], ['Old confirmed', 'warning', 'confirmed'], ['Old security', 'warning', 'proven'],
       ['Old and the call fails', 'warning', 'proven'], ['Old in a deleted file', 'warning', 'proven'],
     ]);
+    // An earlier round's answer about the grade alone confirms no defect, so the warning it is reused for stays unposted.
+    const gradeOnly = { ...result[3].refutation!, premises: [{ premise: reach[0].premise, outcome: 'confirmed' as const, reason: 'r', proof: ['src/math.ts:2'] }] };
+    expect(checkStatus({ ...findings[3], refutation: gradeOnly })).toBe('proven');
 
     // A check of a doubted security finding only settles its status, so it runs once every check that decides a posting has its place.
     const doubted = finding('Security with a doubt', { severity: 'warning', tags: ['security'], doubts: [{ premise: 'The copy is never dropped', decides: 'defect' }] });
