@@ -14,7 +14,7 @@ import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, Overl
 import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { classifyRelatedWork } from './related-work';
 import { makeScratchDir } from './tool-install';
-import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
+import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { disproof, refuteBlockers } from './refute';
@@ -266,13 +266,16 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
   const names = new Set<string>();
   const finders = group.reviewers.filter(r => r.role !== 'verifier');
   const risky = floor || finders.length >= 2;
+  // A group a deeper review moves up has at most one finder. The first finder of `group` on its model is that finder.
+  const identity = (r: GroupReviewer): string => modelIdentity(resolveReviewerModel(config, r.model));
+  const earlier = escalatedFrom?.reviewers.find(r => r.role !== 'verifier');
+  const kept = earlier && finders.find(r => identity(r) === identity(earlier));
   return group.reviewers.map(reviewer => {
     const model = resolveReviewerModel(config, reviewer.model);
     const client = clients && pickReviewerClient(clients, model).client;
     const sent = (tier: EffortLevel): EffortLevel | undefined => (client?.sentEffort ? client.sentEffort(tier) : tier);
     // A reader the deeper review added has no effort without it to compare with.
-    const ref = (r: GroupReviewer): string => r.model ?? '@reviewer';
-    const usual = escalatedFrom ? escalatedFrom.reviewers.find(r => r.role !== 'verifier' && ref(r) === ref(reviewer)) : reviewer;
+    const usual = escalatedFrom ? (reviewer === kept ? earlier : undefined) : reviewer;
     const usualEffort = usual && askedEffort(usual, triage, false);
     // No effort sent ranks below every tier.
     const rank = (tier: EffortLevel | undefined): number => (tier ? EFFORT_ORDER.indexOf(tier) : -1);
