@@ -10,9 +10,9 @@ import { extractJSON } from './json';
 import { resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
-import { parseProof, titlesMatch, truncateDiff } from './review';
+import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { cellGrade, columnDecidesBlock, Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, isGradeCell, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
+import { cellGrade, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -237,13 +237,43 @@ function refutationNote(label: string, { outcome, reason, rule, premises = [] }:
 }
 
 /**
- * Grades `finding` by the outcome its refutations agree on. A disproof drops a finding graded below blocker, such as an
- * open lead or a capped blocker, but never lowers a blocker, lead or not, however many refuters disprove it, since PR
- * content they read could steer them all. An unsettled outcome keeps the grade, and a security finding changes only
- * when confirmed. A confirmation that raises a finding out of the `rare` column moves it to the `normal` one, where
- * `capUnprovenBlocker` applies to it.
+ * Whether `finding` restates a blocker an earlier round recorded or an open thread that blocks. A finding in the file
+ * of such a thread counts too, since a later step can fold it into that thread. So does one that names an earlier
+ * finding no record holds.
  */
-function applyRefutation(finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined): Finding {
+function restatesBlocker(finding: Finding, priorRounds: readonly RoundContext[], blockingThreads: readonly OpenThread[]): boolean {
+  const entries = priorRounds.flatMap(r => r.findings.entries);
+  const named = [finding.sameAs, finding.variantOf].filter((key): key is string => !!key)
+    .map(key => entries.filter(e => stringifyFindingFingerprint(e.fingerprint) === key));
+  if (named.some(found => found.length === 0 || found.some(e => e.severity === 'blocker'))) return true;
+  const threadIds = [finding.threadId, finding.answeredIn?.threadId, ...named.flat().map(e => e.threadId)];
+  return blockingThreads.some(t => t.file === finding.file || threadIds.includes(t.threadId));
+}
+
+/**
+ * Returns the grade the finders gave a blocker that only the judge raised to blocker and that two refuters on
+ * different models both disproved, or undefined when the blocker stays. A blocker a finder filed stays, since PR
+ * content the refuters read could steer them all. So does a tool alert, a security finding, an open lead, which is
+ * no finished finding to grade, and a finding whose refuters' models are unknown or the same.
+ */
+function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined): FindingSeverity | undefined {
+  const [raise, ...later] = finding.gradePath ?? [];
+  if (finding.severity !== 'blocker' || raise?.by !== 'judge' || later.length > 0) return undefined;
+  if (finding.toolSource || finding.lead || isSecurityFinding(finding.tags, finding.reviewers)) return undefined;
+  if (refutation?.outcome !== 'disproved' || pairRefutation?.outcome !== 'disproved') return undefined;
+  if (!refutation.model || !pairRefutation.model || refutation.model === pairRefutation.model) return undefined;
+  const filed = finderGrade(finding);
+  return filed === 'blocker' ? undefined : filed;
+}
+
+/**
+ * Grades `finding` by the outcome its refutations agree on. A disproof drops a finding graded below blocker, such as an
+ * open lead or a capped blocker. It lowers a blocker only to the grade `gradeBeforeJudgeRaise` gives, never one that
+ * `restates` an earlier blocker, and such a finding loses its `cell`, so a later round does not restate the blocker
+ * from it. An unsettled outcome keeps the grade, and a security finding changes only when confirmed. A confirmation
+ * that raises a finding out of the `rare` column moves it to the `normal` one, where `capUnprovenBlocker` applies to it.
+ */
+function applyRefutation(finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined, restates: boolean): Finding {
   const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
   const outcome = agreedOutcome(checks);
   const decided = checks.find(r => r.outcome === outcome);
@@ -253,7 +283,15 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
     judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${notes}` : notes,
   };
   if (outcome !== 'confirmed' && finding.tags?.includes(SECURITY_TAG)) return graded;
-  if (outcome === 'disproved') return finding.severity === 'blocker' ? graded : { ...graded, ...gradeStep(finding, 'ignore', 'refutation', decided!.reason) };
+  if (outcome === 'disproved') {
+    if (finding.severity !== 'blocker') return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', decided!.reason) };
+    const filed = restates ? undefined : gradeBeforeJudgeRaise(finding, refutation, pairRefutation);
+    if (!filed) return graded;
+    const reason = `${refutation!.model} and ${pairRefutation!.model} both disproved it, and no finder graded it a blocker`;
+    core.info(`Posting blocker "${finding.title}" as a ${filed}: ${reason}`);
+    const { cell, ...lowered } = graded;
+    return { ...lowered, ...gradeStep(finding, filed, 'refutation', reason), ...(cell && { judgeCell: cell }), judgeNotes: `${graded.judgeNotes}\nPosted as a ${filed}, since ${reason}.` };
+  }
   if (outcome === 'confirmed') {
     const proof = [...new Set([...(finding.evidence?.proof ?? []), ...checks.flatMap(r => r.outcome === 'confirmed' ? r.proof ?? [] : [])])];
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
@@ -330,6 +368,8 @@ export interface RefuteOptions {
   outsideInput?: string;
   /** A second refuter, on another model, that checks each finding beside the first. */
   pair?: LLMClient;
+  /** The open threads that block. No disproof lowers a blocker that restates one. */
+  blockingThreads?: readonly OpenThread[];
   /** Whether a later step hides `finding` at its grade. Such a finding is checked only when a confirmation can raise it, and takes none of the `MAX_DOUBT_CHECKS` checks. */
   hiddenLater?: (finding: Finding) => boolean;
 }
@@ -341,7 +381,7 @@ export interface RefuteOptions {
  * finding is reused without a new check while the files it rests on are unchanged, except for a finding with a
  * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, hiddenLater }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater }: RefuteOptions): Promise<Finding[]> {
   const check = async (refuter: LLMClient, field: RefutationField, finding: Finding): Promise<Refutation | undefined> => {
     const label = field === 'pairRefutation' ? 'second refutation' : 'refutation';
     // Unseen code or a caller can change in a file the stored outcome does not cover, so such a finding is checked afresh.
@@ -356,7 +396,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
         message => refuter.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
           ...(effort && { effort }), repoTools: { root: workspace, steps: REFUTE_STEPS }, timeoutMs: REFUTE_TIMEOUT_MS,
         }),
-        reply => parseRefutation(reply.content, workspace, finding, diff),
+        reply => ({ ...parseRefutation(reply.content, workspace, finding, diff), ...(reply.model && { model: reply.model }) }),
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
       );
       core.info(`The ${label} of "${finding.title}": ${refutation.outcome}`);
@@ -375,6 +415,6 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     if (!confirmedGrade(finding) && hiddenLater?.(finding)) return finding;
     if (!codeDigest(workspace, [finding.file])) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);
-    return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation) : finding;
+    return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restatesBlocker(finding, priorRounds, blockingThreads)) : finding;
   });
 }

@@ -262,7 +262,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('only when the diff shows this PR neither causes nor exposes the defect. A defect in lines this PR adds is never pre-existing. Neither is the defect this PR fixes in one path and leaves in a sibling path: that fix is incomplete, so the defect is part of the change.');
     expect(prompt).toContain('**The damage is serious.** The failure is in one of the serious categories below. Manki settles this test from the cell you state.');
     expect(prompt).toContain('## Grade Stability');
-    expect(prompt).toContain('keeps the `row` and `column` it had. A prior finding listed with a grade but no `row` comes from a record that stored only the grade: state a cell that gives that grade. Change the cell only when the code at that spot changed or you have evidence the earlier round did not have');
+    expect(prompt).toContain('keeps the `row` and `column` it had. A prior finding listed with a grade but no `row` has no cell to keep: state a cell that gives that grade. Change the cell only when the code at that spot changed or you have evidence the earlier round did not have');
     expect(prompt).toContain('Only a cell with no doubt behind it is kept this way. A prior finding listed with a `gradeIfConfirmed` above its `severity` was capped by a doubt: settle each of its `doubts` with the code shown or your tools and state the cell by what you find, or name them again in `doubts`. A prior grade that rested on a premise your reasoning no longer states is no anchor either: grade the finding as if it were new.');
     expect(prompt).toContain('A failure that outside input can trigger is never hypothetical');
   });
@@ -1779,6 +1779,39 @@ describe('runJudgeAgent', () => {
       expect(userMessage).toContain('(src/lock.ts:150)');
       expect(userMessage).not.toContain('(src/lock.ts:180)');
       expect(userMessage).not.toContain('(src/bundle.js:2)');
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('lowers a blocker only the judge raised when two refuters disprove it, but never in the file of an open thread that blocks', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
+    fs.mkdirSync(path.join(workspace, 'src'));
+    fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
+    const refuter = (model: string): LLMClient => ({
+      repoTools: true,
+      sendMessage: async () => ({ content: JSON.stringify({ outcome: 'disproved', reason: 'A `sync.Once` guards the close.', proof: ['src/index.ts:10'] }), model }),
+    });
+    const gradeWith = async (threads: Array<Partial<OpenThread>>) => {
+      const openThreads = threads.map((t, i) => ({ threadId: `T${i + 1}`, title: 'Old', file: 'src/index.ts', line: 3, ...t }) as OpenThread);
+      mockSendMessage.mockResolvedValue({ content: JSON.stringify({
+        summary: 's', findings: [{ id: 1, title: 'Channel closed twice', row: 'severe', reasoning: 'A second close panics.', confidence: 'high' }],
+        threadEvaluations: openThreads.map(t => ({ threadId: t.threadId, status: 'not_addressed', reason: 'Unchanged.' })),
+      }) });
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [makeFinding({ title: 'Channel closed twice', severity: 'warning', file: 'src/index.ts', line: 10, evidence: { checks: [], proof: ['src/index.ts:10'] } })],
+        diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, isFollowUp: threads.length > 0, openThreads,
+        refutation: { client: refuter('claude-opus-5-5'), workspace, pair: refuter('gpt-6.1-sol') },
+      });
+      return result.findings[0].severity;
+    };
+
+    try {
+      expect(await gradeWith([])).toBe('warning');
+      // A thread that does not block, or one in another file, leaves the finding nothing to restate.
+      expect(await gradeWith([{ severity: 'suggestion' }, { severity: 'blocker', file: 'src/other.ts' }])).toBe('warning');
+      expect(await gradeWith([{ severity: 'blocker' }])).toBe('blocker');
+      expect(await gradeWith([{ severity: 'warning', recordedGrade: 'blocker' }])).toBe('blocker');
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }

@@ -400,6 +400,16 @@ describe('formatFindingComment', () => {
     });
     expect(split).toContain('<summary>How this was checked: double-checked, second check: doubt found</summary>');
     expect(split).toContain(`**Double-checked**\nManki tried to disprove this by reading the code and could not. No caller checks \`value\` first.\n\n**Second check, on another model**\nDoubt found. The parser rejects it. See [\`src/util.ts:3\`](${link('src/util.ts', 3)}).`);
+
+    // A blocker of the judge's that two disproofs put back at its finders' grade says that it does not block.
+    const lowered = render({
+      ...baseFinding, severity: 'warning', evidence: { checks: [], proof: [] },
+      gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'refutation' }],
+      refutation: { outcome: 'disproved', reason: 'A `sync.Once` guards the close.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc' },
+      pairRefutation: { outcome: 'disproved', reason: 'Both paths close through one guard.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc' },
+    });
+    expect(lowered).toContain('**Doubt found**\nManki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself. A `sync.Once` guards the close.');
+    expect(lowered).toContain('**Second check, on another model**\nDoubt found. Both paths close through one guard.');
   });
 
   it('keeps the code spans of every check line balanced, so no line breaks the Markdown after it', () => {

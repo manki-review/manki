@@ -2,9 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+import * as core from '@actions/core';
+
 import { LLMClient, SendMessageOptions } from './providers';
 import { disproof, refuteBlockers } from './refute';
-import { Finding, ParsedDiff, REACH_DOUBT, RoundContext } from './types';
+import { Finding, OpenThread, ParsedDiff, REACH_DOUBT, RoundContext } from './types';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
@@ -15,7 +17,7 @@ const finding = (title: string, overrides: Partial<Finding> = {}): Finding => ({
 });
 
 /** A client with tools that answers each finding, picked by its title in the user message, with a canned reply. */
-function fakeClient(replies: Record<string, unknown>): LLMClient & { calls: [string, SendMessageOptions | undefined, string][]; messages: [string, string][] } {
+function fakeClient(replies: Record<string, unknown>, model?: string): LLMClient & { calls: [string, SendMessageOptions | undefined, string][]; messages: [string, string][] } {
   const calls: [string, SendMessageOptions | undefined, string][] = [];
   const messages: [string, string][] = [];
   return {
@@ -28,7 +30,7 @@ function fakeClient(replies: Record<string, unknown>): LLMClient & { calls: [str
       messages.push([system, user]);
       const reply = replies[title];
       if (reply instanceof Error) throw reply;
-      return { content: typeof reply === 'string' ? reply : JSON.stringify(reply) };
+      return { content: typeof reply === 'string' ? reply : JSON.stringify(reply), ...(model && { model }) };
     },
   };
 }
@@ -205,7 +207,7 @@ describe('refuteBlockers', () => {
 
     expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.pairRefutation?.outcome, disproof(f)?.reason])).toEqual([
       ['Both confirm', 'blocker', 'confirmed', 'confirmed', undefined],
-      // Two disproofs on different models still leave a blocker blocking, since PR content could steer both.
+      // Two disproofs still leave a blocker a finder filed blocking, since PR content could steer both.
       ['Both disprove', 'blocker', 'disproved', 'disproved', 'Both inputs are checked.'],
       // Only a confirmation changes a security finding, however many refuters disprove it.
       ['Security both disprove', 'blocker', 'disproved', 'disproved', 'A comment says it is intended.'],
@@ -244,6 +246,74 @@ describe('refuteBlockers', () => {
     // No file it cites is in the diff, so nothing is shown and nothing claims the PR leaves the code alone.
     expect(message('Unseen confirm and abstain')).not.toMatch(/The PR's change|does not change/i);
     expect(message('Both confirm')).not.toMatch(/The PR's change/i);
+  });
+
+  it('puts a blocker only the judge raised back at its finders\' grade when two refuters on different models disprove it', async () => {
+    const cell = { row: 'wrong', column: 'normal' } as const;
+    const raised = (from: Finding['severity'] = 'warning'): Partial<Finding> => ({ reviewerSeverity: from, gradePath: [{ from, to: 'blocker', by: 'judge' }], cell });
+    const disproved = (reason: string) => ({ outcome: 'disproved', reason, proof: ['src/api.ts:9'] });
+    const cases: Array<[string, Partial<Finding>, unknown?]> = [
+      ['Judge raise', raised()],
+      // An earlier finding that never blocked, in a thread that does not block, is no blocker to restate.
+      ['Same as an earlier warning', { ...raised(), sameAs: 'src/old.ts:3:3:old-warning' }],
+      // When finders disagree the highest grade counts, and a merged duplicate a finder filed as a blocker makes it a finder's blocker.
+      ['Highest finder grade', { ...raised('suggestion'), reviewerSeverity: 'warning' }],
+      ['Merged finder blocker', { ...raised(), reviewerSeverity: 'blocker' }],
+      ['Finder blocker', {}],
+      // Any second answer but a disproof keeps the blocker.
+      ['Second unsure', raised(), { outcome: 'unsettled', reason: 'Could not tell.' }],
+      ['Second confirms', raised(), { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] }],
+      ['Second fails', raised(), new Error('CLI crashed')],
+      ['Second unusable', raised(), 'no JSON'],
+      ['Second without proof', raised(), { outcome: 'disproved', reason: 'It cannot happen.' }],
+      // Never lowered, whatever the refuters say.
+      ['Security raise', { ...raised(), tags: ['security'] }],
+      ['Tool alert', { ...raised(), toolSource: 'eslint' }],
+      ['Open lead', { ...raised(), notChecked: true, lead: { checked: 'read src/math.ts:2', left: 'find the callers' } }],
+      ['In a blocking thread', { ...raised(), threadId: 'T1' }],
+      ['Answered in a blocking thread', { ...raised(), answeredIn: { threadId: 'T1', answer: 'Fixed.' } }],
+      ['Same as an earlier blocker', { ...raised(), sameAs: 'src/old.ts:1:1:old-blocker' }],
+      ['Variant of a finding in a blocking thread', { ...raised(), variantOf: 'src/old.ts:2:2:in-thread' }],
+      ['Same as a finding no record holds', { ...raised(), sameAs: 'src/old.ts:9:9:gone' }],
+      // A later step on the grade means more than the judge's raise decided it.
+      ['Raised by a check', { reviewerSeverity: 'suggestion', gradePath: [{ from: 'suggestion', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }], cell }],
+    ];
+    const first = fakeClient(Object.fromEntries(cases.map(([title]) => [title, disproved('Both inputs are checked.')])), 'claude-opus-5-5');
+    const replies = Object.fromEntries(cases.map(([title, , reply]) => [title, reply ?? disproved('Only checked inputs reach it.')]));
+    const earlier = (line: number, slug: string, severity: Finding['severity'], threadId?: string) => ({ fingerprint: { file: 'src/old.ts', lineStart: line, lineEnd: line, slug }, severity, threadId });
+    const priorRounds = [{ findings: { entries: [earlier(1, 'old-blocker', 'blocker'), earlier(2, 'in-thread', 'warning', 'T1'), earlier(3, 'old-warning', 'warning', 'T2')] }, judge: {} }] as unknown as RoundContext[];
+    const blocking = (file: string) => [{ threadId: 'T1', file, line: 4, severity: 'blocker' }] as OpenThread[];
+    const run = (pair: LLMClient, picked = cases, blockingThreads = blocking('src/old.ts')) =>
+      refuteBlockers(first, picked.map(([title, overrides]) => finding(title, overrides)), { workspace, diff, pair, priorRounds, blockingThreads });
+
+    const result = await run(fakeClient(replies, 'gpt-6.1-sol'));
+
+    expect(result.map(f => [f.title, f.severity])).toEqual([
+      ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ...cases.slice(3).map(([title]) => [title, 'blocker']),
+    ]);
+    const [lowered, , , merged] = result;
+    const reason = 'claude-opus-5-5 and gpt-6.1-sol both disproved it, and no finder graded it a blocker';
+    expect(lowered.gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'refutation', reason }]);
+    expect([lowered.refutation?.model, lowered.pairRefutation?.model]).toEqual(['claude-opus-5-5', 'gpt-6.1-sol']);
+    expect(lowered.judgeNotes).toBe(`Refutation disproved: Both inputs are checked.\nPair refutation disproved: Only checked inputs reach it.\nPosted as a warning, since ${reason}.`);
+    // The blocker cell goes, so a later round does not restate the blocker from it. The record keeps it apart.
+    expect([lowered.cell, lowered.judgeCell]).toEqual([undefined, cell]);
+    expect([merged.cell, merged.judgeCell, merged.gradePath]).toEqual([cell, undefined, raised().gradePath]);
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith(`Posting blocker "Judge raise" as a warning: ${reason}`);
+
+    // Two answers from one model, or from a model the reply does not name, are not two checks.
+    const judgeRaise = cases.slice(0, 1);
+    for (const pairModel of ['claude-opus-5-5', undefined]) {
+      expect((await run(fakeClient(replies, pairModel), judgeRaise))[0].severity).toBe('blocker');
+    }
+    // A later step can fold a finding into an open thread that blocks in its file, so it stays a blocker there.
+    expect((await run(fakeClient(replies, 'gpt-6.1-sol'), judgeRaise, blocking('src/math.ts')))[0].severity).toBe('blocker');
+
+    // A later round that restates the lowered finding as a blocker reuses both answers with their models, and lowers it again without a new call.
+    const stored = { title: 'Judge raise', fingerprint: { file: 'src/math.ts', lineStart: 2, lineEnd: 2, slug: 'judge-raise' }, severity: lowered.severity, threadId: 'T3', refutation: lowered.refutation, pairRefutation: lowered.pairRefutation };
+    const idle = fakeClient({});
+    const [again] = await refuteBlockers(idle, [finding('Judge raise', { ...raised(), sameAs: 'src/math.ts:2:2:judge-raise' })], { workspace, diff, pair: idle, priorRounds: [{ findings: { entries: [stored] }, judge: {} }] as unknown as RoundContext[] });
+    expect([again.severity, idle.calls.length]).toEqual(['warning', 0]);
   });
 
   it('asks both refuters at the same time', async () => {

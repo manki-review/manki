@@ -25,7 +25,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, isGradeCell, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
+import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, isGradeCell, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -487,7 +487,7 @@ You can read the PR's head commit with read-only tools, up to ${toolSteps} calls
 ` : ''}
 ## Grade Stability
 
-A finding that matches one under Prior Round Findings or Prior Findings keeps the \`row\` and \`column\` it had. A prior finding listed with a grade but no \`row\` comes from a record that stored only the grade: state a cell that gives that grade. Change the cell only when the code at that spot changed or you have evidence the earlier round did not have, and say which in \`reasoning\`. Reading the same code again is not new evidence.
+A finding that matches one under Prior Round Findings or Prior Findings keeps the \`row\` and \`column\` it had. A prior finding listed with a grade but no \`row\` has no cell to keep: state a cell that gives that grade. Change the cell only when the code at that spot changed or you have evidence the earlier round did not have, and say which in \`reasoning\`. Reading the same code again is not new evidence.
 
 Only a cell with no doubt behind it is kept this way. A prior finding listed with a \`gradeIfConfirmed\` above its \`severity\` was capped by a doubt: settle each of its \`doubts\` with the code shown or your tools and state the cell by what you find, or name them again in \`doubts\`. A prior grade that rested on a premise your reasoning no longer states is no anchor either: grade the finding as if it were new.
 
@@ -1486,6 +1486,7 @@ export async function runJudgeAgent(
   // The suppressions hide findings by grade, so the refuter settles each grade first.
   const checked = refutation ? await refuteBlockers(refutation.client, mapped, {
     workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
+    blockingThreads: (openThreads ?? input.evaluatedThreads?.openThreads ?? []).filter(threadBlocks),
     hiddenLater: finding => suppress([finding], true).findings[0].severity === 'ignore',
   }) : mapped;
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked);

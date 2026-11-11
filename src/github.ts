@@ -12,7 +12,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
+import { isDisprovedRaise, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -2282,9 +2282,10 @@ const LINKABLE_PATH_RE = /^[\w@+.-]+(?:\/[\w@+.-]+)*$/;
 const REFUTATION_PART: Record<RefutationOutcome, { label: string; text: string }> = {
   confirmed: { label: 'Double-checked', text: 'Manki tried to disprove this by reading the code and could not.' },
   unsettled: { label: 'Not settled', text: 'Manki tried to disprove this by reading the code and could not decide.' },
-  // A posted disproved finding is a blocker, a security finding or one a second check confirmed, since a disproof drops any other.
+  // A posted disproved finding is a blocker, a security finding, one a second check confirmed or one `isDisprovedRaise` names, since a disproof drops any other.
   disproved: { label: 'Doubt found', text: 'Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself.' },
 };
+const DISPROVED_RAISE_TEXT = 'Manki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself.';
 const PAIR_REFUTATION_LABEL = 'Second check, on another model';
 
 /** Opens the fold under a finding comment, so reading the comment back stops its description there. */
@@ -2536,10 +2537,12 @@ function refutationPart(label: string, lead: string, { outcome, reason, proof }:
 }
 
 /** Returns a part for each refuter that checked `finding`. */
-function refutationParts({ refutation, pairRefutation }: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
+function refutationParts(finding: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
+  const { refutation, pairRefutation } = finding;
   const pairLead = pairRefutation && REFUTATION_SUMMARY[pairRefutation.outcome];
+  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : REFUTATION_PART[refutation.outcome].text);
   return [
-    ...(refutation ? [refutationPart(REFUTATION_PART[refutation.outcome].label, REFUTATION_PART[refutation.outcome].text, refutation, linkTo, known)] : []),
+    ...(refutation && lead ? [refutationPart(REFUTATION_PART[refutation.outcome].label, lead, refutation, linkTo, known)] : []),
     ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`, pairRefutation, linkTo, known)] : []),
   ];
 }

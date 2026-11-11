@@ -275,6 +275,8 @@ export interface Finding {
   leadSince?: number;
   /** The severity table cell the grade is worked out from. The judge states it, and a tool check can move its column. */
   cell?: GradeCell;
+  /** The cell the judge stated, on a blocker `applyRefutation` put back at its finders' grade. Only for the record: no prompt shows it. */
+  judgeCell?: GradeCell;
   /**
    * The grade the finding's `cell` gives once every premise in `doubts` holds, worked out by Manki. Set when the finding
    * has a doubt. The refuter checks the finding, and a confirmation of every doubt gives it this grade.
@@ -503,6 +505,11 @@ export function finderGrade(finding: Pick<Finding, 'reviewerSeverity' | 'gradePa
   return finding.reviewerSeverity ?? finding.gradePath?.[0]?.from ?? finding.severity;
 }
 
+/** Whether `applyRefutation` put the blocker the judge alone made of `finding` back at its finders' grade. Nothing else lowers a blocker by a refutation. */
+export function isDisprovedRaise(finding: Pick<Finding, 'gradePath'>): boolean {
+  return !!finding.gradePath?.some(step => step.by === 'refutation' && step.from === 'blocker');
+}
+
 export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
 
 /**
@@ -549,6 +556,8 @@ export interface Refutation {
   files: string[];
   /** SHA-256 over `files` at the commit checked. A later round reuses the outcome while it still matches. */
   codeDigest: string;
+  /** The model that answered. A record from before models were stored has none. */
+  model?: string;
 }
 
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
@@ -2054,6 +2063,8 @@ export interface FindingFingerprintEntry {
   doubts?: Doubt[];
   /** Mirrors `Finding.cell`. A record from before cells has none. */
   cell?: GradeCell;
+  /** Mirrors `Finding.judgeCell`. */
+  judgeCell?: GradeCell;
   /** Mirrors `Finding.gradePath`. */
   gradePath?: GradeStep[];
   /** The reviewer's pre-existing claim kept by the judge, and how it was checked against the diff. */
