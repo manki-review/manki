@@ -102,19 +102,32 @@ describe('applySuppressions', () => {
   });
 
   it('never suppresses a blocker, a security finding, a tool alert or a blocker the judge lowered', () => {
+    const refutation = { outcome: 'unsettled' as const, reason: 'r', files: [], codeDigest: 'd' };
     const findings = [
       makeFinding({ severity: 'blocker', title: 'Unused variable in auth' }),
       makeFinding({ severity: 'warning', title: 'Unused variable leaks the token', tags: ['security'] }),
       makeFinding({ severity: 'warning', title: 'no-unused-vars: Unused variable', toolSource: 'ESLint' }),
       makeFinding({ severity: 'warning', title: 'Unused variable skips the check', tags: [UNPROVEN_TAG] }),
       makeFinding({ severity: 'warning', title: 'Unused variable does not compile', tags: [UNBUILT_TAG] }),
-      makeFinding({ severity: 'warning', title: 'Unused variable hides the error', refutation: { outcome: 'unsettled', reason: 'r', files: [], codeDigest: 'd' } }),
+      // A check protects a finding that was or would be a blocker, and one whose grade it changed.
+      makeFinding({ severity: 'warning', title: 'Unused variable hides the error', refutation, gradeIfConfirmed: 'blocker' }),
+      makeFinding({ severity: 'warning', title: 'Unused variable a finder called a blocker', pairRefutation: refutation, reviewerSeverity: 'blocker' }),
+      makeFinding({ severity: 'warning', title: 'Unused variable the check lowered', refutation, gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation' }] }),
+      makeFinding({ severity: 'warning', title: 'Unused variable the check raised', refutation, gradePath: [{ from: 'note', to: 'warning', by: 'refutation' }] }),
     ];
     const suppressions = [makeSuppression({ pattern: 'unused variable' })];
 
     const { kept, suppressed } = applySuppressions(findings, suppressions);
     expect(kept).toEqual(findings);
     expect(suppressed).toHaveLength(0);
+
+    // A check that left a warning or a note at its grade changes nothing: the suppression hides it as it would have unchecked.
+    const unchanged = [
+      makeFinding({ severity: 'warning', title: 'Unused variable the check confirmed', refutation: { ...refutation, outcome: 'confirmed' } }),
+      makeFinding({ severity: 'warning', title: 'Unused variable the check left open', refutation, gradePath: [{ from: 'note', to: 'warning', by: 'judge' }] }),
+      makeFinding({ severity: 'note', title: 'Unused variable lead', pairRefutation: refutation }),
+    ];
+    expect(applySuppressions(unchanged, suppressions, true).suppressed.map(f => f.title)).toEqual(unchanged.map(f => f.title));
   });
 
   it('never suppresses ignore-severity findings', () => {

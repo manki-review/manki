@@ -4,7 +4,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { minimatch } from 'minimatch';
 
 import { callTokenService } from './auth';
-import { Finding, FindingSeverity, MemorySkipReason, SECURITY_TAG, UNBUILT_TAG, UNPROVEN_TAG } from './types';
+import { Finding, FindingSeverity, MemorySkipReason, SECURITY_TAG, UNBUILT_TAG, UNPROVEN_TAG, wouldBlockIfTrue } from './types';
 import { redactSecrets, redactSecretsDeep } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -256,8 +256,9 @@ const SUPPRESSIBLE_SEVERITIES: ReadonlySet<FindingSeverity> = new Set<FindingSev
 /**
  * Splits the judge's findings into the ones stored suppressions hide and the rest.
  * A blocker, a security finding at any severity and a tool alert are never hidden. Neither is a blocker posted as a
- * warning because it cited no proof (`UNPROVEN_TAG`) or claims a build failure CI does not report (`UNBUILT_TAG`), nor a
- * finding a refutation checked.
+ * warning because it cited no proof (`UNPROVEN_TAG`) or claims a build failure CI does not report (`UNBUILT_TAG`). A
+ * refutation keeps a finding from being hidden only when it changed the grade or `wouldBlockIfTrue` holds, so a check
+ * that left a warning as it was never undoes a suppression.
  */
 export function applySuppressions(
   findings: Finding[],
@@ -268,7 +269,9 @@ export function applySuppressions(
   const suppressed: Finding[] = [];
 
   for (const finding of findings) {
-    const lowered = [UNPROVEN_TAG, UNBUILT_TAG].some(tag => finding.tags?.includes(tag)) || !!(finding.refutation ?? finding.pairRefutation);
+    const checked = !!(finding.refutation ?? finding.pairRefutation);
+    const lowered = [UNPROVEN_TAG, UNBUILT_TAG].some(tag => finding.tags?.includes(tag))
+      || (checked && (wouldBlockIfTrue(finding) || !!finding.gradePath?.some(step => step.by === 'refutation')));
     if (!SUPPRESSIBLE_SEVERITIES.has(finding.severity) || finding.tags?.includes(SECURITY_TAG) || lowered || finding.toolSource) {
       kept.push(finding);
       continue;
