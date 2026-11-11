@@ -172,6 +172,10 @@ describe('parseFindings', () => {
       // A link or an image counts as its text, whether or not the quote keeps the markup.
       ['PR titles must use Conventional Commits and the badge style.', 'CONTRIBUTING.md'],
       ['PR titles must use [Conventional Commits](https://www.conventionalcommits.org/)', 'CONTRIBUTING.md'],
+      // The file never held what a quote puts in a link target or a reference label, also inside another link.
+      ['Every model change needs [a migration](and sign-off by the release team).', 'CONTRIBUTING.md'],
+      ['Every model change needs ![a migration][and two approvals].', 'CONTRIBUTING.md'],
+      ['Every model change needs [[a migration](x)](and a load test).', 'CONTRIBUTING.md'],
       ['Names must be short.', 'notes.md'],
       // The quote is in another loaded file, in no loaded file, in a file that is not loaded, or too short to be a rule.
       ['Every model change needs a migration.', 'services/api/AGENTS.md'],
@@ -183,9 +187,11 @@ describe('parseFindings', () => {
     const replies = JSON.stringify(rules.map(([rule, ruleFile]) => ({ severity: 'warning', title: 'Rule', file: 'shop/models.py', line: 4, description: 'd', rule, ruleFile })));
     const marked = parseFindings(replies, 'R', instructionFiles);
     expect(marked[0].rule).toEqual({ file: 'CONTRIBUTING.md', quote: 'Every model change needs a migration.' });
-    expect(marked.map(f => f.rule?.file)).toEqual(['CONTRIBUTING.md', 'services/api/AGENTS.md', 'services/api/AGENTS.md', 'CONTRIBUTING.md', 'CONTRIBUTING.md', ...Array(6).fill(undefined)]);
+    expect(marked.map(f => f.rule?.file)).toEqual(['CONTRIBUTING.md', 'services/api/AGENTS.md', 'services/api/AGENTS.md', ...Array(5).fill('CONTRIBUTING.md'), ...Array(6).fill(undefined)]);
+    // The kept quote holds the text of each link only, so nothing the file lacks reaches the judge or the comment.
+    expect(marked.slice(4, 8).map(f => f.rule?.quote)).toEqual(['PR titles must use Conventional Commits', ...Array(3).fill('Every model change needs a migration.')]);
     // Without the instruction files no rule can be checked.
-    expect(parseFindings(replies, 'R').map(f => f.rule)).toEqual(Array(11).fill(undefined));
+    expect(parseFindings(replies, 'R').map(f => f.rule)).toEqual(Array(14).fill(undefined));
   });
 
   it('parses markdown-wrapped JSON', () => {
