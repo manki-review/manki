@@ -31,7 +31,7 @@
       <div class="pillars">
         <div class="pillar">
           <h3>Multi-stage pipeline</h3>
-          <p>Planner, Reviewer, Dedup, Judge. Each stage has a specific job; dedup removes repeats before the judge classifies what survives.</p>
+          <p>Planner, finders, dedup, judge and a verdict reader. Each stage has a specific job: dedup removes repeats before the judge classifies what survives, and the verdict reader reads the diff cold before an approval.</p>
         </div>
         <div class="pillar">
           <h3>Bring your own model</h3>
@@ -187,16 +187,16 @@ jobs:
       <p style="text-align:center;color:#b0b8c4;margin-bottom:32px;">Real reviews on real PRs &mdash; no staged demos.</p>
       <div class="pr-cards">
         <div class="pr-card">
-          <span class="pr-title">run dedup before judge to fix stale summary</span>
-          <a href="https://github.com/manki-review/manki/pull/472" class="pr-link">View review &rarr;</a>
+          <span class="pr-title">report noise figures in the weekly stats</span>
+          <a href="https://github.com/manki-review/manki/pull/1415" class="pr-link">View review &rarr;</a>
         </div>
         <div class="pr-card">
-          <span class="pr-title">embed version in `manki-bot` comment marker</span>
-          <a href="https://github.com/manki-review/manki/pull/468" class="pr-link">View review &rarr;</a>
+          <span class="pr-title">point finders to a related repo's guide</span>
+          <a href="https://github.com/manki-review/manki/pull/1424" class="pr-link">View review &rarr;</a>
         </div>
         <div class="pr-card">
-          <span class="pr-title">progress dashboard — stage grouping, icons, no pre-planner flicker</span>
-          <a href="https://github.com/manki-review/manki/pull/469" class="pr-link">View review &rarr;</a>
+          <span class="pr-title">translate names before the related repo pre-search</span>
+          <a href="https://github.com/manki-review/manki/pull/1432" class="pr-link">View review &rarr;</a>
         </div>
       </div>
     </div>

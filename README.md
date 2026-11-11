@@ -14,7 +14,7 @@
 Manki sizes each review to the nature of the change: one reader for a change where no defect could hide, two readers on different models for one that could reach your users. Dedup drops repeats from prior reviews, a judge filters noise and classifies what remains, and manki learns your team's conventions over time.
 
 <p align="center">
-  <img src="assets/review-example.png" alt="Example manki review comment" width="800" />
+  <img src="assets/review-example.png" alt="Manki's progress comment after a review: the planner's triage, the two finders of the review group with their models, and the judge's result" width="800" />
 </p>
 
 ## Why Manki
@@ -40,7 +40,7 @@ Full setup guide with troubleshooting: **[Getting started](docs/getting-started.
 Manki wakes up when a PR is opened. A fast planner (Haiku) triages the change and sets the effort, one or two finders review it in parallel, dedup drops findings that match repeats from prior reviews, and the judge evaluates and classifies what remains. When nothing blocks, a verdict reader reads the whole diff cold before Manki approves. Results land as inline comments plus a summary and verdict. A finding shows what goes wrong, with everything else in one collapsed section: how to fix it, why it matters, and how it was checked. Its summary names those parts, counts the places read and, for a finding the refuter checked, names the outcome of that check. Inside, up to three places show as GitHub code previews, each under the sentence its check gives, and the rest are linked. A finding that cites nothing says so. When all blocking threads resolve, manki approves.
 
 <p align="center">
-  <img src="assets/pipeline.svg" alt="Manki review pipeline: Planner → Reviewers → Dedup → Judge → Review Posted" />
+  <img src="assets/pipeline.svg" alt="Manki review pipeline: Planner → Finders → Dedup → Judge → Verdict reader → Review posted" />
 </p>
 
 See [How reviews work](docs/how-reviews-work.md#review-pipeline) for the full walkthrough.
