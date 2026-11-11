@@ -344,6 +344,18 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
   for (const entry of round.findings?.unposted ?? []) {
     tally(stats, 'Findings recorded without posting (per reason and severity)', `${entry.preExisting?.check ?? 'no reason recorded'}, ${entry.severity}`);
   }
+  // The record keeps these drops of judged findings as counts, without their severities.
+  const dropCounts = {
+    in_pr_suppression: round.judge?.inPrSuppressedCount,
+    ratchet: round.judge?.ratchetSuppressedCount,
+    resolved_thread: round.judge?.resolvedThreadSuppressedCount,
+    own_proposal: round.judge?.ownProposalDemotedCount,
+    test_file: round.dedup?.testNitSuppressedCount,
+    static_signal: round.dedup?.staticSignalMatches?.length,
+  };
+  for (const [reason, count] of Object.entries(dropCounts)) {
+    if (count) tally(stats, 'Findings recorded without posting (per reason and severity)', `${reason}, severity not recorded`, count);
+  }
   if (round.slicing) {
     stats.slicesPerRound.push(round.slicing.files.length);
     for (const slice of round.slicing.reader ?? []) tally(stats, 'Verdict reader per slice', slice.verdict);

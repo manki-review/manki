@@ -190,8 +190,10 @@ describe('review stats', () => {
       },
       judge: {
         summary: '', fixClaimedThreads: ['T1', 'T2'],
+        inPrSuppressedCount: 1, ratchetSuppressedCount: 2, resolvedThreadSuppressedCount: 3, ownProposalDemotedCount: 4,
         dropped: [{ title: 't', file: 'a', line: 1, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'r' }] }],
       },
+      dedup: { testNitSuppressedCount: 5, staticSignalMatches: [{ droppedTitle: 't', file: 'a', line: 1, tool: 'eslint', ruleId: 'r' }] },
       diff: { lines: 1, additions: 1, deletions: 0, filesReviewed: 1, fileTypes: {}, changedSinceLastRound: 3 },
       memory: { loaded: { learnings: 4, suppressions: 2 }, suppressed: [{ title: 't', file: 'a', line: 1, severity: 'nitpick', suppressionId: 'sup-1' }] },
       slicing: { files: [2, 1], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] },
@@ -231,7 +233,11 @@ describe('review stats', () => {
       'Grade changes': { 'unproven: blocker to warning': 1, 'judge: warning to suggestion': 1, 'refutation: warning to ignore': 1 },
       'Pre-existing claims (how each was checked)': { pre_existing: 1 },
       'Memory suppressions (findings hidden per suppression)': { 'sup-1': 1 },
-      'Findings recorded without posting (per reason and severity)': { 'memory_suppression, nitpick': 1, 'pre_existing, suggestion': 1, 'no reason recorded, nitpick': 1 },
+      'Findings recorded without posting (per reason and severity)': {
+        'memory_suppression, nitpick': 1, 'pre_existing, suggestion': 1, 'no reason recorded, nitpick': 1,
+        'in_pr_suppression, severity not recorded': 1, 'ratchet, severity not recorded': 2, 'resolved_thread, severity not recorded': 3,
+        'own_proposal, severity not recorded': 4, 'test_file, severity not recorded': 5, 'static_signal, severity not recorded': 1,
+      },
       'Verdict reader per slice': { READY: 1, ADDRESS_FIRST: 1 },
       Approvals: { 'held: conflict': 1 },
       'Thread reply decisions': { 'Fixed, stays_open': 1 },
