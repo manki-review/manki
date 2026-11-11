@@ -697,6 +697,9 @@ describe('buildJudgeUserMessage', () => {
     const gone = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [outdated(true)], rounds, '');
     // Where the code is not found, the judge still sees the head's code near the same line.
     expect(gone).toContain("- **Now**: that code is not found in the file any more. The head's code near the same line:\n```\n>>> 12: postReply(thread);\n```");
+    // Code that sits in another changed file is shown there, with the file named.
+    const elsewhere = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [{ ...outdated(false), movedTo: 'src/replies.ts' }], rounds, '');
+    expect(elsewhere).toContain('- **Now**: that code is not found in the file any more. The same code sits in `src/replies.ts` at the head:\n```\n>>> 40: reopen(thread);\n```');
     expect(unpushed).toContain('"Null check missing" at src/foo.ts:10 (earlier blocker, stays open: the push did not change this file)');
     expect(unpushed).toMatch(/"Unused import" at src\/bar\.ts:20\n/);
     expect(unpushed).toMatch(/"Agreed later" at src\/baz\.ts:5\n/);

@@ -67,12 +67,8 @@ export function locatePostedLine(posted: string, line: number, current: string):
   return best;
 }
 
-/**
- * Whether the code around line `line` of `posted` differs from the code around line `now` of `current`, or the code was
- * not found at all (`now` undefined). Indentation does not count.
- */
-export function postedCodeChanged(posted: string, line: number, current: string, now: number | undefined): boolean {
-  if (now === undefined) return true;
+/** Whether the code around line `line` of `posted` differs from the code around line `now` of `current`. Indentation does not count. */
+function postedCodeChanged(posted: string, line: number, current: string, now: number): boolean {
   const old = posted.split('\n');
   const cur = current.split('\n');
   for (let d = -OPEN_THREAD_CODE_WINDOW; d <= OPEN_THREAD_CODE_WINDOW; d++) {
@@ -80,4 +76,18 @@ export function postedCodeChanged(posted: string, line: number, current: string,
     if (was !== undefined && was.trim() !== (cur[now - 1 + d] ?? '').trim()) return true;
   }
   return false;
+}
+
+/**
+ * Returns the one file of `files`, each a path with its content, that holds the whole posted window around line `line`
+ * of `posted` unchanged, and the line there. Returns `undefined` when no file does or several do, since the code's
+ * place is then not certain.
+ */
+export function locatePostedFile(posted: string, line: number, files: Iterable<readonly [string, string]>): { file: string; line: number } | undefined {
+  const held: { file: string; line: number }[] = [];
+  for (const [file, content] of files) {
+    const at = locatePostedLine(posted, line, content);
+    if (at !== undefined && !postedCodeChanged(posted, line, content, at)) held.push({ file, line: at });
+  }
+  return held.length === 1 ? held[0] : undefined;
 }

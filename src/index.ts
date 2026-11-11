@@ -12,7 +12,7 @@ import { REVIEW_COMMAND, runReviewCommand } from './cli';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
-import { extractCurrentCodeWindow, locatePostedLine, postedCodeChanged } from './code-window';
+import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
 import { addCodeContext, changeDigest, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
@@ -1110,6 +1110,10 @@ async function collectOpenThreads(
     }
     // An unchanged file holds the code where it was, however few of its lines could vote.
     const now = old === current ? posted.line : locatePostedLine(old, posted.line, current);
+    // Code that left its file counts as moved only when exactly one other file the PR changes holds it unchanged.
+    const elsewhere = now === undefined
+      ? locatePostedFile(old, posted.line, changedFilePaths.flatMap(p => p !== t.file && fileContents?.has(p) ? [[p, fileContents.get(p)!] as const] : []))
+      : undefined;
     // Where the code is not found, the head's code near the same line still shows what the fix left there.
     const near = now ?? Math.min(posted.line, current.split('\n').length);
     return {
@@ -1117,9 +1121,8 @@ async function collectOpenThreads(
       line: near,
       postedCode: extractCurrentCodeWindow(new Map([[t.file, old]]), t.file, posted.line),
       postedCommit: posted.commit,
-      ...(now === undefined && { postedCodeGone: true }),
-      ...(old !== current && postedCodeChanged(old, posted.line, current, now) && { changedSincePosted: true }),
-      currentCode: extractCurrentCodeWindow(contents, t.file, near),
+      ...(elsewhere ? { movedTo: elsewhere.file } : now === undefined && { postedCodeGone: true }),
+      currentCode: elsewhere ? extractCurrentCodeWindow(fileContents, elsewhere.file, elsewhere.line) : extractCurrentCodeWindow(contents, t.file, near),
     };
   });
   return { openThreads, fileContents };

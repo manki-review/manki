@@ -1,4 +1,4 @@
-import { extractCurrentCodeWindow, locatePostedLine, postedCodeChanged } from './code-window';
+import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
 
 describe('extractCurrentCodeWindow', () => {
   function makeFile(lineCount: number): string {
@@ -100,9 +100,14 @@ describe('locatePostedLine', () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
-  it('tells whether the code around the posted line changed since it was posted', () => {
-    expect(postedCodeChanged(posted, 2, ['// header', ...body.map(l => `  ${l}`)].join('\n'), 3)).toBe(false);
-    expect(postedCodeChanged(posted, 2, posted.replace('return null', 'throw new Error()'), 2)).toBe(true);
-    expect(postedCodeChanged(posted, 2, posted, undefined)).toBe(true);
+  it('finds the posted code in another file only when exactly one holds its whole window unchanged', () => {
+    const whole = ['// header', ...body.map(l => `  ${l}`)].join('\n');
+    const part = posted.replace('return null', 'throw new Error()');
+    expect(locatePostedFile(posted, 2, [['src/part.ts', part], ['src/whole.ts', whole]])).toEqual({ file: 'src/whole.ts', line: 3 });
+    // A file that holds only part of the window does not hold the code, and two files that hold it give no certain place.
+    expect(locatePostedFile(posted, 2, [['src/part.ts', part]])).toBeUndefined();
+    expect(locatePostedFile(posted, 2, [['src/a.ts', whole], ['src/b.ts', posted]])).toBeUndefined();
+    expect(locatePostedFile(posted, 2, [['src/other.ts', 'nothing here']])).toBeUndefined();
+    expect(locatePostedFile(posted, 2, [])).toBeUndefined();
   });
 });

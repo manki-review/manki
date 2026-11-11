@@ -1054,13 +1054,14 @@ export interface OpenThread extends FindingMetadata {
   answer?: string;
   /**
    * For an outdated thread, the code around its finding on the commit it was posted on, `postedCommit`. `currentCode`
-   * then shows where that code sits now, or, when `postedCodeGone` says it is not found, the head's code near the same line.
+   * then shows where that code sits now, in the file `movedTo` names when the code left the thread's own. When
+   * `postedCodeGone` says it is not found, `currentCode` shows the head's code near the same line.
    */
   postedCode?: string;
   postedCommit?: string;
   postedCodeGone?: boolean;
-  /** Whether an outdated thread's code differs at the head from when it was posted, whatever the last push touched. */
-  changedSincePosted?: boolean;
+  /** The one other changed file that holds an outdated thread's posted code unchanged. */
+  movedTo?: string;
 }
 
 /**
