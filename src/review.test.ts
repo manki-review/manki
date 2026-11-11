@@ -3273,8 +3273,9 @@ describe('runReview', () => {
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
     const diff = diffChanging('src/x.ts');
     const openThread = makePriorOpenThread({ severity: 'blocker', threadUrl: 'https://github.com/o/r/pull/1#t1' });
-    const thread = (status: PreviousFinding['status']): PreviousFinding => ({ title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'blocker', status, threadId: 'T1' });
-    const runOn = (clients: ReviewClients, headSha: string, openThreads = [openThread], previousFindings = [thread('open')]) => runReview(
+    const thread = (status: PreviousFinding['status'], reopen = false): PreviousFinding => (
+      { title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'blocker', status, threadId: 'T1', ...(reopen && { reopen }) });
+    const runOn = (clients: ReviewClients, headSha: string, openThreads = [openThread], previousFindings = [thread('open')], priorRounds = [prior]) => runReview(
       clients, {
         config: makeConfig(),
         diff,
@@ -3283,7 +3284,7 @@ describe('runReview', () => {
         isFollowUp: true,
         openThreads,
         previousFindings,
-        priorRounds: [prior],
+        priorRounds,
         headSha,
       },
     );
@@ -3296,27 +3297,44 @@ describe('runReview', () => {
     expect(rebased.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', threadId: 'T1' })]);
     expect(rebased.fixClaimedThreadIds).toEqual([]);
 
-    const replied = await runOn(makeClients(), 'sha2', [openThread], [thread('replied')]);
-    expect(replied.outcome).toBe('NOT_CONVERGING');
-    // The round records the threads where someone claimed a fix.
-    expect(replied.fixClaimedThreadIds).toEqual(['T1']);
-    expect(replied.verdict).toBe('REQUEST_CHANGES');
-    expect(replied.needsHuman).toEqual({
-      cause: 'repeated',
-      blockers: [expect.objectContaining({ title: 'Old issue', file: 'src/x.ts', line: 10, round: 1, threadUrl: 'https://github.com/o/r/pull/1#t1' })],
-    });
+    // Nobody claims a fix by replying in the thread, nor does the PR author by resolving it, which leaves a blocker
+    // thread open. Each still requests changes, and none pauses automatic review.
+    for (const [status, authorResolved] of [['replied', false], ['open', true], ['replied', true]] as const) {
+      const unclaimed = await runOn(makeClients(), 'sha2', [openThread], [thread(status, authorResolved)]);
+      expect([status, authorResolved, unclaimed.outcome, unclaimed.verdict]).toEqual([status, authorResolved, 'ADDRESS_FIRST', 'REQUEST_CHANGES']);
+      expect(unclaimed.needsHuman).toBeUndefined();
+      expect(unclaimed.fixClaimedThreadIds).toEqual([]);
+      expect(unclaimed.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', threadId: 'T1' })]);
+    }
 
-    // A resolved thread is a fix claim too. Its blocker is posted again, since no open thread carries it.
+    // A thread that counts as resolved, as when a maintainer other than the author resolved it, is a fix claim. Its
+    // blocker is posted again, since no open thread carries it.
     const resolved = await runOn(makeClients(), 'sha2', [], [thread('resolved')]);
     expect(resolved.outcome).toBe('NOT_CONVERGING');
+    // The round records the threads where a fix was claimed.
+    expect(resolved.fixClaimedThreadIds).toEqual(['T1']);
+    expect(resolved.verdict).toBe('REQUEST_CHANGES');
+    expect(resolved.needsHuman).toEqual({
+      cause: 'repeated',
+      blockers: [expect.objectContaining({ title: 'Old issue', file: 'src/x.ts', line: 10, round: 1 })],
+    });
     expect(resolved.findings[0].threadId).toBeUndefined();
 
-    const samePush = await runOn(makeClients(), 'sha1', [openThread], [thread('replied')]);
+    // So is a fix an earlier round confirmed, also when the thread is open again.
+    const confirmed: RoundContext = { ...buildPriorRound(2, []), judge: { summary: 'Fixed.', threadEvaluations: [{ threadId: 'T1', status: 'addressed', reason: 'The check is in place.' }] } };
+    const cameBack = await runOn(makeClients(), 'sha3', [openThread], [thread('open')], [prior, confirmed]);
+    expect(cameBack.outcome).toBe('NOT_CONVERGING');
+    expect(cameBack.needsHuman).toEqual({
+      cause: 'repeated',
+      blockers: [expect.objectContaining({ title: 'Old issue', round: 1, threadUrl: 'https://github.com/o/r/pull/1#t1' })],
+    });
+
+    const samePush = await runOn(makeClients(), 'sha1', [], [thread('resolved')]);
     expect(samePush.outcome).toBe('ADDRESS_FIRST');
     expect(samePush.needsHuman).toBeUndefined();
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...repeat, sameAs: undefined }], summary: 'New bug.' });
-    const unrelated = await runOn(makeClients(), 'sha2', [openThread], [thread('replied')]);
+    const unrelated = await runOn(makeClients(), 'sha2', [], [thread('resolved')]);
     expect(unrelated.outcome).toBe('ADDRESS_FIRST');
     expect(unrelated.findings[0].threadId).toBeUndefined();
 

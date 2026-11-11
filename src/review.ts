@@ -2388,9 +2388,9 @@ function readyReason(findings: Finding[]): VerdictReason {
 }
 
 /**
- * Returns the prior blockers that a blocker in `findings` names again after someone claimed a fix.
+ * Returns the prior blockers that a blocker in `findings` names again after a fix was claimed.
  * A claim is a thread ID in `fixClaimed`. A prior blocker last raised on `headSha` saw no push since, so it is left out.
- * A blocker named again while its thread is still open and unanswered is still open, not repeated.
+ * A blocker named again while its thread is still open is still open, not repeated.
  */
 function findRepeatedBlockers(findings: Finding[], priorBlockers: PriorFinding[], headSha: string | undefined, fixClaimed: Set<string>): PriorFinding[] {
   if (!headSha) return [];
@@ -2400,14 +2400,16 @@ function findRepeatedBlockers(findings: Finding[], priorBlockers: PriorFinding[]
 }
 
 /**
- * Returns the IDs of the threads where someone claimed a fix: the thread was resolved, a human replied in it,
- * or an earlier round confirmed the fix. With `openThreads` unknown, a thread missing from it proves nothing.
+ * Returns the IDs of the threads where a fix was claimed: an earlier round confirmed the fix, or the thread counts as
+ * resolved or is gone. A reply in a thread claims no fix, whoever wrote it. Neither does the PR author resolving a
+ * guarded thread, which keeps the status `open` or `replied`. With `openThreads` unknown, a thread missing from it
+ * proves nothing.
  */
 function fixClaimedThreadIds(previousFindings: PreviousFinding[] | undefined, openThreads: OpenThread[] | null | undefined, priorRounds: RoundContext[]): Set<string> {
   const claimed = judgeAddressedThreadIds(priorRounds);
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   for (const f of previousFindings ?? []) {
-    if (f.threadId && (f.status !== 'open' || f.reopen)) claimed.add(f.threadId);
+    if (f.threadId && f.status !== 'open' && f.status !== 'replied') claimed.add(f.threadId);
   }
   if (openThreads) {
     for (const p of priorRounds.flatMap(r => r.findings.entries)) {
