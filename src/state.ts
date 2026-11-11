@@ -412,7 +412,7 @@ const NEXT_ROUND_LINE = 'The next review round decides. Push a commit or comment
  * lift that round's block, and `named` holds the threads the round's record names for its blockers. A thread carries a
  * blocker when the record gives its `threadId` and the thread exists, or says the round posted it as a thread of its
  * own. Anything else is unknown and holds the approval: a record that cannot be read, a round that blocked without
- * naming a blocker, and a blocker the round listed only in its review body.
+ * naming a blocker, and a blocker the record names no thread for.
  */
 function blockOf(
   reviews: ReviewEntry[], bot: BotIdentity, commitSha: string, threads: ReviewThread[], owner: string, repo: string, prNumber: number,
@@ -436,8 +436,8 @@ function blockOf(
   const loose = blockers.filter(b => !b.ownThread && !(b.threadId && live.has(b.threadId)));
   if (loose.length === 0) return { named };
   const list = loose.map(b => `- ${sanitizeMarkdown(b.title ?? 'Untitled blocker')}${b.file ? ` (${inline(b.file)})` : ''}`).join('\n');
-  const count = loose.length === 1 ? '1 blocker that no review thread carries' : `${loose.length} blockers that no review thread carries`;
-  return { held: `Manki's review of ${sha} blocks on ${count}, so resolving threads cannot lift it:\n${list}`, named };
+  const count = loose.length === 1 ? '1 blocker' : `${loose.length} blockers`;
+  return { held: `The record of Manki's review of ${sha} names no thread for ${count}, so resolving threads cannot lift the block:\n${list}`, named };
 }
 
 /** Returns why auto-approve has to wait because no Manki review covers the head yet, or `undefined` when one does. */

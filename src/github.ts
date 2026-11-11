@@ -1488,18 +1488,19 @@ function formatReplyFinding(finding: Finding): string[] {
   ];
 }
 
-/** Whether an unresolved Manki thread was already posted for this finding. */
-function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): boolean {
+/** Returns the ID of the unresolved Manki thread already posted for this finding, unless the finding is posted on its own. */
+function openThreadFor(finding: Finding, existingThreads: PreviousFinding[]): string | undefined {
+  if (finding.ownThread) return undefined;
   const open = existingThreads.filter(t => t.status !== 'resolved' && t.threadId && t.markerSlug);
   const fingerprint = { file: finding.file, lineStart: finding.line, lineEnd: finding.line, slug: titleToSlug(finding.title) };
-  return findPriorThreadId(fingerprint, open) !== undefined;
+  return findPriorThreadId(fingerprint, open);
 }
 
-/** Returns why an earlier thread carries a non-blocking finding, which is then not posted again. */
-function carriedBy(finding: Finding, existingThreads: PreviousFinding[]): string | undefined {
+/** Returns why an earlier thread carries a non-blocking finding, which is then not posted again. `matched` is its `openThreadFor`. */
+function carriedBy(finding: Finding, matched: string | undefined): string | undefined {
   if (finding.answeredIn) return `it goes as a reply in its answered thread ${finding.answeredIn.threadId}`;
   if (finding.threadId) return `${finding.variantOf ? 'it goes as a reply in' : 'it restates'} the open thread ${finding.threadId}`;
-  return !finding.ownThread && hasOpenThread(finding, existingThreads) ? 'an open thread already carries it' : undefined;
+  return matched ? `the open thread ${matched} already carries it` : undefined;
 }
 
 /**
@@ -1509,7 +1510,7 @@ function carriedBy(finding: Finding, existingThreads: PreviousFinding[]): string
  * listed, so it stays in place and counts toward no limit.
  */
 export function capNotes(result: ReviewResult, existingThreads: PreviousFinding[], limit = DEFAULT_NOTES): void {
-  const listable = new Set(result.findings.filter(f => isListedNote(f) && !carriedBy(f, existingThreads)));
+  const listable = new Set(result.findings.filter(f => isListedNote(f) && !carriedBy(f, openThreadFor(f, existingThreads))));
   const rank = (f: Finding): number => f.noteRank ?? Number.MAX_SAFE_INTEGER;
   const ordered = [...listable].sort((a, b) => rank(a) - rank(b));
   const capped = new Set(ordered.filter(canLeaveOut).slice(limit));
@@ -1596,6 +1597,8 @@ export async function postReview(
   const notes: Finding[] = [];
   /** The blockers the body shows because no thread can hold them. */
   const unthreaded: Finding[] = [];
+  /** The findings left to an open thread that matches them, with that thread's ID, which the record keeps. */
+  const leftTo = new Map<Finding, string>();
   let carriedBlockers = 0;
   const carriedThreadIds = new Set<string>();
   const nonBlocking: Finding[] = [];
@@ -1609,10 +1612,12 @@ export async function postReview(
   const links: CodeLinks = { linkTo, files, changed };
 
   for (const f of result.findings) {
+    const matched = openThreadFor(f, existingThreads);
     if (!isBlockingFinding(f)) {
-      const carried = carriedBy(f, existingThreads);
+      const carried = carriedBy(f, matched);
       if (carried) {
         core.info(`Skipping "${f.title}" on ${f.file}: ${carried}`);
+        if (matched) leftTo.set(f, matched);
       } else if (isListedNote(f)) {
         notes.push(f);
       } else if (isPreExisting(f) || f.origin === 'reviewed' || f.origin === 'earlier') {
@@ -1656,8 +1661,9 @@ export async function postReview(
     } else if (!diffFile) {
       invalidComments.push(formatFindingBlock(f, links, true));
       unthreaded.push(f);
-    } else if (!f.ownThread && hasOpenThread(f, existingThreads)) {
-      core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: an open thread already carries it`);
+    } else if (matched) {
+      core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
+      leftTo.set(f, matched);
     } else {
       fileComments.push({ path: f.file, body: commentBody, finding: f });
       threadFindings.push(f);
@@ -1746,7 +1752,8 @@ export async function postReview(
     const recordPlace = (entry: FindingFingerprintEntry, f: Finding): FindingFingerprintEntry => {
       const posted = placeOf(f);
       const cited = posted === 'body' && f.severity === 'warning' ? citedLine(files.get(f.file), f.line) : undefined;
-      return { ...entry, posted, ...(cited && { citedLine: cited }) };
+      const threadId = entry.threadId ?? (posted === 'earlier_thread' ? leftTo.get(f) : undefined);
+      return { ...entry, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }) };
     };
     return (context
       ? formatRecordTrailer({

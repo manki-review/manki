@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { areAllFindingsResolved, fetchBotReviewThreads, fixedMarker, checkAndAutoApprove, explainUncarriedBlockers, explainUnreviewedHead, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
-import { formatFindingComment } from './github';
+import { formatFindingComment, postReview, titleToSlug } from './github';
 import { extractApprovalRecords, formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG } from './config';
 import { determineOutcome } from './review';
@@ -485,7 +485,7 @@ describe('checkAndAutoApprove', () => {
     const thread = (id: string, severity: 'blocker' | 'warning' | 'note', resolvedBy?: string) =>
       makeGraphqlFetchThreadNode({ id, body: `<!-- manki:${severity}:${id} --> ${id}`, isResolved: !!resolvedBy, ...(resolvedBy && { resolvedBy }) });
     const fixed = (id = 't1', severity: 'blocker' | 'warning' = 'blocker') => thread(id, severity, 'manki-review[bot]');
-    const NO_THREAD = 'blocks on 1 blocker that no review thread carries, so resolving threads cannot lift it:\n- Lock is never released (`src/lock.ts`)';
+    const NO_THREAD = 'names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
     const UNREAD = 'Manki cannot read the record of its review of `head-sh`, so it cannot tell what that review blocked on.';
     const UNNAMED = 'The record of Manki\'s review of `head-sh` does not say what it blocked on.';
 
@@ -493,7 +493,7 @@ describe('checkAndAutoApprove', () => {
       ['a new blocker on a changed line, its thread resolved', blocked([blocker({ posted: 'thread' })]), [fixed()], true],
       ['a new blocker on a changed line, its thread open', blocked([blocker({ posted: 'thread' })]), [thread('t1', 'blocker')], 'Not all blocking findings resolved'],
       ['a new blocker in a changed file outside the hunks, its file-level thread resolved', blocked([blocker({ posted: 'thread', lineStart: 0 })]), [fixed()], true],
-      ['a new blocker with no file or line, listed in the body', blocked([blocker({ posted: 'body', file: '', lineStart: 0 })]), [], 'no review thread carries, so resolving threads cannot lift it:\n- Lock is never released'],
+      ['a new blocker with no file or line, listed in the body', blocked([blocker({ posted: 'body', file: '', lineStart: 0 })]), [], 'names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released'],
       ['a new blocker in a file outside the diff, listed in the body', blocked([blocker({ posted: 'body' })]), [fixed('t0')], NO_THREAD],
       ['a blocker that restates an earlier warning thread, resolved', blocked([blocker({ posted: 'earlier_thread', threadId: 't1' })]), [fixed('t1', 'warning')], true],
       ['a blocker that restates an earlier warning thread, still open', blocked([blocker({ posted: 'earlier_thread', threadId: 't1' })]), [thread('t1', 'warning')], 'Not all blocking findings resolved'],
@@ -505,7 +505,7 @@ describe('checkAndAutoApprove', () => {
       ['a verdict reader blocker with a thread, resolved', blocked([blocker({ posted: 'thread' })], [], 'verdict_reader'), [fixed()], true],
       ['a verdict reader blocker listed in the body', blocked([blocker({ posted: 'body' })], [], 'verdict_reader'), [], NO_THREAD],
       ['a blocker GitHub refused as a thread', blocked([blocker({ posted: 'body' }), blocker({ posted: 'thread', title: 'Other' })]), [fixed()], NO_THREAD],
-      ['a blocker left to an open thread at its place that the record does not name', blocked([blocker({ posted: 'earlier_thread' })]), [thread('t1', 'warning')], NO_THREAD],
+      ['a blocker an older record left to an open thread without naming it', blocked([blocker({ posted: 'earlier_thread' })]), [fixed('t1', 'warning')], NO_THREAD],
       ['a blocker only the record keeps', blocked([blocker({ posted: 'record' })]), [], NO_THREAD],
       ['a blocker of a record written before `posted`', blocked([blocker()]), [fixed()], NO_THREAD],
       ['a round that blocked without naming a blocker', blocked([]), [fixed()], UNNAMED],
@@ -532,6 +532,33 @@ describe('checkAndAutoApprove', () => {
       if (outcome !== true) expect(infoSpy.mock.calls.map(([line]) => line).join('\n')).toContain(outcome);
     });
 
+    it('approves a blocker left to an open thread at its place once that thread is resolved', async () => {
+      const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+      const title = 'Lock is never released';
+      // The blocker sits outside the hunks of its file, where an open warning thread with its title already is.
+      const posted = jest.fn().mockResolvedValue({ data: { id: 7 } });
+      const postedComment = jest.fn().mockResolvedValue({ data: { id: 70 } });
+      await postReview({ rest: { pulls: { createReview: posted, createReviewComment: postedComment } } } as unknown as Octokit, 'owner', 'repo', 1, HEAD,
+        { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: '', findings: [{ severity: 'blocker', title, file: 'src/lock.ts', line: 40, description: 'd', reviewers: [] }], highlights: [], reviewComplete: true, agentNames: [] },
+        { files: [{ path: 'src/lock.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3, content: '' }] }], totalAdditions: 1, totalDeletions: 0 },
+        blockingRound(HEAD, { findings: { count: 1, severityCounts: {}, entries: [blocker({ lineStart: 40 })] } }), undefined,
+        { existingThreads: [{ title, file: 'src/lock.ts', line: 0, severity: 'warning', status: 'open', threadId: 't1', markerSlug: titleToSlug(title) }] });
+      expect(postedComment).not.toHaveBeenCalled();
+      const body = posted.mock.calls[0][0].body as string;
+
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const check = (threads: ReturnType<typeof thread>[]) => {
+        const octokit = makeMockOctokit({ threads, prHeadSha: HEAD, mergeable: true, createReviewFn: createReviewMock, existingReviews: [{ id: 7, body, state: 'CHANGES_REQUESTED', commit_id: HEAD, user }] });
+        return Promise.all([checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG), explainUncarriedBlockers(octokit, TEST_BOT, 'owner', 'repo', 1, threads.map(t => makeThread({ id: t.id })))]);
+      };
+      // The record names the thread, so it blocks though its own marker says warning, and the check reply names no missing thread.
+      expect(await check([thread('t1', 'warning')])).toEqual([false, undefined]);
+      expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('Not all blocking findings resolved'));
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(await check([fixed('t1', 'warning')])).toEqual([true, undefined]);
+      expect(createReviewMock.mock.calls.map(([args]) => args.event)).toEqual(['APPROVE']);
+    });
+
     it('never approves a blocker without a thread from the review its own round submits, as on a body-only blocker carried after a fix push', async () => {
       const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
       const createReviewMock = jest.fn().mockResolvedValue({});
@@ -554,7 +581,7 @@ describe('checkAndAutoApprove', () => {
       expect(await check('sha-2', reviews, threads)).toBe(false);
 
       expect(createReviewMock).not.toHaveBeenCalled();
-      const told = 'Manki\'s review of `sha-2` blocks on 1 blocker that no review thread carries, so resolving threads cannot lift it:\n- Persisters miss the lock (`src/store.ts`)';
+      const told = 'The record of Manki\'s review of `sha-2` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Persisters miss the lock (`src/store.ts`)';
       expect(infoSpy).toHaveBeenLastCalledWith(`${told}\nSkipping auto-approve, the next review round decides`);
       // The `check` command gets the same reason, and nothing to say once threads carry every blocker.
       const explain = (existingReviews: typeof reviews) => explainUncarriedBlockers(

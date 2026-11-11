@@ -1227,13 +1227,13 @@ describe('handleCheck (via handlePRComment)', () => {
 
     // Resolving the thread does not approve while the review also blocks on a blocker no thread carries, so the reply says so.
     const open = [{ findingTitle: 'Null deref', isBlocking: true, isResolved: false }];
-    const uncarried = 'Manki\'s review of `abc1234` blocks on 1 blocker that no review thread carries, so resolving threads cannot lift it:\n- Lock is never released (`src/lock.ts`)\n\nThe next review round decides.';
+    const uncarried = 'The record of Manki\'s review of `abc1234` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)\n\nThe next review round decides.';
     (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce(open);
     (state.explainUncarriedBlockers as jest.Mock).mockResolvedValueOnce(uncarried);
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig);
     expect(state.explainUncarriedBlockers).toHaveBeenLastCalledWith(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, open);
     expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
-      expect.objectContaining({ body: expect.stringMatching(/^1 blocking thread is still open:\n- Null deref\n\nManki's review of `abc1234` blocks on 1 blocker that no review thread carries[^]*The next review round decides\.\n/) }),
+      expect.objectContaining({ body: expect.stringMatching(/^1 blocking thread is still open:\n- Null deref\n\nThe record of Manki's review of `abc1234` names no thread for 1 blocker[^]*The next review round decides\.\n/) }),
     );
   });
 
@@ -1258,10 +1258,10 @@ describe('handleCheck (via handlePRComment)', () => {
 
     // A blocker no thread carries is named before anything else, since no thread is open to point at.
     (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce([]);
-    (state.explainUncarriedBlockers as jest.Mock).mockResolvedValueOnce('Manki\'s review of `abc1234` blocks on 1 blocker that no review thread carries.');
+    (state.explainUncarriedBlockers as jest.Mock).mockResolvedValueOnce('The record of Manki\'s review of `abc1234` names no thread for 1 blocker.');
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, config);
     expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
-      expect.objectContaining({ body: expect.stringMatching(/^Manki's review of `abc1234` blocks on 1 blocker that no review thread carries\.\n/) }),
+      expect.objectContaining({ body: expect.stringMatching(/^The record of Manki's review of `abc1234` names no thread for 1 blocker\.\n/) }),
     );
 
     // A lookup that fails still gets the generic reply.
