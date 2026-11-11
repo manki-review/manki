@@ -2143,6 +2143,10 @@ describe('runJudgeAgent', () => {
     expect(plain.findings.map(f => [f.severity, f.rule])).toEqual([['note', undefined]]);
     expect(mockSendMessage.mock.calls.at(-1)![0]).not.toMatch(/Rule Findings|ruleBroken|ruleUnseen|Quoted rule/);
     expect(mockSendMessage.mock.calls.at(-1)![1]).not.toContain('not shown to you');
+    // Its prompts are the same, byte for byte, as without the files the judge is not shown.
+    const sent = mockSendMessage.mock.calls.at(-1)!.slice(0, 2);
+    await runJudgeAgent(mockClient, makeConfig({ review: { rules: 'block' } }), { ...input, diff: makeDiff(), excludedPaths: undefined, findings: [findings[8]] });
+    expect(mockSendMessage.mock.calls.at(-1)!.slice(0, 2)).toEqual(sent);
   });
 
   it('settles an unproven rule from the fact the judge could not see alone, whatever the refuter says about the damage, and keeps a confirmed rule finding whose damage it disproves', async () => {

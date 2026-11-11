@@ -146,6 +146,10 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: givenBack })).toContain(blocksByRule);
     // A warning, and a blocker whose own damage blocks, name the rule without the reason for blocking.
     expect(render({ ...baseFinding, severity: 'warning', rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] })).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
+    // A rule warning on code an earlier round reviewed says so under its title and names the rule the same way.
+    const late = render({ ...baseFinding, severity: 'warning', origin: 'reviewed', tags: ['follow-up'], rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] });
+    expect(late).toContain("_An earlier round already reviewed these lines and missed this, and it doesn't block this PR._\n\n");
+    expect(late).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
     expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, cell: { row: 'severe', column: 'normal' } })).toContain(`**Repository rule**\n${ruleLine}\n\n**Checked in the code**`);
     // A quote with a hidden character is not printed, and a rule the judge did not confirm gives no line.
     expect(render({ ...baseFinding, severity: 'warning', rule: { file: 'AGENTS.md', quote: 'Every\u202E change needs a test.', verdict: 'confirmed' } })).toContain('**Repository rule:** This PR breaks a required rule of `AGENTS.md`.\n');
