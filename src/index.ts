@@ -1093,12 +1093,14 @@ async function collectOpenThreads(
   const changedFilePaths = diff.files
     .filter(f => f.changeType !== 'deleted')
     .map(f => f.path);
-  const threadFilePaths = baseOpenThreads.map(t => t.file).filter(p => !changedFilePaths.includes(p));
+  // A thread tied to no file has no code to fetch.
+  const threadFiles = baseOpenThreads.flatMap(t => (t.file ? [t.file] : []));
+  const threadFilePaths = threadFiles.filter(p => !changedFilePaths.includes(p));
   // The prompts read a parsed lockfile's package list, never the file, so it stays out of the shared budget.
   // Only a thread on it reads the file, for its window.
   const parsed = new Set(lockfiles.map(l => l.path));
   const filePaths = [...changedFilePaths, ...threadFilePaths].filter(p => !parsed.has(p));
-  const lockfileThreadPaths = [...new Set(baseOpenThreads.map(t => t.file).filter(p => parsed.has(p)))];
+  const lockfileThreadPaths = [...new Set(threadFiles.filter(p => parsed.has(p)))];
   let fileContents: Map<string, string> | undefined;
   let lockfileContents: Map<string, string> | undefined;
   try {
@@ -1113,7 +1115,7 @@ async function collectOpenThreads(
   // An outdated thread has no line at the head, so the judge sees the code it named when posted and where that code is now.
   const postedAt = new Map(recap.previousFindings.flatMap(f => {
     const line = f.findingLine ?? f.originalLine;
-    return f.threadId && !f.line && f.originalCommit && line ? [[f.threadId, { commit: f.originalCommit, line }] as const] : [];
+    return f.threadId && f.file && !f.line && f.originalCommit && line ? [[f.threadId, { commit: f.originalCommit, line }] as const] : [];
   }));
   const postedContents = new Map(await Promise.all([...new Set([...postedAt.values()].map(p => p.commit))].map(async commit => {
     const files = [...new Set(baseOpenThreads.filter(t => postedAt.get(t.threadId)?.commit === commit).map(t => t.file))];

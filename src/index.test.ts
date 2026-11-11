@@ -5268,6 +5268,9 @@ describe('runFullReview orchestration', () => {
     const previousFindings = [
       { title: 'Issue in changed', file: 'src/app.ts', line: 3, severity: 'note' as const, status: 'open' as const, threadId: 'PRRT_dup' },
       { title: 'Issue in unchanged', file: 'src/other.ts', line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_new' },
+      // A thread tied to no file has no code to fetch, at the head or on the commit it was posted on.
+      { title: 'Design issue', file: '', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile' },
+      { title: 'Outdated design issue', file: '', line: 0, originalLine: 1, originalCommit: 'c0ffee', severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_nofile_old' },
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
@@ -5279,6 +5282,8 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledTimes(1);
     const fetchCall = jest.mocked(ghUtils.fetchFileContents).mock.calls[0];
     const requestedPaths = fetchCall[4];
+    expect(requestedPaths).not.toContain('');
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads?.filter(t => !t.file).map(t => [t.threadId, t.line, t.currentCode])).toEqual([['PRRT_nofile', 1, ''], ['PRRT_nofile_old', 0, '']]);
     // Both files present, no duplicate of `src/app.ts`
     expect(requestedPaths).toContain('src/app.ts');
     expect(requestedPaths).toContain('src/other.ts');
