@@ -7,6 +7,8 @@ import { isMap, isScalar, parseDocument } from 'yaml';
 import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
+import { printableError } from './cli';
+import { cutLegacyCommands, sanitizeLogOutput } from './providers';
 import type { LLMClient } from './providers';
 import { buildLLMClient } from './review-clients';
 import type { Finding, FindingSeverity, RoundContext, RoundOutcome } from './types';
@@ -829,6 +831,24 @@ describe('runBench and buildReport', () => {
     } finally {
       out.mockRestore();
       err.mockRestore();
+    }
+  });
+
+  it('prints long runs of blank lines, spaces, tabs and carriage returns in outside text without slowing down', async () => {
+    const took = (work: () => unknown) => {
+      const start = performance.now();
+      work();
+      return performance.now() - start;
+    };
+    for (const unit of ['\n', ' ', '\t', '\r', ' \t\r\n\n \r']) {
+      const long = `x${unit.repeat(Math.ceil(200_000 / unit.length))}y`;
+      const run = await scoreRun(benchCase, makeReview('ADDRESS_FIRST', [makeFinding({ severity: 'blocker', title: long, file: long, description: long })]), async () => ({ verdict: 'NONE', findings: [], reason: 'none' }));
+      const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase: { ...benchCase, source: long }, runs: [{ ...run, error: long }] }] }]);
+      // Each takes a few milliseconds. A pattern whose whitespace class crosses line breaks takes many seconds on a run of this length.
+      for (const print of [() => sanitizeLogOutput(long), () => cutLegacyCommands(long), () => printableError(new Error(long)), () => formatUnmatched(report.variants), () => formatBenchSummary(report)]) {
+        expect(took(print)).toBeLessThan(2000);
+      }
+      expect(formatUnmatched(report.variants)).toContain('Unmatched blockers on tuning cases');
     }
   });
 
