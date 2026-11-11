@@ -11,6 +11,65 @@ body: |
   - `stop()` joins them after releasing the `sync_loop` lock, which they take themselves. With the loop already taken, they return without acting.
 
   Closes upstream issue 1171
+# Overrides the repository's `.manki.yml` at the base, which sets `critical` on classes and no longer loads. Holds the
+# settings the repository uses now, which name the same paths in `review.critical_paths`.
+config:
+  auto_review: true
+  auto_approve: true
+  exclude_paths:
+    - "*.lock"
+    - "dist/**"
+    - "*.generated.*"
+    - "fuzz/**"
+  skip_authors: ["dependabot[bot]", "github-actions[bot]"]
+  instructions: |
+    This is a Rust implementation of the Dash cryptocurrency protocol.
+    Pay special attention to:
+    - Consensus-critical code paths — changes here can cause chain splits
+    - Proper error handling — prefer Result over unwrap/expect in library code
+    - DIP (Dash Improvement Proposal) compliance for protocol changes
+    - Memory safety in hash/crypto implementations
+  review:
+    classes:
+      security:
+        match: { paths_any: ["key-wallet/**", "key-wallet-manager/**", "dash/src/crypto/**", "crypto/**"] }
+      wallet:
+        rank: 86
+        match: { paths_any: ["key-wallet/**", "key-wallet-manager/**", "dash/src/crypto/**", "crypto/**"] }
+      consensus:
+        rank: 85
+        match: { paths_any: ["dash/src/consensus/**", "dash/src/blockdata/**", "dash/src/sml/**", "dash/src/merkle_tree/**", "hashes/**"] }
+    routing:
+      wallet: pair
+      consensus: pair
+    critical_paths: ["key-wallet/**", "key-wallet-manager/**", "dash/src/crypto/**", "crypto/**", "dash/src/consensus/**", "dash/src/blockdata/**", "dash/src/sml/**", "dash/src/merkle_tree/**", "hashes/**"]
+    outside_input: >-
+      Anything a network peer sends: P2P messages, blocks, transactions, headers,
+      masternode list diffs and the length prefixes inside them. Responses from a
+      Dash Core RPC server. Files read from disk, such as stored headers, filters
+      and wallet data.
+    examples:
+      blocker:
+        - "Indexing `buf[len]` with a length read from a peer message panics on a short message."
+        - "`Vec::with_capacity` sized by a count a peer sends lets one message allocate gigabytes."
+        - "Changing the field order in a `consensus_encode` implementation changes the bytes on the wire, even when every test passes."
+        - "A signature check whose failure is ignored accepts a forged message."
+        - "An inverted peer selection weight, such as `score + offset` where a lower score is better, picks misbehaving peers more often than well-behaved ones."
+      not_blocker:
+        - "A `todo!()` the PR states is intentional: `suggestion` at most."
+        - "An `expect` right after a bounds check that proves it cannot fail."
+        - "A missing test for new code: `suggestion`."
+        - "A missing `#[must_use]` or missing docs: `nitpick`."
+  related_repos:
+    - { repo: dashpay/dash, kind: reference, paths: [src/] }
+    - { repo: dashpay/dips, kind: reference }
+    - { repo: dashpay/platform, kind: consumer, paths: ["packages/rs-*"] }
+    - { repo: dashpay/dash-evo-tool, kind: consumer }
+  static_analysis:
+    analyzers:
+      secrets: true
+  memory:
+    enabled: true
 key_version: 2
 must_catch:
   - id: K1

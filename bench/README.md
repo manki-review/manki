@@ -65,7 +65,7 @@ A false blocker is either a wrong blocker or a real defect the key does not list
 
 ## Comparing setups
 
-`--variant <name>=<file>` scores one setup: the YAML file holds config set on top of each case's base `.manki.yml`, where mappings merge key by key and any other value replaces. `--variant <name>` without a file runs the base config as it is. Repeat it to score several setups on the same cases in one run. `--set <key.path>=<value>` sets one value, read as YAML, on top of every variant. Paths are relative to this checkout, since `npm run` starts there.
+`--variant <name>=<file>` scores one setup: the YAML file holds config set on top of each case's config, where mappings merge key by key and any other value replaces. A case's config is its own `config:` block, or else its base `.manki.yml`. `--variant <name>` without a file runs that config as it is. Repeat it to score several setups on the same cases in one run. `--set <key.path>=<value>` sets one value, read as YAML, on top of every variant. Paths are relative to this checkout, since `npm run` starts there.
 
 ```sh
 npm run bench -- $CHECKOUTS --variant base --variant opus-pair=bench/variants/opus-pair.yml
@@ -131,6 +131,22 @@ must_catch: []                           # problems still in the code or brought
 ```
 
 An earlier open thread the key does not list should stay open. List an earlier finding the push leaves in place under `must_not_repeat`, unless the round should regrade it: then it is a `must_catch` item at the grade it earns. A ref older than follow-up support reviews such a case as a first round, so the release gate leaves out a case one side scored as a follow-up round and the other as a first round, and lists it.
+
+### A case's own config
+
+A case is reviewed with the `.manki.yml` its repository holds at the base. When a Manki release changes the config format, that file may no longer load. Such a case gets a `config:` block that holds the same settings in the current format:
+
+```yaml
+# Overrides the repository's `.manki.yml` at the base, which no longer loads. Same settings in the current format.
+config:
+  instructions: Pay attention to the wallet code.
+  review:
+    critical_paths: ["wallet/**"]
+```
+
+The bench reviews the case with this block in place of the repository's file, and a variant's overrides are set on top of it. The block can drift from what the repository uses, so keep it to a translation and say in a comment above it that it overrides the repository's config. A ref that does not know `config:` ignores it and reads the repository's file. The block is the one place in a case file that may name a repository of the upstream organisation, since `related_repos` lists them. A linked `owner/repo#N` reference to another repository stays out of it too.
+
+A case whose config does not load, its own or the repository's, gets no review. Each of its runs is recorded as `CONFIG_INVALID` with the reason and counts as incomplete, and the `Config invalid` row of the summary table names the case. So a config format change never drops a case without a trace, and the release gate decides nothing while a hold-out case is in that state, naming the case.
 
 A new case comes from a merged pull request in a public repository. Its head is the commit a review saw before a later commit fixed the defect, and each `must_catch` item is checked against the code at that head, with the fixing commit in `fix`. A clean case is a pull request merged as first pushed, with no later fix to its code. Put a new case in the set that needs it more, and never move a hold-out case into tuning to debug it.
 
