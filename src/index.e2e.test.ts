@@ -382,7 +382,7 @@ const READY_REPLIES: Record<Stage, string> = {
 const BLOCKER = { severity: 'blocker', title: 'Sum is never range checked', file: 'src/math.ts', line: 2, description: 'Large inputs overflow silently.', suggestedFix: 'Check the range before adding.', proof: ['src/math.ts:2'] };
 const BLOCKER_REPLIES: Partial<Record<Stage, string>> = {
   reviewer: JSON.stringify([BLOCKER]),
-  judge: JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, severity: 'blocker', reasoning: 'Reachable from any caller.', confidence: 'high' }] }),
+  judge: JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, row: 'wrong', reasoning: 'Reachable from any caller.', confidence: 'high' }] }),
 };
 
 /**
@@ -619,7 +619,7 @@ describe('runFullReview end to end', () => {
   it('lists an open lead below blocker as not finished checking, and has the judge settle a blocker lead', async () => {
     const lead = { lead: true, file: 'src/math.ts', line: 2, description: '', checked: 'read src/math.ts:2', left: 'find every caller' };
     mockLLM.replies.reviewer = JSON.stringify([{ ...lead, severity: 'warning', title: 'Cache may go stale' }, { ...lead, severity: 'blocker', title: 'Sum may overflow' }]);
-    mockLLM.replies.judge = JSON.stringify({ summary: 'Nothing blocks merge.', findings: [{ id: 1, title: 'Sum may overflow', severity: 'ignore', reasoning: 'Inputs are bounded.', confidence: 'high' }] });
+    mockLLM.replies.judge = JSON.stringify({ summary: 'Nothing blocks merge.', findings: [{ id: 1, title: 'Sum may overflow', row: 'none', reasoning: 'Inputs are bounded.', confidence: 'high' }] });
 
     await reviewRound();
 
@@ -879,7 +879,7 @@ describe('runFullReview end to end', () => {
     const leaked = { ...BLOCKER, description: `The key ${secret} is in the log.` };
     Object.assign(mockLLM.replies, {
       reviewer: JSON.stringify([leaked]),
-      judge: JSON.stringify({ summary: `Leaks ${secret}.`, findings: [{ id: 1, title: leaked.title, severity: 'blocker', reasoning: `Prints ${secret}.`, confidence: 'high', reachability: 'reachable' }] }),
+      judge: JSON.stringify({ summary: `Leaks ${secret}.`, findings: [{ id: 1, title: leaked.title, row: 'wrong', reasoning: `Prints ${secret}.`, confidence: 'high', reachability: 'reachable' }] }),
     });
     try {
       await reviewRound();
@@ -903,7 +903,7 @@ describe('runFullReview end to end', () => {
       reviewer: JSON.stringify([reworded]),
       judge: JSON.stringify({
         summary: 'The range check is still missing.',
-        findings: [{ id: 1, title: reworded.title, severity: 'blocker', reasoning: 'Still reachable.', confidence: 'high', sameAs: 'P1' }],
+        findings: [{ id: 1, title: reworded.title, row: 'wrong', reasoning: 'Still reachable.', confidence: 'high', sameAs: 'P1' }],
         threadEvaluations: [{ threadId: 'PRRT_1', status: 'not_addressed', reason: 'No range check yet.' }],
       }),
     });
@@ -946,7 +946,7 @@ describe('runFullReview end to end', () => {
     const finding = { ...BLOCKER, severity };
     Object.assign(mockLLM.replies, {
       reviewer: JSON.stringify([finding]),
-      judge: JSON.stringify({ summary: 'One finding.', findings: [{ id: 1, title: finding.title, severity, reasoning: 'Reachable.', confidence: 'high' }] }),
+      judge: JSON.stringify({ summary: 'One finding.', findings: [{ id: 1, title: finding.title, row: severity === 'blocker' ? 'wrong' : 'improvement', reasoning: 'Reachable.', confidence: 'high' }] }),
     });
     await reviewRound();
     expect(mockGitHub.threads).toHaveLength(1);

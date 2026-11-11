@@ -7,6 +7,40 @@ export type FindingSeverity = 'blocker' | 'warning' | 'suggestion' | 'nitpick' |
 /** Severities from most to least severe. */
 export const SEVERITY_ORDER: readonly FindingSeverity[] = ['blocker', 'warning', 'suggestion', 'nitpick', 'ignore'];
 
+export type CellRow = 'severe' | 'wrong' | 'degraded' | 'improvement' | 'style';
+export type CellColumn = 'normal' | 'rare';
+
+/** A cell of the judge's severity table: what goes wrong, and whether normal use or outside input reaches it. */
+export interface GradeCell {
+  row: CellRow;
+  column: CellColumn;
+  /** The column the judge stated, when Manki grades the finding in another one: a tool check moved it, or it is a security finding. */
+  judgeColumn?: CellColumn;
+}
+
+/** The grade of each severity table cell, by row. */
+export const CELL_GRADES: Readonly<Record<CellRow, Readonly<Record<CellColumn, FindingSeverity>>>> = {
+  severe: { normal: 'blocker', rare: 'blocker' },
+  wrong: { normal: 'blocker', rare: 'warning' },
+  degraded: { normal: 'warning', rare: 'suggestion' },
+  improvement: { normal: 'suggestion', rare: 'suggestion' },
+  style: { normal: 'nitpick', rare: 'nitpick' },
+};
+
+export function cellGrade(row: CellRow, column: CellColumn): FindingSeverity {
+  return CELL_GRADES[row][column];
+}
+
+/** Whether `cell` names a row and a column of the table. A stored record can hold a cell another Manki version wrote. */
+export function isGradeCell(cell: GradeCell | undefined): cell is GradeCell {
+  return !!cell && Object.hasOwn(CELL_GRADES, cell.row) && (cell.column === 'normal' || cell.column === 'rare');
+}
+
+/** Whether the column decides if a finding on `row` blocks. Only there is the `rare` column a claim the refuter checks. */
+export function columnDecidesBlock(row: CellRow): boolean {
+  return cellGrade(row, 'normal') === 'blocker' && cellGrade(row, 'rare') !== 'blocker';
+}
+
 /** The kind of problem a finding names, as the judge classifies it, with the label a reader sees. */
 export const FINDING_CATEGORIES = {
   correctness: 'Correctness',
@@ -220,9 +254,11 @@ export interface Finding {
   lead?: OpenLead;
   /** The round an open lead first came up in, when an earlier round left it unsettled. */
   leadSince?: number;
+  /** The severity table cell the grade is worked out from. The judge states it, and a tool check can move its column. */
+  cell?: GradeCell;
   /**
-   * The grade the judge would give if every premise it doubts holds. Set when that is above the grade it gave, or when
-   * the judge names a doubt in `doubts`. The refuter checks the finding, and a confirmation of every doubt gives it this grade.
+   * The grade the finding's `cell` gives once every premise in `doubts` holds, worked out by Manki. Set when the finding
+   * has a doubt. The refuter checks the finding, and a confirmation of every doubt gives it this grade.
    */
   gradeIfConfirmed?: FindingSeverity;
   /** The premises the judge doubts, which the refuter checks one by one. */
@@ -438,11 +474,23 @@ export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
 
 /**
  * A premise the judge doubts, stated as a fact the code can confirm or disprove. It `decides` either whether the defect
- * exists at all, so a disproof drops the finding, or only whether the finding earns its `gradeIfConfirmed`.
+ * exists at all, so a disproof drops the finding, or only whether the finding earns its `gradeIfConfirmed`, such as
+ * whether normal use or outside input produces the state a finding in the `rare` column needs.
  */
 export interface Doubt {
   premise: string;
   decides: 'defect' | 'grade';
+}
+
+/**
+ * The claim the `rare` column makes on a row where `columnDecidesBlock`, as a premise for the refuter. Manki adds it to
+ * every finding in such a cell, and only its confirmation moves the finding to the `normal` column.
+ */
+export const REACH_DOUBT: Doubt = { premise: 'Normal use or outside input can produce the state this failure needs', decides: 'grade' };
+
+/** Returns `doubts` with `REACH_DOUBT` in place of any doubt that words the same premise. */
+export function withReachDoubt(doubts: readonly Doubt[] = []): Doubt[] {
+  return [...doubts.filter(d => d.premise !== REACH_DOUBT.premise), REACH_DOUBT];
 }
 
 /** How a refuter answered one premise the judge doubts. */
@@ -1655,6 +1703,8 @@ export interface RoundJudgeDrop {
   gradeIfConfirmed?: FindingSeverity;
   /** Mirrors `Finding.doubts`. */
   doubts?: Doubt[];
+  /** Mirrors `Finding.cell`. A dropped finding has one only when a later stage dropped it. */
+  cell?: GradeCell;
 }
 
 export interface RoundAgentMetric {
@@ -1945,6 +1995,8 @@ export interface FindingFingerprintEntry {
   gradeIfConfirmed?: FindingSeverity;
   /** Mirrors `Finding.doubts`. */
   doubts?: Doubt[];
+  /** Mirrors `Finding.cell`. A record from before cells has none. */
+  cell?: GradeCell;
   /** Mirrors `Finding.gradePath`. */
   gradePath?: GradeStep[];
   /** The reviewer's pre-existing claim kept by the judge, and how it was checked against the diff. */

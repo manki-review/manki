@@ -5,13 +5,14 @@ import * as core from '@actions/core';
 
 import { isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
+import { capUnprovenBlocker } from './judge';
 import { extractJSON } from './json';
 import { resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, ParsedDiff, PremiseCheck, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
+import { cellGrade, columnDecidesBlock, Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, isGradeCell, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -41,6 +42,7 @@ To refute it:
 - Name the general rule the finding relies on: a behaviour of the language, the compiler, a library or a protocol, such as "in Python, a name assigned anywhere in a function is local to the whole function", "in TypeScript, a type guard narrows a variable only inside the branch it guards", "in Go, a method with a pointer receiver is not in the method set of the value type", "in Rust, a value moved into a closure cannot be used after it" or "this call blocks while the caller holds the lock". Then search the unchanged code for code that relies on the same rule. Code that already builds or runs and does what the finding says cannot work is a counterexample, and one counterexample disproves the finding.
 - A finding that one piece of code lacks a check, a lock or an error path its sibling has goes through the same search: find why the sibling has it, and whether that reason holds here.
 - For a doubt that the failure is reached, search for a path from an entry point to the failing code. A public function, method, constructor or field is an entry point when the repository is a library, as its manifest shows, or when the outside input in the message names that API: any caller of it can pass a value it accepts, so a path from it counts as reached with no caller in the repository. In an application, an exported function is no entry point on its own and needs a caller. Confirm when such a path carries the triggering value, and disprove only when every path checks the value or cannot carry it.
+- A premise that normal use or outside input can produce a state is such a doubt about the state: the judge holds that only the code's own logic produces it. Confirm it when a caller, stored data, concurrent use of a public API or documented usage produces the state, and cite the lines of that path. Disprove it only when the code shows nothing but its own logic produces the state.
 - For any other doubt, check in the code the premise the message lists, or else the one the judge's reasoning names.
 - For a doubt that this PR causes the defect, the message shows the PR's change to the files the finding cites, when the PR changes them. Confirm such a doubt only when a changed line causes the failure. The cause can sit in a changed file the message does not show, so when what is shown cannot settle it, answer unsettled. Never disprove a finding only because the change shown does not cause it.
 - Reading code cannot confirm that it fails to compile or that a test fails. Return such a claim as unsettled unless a counterexample disproves it.
@@ -198,8 +200,8 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
 
 /**
  * Returns the grade a confirmation gives, while nothing lowered the finding further since the judge: the blocker an
- * unproven cap lowered, or the grade the judge would give if the premise it doubts holds. Reading code never
- * confirms a build failure, so such a claim stays a warning at most.
+ * unproven cap lowered, or the grade the finding's cell gives once the premises the judge doubts hold. Reading code
+ * never confirms a build failure, so such a claim stays a warning at most.
  */
 function confirmedGrade(finding: Finding): FindingSeverity | undefined {
   const grade = finding.tags?.includes(UNPROVEN_TAG) && finding.severity === 'warning' ? 'blocker'
@@ -208,10 +210,20 @@ function confirmedGrade(finding: Finding): FindingSeverity | undefined {
   return capped && SEVERITY_ORDER.indexOf(capped) < SEVERITY_ORDER.indexOf(finding.severity) ? capped : undefined;
 }
 
-/** Returns the outcome `checks` agree on. An unsettled check abstains, and a confirmation against a disproof settles nothing. */
+/** Whether a check that confirms its finding confirmed `REACH_DOUBT`, the claim that keeps a finding in the `rare` column. */
+function reachConfirmed(checks: readonly Refutation[]): boolean {
+  return checks.some(r => r.outcome === 'confirmed' && r.premises?.some(p => p.premise === REACH_DOUBT.premise && p.outcome === 'confirmed'));
+}
+
+/**
+ * Returns the outcome `checks` agree on. An unsettled check abstains, and a confirmation against a disproof settles
+ * nothing. That holds for a disproved premise too, which leaves its own check unsettled when it only decides the grade.
+ */
 function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
   const votes = new Set(checks.map(r => r.outcome).filter(o => o !== 'unsettled'));
-  return votes.size === 1 ? [...votes][0] : 'unsettled';
+  if (votes.size !== 1) return 'unsettled';
+  const [outcome] = votes;
+  return outcome === 'confirmed' && checks.some(r => r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
 }
 
 /** Returns the refutation that disproves `finding`, when its checks agree it is disproved. */
@@ -228,7 +240,8 @@ function refutationNote(label: string, { outcome, reason, rule, premises = [] }:
  * Grades `finding` by the outcome its refutations agree on. A disproof drops a finding graded below blocker, such as an
  * open lead or a capped blocker, but never lowers a blocker, lead or not, however many refuters disprove it, since PR
  * content they read could steer them all. An unsettled outcome keeps the grade, and a security finding changes only
- * when confirmed.
+ * when confirmed. A confirmation that raises a finding out of the `rare` column moves it to the `normal` one, where
+ * `capUnprovenBlocker` applies to it.
  */
 function applyRefutation(finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined): Finding {
   const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
@@ -244,12 +257,16 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
   if (outcome === 'confirmed') {
     const proof = [...new Set([...(finding.evidence?.proof ?? []), ...checks.flatMap(r => r.outcome === 'confirmed' ? r.proof ?? [] : [])])];
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
-    const restored = confirmedGrade(finding);
+    const rareClaim = !!finding.cell && columnDecidesBlock(finding.cell.row) && finding.cell.column === 'rare';
+    // The `rare` column is all that keeps such a finding from blocking, so it rises only when `REACH_DOUBT` itself is confirmed.
+    const restored = rareClaim && !reachConfirmed(checks) ? undefined : confirmedGrade(finding);
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
-    return {
+    const raised = {
       ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', decided!.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
-      ...(tags && { tags }),
+      ...(tags && { tags }), ...(rareClaim && restored && { cell: { ...finding.cell!, column: 'normal' as const, judgeColumn: 'rare' as const } }),
     };
+    // A finding that leaves the `rare` column becomes a blocker no cap has seen, and a confirmed reach is no search for what it says is missing.
+    return rareClaim && restored ? capUnprovenBlocker(raised) : raised;
   }
   return graded;
 }
@@ -264,12 +281,13 @@ function alwaysChecked(finding: Finding): boolean {
 /**
  * Returns the findings the judge kept at their grade with a doubt whether the defect exists, to check with tools: those
  * at `warning` or above, at most `MAX_DOUBT_CHECKS`, the highest grade first. A finding the judge would grade higher if
- * its doubts hold is always checked, since that check is how a warning becomes a blocker.
+ * its doubts hold is always checked, since that check is how a warning becomes a blocker. A finding `hidden` accepts
+ * is left out.
  */
-function doubtsToCheck(findings: readonly Finding[]): Finding[] {
+function doubtsToCheck(findings: readonly Finding[], hidden?: (finding: Finding) => boolean): Finding[] {
   const doubted = findings
     .filter(f => f.severity !== 'ignore' && !alwaysChecked(f) && f.gradeIfConfirmed && rank(f.gradeIfConfirmed) <= rank('warning')
-      && !!f.doubts?.some(d => d.decides === 'defect'))
+      && !!f.doubts?.some(d => d.decides === 'defect') && !hidden?.(f))
     .sort((a, b) => rank(a.severity) - rank(b.severity));
   for (const skipped of doubted.slice(MAX_DOUBT_CHECKS)) {
     core.info(`Not checking the doubt on "${skipped.title}", since ${MAX_DOUBT_CHECKS} findings with higher grades took this round's checks`);
@@ -278,19 +296,26 @@ function doubtsToCheck(findings: readonly Finding[]): Finding[] {
 }
 
 /**
- * Returns `finding` with the `gradeIfConfirmed` and doubts of the latest earlier finding it matches, when a doubt capped
+ * Returns `finding` with the `gradeIfConfirmed`, doubts and cell of the latest earlier finding it matches, when a doubt capped
  * that earlier grade, no check settled it, and the judge kept the grade without naming a doubt of its own. Such a grade
- * is no anchor, so the refuter checks it.
+ * is no anchor, so the refuter checks it. A finding a later cap lowered below the grade of its stated cell is returned
+ * as it is, since the judge did not keep the earlier grade. An earlier finding without a cell the table knows leaves
+ * `finding` none, since the cell the judge stated this round does not give the grade a confirmation restores.
  */
 function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[]): Finding {
   if (finding.gradeIfConfirmed || finding.severity === 'ignore' || finding.severity === 'blocker') return finding;
+  if (isGradeCell(finding.cell) && rank(cellGrade(finding.cell.row, finding.cell.column)) < rank(finding.severity)) return finding;
   const prior = [...priorRounds].reverse().flatMap(r => r.findings.entries)
     .find(e => e.fingerprint.file === finding.file && Math.abs(e.fingerprint.lineStart - finding.line) <= LINE_TOLERANCE && titlesMatch(e.title ?? '', finding.title));
   if (!prior?.gradeIfConfirmed || prior.severity !== finding.severity || rank(prior.gradeIfConfirmed) >= rank(prior.severity)) return finding;
   const settled = [prior.refutation, prior.pairRefutation].some(r => r && (r.outcome !== 'unsettled' || r.premises?.some(p => p.outcome === 'disproved')));
   if (settled) return finding;
   core.info(`"${finding.title}" keeps a grade an earlier round capped with an open doubt, so it is checked again`);
-  return { ...finding, gradeIfConfirmed: prior.gradeIfConfirmed, ...(prior.doubts && { doubts: prior.doubts }) };
+  const { cell: _cell, ...kept } = finding;
+  const cell = isGradeCell(prior.cell) ? prior.cell : undefined;
+  // Only `REACH_DOUBT` lifts the `rare` column, and an earlier record can lack it.
+  const doubts = cell && columnDecidesBlock(cell.row) && cell.column === 'rare' ? withReachDoubt(prior.doubts) : prior.doubts;
+  return { ...kept, gradeIfConfirmed: prior.gradeIfConfirmed, ...(doubts && { doubts }), ...(cell && { cell }) };
 }
 
 export interface RefuteOptions {
@@ -305,6 +330,8 @@ export interface RefuteOptions {
   outsideInput?: string;
   /** A second refuter, on another model, that checks each finding beside the first. */
   pair?: LLMClient;
+  /** Whether a later step hides `finding` at its grade. Such a finding is checked only when a confirmation can raise it, and takes none of the `MAX_DOUBT_CHECKS` checks. */
+  hiddenLater?: (finding: Finding) => boolean;
 }
 
 /**
@@ -314,7 +341,7 @@ export interface RefuteOptions {
  * finding is reused without a new check while the files it rests on are unchanged, except for a finding with a
  * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, hiddenLater }: RefuteOptions): Promise<Finding[]> {
   const check = async (refuter: LLMClient, field: RefutationField, finding: Finding): Promise<Refutation | undefined> => {
     const label = field === 'pairRefutation' ? 'second refutation' : 'refutation';
     // Unseen code or a caller can change in a file the stored outcome does not cover, so such a finding is checked afresh.
@@ -340,10 +367,12 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     }
   };
   const reopened = findings.map(f => reopenCappedGrade(f, priorRounds));
-  const doubtChecks = new Set(doubtsToCheck(reopened));
+  const doubtChecks = new Set(doubtsToCheck(reopened, hiddenLater));
   return mapWithConcurrency(reopened, MAX_PARALLEL_REFUTATIONS, async finding => {
-    // A finding the judge or a suppression dropped stays dropped, even when it was a lead.
+    // A finding the judge dropped stays dropped, even when it was a lead.
     if (finding.severity === 'ignore' || !(alwaysChecked(finding) || doubtChecks.has(finding))) return finding;
+    // Only a check that can raise a finding changes what happens to one a later step hides.
+    if (!confirmedGrade(finding) && hiddenLater?.(finding)) return finding;
     if (!codeDigest(workspace, [finding.file])) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);
     return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation) : finding;

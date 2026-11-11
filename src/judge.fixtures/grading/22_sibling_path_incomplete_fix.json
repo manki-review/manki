@@ -1,0 +1,30 @@
+{
+  "name": "sibling-path-incomplete-fix",
+  "case": "sibling-path-incomplete-fix",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "`PUT /items/:id` still updates items without the write check `POST /items` gets",
+    "file": "src/routes/items.ts",
+    "line": 20,
+    "description": "The PR adds a `canWrite` check to `POST /items`, because any signed-in user could create items. `PUT /items/:id` passes the request body to `store.update` with no such check, so a user without write access can still change any item.",
+    "severity": "blocker",
+    "reviewers": [
+      "Security"
+    ],
+    "preExisting": "The `PUT` handler is unchanged and had no check before this PR either.",
+    "evidence": {
+      "checks": [
+        "src/routes/items.ts:12 adds the `canWrite` check to `POST /items`",
+        "src/routes/items.ts:20 `PUT /items/:id` calls `store.update` unchecked"
+      ],
+      "proof": [
+        "src/routes/items.ts:20",
+        "src/routes/items.ts:12"
+      ]
+    },
+    "suggestedFix": "Add the same `canWrite` check to the `PUT` handler."
+  },
+  "prDiff": "diff --git a/src/routes/items.ts b/src/routes/items.ts\nindex 1111111..2222222 100644\n--- a/src/routes/items.ts\n+++ b/src/routes/items.ts\n@@ -10,10 +10,13 @@ export const items = Router();\n \n items.post('/items', async (req, res) => {\n+  if (!req.user?.canWrite) {\n+    return res.status(403).json({ error: 'forbidden' });\n+  }\n   const item = await store.create(req.body);\n   res.status(201).json(item);\n });\n \n items.put('/items/:id', async (req, res) => {\n   const item = await store.update(req.params.id, req.body);\n   res.json(item);\n });\n"
+}

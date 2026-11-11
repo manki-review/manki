@@ -2730,6 +2730,8 @@ describe('runReview', () => {
     // `parse()` now returns null at src/a.ts:12, and an untouched caller dereferences it. The PR causes that.
     const callerProof = blocker('Caller dereferences the null parse() result', 'src/b.ts', 20, { evidence: { checks: [], proof: ['src/b.ts:20', 'src/a.ts:11-12'] } });
     const callerUnmarked = blocker('Caller dereferences the null parse() result', 'src/b.ts', 20, { preExisting: undefined });
+    // The PR adds an auth check at src/a.ts:12 and leaves the sibling handler open. The fix line cited as proof ties it to the PR.
+    const siblingPath = blocker('PUT handler lacks the auth check POST got', 'src/a.ts', 40, { evidence: { checks: [], proof: ['src/a.ts:40', 'src/a.ts:12'] } });
     const deleted = blocker('Deleted module is still imported', 'src/legacy.ts', 4);
     const excluded = blocker('Generated client drops the auth header', 'gen/client.ts', 8);
     const run = (clients: ReviewClients) => runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', excludedPaths: ['gen/client.ts'] });
@@ -2764,14 +2766,14 @@ describe('runReview', () => {
 
     // Each of these sits outside every hunk, but something ties it to this PR, so it keeps blocking.
     const checks: Array<Finding['preExistingCheck']> = [];
-    for (const tied of [callerProof, callerUnmarked, deleted, excluded]) {
+    for (const tied of [callerProof, callerUnmarked, deleted, excluded, siblingPath]) {
       mockedRunJudgeAgent.mockResolvedValue({ findings: [tied], summary: 'One defect.' });
       const result = await run(makeClients());
       expect([tied.title, result.outcome, result.findings[0].severity, result.findings[0].tags]).toEqual([tied.title, 'ADDRESS_FIRST', 'blocker', undefined]);
       checks.push(result.findings[0].preExistingCheck);
     }
     // A claim the diff or the files contradict records which condition failed, and an unmarked finding records none.
-    expect(checks).toEqual(['touches_diff', undefined, 'deleted_file', 'excluded_file']);
+    expect(checks).toEqual(['touches_diff', undefined, 'deleted_file', 'excluded_file', 'touches_diff']);
 
     // The verdict reader's blockers have no judge to confirm a pre-existing mark, so they always block.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });

@@ -53,6 +53,10 @@ const FOLLOW_UP_YAML = `${CASE_YAML}prior_round:
       file: src/read.rs
       line: 12
       grade_if_confirmed: blocker
+      cell: { row: severe, column: normal }
+      doubts:
+        - premise: A peer can send the length.
+          decides: defect
       posted: thread
       state: open
       description: A peer picks the size.
@@ -143,6 +147,7 @@ describe('parseCase', () => {
       findings: [
         {
           id: 'P1', severity: 'blocker', title: 'Reader allocates from a peer length', file: 'src/read.rs', line: 12, gradeIfConfirmed: 'blocker', thread: 'open',
+          cell: { row: 'severe', column: 'normal' }, doubts: [{ premise: 'A peer can send the length.', decides: 'defect' }],
           description: 'A peer picks the size.', howToFix: 'Cap the length.', suggestedFix: 'let len = len.min(MAX);', security: true,
         },
         { id: 'P2', severity: 'warning', title: 'No timeout on the connection', file: 'src/conn.rs', line: 40, thread: 'open' },
@@ -164,6 +169,8 @@ describe('parseCase', () => {
     ['      posted: body', '      posted: body\n      state: open', '`state` must be open, resolved or fixed for a thread, and unset for a body finding'],
     ['      posted: body', '      posted: review', '`posted` must be thread or body'],
     ['      line: 70', '      line: 0', 'prior_round.findings[2]: `line` must be a positive integer'],
+    ['row: severe', 'row: serious', '`cell` must have a `row` of severe, wrong, degraded, improvement, style and a `column` of normal or rare'],
+    ['decides: defect', 'decides: maybe', '`doubts` must be a list of mappings with a `premise` and a `decides` of defect or grade'],
     [`  head: ${SHA_C}`, '  head: abc', '`prior_round.head` must be a full commit SHA'],
     ['  - id: P2\n    severity: warning\n    mechanism: The read', '  - id: K1\n    severity: warning\n    locations: [src/conn.rs]\n    mechanism: The read', '`must_keep_open` names K1, which is no earlier finding'],
     ['  - id: P2\n    severity: warning\n    mechanism: The read', '  - id: P4\n    severity: warning\n    locations: [src/conn.rs]\n    mechanism: The read', '`must_keep_open` names P4, which is no open earlier thread'],

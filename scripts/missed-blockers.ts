@@ -21,7 +21,7 @@ import { replyOutcome } from '../src/interaction';
 import type { EarlierFinding } from '../src/local-review';
 import { FOUND_AGAIN_MARKER, isSecurityThread, parseFindingData, parseFindingFromComment, recordedThreadGrades, titlesOverlap } from '../src/recap';
 import { fixedMarker } from '../src/state';
-import { FindingFingerprintEntry, FindingSeverity, PRE_EXISTING_TAG, RoundContext } from '../src/types';
+import { FindingFingerprintEntry, FindingSeverity, isGradeCell, PRE_EXISTING_TAG, RoundContext } from '../src/types';
 import { githubToken } from './review-history';
 import { fetchPrRecords, listMergedPrs, PrRecords } from './review-stats';
 
@@ -143,7 +143,7 @@ export function collectFollowUps(rounds: RoundContext[], comments: ThreadComment
       followUp.findings.push({
         // A file-level finding has line 0, and a case line starts at 1.
         id, severity, title, file: entry.fingerprint.file, line: Math.max(1, entry.fingerprint.lineStart),
-        ...(entry.gradeIfConfirmed && { gradeIfConfirmed: entry.gradeIfConfirmed }),
+        ...(entry.gradeIfConfirmed && { gradeIfConfirmed: entry.gradeIfConfirmed }), ...(isGradeCell(entry.cell) && { cell: entry.cell }), ...(entry.doubts && { doubts: entry.doubts }),
         ...(meta.description && { description: meta.description }), ...(meta.howToFix && { howToFix: meta.howToFix }),
         ...((meta.suggestedFix ?? entry.suggestedFix) && { suggestedFix: meta.suggestedFix ?? entry.suggestedFix }),
         ...(thread && isSecurityThread(thread.root.body!) && { security: true }), ...(thread && { thread: open ? 'open' : fixed ? 'fixed' : 'resolved' }),
@@ -247,6 +247,7 @@ export function draftCase(repo: string, pr: DraftPr, miss: Miss, base: string, f
         head: followUp.priorHead,
         findings: followUp.findings.map(f => ({
           id: f.id, severity: f.severity, title: plain(f.title), file: f.file, line: f.line, ...(f.gradeIfConfirmed && { grade_if_confirmed: f.gradeIfConfirmed }),
+          ...(f.cell && { cell: { row: f.cell.row, column: f.cell.column } }), ...(f.doubts && { doubts: f.doubts.map(d => ({ premise: plain(d.premise), decides: d.decides })) }),
           posted: f.thread ? 'thread' : 'body', ...(f.thread && { state: f.thread }),
           ...(f.description && { description: plain(f.description) }), ...(f.howToFix && { how_to_fix: plain(f.howToFix) }),
           ...(f.suggestedFix && { suggested_fix: f.suggestedFix }), ...(f.security && { security: true }),

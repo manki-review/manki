@@ -17,7 +17,7 @@ import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
 import { SECURITY_TAG } from './types';
-import type { ConfigSource, Finding, FindingSeverity, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome } from './types';
+import type { ConfigSource, Doubt, Finding, FindingSeverity, GradeCell, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome } from './types';
 import { fetchWorkspace, gitEnv, runGit } from './workspace';
 
 const DEFAULT_CONFIG_PATH = '.manki.yml';
@@ -66,6 +66,9 @@ export interface EarlierFinding {
   file: string;
   line: number;
   gradeIfConfirmed?: FindingSeverity;
+  /** The cell and the doubts behind `gradeIfConfirmed`, when the earlier round recorded them. */
+  cell?: GradeCell;
+  doubts?: Doubt[];
   description?: string;
   howToFix?: string;
   suggestedFix?: string;
@@ -266,7 +269,7 @@ async function followUpInputs(
   const posted: Finding[] = earlier.findings.map(f => ({
     severity: f.severity, title: f.title, file: f.file, line: f.line, description: f.description ?? '', reviewers: [],
     ...(f.howToFix && { howToFix: f.howToFix }), ...(f.suggestedFix && { suggestedFix: f.suggestedFix }), ...(f.gradeIfConfirmed && { gradeIfConfirmed: f.gradeIfConfirmed }),
-    ...(f.security && { tags: [SECURITY_TAG] }), ...(f.thread && { threadId: f.id }),
+    ...(f.cell && { cell: f.cell }), ...(f.doubts && { doubts: f.doubts }), ...(f.security && { tags: [SECURITY_TAG] }), ...(f.thread && { threadId: f.id }),
   }));
   const blocks = posted.some(f => f.severity === 'blocker');
   // A pull request round reads a thread as fixed from the earlier judge's `addressed` evaluation.
