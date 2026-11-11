@@ -187,6 +187,8 @@ describe('fetchBotReviewThreads', () => {
           replies: [
             { body: `Fixed in abababa.\n\n${fixedMarker('ab'.repeat(20))}`, author: { login: 'manki-review' } },
             { body: `Done.\n\n${fixedMarker('cd'.repeat(20))}`, author: { login: 'alice' } },
+            // A marker in a fix that Manki's reply quotes is a finder's text.
+            { body: `This came up again.\n\n\`\`\`\n${fixedMarker('ef'.repeat(20))}\n\`\`\`\n\n<!-- manki -->\n<!-- manki-found-again -->`, author: { login: 'manki-review' } },
           ],
         }),
       ]),

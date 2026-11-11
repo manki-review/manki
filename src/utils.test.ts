@@ -198,6 +198,12 @@ describe('ownMarker', () => {
     expect(ownMarker('<!-- manki:blocker:own --> **Blocker**: with text after it', '<!-- manki:')).toBe('blocker:own');
     // A JSON value keeps its line and paragraph separators, which break no line.
     expect(ownMarker('<!-- manki-finding: {"title":"a\u2028b\u2029c"} -->', '<!-- manki-finding: ')).toBe('{"title":"a\u2028b\u2029c"}');
+    // A reply can lack the marker, so with an anchor only the lines below the last anchor line are read.
+    const reply = ['This came up again.', '```', '<!-- manki -->', '<!-- manki-fixed:quoted -->', '```', '', '<!-- manki -->'];
+    expect(ownMarker(reply.join('\n'), '<!-- manki-fixed:')).toBe('quoted');
+    expect(ownMarker(reply.join('\n'), '<!-- manki-fixed:', '<!-- manki -->')).toBeUndefined();
+    expect(ownMarker([...reply, '<!-- manki-fixed:own -->'].join('\r\n'), '<!-- manki-fixed:', '<!-- manki -->')).toBe('own');
+    expect(ownMarker('<!-- manki-fixed:no-anchor -->', '<!-- manki-fixed:', '<!-- manki -->')).toBe('no-anchor');
   });
 
   it('finds no marker that is not on a line of its own or never closes', () => {

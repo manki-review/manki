@@ -8,7 +8,7 @@ import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, hasOwnMarker, hasReviewRecord } from './review-record';
 import { AuthorClearRole, AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, isSecurityFinding } from './types';
-import { ownMarker } from './utils';
+import { COMMENT_MARKER, ownMarker } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -117,7 +117,7 @@ const REPLY_OUTCOME_RE = /^\**(Fixed|Withdrawn|Agreed|Kept|Unverified)\./;
 /** Returns Manki's latest answer to a developer in `comments`, without its markers: an outcome reply, or a found-again reply. */
 function latestAnswer(bot: BotIdentity, comments: ThreadCommentNode[]): string | undefined {
   const answer = comments.slice(1).filter(c => isBotLogin(bot, c.author?.login) && !!c.body
-    && (REPLY_OUTCOME_RE.test(c.body) || c.body.includes(FOUND_AGAIN_MARKER))).pop();
+    && (REPLY_OUTCOME_RE.test(c.body) || hasOwnMarker(c.body, FOUND_AGAIN_MARKER, COMMENT_MARKER))).pop();
   return answer?.body.split('\n\n<!--')[0].trim();
 }
 
@@ -143,7 +143,7 @@ function recordedSecurityOverride(
   bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author: { login: string } | null }>,
 ): Omit<SecurityOverride, 'thread'> | undefined {
   for (const c of comments.slice(1)) {
-    const match = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', SECURITY_OVERRIDE_OPENER)?.match(/^(resolve|dismiss):([\w-]+)$/) : null;
+    const match = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', SECURITY_OVERRIDE_OPENER, COMMENT_MARKER)?.match(/^(resolve|dismiss):([\w-]+)$/) : null;
     if (match) return { via: match[1] as SecurityOverride['via'], login: match[2] };
   }
   return undefined;
@@ -1042,7 +1042,7 @@ async function fetchReviewThreads(
         resolvedByHuman: !!thread.resolvedBy?.login && !isBotLogin(bot, thread.resolvedBy.login),
         ...(thread.resolvedBy?.login && { resolvedByLogin: thread.resolvedBy.login }),
         isSecurity: isBotThread && isSecurityThread(body),
-        reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && c.body?.includes(REOPENED_MARKER)),
+        reopenedByManki: thread.comments.nodes.slice(1).some(c => isBotLogin(bot, c.author?.login) && hasOwnMarker(c.body ?? '', REOPENED_MARKER, COMMENT_MARKER)),
         ...(recordedOverride && { recordedOverride }),
         hasHumanReply,
         findingTitle,

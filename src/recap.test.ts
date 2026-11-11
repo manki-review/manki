@@ -1443,10 +1443,11 @@ describe('fetchRecapState', () => {
     it('keeps a blocking or security finding blocking until someone other than the PR author dismisses it', async () => {
       const title = 'Token leaks into logs';
       const slug = titleToSlug(title);
-      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string }; reopened?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
+      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string }; reopened?: boolean; foundAgain?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
       const bounded = 'Every caller bounds both inputs.';
       const cases: Record<string, Case> = {
-        'src/author-resolved.ts': { resolver: 'author', security: true, blocks: true },
+        // A Manki reply that quotes the fix does not count as a reopen.
+        'src/author-resolved.ts': { resolver: 'author', foundAgain: true, security: true, blocks: true },
         // A recorded override counts only once GitHub confirms the PR author's role, since a Manki reply can echo any text.
         'src/author-dismissed.ts': { resolver: BOT_LOGIN, dismissed: true, security: true, blocks: true },
         'src/bot-resolved.ts': { resolver: BOT_LOGIN, security: true, blocks: true },
@@ -1494,7 +1495,7 @@ describe('fetchRecapState', () => {
         judge: { summary: 'ok', threadEvaluations: ['src/judge-addressed.ts', 'src/judge-addressed-author-resolved.ts'].map(file => ({ threadId: `T_${file}`, status: 'addressed' as const, reason: 'The token is redacted now.' })) },
       });
       const octokit = mockOctokit(files.map(file => {
-        const { resolver, reply, reopened, dismissed, security } = cases[file];
+        const { resolver, reply, reopened, foundAgain, dismissed, security } = cases[file];
         // The fix quotes Manki's reply markers and a lower grade. In a thread's first comment they are a finder's text.
         const quoted = ['```ts', REOPENED_MARKER, securityOverrideMarker('resolve', 'author'), '<!-- manki:note:Quoted -->', '<!-- manki-finding: {"title":"Quoted"} -->', '```'].join('\n');
         const body = formatFindingComment(makeFinding({
@@ -1510,6 +1511,7 @@ describe('fetchRecapState', () => {
           comments: { nodes: [
             { body, author: { login: BOT_LOGIN } },
             ...(reopened ? [{ body: `<!-- manki -->\n${REOPENED_MARKER}\nReopened.`, author: { login: BOT_LOGIN } }] : []),
+            ...(foundAgain ? [{ body: `This came up again.\n\n${quoted}\n\n<!-- manki -->\n<!-- manki-found-again -->`, author: { login: BOT_LOGIN } }] : []),
             ...(dismissed ? [{ body: `Dismissed.\n<!-- manki -->\n${securityOverrideMarker('dismiss', 'author')}`, author: { login: BOT_LOGIN } }] : []),
             ...(reply ? [{ body: reply.text ?? 'Agreed, no change needed.', author: { login: reply.login }, authorAssociation: reply.association }] : []),
           ] },

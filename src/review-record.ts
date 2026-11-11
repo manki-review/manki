@@ -1,7 +1,7 @@
 import { gunzipSync, gzipSync } from 'zlib';
 
 import type { ApprovalRecord, ReplyRecord, RoundContext } from './types';
-import { ownMarker, redactSecretsDeep, sanitizeHtmlCommentJson, sanitizeTokens } from './utils';
+import { linesBelow, ownMarker, redactSecretsDeep, sanitizeHtmlCommentJson, sanitizeTokens } from './utils';
 
 /** Opens a round record, plain or compressed. */
 const RECORD_OPENER = '<!-- manki-context';
@@ -91,13 +91,12 @@ export function hasReviewRecord(body: string): boolean {
 }
 
 /**
- * Whether Manki itself wrote the flag `marker` in a review `body`: on a line of its own, below the round record when
- * the body has one. The text above a record quotes code and model text, which can hold a marker.
+ * Whether Manki itself wrote the flag `marker` in `body`: on a line of its own below the last line that starts with
+ * `anchor`, or anywhere when no line does. The text above the anchor quotes code and model text, which can hold a
+ * marker. The anchor is the round record in a review body and `COMMENT_MARKER` in a thread reply.
  */
-export function hasOwnMarker(body: string, marker: string): boolean {
-  const lines = body.split('\n');
-  const record = lines.map(l => l.startsWith(RECORD_OPENER) && l.includes('-->')).lastIndexOf(true);
-  return lines.slice(record + 1).some(l => l.trimEnd() === marker);
+export function hasOwnMarker(body: string, marker: string, anchor = RECORD_OPENER): boolean {
+  return linesBelow(body, anchor).some(l => l.trimEnd() === marker);
 }
 
 /**

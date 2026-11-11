@@ -184,7 +184,7 @@ async function fetchBotReviewThreads(
       const threadUrl = thread.comments.nodes[0]?.url;
       const recordedOverride = isSecurity || isBlocking ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       const fixedOn = thread.comments.nodes.slice(1).flatMap(c => {
-        const sha = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', FIXED_MARKER_OPENER)?.match(/^[0-9a-f]{40}$/)?.[0] : undefined;
+        const sha = isBotLogin(bot, c.author?.login) ? ownMarker(c.body ?? '', FIXED_MARKER_OPENER, BOT_MARKER)?.match(/^[0-9a-f]{40}$/)?.[0] : undefined;
         return sha ? [sha] : [];
       });
       return {

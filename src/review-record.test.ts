@@ -3,7 +3,7 @@ import { gzipSync } from 'zlib';
 import { extractReplyRecords, extractReviewRecords, formatReplyRecord, formatReviewRecord, hasOwnMarker, hasReviewRecord } from './review-record';
 import { makeRoundContext } from './test-utils';
 import { RoundContext } from './types';
-import { registerSecret } from './utils';
+import { COMMENT_MARKER, registerSecret } from './utils';
 
 const PLAIN_PREFIX = '<!-- manki-context: ';
 
@@ -104,6 +104,12 @@ describe('extractReviewRecords', () => {
     expect(hasOwnMarker(`\`\`\`\n${flag}\n\`\`\`\n\n${record}\n\n${footer}`, flag)).toBe(false);
     expect(hasOwnMarker(`${record}\n\nFound by \`${flag}\`\n\n<!-- manki-bot -->`, flag)).toBe(false);
     expect(hasOwnMarker(`Review text.\n\n${record}`, flag)).toBe(false);
+    // A thread reply has no record. Its own markers follow its last `<!-- manki -->` line, and a fix it quotes sits above.
+    const reply = (own: string) => `This came up again.\n\n\`\`\`ts\n<!-- manki -->\n${flag}\n\`\`\`\n\n<!-- manki -->${own}`;
+    expect(hasOwnMarker(reply(''), flag, COMMENT_MARKER)).toBe(false);
+    expect(hasOwnMarker(reply('\n<!-- manki-found-again -->'), flag, COMMENT_MARKER)).toBe(false);
+    expect(hasOwnMarker(reply(`\n<!-- manki-reply-record: {} -->\r\n${flag}\r`), flag, COMMENT_MARKER)).toBe(true);
+    expect(hasOwnMarker(`<!-- manki -->\n${flag}\nReopened.`, flag, COMMENT_MARKER)).toBe(true);
   });
 });
 

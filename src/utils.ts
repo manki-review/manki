@@ -201,12 +201,22 @@ export function sanitizeHtmlCommentJson(json: string): string {
 }
 
 /**
+ * Returns the lines of `body` below its last line that starts with `anchor`, or all its lines when none does or none is
+ * given. Manki writes the anchor below all text that quotes code and model text, so a marker above it is quoted text.
+ */
+export function linesBelow(body: string, anchor?: string): string[] {
+  const lines = body.split('\n');
+  return anchor === undefined ? lines : lines.slice(lines.map(l => l.startsWith(anchor) && l.includes('-->')).lastIndexOf(true) + 1);
+}
+
+/**
  * Returns what Manki's own hidden marker with `opener` holds in `body`, without the opener and the close: the last line
  * that starts with `opener`, up to the first close. Manki writes each marker on a line of its own below all text of a
  * finder, a record or the PR, and JSON in a marker holds no line break or close. An earlier match is quoted text.
+ * A reply does not always hold the marker, so pass `COMMENT_MARKER` as `anchor` to read only the lines below it.
  */
-export function ownMarker(body: string, opener: string): string | undefined {
-  const line = body.split('\n').filter(l => l.startsWith(opener) && l.includes('-->', opener.length)).at(-1);
+export function ownMarker(body: string, opener: string, anchor?: string): string | undefined {
+  const line = linesBelow(body, anchor).filter(l => l.startsWith(opener) && l.includes('-->', opener.length)).at(-1);
   return line?.slice(opener.length, line.indexOf('-->', opener.length)).trimEnd();
 }
 
