@@ -5,7 +5,7 @@ import { MANKI_VERSION, RepoContext } from './github';
 import type { MemorySkip } from './memory';
 import { latestLimits, parseModelSpec, summarizeCalls } from './providers';
 import { routingDigest } from './routing';
-import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRelatedRepo, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall, PRE_EXISTING_TAG, Finding, FindingFingerprintEntry } from './types';
+import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, PromptVersions, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRelatedRepo, RoundRouting, RoundRunner, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides, TokenServiceCall, PRE_EXISTING_TAG, Finding, FindingFingerprintEntry } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   OWN_PROPOSAL_TAG,
@@ -44,6 +44,7 @@ export interface RoundRecordInput {
   staticAnalysis?: RoundStaticAnalysis;
   /** The token service calls the run made before the round posts. */
   tokenServiceCalls?: TokenServiceCall[];
+  runner?: RoundRunner;
   /** The instruction files the round read, and the one that was cut. */
   instructions?: Pick<RepoContext, 'files' | 'cut'>;
 }
@@ -422,6 +423,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     recap: buildRoundRecap(recap),
     ...(staticAnalysis && { staticAnalysis }),
     ...(tokenServiceCalls && tokenServiceCalls.length > 0 && { tokenService: tokenServiceCalls }),
+    ...(input.runner && { runner: input.runner }),
     ...(result.slicing && { slicing: result.slicing }),
     ...(result.leads && result.leads.length > 0 && { leads: result.leads }),
     ...(input.instructions && { instructions: { files: input.instructions.files.map(f => f.path), ...(input.instructions.cut && { cut: input.instructions.cut }) } }),

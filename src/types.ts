@@ -1590,6 +1590,8 @@ export interface RoundContext {
   staticAnalysis?: RoundStaticAnalysis;
   /** The token service calls the run made before it posted the review. */
   tokenService?: TokenServiceCall[];
+  /** The runner the round ran on, and what the run took from it before it posted the review. */
+  runner?: RoundRunner;
   /** How the diff was split, when it was read in several slices. */
   slicing?: RoundSlicing;
   /** The instruction files the round read from the base branch, in the order the prompts print them. */
@@ -1616,6 +1618,26 @@ export interface RoundContext {
    * GitHub refuses afterwards, or a body rewritten to carry it, is not reflected.
    */
   output?: RoundOutput;
+}
+
+/** The machine a run used, and what the run took from it. */
+export interface RoundRunner {
+  /** `github-hosted` or `self-hosted`, as the runner reports it. */
+  environment?: string;
+  name?: string;
+  os: string;
+  arch: string;
+  cpus: number;
+  /** The machine's memory. */
+  memoryBytes: number;
+  /** The container's memory limit, when it is below the machine's memory. */
+  memoryLimitBytes?: number;
+  /** Time from the start of the workflow run to the start of the action: the queue for a runner and the job's earlier steps. */
+  queuedMs?: number;
+  /** The most resident memory the action and its child processes held in one sample. Missing where processes cannot be listed. */
+  peakMemoryBytes?: number;
+  /** The most model CLI processes that ran at the same time. */
+  peakCliProcesses: number;
 }
 
 export interface RoundOutput {

@@ -1331,6 +1331,11 @@ describe('postReview with context', () => {
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, routing: { ...ctx.routing!, reviewers: [{ name: 'deep', model: 'gemini-3-pro', provider: 'gemini' }] } }, 60000);
     expect(mockCreateReview.mock.calls.at(-1)![0].body).toContain('- Found by `gemini-3-pro`, judged by ');
     expect(body.slice(0, -TRAILING_MARKERS.length)).toMatch(/-->\n\n<details>\n<summary>About this review<\/summary>\n\n- Reviewed \[`abc`\]\([^)]+\), round \d+\n- 200 changed lines read in 1m 0s\n- Found by `claude-sonnet-4-20250514`, judged by `[^`]+`\n- \[How Manki reviews\]\([^)]+\)\n\n<\/details>$/);
+    // A round that recorded its runner shows it as the footer's last line of figures.
+    const runner = { environment: 'self-hosted', os: 'linux', arch: 'x64', cpus: 4, memoryBytes: 64 * 1024 ** 3, memoryLimitBytes: 2 * 1024 ** 3, queuedMs: 663_000, peakMemoryBytes: 1.5 * 1024 ** 3, peakCliProcesses: 6 };
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, { ...ctx, runner }, 60000);
+    expect(mockCreateReview.mock.calls.at(-1)![0].body).toContain('\n- Runner: self-hosted · waited 11m 3s · peak memory 1.5 GiB of 2.0 GiB\n- [How Manki reviews](');
+    expect(mockCreateReview.mock.calls.at(-1)![0].body).toContain('"peakCliProcesses":6');
     expect(body).not.toContain('\u{1F4CA}');
     expect(body).toContain('"reviewer":"claude-sonnet-4-20250514"');
 
