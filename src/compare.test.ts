@@ -67,6 +67,8 @@ describe('runComparisons', () => {
     expect(field.options).toEqual({ effort: 'high', repoTools: { root: '/repo', steps: 12 }, timeoutMs: 600_000 });
     expect(field.system).toContain('You can read the repository with read-only tools.');
     expect(field.system).toContain(`- ${CLAIMS_MISSING_RULE}\n- ${PRE_EXISTING_RULE}`);
+    // A gap in sibling code is what these calls look for, so the defect a PR fixes in one path is never pre-existing in the other.
+    expect(PRE_EXISTING_RULE).toContain('Never set it either on the defect this PR fixes in one path and leaves in a sibling path, such as an auth check added to `POST /items` while `PUT /items/:id` stays open: the fix is incomplete, so report it as part of the change and cite the line of the fix in `proof`.');
     expect(field.system).toContain(`- ${UNTRUSTED_CONTENT_RULE}\n- ${VERIFY_CLAIMS_RULE}`);
     expect(field.user).toContain('The change looks up `worker_id` in `idle` of `WorkerPool`, on the first line below. Can `worker_id` be held in `retired` instead? If so, does the change handle it? Read where `retired` is written before you answer.');
     expect(field.user).toContain('The changed lines that use `idle`:\n\n```\nsrc/claim.py:2: if worker_id in pool.idle:\nsrc/claim.py:5: pool.idle.discard(worker_id)\n```');
