@@ -70,7 +70,7 @@ describe('relatedRepoLoader', () => {
     expect(calls.filter(c => c.cwd === dashDir).map(c => c.args)).toEqual([
       ['init', '-q'],
       ['remote', 'add', 'origin', 'https://github.com/dashpay/dash.git'],
-      ['sparse-checkout', 'set', '--no-cone', '/src/consensus', '/doc/*.md'],
+      ['sparse-checkout', 'set', '--no-cone', '/AGENTS.md', '/CLAUDE.md', '/src/consensus', '/doc/*.md'],
       ['fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', 'v23.0.0'],
       ['checkout', '-q', '--force', '--detach', 'FETCH_HEAD'],
       ['repack', '-a', '-d', '-q'],
@@ -161,7 +161,7 @@ describe('relatedRepoLoader', () => {
       ['init', '-q'],
       ['remote', 'add', 'origin', 'https://github.com/dashpay/dash.git'],
       FSCK,
-      ['sparse-checkout', 'set', '--no-cone', '/src/consensus', '/doc/*.md'],
+      ['sparse-checkout', 'set', '--no-cone', '/AGENTS.md', '/CLAUDE.md', '/src/consensus', '/doc/*.md'],
       ['fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', 'v23.0.0'],
       ['checkout', '-q', '--force', '--detach', 'FETCH_HEAD'],
       ['repack', '-a', '-d', '-q'],

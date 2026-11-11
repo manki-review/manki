@@ -982,7 +982,7 @@ export interface RelatedRepo {
   kind: RelatedRepoKind;
   /** Branch, tag or full commit hash to read. Defaults to the repo's default branch. */
   ref?: string;
-  /** Paths or globs to fetch, relative to the repo root. Defaults to the whole repo. */
+  /** Paths or globs to fetch, relative to the repo root, next to the root `AGENTS.md` and `CLAUDE.md`. Defaults to the whole repo. */
   paths?: string[];
 }
 

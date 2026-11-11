@@ -13,6 +13,8 @@ const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
 // Git sends no credential, so a private repo fails, and runs no hook or fsmonitor of a clone.
 const GIT_CONFIG = { 'credential.helper': '', 'core.hooksPath': devNull, 'core.fsmonitor': 'false' };
+// A repo's guide is the first of these at its root.
+const GUIDE_FILES = ['AGENTS.md', 'CLAUDE.md'];
 
 export interface RelatedRepoLoaderOptions {
   /** Time limit for fetching one repo. */
@@ -116,8 +118,6 @@ export async function fetchReferenceRepos(related: RelatedRepoTools, options: Re
   return fetched.flatMap(result => (result.status === 'fulfilled' ? [result.value] : []));
 }
 
-const GUIDE_FILES = ['AGENTS.md', 'CLAUDE.md'];
-
 /**
  * Returns the guide file at the root of each of `checkouts` that has one, by `owner/name`, or `undefined` when none
  * has. Only a regular file counts, so a guide is never a link that leaves the checkout.
@@ -159,7 +159,7 @@ export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guid
 }
 
 /**
- * Fetches one commit of `repo`, with only its `paths`, into its directory under `cacheDir`, reusing the objects of a
+ * Fetches one commit of `repo`, with only its `paths` and `GUIDE_FILES`, into its directory under `cacheDir`, reusing the objects of a
  * clone already there, and returns that directory. Throws when it cannot be fetched in time, as a private or missing
  * repo cannot.
  */
@@ -189,7 +189,7 @@ async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutM
     removeUnlessRealDirectory(cacheDir, log);
     removeUnlessRealDirectory(dirname(dir), log);
     await initReusingObjects(dir, init, git, log);
-    await git(...(repo.paths ? ['sparse-checkout', 'set', '--no-cone', ...repo.paths.map(sparsePattern)] : ['sparse-checkout', 'disable']));
+    await git(...(repo.paths ? ['sparse-checkout', 'set', '--no-cone', ...[...GUIDE_FILES, ...repo.paths].map(sparsePattern)] : ['sparse-checkout', 'disable']));
     await git('fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', repo.ref ?? 'HEAD');
     await git('checkout', '-q', '--force', '--detach', 'FETCH_HEAD');
     // With no refs to negotiate from, the fetch sends every tree of a new commit again. Repacking keeps one copy in the cache.

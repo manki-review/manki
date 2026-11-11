@@ -85,7 +85,7 @@ export const SETTINGS: Setting[] = [
   { key: 'related_repos[].repo', type: '`owner/name`', default: 'required', description: 'A public repository on github.com.' },
   { key: 'related_repos[].kind', type: '`reference` or `consumer`', default: 'required', description: '`reference` for a repository this one implements, `consumer` for one that depends on it.' },
   { key: 'related_repos[].ref', type: 'branch, tag or full commit hash', default: 'the default branch', description: 'What to read. Write a name that looks like a short commit hash as `refs/heads/<name>` or `refs/tags/<name>`.' },
-  { key: 'related_repos[].paths', type: 'list of up to 20 paths or globs', default: 'the whole repository', description: 'The only paths fetched.' },
+  { key: 'related_repos[].paths', type: 'list of up to 20 paths or globs', default: 'the whole repository', description: 'The only paths fetched, along with a root `AGENTS.md` and `CLAUDE.md`.' },
   { key: 'review_passes', type: 'integer from 1 to 5', description: 'Runs each finder this many times with the files in shuffled order, and keeps only the findings the passes agree on.' },
   { key: 'noise_level', type: '`low`, `medium` or `high`', description: '`low` tells the finders to leave out style, formatting and anything a formatter or linter catches, except a break of a rule in the repository\'s own `AGENTS.md`, `CLAUDE.md` or `CONTRIBUTING.md`, which is reported with the rule quoted. `high` asks for borderline suggestions too.' },
   { key: 'instructions', type: 'string', default: 'none', description: 'Extra context for the finders. They also read the root `AGENTS.md`, `CLAUDE.md` and `CONTRIBUTING.md`, the nearest `AGENTS.md` and `CLAUDE.md` above each changed file, and the `.md` files these link to.' },

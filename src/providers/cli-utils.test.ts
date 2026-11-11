@@ -215,14 +215,15 @@ describe('repoToolsPrompt', () => {
 
     const guided = prompt({ 'acme/server': 'AGENTS.md' });
     expect(guided).toContain([
-      '- `acme/server`, reference: a codebase this one implements or ports. Only `internal/` is fetched. Its guide is `AGENTS.md`.',
+      '- `acme/server`, reference: a codebase this one implements or ports. Only `internal/` is fetched. Its guide is `AGENTS.md`, fetched too.',
       '- `acme/app`, consumer: a codebase that depends on this one.',
       '',
     ].join('\n'));
     expect(guided).toContain(`uses what changed.\n\n${rule}\n\nCite a related repo's code as`);
+    expect(prompt({ 'acme/app': 'CLAUDE.md' })).toContain('- `acme/server`, reference: a codebase this one implements or ports. Only `internal/` is fetched.\n- `acme/app`, consumer: a codebase that depends on this one. Its guide is `CLAUDE.md`.\n');
 
     // Without a guide the prompt is the one a round without this step gets.
-    expect(guided.replace(' Its guide is `AGENTS.md`.', '').replace(`${rule}\n\n`, '')).toBe(prompt());
+    expect(guided.replace(' Its guide is `AGENTS.md`, fetched too.', '').replace(`${rule}\n\n`, '')).toBe(prompt());
     expect(prompt()).not.toContain('guide');
   });
 });
