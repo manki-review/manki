@@ -1065,11 +1065,6 @@ export interface ReviewConfig {
   static_analysis?: StaticAnalysisConfig;
   /** Public repos the review may read as context. Always read from the base branch, so a PR cannot make Manki fetch another repo. */
   related_repos?: RelatedRepo[];
-  /**
-   * @deprecated Removed in v5.1.0. The field is still parsed so old configs don't fail,
-   * but the value is ignored and a one-line warning is emitted at run start.
-   */
-  nit_handling?: 'issues' | 'comments';
   /** `skip` reviews a draft PR only on request, `review` reviews it automatically. A draft review never approves. */
   drafts?: 'skip' | 'review';
   review_passes?: number;

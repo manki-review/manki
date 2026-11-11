@@ -219,7 +219,6 @@ These still load, with a warning.
 | Setting | Type | Default | What it does |
 |---------|------|---------|--------------|
 | `planner.paired` | `auto`, `always` or `never` | `auto` | Pins the planner's `paired` answer. Route classes with `review.routing` instead. |
-| `nit_handling` | `issues` or `comments` | none | Ignored. Notes are listed in the review body. |
 | `review_level` | any | none | Ignored. The planner sets how many finders read each PR. |
 | `review_thresholds` | any | none | Ignored. Line counts no longer size the review. |
 | `stats` | any | none | Ignored. The round record is always a hidden comment in the review. |

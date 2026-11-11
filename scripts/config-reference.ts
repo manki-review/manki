@@ -103,7 +103,6 @@ export const SETTINGS: Setting[] = [
   { key: 'memory.repo', type: '`owner/name`', default: 'none', description: 'Your own memory repository instead of the central one, such as `<owner>/review-memory`. Needs the `memory_repo_token` input, or memory is skipped with a warning. For a private repo, it must be private and have the same owner.' },
   { key: 'metrics', type: 'map', default: 'none', description: 'Metrics Manki records.' },
   { key: 'metrics.fix_rate', type: 'boolean', default: 'the value of `memory.enabled`', description: 'On merge, count per severity and finder how many posted findings were fixed, dismissed or left untouched. Written to the job summary, and to the repo\'s memory when memory is on.' },
-  { key: 'nit_handling', type: '`issues` or `comments`', default: 'none', deprecated: true, description: 'Ignored. Notes are listed in the review body.' },
   { key: 'review_level', type: 'any', default: 'none', deprecated: true, description: 'Ignored. The planner sets how many finders read each PR.' },
   { key: 'review_thresholds', type: 'any', default: 'none', deprecated: true, description: 'Ignored. Line counts no longer size the review.' },
   { key: 'stats', type: 'any', default: 'none', deprecated: true, description: 'Ignored. The round record is always a hidden comment in the review.' },
