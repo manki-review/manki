@@ -2790,8 +2790,9 @@ function formatFold(fix: FoldPart | undefined, why: string, checks: FindingCheck
     const list = items.length === 1 ? items[0] : `${items.slice(0, -1).join(', ')}${items.length > 2 ? ',' : ''} and ${items[items.length - 1]}`;
     summary = `${list}${outcomes.length ? ` · ${outcomes.join(', ')}` : ''}`;
   }
-  // The summary names a lone part, so it needs no label of its own.
-  const body = parts.length === 1 ? first.text : parts.map(labelledPart).join('\n\n');
+  // The summary names a lone part, so it needs no label of its own, unless the status took the place of its outcome there.
+  const named = parts.length === 1 && !(checks.status && checks.outcomes.length > 0);
+  const body = named ? first.text : parts.map(labelledPart).join('\n\n');
   return `${CHECKS_MARKER}\n<details>\n<summary>${summary}</summary>\n\n${body}\n\n</details>`;
 }
 

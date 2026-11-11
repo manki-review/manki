@@ -409,6 +409,8 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, evidence: cited, refutation: splitFinding.refutation, checkStatus: 'confirmed' })).toContain('<summary>How this was checked: 1 place read, confirmed with tools</summary>');
     expect(render({ ...baseFinding, evidence: cited, howToFix: 'Check for `null` first.', checkStatus: 'proven' })).toContain('<summary>How to fix it and 1 place read · proven from the cited lines</summary>');
     expect(render({ ...baseFinding, howToFix: 'Check for `null` first.', checkStatus: 'unconfirmed' })).toContain('<summary>How to fix it · not confirmed</summary>');
+    // The status takes the place of "not checked against the code" in the title, so the fold says it.
+    expect(render({ ...baseFinding, checkStatus: 'unconfirmed' })).toContain('<summary>How this was checked: not confirmed</summary>\n\n**Not checked against the code**\nNothing was cited to back it.\n');
     // A single line folds all the same, so the title can say it.
     const oneLine = { checks: [], proof: ['src/main.ts:42'] };
     expect(render({ ...baseFinding, evidence: oneLine })).toContain('\n<!-- manki-checks -->\n**Checked:** ');
