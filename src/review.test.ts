@@ -2196,7 +2196,7 @@ describe('runReview', () => {
     const sweeping = (system: string) => system.startsWith('A code review found the blocker');
     const openThread: OpenThread = { threadId: 'T1', title: 'Search is slow', file: 'src/search.ts', line: 90, severity: 'warning' };
     const evaluation: ThreadEvaluation = { threadId: 'T1', status: 'not_addressed', reason: 'r' };
-    const run = async (sweep: boolean, disproved = false) => {
+    const run = async (sweep: boolean, disproved = false, sweepJudgeError?: Error) => {
       const clients = makeClients();
       jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({
         content: sweeping(system) ? JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [elsewhere, restated, reworded, citedElsewhere, nearCited, citedByDropped] }) : JSON.stringify([original, other, dropped]),
@@ -2204,7 +2204,10 @@ describe('runReview', () => {
       clients.dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[{"pair": 1, "sameDefect": true}]' }) } as unknown as import('./providers').LLMClient;
       mockedRunJudgeAgent.mockClear();
       // The sweep's judge call grades one finding as a note and ranks it first of its own notes.
-      mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings.map((f, i) => (i === 1 ? { ...f, severity: 'suggestion' as const, noteRank: 0 } : f)), summary: 'ok' }));
+      mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => {
+        if (sweepJudgeError) throw sweepJudgeError;
+        return { findings: input.findings.map((f, i) => (i === 1 ? { ...f, severity: 'suggestion' as const, noteRank: 0 } : f)), summary: 'ok' };
+      });
       // The judge merges the finders' copies of the blocker into one, which the refuters may have disproved.
       const refutation = { outcome: 'disproved' as const, reason: 'Bounded.', files: [], codeDigest: '' };
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
@@ -2242,6 +2245,16 @@ describe('runReview', () => {
     expect(result.allJudgedFindings?.filter(f => f.reviewers.includes(reviewer)).map(f => f.noteRank)).toEqual([undefined, undefined, undefined]);
     expect(result.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
     expect(result.llmCalls?.filter(c => c.stage === 'sweep').map(c => c.agent)).toEqual([reviewer]);
+
+    // A judge that fails on the sweep's findings ends the round incomplete, so no blocker the sweep found is lost
+    // behind an approval. The record keeps what the first judge call graded, and nothing is posted.
+    for (const [error, summary] of [[new Error('Judge left out 1 of 3 findings twice'), 'The judge failed on the findings of the sweep. Retry with @manki review.'], [new QuotaError('rate limited', 'requests'), expect.stringContaining('requests')]] as const) {
+      const failed = (await run(true, false, error)).result;
+      expect([failed.outcome, failed.verdict, failed.reviewComplete, failed.findings]).toEqual(['INCOMPLETE', 'COMMENT', false, []]);
+      expect(failed.summary).toEqual(summary);
+      expect(failed.allJudgedFindings?.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Rename the helper']);
+      expect(failed.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
+    }
   });
 
   it('stops waiting for a comparison a grace period after the finders are done, records it as timed out and completes the round', async () => {

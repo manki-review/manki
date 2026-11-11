@@ -1660,6 +1660,18 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify(first) }).mockRejectedValueOnce(new QuotaError('rate limited', 'requests'));
     await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toBeInstanceOf(QuotaError);
 
+    // The reply to a retry is read only for the findings it was asked for. An entry without an `id` goes to the closest
+    // of those, never to a finding the first reply graded, and an entry that names another finding is not moved onto one.
+    const near: JudgeInput = { ...input, findings: [makeFinding({ title: 'Lock held across await', line: 3 }), makeFinding({ title: 'Await under the lock', line: 4 })] };
+    const graded = { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'Lock held across await', row: 'wrong', reasoning: 'first', confidence: 'high' }] }) };
+    const unnumbered = { title: 'Await under lock', row: 'degraded', reasoning: 'second', confidence: 'high' };
+    mockSendMessage.mockReset();
+    mockSendMessage.mockResolvedValueOnce(graded).mockResolvedValueOnce(reply([unnumbered]));
+    expect((await runJudgeAgent(mockClient, makeConfig(), near)).findings.map(f => [f.title, f.judgeNotes])).toEqual([['Lock held across await', 'first'], ['Await under the lock', 'second']]);
+    mockSendMessage.mockReset();
+    mockSendMessage.mockResolvedValueOnce(graded).mockResolvedValueOnce(reply([{ ...unnumbered, id: 1, title: 'Await under the lock' }]));
+    await expect(runJudgeAgent(mockClient, makeConfig(), near)).rejects.toThrow('Judge left out 1 of 2 findings twice: 2 "Await under the lock"');
+
     // A missing finding and a missing open thread are asked for in the same retry.
     const openThreads: OpenThread[] = ['PRRT_a', 'PRRT_b'].map(threadId => ({ threadId, title: `Thread ${threadId}`, file: 'src/other.ts', line: 1, severity: 'warning' }));
     mockSendMessage.mockReset();

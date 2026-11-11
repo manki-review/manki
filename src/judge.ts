@@ -1418,12 +1418,13 @@ export async function runJudgeAgent(
   const threadsToEvaluate = hasOpenThreads && !overrideApplied ? openThreads! : [];
 
   // Each kept entry carries the number of the finding it grades, so a second reply merges with the first by `id`.
-  const parseReply = (reply: LLMResponse): JudgeResult => {
+  // A reply to a retry is read only for the findings numbered in `asked`.
+  const parseReply = (reply: LLMResponse, asked?: readonly number[]): JudgeResult => {
     if (reply.truncated) {
       throw new Error(`judge reply truncated at the output token limit (length ${reply.content.length})`);
     }
     const parsed = parseJudgeResponse(reply.content);
-    return { ...parsed, findings: alignJudgedToFindings(findings, parsed.findings).flatMap((j, i) => (j ? [{ ...j, id: i + 1 }] : [])) };
+    return { ...parsed, findings: alignJudgedToFindings(findings, parsed.findings, asked).flatMap((j, i) => (j ? [{ ...j, id: i + 1 }] : [])) };
   };
   const leftOut = (result: JudgeResult): { findings: number[]; threads: string[] } => {
     const graded = new Set(result.findings.map(j => j.id));
@@ -1437,14 +1438,14 @@ export async function runJudgeAgent(
     const first = await sendWithParseRetry(
       userMessage,
       send,
-      parseReply,
+      reply => parseReply(reply),
       (error) => core.warning(`Judge reply could not be used (${error}), asking once more`),
     );
     const missing = leftOut(first);
     if (missing.findings.length + missing.threads.length === 0) return first;
     core.warning(`Judge reply leaves out ${missing.findings.length} of ${findings.length} findings and ${missing.threads.length} of ${threadsToEvaluate.length} open threads, asking once more for them`);
     const reminder = buildMissingEntriesReminder(missing.findings, missing.threads);
-    const retry = await send(`${reminder}\n\nOriginal message:\n${userMessage}`).then(parseReply).catch((error) => {
+    const retry = await send(`${reminder}\n\nOriginal message:\n${userMessage}`).then(reply => parseReply(reply, missing.findings)).catch((error) => {
       // A finding without a grade fails the judge. A thread without an evaluation only stays open.
       if (missing.findings.length > 0) throw error;
       core.warning(`Judge retry failed (${error})`);
@@ -1454,7 +1455,7 @@ export async function runJudgeAgent(
     // the notes of one reply, so an entry from the retry has none.
     const merged: JudgeResult = {
       ...first,
-      findings: [...first.findings, ...(retry?.findings ?? []).filter(j => missing.findings.includes(j.id!)).map(({ noteRank: _, ...j }) => j)],
+      findings: [...first.findings, ...(retry?.findings ?? []).map(({ noteRank: _, ...j }) => j)],
       ...(missing.threads.length > 0 && {
         threadEvaluations: [...(first.threadEvaluations ?? []), ...(retry?.threadEvaluations ?? []).filter(e => missing.threads.includes(e.threadId))],
       }),
@@ -1692,20 +1693,26 @@ export function capUnprovenBlocker(finding: Finding): Finding {
  * Returns the judge's entry for each finding, matched by the `id` the entry
  * echoes. An entry without a usable `id` goes to the free finding with the
  * closest title, with a warning. A finding no entry grades has none.
+ *
+ * With `asked`, the reply answers a request for the findings with those numbers only. An entry that names any
+ * other finding is ignored, and the title match chooses among the asked findings alone.
  */
-function alignJudgedToFindings(original: Finding[], judged: JudgedFinding[]): Array<JudgedFinding | undefined> {
+function alignJudgedToFindings(original: Finding[], judged: JudgedFinding[], asked?: readonly number[]): Array<JudgedFinding | undefined> {
   const aligned: Array<JudgedFinding | undefined> = original.map(() => undefined);
+  const free = (index: number): boolean => index >= 0 && index < original.length && !aligned[index] && (!asked || asked.includes(index + 1));
   const unmatched: JudgedFinding[] = [];
   for (const j of judged) {
     const index = (j.id ?? 0) - 1;
-    if (index >= 0 && index < original.length && !aligned[index]) {
+    if (free(index)) {
       aligned[index] = j;
+    } else if (asked && j.id !== undefined) {
+      core.info(`Judge entry "${j.title}" (id ${j.id}) answers a finding the retry did not ask for. Skipping it.`);
     } else {
       unmatched.push(j);
     }
   }
   for (const j of unmatched) {
-    const index = closestTitle(j.title, original.map((o, i) => (aligned[i] ? undefined : o.title)));
+    const index = closestTitle(j.title, original.map((o, i) => (free(i) ? o.title : undefined)));
     if (index === undefined) {
       core.warning(`Judge entry "${j.title}" (id ${j.id ?? 'missing'}) matches no finding. Skipping it.`);
       continue;
