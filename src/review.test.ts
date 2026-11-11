@@ -5107,9 +5107,13 @@ describe('runReview post-judge suppression', () => {
     jest.mocked(applySuppressions).mockReturnValue({ kept: [], suppressed: [] });
   });
 
-  it('drops a suggestion finding on a test file in round 2', async () => {
+  it('drops a suggestion finding on a test file in round 2, never a security finding or a tool alert', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
-      findings: [makeFinding({ severity: 'suggestion', file: 'src/foo.test.ts', title: 'Could simplify' })],
+      findings: [
+        makeFinding({ severity: 'suggestion', file: 'src/foo.test.ts', title: 'Could simplify' }),
+        makeFinding({ severity: 'suggestion', file: 'src/foo.test.ts', title: 'Token logged in a fixture', tags: ['security'] }),
+        makeFinding({ severity: 'nitpick', file: 'src/foo.test.ts', title: 'Unused import', toolSource: 'eslint' }),
+      ],
       summary: 'ok',
     });
     const result = await runReview(
@@ -5121,7 +5125,7 @@ describe('runReview post-judge suppression', () => {
         priorRounds: [buildPriorRound(1)],
       },
     );
-    expect(result.findings).toHaveLength(0);
+    expect(result.findings.map(f => f.title)).toEqual(['Token logged in a fixture', 'Unused import']);
     expect(result.testNitSuppressedCount).toBe(1);
   });
 

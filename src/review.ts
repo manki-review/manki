@@ -1391,7 +1391,7 @@ export async function runReview(
     if (patterns.length > 0) {
       const before = finalFindings.length;
       finalFindings = finalFindings.filter(f => {
-        if (f.severity !== 'suggestion' && f.severity !== 'nitpick') return true;
+        if (!canLeaveOut(f)) return true;
         const onTestFile = patterns.some(p => minimatch(f.file, p));
         if (onTestFile) {
           core.info(`Test-nit suppression: dropping ${f.severity} "${f.title}" on ${f.file}:${f.line}`);
