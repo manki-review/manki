@@ -1815,23 +1815,40 @@ describe('postReview body lead', () => {
     const blocked = (findings: Finding[], more: Partial<ReviewResult> = {}): ReviewResult =>
       round({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReason: 'required_present', summary: 'Nothing blocks merge.', allJudgedFindings: findings, findings, ...more });
     const byJudge = { ...blocker, gradePath: [{ from: 'warning' as const, to: 'blocker' as const, by: 'judge' as const }] };
-    const confirmed = { ...blocker, gradePath: [{ from: 'blocker' as const, to: 'warning' as const, by: 'judge' as const }, { from: 'warning' as const, to: 'blocker' as const, by: 'refutation' as const }] };
+    const path = (...steps: [Finding['severity'], Finding['severity'], GradeChange][]): Pick<Finding, 'gradePath'> => ({ gradePath: steps.map(([from, to, by]) => ({ from, to, by })) });
+    const confirmed: Finding = { ...blocker, gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge'], ['warning', 'blocker', 'refutation']) };
     const lowered = { ...blocker, title: 'Empty list is read', line: 20, description: 'The first item is read unchecked.' };
     const fromBlocker = '`total / pageSize` rounds down.';
+    const sentences = (...findings: Finding[]): string[] => findings.map(f => roundSentence(blocked([f])));
     // The judge graded the blocker itself, by raising it or by keeping the grade a finder filed.
-    expect([byJudge, blocker].map(f => roundSentence(blocked([f])))).toEqual(['Nothing blocks merge.', 'Nothing blocks merge.']);
-    // The refuter confirmed a doubt, Manki graded in another column than the judge stated, or the judge stated no cell.
-    expect(roundSentence(blocked([confirmed]))).toBe(fromBlocker);
-    expect(roundSentence(blocked([{ ...byJudge, cell: { row: 'wrong', column: 'normal', judgeColumn: 'rare' } }]))).toBe(fromBlocker);
-    expect(roundSentence(blocked([{ ...blocker, cell: undefined }]))).toBe(fromBlocker);
+    expect(sentences(byJudge, blocker)).toEqual(['Nothing blocks merge.', 'Nothing blocks merge.']);
+    // So it did when the refuter gave the blocker back after the unproven cap, and when a security finding moved out of a `rare` column that blocks too.
+    const restored = { ...blocker, ...path(['blocker', 'warning', 'unproven'], ['warning', 'blocker', 'refutation']) };
+    const severe: Finding = { ...blocker, tags: ['security'], cell: { row: 'severe', column: 'normal', judgeColumn: 'rare' } };
+    expect(sentences(restored, severe)).toEqual(['Nothing blocks merge.', 'Nothing blocks merge.']);
+    // The refuter confirmed a doubt, on a blocker cell or on the `rare` column. A doubt on a security blocker never held it down, but the judge still named it.
+    const reach: Finding = { ...confirmed, cell: { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, ...path(['warning', 'blocker', 'refutation']) };
+    expect(sentences(confirmed, reach, { ...severe, gradeIfConfirmed: 'blocker' })).toEqual([fromBlocker, fromBlocker, fromBlocker]);
+    // Manki graded a security finding in another column than the judge stated, the judge stated no cell, or the cell is none the table knows.
+    const unknownCell = { row: 'critical', column: 'normal' } as unknown as Finding['cell'];
+    expect(sentences({ ...byJudge, tags: ['security'], cell: { row: 'wrong', column: 'normal', judgeColumn: 'rare' } }, { ...blocker, cell: undefined }, { ...blocker, cell: unknownCell }))
+      .toEqual([fromBlocker, fromBlocker, fromBlocker]);
+    // A blocker the round carries on an earlier thread follows the same rule.
+    expect(sentences({ ...blocker, threadId: 'PRRT_1' }, { ...confirmed, threadId: 'PRRT_1' })).toEqual(['Nothing blocks merge.', fromBlocker]);
     // A sweep's finding is graded in a later call than the one that wrote the summary.
     const sweeps = [{ reviewer: 'Sweep 1', blocker: 'src/a.ts:20', status: 'answered' as const }];
     expect(roundSentence(blocked([lowered, { ...byJudge, reviewers: ['Sweep 1'] }], { sweeps }))).toBe('The first item is read unchecked.');
     expect(roundSentence(blocked([lowered, byJudge], { sweeps }))).toBe('Nothing blocks merge.');
     // One such blocker is enough, next to one the judge graded.
     expect(roundSentence(blocked([lowered, confirmed]))).toBe('The first item is read unchecked.');
-    // A finding that does not block changes nothing, whoever graded it.
-    expect(roundSentence(blocked([lowered, { ...confirmed, severity: 'warning', tags: ['follow-up'] }]))).toBe('Nothing blocks merge.');
+    // A finding that does not block changes nothing: a doubt nobody confirmed, a cap that stayed, a blocker in code the PR left alone or one two refuters lowered.
+    const below = (more: Partial<Finding>): Finding => ({ ...blocker, title: 'Offset is off by one', line: 30, severity: 'warning', ...more });
+    const notBlocking = [
+      below({ gradeIfConfirmed: 'blocker', ...path(['blocker', 'warning', 'judge']) }),
+      ...(['unproven', 'build_claim', 'pre_existing'] as const).map(by => below(path(['blocker', 'warning', by]))),
+      below({ cell: undefined, ...path(['warning', 'blocker', 'judge'], ['blocker', 'warning', 'refutation']) }),
+    ];
+    expect(notBlocking.map(f => roundSentence(blocked([lowered, f])))).toEqual(notBlocking.map(() => 'Nothing blocks merge.'));
     const raised = await postedBody(blocked([confirmed]));
     expect(lead(raised.body).split('\n\n').slice(0, 2)).toEqual(['\u{1F534} **Changes requested:** 1 blocker.', `**What blocks:** ${fromBlocker}`]);
     expect([roundSummary(blocked([confirmed])), raised.body.includes('Nothing blocks')]).toEqual([fromBlocker, false]);

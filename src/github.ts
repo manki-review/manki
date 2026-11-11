@@ -12,7 +12,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { findingKey, isDisprovedRaise, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
+import { cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -2050,10 +2050,10 @@ export function roundSentence(result: ReviewResult): string {
   const droppedLater = (f: Finding) => f.gradePath?.length ? f.gradePath.at(-1)!.by !== 'judge' : false;
   const kept = (result.allJudgedFindings ?? []).filter(f => f.severity !== 'ignore' || droppedLater(f));
   const listed = new Set(result.findings.map(findingKey));
-  // The judge graded a blocker itself when it stated the cell that gives the grade and no later step set the grade.
+  // The judge graded a blocker itself when the cell it stated gives `blocker` with no doubt behind it. A doubt leaves `gradeIfConfirmed`.
   // A sweep's finding is graded in a later judge call, and the verdict reader's has no cell.
   const sweepers = new Set(result.sweeps?.map(sweep => sweep.reviewer));
-  const judgeGraded = (f: Finding) => !!f.cell && !f.cell.judgeColumn && (f.gradePath?.at(-1)?.by ?? 'judge') === 'judge' && !f.reviewers.some(r => sweepers.has(r));
+  const judgeGraded = (f: Finding) => isGradeCell(f.cell) && cellGrade(f.cell.row, f.cell.judgeColumn ?? f.cell.column) === 'blocker' && !f.gradeIfConfirmed && !f.reviewers.some(r => sweepers.has(r));
   const blockers = result.findings.filter(f => f.severity === 'blocker');
   // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
   const stands = result.verdictReason !== 'verdict_reader' && (kept.length === 0 || kept.some(f => listed.has(findingKey(f)))) && blockers.every(judgeGraded);
