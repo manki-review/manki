@@ -443,6 +443,12 @@ async function showAlreadyReviewed(
   });
 }
 
+/** Loads the config file at `ref` for an event that runs no review round. */
+async function loadEventConfig(octokit: Octokit, owner: string, repo: string, ref: string): Promise<ReviewConfig> {
+  const configPath = core.getInput('config_path') || '.manki.yml';
+  return loadConfig(await fetchConfigFile(octokit, owner, repo, ref, configPath) ?? undefined, configPath);
+}
+
 async function handlePullRequest(): Promise<void> {
   const pr = github.context.payload.pull_request;
   if (!pr) {
@@ -496,9 +502,7 @@ async function handleMergedPullRequest(): Promise<void> {
 
   const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
-  const configPath = core.getInput('config_path') || '.manki.yml';
-  const configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath);
-  const config = loadConfig(configContent ?? undefined, configPath);
+  const config = await loadEventConfig(octokit, owner, repo, pr.base.ref);
   if (!(config.metrics?.fix_rate ?? config.memory?.enabled)) {
     core.info('Fix-rate metrics are off, skipping');
     return;
@@ -2013,11 +2017,7 @@ async function handleReviewStateCheck(): Promise<void> {
 
   const { owner, repo } = github.context.repo;
   const prNumber = pr.number;
-  const configPathInput = core.getInput('config_path');
-
-  const configPath = configPathInput || '.manki.yml';
-  const configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath);
-  const config = loadConfig(configContent ?? undefined, configPath);
+  const config = await loadEventConfig(octokit, owner, repo, pr.base.ref);
 
   // A guarded thread the PR author resolved blocks with `auto_approve` off too, so it is reopened first.
   const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, pr.user?.login);
@@ -2043,21 +2043,14 @@ async function handleInteraction(): Promise<void> {
     return;
   }
 
-  const configPathInput = core.getInput('config_path');
-
   const { octokit, bot } = await getAuth();
 
   const { owner, repo } = github.context.repo;
   const prNumber = github.context.payload.issue?.number;
   if (!prNumber) return;
 
-  let baseRef = 'main';
   const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-  baseRef = pr.base.ref;
-
-  const configPath = configPathInput || '.manki.yml';
-  const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
-  const config = loadConfig(configContent ?? undefined, configPath);
+  const config = await loadEventConfig(octokit, owner, repo, pr.base.ref);
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
@@ -2080,11 +2073,7 @@ async function handleIssueInteraction(): Promise<void> {
   if (!issueNumber) return;
 
   const { octokit, bot } = await getAuth();
-  const configPathInput = core.getInput('config_path');
-
-  const configPath = configPathInput || '.manki.yml';
-  const configContent = await fetchConfigFile(octokit, owner, repo, 'main', configPath);
-  const config = loadConfig(configContent ?? undefined, configPath);
+  const config = await loadEventConfig(octokit, owner, repo, 'main');
 
   const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, issueNumber);
 
@@ -2129,15 +2118,10 @@ async function handleReviewCommentInteraction(): Promise<void> {
     return;
   }
 
-  const configPathInput = core.getInput('config_path');
-
   const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
 
-  const baseRef = payload.pull_request?.base?.ref ?? 'main';
-  const configPath = configPathInput || '.manki.yml';
-  const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
-  const config = loadConfig(configContent ?? undefined, configPath);
+  const config = await loadEventConfig(octokit, owner, repo, payload.pull_request?.base?.ref ?? 'main');
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
