@@ -618,14 +618,17 @@ export interface PremiseCheck {
 
 /** The outcome of the judge's attempt to refute a finding with tools. */
 export interface Refutation {
+  /** What the check means for the finding's grade: the answer to the whole finding, or what its `premises` add up to. */
   outcome: RefutationOutcome;
+  /** The refuter's own answer whether the defect exists, whatever it found about the premises. A record from before this was stored has none. */
+  defect?: RefutationOutcome;
   /** What decided it, in one or two sentences. */
   reason: string;
   /** The general rule of the language, a library or a protocol that the finding relies on, as the refuter named it. */
   rule?: string;
   /** The `file:line` locations the judge cites: the failure for `confirmed`, the reason it cannot happen for `disproved`. */
   proof?: string[];
-  /** The answer to each premise in the finding's `doubts`, in order. The outcome follows from them. */
+  /** The answer to each premise in the finding's `doubts`, in order. The `outcome` follows from them. */
   premises?: PremiseCheck[];
   /** The finding's own file and the files the outcome cites. */
   files: string[];

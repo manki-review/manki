@@ -35,7 +35,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
+import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG } from './types';
 import { citedLine } from './finding-fingerprint';
 import { fingerprintEntriesFromLegacy, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -1944,6 +1944,7 @@ jest.mock('./judge', () => ({
   collectPriorBlockers: jest.requireActual('./judge').collectPriorBlockers,
   foldInto: jest.requireActual('./judge').foldInto,
   capUnconfirmedBuildClaim: jest.requireActual('./judge').capUnconfirmedBuildClaim,
+  capUnprovenBlocker: jest.requireActual('./judge').capUnprovenBlocker,
 }));
 
 // The pinned ast-grep build is downloaded at run time, so tests parse with the installed one.
@@ -2253,7 +2254,8 @@ describe('runReview', () => {
       }
       if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
       refuterCalls.push(titles.find(title => user.includes(`: ${title}\n`))!);
-      return { content: JSON.stringify({ reason: 'It leaks.', premises: [{ outcome: 'confirmed', reason: 'It leaks.', proof: ['src/app.ts:1'] }] }) };
+      const confirmed = { outcome: 'confirmed', reason: 'It leaks.', proof: ['src/app.ts:1'] };
+      return { content: JSON.stringify({ ...confirmed, premises: [confirmed] }) };
     });
     mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
     mockedApplySuppressions.mockImplementation(jest.requireActual<typeof import('./memory')>('./memory').applySuppressions);
@@ -2314,6 +2316,53 @@ describe('runReview', () => {
       ['Loader ignores the lock entry', 'warning', 'pre_existing', true, 'confirmed'],
     ]);
     expect(result.unpostedPreExisting).toBeUndefined();
+  });
+
+  it('posts a warning on unchanged code in the `rare` column when its check confirms the defect, whatever the check finds about the reach', async () => {
+    const lines = (word: string) => Array.from({ length: 30 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
+    const { root, diff } = gitWorkspace({ 'src/app.ts': lines('old'), 'src/old.ts': lines('kept') }, { 'src/app.ts': lines('new') });
+    // What the refuter answers for each: whether the defect exists, then whether normal use reaches it.
+    const answers: Record<string, [string, string]> = {
+      'Old parser drops the last row': ['confirmed', 'unsettled'], 'Old cache may serve a stale entry': ['unsettled', 'unsettled'], 'Old retry sends twice': ['confirmed', 'confirmed'],
+    };
+    const titles = Object.keys(answers);
+    const found = titles.map((title, i) => ({
+      severity: 'warning', title, file: 'src/old.ts', line: 11 + i, description: 'd', evidence: [`src/old.ts:${11 + i} shows it`], proof: [`src/old.ts:${11 + i}`],
+      preExisting: true, preExistingReason: 'The code predates this PR.',
+    }));
+    const refuterMessages: string[] = [];
+    const clients = makeClients();
+    // One finder reports them, so the judge merges no copies.
+    jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found) });
+    Object.assign(clients.judge, { repoTools: true });
+    jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
+      if (system.startsWith('You are a code review judge')) {
+        // The judge calls each wrong only in a state normal use does not produce, which makes it a warning that blocks once the reach is confirmed.
+        return { content: JSON.stringify({ summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'wrong', column: 'rare', preExisting: true, reasoning: 'r' })) }) };
+      }
+      if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
+      refuterMessages.push(user);
+      const [defect, reach] = answers[titles.find(title => user.includes(`: ${title}\n`))!];
+      const proof = ['src/old.ts:11'];
+      return { content: JSON.stringify({ outcome: defect, reason: 'r', proof, premises: [{ outcome: reach, reason: 'r', proof }] }) };
+    });
+    mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+    let result: ReviewResult;
+    try {
+      result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(result.reviewComplete).toBe(true);
+    // Each is asked once, about the reach and about the defect.
+    expect(refuterMessages.map(user => user.includes(`1. ${REACH_DOUBT.premise}`))).toEqual([true, true, true]);
+    // A confirmed defect is posted as a warning though its reach is open. A confirmed reach makes it a blocker, which code the PR did not change posts as a warning.
+    expect(result.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags?.includes('pre-existing'), f.checkStatus])).toEqual([
+      ['Old parser drops the last row', 'warning', undefined, true, 'confirmed'],
+      ['Old retry sends twice', 'warning', 'blocker', true, 'confirmed'],
+    ]);
+    expect(result.unpostedPreExisting?.map(f => [f.title, f.severity, f.refutation?.defect])).toEqual([['Old cache may serve a stale entry', 'warning', 'unsettled']]);
   });
 
   it('keeps a check for an unproven warning of a later judge call, since every other check that shares the limit waits for the round\'s end', async () => {
@@ -2570,7 +2619,7 @@ describe('runReview', () => {
 
   describe('open leads', () => {
     const leadOf = (severity: string, title: string, file: string, line: number) => ({ lead: true, severity, title, file, line, description: `${title}.`, checked: 'read the file', left: 'check the caller' });
-    const refuted = (outcome: 'confirmed' | 'disproved' | 'unsettled') => ({ outcome, reason: `It is ${outcome}.`, files: ['src/a.ts'], codeDigest: 'abc' });
+    const refuted = (outcome: 'confirmed' | 'disproved' | 'unsettled') => ({ outcome, defect: outcome, reason: `It is ${outcome}.`, files: ['src/a.ts'], codeDigest: 'abc' });
     const diff = { ...diffChanging('src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'), totalAdditions: 10, totalDeletions: 5 };
     /** Clients whose first finder reports `reply`, and whose judge has tools when `tools` is set. */
     const leadClients = (reply: unknown[], tools: boolean) => {
@@ -2672,7 +2721,7 @@ describe('runReview', () => {
   describe('unproven warnings', () => {
     const diff = { ...diffChanging('src/a.ts', 'src/b.ts'), totalAdditions: 10, totalDeletions: 5 };
     const doubts = [{ premise: 'The caller holds no lock', decides: 'defect' as const }];
-    const checked = (outcome: 'confirmed' | 'unsettled') => ({ refutation: { outcome, reason: `It is ${outcome}.`, files: ['src/a.ts'], codeDigest: 'abc' } });
+    const checked = (outcome: 'confirmed' | 'unsettled') => ({ refutation: { outcome, defect: outcome, reason: `It is ${outcome}.`, files: ['src/a.ts'], codeDigest: 'abc' } });
     const proof = { evidence: { checks: [], proof: ['src/a.ts:1'] } };
     /** Runs a round whose judge returns one finding per entry of `judged`, by title, with or without repository tools. */
     const review = async (judged: Record<string, Partial<Finding>>, tools: boolean) => {
@@ -3052,10 +3101,10 @@ describe('runReview', () => {
     const oldSuggestion = blocker('Old helper could be shorter', 'src/a.ts', 60, { severity: 'note' });
     // No check ran on this one, as on a round without tools, after a refuter call that failed, or in a file the refuter cannot read.
     const oldUnsure = blocker('Old retry may spin', 'src/a.ts', 70, { severity: 'warning', evidence: { checks: [], proof: ['src/a.ts:70'] } });
-    const oldUnsettled = { ...oldUnsure, title: 'Old lock may leak', line: 72, refutation: { outcome: 'unsettled' as const, reason: 'Could not tell.', files: ['src/a.ts'], codeDigest: 'abc' } };
+    const oldUnsettled = { ...oldUnsure, title: 'Old lock may leak', line: 72, refutation: { outcome: 'unsettled' as const, defect: 'unsettled' as const, reason: 'Could not tell.', files: ['src/a.ts'], codeDigest: 'abc' } };
     const oldUnreached = { ...oldUnsure, title: 'Old cache may grow', line: 74, overCheckLimit: true as const };
     const oldSure = blocker('Old timeout is never cleared', 'src/a.ts', 80, {
-      severity: 'warning', evidence: { checks: [], proof: ['src/a.ts:80'] }, refutation: { outcome: 'confirmed', reason: 'Nothing clears it.', files: ['src/a.ts'], codeDigest: 'abc' },
+      severity: 'warning', evidence: { checks: [], proof: ['src/a.ts:80'] }, refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'Nothing clears it.', files: ['src/a.ts'], codeDigest: 'abc' },
     });
     mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile, oldSuggestion, oldUnsure, oldUnsettled, oldUnreached, oldSure], summary: 'Old defects.' });
     const pre = await run(makeClients());

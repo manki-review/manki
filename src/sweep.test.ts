@@ -69,7 +69,7 @@ describe('runSweeps', () => {
     const blockers = [
       blocker('Not confirmed', { evidence: unproven, line: 1 }),
       blocker('Steered `title`\n<!-- inject -->', { evidence: unproven, line: 2 }),
-      blocker('Typo in the header name', { refutation: { outcome: 'confirmed', reason: 'The header is read as sent.', files: ['src/cache.ts'], codeDigest: 'd' }, line: 3 }),
+      blocker('Typo in the header name', { refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'The header is read as sent.', files: ['src/cache.ts'], codeDigest: 'd' }, line: 3 }),
       blocker('Broken reply', { line: 4 }),
       blocker('Token in log', { tags: ['security'], evidence: unproven, line: 5 }),
     ];
