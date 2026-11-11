@@ -6,6 +6,7 @@ import { resolveInRoot } from './mcp-server';
 import { LLMClient, LLMResponse, QuotaError, RefusalError, SendMessageOptions } from './providers';
 import { extractJSON } from './json';
 import {
+  applySuppressions,
   filterLearningsForFinding,
   filterSuppressionsForFinding,
   sanitizeForPromptEmbed,
@@ -19,10 +20,10 @@ import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, fencePrText, filesChangedByPush, parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff } from './review';
+import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, preExistingCheck, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
-import { refuteBlockers } from './refute';
+import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
 import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
@@ -278,9 +279,9 @@ export interface JudgeInput {
   /**
    * A client with `repoTools` and the checked-out PR head. The judge reads the code findings cite outside the diff from
    * the head, and the client tries to refute each blocker, open lead and finding lowered for want of proof, and up to
-   * four findings with a doubt the judge named.
+   * `MAX_DOUBT_CHECKS` warnings nothing proves yet. The judge calls of one round share those checks through `doubtBudget`.
    */
-  refutation?: { client: LLMClient; workspace: string; pair?: LLMClient };
+  refutation?: { client: LLMClient; workspace: string; pair?: LLMClient; doubtBudget?: { left: number } };
   /** Read-only tool calls the judge itself may make on the `refutation` workspace while it grades. 0 or unset gives it none. */
   toolSteps?: number;
   /** The section `listUsesOutsideDiff` builds, shown to the judge and the refuter. */
@@ -445,6 +446,10 @@ Serious damage is one of:
 
 ${OUTSIDE_INPUT_RULE}
 
+## Warning Tests
+
+A finding is a \`warning\` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and \`proof\` cites the lines that show it. Manki posts a warning only when it is proven. For one you cannot prove from the code shown${toolSteps > 0 ? ' or your tools' : ''}, follow When You Are Unsure.
+
 ## Severity Table
 
 State each finding's cell: \`row\` is what goes wrong, and \`column\` is when it happens. Manki works out the grade from the cell. A \`blocker\` from the table still needs all five tests.
@@ -469,7 +474,7 @@ A rule below that gives a finding a grade names the row to state: \`degraded\` i
 
 ## Code You Cannot See
 
-You see the diff, the lines under **Uses Outside the Diff** when the user message has that section, and, under a finding, the code it cites outside the diff when Manki could read it, marked **Cited code outside the diff**. A finding that cites a line listed under Uses Outside the Diff rests on code shown, so grade it on its merits like any finding. A finding can rest on code beyond all that, such as a caller, a lock taken in another function or a type defined elsewhere. A doubt that the failure is reached is the same kind of gap: no caller in the code shown passes the value that triggers it, the path looks latent, or a real input may never take it. A path through a library's public API is reached, since any caller of that API can pass a value it accepts, with no caller inside the repository. The rule on a check of a trusted internal value still applies when the code shown proves that the code's own logic keeps the value valid: that is evidence, not a doubt. The \`rare\` column always carries its doubt, by the Severity Table. Only a doubt the code shown does not settle counts here. Code you cannot see and a path you cannot follow are no evidence against a finding, so on their own they never drop a finding and never lower its row. State the cell such a finding earns if that code is as the finding says and the path exists, and list what you could not see in \`doubts\`, by When You Are Unsure: a \`blocker\` cell whose failure you cannot follow in the code shown is graded \`warning\`, and a \`warning\` stays.
+You see the diff, the lines under **Uses Outside the Diff** when the user message has that section, and, under a finding, the code it cites outside the diff when Manki could read it, marked **Cited code outside the diff**. A finding that cites a line listed under Uses Outside the Diff rests on code shown, so grade it on its merits like any finding. A finding can rest on code beyond all that, such as a caller, a lock taken in another function or a type defined elsewhere. A doubt that the failure is reached is the same kind of gap: no caller in the code shown passes the value that triggers it, the path looks latent, or a real input may never take it. A path through a library's public API is reached, since any caller of that API can pass a value it accepts, with no caller inside the repository. Code this PR adds is reached the same way: a function, method or handler the PR adds is there to be called, so a missing caller is no doubt, and calling it as its name, signature and comments say is normal use. The rule on a check of a trusted internal value still applies when the code shown proves that the code's own logic keeps the value valid: that is evidence, not a doubt. The \`rare\` column always carries its doubt, by the Severity Table. Only a doubt the code shown does not settle counts here. Code you cannot see and a path you cannot follow are no evidence against a finding, so on their own they never drop a finding and never lower its row. State the cell such a finding earns if that code is as the finding says and the path exists, and list what you could not see in \`doubts\`, by When You Are Unsure: a \`blocker\` cell whose failure you cannot follow in the code shown is graded \`warning\`, and a \`warning\` cell is posted only once it is proven.
 ${toolSteps > 0 ? `
 ## Your Tools
 
@@ -509,14 +514,14 @@ A reviewer marks a finding pre-existing when it says the defect sits on code thi
 When you cannot tell whether a finding is real, resolve it by the grade its cell gives:
 
 - \`blocker\`: when you cannot settle one of the five tests, state the cell all the same, list what you could not settle in \`doubts\`, and say in \`reasoning\` which test it is. Manki grades it \`warning\` at most.
-- \`warning\`: keep it, list what you could not determine in \`doubts\`, and say it in \`reasoning\`. A wrongly dropped defect ships. A wrongly kept one costs a single fix.
+- \`warning\`: state the cell all the same, list the premise you could not settle in \`doubts\` with \`decides\` set to \`defect\`, and say it in \`reasoning\`. ${toolsCheckFindings ? 'Manki checks the premise with tools and posts the warning only when the check confirms it.' : 'No tool check runs on this review, so Manki posts the warning only when `proof` cites the lines that show the failure.'}
 - \`note\`: drop it (\`ignore\`). A missed note is cheap. Chasing a false one is not.
 
 Being certain overrides this. It governs doubt, never judgment.
 
 State on every finding the \`row\` its consequence earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A premise you only assume, with no line to cite for it, is still a doubt. So is a premise that lowers or caps the grade, such as callers probably validating a value, a path looking limited or an input looking trusted, unless the code shown or your tool calls prove it. Except for an open lead, which follows its own rule, never mark a finding \`ignore\` for an unsettled doubt alone: when its cell gives \`warning\` or \`blocker\` if the doubt holds, state that cell and list the doubt.
 
-A doubt is only a premise that the code shown and your tool calls leave open. A premise your reasoning settles from lines you cite is not a doubt, so never list it. List each doubt in \`doubts\`, as a fact the code can confirm or disprove: "a public request handler passes \`index\` to \`getItem\` unchecked", not "callers probably validate \`index\`". Set \`decides\` to \`defect\` when the defect does not exist if the premise is false, and to \`grade\` when the finding stands either way and only its cell depends on the premise. Manki counts a \`grade\` doubt only on the \`wrong\` row, where the column decides whether the finding blocks. When you doubt nothing, leave \`doubts\` empty.${toolsCheckFindings ? ' Manki checks each premise with tools when confirming it would raise the grade: on a `blocker` cell with a doubt, and on the `rare` column of the `wrong` row. On a finding whose doubts hold no grade down, it checks a doubt whether the defect exists on at most four findings a round at `warning` or above, the highest grades first. A finding gets the higher grade only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.' : ''}
+A doubt is only a premise that the code shown and your tool calls leave open. A premise your reasoning settles from lines you cite is not a doubt, so never list it. List each doubt in \`doubts\`, as a fact the code can confirm or disprove: "a public request handler passes \`index\` to \`getItem\` unchecked", not "callers probably validate \`index\`". Set \`decides\` to \`defect\` when the defect does not exist if the premise is false, and to \`grade\` when the finding stands either way and only its cell depends on the premise. Manki counts a \`grade\` doubt only on the \`wrong\` row, where the column decides whether the finding blocks. When you doubt nothing, leave \`doubts\` empty.${toolsCheckFindings ? ' Manki checks each premise with tools when confirming it would raise the grade: on a `blocker` cell with a doubt, and on the `rare` column of the `wrong` row. It also checks each `warning` with a `defect` doubt, and each one whose `proof` is empty, on up to ' + MAX_DOUBT_CHECKS + ' findings a round. A warning the check confirms is posted. One it cannot settle or does not reach is recorded and not posted, unless it would be a blocker if true. A finding gets the higher grade only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.' : ''}
 
 Start \`reasoning\` with your verdict, the grade the cell gives or \`ignore\`, then the facts behind it. For a blocker, name the failure and cite the proving lines (e.g., "blocker. When a request omits \`page\`, \`listItems\` at src/api.ts:42 divides by zero and the handler returns 500 for every default listing.").
 
@@ -640,7 +645,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "fixLeaves": "",
       "confidence": "high" | "medium" | "low",
       "reasoning": "Your verdict first, then 1-2 sentences on why",
-      "proof": ["file:line of each line that shows the failure, for a blocker"]
+      "proof": ["file:line of each line that shows the failure, for a blocker or a warning"]
     }
   ],
   "noteOrder": ["N of each finding graded note, the most useful first"]${hasOpenThreads ? `,
@@ -1474,11 +1479,20 @@ export async function runJudgeAgent(
     const crossRound = applyCrossRoundSuppression(list, priorRounds, crossRoundOptions);
     return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet) };
   };
+  // Each step after the refuter that keeps a warning out of the review whatever a check says belongs here: the
+  // suppressions above, which drop it or make it a note, the memory suppressions and `markPreExisting`.
+  const unpostedLater = (finding: Finding): boolean => suppress([finding], true).findings[0].severity !== finding.severity
+    || applySuppressions([finding], memory?.suppressions ?? [], true).suppressed.length > 0
+    || (staysPreExisting(finding) && !postedWhenPreExisting(finding));
+  const earlier = earlierFindings(priorRounds ?? [], openThreads ?? input.evaluatedThreads?.openThreads ?? [], crossRoundOptions.threadEvaluations);
   // The suppressions hide findings by grade, so the refuter settles each grade first.
   const checked = refutation ? await refuteBlockers(refutation.client, mapped, {
-    workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
+    workspace: refutation.workspace, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
     blockingThreads: (openThreads ?? input.evaluatedThreads?.openThreads ?? []).filter(threadBlocks),
     hiddenLater: finding => suppress([finding], true).findings[0].severity === 'ignore',
+    unpostedLater,
+    // The match `foldIntoEarlierFindings` makes without a model. The threads are graded again before it runs, so it is not certain yet.
+    restatesEarlier: finding => earlier.some(e => sameProblem(e.finding, finding)),
   }) : mapped;
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked);
 

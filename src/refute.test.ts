@@ -5,7 +5,7 @@ import { join } from 'path';
 import * as core from '@actions/core';
 
 import { LLMClient, SendMessageOptions } from './providers';
-import { disproof, refuteBlockers } from './refute';
+import { disproof, refuteBlockers, unprovenReason } from './refute';
 import { Finding, OpenThread, ParsedDiff, REACH_DOUBT, RoundContext } from './types';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -489,35 +489,150 @@ describe('refuteBlockers', () => {
     expect(client.calls.filter(([title]) => title === 'Premises not answered')).toHaveLength(2);
   });
 
-  it('checks every finding a doubt holds below its conditional grade, and at most four kept at their grade with a doubt whether the defect exists', async () => {
+  it('checks every finding a doubt holds below its conditional grade, and at most eight warnings nothing proves yet', async () => {
     const unsettled = { outcome: 'unsettled', reason: 'Could not tell.', premises: [] };
     const exists = [{ premise: 'The copy is never dropped', decides: 'defect' as const }];
     const doubted = (title: string, severity: Finding['severity']) => finding(title, { severity, gradeIfConfirmed: severity, doubts: exists });
+    const noProof = { evidence: { checks: ['read src/math.ts'], proof: [] } };
     const findings = [
       // A check that can raise a finding is how a warning becomes a blocker, so it is never capped.
       finding('Note to warning', { severity: 'note', gradeIfConfirmed: 'warning' }),
       finding('Warning to blocker', { severity: 'warning', gradeIfConfirmed: 'blocker' }),
       // A finding in the `rare` column of the `wrong` row is such a check.
       finding('Second warning to blocker', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'Any client reaches it', decides: 'grade' }] }),
-      doubted('Doubted suggestion', 'note'),
+      doubted('Doubted note', 'note'),
+      // A warning whose file the refuter cannot read, such as one the PR deletes or one with no file, takes none of the eight.
+      { ...doubted('Doubt in a deleted file', 'warning'), file: 'src/deleted.ts' },
+      { ...doubted('Doubt with no file', 'warning'), file: '' },
+      finding('No proof in a deleted file', { severity: 'warning', file: 'src/deleted.ts', ...noProof }),
+      // Neither does a warning a later step records without posting it.
+      doubted('Left out later with a doubt', 'warning'),
+      finding('Left out later without proof', { severity: 'warning', ...noProof }),
+      // A warning linked to an earlier finding, or one that matches one, is probably kept out later. That is not certain, so it is checked after the others.
+      { ...doubted('Linked to an open thread', 'warning'), sameAs: 'src/math.ts:1:earlier' },
+      doubted('Matches an earlier finding', 'warning'),
       doubted('Doubted warning 1', 'warning'),
       doubted('Doubted warning 2', 'warning'),
       doubted('Doubted warning 3', 'warning'),
-      // Blockers are always checked and take none of the four.
+      // Blockers are always checked and take none of the eight.
       doubted('Doubted blocker', 'blocker'),
-      // A doubt only about the grade cannot change a finding kept at that grade, so it takes no check.
+      // A doubt only about the grade cannot change a finding kept at that grade, so with its proof cited it takes no check.
       finding('Grade doubt at its grade', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: [{ premise: 'Any client reaches it', decides: 'grade' }] }),
+      // A warning no cited line proves is checked like a doubted one, and a note is not.
+      finding('Warning without proof', { severity: 'warning', ...noProof }),
+      finding('Note without proof', { severity: 'note', ...noProof }),
+      // A tool alert and a security finding are posted whatever a check says, so neither takes one of the eight.
+      finding('Tool alert without proof', { severity: 'warning', toolSource: 'CodeQL', ...noProof }),
+      finding('Security warning without proof', { severity: 'warning', tags: ['security'], ...noProof }),
+      { ...doubted('Security warning with a doubt', 'warning'), tags: ['security'] },
       doubted('Doubted warning 4', 'warning'),
       doubted('Doubted warning 5', 'warning'),
+      doubted('Doubted warning 6', 'warning'),
+      doubted('Doubted warning 7', 'warning'),
+      // The ninth and tenth are past the limit.
+      doubted('Doubted warning 8', 'warning'),
+      finding('Second warning without proof', { severity: 'warning', ...noProof }),
+      finding('Proven warning', { severity: 'warning' }),
     ];
     const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, unsettled])));
 
-    await refuteBlockers(client, findings, { workspace, diff });
+    const restatesEarlier = (f: Finding) => f.title === 'Matches an earlier finding';
+    const result = await refuteBlockers(client, findings, { workspace, diff, unpostedLater: f => f.title.startsWith('Left out later'), restatesEarlier });
 
     expect(client.calls.map(([title]) => title).sort()).toEqual([
-      'Doubted blocker', 'Doubted warning 1', 'Doubted warning 2', 'Doubted warning 3', 'Doubted warning 4',
-      'Note to warning', 'Second warning to blocker', 'Warning to blocker',
+      'Doubted blocker', 'Doubted warning 1', 'Doubted warning 2', 'Doubted warning 3', 'Doubted warning 4', 'Doubted warning 5', 'Doubted warning 6', 'Doubted warning 7',
+      'Note to warning', 'Second warning to blocker', 'Warning to blocker', 'Warning without proof',
     ]);
+    expect(client.messages.find(([, user]) => user.includes(': Warning without proof\n'))![1]).toMatch(/^## Warning no cited line proves: Warning without proof\n/);
+    expect(client.messages[0][0]).toContain('a claimed build failure no CI result reports, a warning no cited line proves, or a finding that rests on premises the judge doubts');
+
+    // Only a check that settled nothing and the limit leave a doubted warning unproven. Where no check could run, the cited lines decide.
+    const reasons = (list: Finding[]) => Object.fromEntries(list.filter(f => f.severity === 'warning').map(f => [f.title, unprovenReason(f)]));
+    expect(reasons(result)).toEqual({
+      'Warning to blocker': undefined, 'Second warning to blocker': undefined, 'Grade doubt at its grade': undefined, 'Proven warning': undefined,
+      'Doubted warning 1': 'unsettled_check', 'Doubted warning 2': 'unsettled_check', 'Doubted warning 3': 'unsettled_check', 'Doubted warning 4': 'unsettled_check',
+      'Doubted warning 5': 'unsettled_check', 'Doubted warning 6': 'unsettled_check', 'Doubted warning 7': 'unsettled_check', 'Warning without proof': 'unsettled_check',
+      'Doubted warning 8': 'not_checked', 'Second warning without proof': 'not_checked',
+      'Linked to an open thread': 'not_checked', 'Matches an earlier finding': 'not_checked',
+      'Doubt in a deleted file': undefined, 'Doubt with no file': undefined, 'No proof in a deleted file': 'no_proof',
+      'Left out later with a doubt': undefined, 'Left out later without proof': 'no_proof',
+      'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof', 'Security warning with a doubt': undefined,
+    });
+    // The judge calls of one round share the eight, so a later call checks only what an earlier one left.
+    const doubtBudget = { left: 3 };
+    const pairOf = (name: string) => [doubted(`${name} 1`, 'warning'), doubted(`${name} 2`, 'warning')];
+    const shared = fakeClient({ 'First call 1': unsettled, 'First call 2': unsettled, 'Second call 1': unsettled, 'Second call 2': unsettled });
+    await refuteBlockers(shared, pairOf('First call'), { workspace, diff, doubtBudget });
+    const later = await refuteBlockers(shared, pairOf('Second call'), { workspace, diff, doubtBudget });
+    expect(shared.calls.map(([title]) => title).sort()).toEqual(['First call 1', 'First call 2', 'Second call 1']);
+    expect([reasons(later), doubtBudget]).toEqual([{ 'Second call 1': 'unsettled_check', 'Second call 2': 'not_checked' }, { left: 0 }]);
+    // With a check left after the others, a linked warning and one that matches an earlier finding are checked too.
+    const mixed = findings.filter(f => ['Linked to an open thread', 'Matches an earlier finding', 'Doubted warning 1'].includes(f.title));
+    const checkedWith = async (left: number) => {
+      const some = fakeClient(Object.fromEntries(mixed.map(f => [f.title, unsettled])));
+      await refuteBlockers(some, mixed, { workspace, diff, restatesEarlier, doubtBudget: { left } });
+      return some.calls.map(([title]) => title).sort();
+    };
+    expect([await checkedWith(1), await checkedWith(2), await checkedWith(3)]).toEqual([
+      ['Doubted warning 1'], ['Doubted warning 1', 'Linked to an open thread'], ['Doubted warning 1', 'Linked to an open thread', 'Matches an earlier finding'],
+    ]);
+    // Before any check, as on a round without tools, only the cited lines decide.
+    expect(Object.entries(reasons(findings)).filter(([, reason]) => reason)).toEqual([
+      ['No proof in a deleted file', 'no_proof'], ['Left out later without proof', 'no_proof'], ['Warning without proof', 'no_proof'], ['Tool alert without proof', 'no_proof'], ['Security warning without proof', 'no_proof'],
+      ['Second warning without proof', 'no_proof'],
+    ]);
+  });
+
+
+  it('proves a warning by a check that confirms it, and leaves a blocker posted as a warning unproven until one does', async () => {
+    const exists = [{ premise: 'The copy is never dropped', decides: 'defect' as const }];
+    const client = fakeClient({
+      'Doubt confirmed': { outcome: 'confirmed', reason: 'It holds.', premises: [{ outcome: 'confirmed', reason: 'It holds.', proof: ['src/math.ts:2'] }] },
+      'No proof confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
+      'No proof disproved': { outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] },
+      'Capped blocker unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
+      'Doubt and the call fails': new Error('overloaded'),
+      'No proof and the call fails': new Error('overloaded'),
+    });
+    const findings = [
+      finding('Doubt confirmed', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists }),
+      finding('No proof confirmed', { severity: 'warning', evidence: { checks: [], proof: [] } }),
+      finding('No proof disproved', { severity: 'warning', evidence: { checks: [], proof: [] } }),
+      finding('Capped blocker unsettled', { severity: 'warning', tags: ['unproven-blocker'] }),
+      finding('Doubt and the call fails', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists }),
+      finding('No proof and the call fails', { severity: 'warning', evidence: { checks: [], proof: [] } }),
+      finding('Capped build claim', { severity: 'warning', tags: ['unconfirmed-build-claim'] }),
+    ];
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+
+    const result = await refuteBlockers(client, findings.slice(0, 6), { workspace, diff });
+
+    expect(result.map(f => [f.title, f.severity, f.evidence?.proof, f.severity === 'warning' && unprovenReason(f)])).toEqual([
+      ['Doubt confirmed', 'warning', ['src/math.ts:2'], undefined],
+      ['No proof confirmed', 'warning', ['src/math.ts:2'], undefined],
+      ['No proof disproved', 'ignore', [], false],
+      ['Capped blocker unsettled', 'warning', ['src/math.ts:2'], 'unsettled_check'],
+      // A call that fails settles nothing either way, so an outage hides no warning that cites its proof.
+      ['Doubt and the call fails', 'warning', ['src/math.ts:2'], undefined],
+      ['No proof and the call fails', 'warning', [], 'no_proof'],
+    ]);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Could not check "Doubt and the call fails"'));
+    warnSpy.mockRestore();
+    // A cap for want of proof stands whatever lines are cited, checked or not.
+    expect([unprovenReason(findings[3]), unprovenReason(findings[6])]).toEqual(['no_proof', 'no_proof']);
+
+    // One check that confirms every premise the defect rests on proves it, whatever it says of the grade and whatever a second check says.
+    const answer = (outcome: 'confirmed' | 'disproved' | 'unsettled', premises: Array<'confirmed' | 'disproved' | 'unsettled'>) => ({
+      outcome, reason: 'r', files: ['src/math.ts'], codeDigest: 'abc',
+      premises: premises.map((o, i) => ({ premise: i === 0 ? 'The copy is never dropped' : 'Any client reaches it', outcome: o, reason: 'r' })),
+    });
+    const twoDoubts = finding('Two doubts', { severity: 'warning', doubts: [...exists, { premise: 'Any client reaches it', decides: 'grade' }] });
+    expect([
+      unprovenReason({ ...twoDoubts, refutation: answer('unsettled', ['confirmed', 'disproved']) }),
+      unprovenReason({ ...twoDoubts, refutation: answer('unsettled', ['unsettled', 'confirmed']) }),
+      unprovenReason({ ...twoDoubts, refutation: answer('confirmed', ['confirmed', 'confirmed']), pairRefutation: answer('disproved', ['disproved', 'confirmed']) }),
+      unprovenReason({ ...twoDoubts, refutation: answer('unsettled', ['unsettled', 'unsettled']), pairRefutation: answer('unsettled', ['unsettled', 'unsettled']) }),
+    ]).toEqual([undefined, 'unsettled_check', undefined, 'unsettled_check']);
   });
 
   it('asks for the general rule a finding relies on, and drops a build claim that unchanged code relying on the same rule disproves', async () => {
@@ -576,6 +691,30 @@ describe('refuteBlockers', () => {
     const pairedRounds = [{ findings: { entries: [{ title: 'Sum overflows', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation: first.refutation, pairRefutation: paired.pairRefutation }] }, judge: {} }] as unknown as RoundContext[];
     await refuteBlockers(client, [finding('Sum overflows')], { workspace, priorRounds: pairedRounds, diff, pair });
     expect([client.calls.length, pair.calls.length, paired.pairRefutation?.outcome]).toEqual([1, 1, 'confirmed']);
+
+    // The eight checks count refuter calls. A warning whose stored outcome is reused makes none, so it takes none of them.
+    const noProof = { severity: 'warning' as const, evidence: { checks: [], proof: [] } };
+    const eight = Array.from({ length: 8 }, (_, i) => `Unproven ${i + 1}`);
+    const warnings = ['Stored warning', ...eight].map(title => finding(title, noProof));
+    const unsettled = Object.fromEntries(warnings.map(f => [f.title, { outcome: 'unsettled', reason: 'Could not tell.', premises: [] }]));
+    const refuter = fakeClient(unsettled);
+    const [stored] = await refuteBlockers(refuter, warnings.slice(0, 1), { workspace, diff });
+    const storedRounds = [{ findings: { entries: [{ title: 'Stored warning', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation: stored.refutation }] }, judge: {} }] as unknown as RoundContext[];
+    const overLimit = (list: Finding[]) => list.filter(f => f.overCheckLimit).map(f => f.title);
+    const doubtBudget = { left: 8 };
+    const reusing = await refuteBlockers(refuter, warnings, { workspace, diff, priorRounds: storedRounds, doubtBudget });
+    expect(refuter.calls.map(([title]) => title).sort()).toEqual(['Stored warning', ...eight]);
+    expect([reusing[0].refutation, overLimit(reusing), doubtBudget]).toEqual([stored.refutation, [], { left: 0 }]);
+    // A second refuter with no stored outcome has to be asked, so the warning takes one of the eight like any other.
+    const second = fakeClient(unsettled);
+    const pairBudget = { left: 8 };
+    const asked = await refuteBlockers(fakeClient(unsettled), warnings, { workspace, diff, priorRounds: storedRounds, pair: second, doubtBudget: pairBudget });
+    expect(second.calls.map(([title]) => title).sort()).toEqual(['Stored warning', ...eight.slice(0, 7)]);
+    expect([asked[0].refutation, overLimit(asked), pairBudget]).toEqual([stored.refutation, ['Unproven 8'], { left: 0 }]);
+    // A warning a later step drops at its grade takes none either, since no check runs on it.
+    const dropped = fakeClient(unsettled);
+    const hiding = await refuteBlockers(dropped, warnings, { workspace, diff, hiddenLater: f => f.title === 'Stored warning' });
+    expect([dropped.calls.map(([title]) => title).sort(), overLimit(hiding)]).toEqual([eight, []]);
 
     // A change to the file that holds the check the outcome cites forces a new check, like a change to the finding's file.
     writeFileSync(join(workspace, 'src', 'api.ts'), '// the check is gone\n');

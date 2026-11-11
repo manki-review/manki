@@ -12,7 +12,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { cellGrade, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
+import { cellGrade, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -28,14 +28,17 @@ const OUTCOMES: readonly RefutationOutcome[] = ['disproved', 'confirmed', 'unset
 const LINE_TOLERANCE = 5;
 // Blockers posted as warnings for want of proof a tool could find.
 const CHECKED_TAGS: readonly string[] = [UNPROVEN_TAG, UNBUILT_TAG];
-// Findings checked for a doubt whether the defect exists, at the grade the judge kept. Every other check runs uncapped.
-const MAX_DOUBT_CHECKS = 4;
+/**
+ * The warnings a round checks because nothing proves them yet, one refuter call each. Every other check runs uncapped.
+ * A round posts about one warning on average, so this binds only on a round with many unproven ones.
+ */
+export const MAX_DOUBT_CHECKS = 8;
 
 type RefutationField = 'refutation' | 'pairRefutation';
 
 const REFUTE_SYSTEM_PROMPT = `You check one finding a code review raised on a pull request, using read-only tools on the PR's head commit.
 
-The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, or a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade. Try to refute it, then follow the failure path from its trigger to the damage.
+The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, a warning no cited line proves, or a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade. Try to refute it, then follow the failure path from its trigger to the damage.
 
 To refute it:
 - Look for a concrete reason the failure cannot happen, such as an earlier check, a type or an existing test.
@@ -130,6 +133,7 @@ function findingKind(finding: Finding): string {
   if (finding.lead) return 'Open lead';
   if (finding.gradeIfConfirmed) return 'Finding the judge could not settle without tools';
   if (finding.tags?.includes(UNBUILT_TAG)) return 'Claimed build failure';
+  if (finding.severity === 'warning' && !finding.tags?.includes(UNPROVEN_TAG)) return 'Warning no cited line proves';
   return 'Blocker';
 }
 
@@ -316,21 +320,64 @@ function alwaysChecked(finding: Finding): boolean {
     || (!!finding.gradeIfConfirmed && rank(finding.gradeIfConfirmed) < rank(finding.severity));
 }
 
+const doubtsDefect = (finding: Finding): boolean => !!finding.doubts?.some(d => d.decides === 'defect');
+const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.length;
+
+/** Whether the review posts `finding` only when something proves it. A tool alert and a security finding are posted either way. */
+export function needsProof(finding: Finding): boolean {
+  return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers);
+}
+
+/** Whether an earlier finding is linked to `finding`. A later step then probably keeps the warning out of the review, but only a certain result takes a warning out of the checks, so this one is checked last. */
+const linkedToEarlier = (finding: Finding): boolean => !!(finding.sameAs || finding.variantOf || finding.threadId || finding.answeredIn);
+
 /**
- * Returns the findings the judge kept at their grade with a doubt whether the defect exists, to check with tools: those
- * at `warning` or above, at most `MAX_DOUBT_CHECKS`, the highest grade first. A finding the judge would grade higher if
- * its doubts hold is always checked, since that check is how a warning becomes a blocker. A finding `hidden` accepts
- * is left out.
+ * Returns the warnings to check with tools because nothing proves them yet, at most `limit`, and those `over` that
+ * limit. A warning gets one of these checks only when the result can change whether the review shows it. So it must
+ * be one that `needsProof`, with a doubt of the judge whether the defect exists or no cited line that proves it, and
+ * none that `noCheck` accepts: a check could not run on that one, or a later step decides about it whatever the check
+ * says. The order is the one given, with the warnings that are `linkedToEarlier` or that `restatesEarlier` accepts
+ * after the others. The `limit` counts refuter calls, so a warning `needsNoCall` accepts takes none of it and is
+ * returned as `reused`. A finding the judge would grade higher if its doubts hold is always checked, since that check
+ * is how a warning becomes a blocker.
  */
-function doubtsToCheck(findings: readonly Finding[], hidden?: (finding: Finding) => boolean): Finding[] {
-  const doubted = findings
-    .filter(f => f.severity !== 'ignore' && !alwaysChecked(f) && f.gradeIfConfirmed && rank(f.gradeIfConfirmed) <= rank('warning')
-      && !!f.doubts?.some(d => d.decides === 'defect') && !hidden?.(f))
-    .sort((a, b) => rank(a.severity) - rank(b.severity));
-  for (const skipped of doubted.slice(MAX_DOUBT_CHECKS)) {
-    core.info(`Not checking the doubt on "${skipped.title}", since ${MAX_DOUBT_CHECKS} findings with higher grades took this round's checks`);
+function doubtsToCheck(
+  findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean, restatesEarlier: (finding: Finding) => boolean, needsNoCall: (finding: Finding) => boolean,
+): { checked: Finding[]; reused: Finding[]; over: Finding[] } {
+  const last = (finding: Finding): boolean => linkedToEarlier(finding) || restatesEarlier(finding);
+  const open = findings.filter(f => needsProof(f) && !alwaysChecked(f) && (doubtsDefect(f) || citesNoProof(f)) && !noCheck(f));
+  const reused = open.filter(needsNoCall);
+  const calling = open.filter(f => !reused.includes(f));
+  const unproven = [...calling.filter(f => !last(f)), ...calling.filter(last)];
+  const over = unproven.slice(limit);
+  for (const skipped of over) {
+    core.info(`Not checking "${skipped.title}", since the round's ${MAX_DOUBT_CHECKS} checks of unproven warnings are used up`);
   }
-  return doubted.slice(0, MAX_DOUBT_CHECKS);
+  return { checked: unproven.slice(0, limit), reused, over };
+}
+
+/** Whether `check` confirms that the defect of `finding` exists: the whole finding, or every premise the defect rests on. */
+function confirmsDefect(finding: Finding, check: Refutation): boolean {
+  if (check.outcome === 'confirmed') return true;
+  const decisive = (check.premises ?? []).filter(p => finding.doubts?.some(d => d.premise === p.premise && d.decides === 'defect'));
+  return decisive.length > 0 && decisive.every(p => p.outcome === 'confirmed');
+}
+
+/**
+ * Returns why nothing proves the warning `finding`, or undefined when something does. One check that confirms the
+ * defect proves it, whatever a second check says. A doubt of the judge whether the defect exists leaves a warning
+ * unproven in two cases only: a check ran and did not settle it, or the warning is `overCheckLimit`. In every other
+ * case no check could decide, as on a round without tools, a file the refuter cannot read or a call that failed, so
+ * the cited lines decide. A blocker posted as a warning for want of proof stays unproven until a check confirms it.
+ */
+export function unprovenReason(finding: Finding): UnprovenReason | undefined {
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
+  if (checks.some(check => confirmsDefect(finding, check))) return undefined;
+  const lacksProof = citesNoProof(finding) || !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag));
+  const open = lacksProof || doubtsDefect(finding);
+  if (checks.length > 0) return open ? 'unsettled_check' : undefined;
+  if (finding.overCheckLimit) return open ? 'not_checked' : undefined;
+  return lacksProof ? 'no_proof' : undefined;
 }
 
 /**
@@ -370,8 +417,14 @@ export interface RefuteOptions {
   pair?: LLMClient;
   /** The open threads that block. No disproof lowers a blocker that restates one. */
   blockingThreads?: readonly OpenThread[];
-  /** Whether a later step hides `finding` at its grade. Such a finding is checked only when a confirmation can raise it, and takes none of the `MAX_DOUBT_CHECKS` checks. */
+  /** Whether a later step drops `finding` at its grade. Such a finding is checked only when a confirmation can raise it. */
   hiddenLater?: (finding: Finding) => boolean;
+  /** Whether a later step keeps the warning `finding` out of the review whatever a check says. Such a warning takes none of the `MAX_DOUBT_CHECKS` checks. */
+  unpostedLater?: (finding: Finding) => boolean;
+  /** Whether the warning `finding` probably restates an earlier finding that nothing links it to yet. Such a warning is checked after the others, like a linked one. */
+  restatesEarlier?: (finding: Finding) => boolean;
+  /** How many of the round's `MAX_DOUBT_CHECKS` checks are left. Each one this call makes lowers it, so the judge calls of one round share them. */
+  doubtBudget?: { left: number };
 }
 
 /**
@@ -381,11 +434,13 @@ export interface RefuteOptions {
  * finding is reused without a new check while the files it rests on are unchanged, except for a finding with a
  * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget }: RefuteOptions): Promise<Finding[]> {
+  // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
+  const stored = (field: RefutationField, finding: Finding): Refutation | undefined =>
+    finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
   const check = async (refuter: LLMClient, field: RefutationField, finding: Finding): Promise<Refutation | undefined> => {
     const label = field === 'pairRefutation' ? 'second refutation' : 'refutation';
-    // Unseen code or a caller can change in a file the stored outcome does not cover, so such a finding is checked afresh.
-    const prior = finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
+    const prior = stored(field, finding);
     if (prior) {
       core.info(`Reusing the ${prior.outcome} ${label} of "${finding.title}" from an earlier round, since the files it rests on are unchanged`);
       return prior;
@@ -407,13 +462,21 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     }
   };
   const reopened = findings.map(f => reopenCappedGrade(f, priorRounds));
-  const doubtChecks = new Set(doubtsToCheck(reopened, hiddenLater));
+  const checkable = (finding: Finding): boolean => !!codeDigest(workspace, [finding.file]);
+  const noCheck = (finding: Finding): boolean => !!unpostedLater?.(finding) || !!hiddenLater?.(finding) || !checkable(finding);
+  // `MAX_DOUBT_CHECKS` counts refuter calls, so a warning takes none when each refuter asked about it reuses a stored outcome.
+  const needsNoCall = (finding: Finding): boolean => !!stored('refutation', finding) && (!pair || !!stored('pairRefutation', finding));
+  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall);
+  if (doubtBudget) doubtBudget.left -= picked.checked.length;
+  const doubtChecks = new Set([...picked.checked, ...picked.reused]);
+  const overLimit = new Set(picked.over);
   return mapWithConcurrency(reopened, MAX_PARALLEL_REFUTATIONS, async finding => {
+    if (overLimit.has(finding)) return { ...finding, overCheckLimit: true as const };
     // A finding the judge dropped stays dropped, even when it was a lead.
     if (finding.severity === 'ignore' || !(alwaysChecked(finding) || doubtChecks.has(finding))) return finding;
     // Only a check that can raise a finding changes what happens to one a later step hides.
     if (!confirmedGrade(finding) && hiddenLater?.(finding)) return finding;
-    if (!codeDigest(workspace, [finding.file])) return finding;
+    if (!checkable(finding)) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);
     return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restatesBlocker(finding, priorRounds, blockingThreads)) : finding;
   });

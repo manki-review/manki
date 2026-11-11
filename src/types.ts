@@ -167,7 +167,7 @@ export function isSecurityFinding(tags: string[] | undefined, priorReviewers: Re
   return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
 }
 
-/** Whether a step may leave the finding out of the review. Only a note can be left out, and never a security finding or a tool alert. */
+/** Whether a step that leaves out notes may leave the finding out of the review: only a note, and never a security finding or a tool alert. */
 export function canLeaveOut(f: Finding): boolean {
   return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers);
 }
@@ -347,8 +347,12 @@ export interface Finding {
   pairRefutation?: Refutation;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;
-  /** Why the review leaves the note out. Only the round record keeps such a note. */
+  /** Why the review leaves the finding out. Only the round record keeps such a finding. */
   unpostedReason?: UnpostedReason;
+  /** Set on an unproven warning the refuter could have checked, had `MAX_DOUBT_CHECKS` other warnings not taken the round's checks. */
+  overCheckLimit?: true;
+  /** Set on a warning nothing proves that is posted all the same, because it would be a blocker if it holds. */
+  unconfirmed?: true;
   /** The finding's place in the judge's order of the notes, 0 for the one the author gains most from. Unset when the judge did not rank it. */
   noteRank?: number;
   /** Why the defect exists without this PR's change, when the reviewer says so. The judge must keep it, or it is cleared. */
@@ -572,6 +576,11 @@ export function finderGrade(finding: Pick<Finding, 'reviewerSeverity' | 'gradePa
   return finding.reviewerSeverity ?? finding.gradePath?.[0]?.from ?? finding.severity;
 }
 
+/** Whether the judge or a finder graded `f` a blocker at any point, or the judge would if the premises it doubts hold. */
+export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'reviewerSeverity' | 'gradePath'>): boolean {
+  return f.gradeIfConfirmed === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
+}
+
 /** Whether `applyRefutation` put the blocker the judge alone made of `finding` back at its finders' grade. Nothing else lowers a blocker by a refutation. */
 export function isDisprovedRaise(finding: Pick<Finding, 'gradePath'>): boolean {
   return !!finding.gradePath?.some(step => step.by === 'refutation' && step.from === 'blocker');
@@ -630,7 +639,7 @@ export interface Refutation {
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note, and the last three on a warning nothing proves. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
@@ -638,8 +647,19 @@ export const UNPOSTED_REASONS = {
   pre_existing: 'on code this PR did not change',
   memory_suppression: 'hidden by a memory suppression',
   static_signal_match: 'a CI tool reports the same line',
+  unsettled_check: 'a tool check could not confirm it',
+  not_checked: 'nothing proves it and no tool check ran on it',
+  no_proof: 'it cites no lines that prove it',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
+/** Why nothing proves a warning: a check ran and settled nothing, the round's checks did not reach it, or no check could decide and no line is cited. */
+const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof'] as const satisfies readonly UnpostedReason[];
+export type UnprovenReason = typeof UNPROVEN_REASONS[number];
+
+/** Whether the review leaves `finding` out because nothing proves it. */
+export function leftOutUnproven(finding: Pick<Finding, 'unpostedReason'>): boolean {
+  return UNPROVEN_REASONS.some(reason => reason === finding.unpostedReason);
+}
 
 /** Where a round put a finding: a thread of its own, the review body, an earlier thread that carries it, or the round record only. */
 export type PostedPlace = 'thread' | 'body' | 'earlier_thread' | 'record';
@@ -801,8 +821,8 @@ export interface ReviewResult {
   memoryLoaded?: { learnings: number; suppressions: number };
   /** Pre-existing findings not worth posting, such as notes. Only the round record keeps them. */
   unpostedPreExisting?: Finding[];
-  /** The notes the review leaves out, each with `unpostedReason`. Only the round record keeps them. */
-  unpostedNotes?: Finding[];
+  /** The findings the review leaves out, each with `unpostedReason`. Only the round record keeps them. */
+  unposted?: Finding[];
   /**
    * The warnings an earlier round listed only in its review body, which this round lists again in one short list. No
    * finding of this round names them, and the line each points at still reads as it did. They are no findings of the
@@ -2192,6 +2212,7 @@ export interface CitedLine {
  * Why a warning carried from an earlier review body is no longer listed: its line reads differently or its file is gone
  * (`line_changed`), or a finding the judge graded this round names it. That finding is listed (`restated`), a note the
  * review leaves out (`hidden_note`), dropped by the judge (`judge_dropped`) or left out by a later step (`left_out`).
+ * A warning left out because nothing proves it ends none.
  */
 export type CarriedEndReason = 'line_changed' | 'restated' | 'hidden_note' | 'judge_dropped' | 'left_out';
 

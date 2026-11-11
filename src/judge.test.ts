@@ -26,6 +26,7 @@ import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { preExistingCheck, truncateDiff } from './review';
+import { unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
@@ -209,7 +210,15 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toContain('Your grade is final');
     expect(prompt).toContain('Any other code the PR did not touch and does not affect is never a finding');
     expect(prompt).toContain('- `blocker`: when you cannot settle one of the five tests, state the cell all the same, list what you could not settle in `doubts`, and say in `reasoning` which test it is. Manki grades it `warning` at most.');
-    expect(prompt).toContain('- `warning`: keep it');
+    expect(prompt).toContain('- `warning`: state the cell all the same, list the premise you could not settle in `doubts` with `decides` set to `defect`, and say it in `reasoning`. No tool check runs on this review, so Manki posts the warning only when `proof` cites the lines that show the failure.');
+    expect(prompt).not.toMatch(/keep it, list|costs a single fix/);
+    const warningTests = (p: string) => p.slice(p.indexOf('## Warning Tests'), p.indexOf('## Severity Table')).trim();
+    expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Manki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
+    expect(prompt).toContain('"proof": ["file:line of each line that shows the failure, for a blocker or a warning"]');
+    const withTools = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true, 8);
+    expect(warningTests(withTools)).toContain('For one you cannot prove from the code shown or your tools, follow When You Are Unsure.');
+    expect(withTools).toContain('and say it in `reasoning`. Manki checks the premise with tools and posts the warning only when the check confirms it.\n');
+    expect(withTools).not.toContain('No tool check runs on this review');
     expect(prompt).toContain('- `note`: drop it (`ignore`)');
     expect(prompt).toContain('Agreement never raises or protects a finding\'s severity.');
     expect(prompt).not.toMatch(/trust (the )?(reviewer )?severity/i);
@@ -315,17 +324,17 @@ describe('buildJudgeSystemPrompt', () => {
   it('never drops or caps a finding for code the judge cannot see or a path it doubts is reached, asks for the cell every finding earns if its doubts hold, and says tools check it only when they do', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     const section = prompt.slice(prompt.indexOf('## Code You Cannot See'), prompt.indexOf('## Grade Stability'));
-    expect(section).toContain('Code you cannot see and a path you cannot follow are no evidence against a finding, so on their own they never drop a finding and never lower its row. State the cell such a finding earns if that code is as the finding says and the path exists, and list what you could not see in `doubts`, by When You Are Unsure: a `blocker` cell whose failure you cannot follow in the code shown is graded `warning`, and a `warning` stays.');
+    expect(section).toContain('Code you cannot see and a path you cannot follow are no evidence against a finding, so on their own they never drop a finding and never lower its row. State the cell such a finding earns if that code is as the finding says and the path exists, and list what you could not see in `doubts`, by When You Are Unsure: a `blocker` cell whose failure you cannot follow in the code shown is graded `warning`, and a `warning` cell is posted only once it is proven.');
     expect(section).toContain('A finding that cites a line listed under Uses Outside the Diff rests on code shown, so grade it on its merits like any finding.');
     expect(section).toContain('A doubt that the failure is reached is the same kind of gap: no caller in the code shown passes the value that triggers it, the path looks latent, or a real input may never take it.');
-    expect(section).toContain("A path through a library's public API is reached, since any caller of that API can pass a value it accepts, with no caller inside the repository.");
+    expect(section).toContain("A path through a library's public API is reached, since any caller of that API can pass a value it accepts, with no caller inside the repository. Code this PR adds is reached the same way: a function, method or handler the PR adds is there to be called, so a missing caller is no doubt, and calling it as its name, signature and comments say is normal use.");
     expect(section).toContain("The rule on a check of a trusted internal value still applies when the code shown proves that the code's own logic keeps the value valid: that is evidence, not a doubt. The `rare` column always carries its doubt, by the Severity Table. Only a doubt the code shown does not settle counts here.");
     const unsure = prompt.slice(prompt.indexOf('## When You Are Unsure'), prompt.indexOf('## Worked Examples'));
     expect(unsure).toContain('State on every finding the `row` its consequence earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A premise you only assume, with no line to cite for it, is still a doubt. So is a premise that lowers or caps the grade, such as callers probably validating a value, a path looking limited or an input looking trusted, unless the code shown or your tool calls prove it. Except for an open lead, which follows its own rule, never mark a finding `ignore` for an unsettled doubt alone: when its cell gives `warning` or `blocker` if the doubt holds, state that cell and list the doubt.');
     expect(unsure).toContain('A doubt is only a premise that the code shown and your tool calls leave open. A premise your reasoning settles from lines you cite is not a doubt, so never list it. List each doubt in `doubts`, as a fact the code can confirm or disprove: "a public request handler passes `index` to `getItem` unchecked", not "callers probably validate `index`". Set `decides` to `defect` when the defect does not exist if the premise is false, and to `grade` when the finding stands either way and only its cell depends on the premise. Manki counts a `grade` doubt only on the `wrong` row, where the column decides whether the finding blocks. When you doubt nothing, leave `doubts` empty.');
     expect(prompt).not.toContain('Manki checks each premise with tools');
     expect(prompt).toContain('"doubts": [{"premise": "A fact the code can confirm or disprove", "decides": "defect" | "grade"}],');
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki checks each premise with tools when confirming it would raise the grade: on a `blocker` cell with a doubt, and on the `rare` column of the `wrong` row. On a finding whose doubts hold no grade down, it checks a doubt whether the defect exists on at most four findings a round at `warning` or above, the highest grades first. A finding gets the higher grade only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki checks each premise with tools when confirming it would raise the grade: on a `blocker` cell with a doubt, and on the `rare` column of the `wrong` row. It also checks each `warning` with a `defect` doubt, and each one whose `proof` is empty, on up to 8 findings a round. A warning the check confirms is posted. One it cannot settle or does not reach is recorded and not posted, unless it would be a blocker if true. A finding gets the higher grade only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.');
   });
 
   it('blocks on a claimed build, type or test failure only when CI confirms it', () => {
@@ -5231,19 +5240,23 @@ describe('runJudgeAgent cross-round suppression', () => {
 
     // The refuter runs before the ratchet, so a `rare` claim is checked even when the author agreed with the finding
     // earlier: a confirmed one blocks, and the other is hidden after the one check it cost. A check on a doubt whether
-    // the defect exists or on a lead never raises a grade, so a finding the ratchet hides gets no such check.
+    // the defect exists or on a lead never raises a grade, so a finding the ratchet hides gets no such check. Neither
+    // does a doubted warning the round records without posting it: one a memory suppression matches, and one on code
+    // the PR did not change unless the judge is highly confident in it.
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
-    fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
-    const titles = ['Stale cache read', 'Lost update', 'Handle leak', 'Open lead', 'Leaky retry'];
+    for (const file of ['index.ts', 'old.ts']) fs.writeFileSync(path.join(workspace, 'src', file), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
+    const unchanged = ['Old loop', 'Old loop the judge is sure of'];
+    const titles = ['Stale cache read', 'Lost update', 'Handle leak', 'Open lead', 'Leaky retry', 'Remembered pattern', ...unchanged];
     const leak = [{ premise: 'Nothing closes the handle', decides: 'defect' }];
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({
-        id: i + 1, title, reasoning: 'r', confidence: 'medium',
-        ...(['Handle leak', 'Leaky retry'].includes(title) ? { row: 'degraded', doubts: leak } : title === 'Open lead' ? { row: 'degraded' } : { row: 'wrong', column: 'rare' }),
+        id: i + 1, title, reasoning: 'r', confidence: title === unchanged[1] ? 'high' : 'medium', preExisting: unchanged.includes(title),
+        ...(i === 2 || i > 3 ? { row: 'degraded', doubts: leak } : title === 'Open lead' ? { row: 'degraded' } : { row: 'wrong', column: 'rare' }),
       })),
     }) });
     const refuterCalls: string[] = [];
+    const doubtBudget = { left: 8 };
     const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
     const refuter: LLMClient = {
       repoTools: true,
@@ -5256,11 +5269,13 @@ describe('runJudgeAgent cross-round suppression', () => {
     };
     try {
       const checked = await runJudgeAgent(mockClient, makeConfig(), {
-        ...input, refutation: { client: refuter, workspace },
+        ...input, refutation: { client: refuter, workspace, doubtBudget },
         findings: titles.map((title, i) => makeFinding({
           title, file: 'src/index.ts', line: 10 + i, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`] },
           ...(title === 'Open lead' && { lead: { checked: 'read src/index.ts:13', left: 'find the callers' } }),
+          ...(unchanged.includes(title) && { file: 'src/old.ts', evidence: { checks: [], proof: [`src/old.ts:${10 + i}`] }, preExisting: 'The loop predates this PR.' }),
         })),
+        memory: makeMemory({ suppressions: [makeSuppression({ pattern: 'Remembered pattern' })] }),
         priorRounds: [roundContextFromLegacy({
           round: 1, commitSha: 'abc', timestamp: 't',
           findings: titles.slice(0, 4).map((title, i) => ({ fingerprint: { file: 'src/index.ts', lineStart: 10 + i, lineEnd: 10 + i, slug: titleToSlug(title) }, severity: 'warning' as const, title, authorReply: 'agree' as const })),
@@ -5273,12 +5288,18 @@ describe('runJudgeAgent cross-round suppression', () => {
         ['Handle leak', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-by-ratchet']],
         ['Open lead', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-by-ratchet']],
         ['Leaky retry', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-in-pr']],
+        ['Remembered pattern', 'warning', { row: 'degraded', column: 'normal' }, undefined],
+        ['Old loop', 'warning', { row: 'degraded', column: 'normal' }, undefined],
+        ['Old loop the judge is sure of', 'warning', { row: 'degraded', column: 'normal' }, undefined],
       ]);
-      expect(refuterCalls.sort()).toEqual(['Lost update', 'Stale cache read']);
+      expect(refuterCalls.sort()).toEqual(['Lost update', 'Old loop the judge is sure of', 'Stale cache read']);
+      // Only the check of the doubted warning counts against the round's eight.
+      expect(doubtBudget.left).toBe(7);
       expect(checked.findings[2].doubts).toEqual(leak);
       expect([checked.crossRoundSuppressed, checked.inPrSuppressedCount]).toEqual([3, 1]);
       // Asking whether a finding will be hidden logs nothing, so the log names each hidden finding once.
       expect(infoSpy.mock.calls.filter(([line]) => String(line).startsWith('In-PR suppression'))).toHaveLength(1);
+      expect(infoSpy.mock.calls.filter(([line]) => String(line).startsWith('Suppressed finding'))).toHaveLength(0);
     } finally {
       infoSpy.mockRestore();
       fs.rmSync(workspace, { recursive: true, force: true });
@@ -5503,6 +5524,8 @@ const GRADING_CASES = [
   'rare-claim-reachable',
   'sibling-path-incomplete-fix',
   'refuted-by-shown-guard',
+  'proven-warning',
+  'unproven-warning',
 ] as const;
 
 const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix'];
@@ -5517,6 +5540,8 @@ interface GradingFixture {
   interRoundDiff?: string;
   /** The PR's title and description, shown to the judge as the PR context. */
   pr?: { title: string; body: string };
+  /** For a finding the judge grades `warning`: whether the code shown proves it, so that no tool check is needed before it is posted. */
+  proven?: boolean;
 }
 
 const PRIOR_ROUND_CASES: readonly string[] = ['grade-stable', 'own-proposal-objection', 'own-proposal-worse'];
@@ -5540,7 +5565,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks and claims a guard in the diff refutes, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, and a warning the code shown proves or leaves open, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 
@@ -5549,6 +5574,7 @@ describe('judge grading fixture corpus', () => {
     expect(fixture.allowed.includes('blocker')).toBe(BLOCKER_CASES.includes(fixture.case) || fixture.case === 'own-proposal-worse');
     expect(fixture.priorRound !== undefined).toBe(PRIOR_ROUND_CASES.includes(fixture.case));
     expect(fixture.pr !== undefined).toBe(fixture.case === 'declared-gap');
+    expect(fixture.proven).toBe({ 'proven-warning': true, 'unproven-warning': false }[fixture.case as string]);
     const appliesFix = computeProvenanceMap(gradingPriorRounds(fixture), fixture.prDiff)
       .some(e => e.file === fixture.finding.file && fixture.finding.line >= e.lineStart && fixture.finding.line <= e.lineEnd);
     expect(appliesFix).toBe(fixture.case.startsWith('own-proposal-'));
@@ -5576,6 +5602,10 @@ describe('judge grading fixture corpus', () => {
     const graded = result.findings[0];
     console.log(`[live-judge] ${fixture.name}: allowed=${fixture.allowed.join('|')} actual=${graded?.severity} cell=${JSON.stringify(graded?.cell)} gradeIfConfirmed=${graded?.gradeIfConfirmed} doubts=${JSON.stringify(graded?.doubts ?? [])} reasoning=${JSON.stringify(graded?.judgeNotes ?? '')}`);
     expect(fixture.allowed).toContain(graded?.severity);
+    // A proven warning is posted even when no check reaches it. An unproven one names a doubt or cites no lines, so it is posted only once a check confirms it.
+    const unreached = unprovenReason({ ...graded, overCheckLimit: true });
+    if (fixture.proven) expect([unprovenReason(graded), unreached]).toEqual([undefined, undefined]);
+    if (fixture.proven === false) expect(unreached).toBe('not_checked');
   }, 600_000);
 });
 

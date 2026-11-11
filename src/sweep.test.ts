@@ -51,6 +51,7 @@ describe('runSweeps', () => {
     const [{ system, user, options }] = client.calls;
     expect(system).toContain('never the names, values or files of this instance');
     expect(system).toContain('Never report the blocker\'s own location again.');
+    expect(system).toContain('- **warning**: a real case that fails, but not catastrophically. List its proving lines in `proof` too.');
     expect(system).toContain(UNTRUSTED_CONTENT_RULE);
     expect(user).toContain('## Blocker: Cache key misses the locale');
     expect(user).toContain('- **Location**: src/cache.ts:10');

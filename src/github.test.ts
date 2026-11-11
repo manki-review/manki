@@ -87,6 +87,10 @@ describe('formatFindingComment', () => {
     const comment = render({ ...baseFinding, severity: 'warning', judgeConfidence: 'low' });
     expect(comment.startsWith(`\u26A0\uFE0F **Warning**\n\n**${baseFinding.title}**\n\n_Manki is not sure this applies, so please check it._\n\n**What goes wrong:** ${baseFinding.description}`)).toBe(true);
     expect(comment).not.toMatch(/\u{1F534}|\u{1F7E0}|\u{1F7E1}/u);
+    // A warning nothing confirmed says that in place of the confidence note.
+    const unconfirmed = render({ ...baseFinding, severity: 'warning', judgeConfidence: 'low', unconfirmed: true });
+    expect(unconfirmed.startsWith(`\u26A0\uFE0F **Warning**\n\n**${baseFinding.title}**\n\n_Manki could not confirm this, so please check it._\n\n**What goes wrong:** ${baseFinding.description}`)).toBe(true);
+    expect(unconfirmed).not.toContain('is not sure this applies');
   });
 
   it('renders a short code fix as a suggestion block', () => {
@@ -3227,6 +3231,7 @@ describe('updateProgressComment', () => {
       { title: 'Null dereference', severity: 'blocker', reasoning: 'Valid bug', confidence: 'high', kept: true },
       { title: 'Style nitpick', severity: 'ignore', reasoning: 'Intentional pattern', confidence: 'medium', kept: false },
       { title: 'Rename', severity: 'note', reasoning: 'Clearer', confidence: 'high', kept: false, unpostedReason: 'reviewed_code' },
+      { title: 'Slow path', severity: 'warning', reasoning: 'May be slow', confidence: 'medium', kept: false, unpostedReason: 'unsettled_check' },
     ],
     timing: {
       parseMs: 500,
@@ -3315,6 +3320,7 @@ describe('updateProgressComment', () => {
     expect(body).toContain('- Dropped: "Style nitpick"');
     expect(body).toContain('(ignore, medium confidence)');
     expect(body).toContain('- Not listed, on code an earlier round reviewed: "Rename" (note, high confidence): "Clearer"');
+    expect(body).toContain('- Not listed, a tool check could not confirm it: "Slow path" (warning, medium confidence): "May be slow"');
   });
 
   it('does not render recap section in metadata', async () => {
@@ -4435,13 +4441,13 @@ describe('postReview non-blocking findings', () => {
 
     // A line says how many notes are over the limit, under the listed notes or alone when the review lists none.
     const leftOut = [nonBlocking('note', 'Left out', 11, { unpostedReason: 'note_cap' }), nonBlocking('note', 'Also left out', 12, { unpostedReason: 'note_cap' })];
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([nonBlocking('note', 'Typo in name', 7)]), unpostedNotes: leftOut }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([nonBlocking('note', 'Typo in name', 7)]), unposted: leftOut }, diff);
     // A note left out for another reason is not counted.
     const seen = [nonBlocking('note', 'Reviewed', 13, { unpostedReason: 'reviewed_code' }), nonBlocking('note', 'Listed', 14, { unpostedReason: 'listed_earlier' })];
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([nonBlocking('note', 'Typo in name', 7)]), unpostedNotes: [leftOut[0], ...seen] }, diff);
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unpostedNotes: [leftOut[0], ...seen] }, diff);
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unpostedNotes: leftOut }, diff);
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unpostedNotes: seen }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([nonBlocking('note', 'Typo in name', 7)]), unposted: [leftOut[0], ...seen] }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: [leftOut[0], ...seen] }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: leftOut }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: seen }, diff);
     const [, under, underOne, alone, aloneMany, uncapped] = createReview.mock.calls.map(call => call[0].body as string);
     expect(under).toMatch(/ -->\n\n<\/details>\n\n<sub>2 more notes are not listed\.<\/sub>/);
     expect(underOne).toContain('</details>\n\n<sub>1 more note is not listed.</sub>');
@@ -4450,6 +4456,18 @@ describe('postReview non-blocking findings', () => {
     expect(uncapped).not.toContain('not listed');
     expect(`${under}${alone}`).not.toContain('Left out');
     expect(review.body).not.toContain('not listed');
+
+    // A line of its own counts the warnings left out because nothing proves them, and says where each is named.
+    const unproven = [nonBlocking('warning', 'Unsettled', 15, { unpostedReason: 'unsettled_check' }), nonBlocking('warning', 'Unchecked', 16, { unpostedReason: 'not_checked' }), nonBlocking('warning', 'Uncited', 17, { unpostedReason: 'no_proof' })];
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: [unproven[0], ...leftOut] }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: unproven }, diff);
+    const [one, three] = createReview.mock.calls.slice(-2).map(call => call[0].body as string);
+    expect(one).toMatch(/^Summary\n\n---\n\n<sub>1 warning is not listed, since nothing proves it\. The progress comment names it under "Judge decisions"\.<\/sub>\n\n---\n\n<sub>2 notes are not listed\.<\/sub>/);
+    expect(three).toMatch(/^Summary\n\n---\n\n<sub>3 warnings are not listed, since nothing proves them\. The progress comment names each under "Judge decisions"\.<\/sub>/);
+    expect(`${one}${three}`).not.toMatch(/Unsettled|Unchecked|Uncited/);
+    // An incomplete round's progress comment names no judge decisions, so its review points at none.
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), reviewComplete: false, unposted: unproven }, diff);
+    expect(createReview.mock.calls.at(-1)![0].body).not.toContain('Judge decisions');
   });
 
   it('posts at most five non-blocking findings inline, most severe first, and lists the rest', async () => {
@@ -4512,34 +4530,34 @@ describe('postReview non-blocking findings', () => {
     const hidden = nonBlocking('note', 'Hidden by another rule', 90);
 
     // Without an order from the judge, the notes keep the order they came in.
-    const unranked: ReviewResult = { ...buildResult([...findings]), unpostedNotes: [hidden] };
+    const unranked: ReviewResult = { ...buildResult([...findings]), unposted: [hidden] };
     capNotes(unranked, existingThreads);
     expect(titles(unranked.findings)).toEqual([...others, 'Note one', 'Note two', 'Note three']);
-    expect(unranked.unpostedNotes).toEqual([hidden, { ...findings[7], unpostedReason: 'note_cap' }, { ...findings[8], unpostedReason: 'note_cap' }]);
+    expect(unranked.unposted).toEqual([hidden, { ...findings[7], unpostedReason: 'note_cap' }, { ...findings[8], unpostedReason: 'note_cap' }]);
 
     // The judge's order decides which notes are listed. A note it did not rank comes after the ranked ones.
     const ranks: Record<string, number> = { 'Note five': 0, 'Note three': 1, 'Deferred warning': 2, 'Note one': 4 };
     const ranked = buildResult(findings.map(f => (f.title in ranks ? { ...f, noteRank: ranks[f.title] } : f)));
     capNotes(ranked, existingThreads);
     expect(titles(ranked.findings)).toEqual([...others, 'Note five', 'Note three', 'Note one']);
-    expect(titles(ranked.unpostedNotes)).toEqual(['Note two', 'Note four']);
+    expect(titles(ranked.unposted)).toEqual(['Note two', 'Note four']);
 
     const none = buildResult([...findings]);
     capNotes(none, existingThreads, 0);
     expect(titles(none.findings)).toEqual(others);
-    expect(titles(none.unpostedNotes)).toEqual(['Note one', 'Note two', 'Note three', 'Note four', 'Note five']);
+    expect(titles(none.unposted)).toEqual(['Note one', 'Note two', 'Note three', 'Note four', 'Note five']);
 
     const all = buildResult([...findings]);
     capNotes(all, existingThreads, 5);
     expect(titles(all.findings)).toEqual([...others, 'Note one', 'Note two', 'Note three', 'Note four', 'Note five']);
-    expect(all.unpostedNotes).toBeUndefined();
+    expect(all.unposted).toBeUndefined();
 
     // A tool alert is listed in the judge's order with the notes, takes no place and is never left out.
     const alerts = [nonBlocking('note', 'Unused import', 12, { toolSource: 'eslint', noteRank: 2 }), nonBlocking('note', 'Shadowed name', 13, { toolSource: 'eslint' })];
     const withAlerts = buildResult([alerts[0], ...findings.map(f => (f.title in ranks ? { ...f, noteRank: ranks[f.title] } : f)), alerts[1]]);
     capNotes(withAlerts, existingThreads, 2);
     expect(titles(withAlerts.findings)).toEqual([...others, 'Note five', 'Note three', 'Unused import', 'Shadowed name']);
-    expect(titles(withAlerts.unpostedNotes)).toEqual(['Note one', 'Note two', 'Note four']);
+    expect(titles(withAlerts.unposted)).toEqual(['Note one', 'Note two', 'Note four']);
     const onlyAlerts = buildResult([...alerts, ...findings]);
     capNotes(onlyAlerts, existingThreads, 0);
     expect(titles(onlyAlerts.findings)).toEqual([...others, 'Unused import', 'Shadowed name']);

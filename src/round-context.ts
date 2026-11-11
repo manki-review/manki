@@ -275,7 +275,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.rule && { rule: f.rule }),
     ...(f.unpostedReason && { unpostedReason: f.unpostedReason }),
   });
-  const unposted = [...(result.unpostedPreExisting ?? []), ...(result.unpostedNotes ?? [])].map((f): FindingFingerprintEntry => ({ ...toEntry(f), posted: 'record' }));
+  const unposted = [...(result.unpostedPreExisting ?? []), ...(result.unposted ?? [])].map((f): FindingFingerprintEntry => ({ ...toEntry(f), posted: 'record' }));
   return {
     meta: {
       prNumber,

@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
-import { canLeaveOut, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, findingKey, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
@@ -18,7 +18,7 @@ import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
-import { disproof, refuteBlockers } from './refute';
+import { disproof, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
@@ -62,11 +62,15 @@ export function preExistingCheck(f: Finding, diff: ParsedDiff, excludedPaths: Re
   return touchesChangedCode(f, diff) ? 'touches_diff' : 'pre_existing';
 }
 
+/** Whether a finding on code the PR did not change is worth an author's time: a security finding, a blocker, or a warning the judge is highly confident in. */
+export function postedWhenPreExisting(f: Finding): boolean {
+  return isSecurityFinding(f.tags, f.reviewers) || f.severity === 'blocker' || (f.severity === 'warning' && f.judgeConfidence === 'high');
+}
+
 /**
  * Tags each finding on code this PR did not change as pre-existing. A non-security blocker among them becomes a
  * warning, so no check that reads the severity, in this round or a later one, lets it block.
- * Only the pre-existing findings worth an author's time are `posted`: blockers, warnings the judge is highly confident
- * in, and security findings. The rest are `unposted`, for the round record only.
+ * Only the findings `postedWhenPreExisting` accepts are `posted`. The rest are `unposted`, for the round record only.
  */
 function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: ReadonlySet<string>): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
@@ -79,16 +83,37 @@ function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: R
       continue;
     }
     const tagged: Finding = { ...f, tags: [...(f.tags ?? []), PRE_EXISTING_TAG], preExistingCheck: check };
-    if (isSecurityFinding(f.tags, f.reviewers)) {
-      posted.push(tagged);
-    } else if (f.severity === 'blocker') {
-      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the PR did not change that line`);
-      posted.push({ ...tagged, ...gradeStep(f, 'warning', 'pre_existing', f.preExisting), originalSeverity: f.originalSeverity ?? 'blocker' });
-    } else if (f.severity === 'warning' && f.judgeConfidence === 'high') {
-      posted.push(tagged);
-    } else {
+    if (!postedWhenPreExisting(f)) {
       core.info(`Recording pre-existing ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it`);
       unposted.push(tagged);
+    } else if (f.severity === 'blocker' && !isSecurityFinding(f.tags, f.reviewers)) {
+      core.info(`Posting blocker "${f.title}" on ${f.file}:${f.line} as a pre-existing warning: the PR did not change that line`);
+      posted.push({ ...tagged, ...gradeStep(f, 'warning', 'pre_existing', f.preExisting), originalSeverity: f.originalSeverity ?? 'blocker' });
+    } else {
+      posted.push(tagged);
+    }
+  }
+  return { posted, unposted };
+}
+
+/**
+ * Splits off the warnings that `needsProof` and that nothing proves, by `unprovenReason`, as `unposted` with that
+ * reason, for the round record only. A warning is left out only when it is certain that no rule keeps it, so these
+ * stay `posted` too: a finding `foldIntoEarlierFindings` or the judge put under one an earlier round still shows, and
+ * a finding that `wouldBlock`, which is marked `unconfirmed`.
+ */
+function hideUnprovenWarnings(findings: Finding[], wouldBlock = wouldBlockIfTrue): { posted: Finding[]; unposted: Finding[] } {
+  const posted: Finding[] = [];
+  const unposted: Finding[] = [];
+  for (const f of findings) {
+    const unpostedReason = needsProof(f) ? unprovenReason(f) : undefined;
+    if (!unpostedReason || f.threadId || f.answeredIn || f.raisedIn !== undefined) {
+      posted.push(f);
+    } else if (wouldBlock(f)) {
+      posted.push({ ...f, unconfirmed: true });
+    } else {
+      core.info(`Recording warning "${f.title}" on ${f.file}:${f.line} without posting it: ${UNPOSTED_REASONS[unpostedReason]}`);
+      unposted.push({ ...f, unpostedReason });
     }
   }
   return { posted, unposted };
@@ -1252,6 +1277,7 @@ export async function runReview(
     client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge?.client.repoTools ? clients.fallbacks.judge : undefined }, 'judge', 'refute'),
     workspace,
     ...(clients.refuterPair?.repoTools && { pair: withFallback({ client: clients.refuterPair }, 'judge', 'refute_pair') }),
+    doubtBudget: { left: MAX_DOUBT_CHECKS },
   } : undefined;
   if (clients.refuterPair && !refutation?.pair) core.warning('No second refuter runs, since `models.refuter_pair` needs the PR head checked out and repository tools on both its model and the judge\'s');
   const judgeInput: JudgeInput = {
@@ -1447,6 +1473,10 @@ export async function runReview(
   finalFindings = (await foldIntoEarlierFindings(finalFindings, earlier, earlierWrap?.client)).map(guard);
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
   threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+  // After the fold into earlier findings, so a warning an earlier round already shows stays where it is.
+  const proven = hideUnprovenWarnings(finalFindings);
+  finalFindings = proven.posted;
+  const unposted = proven.unposted;
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
@@ -1458,7 +1488,7 @@ export async function runReview(
   Object.assign(recorded, {
     threadEvaluations, ...(slicing && { slicing }), ...(suppressionCount > 0 && { suppressionCount }), ...(memorySuppressed.length > 0 && { memorySuppressed }),
     ...(unpostedPreExisting.length > 0 && { unpostedPreExisting }), ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
-    ...(staticSignalMatches.length > 0 && { staticSignalMatches }), ...(openLeads.length > 0 && { openLeads }),
+    ...(staticSignalMatches.length > 0 && { staticSignalMatches }), ...(openLeads.length > 0 && { openLeads }), ...(unposted.length > 0 && { unposted }),
   });
   if (outcome === 'READY') {
     const verdictWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict'));
@@ -1496,7 +1526,8 @@ export async function runReview(
       const foldWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
       const folded = await foldIntoReaderBlockers(finalFindings, restated, foldWrap?.client);
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
-      const readerFindings = folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
+      // The reader names only blockers, so each one would block if true: none is left out, and one nothing confirmed is marked.
+      const readerFindings = hideUnprovenWarnings(folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), () => true).posted;
       finalFindings = [...folded.findings, ...readerFindings];
       threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
       // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
@@ -1576,6 +1607,7 @@ export async function runReview(
     fixClaimedThreadIds: [...fixClaimed],
     ...(memory && { memoryLoaded: { learnings: memory.learnings.length, suppressions: memory.suppressions.length } }),
     ...(unpostedPreExisting.length > 0 && { unpostedPreExisting }),
+    ...(unposted.length > 0 && { unposted }),
     ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
     agentResponseLengths,
     agentDurationMs,
@@ -1827,7 +1859,7 @@ Example of one finding:
 ## Evidence
 
 - In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each. Start each line with its \`file:line\` and quote the key code it refers to in backticks, such as "api/list.go:42 computes \`pages := total / pageSize\`". When the quoted code holds a backtick itself, wrap it in double backticks with a space inside, as in \`\` a \`b\` \`\`.
-- A \`blocker\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most.
+- A \`blocker\` or a \`warning\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most, and a warning without proof is posted only when a tool check confirms it.
 - ${CLAIMS_MISSING_RULE}
 - ${PRE_EXISTING_RULE}${tools ? `
 - When Manki tells you to wrap up, report what you have. Set \`"notChecked": true\` on a finding you could not finish checking.
@@ -2519,7 +2551,7 @@ interface EarlierFinding {
  * Returns the earlier findings a finding of this round can restate: each of `openThreads` the round leaves open, each
  * finding an earlier round recorded under one of them, and each finding an earlier round listed only in its review body.
  */
-function earlierFindings(priorRounds: RoundContext[], openThreads: OpenThread[], threadEvaluations: ThreadEvaluation[] | undefined): EarlierFinding[] {
+export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenThread[], threadEvaluations: ThreadEvaluation[] | undefined): EarlierFinding[] {
   const addressed = new Set((threadEvaluations ?? []).filter(e => e.status === 'addressed').map(e => e.threadId));
   const open = new Set(openThreads.filter(t => !addressed.has(t.threadId)).map(t => t.threadId));
   const entries = priorRounds.flatMap(r => (r.findings.entries ?? []).map(entry => ({ entry, key: stringifyFindingFingerprint(entry.fingerprint), round: entry.raisedIn ?? r.meta.round })));
@@ -2600,6 +2632,7 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
  * warning does not vanish because no finder raised it again. Only an entry with `citedLine` is carried. A warning leaves
  * the list only for certain, and `result.carriedEnded` says why: a finding the judge graded this round names its problem,
  * kept or not, or the file at the head has fewer places reading like its `citedLine` than when it was listed, or is gone.
+ * A finding left out because nothing proves it does not count, so it ends no carried warning.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
  * its `citedLine`, which is also the line a finding of this round is compared with. Call it after the last step that
  * takes a finding out of `result.findings`, so each reason says where the naming finding ended up.
@@ -2608,11 +2641,14 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
   const last = priorRounds.at(-1);
   if (!last) return;
   const warnings = [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => e.citedLine && !e.threadId);
+  // A warning left out because nothing proves it withdraws nothing, so the warning an earlier round listed stays listed.
+  const unproven = new Set((result.unposted ?? []).filter(leftOutUnproven).map(findingKey));
+  const settled = (findings: Finding[]) => findings.filter(f => !unproven.has(findingKey(f)));
   const judged: Array<[CarriedEndReason, Finding[]]> = [
     ['restated', result.findings],
-    ['hidden_note', result.unpostedNotes ?? []],
+    ['hidden_note', settled(result.unposted ?? [])],
     ['judge_dropped', (result.allJudgedFindings ?? []).filter(f => f.severity === 'ignore')],
-    ['left_out', result.allJudgedFindings ?? []],
+    ['left_out', settled(result.allJudgedFindings ?? [])],
   ];
   const linesOf = cachedFileLines(head, 'so the warnings carried on it stay listed');
   const carried: FindingFingerprintEntry[] = [];
@@ -2675,7 +2711,7 @@ type Located = Pick<Finding, 'title' | 'file' | 'line' | 'evidence'>;
  * whatever the titles say. When one title contains the other, a few lines apart or one citing the other's line is
  * enough. Titles that only share words, which short titles do by chance, must both cite the other's line.
  */
-function sameProblem(a: Located, b: Located): boolean {
+export function sameProblem(a: Located, b: Located): boolean {
   if (a.file !== b.file) return false;
   const near = Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
   if (near && sharesProofLine(a, b)) return true;

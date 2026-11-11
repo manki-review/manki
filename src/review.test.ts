@@ -951,7 +951,7 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('in unchanged code whose behavior the change breaks');
     expect(prompt).toContain('Look for all of them, not only the first or the worst.');
     // The proof requirement stays.
-    expect(prompt).toContain('A `blocker` must list in `proof` the `file:line` of each line that shows the failure.');
+    expect(prompt).toContain('- A `blocker` or a `warning` must list in `proof` the `file:line` of each line that shows the failure. A blocker without proof is posted as a warning at most, and a warning without proof is posted only when a tool check confirms it.');
     expect(prompt).toContain('Start each line with its `file:line` and quote the key code it refers to in backticks');
     expect(prompt).not.toMatch(/not to explore|Don't comment on unchanged code|only flag issues in the changed code|not pedantic/);
     expect(buildReviewerSystemPrompt(reviewer, makeConfig())).toContain('Frame every potential note through this lens');
@@ -1005,7 +1005,7 @@ describe('buildReviewerSystemPrompt', () => {
     it('asks for evidence from every reviewer, and for open leads only from one with tools', () => {
       const without = buildReviewerSystemPrompt(reviewer, makeConfig());
       const withTools = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, true);
-      expect(without).toContain('A `blocker` must list in `proof`');
+      expect(without).toContain('A `blocker` or a `warning` must list in `proof`');
       expect(without).not.toContain('"lead": true');
       expect(withTools).toContain('Report each suspicion you were still checking as an open lead');
       expect(withTools).toContain('Set `"notChecked": true`');
@@ -2182,6 +2182,93 @@ describe('runReview', () => {
     expect(result.agentNames).not.toContain(reviewer);
   });
 
+  it('gives none of the eight checks to a warning a later step keeps out of the review', async () => {
+    const lines = (word: string) => Array.from({ length: 30 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
+    const { root, diff } = gitWorkspace({ 'src/app.ts': lines('old'), 'src/old.ts': lines('kept') }, { 'src/app.ts': lines('new') });
+    const agreed = (title: string, line: number): LegacyHandoverFindingFixture =>
+      ({ fingerprint: { file: 'src/app.ts', lineStart: line, lineEnd: line, slug: titleToSlug(title) }, severity: 'warning', title, authorReply: 'agree' });
+    const judged = (r: ReviewResult, title: string) => r.allJudgedFindings?.filter(f => f.title === title).map(f => [f.severity, f.tags]);
+    // One row per case where no outcome of a check changes whether the review shows the warning: the warning, what
+    // makes it such a case, and how the round ends for it. A new step that hides a warning gets a row here.
+    const hidden: Array<{ step: string; title: string; finding?: object; verdict?: object; options?: Partial<Parameters<typeof runReview>[1]>; ends: (r: ReviewResult) => unknown; as: unknown }> = [
+      {
+        step: 'cross-round suppression', title: 'Agreed last round',
+        options: { priorRounds: [roundContextFromLegacy({ round: 1, commitSha: 'abc', timestamp: 't', findings: [agreed('Agreed last round', 11), agreed('Reverses the agreed fix', 12)] })] },
+        ends: r => judged(r, 'Agreed last round'), as: [['ignore', ['suppressed-by-ratchet']]],
+      },
+      {
+        step: 'contradiction of an agreed finding', title: 'Reverses the agreed fix', finding: { description: 'Remove the guard again.' },
+        ends: r => r.findings.filter(f => f.title === 'Reverses the agreed fix').map(f => [f.severity, f.tags?.includes('contradicts-prior-round')]), as: [['note', true]],
+      },
+      {
+        // A finder's blocker passes the dedup against the resolved thread, so only the suppression after the judge drops it.
+        step: 'in-PR suppression', title: 'Resolved in its thread', finding: { severity: 'blocker' },
+        options: { previousFindings: [{ title: 'Resolved in its thread', file: 'src/app.ts', line: 13, severity: 'warning', status: 'resolved', threadId: 'T1' }] },
+        ends: r => judged(r, 'Resolved in its thread'), as: [['ignore', ['suppressed-in-pr']]],
+      },
+      {
+        step: 'memory suppression', title: 'Remembered pattern',
+        options: { memory: { learnings: [], suppressions: [{ id: 'sup-1', pattern: 'Remembered pattern', reason: 'Intended.', created_by: 'dev', created_at: '2025-01-01', pr_ref: 'o/r#1' }] } },
+        ends: r => r.memorySuppressed?.map(f => [f.title, f.suppressedBy]), as: [['Remembered pattern', 'sup-1']],
+      },
+      {
+        step: 'unposted pre-existing warning', title: 'Old loop', finding: { file: 'src/old.ts', proof: ['src/old.ts:15'], preExisting: true, preExistingReason: 'The loop predates this PR.' },
+        verdict: { preExisting: true },
+        ends: r => r.unpostedPreExisting?.map(f => [f.title, f.preExistingCheck]), as: [['Old loop', 'pre_existing']],
+      },
+      {
+        // No step hides a security finding, so no outcome of a check changes whether the review shows it.
+        step: 'security finding', title: 'Token in the log', verdict: { security: true },
+        ends: r => r.findings.filter(f => f.title === 'Token in the log').map(f => [f.severity, f.tags?.includes('security')]), as: [['warning', true]],
+      },
+      {
+        // No check can run on a file the refuter cannot read, so the cited lines decide.
+        step: 'unreadable file', title: 'In a file the head lacks', finding: { file: 'src/gone.ts', proof: ['src/gone.ts:16'] },
+        ends: r => r.findings.filter(f => f.title === 'In a file the head lacks').map(f => f.severity), as: ['warning'],
+      },
+      {
+        // The fold puts it under its open thread, which is not certain when the checks are picked. So it is checked after the others, and gets no check here.
+        step: 'restated open thread', title: 'Timer leaks on retry',
+        options: { openThreads: [{ threadId: 'T2', title: 'Timer leaks on retry', file: 'src/app.ts', line: 18, severity: 'warning' }] },
+        ends: r => r.findings.filter(f => f.title === 'Timer leaks on retry').map(f => [f.severity, f.threadId]), as: [['warning', 'T2']],
+      },
+    ];
+    // Behind them, eight warnings the review posts once a check confirms them. The eighth is checked only when no row took a check.
+    const postable = Array.from({ length: 8 }, (_, i) => `Postable ${i + 1}`);
+    const titles = [...hidden.map(row => row.title), ...postable];
+    const found = titles.map((title, i) => ({
+      severity: 'warning', title, file: 'src/app.ts', line: 11 + i, description: 'd', evidence: [`src/app.ts:${11 + i} shows it`], proof: [`src/app.ts:${11 + i}`],
+      ...hidden.find(row => row.title === title)?.finding,
+    }));
+    const doubt = [{ premise: 'Nothing closes the handle', decides: 'defect' }];
+    const refuterCalls: string[] = [];
+    const clients = makeClients(JSON.stringify(found));
+    Object.assign(clients.judge, { repoTools: true });
+    jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
+      if (system.startsWith('You are a code review judge')) {
+        // Both finders report every finding, so the judge answers for each copy.
+        return { content: JSON.stringify({ summary: 's', threadEvaluations: [{ threadId: 'T2', status: 'not_addressed', reason: 'r' }], findings: [...titles, ...titles].map((title, i) => ({ id: i + 1, title, row: 'degraded', doubts: doubt, reasoning: 'r', confidence: 'medium', ...hidden.find(row => row.title === title)?.verdict })) }) };
+      }
+      if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
+      refuterCalls.push(titles.find(title => user.includes(`: ${title}\n`))!);
+      return { content: JSON.stringify({ reason: 'It leaks.', premises: [{ outcome: 'confirmed', reason: 'It leaks.', proof: ['src/app.ts:1'] }] }) };
+    });
+    mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+    mockedApplySuppressions.mockImplementation(jest.requireActual<typeof import('./memory')>('./memory').applySuppressions);
+    let result: ReviewResult;
+    try {
+      result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, isFollowUp: true, ...Object.assign({}, ...hidden.map(row => row.options)) });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(result.reviewComplete).toBe(true);
+    expect(refuterCalls.sort()).toEqual(postable);
+    expect(hidden.map(row => [row.step, row.ends(result)])).toEqual(hidden.map(row => [row.step, row.as]));
+    expect(result.findings.filter(f => postable.includes(f.title)).map(f => f.severity)).toEqual(postable.map(() => 'warning'));
+    expect(result.unposted).toBeUndefined();
+  });
+
   it('sweeps the diff for other instances of each kept blocker\'s class with `review.sweep`, and judges what it finds', async () => {
     const original = { severity: 'blocker', title: 'Cache key misses the locale', file: 'src/cache.ts', line: 10, description: 'd', evidence: ['src/cache.ts:10 builds the key'], proof: ['src/cache.ts:10'] };
     const elsewhere = { ...original, title: 'Search key misses the tenant', file: 'src/search.ts', line: 40, evidence: ['src/search.ts:40 builds the key'], proof: ['src/search.ts:40'] };
@@ -2482,6 +2569,90 @@ describe('runReview', () => {
     });
   });
 
+  describe('unproven warnings', () => {
+    const diff = { ...diffChanging('src/a.ts', 'src/b.ts'), totalAdditions: 10, totalDeletions: 5 };
+    const doubts = [{ premise: 'The caller holds no lock', decides: 'defect' as const }];
+    const checked = (outcome: 'confirmed' | 'unsettled') => ({ refutation: { outcome, reason: `It is ${outcome}.`, files: ['src/a.ts'], codeDigest: 'abc' } });
+    const proof = { evidence: { checks: [], proof: ['src/a.ts:1'] } };
+    /** Runs a round whose judge returns one finding per entry of `judged`, by title, with or without repository tools. */
+    const review = async (judged: Record<string, Partial<Finding>>, tools: boolean) => {
+      const clients = makeClients();
+      if (tools) Object.assign(clients.judge, { repoTools: true });
+      const reported = Object.keys(judged).map((title, i) => ({ severity: 'warning', title, file: i % 2 ? 'src/b.ts' : 'src/a.ts', line: 10 * (i + 1), description: `${title}.` }));
+      jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(reported) });
+      mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings.map(f => ({ ...f, ...judged[f.title] })) }));
+      return runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', ...(tools && { workspace: '/work/pr-head' }) });
+    };
+    const shown = (result: Awaited<ReturnType<typeof runReview>>) => result.findings.map(f => [f.title, f.unconfirmed]);
+    const recordedOnly = (result: Awaited<ReturnType<typeof runReview>>) => result.unposted?.map(f => [f.title, f.severity, f.unpostedReason]);
+
+    it('posts a warning only when cited lines or a tool check prove it, and records the others with the reason', async () => {
+      const result = await review({
+        'Cited lines show it': proof,
+        'The check confirmed the doubt': { ...proof, doubts, ...checked('confirmed') },
+        'The check confirmed it without cited lines': checked('confirmed'),
+        'The check settled nothing': { ...proof, doubts, ...checked('unsettled') },
+        'Doubted and past the limit of checks': { ...proof, doubts, overCheckLimit: true },
+        // No check could decide, as when the refuter's call fails or it cannot read the file, so the cited lines do.
+        'Doubted and no check could run': { ...proof, doubts },
+        'No cited lines and no check could run': {},
+        // A link the judge named counts only once an earlier finding the review still shows carries it.
+        'Names an earlier finding no round still shows': { sameAs: 'src/gone.ts:1:1:gone' },
+        // Only a warning is left out.
+        'A doubted note': { severity: 'note', doubts },
+        'A blocker': { severity: 'blocker', ...proof },
+      }, true);
+
+      expect(shown(result)).toEqual([
+        ['Cited lines show it', undefined], ['The check confirmed the doubt', undefined], ['The check confirmed it without cited lines', undefined],
+        ['Doubted and no check could run', undefined], ['A doubted note', undefined], ['A blocker', undefined],
+      ]);
+      expect(recordedOnly(result)).toEqual([
+        ['The check settled nothing', 'warning', 'unsettled_check'],
+        ['Doubted and past the limit of checks', 'warning', 'not_checked'],
+        ['No cited lines and no check could run', 'warning', 'no_proof'],
+        ['Names an earlier finding no round still shows', 'warning', 'no_proof'],
+      ]);
+      // The judged list still holds each one, so the progress comment can name it.
+      expect(result.allJudgedFindings?.map(f => f.title)).toEqual(expect.arrayContaining(['The check settled nothing', 'No cited lines and no check could run']));
+      // A warning never blocks, so leaving one out changes no outcome.
+      expect(result.outcome).toBe('ADDRESS_FIRST');
+    });
+
+    it('never leaves out a finding that would be a blocker if true, a security finding or a tool alert', async () => {
+      const lowered = (by: 'unproven' | 'build_claim' | 'refutation' | 'judge') => ({ gradePath: [{ from: 'blocker' as const, to: 'warning' as const, by }] });
+      const result = await review({
+        'The judge held a blocker cell down': { ...proof, doubts, gradeIfConfirmed: 'blocker', ...checked('unsettled') },
+        'A blocker without cited lines': { tags: ['unproven-blocker'], ...lowered('unproven'), ...checked('unsettled') },
+        'A build failure no CI result reports': { ...proof, tags: ['unconfirmed-build-claim'], ...lowered('build_claim') },
+        'A finder filed it as a blocker': { doubts, reviewerSeverity: 'blocker' },
+        'A blocker the judge lowered': { doubts, ...lowered('judge') },
+        'A security finding': { tags: [SECURITY_TAG], doubts },
+        'A tool alert': { toolSource: 'CodeQL' },
+        'A warning nothing proves': { doubts },
+      }, true);
+
+      expect(shown(result)).toEqual([
+        ['The judge held a blocker cell down', true], ['A blocker without cited lines', true], ['A build failure no CI result reports', true],
+        ['A finder filed it as a blocker', true], ['A blocker the judge lowered', true], ['A security finding', undefined], ['A tool alert', undefined],
+      ]);
+      expect(recordedOnly(result)).toEqual([['A warning nothing proves', 'warning', 'no_proof']]);
+      expect(result.outcome).toBe('READY');
+    });
+
+    it('lets the cited lines decide on a round without repository tools', async () => {
+      const result = await review({
+        'Cited lines with a doubt': { ...proof, doubts },
+        'No cited lines': { doubts },
+        'A blocker without cited lines': { tags: ['unproven-blocker'], gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] },
+        'A security finding without cited lines': { tags: [SECURITY_TAG] },
+      }, false);
+
+      expect(shown(result)).toEqual([['Cited lines with a doubt', undefined], ['A blocker without cited lines', true], ['A security finding without cited lines', undefined]]);
+      expect(recordedOnly(result)).toEqual([['No cited lines', 'warning', 'no_proof']]);
+    });
+  });
+
   it('requests changes with the verdict reader\'s blockers as blocking findings', async () => {
     const clients = makeClients();
     jest.mocked(clients.judge.sendMessage).mockResolvedValue({
@@ -2550,7 +2721,7 @@ describe('runReview', () => {
           suggestedFix: 'let tasks = take(&mut *lock);', reviewers: ['Finder A', 'Finder B'], evidence: { checks: ['src/a.ts:6 takes the lock'], proof: ['src/a.ts:6', 'src/a.ts:12'] },
         },
         { severity: 'note', title: 'Rename the helper', file: 'src/a.ts', line: 9, description: 'Clearer.', reviewers: ['Finder A'] },
-        { severity: 'warning', title: 'The `tasks` lock is never released on error', file: 'src/a.ts', line: 14, description: 'Leaks.', reviewers: ['Finder B'] },
+        { severity: 'warning', title: 'The `tasks` lock is never released on error', file: 'src/a.ts', line: 14, description: 'Leaks.', reviewers: ['Finder B'], evidence: { checks: [], proof: ['src/a.ts:14'] } },
         {
           severity: 'warning', title: '`join` retries the `tasks` lock forever', file: 'src/a.ts', line: 30, description: 'Spins.', reviewers: ['Finder B'],
           evidence: { checks: [], proof: ['src/a.ts:12', 'src/a.ts:30'] },
@@ -2778,7 +2949,7 @@ describe('runReview', () => {
     // Only blockers and warnings the judge is highly confident in are posted. The rest stay in the round record.
     const oldSuggestion = blocker('Old helper could be shorter', 'src/a.ts', 60, { severity: 'note' });
     const oldUnsure = blocker('Old retry may spin', 'src/a.ts', 70, { severity: 'warning', judgeConfidence: 'medium' });
-    const oldSure = blocker('Old timeout is never cleared', 'src/a.ts', 80, { severity: 'warning', judgeConfidence: 'high' });
+    const oldSure = blocker('Old timeout is never cleared', 'src/a.ts', 80, { severity: 'warning', judgeConfidence: 'high', evidence: { checks: [], proof: ['src/a.ts:80'] } });
     mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile, oldSuggestion, oldUnsure, oldSure], summary: 'Old defects.' });
     const pre = await run(makeClients());
     expect(pre.outcome).toBe('READY');
@@ -2830,7 +3001,7 @@ describe('runReview', () => {
   });
 
   it('turns every warning into a follow-up in every round, security ones included, while a verdict reader blocker still blocks', async () => {
-    const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
+    const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'], evidence: { checks: [], proof: ['src/a.ts:4'] } };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
     const diff = diffChanging('src/a.ts');
     const runAtRound = (clients: ReviewClients, round: number) => runReview(
@@ -3093,18 +3264,18 @@ describe('runReview', () => {
       makePriorWarningFinding({ title: 'Cache never cleared', threadId: 'T2', fingerprint: { file: 'src/x.ts', lineStart: 40, lineEnd: 40, slug: 'cache-never-cleared' } }),
       makePriorWarningFinding({ severity: 'note', title: 'Name is vague', threadId: undefined, fingerprint: { file: 'src/y.ts', lineStart: 5, lineEnd: 5, slug: 'name-is-vague' } }),
     ]);
-    const finding = (severity: Finding['severity'], title: string, file: string, line: number, link: Partial<Finding> = {}): Finding => ({ severity, title, file, line, description: 'd', reviewers: ['r'], ...link });
+    const finding = (severity: Finding['severity'], title: string, file: string, line: number, link: Partial<Finding> = {}): Finding => ({ severity, title, file, line, description: 'd', reviewers: ['r'], evidence: { checks: [], proof: [`${file}:${line}`] }, ...link });
     const findings = [
       // The judge links these. A blocker in an open warning thread still blocks, and is listed under that thread.
-      finding('warning', 'Retry loop has no cap', 'src/x.ts', 12, { sameAs: 'src/x.ts:10:10:retry-never-ends' }),
-      finding('warning', 'Retry also ignores the backoff field', 'src/x.ts', 11, { variantOf: 'src/x.ts:10:10:retry-never-ends' }),
+      finding('warning', 'Retry loop has no cap', 'src/x.ts', 12, { sameAs: 'src/x.ts:10:10:retry-never-ends', evidence: undefined }),
+      finding('warning', 'Retry also ignores the backoff field', 'src/x.ts', 11, { variantOf: 'src/x.ts:10:10:retry-never-ends', evidence: undefined }),
       finding('blocker', 'Retry spins the CPU', 'src/x.ts', 30, { sameAs: 'src/x.ts:10:10:retry-never-ends' }),
       // The static same-problem check links an unlinked finding, in a thread or in an earlier review body.
       finding('warning', 'Retry never ends', 'src/x.ts', 10),
       finding('note', 'Name is vague', 'src/y.ts', 5),
       // The dedup model decides a nearby pair the static check leaves apart.
       finding('note', 'Helper is misnamed', 'src/y.ts', 7),
-      finding('warning', 'File handle leaks', 'src/x.ts', 14),
+      finding('warning', 'File handle leaks', 'src/x.ts', 14, { evidence: undefined }),
       // A thread the judge finds addressed takes nothing, and a judge link to it is ignored.
       finding('warning', 'Cache never cleared', 'src/x.ts', 40, { variantOf: 'src/x.ts:40:40:cache-never-cleared' }),
     ];
@@ -3129,11 +3300,12 @@ describe('runReview', () => {
       ['Retry never ends', 'T1', undefined, undefined],
       ['Name is vague', undefined, undefined, 1],
       ['Helper is misnamed', undefined, undefined, 1],
-      ['File handle leaks', undefined, undefined, undefined],
       ['Cache never cleared', undefined, 'src/x.ts:40:40:cache-never-cleared', undefined],
     ]);
     // A restatement of a review body finding names it, whichever check made the link.
     expect(result.findings.filter(f => f.raisedIn).map(f => f.sameAs)).toEqual(['src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague']);
+    // Three warnings cite no proving line. Only the one no earlier finding is linked to is left out for it.
+    expect(result.unposted?.map(f => [f.title, f.unpostedReason])).toEqual([['File handle leaks', 'no_proof']]);
     expect(result.outcome).toBe('ADDRESS_FIRST');
     expect(result.verdictTrace?.unresolvedPriors).toEqual([]);
     const calls = jest.mocked(dedup.sendMessage).mock.calls;
@@ -3292,7 +3464,7 @@ describe('runReview', () => {
   });
 
   it('ends the last automatic round READY when nothing blocks, otherwise NOT_CONVERGING', async () => {
-    const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
+    const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'], evidence: { checks: [], proof: ['src/a.ts:4'] } };
     const diff = diffChanging('src/a.ts');
     const runFinal = (clients: ReviewClients) => runReview(
       clients, {
@@ -3329,7 +3501,7 @@ describe('runReview', () => {
 
   it('turns a round 1 warning into a follow-up and approves', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
-      findings: [{ severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] }],
+      findings: [{ severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'], evidence: { checks: [], proof: ['src/a.ts:4'] } }],
       summary: 'One warning.',
     });
     const result = await runReview(
@@ -5319,8 +5491,8 @@ describe('runReview post-judge suppression', () => {
     const diff = makeDiff({ files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 12, content: '' }] }], totalAdditions: 12 });
     const clients = makeClients();
     jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify([
-      { severity: 'warning', title: 'Unchecked result', file: 'src/a.ts', line: 10, description: 'The query result is never checked.' },
-      { severity: 'warning', title: 'Stale cache', file: 'src/gone.ts', line: 3, description: 'The cache is never cleared.' },
+      { severity: 'warning', title: 'Unchecked result', file: 'src/a.ts', line: 10, description: 'The query result is never checked.', proof: ['src/a.ts:10'] },
+      { severity: 'warning', title: 'Stale cache', file: 'src/gone.ts', line: 3, description: 'The cache is never cleared.', proof: ['src/gone.ts:3'] },
     ]) });
     const judgeGrades: Record<string, Finding['severity']> = { 'js/redos: Inefficient regular expression': 'ignore' };
     mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
@@ -6131,13 +6303,17 @@ describe('carryBodyWarnings', () => {
   it('ends a carried warning that a finding of the round names, and records how that finding ended', async () => {
     const named = await carry([first], then, {
       findings: [finding('Loop has no cap', 80, { sameAs: keyOf(retry) })],
-      unpostedNotes: [finding('Nothing is returned', 3, { severity: 'note' })],
+      unposted: [finding('Nothing is returned', 3, { severity: 'note' })],
       allJudgedFindings: [finding('Check runs twice', 2, { severity: 'ignore', file: 'src/y.ts' })],
     });
     expect([named.titles, named.ended]).toEqual([undefined, ['restated', 'hidden_note', 'judge_dropped']]);
     // A finding the judge kept and a later step left out counts too, and one about something else does not.
     const leftOut = await carry([first], then, { allJudgedFindings: [finding('Retry never ends', 2), finding('Loop has no cap', 80)] });
     expect([leftOut.titles, leftOut.ended]).toEqual([all.slice(1), ['left_out']]);
+    // A warning left out because nothing proves it withdraws nothing, so the warning it names stays listed.
+    const unprovenAgain = finding('Retry never ends', 2, { unpostedReason: 'unsettled_check' });
+    const unproven = await carry([first], then, { unposted: [unprovenAgain], allJudgedFindings: [finding('Retry never ends', 2)] });
+    expect([unproven.titles, unproven.ended]).toEqual([all, undefined]);
 
     // A later round carries the warning with the place the first round read, and a restatement in other words names the first statement.
     const carriedRetry = { ...retry, raisedIn: 1 };

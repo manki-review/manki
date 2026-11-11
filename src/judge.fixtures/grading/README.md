@@ -1,6 +1,8 @@
 # Judge grading fixture corpus
 
-Each `*.json` file holds one reviewer finding, which claims a `blocker` in all but `own-proposal-objection` and `refuted-by-shown-guard`, the PR diff it sits in, and the grades the judge may return (`allowed`). Every fixture without `blocker` in `allowed` breaks exactly one rule of the blocker definition. The others cover cases a rule could wrongly clear.
+Each `*.json` file holds one reviewer finding, which claims a `blocker` in all but `own-proposal-objection`, `refuted-by-shown-guard` and the two warning fixtures, the PR diff it sits in, and the grades the judge may return (`allowed`). Every fixture without `blocker` in `allowed` breaks exactly one rule of the blocker definition, except the two warning fixtures. The others cover cases a rule could wrongly clear.
+
+The two warning fixtures also set `proven`. A warning is posted only when it is proven, so the judge must tell a warning the code shown proves from one that rests on code it cannot see. With `proven: true` the graded finding has to cite proving lines and name no doubt whether the defect exists. With `proven: false` it has to name such a doubt or cite no lines, so that a tool check runs before it is posted.
 
 `judge.test.ts` checks that the corpus covers every case once and that each finding points at a line of its diff. A live replay, gated on `RUN_JUDGE_LIVE_FIXTURES=1`, sends each fixture through `runJudgeAgent` against a real model and checks the grade is allowed. CI does not run it. Run it after changing the judge prompt or model.
 
@@ -31,3 +33,5 @@ Each `*.json` file holds one reviewer finding, which claims a `blocker` in all b
 | `21_rare_claim_reachable.json` | `blocker` | A new Python `Session.refresh()` races `close()` and leaks a socket. The window looks like a rare timing case, but the docstring tells users to call `refresh()` from a background thread, so normal use produces it. |
 | `22_sibling_path_incomplete_fix.json` | `blocker` | The PR adds a write check to `POST /items` and leaves `PUT /items/:id` open. The reviewer calls the open route pre-existing because its lines are unchanged, but it is the defect the PR fixes, left in a sibling path. |
 | `23_refuted_by_shown_guard.json` | not `blocker` | A reviewer files as a `warning` that a Go stream's `Shutdown` and `run` can both close one channel, which would panic. Both go through a `sync.Once` the diff shows, so the judge has no ground to raise the finding to a blocker. |
+| `24_proven_warning.json` | `warning`, proven | A Ruby report replaces one grouped query with a query per user inside the loop. Both the removed query and the new loop are in the diff, so the cited lines show the slowdown and nothing is left to doubt. |
+| `25_unproven_warning.json` | `warning`, not proven | A Kotlin invoice renderer moves a tax rate lookup into the loop over line items. The finding says each call asks a remote service, but the diff does not show `rateFor`, so the defect rests on code the judge cannot see. |

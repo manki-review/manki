@@ -23,7 +23,7 @@ Respond with ONLY a JSON array (no markdown fences, no explanation), one entry p
 [{"severity": "blocker" | "warning" | "note", "title": "The defect in one plain line", "file": "path/to/file.ext", "line": <line number in the NEW file>, "description": "At most three sentences: what goes wrong in practice and the decisive evidence.", "howToFix": "The change that fixes it, in one or two sentences", "evidence": ["file:line, then what you read there and what it showed, quoting the key code in backticks"], "proof": ["file:line of each line that shows the failure"]}]
 
 - **blocker**: wrong results, lost data, a crash or a security hole. List in \`proof\` the \`file:line\` of each line that shows the failure.
-- **warning**: a real case that fails, but not catastrophically.
+- **warning**: a real case that fails, but not catastrophically. List its proving lines in \`proof\` too.
 - **note**: an inconsistency that works today.
 - Put each defect on the line that needs the fix, in the changed code where you can.
 - When the answer is no, or the code already handles the case, respond with [].
