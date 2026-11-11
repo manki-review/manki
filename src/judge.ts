@@ -526,7 +526,7 @@ Being certain overrides this. It governs doubt, never judgment.
 
 State on every finding the \`row\` its consequence earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. So is a premise that lowers or caps the grade, such as callers probably validating a value, a path looking limited or an input looking trusted, unless the code shown or your tool calls prove it. Except for an open lead, which follows its own rule, never mark a finding \`ignore\` for an unsettled doubt alone: when its cell gives \`warning\` or \`blocker\` if the doubt holds, state that cell and list the doubt.
 
-List each premise you doubt in \`doubts\`, as a fact the code can confirm or disprove: "a public request handler passes \`index\` to \`getItem\` unchecked", not "callers probably validate \`index\`". Set \`decides\` to \`defect\` when the defect does not exist if the premise is false, and to \`grade\` when the finding stands either way and only its cell depends on the premise. When you doubt nothing, leave \`doubts\` empty.${toolsCheckFindings ? ' Manki checks each premise with tools when confirming it would raise the grade: on a `blocker` cell with a doubt, and on the `rare` column of the `wrong` row. On a finding whose doubts hold no grade down, it checks a doubt whether the defect exists on at most four findings a round at `warning` or above, the highest grades first. A finding gets the higher grade only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.' : ''}
+List each premise you doubt in \`doubts\`, as a fact the code can confirm or disprove: "a public request handler passes \`index\` to \`getItem\` unchecked", not "callers probably validate \`index\`". Set \`decides\` to \`defect\` when the defect does not exist if the premise is false, and to \`grade\` when the finding stands either way and only its cell depends on the premise. Manki counts a \`grade\` doubt only on the \`wrong\` row, where the column decides whether the finding blocks. When you doubt nothing, leave \`doubts\` empty.${toolsCheckFindings ? ' Manki checks each premise with tools when confirming it would raise the grade: on a `blocker` cell with a doubt, and on the `rare` column of the `wrong` row. On a finding whose doubts hold no grade down, it checks a doubt whether the defect exists on at most four findings a round at `warning` or above, the highest grades first. A finding gets the higher grade only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.' : ''}
 
 Start \`reasoning\` with your verdict, the grade the cell gives or \`ignore\`, then the facts behind it. For a blocker, name the failure and cite the proving lines (e.g., "blocker. When a request omits \`page\`, \`listItems\` at src/api.ts:42 divides by zero and the handler returns 500 for every default listing.").
 
@@ -1569,8 +1569,8 @@ export function mapJudgedToFindings(
 
 /**
  * Returns the grade fields the judge's cell gives `o`, or none when the judge named no row. A security finding is
- * graded in the `normal` column of its row, and no doubt holds it down. Any other blocker cell is a warning until the
- * refuter confirms its doubts, when one of them is whether the defect exists or when the row is one where
+ * graded in the `normal` column of its row, and no doubt holds it down. Any other blocker cell with a doubt is a
+ * warning until the refuter confirms every doubt. A doubt that only decides the cell counts only on a row where
  * `columnDecidesBlock`. A tool alert takes its cell as stated, with no doubts.
  */
 function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security }: JudgedFinding): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'doubts'>> {
@@ -1585,10 +1585,11 @@ function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: 
   const stated = cellGrade(row, column);
   if (o.toolSource) return { ...gradeStep(o, stated, 'judge'), cell };
   const checkedRare = columnDecidesBlock(row) && column === 'rare';
+  const counted = columnDecidesBlock(row) ? named : named.filter(d => d.decides === 'defect');
   // A doubt the judge names can be about anything, so only `REACH_DOUBT` stands for the claim the `rare` column makes.
-  const doubts = checkedRare ? [...named.filter(d => d.premise !== REACH_DOUBT.premise), REACH_DOUBT] : named;
+  const doubts = checkedRare ? [...counted.filter(d => d.premise !== REACH_DOUBT.premise), REACH_DOUBT] : counted;
   if (doubts.length === 0) return { ...gradeStep(o, stated, 'judge'), cell };
-  const heldDown = stated === 'blocker' && !isSecurity && (columnDecidesBlock(row) || doubts.some(d => d.decides === 'defect'));
+  const heldDown = stated === 'blocker' && !isSecurity;
   return { ...gradeStep(o, heldDown ? 'warning' : stated, 'judge'), cell, gradeIfConfirmed: cellGrade(row, checkedRare ? 'normal' : column), doubts };
 }
 

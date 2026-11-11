@@ -319,7 +319,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(section).toContain("The rule on a check of a trusted internal value still applies when the code shown proves that the code's own logic keeps the value valid: that is evidence, not a doubt. The `rare` column always carries its doubt, by the Severity Table. Only a doubt the code shown does not settle counts here.");
     const unsure = prompt.slice(prompt.indexOf('## When You Are Unsure'), prompt.indexOf('## Worked Examples'));
     expect(unsure).toContain('State on every finding the `row` its consequence earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A doubt you settle by assumption is still a doubt. So is a premise that lowers or caps the grade, such as callers probably validating a value, a path looking limited or an input looking trusted, unless the code shown or your tool calls prove it. Except for an open lead, which follows its own rule, never mark a finding `ignore` for an unsettled doubt alone: when its cell gives `warning` or `blocker` if the doubt holds, state that cell and list the doubt.');
-    expect(unsure).toContain('List each premise you doubt in `doubts`, as a fact the code can confirm or disprove: "a public request handler passes `index` to `getItem` unchecked", not "callers probably validate `index`". Set `decides` to `defect` when the defect does not exist if the premise is false, and to `grade` when the finding stands either way and only its cell depends on the premise. When you doubt nothing, leave `doubts` empty.');
+    expect(unsure).toContain('List each premise you doubt in `doubts`, as a fact the code can confirm or disprove: "a public request handler passes `index` to `getItem` unchecked", not "callers probably validate `index`". Set `decides` to `defect` when the defect does not exist if the premise is false, and to `grade` when the finding stands either way and only its cell depends on the premise. Manki counts a `grade` doubt only on the `wrong` row, where the column decides whether the finding blocks. When you doubt nothing, leave `doubts` empty.');
     expect(prompt).not.toContain('Manki checks each premise with tools');
     expect(prompt).toContain('"doubts": [{"premise": "A fact the code can confirm or disprove", "decides": "defect" | "grade"}],');
     expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('Manki checks each premise with tools when confirming it would raise the grade: on a `blocker` cell with a doubt, and on the `rare` column of the `wrong` row. On a finding whose doubts hold no grade down, it checks a doubt whether the defect exists on at most four findings a round at `warning` or above, the highest grades first. A finding gets the higher grade only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.');
@@ -1740,7 +1740,7 @@ describe('runJudgeAgent', () => {
         { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, { row: 'degraded', column: 'normal' }, { row: 'wrong', column: 'rare' },
         undefined, undefined, { row: 'wrong', column: 'rare' }, { row: 'degraded', column: 'normal' }, { row: 'degraded', column: 'rare' },
       ]);
-      expect(result.findings.map(f => f.gradeIfConfirmed)).toEqual(['blocker', 'blocker', undefined, 'blocker', undefined, undefined, 'blocker', 'warning', 'suggestion']);
+      expect(result.findings.map(f => f.gradeIfConfirmed)).toEqual(['blocker', 'blocker', undefined, 'blocker', undefined, undefined, 'blocker', 'warning', undefined]);
       // Manki adds the claim the `rare` column makes as a premise of its own, next to any doubt the judge names.
       expect(result.findings[3].doubts).toEqual([REACH_DOUBT]);
       expect(result.findings[6].doubts).toEqual([{ premise: 'A request reads the second cache after the write', decides: 'grade' }, REACH_DOUBT]);
@@ -3588,11 +3588,12 @@ describe('mapJudgedToFindings', () => {
     expect(graded.map(f => [f.cell, f.severity])).toEqual(cells.map(cell => [cell, CELL_GRADES[cell.row][cell.column]]));
     // Only on the `wrong` row does a confirmed premise raise a finding out of the `rare` column.
     expect(graded.filter(f => f.cell?.column === 'rare').map(f => [f.cell?.row, f.gradeIfConfirmed])).toEqual([
-      ['severe', 'blocker'], ['wrong', 'blocker'], ['degraded', 'suggestion'], ['improvement', 'suggestion'], ['style', 'nitpick'],
+      ['severe', undefined], ['wrong', 'blocker'], ['degraded', undefined], ['improvement', undefined], ['style', undefined],
     ]);
     expect(graded[0]).toMatchObject({ reviewerSeverity: 'suggestion', gradePath: [{ from: 'suggestion', to: 'blocker', by: 'judge' }] });
-    // The judge's own `grade` doubt is not the claim the `rare` column makes, so Manki adds that one where the column decides.
-    expect(graded.filter(f => f.cell?.column === 'rare').map(f => f.doubts)).toEqual([[reach], [reach, REACH_DOUBT], [reach], [reach], [reach]]);
+    // A doubt that only decides the cell counts only where the column decides whether the finding blocks. There the judge's
+    // own `grade` doubt is not the claim the `rare` column makes, so Manki adds that one.
+    expect(graded.filter(f => f.cell?.column === 'rare').map(f => f.doubts)).toEqual([undefined, [reach, REACH_DOUBT], undefined, undefined, undefined]);
     expect(warnSpy).not.toHaveBeenCalled();
 
     const originals = [
@@ -3602,7 +3603,7 @@ describe('mapJudgedToFindings', () => {
       proven('Rare security'), proven('Tagged security', { tags: ['security'] }),
     ];
     const judged: JudgedFinding[] = [
-      { id: 1, title: 'Doubted blocker', row: 'severe', doubts: [doubt], reasoning: 'r', confidence: 'high' },
+      { id: 1, title: 'Doubted blocker', row: 'severe', doubts: [doubt, reach], reasoning: 'r', confidence: 'high' },
       { id: 2, title: 'Doubted security', row: 'severe', doubts: [doubt], reasoning: 'r', confidence: 'high' },
       { id: 3, title: 'Marked security', row: 'wrong', security: true, doubts: [doubt], reasoning: 'r', confidence: 'high' },
       { id: 4, title: 'Tool alert', row: 'wrong', column: 'rare', doubts: [doubt], reasoning: 'r', confidence: 'high' },
@@ -3617,6 +3618,7 @@ describe('mapJudgedToFindings', () => {
     ];
     const result = mapJudgedToFindings(originals, judged);
     expect(result.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.doubts])).toEqual([
+      // Only the doubt whether the defect exists holds a `severe` finding down, so only that one goes to the refuter.
       ['Doubted blocker', 'warning', 'blocker', [doubt]],
       ['Doubted security', 'blocker', 'blocker', [doubt]],
       ['Marked security', 'blocker', 'blocker', [doubt]],
@@ -3628,8 +3630,8 @@ describe('mapJudgedToFindings', () => {
       ['No row', 'warning', undefined, undefined],
       // On the `wrong` row the other column gives a lower grade, so a doubt about the reach holds the blocker down.
       ['Doubted reach', 'warning', 'blocker', [reach]],
-      // Both columns of the `severe` row block, so a doubt about the reach holds nothing down there.
-      ['Severe with a reach doubt', 'blocker', 'blocker', [reach]],
+      // Both columns of the `severe` row block, so a doubt about the reach decides nothing there and is dropped.
+      ['Severe with a reach doubt', 'blocker', undefined, undefined],
       // The claim of the `rare` column is listed once when the judge names it too, and it only ever decides the grade.
       ['Rare with the reach doubt', 'warning', 'blocker', [doubt, REACH_DOUBT]],
       // A security finding is graded in the `normal` column of the row the judge states, since an attacker chooses the input.
