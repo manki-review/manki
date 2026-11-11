@@ -8,8 +8,9 @@ import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, Bot
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, isOverrideCandidate, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
+import { fetchPriorRoundContexts, isOverrideCandidate, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadMarkerSlug, threadSeverity } from './recap';
 import { formatApprovalRecord, hasReviewRecord } from './review-record';
+import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
 import { withMarkers } from './utils';
 
@@ -69,6 +70,8 @@ interface ReviewThread {
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after an admin check. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
   findingTitle: string;
+  /** Where the thread was posted, for which finding and on which commit. Absent for a thread without a finding marker. */
+  place?: { file: string; line: number; originalLine?: number; findingLine?: number; markerSlug: string; commit?: string };
   /** URL of the thread's first comment. */
   threadUrl?: string;
   /** The head commits on which a Manki reply in this thread confirmed the fix, from `fixedMarker`. */
@@ -97,12 +100,16 @@ async function fetchBotReviewThreads(
     id: string;
     isResolved: boolean;
     resolvedBy?: { login: string } | null;
+    path?: string | null;
+    line?: number | null;
+    originalLine?: number | null;
     comments: {
       nodes: Array<{
         databaseId?: number | null;
         body: string;
         url?: string;
         author: { login: string } | null;
+        originalCommit?: { oid: string } | null;
       }>;
     };
   }>(octokit, owner, repo, prNumber, `
@@ -111,6 +118,9 @@ async function fetchBotReviewThreads(
     resolvedBy {
       login
     }
+    path
+    line
+    originalLine
     comments(first: 100) {
       nodes {
         databaseId
@@ -118,6 +128,9 @@ async function fetchBotReviewThreads(
         url
         author {
           login
+        }
+        originalCommit {
+          oid
         }
       }
     }
@@ -142,7 +155,15 @@ async function fetchBotReviewThreads(
       const isBlocking = 'priorRoundsIncomplete' in records || threadBlocks({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity });
       // The marker's slug turned every other character into a hyphen, so the finding data keeps the real title.
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
-      const findingTitle = parseFindingData(body)?.title?.trim() || (titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown');
+      const data = parseFindingData(body);
+      const findingTitle = data?.title?.trim() || (titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown');
+      const markerSlug = threadMarkerSlug(body);
+      const findingLine = data && data.file === thread.path ? data.line : undefined;
+      const commit = thread.comments.nodes[0]?.originalCommit?.oid;
+      const place = thread.path && markerSlug ? {
+        file: thread.path, line: thread.line ?? 0, markerSlug,
+        ...(thread.originalLine && { originalLine: thread.originalLine }), ...(findingLine && { findingLine }), ...(commit && { commit }),
+      } : undefined;
 
       const rootCommentId = thread.comments.nodes[0]?.databaseId;
       const resolvedByLogin = thread.resolvedBy?.login;
@@ -161,6 +182,7 @@ async function fetchBotReviewThreads(
         ...(isSecurity && { isSecurity: true }),
         ...(recordedOverride && { recordedOverride }),
         findingTitle,
+        ...(place && { place }),
         ...(threadUrl && { threadUrl }),
         ...(fixedOn.length > 0 && { fixedOn }),
       };
@@ -418,11 +440,11 @@ const NEXT_ROUND_LINE = 'The next review round decides. Push a commit or comment
 
 /**
  * Returns what resolving threads can do about the newest round Manki posted on `commitSha`: `held` says why it cannot
- * lift that round's block, and `named` holds the threads the round's record names for its blockers. A thread carries a
- * blocker when the record gives its `threadId` and the thread exists, or says the round posted it as a thread of its
- * own. A standing approval posted again on `commitSha` blocks on nothing. Anything else is unknown and holds the
- * approval: a record that cannot be read, a round that blocked without naming a blocker, and a blocker the record
- * names no thread for.
+ * lift that round's block, and `named` holds the live threads that carry its blockers. The record alone never proves a
+ * thread. A thread carries a blocker when the record gives its `threadId` and the thread exists, or when the record
+ * says the round posted the blocker as a thread and one of the threads posted on `commitSha` matches it. A standing
+ * approval posted again on `commitSha` blocks on nothing. Anything else is unknown and holds the approval: a record
+ * that cannot be read, a round that blocked without naming a blocker, and a blocker without a live thread.
  */
 function blockOf(
   reviews: ReviewEntry[], bot: BotIdentity, commitSha: string, threads: ReviewThread[], owner: string, repo: string, prNumber: number,
@@ -436,19 +458,31 @@ function blockOf(
     return { held: `Manki cannot read the record of its review of ${sha}, so it cannot tell what that review blocked on.`, named: new Set() };
   }
   const blockers = [
-    ...round.findings.entries.filter(e => e.severity === 'blocker').map(e => ({ title: e.title, file: e.fingerprint.file, threadId: e.threadId, ownThread: e.posted === 'thread' })),
-    ...(round.judge.verdictTrace?.unresolvedPriors ?? []).map(p => ({ title: p.title, file: p.file, threadId: p.threadId, ownThread: false })),
+    ...round.findings.entries.filter(e => e.severity === 'blocker').map(e => ({ title: e.title, file: e.fingerprint.file, threadId: e.threadId, posted: e.posted === 'thread' ? e.fingerprint : undefined })),
+    ...(round.judge.verdictTrace?.unresolvedPriors ?? []).map(p => ({ title: p.title, file: p.file, threadId: p.threadId, posted: undefined })),
   ];
   if (round.verdict !== 'APPROVE' && blockers.length === 0) {
     return { held: `The record of Manki's review of ${sha} does not say what it blocked on.`, named: new Set() };
   }
   const live = new Set(threads.map(t => t.id));
-  const named = new Set(blockers.flatMap(b => b.threadId ?? []));
-  const loose = blockers.filter(b => !b.ownThread && !(b.threadId && live.has(b.threadId)));
-  if (loose.length === 0) return { named };
-  const list = loose.map(b => `- ${sanitizeMarkdown(b.title ?? 'Untitled blocker')}${b.file ? ` (${inline(b.file)})` : ''}`).join('\n');
-  const count = loose.length === 1 ? '1 blocker' : `${loose.length} blockers`;
-  return { held: `The record of Manki's review of ${sha} names no thread for ${count}, so resolving threads cannot lift the block:\n${list}`, named };
+  // Only a thread posted on the round's own commit can be the round's, and each one carries a single blocker.
+  let own = threads.flatMap(t => t.place?.commit === commitSha ? [{ threadId: t.id, ...t.place }] : []);
+  const named = new Set<string>();
+  const loose: typeof blockers = [];
+  for (const b of blockers) {
+    const carrier = b.threadId && live.has(b.threadId) ? b.threadId : b.posted && findPriorThreadId(b.posted, own);
+    if (!carrier) loose.push(b);
+    else named.add(carrier);
+    own = own.filter(t => t.threadId !== carrier);
+  }
+  const told = (claim: string, list: typeof loose): string[] => {
+    if (list.length === 0) return [];
+    const lines = list.map(b => `- ${sanitizeMarkdown(b.title ?? 'Untitled blocker')}${b.file ? ` (${inline(b.file)})` : ''}`).join('\n');
+    return [`The record of Manki's review of ${sha} ${claim} for ${list.length === 1 ? '1 blocker' : `${list.length} blockers`}, so resolving threads cannot lift the block:\n${lines}`];
+  };
+  const claimed = (b: typeof loose[number]): boolean => !!b.threadId || !!b.posted;
+  const held = [...told('names no thread', loose.filter(b => !claimed(b))), ...told('names a thread that does not exist', loose.filter(claimed))].join('\n\n');
+  return { ...(held && { held }), named };
 }
 
 /** Returns why auto-approve has to wait because no Manki review covers the head yet, or `undefined` when one does. */

@@ -28,11 +28,24 @@ const AUTO_REVIEW_OFF = { ...DEFAULT_CONFIG, auto_review: false };
 
 const SETTING_REFUSAL = 'GitHub Actions is not permitted to approve pull requests.';
 
-/** The record of a round on `commitSha` that requested changes for one blocker it posted as a thread, unless `overrides` say otherwise. */
+/**
+ * The record of a round on `commitSha` that requested changes for one blocker it posted as a thread, unless `overrides`
+ * say otherwise. The thread `makeGraphqlFetchThreadNode` builds by default is that blocker's.
+ */
 function blockingRound(commitSha: string, overrides: Partial<RoundContext> = {}, round = 1): RoundContext {
-  const entries = [makeFindingFingerprintEntry({ severity: 'blocker', posted: 'thread' })];
+  const entries = [makeFindingFingerprintEntry({ severity: 'blocker', posted: 'thread', title: 'test finding' })];
   const context = makeRoundContext(round, { verdict: 'REQUEST_CHANGES', findings: { count: entries.length, severityCounts: {}, entries }, ...overrides });
   return { ...context, meta: { ...context.meta, commitSha } };
+}
+
+/** The record of the round on `commitSha` that posted `threads`: it requested changes for its blocker threads, or approved without one. */
+function roundThatPosted(commitSha: string, threads: ReturnType<typeof makeGraphqlFetchThreadNode>[]): RoundContext {
+  const entries = threads.flatMap(t => {
+    const slug = t.comments.nodes[0].body.match(/<!-- manki:blocker:(.+?) -->/)?.[1];
+    const line = t.line ?? 0;
+    return slug ? [makeFindingFingerprintEntry({ severity: 'blocker', posted: 'thread', fingerprint: { file: t.path, lineStart: line, lineEnd: line, slug } })] : [];
+  });
+  return blockingRound(commitSha, { verdict: entries.length > 0 ? 'REQUEST_CHANGES' : 'APPROVE', findings: { count: entries.length, severityCounts: {}, entries } });
 }
 
 /** The body of the review that posted `round`. */
@@ -112,16 +125,24 @@ function makeGraphqlFetchThreadNode(overrides: {
   resolvedBy?: string;
   url?: string;
   replies?: Array<{ body: string; author: { login: string } }>;
+  path?: string;
+  /** `null` for a file-level thread. */
+  line?: number | null;
+  /** The commit the thread was posted on. */
+  commit?: string;
 } = {}) {
   return {
     id: overrides.id ?? 'thread-1',
     isResolved: overrides.isResolved ?? false,
     ...(overrides.isResolved && { resolvedBy: { login: overrides.resolvedBy ?? 'reviewer' } }),
+    path: overrides.path ?? 'src/a.ts',
+    line: overrides.line === undefined ? 10 : overrides.line,
     comments: {
       nodes: [{
         ...(overrides.databaseId !== undefined && { databaseId: overrides.databaseId }),
         body: overrides.body ?? '<!-- manki:blocker:test-finding --> **Blocker**: test finding',
         ...(overrides.url && { url: overrides.url }),
+        ...(overrides.commit && { originalCommit: { oid: overrides.commit } }),
         author: overrides.authorLogin !== undefined
           ? (overrides.authorLogin === null ? null : { login: overrides.authorLogin })
           : { login: 'manki-review[bot]' },
@@ -144,9 +165,11 @@ describe('fetchBotReviewThreads', () => {
   it('returns bot threads with parsed severity and title', async () => {
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
-        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:null-check --> **Blocker**: null check', databaseId: 501 }),
+        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:null-check --> **Blocker**: null check', databaseId: 501, commit: 'sha-1' }),
+        // A file-level thread keeps the line its finding names.
         makeGraphqlFetchThreadNode({
-          id: 't3', body: `<!-- manki:warning:-parse--drops-a-field --> **Warning**\n\n<!-- manki-finding: ${JSON.stringify({ title: '`parse` drops a field' })} -->`,
+          id: 't3', line: null, path: 'src/parse.ts',
+          body: `<!-- manki:warning:-parse--drops-a-field --> **Warning**\n\n<!-- manki-finding: ${JSON.stringify({ title: '`parse` drops a field', file: 'src/parse.ts', line: 40 })} -->`,
         }),
         makeGraphqlFetchThreadNode({
           id: 't2', body: '<!-- manki:suggestion:rename-var --> **Suggestion**: rename var', isResolved: true,
@@ -163,9 +186,9 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(3);
-    expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, findingTitle: 'null check' });
-    expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, findingTitle: '`parse` drops a field' });
-    expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', fixedOn: ['ab'.repeat(20)] });
+    expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, findingTitle: 'null check', place: { file: 'src/a.ts', line: 10, markerSlug: 'null-check', commit: 'sha-1' } });
+    expect(threads[1]).toEqual({ id: 't3', isResolved: false, isBlocking: false, findingTitle: '`parse` drops a field', place: { file: 'src/parse.ts', line: 0, findingLine: 40, markerSlug: '-parse--drops-a-field' } });
+    expect(threads[2]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var', place: { file: 'src/a.ts', line: 10, markerSlug: 'rename-var' }, fixedOn: ['ab'.repeat(20)] });
   });
 
   it('reads every page of review threads', async () => {
@@ -302,10 +325,12 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(4);
-    expect(threads[0]).toEqual({ id: 't1', isResolved: false, isBlocking: false, findingTitle: 'style issue' });
-    expect(threads[1]).toEqual({ id: 't2', isResolved: false, isBlocking: false, findingTitle: 'false positive' });
-    expect(threads[2]).toEqual({ id: 't3', isResolved: false, isBlocking: false, findingTitle: 'race' });
-    expect(threads[3]).toEqual({ id: 't4', isResolved: false, isBlocking: true, findingTitle: 'crash' });
+    expect(threads.map(({ id, isResolved, isBlocking, findingTitle }) => ({ id, isResolved, isBlocking, findingTitle }))).toEqual([
+      { id: 't1', isResolved: false, isBlocking: false, findingTitle: 'style issue' },
+      { id: 't2', isResolved: false, isBlocking: false, findingTitle: 'false positive' },
+      { id: 't3', isResolved: false, isBlocking: false, findingTitle: 'race' },
+      { id: 't4', isResolved: false, isBlocking: true, findingTitle: 'crash' },
+    ]);
   });
 
   it('migrates legacy severity markers (`required`, `nit`) on read', async () => {
@@ -414,12 +439,13 @@ describe('checkAndAutoApprove', () => {
     mergeable?: boolean | null;
     draft?: boolean;
   } = {}) {
-    const threads = overrides.threads ?? [];
     const prHeadSha = overrides.prHeadSha ?? 'abc123';
+    // A thread was posted on the head unless it names another commit, and the round on the head posted the threads unless `existingReviews` says otherwise.
+    const threads = (overrides.threads ?? []).map(t => ({ ...t, comments: { nodes: t.comments.nodes.map((c, i) => (i === 0 ? { originalCommit: { oid: prHeadSha }, ...c } : c)) } }));
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
     const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
     const existingReviews = overrides.existingReviews ?? [
-      { body: roundBody(blockingRound(prHeadSha)), state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'manki-review[bot]', type: 'Bot' } },
+      { body: roundBody(roundThatPosted(prHeadSha, overrides.threads ?? [])), state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'manki-review[bot]', type: 'Bot' } },
     ];
     const existingComments = overrides.existingComments ?? [];
 
@@ -482,29 +508,39 @@ describe('checkAndAutoApprove', () => {
         findings: { count: entries.length, severityCounts: {}, entries },
         judge: { summary: '', verdictReason, verdictTrace: { survivingBlockers: [], unresolvedPriors: priors } },
       }));
-    const thread = (id: string, severity: 'blocker' | 'warning' | 'note', resolvedBy?: string) =>
-      makeGraphqlFetchThreadNode({ id, body: `<!-- manki:${severity}:${id} --> ${id}`, isResolved: !!resolvedBy, ...(resolvedBy && { resolvedBy }) });
-    const fixed = (id = 't1', severity: 'blocker' | 'warning' = 'blocker') => thread(id, severity, 'manki-review[bot]');
+    type Place = { title?: string; line?: number | null; commit?: string };
+    /** A thread for the blocker `title` in `src/lock.ts`, posted on the head at the blocker's line unless `at` says otherwise. */
+    const thread = (id: string, severity: 'blocker' | 'warning' | 'note', resolvedBy?: string, at: Place = {}) => makeGraphqlFetchThreadNode({
+      id, body: `<!-- manki:${severity}:${titleToSlug(at.title ?? 'Lock is never released')} --> ${id}`, isResolved: !!resolvedBy, ...(resolvedBy && { resolvedBy }),
+      path: 'src/lock.ts', ...(at.line !== undefined && { line: at.line }), ...(at.commit && { commit: at.commit }),
+    });
+    const fixed = (id = 't1', severity: 'blocker' | 'warning' = 'blocker', at: Place = {}) => thread(id, severity, 'manki-review[bot]', at);
     const NO_THREAD = 'names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
+    const GONE = 'names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
     const UNREAD = 'Manki cannot read the record of its review of `head-sh`, so it cannot tell what that review blocked on.';
     const UNNAMED = 'The record of Manki\'s review of `head-sh` does not say what it blocked on.';
 
     it.each<[string, string, ReturnType<typeof thread>[], true | string]>([
       ['a new blocker on a changed line, its thread resolved', blocked([blocker({ posted: 'thread' })]), [fixed()], true],
       ['a new blocker on a changed line, its thread open', blocked([blocker({ posted: 'thread' })]), [thread('t1', 'blocker')], 'Not all blocking findings resolved'],
-      ['a new blocker in a changed file outside the hunks, its file-level thread resolved', blocked([blocker({ posted: 'thread', lineStart: 0 })]), [fixed()], true],
+      ['a new blocker in a changed file outside the hunks, its file-level thread resolved', blocked([blocker({ posted: 'thread', lineStart: 40 })]), [fixed('t1', 'blocker', { line: null })], true],
+      ['a new blocker whose thread is not there yet, was refused or was deleted by hand', blocked([blocker({ posted: 'thread' })]), [], GONE],
+      ['a new blocker without its thread, beside a resolved thread an earlier round posted at its place', blocked([blocker({ posted: 'thread' })]), [fixed('t1', 'blocker', { commit: 'older-sha' })], GONE],
+      ['a new blocker without its thread, beside the resolved thread of another finding at its place', blocked([blocker({ posted: 'thread' })]), [fixed('t1', 'blocker', { title: 'Other' })], GONE],
+      ['a new blocker without its thread, beside the resolved thread of the same finding in another place', blocked([blocker({ posted: 'thread' })]), [fixed('t1', 'blocker', { line: 30 })], GONE],
+      ['two new blockers with one title at one place and a single thread, resolved', blocked([blocker({ posted: 'thread' }), blocker({ posted: 'thread', lineStart: 12 })]), [fixed()], GONE],
       ['a new blocker with no file or line, listed in the body', blocked([blocker({ posted: 'body', file: '', lineStart: 0 })]), [], 'names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released'],
       ['a new blocker in a file outside the diff, listed in the body', blocked([blocker({ posted: 'body' })]), [fixed('t0')], NO_THREAD],
       ['a blocker that restates an earlier warning thread, resolved', blocked([blocker({ posted: 'earlier_thread', threadId: 't1' })]), [fixed('t1', 'warning')], true],
       ['a blocker that restates an earlier warning thread, still open', blocked([blocker({ posted: 'earlier_thread', threadId: 't1' })]), [thread('t1', 'warning')], 'Not all blocking findings resolved'],
-      ['a blocker that restates a thread that is gone', blocked([blocker({ posted: 'earlier_thread', threadId: 'gone' })]), [fixed()], NO_THREAD],
+      ['a blocker that restates a thread that is gone', blocked([blocker({ posted: 'earlier_thread', threadId: 'gone' })]), [fixed()], GONE],
       ['an earlier blocker thread, resolved since', blocked([], [prior('t1')]), [fixed()], true],
       ['an earlier blocker thread, still open', blocked([], [prior('t1')]), [thread('t1', 'blocker')], 'Not all blocking findings resolved'],
       ['an earlier blocker thread a note marker hides, still open', blocked([], [prior('t1')]), [thread('t1', 'note')], 'A thread the covering review blocks on is not resolved'],
       ['an earlier blocker only a review body listed', blocked([], [prior()]), [fixed('t0'), thread('t2', 'note'), thread('t3', 'note')], NO_THREAD],
       ['a verdict reader blocker with a thread, resolved', blocked([blocker({ posted: 'thread' })], [], 'verdict_reader'), [fixed()], true],
       ['a verdict reader blocker listed in the body', blocked([blocker({ posted: 'body' })], [], 'verdict_reader'), [], NO_THREAD],
-      ['a blocker GitHub refused as a thread', blocked([blocker({ posted: 'body' }), blocker({ posted: 'thread', title: 'Other' })]), [fixed()], NO_THREAD],
+      ['a blocker GitHub refused as a thread', blocked([blocker({ posted: 'body' }), blocker({ posted: 'thread', title: 'Other' })]), [fixed('t1', 'blocker', { title: 'Other' })], NO_THREAD],
       ['a blocker an older record left to an open thread without naming it', blocked([blocker({ posted: 'earlier_thread' })]), [fixed('t1', 'warning')], NO_THREAD],
       ['a blocker only the record keeps', blocked([blocker({ posted: 'record' })]), [], NO_THREAD],
       ['a blocker of a record written before `posted`', blocked([blocker()]), [fixed()], NO_THREAD],
@@ -556,6 +592,60 @@ describe('checkAndAutoApprove', () => {
       expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('Not all blocking findings resolved'));
       expect(createReviewMock).not.toHaveBeenCalled();
       expect(await check([fixed('t1', 'warning')])).toEqual([true, undefined]);
+      expect(createReviewMock.mock.calls.map(([args]) => args.event)).toEqual(['APPROVE']);
+    });
+
+    it('never approves while the thread of a blocker the round posts after its review is missing', async () => {
+      const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+      jest.spyOn(core, 'warning').mockImplementation(() => {});
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const check = (body: string, threads: ReturnType<typeof thread>[] = []) => checkAndAutoApprove(
+        makeMockOctokit({ threads, prHeadSha: HEAD, mergeable: true, createReviewFn: createReviewMock, existingReviews: [{ id: 7, body, state: 'CHANGES_REQUESTED', commit_id: HEAD, user }] }),
+        TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+      /** Posts a round whose blocker sits outside the hunks of its file, so its file-level thread follows the review. `comment` gets the review body. */
+      const post = async (comment: (submitted: string) => Promise<unknown>, updateReview = jest.fn(), description = 'd') => {
+        const createReview = jest.fn().mockResolvedValue({ data: { id: 7 } });
+        const createReviewComment = jest.fn(() => comment(createReview.mock.calls[0][0].body as string));
+        const failure = await postReview({ rest: { pulls: { createReview, createReviewComment, updateReview } } } as unknown as Octokit, 'owner', 'repo', 1, HEAD,
+          { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: '', findings: [{ severity: 'blocker', title: 'Lock is never released', file: 'src/lock.ts', line: 40, description, reviewers: [] }], highlights: [], reviewComplete: true, agentNames: [] },
+          { files: [{ path: 'src/lock.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3, content: '' }] }], totalAdditions: 1, totalDeletions: 0 },
+          blockingRound(HEAD, { findings: { count: 1, severityCounts: {}, entries: [blocker({ lineStart: 40 })] } }),
+        ).then(() => undefined, (error: Error) => error.message);
+        return { body: createReview.mock.calls[0][0].body as string, failure, updateReview };
+      };
+      const refuse = () => Promise.reject(Object.assign(new Error('refused'), { status: 422 }));
+      const held = () => expect(infoSpy).toHaveBeenLastCalledWith(`The record of Manki's review of \`head-sh\` ${GONE}\nSkipping auto-approve, the next review round decides`);
+
+      // GitHub refuses the thread, and the review has no room for the blocker, so its record still says `thread`.
+      const full = await post(refuse, jest.fn(), 'word '.repeat(13000));
+      expect(full.failure).toContain('or fit them in review #7');
+      expect(full.updateReview).not.toHaveBeenCalled();
+      expect(await check(full.body)).toBe(false);
+      held();
+
+      // GitHub refuses the thread, and the review cannot be updated either.
+      const stuck = await post(refuse, jest.fn().mockRejectedValue(new Error('update down')));
+      expect(stuck.failure).toContain('or in review #7');
+      expect(await check(stuck.body)).toBe(false);
+      held();
+
+      // The submitted review starts the check before its thread is posted.
+      let early: boolean | undefined;
+      const raced = await post(async submitted => {
+        early = await check(submitted);
+        held();
+        return { data: { id: 70 } };
+      });
+      expect([raced.failure, early]).toEqual([undefined, false]);
+
+      // The thread is there afterwards and blocks until it is resolved. A thread deleted by hand leaves the block in place.
+      const posted = (resolvedBy?: string) => thread('t1', 'blocker', resolvedBy, { line: null });
+      expect(await check(raced.body, [posted()])).toBe(false);
+      expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('Not all blocking findings resolved'));
+      expect(await check(raced.body, [])).toBe(false);
+      held();
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(await check(raced.body, [posted('manki-review[bot]')])).toBe(true);
       expect(createReviewMock.mock.calls.map(([args]) => args.event)).toEqual(['APPROVE']);
     });
 
@@ -614,10 +704,14 @@ describe('checkAndAutoApprove', () => {
       const told = 'The record of Manki\'s review of `sha-2` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Persisters miss the lock (`src/store.ts`)';
       expect(infoSpy).toHaveBeenLastCalledWith(`${told}\nSkipping auto-approve, the next review round decides`);
       // The `check` command gets the same reason, and nothing to say once threads carry every blocker.
-      const explain = (existingReviews: typeof reviews) => explainUncarriedBlockers(
-        makeMockOctokit({ threads, prHeadSha: 'sha-2', existingReviews }), TEST_BOT, 'owner', 'repo', 1, threads.map(t => makeThread({ id: t.id })));
+      const explain = (existingReviews: typeof reviews, live = threads.map(t => makeThread({ id: t.id }))) => explainUncarriedBlockers(
+        makeMockOctokit({ threads, prHeadSha: 'sha-2', existingReviews }), TEST_BOT, 'owner', 'repo', 1, live);
       expect(await explain(reviews)).toBe(`${told}\n\nThe next review round decides. Push a commit or comment \`@manki review\` to start one.`);
-      expect(await explain([{ ...reviews[1], body: roundBody(blockingRound('sha-2')) }])).toBeUndefined();
+      const posted = { file: 'src/a.ts', line: 10, markerSlug: 'test-finding', commit: 'sha-2' };
+      expect(await explain([{ ...reviews[1], body: roundBody(blockingRound('sha-2')) }], [makeThread({ place: posted })])).toBeUndefined();
+      // The same thread on an earlier commit is not that round's.
+      expect(await explain([{ ...reviews[1], body: roundBody(blockingRound('sha-2')) }], [makeThread({ place: { ...posted, commit: 'sha-1' } })]))
+        .toContain('names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- test finding (`src/a.ts`)');
       expect(await explain([firstReview])).toBeUndefined();
     });
   });
@@ -692,11 +786,11 @@ describe('checkAndAutoApprove', () => {
     const octokit = makeMockOctokit({
       threads: [
         makeGraphqlFetchThreadNode({
-          id: 't1', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r1',
+          id: 't1', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r1', line: 3,
           body: formatFindingComment(finding('Token leaks into logs', ['security']), TEST_LINKS),
           ...(recorded && { replies: [{ body: `<!-- manki -->\n${securityOverrideMarker('resolve', 'author')}`, author: { login: 'manki-review[bot]' } }] }),
         }),
-        makeGraphqlFetchThreadNode({ id: 't2', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r2', body: formatFindingComment(finding('Off by one'), TEST_LINKS) }),
+        makeGraphqlFetchThreadNode({ id: 't2', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r2', line: 3, body: formatFindingComment(finding('Off by one'), TEST_LINKS) }),
       ],
       createReviewFn: createReviewMock,
       permission,
@@ -913,7 +1007,7 @@ describe('checkAndAutoApprove', () => {
   it('creates new approval when latest bot review is CHANGES_REQUESTED', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
-      threads: [],
+      threads: [makeGraphqlFetchThreadNode({ isResolved: true })],
       prHeadSha: 'sha-new',
       createReviewFn: createReviewMock,
       existingReviews: [
@@ -1024,7 +1118,7 @@ describe('checkAndAutoApprove', () => {
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
       const octokit = makeMockOctokit({
         threads: [
-          makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
+          makeGraphqlFetchThreadNode({ id: 't1', isResolved: true }),
         ],
         prHeadSha: 'head-sha-aaaa',
         createReviewFn: createReviewMock,
@@ -1189,7 +1283,7 @@ describe('checkAndAutoApprove', () => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
       const octokit = makeMockOctokit({
-        threads: [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true })],
+        threads: [makeGraphqlFetchThreadNode({ id: 't1', isResolved: true, commit: 'old-sha-bbbb' })],
         prHeadSha: 'head-sha-aaaa',
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
@@ -1246,7 +1340,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
       { body: roundBody(blockingRound(prHeadSha)), state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'manki-review[bot]', type: 'Bot' } },
     ];
     return {
-      graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
+      graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ isResolved: true, commit: prHeadSha })])),
       paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
