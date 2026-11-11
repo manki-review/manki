@@ -4,18 +4,18 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, NO_VERDICT_MARKER, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, inline, NO_VERDICT_MARKER, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, isOverrideCandidate, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
+import { fetchPriorRoundContexts, isOverrideCandidate, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
 import { formatApprovalRecord } from './review-record';
 import { ApprovalRecord, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
 import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 type PullHead = { head: { sha: string }; base: { ref: string } };
-type ReviewEntry = { body?: string | null; state?: string; commit_id?: string | null; user?: { login?: string; type?: string } | null };
+type ReviewEntry = { id: number; body?: string | null; state?: string; commit_id?: string | null; user?: { login?: string; type?: string } | null };
 
 const BOT_MARKER = '<!-- manki -->';
 const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
@@ -391,17 +391,53 @@ function isBotReview(bot: BotIdentity, r: ReviewEntry): boolean {
 }
 
 /**
- * Whether a Manki review covers the head of `pr`. That is a verdict on the head that is not dismissed,
- * or the standing verdict on a commit whose PR diff equals the head's, as after a rebase.
+ * Returns the commit whose Manki review covers the head of `pr`, or `undefined` when none does. That is the head with a
+ * verdict that is not dismissed, or the commit of the standing verdict when its PR diff equals the head's, as after a rebase.
  */
-async function reviewCoversHead(
+async function coveredCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
   pr: PullHead, reviews: ReviewEntry[],
-): Promise<boolean> {
-  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha && !r.body?.includes(NO_VERDICT_MARKER))) return true;
+): Promise<string | undefined> {
+  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha && !r.body?.includes(NO_VERDICT_MARKER))) return pr.head.sha;
   const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha);
   if (standing) core.info(`No change since the reviewed commit ${standing.commitSha.slice(0, 7)}, so its review covers ${pr.head.sha.slice(0, 7)}`);
-  return !!standing;
+  return standing?.commitSha;
+}
+
+/** How a PR with a block that resolving threads cannot lift gets its next verdict. */
+const NEXT_ROUND_LINE = 'The next review round decides. Push a commit or comment `@manki review` to start one.';
+
+/**
+ * Returns what resolving threads can do about the newest round Manki posted on `commitSha`: `held` says why it cannot
+ * lift that round's block, and `named` holds the threads the round's record names for its blockers. A thread carries a
+ * blocker when the record gives its `threadId` and the thread exists, or says the round posted it as a thread of its
+ * own. Anything else is unknown and holds the approval: a record that cannot be read, a round that blocked without
+ * naming a blocker, and a blocker the round listed only in its review body.
+ */
+function blockOf(
+  reviews: ReviewEntry[], bot: BotIdentity, commitSha: string, threads: ReviewThread[], owner: string, repo: string, prNumber: number,
+): { held?: string; named: Set<string> } {
+  const sha = `\`${commitSha.slice(0, 7)}\``;
+  // An auto-approval and a round without a verdict decide nothing about blockers, so the round before them stands.
+  const review = reviews.filter(r => isBotReview(bot, r) && r.commit_id === commitSha && !r.body?.includes(NO_VERDICT_MARKER) && !r.body?.includes(AUTO_APPROVE_MARKER)).at(-1);
+  const round = review && parseContextBlocks([{ body: review.body ?? '', id: review.id }], owner, repo, prNumber).rounds.at(0);
+  if (!round || round.meta.commitSha !== commitSha) {
+    return { held: `Manki cannot read the record of its review of ${sha}, so it cannot tell what that review blocked on.`, named: new Set() };
+  }
+  const blockers = [
+    ...round.findings.entries.filter(e => e.severity === 'blocker').map(e => ({ title: e.title, file: e.fingerprint.file, threadId: e.threadId, ownThread: e.posted === 'thread' })),
+    ...(round.judge.verdictTrace?.unresolvedPriors ?? []).map(p => ({ title: p.title, file: p.file, threadId: p.threadId, ownThread: false })),
+  ];
+  if (round.verdict !== 'APPROVE' && blockers.length === 0) {
+    return { held: `The record of Manki's review of ${sha} does not say what it blocked on.`, named: new Set() };
+  }
+  const live = new Set(threads.map(t => t.id));
+  const named = new Set(blockers.flatMap(b => b.threadId ?? []));
+  const loose = blockers.filter(b => !b.ownThread && !(b.threadId && live.has(b.threadId)));
+  if (loose.length === 0) return { named };
+  const list = loose.map(b => `- ${sanitizeMarkdown(b.title ?? 'Untitled blocker')}${b.file ? ` (${inline(b.file)})` : ''}`).join('\n');
+  const count = loose.length === 1 ? '1 blocker that no review thread carries' : `${loose.length} blockers that no review thread carries`;
+  return { held: `Manki's review of ${sha} blocks on ${count}, so resolving threads cannot lift it:\n${list}`, named };
 }
 
 /** Returns why auto-approve has to wait because no Manki review covers the head yet, or `undefined` when one does. */
@@ -409,11 +445,23 @@ async function explainUnreviewedHead(octokit: Octokit, bot: BotIdentity, owner: 
   const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
   const head = `\`${pr.head.sha.slice(0, 7)}\``;
   const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });
-  if (await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews)) return undefined;
+  if (await coveredCommit(octokit, bot, owner, repo, prNumber, pr, reviews)) return undefined;
   const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
   return halt
     ? `Manki has not reviewed ${head}. ${halt.text}`
     : `Manki has not reviewed ${head} yet. A push review should start shortly, and approval follows from its verdict.`;
+}
+
+/**
+ * Returns why resolving threads cannot lift the block of the review that covers the head, with how the PR gets its next
+ * verdict, or `undefined` when threads carry every blocker of that review or no review covers the head.
+ */
+async function explainUncarriedBlockers(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, threads: ReviewThread[]): Promise<string | undefined> {
+  const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });
+  const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, reviews);
+  const held = covered && blockOf(reviews, bot, covered, threads, owner, repo, prNumber).held;
+  return held ? `${held}\n\n${NEXT_ROUND_LINE}` : undefined;
 }
 
 /** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. */
@@ -568,7 +616,8 @@ async function checkAndAutoApprove(
   // Stale-SHA gate: bail unless a Manki review covers the current HEAD. This covers
   // every variant: stale prior review, absent commit_id, all reviews DISMISSED, or
   // no bot review at all.
-  if (!await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews)) {
+  const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, reviews);
+  if (!covered) {
     const staleSha =
       reviews.filter((r: ReviewEntry) => isBotReview(bot, r) && r.commit_id !== pr.head.sha).slice(-1)[0]?.commit_id ?? 'unknown';
     core.warning(
@@ -593,6 +642,17 @@ async function checkAndAutoApprove(
   const held = (r?: ReviewEntry) => !!r?.body?.includes(HELD_FOR_PERSON_MARKER);
   if (held(latestBotReview) || botReviews.some(r => r.commit_id === pr.head.sha && held(r))) {
     core.info('The review that covers the head holds its approval for a person, such as for unread files — skipping auto-approve');
+    return false;
+  }
+
+  const block = blockOf(reviews, bot, covered, threads, owner, repo, prNumber);
+  if (block.held) {
+    core.info(`${block.held}\nSkipping auto-approve, the next review round decides`);
+    return false;
+  }
+  // A thread the record names for a blocker blocks whatever its own severity says.
+  if (!areAllFindingsResolved(threads.map(t => block.named.has(t.id) ? { ...t, isBlocking: true } : t), bot, prAuthorLogin, prAuthorIsAdmin)) {
+    core.info('A thread the covering review blocks on is not resolved — skipping auto-approve');
     return false;
   }
 
@@ -658,4 +718,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, deleteThreadReply, explainUnreviewedHead, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, deleteThreadReply, explainUncarriedBlockers, explainUnreviewedHead, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

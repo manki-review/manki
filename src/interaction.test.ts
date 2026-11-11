@@ -64,6 +64,7 @@ jest.mock('./review', () => ({
 jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn(async (overrides: unknown[]) => overrides),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
+  explainUncarriedBlockers: jest.fn().mockResolvedValue(undefined),
   explainUnreviewedHead: jest.fn().mockResolvedValue(undefined),
   fetchBotReviewThreads: jest.fn().mockResolvedValue([]),
   fixedMarker: jest.requireActual('./state').fixedMarker,
@@ -1223,6 +1224,17 @@ describe('handleCheck (via handlePRComment)', () => {
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('1 blocking thread is still open:\n- Null deref in `parse`\n\nApproval follows') }),
     );
+
+    // Resolving the thread does not approve while the review also blocks on a blocker no thread carries, so the reply says so.
+    const open = [{ findingTitle: 'Null deref', isBlocking: true, isResolved: false }];
+    const uncarried = 'Manki\'s review of `abc1234` blocks on 1 blocker that no review thread carries, so resolving threads cannot lift it:\n- Lock is never released (`src/lock.ts`)\n\nThe next review round decides.';
+    (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce(open);
+    (state.explainUncarriedBlockers as jest.Mock).mockResolvedValueOnce(uncarried);
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig);
+    expect(state.explainUncarriedBlockers).toHaveBeenLastCalledWith(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, open);
+    expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: expect.stringMatching(/^1 blocking thread is still open:\n- Null deref\n\nManki's review of `abc1234` blocks on 1 blocker that no review thread carries[^]*The next review round decides\.\n/) }),
+    );
   });
 
   it('reports why it did not approve when no blocking issues are open', async () => {
@@ -1242,6 +1254,14 @@ describe('handleCheck (via handlePRComment)', () => {
     expect(state.explainUnreviewedHead).toHaveBeenLastCalledWith(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, config);
     expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
       expect.objectContaining({ body: expect.stringMatching(/^A review of `abc1234` is running or queued\.\n/) }),
+    );
+
+    // A blocker no thread carries is named before anything else, since no thread is open to point at.
+    (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce([]);
+    (state.explainUncarriedBlockers as jest.Mock).mockResolvedValueOnce('Manki\'s review of `abc1234` blocks on 1 blocker that no review thread carries.');
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, config);
+    expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: expect.stringMatching(/^Manki's review of `abc1234` blocks on 1 blocker that no review thread carries\.\n/) }),
     );
 
     // A lookup that fails still gets the generic reply.

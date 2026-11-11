@@ -9,7 +9,7 @@ import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isSecurityThread, mayClearSecurityThread, parseFindingData } from './recap';
-import { ResolutionReason, ReviewThread, announceSecurityOverrides, fixedMarker, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, resolveReviewThread } from './state';
+import { ResolutionReason, ReviewThread, announceSecurityOverrides, fixedMarker, checkAndAutoApprove, explainUncarriedBlockers, explainUnreviewedHead, fetchBotReviewThreads, resolveReviewThread } from './state';
 import { ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage } from './round-context';
@@ -858,19 +858,22 @@ async function handleCheck(
   if (!approved) {
     const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
     const blocking = threads.filter(t => t.isBlocking && !t.isResolved);
+    const untold = (error: unknown) => {
+      core.warning(`Could not tell why the approval did not go through: ${error instanceof Error ? error.message : error}`);
+      return undefined;
+    };
+    const uncarried = await explainUncarriedBlockers(octokit, bot, owner, repo, prNumber, threads).catch(untold);
 
     if (blocking.length > 0) {
       const list = blocking.map(t => `- ${sanitizeMarkdown(t.findingTitle)}`).join('\n');
       await octokit.rest.issues.createComment({
         owner, repo,
         issue_number: prNumber,
-        body: withMarkers(`${blocking.length === 1 ? '1 blocking thread is' : `${blocking.length} blocking threads are`} still open:\n${list}\n\nApproval follows once ${blocking.length === 1 ? 'it is' : 'they are'} resolved.`, BOT_MARKER),
+        body: withMarkers(`${blocking.length === 1 ? '1 blocking thread is' : `${blocking.length} blocking threads are`} still open:\n${list}\n\n${uncarried ?? `Approval follows once ${blocking.length === 1 ? 'it is' : 'they are'} resolved.`}`, BOT_MARKER),
       });
     } else {
-      const reason = await explainUnreviewedHead(octokit, bot, owner, repo, prNumber, config).catch((error: unknown) => {
-        core.warning(`Could not tell why the approval did not go through: ${error instanceof Error ? error.message : error}`);
-        return undefined;
-      }) ?? 'No blocking threads are open, but the approval did not go through. The workflow log has the reason.';
+      const reason = uncarried ?? await explainUnreviewedHead(octokit, bot, owner, repo, prNumber, config).catch(untold)
+        ?? 'No blocking threads are open, but the approval did not go through. The workflow log has the reason.';
       await octokit.rest.issues.createComment({
         owner, repo,
         issue_number: prNumber,

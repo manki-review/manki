@@ -1,11 +1,12 @@
 import * as core from '@actions/core';
-import { areAllFindingsResolved, fetchBotReviewThreads, fixedMarker, checkAndAutoApprove, explainUnreviewedHead, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
+import { areAllFindingsResolved, fetchBotReviewThreads, fixedMarker, checkAndAutoApprove, explainUncarriedBlockers, explainUnreviewedHead, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
-import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
+import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { formatFindingComment } from './github';
 import { extractApprovalRecords, formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG } from './config';
-import { ApprovalRecord, Finding, RoundContext, ThreadEvaluation } from './types';
+import { determineOutcome } from './review';
+import { ApprovalRecord, Finding, FindingFingerprintEntry, RoundContext, ThreadEvaluation, VerdictTraceEntry } from './types';
 import * as authModule from './auth';
 
 jest.mock('./auth', () => ({
@@ -26,6 +27,16 @@ jest.mock('./github', () => ({
 const AUTO_REVIEW_OFF = { ...DEFAULT_CONFIG, auto_review: false };
 
 const SETTING_REFUSAL = 'GitHub Actions is not permitted to approve pull requests.';
+
+/** The record of a round on `commitSha` that requested changes for one blocker it posted as a thread, unless `overrides` say otherwise. */
+function blockingRound(commitSha: string, overrides: Partial<RoundContext> = {}, round = 1): RoundContext {
+  const entries = [makeFindingFingerprintEntry({ severity: 'blocker', posted: 'thread' })];
+  const context = makeRoundContext(round, { verdict: 'REQUEST_CHANGES', findings: { count: entries.length, severityCounts: {}, entries }, ...overrides });
+  return { ...context, meta: { ...context.meta, commitSha } };
+}
+
+/** The body of the review that posted `round`. */
+const roundBody = (round: RoundContext): string => `<!-- manki -->\n${formatReviewRecord(round)}`;
 
 const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
   id: 'thread-1',
@@ -395,7 +406,7 @@ describe('checkAndAutoApprove', () => {
     createReviewFn?: jest.Mock;
     createCommentFn?: jest.Mock;
     checks?: { create: jest.Mock; update: jest.Mock };
-    existingReviews?: Array<{ body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
+    existingReviews?: Array<{ id?: number; body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
     existingComments?: Array<{ body?: string; user?: { login?: string } }>;
     permission?: string;
     /** The PR diff at each commit, keyed by its SHA, as `compareCommits` against the base returns it. */
@@ -408,7 +419,7 @@ describe('checkAndAutoApprove', () => {
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
     const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
     const existingReviews = overrides.existingReviews ?? [
-      { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'manki-review[bot]', type: 'Bot' } },
+      { body: roundBody(blockingRound(prHeadSha)), state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'manki-review[bot]', type: 'Bot' } },
     ];
     const existingComments = overrides.existingComments ?? [];
 
@@ -456,6 +467,102 @@ describe('checkAndAutoApprove', () => {
       decision: 'approved', reason: 'all blocking threads are resolved', head: 'sha-456', threads: { total: 2, resolved: 2 },
       timestamp: expect.any(String), mankiVersion: expect.any(String),
     }]);
+  });
+
+  describe('the round that covers the head', () => {
+    const HEAD = 'head-sha';
+    const user = { login: 'manki-review[bot]', type: 'Bot' };
+    const blocker = (overrides: Parameters<typeof makeFindingFingerprintEntry>[0] = {}): FindingFingerprintEntry =>
+      makeFindingFingerprintEntry({ severity: 'blocker', title: 'Lock is never released', file: 'src/lock.ts', ...overrides });
+    const prior = (threadId?: string): VerdictTraceEntry =>
+      ({ file: 'src/lock.ts', title: 'Lock is never released', fingerprint: 'src/lock.ts:10:10:Lock-is-never-released', ...(threadId && { threadId }) });
+    /** A round that requested changes for `entries` of its own and the earlier blockers `priors`. */
+    const blocked = (entries: FindingFingerprintEntry[], priors: VerdictTraceEntry[] = [], verdictReason: RoundContext['judge']['verdictReason'] = priors.length > 0 ? 'prior_unaddressed' : 'required_present') =>
+      roundBody(blockingRound(HEAD, {
+        findings: { count: entries.length, severityCounts: {}, entries },
+        judge: { summary: '', verdictReason, verdictTrace: { survivingBlockers: [], unresolvedPriors: priors } },
+      }));
+    const thread = (id: string, severity: 'blocker' | 'warning' | 'note', resolvedBy?: string) =>
+      makeGraphqlFetchThreadNode({ id, body: `<!-- manki:${severity}:${id} --> ${id}`, isResolved: !!resolvedBy, ...(resolvedBy && { resolvedBy }) });
+    const fixed = (id = 't1', severity: 'blocker' | 'warning' = 'blocker') => thread(id, severity, 'manki-review[bot]');
+    const NO_THREAD = 'blocks on 1 blocker that no review thread carries, so resolving threads cannot lift it:\n- Lock is never released (`src/lock.ts`)';
+    const UNREAD = 'Manki cannot read the record of its review of `head-sh`, so it cannot tell what that review blocked on.';
+    const UNNAMED = 'The record of Manki\'s review of `head-sh` does not say what it blocked on.';
+
+    it.each<[string, string, ReturnType<typeof thread>[], true | string]>([
+      ['a new blocker on a changed line, its thread resolved', blocked([blocker({ posted: 'thread' })]), [fixed()], true],
+      ['a new blocker on a changed line, its thread open', blocked([blocker({ posted: 'thread' })]), [thread('t1', 'blocker')], 'Not all blocking findings resolved'],
+      ['a new blocker in a changed file outside the hunks, its file-level thread resolved', blocked([blocker({ posted: 'thread', lineStart: 0 })]), [fixed()], true],
+      ['a new blocker with no file or line, listed in the body', blocked([blocker({ posted: 'body', file: '', lineStart: 0 })]), [], 'no review thread carries, so resolving threads cannot lift it:\n- Lock is never released'],
+      ['a new blocker in a file outside the diff, listed in the body', blocked([blocker({ posted: 'body' })]), [fixed('t0')], NO_THREAD],
+      ['a blocker that restates an earlier warning thread, resolved', blocked([blocker({ posted: 'earlier_thread', threadId: 't1' })]), [fixed('t1', 'warning')], true],
+      ['a blocker that restates an earlier warning thread, still open', blocked([blocker({ posted: 'earlier_thread', threadId: 't1' })]), [thread('t1', 'warning')], 'Not all blocking findings resolved'],
+      ['a blocker that restates a thread that is gone', blocked([blocker({ posted: 'earlier_thread', threadId: 'gone' })]), [fixed()], NO_THREAD],
+      ['an earlier blocker thread, resolved since', blocked([], [prior('t1')]), [fixed()], true],
+      ['an earlier blocker thread, still open', blocked([], [prior('t1')]), [thread('t1', 'blocker')], 'Not all blocking findings resolved'],
+      ['an earlier blocker thread a note marker hides, still open', blocked([], [prior('t1')]), [thread('t1', 'note')], 'A thread the covering review blocks on is not resolved'],
+      ['an earlier blocker only a review body listed', blocked([], [prior()]), [fixed('t0'), thread('t2', 'note'), thread('t3', 'note')], NO_THREAD],
+      ['a verdict reader blocker with a thread, resolved', blocked([blocker({ posted: 'thread' })], [], 'verdict_reader'), [fixed()], true],
+      ['a verdict reader blocker listed in the body', blocked([blocker({ posted: 'body' })], [], 'verdict_reader'), [], NO_THREAD],
+      ['a blocker GitHub refused as a thread', blocked([blocker({ posted: 'body' }), blocker({ posted: 'thread', title: 'Other' })]), [fixed()], NO_THREAD],
+      ['a blocker left to an open thread at its place that the record does not name', blocked([blocker({ posted: 'earlier_thread' })]), [thread('t1', 'warning')], NO_THREAD],
+      ['a blocker only the record keeps', blocked([blocker({ posted: 'record' })]), [], NO_THREAD],
+      ['a blocker of a record written before `posted`', blocked([blocker()]), [fixed()], NO_THREAD],
+      ['a round that blocked without naming a blocker', blocked([]), [fixed()], UNNAMED],
+      ['a record that cannot be read', '<!-- manki -->\n<!-- manki-context: {"meta": -->', [fixed()], UNREAD],
+      ['a review without a record', '<!-- manki -->', [fixed()], UNREAD],
+      ['a record of another commit', roundBody(blockingRound('other-sha')), [fixed()], UNREAD],
+      ['the record of an incomplete round', roundBody({ ...blockingRound(HEAD), meta: { ...blockingRound(HEAD).meta, incomplete: true } }), [fixed()], UNREAD],
+      ['a round that approved, its thread reopened and resolved again', roundBody(blockingRound(HEAD, { verdict: 'APPROVE', findings: { count: 0, severityCounts: {}, entries: [] } })), [fixed()], true],
+    ])('%s', async (_label, body, threads, outcome) => {
+      const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+      jest.spyOn(core, 'warning').mockImplementation(() => {});
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const createCommentMock = jest.fn().mockResolvedValue({});
+      const octokit = makeMockOctokit({
+        threads, prHeadSha: HEAD, mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock,
+        // An earlier round on the head, whose blocker has a thread, never decides for the newest one.
+        existingReviews: [{ id: 6, body: roundBody(blockingRound(HEAD)), state: 'COMMENTED', commit_id: HEAD, user }, { id: 7, body, state: 'COMMENTED', commit_id: HEAD, user }],
+      });
+
+      expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG)).toBe(outcome === true);
+      expect(createReviewMock.mock.calls.map(([args]) => args.event)).toEqual(outcome === true ? ['APPROVE'] : []);
+      // The event path says why in the log and posts nothing on the PR.
+      expect(createCommentMock).not.toHaveBeenCalled();
+      if (outcome !== true) expect(infoSpy.mock.calls.map(([line]) => line).join('\n')).toContain(outcome);
+    });
+
+    it('never approves a blocker without a thread from the review its own round submits, as on a body-only blocker carried after a fix push', async () => {
+      const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const outside = blocker({ posted: 'body', file: 'src/store.ts', title: 'Persisters miss the lock' });
+      const first = blockingRound('sha-1', { findings: { count: 1, severityCounts: {}, entries: [outside] } });
+      const firstReview = { id: 1, body: roundBody(first), state: 'CHANGES_REQUESTED', commit_id: 'sha-1', user };
+      const check = (head: string, existingReviews: typeof firstReview[], threads: ReturnType<typeof thread>[]) => checkAndAutoApprove(
+        makeMockOctokit({ threads, prHeadSha: head, mergeable: true, createReviewFn: createReviewMock, existingReviews }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+
+      // Round 1 lists the blocker in its body, and its own review starts the check.
+      expect(await check('sha-1', [firstReview], [thread('t2', 'note')])).toBe(false);
+
+      // The fix push touches the blocker's file, and round 2 carries the blocker without a finding that restates it.
+      const decided = determineOutcome([], first.findings.entries, [], new Set(), [], new Map(), new Set(['src/store.ts']));
+      expect(decided).toMatchObject({ outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed' });
+      expect(decided.verdictTrace.unresolvedPriors).toEqual([expect.not.objectContaining({ threadId: expect.anything() })]);
+      const second = blockingRound('sha-2', { findings: { count: 0, severityCounts: {}, entries: [] }, judge: { summary: '', ...decided } }, 2);
+      const reviews = [{ ...firstReview, state: 'DISMISSED' }, { id: 2, body: roundBody(second), state: 'CHANGES_REQUESTED', commit_id: 'sha-2', user }];
+      const threads = [fixed('t1'), thread('t2', 'note'), thread('t3', 'note')];
+      expect(await check('sha-2', reviews, threads)).toBe(false);
+
+      expect(createReviewMock).not.toHaveBeenCalled();
+      const told = 'Manki\'s review of `sha-2` blocks on 1 blocker that no review thread carries, so resolving threads cannot lift it:\n- Persisters miss the lock (`src/store.ts`)';
+      expect(infoSpy).toHaveBeenLastCalledWith(`${told}\nSkipping auto-approve, the next review round decides`);
+      // The `check` command gets the same reason, and nothing to say once threads carry every blocker.
+      const explain = (existingReviews: typeof reviews) => explainUncarriedBlockers(
+        makeMockOctokit({ threads, prHeadSha: 'sha-2', existingReviews }), TEST_BOT, 'owner', 'repo', 1, threads.map(t => makeThread({ id: t.id })));
+      expect(await explain(reviews)).toBe(`${told}\n\nThe next review round decides. Push a commit or comment \`@manki review\` to start one.`);
+      expect(await explain([{ ...reviews[1], body: roundBody(blockingRound('sha-2')) }])).toBeUndefined();
+      expect(await explain([firstReview])).toBeUndefined();
+    });
   });
 
   it('holds an approval on a draft with one notice per head, and on the event draft state when the PR cannot be read', async () => {
@@ -754,7 +861,7 @@ describe('checkAndAutoApprove', () => {
       createReviewFn: createReviewMock,
       existingReviews: [
         { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'sha-new', user: { login: 'manki-review[bot]', type: 'Bot' } },
-        { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-new', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        { body: roundBody(blockingRound('sha-new')), state: 'CHANGES_REQUESTED', commit_id: 'sha-new', user: { login: 'manki-review[bot]', type: 'Bot' } },
       ],
     });
 
@@ -866,7 +973,7 @@ describe('checkAndAutoApprove', () => {
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
         existingReviews: [1, 2, 3, 4, 5].map(n => ({
-          body: `<!-- manki -->\n${formatReviewRecord(makeRoundContext(n))}`, state: n === 5 ? 'CHANGES_REQUESTED' : 'COMMENTED',
+          body: roundBody(n === 5 ? blockingRound('head-sha-aaaa', {}, 5) : makeRoundContext(n)), state: n === 5 ? 'CHANGES_REQUESTED' : 'COMMENTED',
           commit_id: n === 5 ? 'head-sha-aaaa' : `old-sha-${n}`, user: { login: 'manki-review[bot]', type: 'Bot' },
         })),
       });
@@ -1030,7 +1137,7 @@ describe('checkAndAutoApprove', () => {
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
         existingReviews: [
-          { body: '<!-- manki-bot -->', state: 'CHANGES_REQUESTED', commit_id: 'old-sha-bbbb', user: { login: 'manki-review[bot]', type: 'Bot' } },
+          { body: `<!-- manki-bot -->\n${formatReviewRecord(blockingRound('old-sha-bbbb'))}`, state: 'CHANGES_REQUESTED', commit_id: 'old-sha-bbbb', user: { login: 'manki-review[bot]', type: 'Bot' } },
         ],
         diffs: { 'old-sha-bbbb': rebaseDiff, 'head-sha-aaaa': headDiff },
       });
@@ -1073,13 +1180,13 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     createReviewFn?: jest.Mock;
     createCommentFn?: jest.Mock;
     prHeadSha?: string;
-    existingReviews?: Array<{ body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
+    existingReviews?: Array<{ id?: number; body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
   } = {}) {
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
     const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
     const prHeadSha = overrides.prHeadSha ?? 'sha-x';
     const existingReviews = overrides.existingReviews ?? [
-      { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'manki-review[bot]', type: 'Bot' } },
+      { body: roundBody(blockingRound(prHeadSha)), state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'manki-review[bot]', type: 'Bot' } },
     ];
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
