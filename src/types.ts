@@ -1364,6 +1364,8 @@ export interface RoundMeta {
   needsHuman?: NeedsHuman;
   /** Set when the round reviewed a draft, which does not count toward the round cap. */
   draft?: boolean;
+  /** Set when the round ended incomplete. A later round does not read the record as an earlier round. */
+  incomplete?: true;
   /**
    * Set when the record was too large for the review even compressed: the fields of per-file and per-finding
    * diagnostics that were left out, such as `judge.dropped`.

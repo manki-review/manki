@@ -1565,6 +1565,34 @@ describe('fetchRecapState', () => {
       );
     });
 
+    it('reads a PR with an incomplete round among complete ones like one with only the complete rounds', async () => {
+      const first = makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [makeFindingFingerprintEntry({ severity: 'warning', threadId: 'thread-1' })] } });
+      const second = makeRoundContext(2, { judge: { summary: 'second round' } });
+      // The incomplete round took the number the next complete round gets. Read as a round, it would raise and settle the thread.
+      const incomplete = (round: number) => makeRoundContext(round, {
+        meta: { prNumber: 1, commitSha: 'failed', round, timestamp: 't', mankiVersion: '7', outcome: 'INCOMPLETE', incomplete: true },
+        findings: { count: 1, severityCounts: {}, entries: [makeFindingFingerprintEntry({ severity: 'blocker', threadId: 'thread-1' })] },
+        judge: { summary: 'failed round', threadEvaluations: [{ threadId: 'thread-1', status: 'addressed', reason: 'fixed' }] },
+      });
+      const review = (id: number, ctx: RoundContext) => ({ id, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } });
+      const state = (reviews: ReturnType<typeof review>[]) => fetchRecapState(mockOctokit([makeThread()], reviews), TEST_BOT, 'owner', 'repo', 1);
+      const complete = await state([review(10, first), review(30, second)]);
+      expect(complete.priorRounds.map(r => [r.meta.round, r.meta.commitSha])).toEqual([[1, first.meta.commitSha], [2, second.meta.commitSha]]);
+
+      for (const reviews of [
+        [review(10, first), review(20, incomplete(2)), review(30, second)],
+        [review(5, incomplete(1)), review(10, first), review(30, second)],
+        // Posted last, under a number a complete round has or under the next one.
+        [review(10, first), review(30, second), review(40, incomplete(2))],
+        [review(10, first), review(30, second), review(40, incomplete(3))],
+      ]) {
+        expect(await state(reviews)).toEqual(complete);
+      }
+      // A skipped record is neither unread nor a duplicate.
+      expect(complete.priorRoundsIncomplete).toBeUndefined();
+      expect(core.warning).not.toHaveBeenCalled();
+    });
+
     it('skips a context block whose parsed value is null (not an object)', async () => {
       const body = '<!-- manki-context: null -->';
       const octokit = mockOctokit([], [

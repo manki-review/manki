@@ -1939,6 +1939,14 @@ describe('runFullReview orchestration', () => {
 
       expect(completedCheck()).toMatchObject({ conclusion: 'failure', output: { title: 'Review incomplete', summary: 'The judge failed.' } });
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual({ noVerdict: true });
+      // The round posts its record, marked so that no later round reads it as an earlier round.
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]).toMatchObject({ meta: { round: 1, commitSha: 'abc123', outcome: 'INCOMPLETE', incomplete: true }, verdict: 'COMMENT' });
+      // Nothing reports the commit as reviewed.
+      expect(authModule.reportPrState).not.toHaveBeenCalled();
+
+      jest.mocked(ghUtils.postReview).mockClear();
+      await callRunFullReview();
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]?.meta).not.toHaveProperty('incomplete');
     });
 
     it('records a draft round as a draft and never makes it the final capped round', async () => {
@@ -3138,7 +3146,7 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 42, 'abc123',
       expect.objectContaining({ verdict: 'COMMENT' }),
-      expect.anything(), undefined, undefined, { noVerdict: true },
+      expect.anything(), expect.objectContaining({ meta: expect.objectContaining({ incomplete: true }) }), expect.any(Number), { noVerdict: true },
     );
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith('Review incomplete: Review incomplete');
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4].totalDurationMs).toEqual(expect.any(Number));

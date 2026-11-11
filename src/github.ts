@@ -1588,11 +1588,13 @@ export async function postReview(
     }
   }
 
-  const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl, context, reviewTimeMs);
+  // An incomplete round keeps its record for diagnostics. What it shows reads as it does without one.
+  const round = context?.meta.incomplete ? undefined : context;
+  const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl, round, reviewTimeMs);
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
   const earlier = carriedThreadIds.size + (result.verdictTrace?.unresolvedPriors.length ?? 0);
-  const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (context?.meta.round ?? 1) > 1 };
+  const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (round?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
   const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;

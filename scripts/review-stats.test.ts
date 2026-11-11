@@ -91,12 +91,19 @@ describe('review stats', () => {
       meta: { prNumber: 2, commitSha: `c${round}`, round, timestamp: 't', mankiVersion: '7' },
       judge: { summary: '', ...(round === 2 && { interRoundDiffState: 'changed', interRoundDiffTruncated: true }), ...(round >= 4 && { interRoundDiffState: 'empty' }) },
     }));
-    const two = prRecords('o/r', 2, { reviews: [reader, ...later].map((context, i) => review(100 + i, context)), threadComments: [] });
+    // An incomplete round is counted apart: none of its findings, cost or round number reaches another figure.
+    const failed = makeRoundContext(2, {
+      meta: { prNumber: 2, commitSha: 'f', round: 2, timestamp: 't', mankiVersion: '7', outcome: 'INCOMPLETE', incomplete: true },
+      findings: { count: 1, severityCounts: {}, entries: [makeFindingFingerprintEntry({ severity: 'blocker' })] },
+      usage: { estimatedCostUsd: 9 },
+    });
+    const two = prRecords('o/r', 2, { reviews: [reader, failed, ...later].map((context, i) => review(100 + i, context)), threadComments: [] });
+    expect([two.rounds.length, two.incompleteRounds]).toEqual([5, [failed]]);
 
     const unreviewed = prRecords('o/r', 3, { reviews: [{ id: 200, body: 'A person\'s review.', user: person }], threadComments: [] });
     const stats = computeStats([one, two, unreviewed]);
     expect(stats).toMatchObject({
-      prs: 2, unreviewed: 1, roundsPerPr: [2, 5], passedFirstRound: 0, manyRounds: 1, rounds: 7,
+      prs: 2, unreviewed: 1, roundsPerPr: [2, 5], passedFirstRound: 0, manyRounds: 1, rounds: 7, incompleteRounds: 1,
       severityCounts: { blocker: 1, warning: 1 }, findings: 2, onReviewedCode: 1,
       blockerOutcomes: { fixed: 1, withdrawn: 1, other: 1 },
       readerRounds: 1, readerBlockers: 2,
@@ -112,7 +119,8 @@ describe('review stats', () => {
     });
 
     const report = renderStats(stats);
-    expect(report).toContain('# Review statistics over 2 merged PRs and 7 rounds\n\n1 more merged PR has no round record and is left out.');
+    expect(report).toContain('# Review statistics over 2 merged PRs and 7 rounds\n\n1 more merged PR has no record of a completed round and is left out.');
+    expect(report).toContain('- Rounds that ended incomplete, counted in no other figure: 1');
     expect(report).toContain('- Rounds per PR: mean 3.5, median 3.5, max 5.0');
     expect(report).toContain('- Needed 5 or more rounds: 50% (1 of 2)');
     expect(report).toContain('| blocker | 1 | 0.14 |');

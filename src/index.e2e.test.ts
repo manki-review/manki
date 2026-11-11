@@ -662,6 +662,33 @@ describe('runFullReview end to end', () => {
     expect(mockLLM.calls).not.toContain('verdict');
   });
 
+  it('posts the record of an incomplete round, which the next round does not read as an earlier round', async () => {
+    Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+    await reviewRound();
+
+    mockGitHub.headSha = 'b2'.repeat(20);
+    mockLLM.replies.judge = 'The findings look fine to me.';
+    await reviewRound();
+    const failed = postedReviews()[1];
+    expect(failed.state).toBe('COMMENTED');
+    const failedRecord = mockGitHub.roundContext(failed);
+    expect(failedRecord.meta).toMatchObject({ round: 2, commitSha: mockGitHub.headSha, outcome: 'INCOMPLETE', incomplete: true });
+    expect(failedRecord.usage.llmCalls?.filter(c => c.stage === 'judge').length).toBeGreaterThan(0);
+
+    mockGitHub.headSha = 'c3'.repeat(20);
+    mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
+    Object.assign(mockLLM.replies, READY_REPLIES, {
+      judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
+    });
+    await reviewRound();
+    const fixed = postedReviews()[2];
+    expect(fixed.state).toBe('APPROVED');
+    // The round counts as the second, after one earlier round.
+    expect(mockGitHub.roundContext(fixed).meta).toMatchObject({ round: 2, cap: { priorRoundCount: 1 } });
+    expect(mockGitHub.roundContext(fixed).meta).not.toHaveProperty('incomplete');
+    expect(mockGitHub.threads[0].isResolved).toBe(true);
+  });
+
   it('fails the run and keeps the previous review when posting the review returns 5xx', async () => {
     const previous = mockGitHub.addReview(`${BOT_MARKER}\nChanges requested.`, 'CHANGES_REQUESTED', 'old0000000000000000000000000000000000000', APP_LOGIN);
     mockGitHub.failures.push({ method: 'POST', path: /\/pulls\/\d+\/reviews$/, status: 502 });
