@@ -1461,10 +1461,16 @@ export async function runJudgeAgent(
   const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
   const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting), staysPreExisting)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f));
+  const suppress = (list: Finding[]) => {
+    const crossRound = applyCrossRoundSuppression(list, priorRounds, crossRoundOptions);
+    return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions) };
+  };
   // The suppressions hide findings by grade, so the refuter settles each grade first.
-  const checked = refutation ? await refuteBlockers(refutation.client, mapped, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input }) : mapped;
-  const suppression = applyCrossRoundSuppression(checked, priorRounds, crossRoundOptions);
-  const { findings: suppressed, count: inPrCount } = applyInPrSuppression(suppression.findings, inPrSuppressions);
+  const checked = refutation ? await refuteBlockers(refutation.client, mapped, {
+    workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
+    hiddenLater: finding => suppress([finding]).findings[0].severity === 'ignore',
+  }) : mapped;
+  const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked);
 
   return {
     findings: suppressed,

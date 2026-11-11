@@ -277,12 +277,13 @@ function alwaysChecked(finding: Finding): boolean {
 /**
  * Returns the findings the judge kept at their grade with a doubt whether the defect exists, to check with tools: those
  * at `warning` or above, at most `MAX_DOUBT_CHECKS`, the highest grade first. A finding the judge would grade higher if
- * its doubts hold is always checked, since that check is how a warning becomes a blocker.
+ * its doubts hold is always checked, since that check is how a warning becomes a blocker. A finding `hidden` accepts
+ * is left out.
  */
-function doubtsToCheck(findings: readonly Finding[]): Finding[] {
+function doubtsToCheck(findings: readonly Finding[], hidden?: (finding: Finding) => boolean): Finding[] {
   const doubted = findings
     .filter(f => f.severity !== 'ignore' && !alwaysChecked(f) && f.gradeIfConfirmed && rank(f.gradeIfConfirmed) <= rank('warning')
-      && !!f.doubts?.some(d => d.decides === 'defect'))
+      && !!f.doubts?.some(d => d.decides === 'defect') && !hidden?.(f))
     .sort((a, b) => rank(a.severity) - rank(b.severity));
   for (const skipped of doubted.slice(MAX_DOUBT_CHECKS)) {
     core.info(`Not checking the doubt on "${skipped.title}", since ${MAX_DOUBT_CHECKS} findings with higher grades took this round's checks`);
@@ -325,6 +326,8 @@ export interface RefuteOptions {
   outsideInput?: string;
   /** A second refuter, on another model, that checks each finding beside the first. */
   pair?: LLMClient;
+  /** Whether a later step hides `finding` at its grade. Such a finding takes none of the `MAX_DOUBT_CHECKS` checks, which never raise a grade. */
+  hiddenLater?: (finding: Finding) => boolean;
 }
 
 /**
@@ -334,7 +337,7 @@ export interface RefuteOptions {
  * finding is reused without a new check while the files it rests on are unchanged, except for a finding with a
  * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, hiddenLater }: RefuteOptions): Promise<Finding[]> {
   const check = async (refuter: LLMClient, field: RefutationField, finding: Finding): Promise<Refutation | undefined> => {
     const label = field === 'pairRefutation' ? 'second refutation' : 'refutation';
     // Unseen code or a caller can change in a file the stored outcome does not cover, so such a finding is checked afresh.
@@ -360,7 +363,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     }
   };
   const reopened = findings.map(f => reopenCappedGrade(f, priorRounds));
-  const doubtChecks = new Set(doubtsToCheck(reopened));
+  const doubtChecks = new Set(doubtsToCheck(reopened, hiddenLater));
   return mapWithConcurrency(reopened, MAX_PARALLEL_REFUTATIONS, async finding => {
     // A finding the judge dropped stays dropped, even when it was a lead.
     if (finding.severity === 'ignore' || !(alwaysChecked(finding) || doubtChecks.has(finding))) return finding;

@@ -5084,13 +5084,17 @@ describe('runJudgeAgent cross-round suppression', () => {
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
 
     // The refuter runs before the ratchet, so a `rare` claim is checked even when the author agreed with the finding
-    // earlier: a confirmed one blocks, and the other is hidden after the one check it cost.
+    // earlier: a confirmed one blocks, and the other is hidden after the one check it cost. A doubt whether the defect
+    // exists never raises a grade, so a finding the ratchet hides takes none of the round's few such checks.
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
-    const titles = ['Stale cache read', 'Lost update'];
+    const titles = ['Stale cache read', 'Lost update', 'Handle leak'];
+    const leak = [{ premise: 'Nothing closes the handle', decides: 'defect' }];
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
-      summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'wrong', column: 'rare', reasoning: 'r', confidence: 'medium' })),
+      summary: 's', findings: titles.map((title, i) => ({
+        id: i + 1, title, reasoning: 'r', confidence: 'medium', ...(title === 'Handle leak' ? { row: 'degraded', doubts: leak } : { row: 'wrong', column: 'rare' }),
+      })),
     }) });
     const refuterCalls: string[] = [];
     const refuter: LLMClient = {
@@ -5114,9 +5118,11 @@ describe('runJudgeAgent cross-round suppression', () => {
       expect(checked.findings.map(f => [f.title, f.severity, f.cell, f.tags])).toEqual([
         ['Stale cache read', 'blocker', { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, undefined],
         ['Lost update', 'ignore', { row: 'wrong', column: 'rare' }, ['suppressed-by-ratchet']],
+        ['Handle leak', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-by-ratchet']],
       ]);
       expect(refuterCalls.sort()).toEqual(['Lost update', 'Stale cache read']);
-      expect(checked.crossRoundSuppressed).toBe(1);
+      expect(checked.findings[2].doubts).toEqual(leak);
+      expect(checked.crossRoundSuppressed).toBe(2);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
