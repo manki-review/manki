@@ -179,6 +179,7 @@ describe('parseCase', () => {
       mustResolve: ['P1'], mustNotRepeat: ['P3'],
       mustKeepOpen: [{ id: 'P2', severity: 'warning', mechanism: 'The read timeout is set, the write timeout is not.', locations: ['src/conn.rs'] }],
     });
+    expect(parseCase(FOLLOW_UP_YAML.replace('grade_if_confirmed: blocker', 'grade_if_confirmed: nitpick'), 'follow.yml').priorRound!.findings[0].gradeIfConfirmed).toBe('note');
   });
 
   it.each([
@@ -1043,6 +1044,32 @@ describe('mergeReports and gateReports', () => {
     ].join('\n'));
     expect(text).toContain('Shared hold-out cases (2): demo-1, demo-2');
     expect(text).not.toContain('Left out');
+  });
+
+  it('gives a stored report with the older levels the same gate figures as a report of the same reviews with notes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'manki-bench-gate-'));
+    try {
+      mkdirSync(join(root, 'bench', 'holdout'), { recursive: true });
+      writeFileSync(join(root, 'bench', 'holdout', 'demo-1.yml'), '');
+      const stored = (name: string, r: unknown) => {
+        writeFileSync(join(root, name), JSON.stringify(r));
+        return readReport(join(root, name), root).report;
+      };
+      // The level of K1 in an older case file, the level the review gave its match, that level as the older version stored it, and the items found at grade.
+      for (const [keyed, given, olderGiven, found] of [['suggestion', 'warning', 'warning', 1], ['warning', 'note', 'suggestion', 0], ['nitpick', 'note', 'nitpick', 1]] as const) {
+        const benchCase = parseCase(CASE_YAML.replace('severity: blocker', `severity: ${keyed}`), 'demo-1.yml', 'holdout');
+        const current = report([[benchCase, [await run(benchCase, given)]]]);
+        const older: BenchReport = JSON.parse(JSON.stringify(current, function (this: object, key, value: unknown) {
+          return key === 'severity' && value === 'note' ? ('tier' in this ? 'suggestion' : olderGiven) : value;
+        }).replaceAll('"note":', '"suggestion":'));
+        expect(JSON.stringify(older)).not.toContain('"note"');
+        const [result] = gateReports([stored('older.json', older), stored('older-again.json', again(older))], [stored('current.json', current)]);
+        expect(result).toMatchObject({ verdict: 'PASS', shared: ['demo-1'], baseline: { found }, candidate: { found } });
+        expect(result.baseline).toEqual({ ...result.candidate, runs: 2 });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('scores a stored report again against a changed key, so the gate compares it, and leaves a case it cannot score with certainty', async () => {
