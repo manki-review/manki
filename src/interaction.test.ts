@@ -773,7 +773,7 @@ describe('handleReviewCommentReply', () => {
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'warning', 'WONT_FIX'],
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined],
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'reraised', undefined],
-    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true],
+    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, false, true, 'other'],
     ['Fixed. The guard now runs first.', 'MEMBER', 'someone', 'pr-author', 'reraised', 'ADDRESSED'],
     ['Fixed. The guard now runs first.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined],
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', 'INVALID'],
@@ -798,7 +798,10 @@ describe('handleReviewCommentReply', () => {
     ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', 'pr-author', 'security', 'WONT_FIX', true, true],
     // That holds for a thread Manki reopened before, which gets no second note.
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', 'INVALID', true, false, true, 'pr-author'],
+    // The PR author's own answer there settles nothing, so it says that the finding keeps blocking.
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, false, true, 'pr-author'],
+    ['Fixed. The guard now runs first.', 'OWNER', 'pr-author', 'pr-author', 'security', undefined, true, false, true, 'pr-author'],
+    ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, false, true, 'pr-author'],
     // A warning thread the PR author resolved needs no clearing, and neither does a thread someone else resolved.
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'warning', undefined, true, false, true, 'pr-author'],
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', undefined, true, false, true, 'other'],
@@ -832,15 +835,19 @@ describe('handleReviewCommentReply', () => {
       : 'a maintainer other than the PR author, or a repo admin, closes it';
     // The note goes only on a thread that did open, and that the answer does not clear.
     const noted = authorResolved && reopens && !reason;
+    // A thread that stays resolved by the PR author keeps blocking, which an answer that would settle it says.
+    const keepsBlocking = !noted && sender === 'pr-author' && (authorResolved || resolver === 'pr-author') && /^\**(Fixed|Agreed|Withdrawn)\./.test(reply);
+    const finding = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding`;
     const note = noted ? '\n\nReopened. The PR author cannot resolve it.'
-      : `\n\nThis is a ${kind === 'security' ? 'security' : 'blocking'} finding, so the thread stays open until ${until}.`;
-    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${staysOpen || noted ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
+      : keepsBlocking ? `\n\n${finding}, so resolving the thread does not clear it. It keeps blocking until ${until.replace('closes', 'clears')}.`
+        : `\n\n${finding}, so the thread stays open until ${until}.`;
+    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${staysOpen || noted || keepsBlocking ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason && reopens ? [[octokit, 'PRRT_this', reason]] : []);
     // The reply record keeps what the reply decided for the thread.
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls.at(-1)![0].body as string;
     const [record] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
     const outcome = /^\**(Fixed|Agreed|Withdrawn)\b/.exec(reply)?.[1];
-    const fate = noted ? 'stays_open' : reason ? 'resolves' : resolved ? 'already_resolved' : staysOpen ? 'stays_open' : 'no_permission';
+    const fate = noted || keepsBlocking ? 'stays_open' : reason ? 'resolves' : resolved ? 'already_resolved' : staysOpen ? 'stays_open' : 'no_permission';
     expect(record.decision).toEqual(outcome ? { outcome, thread: fate } : undefined);
     // Only a resolved thread is looked up, and the answer that reopens one carries the marker that stops a second reopen.
     expect(jest.mocked(state.authorResolvedNote).mock.calls).toEqual(resolved ? [[octokit, TEST_BOT, 'test-owner', 'test-repo', 1, prAuthor, CONFIG, 'PRRT_this']] : []);
@@ -1392,18 +1399,23 @@ describe('handleReviewCommentCommand', () => {
   });
 
   // The approval check counts a resolved thread as cleared only by who resolved it, so Manki resolves a thread the PR author resolved itself.
-  it.each<[string, FindingKind, string, boolean, 'cleared' | 'left' | 'failed']>([
+  it.each<[string, FindingKind, string, boolean, 'cleared' | 'left' | 'failed' | 'refused', string?]>([
     ['a blocker thread the PR author resolved', 'blocker', 'pr-author', false, 'cleared'],
     ['a security thread the PR author resolved', 'security', 'pr-author', false, 'cleared'],
     ['a blocker thread the PR author resolved, which cannot be reopened', 'blocker', 'pr-author', false, 'failed'],
     ['a security thread a repo admin PR author resolved', 'security', 'pr-author', true, 'left'],
     ['a blocker thread another maintainer resolved', 'blocker', 'other', false, 'left'],
     ['a warning thread the PR author resolved', 'warning', 'pr-author', false, 'left'],
-  ])('clears a resolved thread a maintainer dismisses only when its resolve does not count: %s', async (_label, kind, resolver, authorIsAdmin, result) => {
+    // The PR author's own dismissal clears nothing, so it says that the finding keeps blocking.
+    ['a blocker thread the PR author resolved, dismissed by the PR author', 'blocker', 'pr-author', false, 'refused', 'pr-author'],
+    ['a security thread the PR author resolved, dismissed by the PR author', 'security', 'pr-author', false, 'refused', 'pr-author'],
+    ['a security thread a repo admin PR author resolved, dismissed by that author', 'security', 'pr-author', true, 'left', 'pr-author'],
+    ['a blocker thread another maintainer resolved, dismissed by the PR author', 'blocker', 'other', false, 'left', 'pr-author'],
+  ])('clears a resolved thread a maintainer dismisses only when its resolve does not count: %s', async (_label, kind, resolver, authorIsAdmin, result, sender = 'someone') => {
     setContext({
       comment: { id: 64, body: '@manki dismiss', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' },
       pull_request: { number: 1, user: { login: 'pr-author' } },
-      sender: { login: 'someone' },
+      sender: { login: sender },
     });
     const octokit = createMockOctokit();
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(kind), path: 'src/file.ts', line: 10 } });
@@ -1415,14 +1427,16 @@ describe('handleReviewCommentCommand', () => {
 
     await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 64, parseCommand('@manki dismiss'));
 
-    expect(jest.mocked(state.reopenThread).mock.calls).toEqual(result === 'left' ? [] : [[octokit, 'PRRT_this']]);
+    expect(jest.mocked(state.reopenThread).mock.calls).toEqual(result === 'cleared' || result === 'failed' ? [[octokit, 'PRRT_this']] : []);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(result === 'cleared' ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
     expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
     // A thread that stays resolved by the PR author still blocks, so the dismissal says it did not work.
+    const keepsBlocking = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding, so resolving the thread does not clear it. It keeps blocking until a maintainer other than the PR author, or a repo admin, clears it.`;
+    const note = { failed: 'Could not resolve this thread. The run log has the reason.', refused: keepsBlocking, cleared: undefined, left: undefined }[result];
     expect(jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls).toEqual(
-      result === 'failed' ? [[expect.objectContaining({ comment_id: 64, body: 'Could not resolve this thread. The run log has the reason.\n\n<!-- manki -->' })]] : [],
+      note ? [[expect.objectContaining({ comment_id: 64, body: `${note}\n\n<!-- manki -->` })]] : [],
     );
-    expect(jest.mocked(ghUtils.reactToReviewComment).mock.calls).toEqual(result === 'failed' ? [] : [[octokit, 'test-owner', 'test-repo', 64, '+1']]);
+    expect(jest.mocked(ghUtils.reactToReviewComment).mock.calls).toEqual(note ? [] : [[octokit, 'test-owner', 'test-repo', 64, '+1']]);
   });
 
   it('keeps an admin dismissal open when Manki cannot record it, and records it once', async () => {

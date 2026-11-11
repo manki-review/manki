@@ -1335,6 +1335,12 @@ describe('runFullReview end to end', () => {
       await resolveThread(thread, 'alice');
       await replyInThread(thread, 'It still cannot overflow.', kept);
       expect(answers().slice(2)).toEqual([`${kept}\n\n<!-- manki -->`]);
+
+      // Her own agreement or dismissal there clears nothing, and Manki says that the finding keeps blocking.
+      const keepsBlocking = 'This is a blocking finding, so resolving the thread does not clear it. It keeps blocking until a maintainer other than the PR author, or a repo admin, clears it.';
+      await replyInThread(thread, 'I will handle it in a follow-up.', 'Agreed. A follow-up works.');
+      await replyInThread(thread, '@manki dismiss', '');
+      expect(answers().slice(3)).toEqual([`Agreed. A follow-up works.\n\n${keepsBlocking}\n\n<!-- manki -->`, `${keepsBlocking}\n\n<!-- manki -->`]);
       expect(thread.isResolved).toBe(true);
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
     });
