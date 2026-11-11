@@ -439,9 +439,19 @@ function foundAtGrade(item: Pick<KeyItem, 'id' | 'severity'>, run: Pick<RunScore
   return run.matches.some(m => m.item === item.id && m.verdict === 'MATCH' && severityCredit(m.severity, item.severity) === 1);
 }
 
-/** Matches the findings of one review to the case's key and scores it. */
-export async function scoreRun(benchCase: BenchCase, review: LocalReview, matcher: Matcher): Promise<RunScore> {
-  const { findings, outcome, reviewComplete } = review.result;
+/** What a score reads of a review besides the case's key. */
+interface ScoredReview {
+  findings: MatchedFinding[];
+  outcome: string;
+  complete: boolean;
+  /** The earlier open threads the round resolved, for a complete round of a follow-up case. */
+  resolved?: string[];
+}
+
+type KeyScore = Pick<RunScore, 'matches' | 'mustCatchRecall' | 'weightedRecall' | 'verdictCorrect' | 'falseBlockers' | 'unexpectedWarnings' | 'extraFindings' | 'duplicates' | 'followUp'>;
+
+/** Matches the findings of one review to the case's key and returns the part of its score that the key decides. */
+async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: reviewComplete, resolved }: ScoredReview, matcher: Matcher): Promise<KeyScore> {
   const matches: ItemMatch[] = [];
   const repeats = repeatItems(benchCase);
   for (const item of [...benchCase.mustCatch, ...benchCase.niceToHave, ...repeats]) {
@@ -460,14 +470,10 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
   const restated = new Set(matches.filter(m => isRepeat(m.item) && m.verdict === 'MATCH').flatMap(m => m.findings));
   const matched = matchedFindings(matches, isRepeat);
   const strict = (item: KeyItem) => matches.find(m => m.item === item.id && m.verdict === 'MATCH');
-  const { mustCatch, priorRound } = benchCase;
+  const { mustCatch } = benchCase;
   const totalWeight = mustCatch.reduce((sum, item) => sum + SEVERITY_WEIGHT[item.severity], 0);
   const expected = expectedVerdict(benchCase);
-  const resolved = priorRound && reviewComplete ? resolvedThreads(benchCase, review) : undefined;
   return {
-    ...reviewFacts(review),
-    complete: reviewComplete,
-    ...(!reviewComplete && { error: review.result.summary || 'The review did not complete.' }),
     matches,
     mustCatchRecall: mustCatch.length > 0 && reviewComplete ? mustCatch.filter(strict).length / mustCatch.length : null,
     weightedRecall: mustCatch.length > 0 && reviewComplete ? mustCatch.reduce((sum, item) => sum + SEVERITY_WEIGHT[item.severity] * severityCredit(strict(item)?.severity, item.severity), 0) / totalWeight : null,
@@ -484,6 +490,18 @@ export async function scoreRun(benchCase: BenchCase, review: LocalReview, matche
         repeats: restated.size,
       },
     }),
+  };
+}
+
+/** Matches the findings of one review to the case's key and scores it. */
+export async function scoreRun(benchCase: BenchCase, review: LocalReview, matcher: Matcher): Promise<RunScore> {
+  const { findings, outcome, reviewComplete: complete } = review.result;
+  const resolved = benchCase.priorRound && complete ? resolvedThreads(benchCase, review) : undefined;
+  return {
+    ...reviewFacts(review),
+    complete,
+    ...(!complete && { error: review.result.summary || 'The review did not complete.' }),
+    ...await scoreKey(benchCase, { findings, outcome, complete, ...(resolved && { resolved }) }, matcher),
   };
 }
 
