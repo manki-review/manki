@@ -1552,6 +1552,20 @@ describe('selectTeam', () => {
     // Reuse and repository rules come right after tests.
     expect(focus).toMatch(/\n7\. Tests: [^\n]*\n8\. Reuse: [^\n]*\n9\. Repository rules: [^\n]*\n10\. Contract breaks: [^\n]*\n11\. Narrowed input: /);
     expect({ focus }).toMatchSnapshot();
+
+    // A related repo adds the check for its kind at its place in the order. Without one of that kind the check is not shown.
+    const focusWith = (...related: Array<'reference' | 'consumer'>) => {
+      const related_repos = related.map(kind => ({ repo: `acme/${kind}`, kind }));
+      return selectTeam(plainDiff, makeConfig({ reviewers, related_repos }), { trivial: false, subtle: true, paired: true }).finders[0].prompt.focus;
+    };
+    expect(focusWith()).toBe(focus);
+    const withReference = focusWith('reference');
+    expect(withReference).toMatch(/\n4\. Reference behaviour: [^\n]*\n5\. Specifications: when the change touches a wire format, a protocol message or a rule a specification defines, such as a validation or consensus rule, and a \*\*reference\*\* related repo holds that specification, search it for the name of the message, field or rule and compare the change with what it says\. [^\n]*\n6\. Error paths: /);
+    expect(withReference).not.toContain('Consumers:');
+    const withConsumer = focusWith('consumer');
+    expect(withConsumer).toMatch(/\n12\. Readers: [^\n]*\n13\. Consumers: for each public type, function or serialized format the change alters, find its uses in each \*\*consumer\*\* related repo and check that they still work with the change\. Start from the lines under "In the Consumer Repos" when that section is given\. [^\n]*\n14\. Sibling state: /);
+    expect(withConsumer).not.toContain('Specifications:');
+    expect(focusWith('consumer', 'reference')).toMatch(/\n5\. Specifications: [^\n]*\n6\. Error paths: [\s\S]*\n13\. Readers: [^\n]*\n14\. Consumers: [^\n]*\n15\. Sibling state: /);
   });
 
   describe('configured routing', () => {

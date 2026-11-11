@@ -276,7 +276,7 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
     const sentEffort = sent(effort) ?? effort;
     const verifier = reviewer.role === 'verifier';
     const custom = reviewer.focus ? [...config.reviewers, { name: 'This review group', focus: reviewer.focus }] : config.reviewers;
-    const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom);
+    const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom, config.related_repos);
     const label = verifier ? `Quick check · ${modelDisplayName(model)}`
       : [modelDisplayName(model), sentEffort, ...(reviewer.focus ? [shortFocus(reviewer.focus)] : [])].join(' · ');
     let name = label;
