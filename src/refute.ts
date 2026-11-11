@@ -328,16 +328,22 @@ export function needsProof(finding: Finding): boolean {
   return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers);
 }
 
+/** Whether an earlier finding is linked to `finding`. A later step then probably keeps the warning out of the review, but only a certain result takes a warning out of the checks, so this one is checked last. */
+const linkedToEarlier = (finding: Finding): boolean => !!(finding.sameAs || finding.variantOf || finding.threadId || finding.answeredIn);
+
 /**
- * Returns the warnings to check with tools because nothing proves them yet, at most `limit`, in the order given, and
- * those `over` that limit. A warning gets one of these checks only when the result can change whether the review
- * shows it. So it must be one that `needsProof`, with a doubt of the judge whether the defect exists or no cited line
- * that proves it, and none that `noCheck` accepts: a check could not run on that one, or a later step decides about it
- * whatever the check says. A finding the judge would grade higher if its doubts hold is always checked, since that
- * check is how a warning becomes a blocker.
+ * Returns the warnings to check with tools because nothing proves them yet, at most `limit`, and those `over` that
+ * limit. A warning gets one of these checks only when the result can change whether the review shows it. So it must
+ * be one that `needsProof`, with a doubt of the judge whether the defect exists or no cited line that proves it, and
+ * none that `noCheck` accepts: a check could not run on that one, or a later step decides about it whatever the check
+ * says. The order is the one given, with the warnings that are `linkedToEarlier` or that `restatesEarlier` accepts
+ * after the others. A finding the judge would grade higher if its doubts hold is always checked, since that check is
+ * how a warning becomes a blocker.
  */
-function doubtsToCheck(findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean): { checked: Finding[]; over: Finding[] } {
-  const unproven = findings.filter(f => needsProof(f) && !alwaysChecked(f) && (doubtsDefect(f) || citesNoProof(f)) && !noCheck(f));
+function doubtsToCheck(findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean, restatesEarlier: (finding: Finding) => boolean): { checked: Finding[]; over: Finding[] } {
+  const last = (finding: Finding): boolean => linkedToEarlier(finding) || restatesEarlier(finding);
+  const open = findings.filter(f => needsProof(f) && !alwaysChecked(f) && (doubtsDefect(f) || citesNoProof(f)) && !noCheck(f));
+  const unproven = [...open.filter(f => !last(f)), ...open.filter(last)];
   const over = unproven.slice(limit);
   for (const skipped of over) {
     core.info(`Not checking "${skipped.title}", since the round's ${MAX_DOUBT_CHECKS} checks of unproven warnings are used up`);
@@ -410,6 +416,8 @@ export interface RefuteOptions {
   hiddenLater?: (finding: Finding) => boolean;
   /** Whether a later step keeps the warning `finding` out of the review whatever a check says. Such a warning takes none of the `MAX_DOUBT_CHECKS` checks. */
   unpostedLater?: (finding: Finding) => boolean;
+  /** Whether the warning `finding` probably restates an earlier finding that nothing links it to yet. Such a warning is checked after the others, like a linked one. */
+  restatesEarlier?: (finding: Finding) => boolean;
   /** How many of the round's `MAX_DOUBT_CHECKS` checks are left. Each one this call makes lowers it, so the judge calls of one round share them. */
   doubtBudget?: { left: number };
 }
@@ -421,7 +429,7 @@ export interface RefuteOptions {
  * finding is reused without a new check while the files it rests on are unchanged, except for a finding with a
  * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, doubtBudget }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget }: RefuteOptions): Promise<Finding[]> {
   const check = async (refuter: LLMClient, field: RefutationField, finding: Finding): Promise<Refutation | undefined> => {
     const label = field === 'pairRefutation' ? 'second refutation' : 'refutation';
     // Unseen code or a caller can change in a file the stored outcome does not cover, so such a finding is checked afresh.
@@ -448,7 +456,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   };
   const reopened = findings.map(f => reopenCappedGrade(f, priorRounds));
   const checkable = (finding: Finding): boolean => !!codeDigest(workspace, [finding.file]);
-  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, finding => !!unpostedLater?.(finding) || !checkable(finding));
+  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, finding => !!unpostedLater?.(finding) || !checkable(finding), finding => !!restatesEarlier?.(finding));
   if (doubtBudget) doubtBudget.left -= picked.checked.length;
   const doubtChecks = new Set(picked.checked);
   const overLimit = new Set(picked.over);

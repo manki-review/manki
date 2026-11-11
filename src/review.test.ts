@@ -2226,6 +2226,12 @@ describe('runReview', () => {
         step: 'unreadable file', title: 'In a file the head lacks', finding: { file: 'src/gone.ts', proof: ['src/gone.ts:16'] },
         ends: r => r.findings.filter(f => f.title === 'In a file the head lacks').map(f => f.severity), as: ['warning'],
       },
+      {
+        // The fold puts it under its open thread, which is not certain when the checks are picked. So it is checked after the others, and gets no check here.
+        step: 'restated open thread', title: 'Timer leaks on retry',
+        options: { openThreads: [{ threadId: 'T2', title: 'Timer leaks on retry', file: 'src/app.ts', line: 18, severity: 'warning' }] },
+        ends: r => r.findings.filter(f => f.title === 'Timer leaks on retry').map(f => [f.severity, f.threadId]), as: [['warning', 'T2']],
+      },
     ];
     // Behind them, eight warnings the review posts once a check confirms them. The eighth is checked only when no row took a check.
     const postable = Array.from({ length: 8 }, (_, i) => `Postable ${i + 1}`);
@@ -2241,7 +2247,7 @@ describe('runReview', () => {
     jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
       if (system.startsWith('You are a code review judge')) {
         // Both finders report every finding, so the judge answers for each copy.
-        return { content: JSON.stringify({ summary: 's', findings: [...titles, ...titles].map((title, i) => ({ id: i + 1, title, row: 'degraded', doubts: doubt, reasoning: 'r', confidence: 'medium', ...hidden.find(row => row.title === title)?.verdict })) }) };
+        return { content: JSON.stringify({ summary: 's', threadEvaluations: [{ threadId: 'T2', status: 'not_addressed', reason: 'r' }], findings: [...titles, ...titles].map((title, i) => ({ id: i + 1, title, row: 'degraded', doubts: doubt, reasoning: 'r', confidence: 'medium', ...hidden.find(row => row.title === title)?.verdict })) }) };
       }
       if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
       refuterCalls.push(titles.find(title => user.includes(`: ${title}\n`))!);

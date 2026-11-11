@@ -2551,7 +2551,7 @@ interface EarlierFinding {
  * Returns the earlier findings a finding of this round can restate: each of `openThreads` the round leaves open, each
  * finding an earlier round recorded under one of them, and each finding an earlier round listed only in its review body.
  */
-function earlierFindings(priorRounds: RoundContext[], openThreads: OpenThread[], threadEvaluations: ThreadEvaluation[] | undefined): EarlierFinding[] {
+export function earlierFindings(priorRounds: RoundContext[], openThreads: OpenThread[], threadEvaluations: ThreadEvaluation[] | undefined): EarlierFinding[] {
   const addressed = new Set((threadEvaluations ?? []).filter(e => e.status === 'addressed').map(e => e.threadId));
   const open = new Set(openThreads.filter(t => !addressed.has(t.threadId)).map(t => t.threadId));
   const entries = priorRounds.flatMap(r => (r.findings.entries ?? []).map(entry => ({ entry, key: stringifyFindingFingerprint(entry.fingerprint), round: entry.raisedIn ?? r.meta.round })));
@@ -2711,7 +2711,7 @@ type Located = Pick<Finding, 'title' | 'file' | 'line' | 'evidence'>;
  * whatever the titles say. When one title contains the other, a few lines apart or one citing the other's line is
  * enough. Titles that only share words, which short titles do by chance, must both cite the other's line.
  */
-function sameProblem(a: Located, b: Located): boolean {
+export function sameProblem(a: Located, b: Located): boolean {
   if (a.file !== b.file) return false;
   const near = Math.abs(a.line - b.line) <= DISMISSED_LINE_TOLERANCE;
   if (near && sharesProofLine(a, b)) return true;

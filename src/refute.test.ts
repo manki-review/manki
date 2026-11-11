@@ -508,6 +508,9 @@ describe('refuteBlockers', () => {
       // Neither does a warning a later step records without posting it.
       doubted('Left out later with a doubt', 'warning'),
       finding('Left out later without proof', { severity: 'warning', ...noProof }),
+      // A warning linked to an earlier finding, or one that matches one, is probably kept out later. That is not certain, so it is checked after the others.
+      { ...doubted('Linked to an open thread', 'warning'), sameAs: 'src/math.ts:1:earlier' },
+      doubted('Matches an earlier finding', 'warning'),
       doubted('Doubted warning 1', 'warning'),
       doubted('Doubted warning 2', 'warning'),
       doubted('Doubted warning 3', 'warning'),
@@ -533,7 +536,8 @@ describe('refuteBlockers', () => {
     ];
     const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, unsettled])));
 
-    const result = await refuteBlockers(client, findings, { workspace, diff, unpostedLater: f => f.title.startsWith('Left out later') });
+    const restatesEarlier = (f: Finding) => f.title === 'Matches an earlier finding';
+    const result = await refuteBlockers(client, findings, { workspace, diff, unpostedLater: f => f.title.startsWith('Left out later'), restatesEarlier });
 
     expect(client.calls.map(([title]) => title).sort()).toEqual([
       'Doubted blocker', 'Doubted warning 1', 'Doubted warning 2', 'Doubted warning 3', 'Doubted warning 4', 'Doubted warning 5', 'Doubted warning 6', 'Doubted warning 7',
@@ -549,6 +553,7 @@ describe('refuteBlockers', () => {
       'Doubted warning 1': 'unsettled_check', 'Doubted warning 2': 'unsettled_check', 'Doubted warning 3': 'unsettled_check', 'Doubted warning 4': 'unsettled_check',
       'Doubted warning 5': 'unsettled_check', 'Doubted warning 6': 'unsettled_check', 'Doubted warning 7': 'unsettled_check', 'Warning without proof': 'unsettled_check',
       'Doubted warning 8': 'not_checked', 'Second warning without proof': 'not_checked',
+      'Linked to an open thread': 'not_checked', 'Matches an earlier finding': 'not_checked',
       'Doubt in a deleted file': undefined, 'Doubt with no file': undefined, 'No proof in a deleted file': 'no_proof',
       'Left out later with a doubt': undefined, 'Left out later without proof': 'no_proof',
       'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof', 'Security warning with a doubt': undefined,
@@ -561,6 +566,16 @@ describe('refuteBlockers', () => {
     const later = await refuteBlockers(shared, pairOf('Second call'), { workspace, diff, doubtBudget });
     expect(shared.calls.map(([title]) => title).sort()).toEqual(['First call 1', 'First call 2', 'Second call 1']);
     expect([reasons(later), doubtBudget]).toEqual([{ 'Second call 1': 'unsettled_check', 'Second call 2': 'not_checked' }, { left: 0 }]);
+    // With a check left after the others, a linked warning and one that matches an earlier finding are checked too.
+    const mixed = findings.filter(f => ['Linked to an open thread', 'Matches an earlier finding', 'Doubted warning 1'].includes(f.title));
+    const checkedWith = async (left: number) => {
+      const some = fakeClient(Object.fromEntries(mixed.map(f => [f.title, unsettled])));
+      await refuteBlockers(some, mixed, { workspace, diff, restatesEarlier, doubtBudget: { left } });
+      return some.calls.map(([title]) => title).sort();
+    };
+    expect([await checkedWith(1), await checkedWith(2), await checkedWith(3)]).toEqual([
+      ['Doubted warning 1'], ['Doubted warning 1', 'Linked to an open thread'], ['Doubted warning 1', 'Linked to an open thread', 'Matches an earlier finding'],
+    ]);
     // Before any check, as on a round without tools, only the cited lines decide.
     expect(Object.entries(reasons(findings)).filter(([, reason]) => reason)).toEqual([
       ['No proof in a deleted file', 'no_proof'], ['Left out later without proof', 'no_proof'], ['Warning without proof', 'no_proof'], ['Tool alert without proof', 'no_proof'], ['Security warning without proof', 'no_proof'],
