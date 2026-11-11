@@ -95,8 +95,9 @@ const KEPT_REPLY_RE = /^(\**)Kept\.(\**)/;
 
 const WITHDRAWN_REPLY_RE = /^\**Withdrawn\b/;
 
-// A code location as `path:line`, where the path has an extension, such as `src/retry.ts:48`.
-const CODE_LOCATION_RE = /[\w./-]+\.\w+:\d+/g;
+// A code location as `path:line`, where the path has an extension, such as `src/retry.ts:48`. The path may sit in a code
+// span of its own, which is how `highlightCode` leaves the path of a changed file.
+const CODE_LOCATION_RE = /(`?)([\w./-]+\.\w+)\1:(\d+)/g;
 
 const UNPROVEN_KEPT = 'I could not point to lines that show the problem still happens, so a maintainer should decide and resolve this thread.';
 
@@ -232,13 +233,26 @@ async function askWithRecord(
 }
 
 /**
- * Turns a "Kept." reply that cites no code location the finding did not already cite into "Unverified.", since only
- * new lines can show the finding still stands.
+ * Returns the code locations `text` cites, as `path:line`. A location in `file` gets the path of `file`, also when the
+ * text names only its file name. A path in a code span of its own counts only for `file`, unless `anySpan`: any other
+ * text `highlightCode` put into a span, such as a field of the changed code, is no location.
  */
-function requireNewProof(reply: string, finding: string): string {
+function codeLocations(text: string, file: string | undefined, anySpan = false): string[] {
+  const name = file?.split('/').pop();
+  return [...text.matchAll(CODE_LOCATION_RE)].flatMap(([, span, path, line]) => {
+    const own = path === file || path === name;
+    return span && !own && !anySpan ? [] : [`${own ? file : path}:${line}`];
+  });
+}
+
+/**
+ * Turns a "Kept." reply that cites no code location the finding did not already cite into "Unverified.", since only
+ * new lines can show the finding still stands. `file` is the file the finding's thread sits on.
+ */
+function requireNewProof(reply: string, finding: string, file?: string): string {
   if (!KEPT_REPLY_RE.test(reply)) return reply;
-  const cited = new Set(finding.match(CODE_LOCATION_RE) ?? []);
-  if ((reply.match(CODE_LOCATION_RE) ?? []).some(location => !cited.has(location))) return reply;
+  const cited = new Set(codeLocations(finding, file, true));
+  if (codeLocations(reply, file).some(location => !cited.has(location))) return reply;
   return `${reply.replace(KEPT_REPLY_RE, '$1Unverified.$2')} ${UNPROVEN_KEPT}`;
 }
 
@@ -340,7 +354,7 @@ export async function handleReviewCommentReply(
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools);
     const findingBody = root.comment.body ?? '';
     // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
-    const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody);
+    const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody, root.comment.path);
     const isSecurity = isSecurityThread(findingBody);
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     const outcome = replyOutcome(reply);
