@@ -808,7 +808,10 @@ export function buildJudgeUserMessage(
       // A later round that found the thread open without naming a partial fix leaves the earlier note true.
       const latest = [...(priorRounds ?? [])].reverse().map(r => r.judge.threadEvaluations?.find(e => e.threadId === t.threadId && e.status === 'partly_addressed')).find(e => !!e);
       if (latest?.remaining) {
-        parts.push(`- **Partly fixed in an earlier round, still open**: ${sanitizeForPromptEmbed(latest.remaining.replace(/[\r\n]+/g, ' '))}${latest.grade ? ` (graded ${latest.grade}${isGradeCell(latest.cell) ? `, row ${latest.cell.row}, column ${latest.cell.column}` : ''})` : ''}`);
+        // A later round can have raised the thread again, so the grade shown is the thread's own, with the cell only while it still gives that grade.
+        const grade = t.recordedGrade ?? latest.grade;
+        const cell = grade === latest.grade && isGradeCell(latest.cell) ? `, row ${latest.cell.row}, column ${latest.cell.column}` : '';
+        parts.push(`- **Partly fixed in an earlier round, still open**: ${sanitizeForPromptEmbed(latest.remaining.replace(/[\r\n]+/g, ' '))}${grade ? ` (graded ${grade}${cell})` : ''}`);
       }
       if (t.answer) {
         parts.push(`- **Manki's answer in this thread**: ${sanitizeForPromptEmbed(safeTruncate(t.answer.replace(/[\r\n]+/g, ' '), MAX_ANSWER_CHARS))}`);

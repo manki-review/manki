@@ -701,6 +701,11 @@ describe('buildJudgeUserMessage', () => {
     // The judge sees what an earlier round found still open after a partial fix, and the grade it gave that.
     expect(unpushed).toContain('- **Partly fixed in an earlier round, still open**: The upload still has no timeout. (graded suggestion, row degraded, column rare)');
     expect(unpushed.match(/Partly fixed in an earlier round/g)).toHaveLength(1);
+    // A later round raised the thread again, so the note shows the grade the thread has now, without the cell of the lower one.
+    const raisedAgain = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads.map(t => ({ ...t, recordedGrade: 'blocker' as const })), rounds, '');
+    expect(raisedAgain).toContain('The upload still has no timeout. (graded blocker)\n');
+    const unchanged = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads.map(t => ({ ...t, recordedGrade: 'suggestion' as const })), rounds, '');
+    expect(unchanged).toContain('The upload still has no timeout. (graded suggestion, row degraded, column rare)\n');
 
     // An outdated thread shows the code it named when posted, and where that code is now or that it is gone, and the
     // judge sees Manki's own answer in the thread.
