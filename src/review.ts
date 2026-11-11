@@ -11,6 +11,7 @@ import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } f
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
 import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
+import { translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { classifyRelatedWork } from './related-work';
 import { makeScratchDir } from './tool-install';
@@ -738,8 +739,10 @@ export async function runReview(
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
     effort: comparisonEffort, workspace, signal: comparisonDeadline.signal,
   });
-  const checkouts = related && uses.referenceNames ? await fetchRelatedRepos(related) : [];
-  const relatedUses = await listRelatedUses(checkouts, uses.referenceNames ?? []);
+  const referenceNames = uses.referenceNames ?? [];
+  const checkouts = related && referenceNames.length > 0 ? await fetchRelatedRepos(related) : [];
+  const translation = await translateNames(clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'translate'), referenceNames, diff.files.map(f => f.path), checkouts);
+  const relatedUses = await listRelatedUses(checkouts, referenceNames, translation);
   const guides = relatedRepoGuides(checkouts);
   const usesOutsideDiff = uses.section + relatedUses.section;
   const usesRecord = uses.record || relatedUses.record ? { ...uses.record, ...relatedUses.record } : undefined;
