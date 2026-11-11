@@ -13,7 +13,8 @@ import type { Finding, ReviewResult, RoundOutcome } from './types';
 jest.mock('@actions/core');
 jest.mock('./providers', () => ({
   ...jest.requireActual('./providers'),
-  createLLMClient: jest.fn(() => ({ repoTools: true, sendMessage: jest.fn() })),
+  // As with the real clients, only an OAuth token gives repository tools.
+  createLLMClient: jest.fn((_provider: string, _model: string, auth: { kind: string }) => ({ repoTools: auth.kind === 'oauth', sendMessage: jest.fn() })),
 }));
 jest.mock('./review', () => ({
   ...jest.requireActual('./review'),
@@ -244,6 +245,33 @@ describe('reviewLocal', () => {
     expect(jest.mocked(runReview).mock.calls[0][1].config.exclude_paths).toEqual([]);
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringMatching(/^Could not load \.manki\.yml at the head, this review uses the base's settings: Invalid YAML/));
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('This change edits'));
+
+  });
+
+  it('holds a patch review whose patch leaves a config that does not load, read with the patch applied', async () => {
+    jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
+    // An API key gives no repository tools, so no workspace applies the patch and only the config read can refuse it.
+    const noTools = { ...inputs, anthropicOauthToken: '', anthropicApiKey: 'key' };
+    const patched = (config: string) => reviewLocal({
+      repoRoot: repo, base: 'main', head: 'main', providerInputs: noTools,
+      patch: `diff --git a/.manki.yml b/.manki.yml\n--- a/.manki.yml\n+++ b/.manki.yml\n@@ -1,2 +1,${config.split('\n').length - 1} @@\n-exclude_paths:\n-  - "docs/**"\n${config.replace(/^(?=.)/gm, '+')}`,
+    });
+
+    expect((await patched('exclude_paths: [\n')).approvalHeld).toBe('config');
+    expect(jest.mocked(runReview).mock.calls[0][1].config.exclude_paths).toEqual(['docs/**']);
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringMatching(/^Could not load \.manki\.yml at the head, this review uses the base's settings: Invalid YAML/));
+
+    // A patch that leaves the config loading holds nothing.
+    jest.mocked(core.warning).mockClear();
+    expect((await patched('exclude_paths: ["vendor/**"]\n')).approvalHeld).toBe(false);
+    expect(jest.mocked(core.warning)).not.toHaveBeenCalled();
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('This change edits `exclude_paths` in .manki.yml'));
+    // The patch is applied in a scratch index, so the checkout and its index stay as they were.
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+
+    // A patch that does not apply cannot show what config it leaves, so it is refused without tools too.
+    await expect(reviewLocal({ repoRoot: repo, base: 'main', head: 'main', patch: git(repo, 'diff', 'feature~1', 'feature'), providerInputs: noTools }))
+      .rejects.toThrow('The patch does not apply to');
   });
 
   it('sets config overrides on top of the base config, and refuses overrides that make it invalid or name an unknown key before any model call', async () => {
