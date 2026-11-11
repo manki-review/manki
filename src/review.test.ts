@@ -18,6 +18,7 @@ import {
   shuffleDiffFiles,
   findingsMatch,
   intersectFindings,
+  carryBodyWarnings,
   runReview,
   runPlanner,
   sanitizePlannerField,
@@ -34,8 +35,9 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { cellGrade, Finding, FindingSeverity, GradeCell, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
-import { fingerprintEntriesFromLegacy, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_LINKS } from './test-utils';
+import { cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
+import { citedLine } from './finding-fingerprint';
+import { fingerprintEntriesFromLegacy, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
@@ -3130,6 +3132,8 @@ describe('runReview', () => {
       ['File handle leaks', undefined, undefined, undefined],
       ['Cache never cleared', undefined, 'src/x.ts:40:40:cache-never-cleared', undefined],
     ]);
+    // A restatement of a review body finding names it, whichever check made the link.
+    expect(result.findings.filter(f => f.raisedIn).map(f => f.sameAs)).toEqual(['src/y.ts:5:5:name-is-vague', 'src/y.ts:5:5:name-is-vague']);
     expect(result.outcome).toBe('ADDRESS_FIRST');
     expect(result.verdictTrace?.unresolvedPriors).toEqual([]);
     const calls = jest.mocked(dedup.sendMessage).mock.calls;
@@ -6032,6 +6036,116 @@ describe('wrapClientForUsage', () => {
 
     await client.sendMessage('sys', 'retry');
     expect(Math.max(0, getTotals().calls - 1)).toBe(1);
+  });
+});
+
+describe('carryBodyWarnings', () => {
+  // The files as the earlier round read them. In `src/x.ts`, `retry();` is on line 2 and `return null;` on line 3 and
+  // in nine more functions. `src/y.ts` reads the same in two places.
+  const then: Record<string, string[]> = {
+    'src/x.ts': ['function load() {', '  retry();', '  return null;', '}', ...Array.from({ length: 9 }, (_, i) => [`function f${i}() {`, '  return null;', '}']).flat(), 'done();'],
+    'src/y.ts': ['a();', 'check();', 'b();', '', 'a();', 'check();', 'b();'],
+  };
+  const entry = (title: string, lineStart: number, more: Partial<FindingFingerprintEntry> = {}, file = 'src/x.ts'): FindingFingerprintEntry => {
+    const cited = citedLine(then[file], lineStart);
+    return { ...makeFindingFingerprintEntry({ title, file, lineStart }), posted: 'body', ...(cited && { citedLine: cited }), ...more };
+  };
+  const round = (n: number, entries: FindingFingerprintEntry[], carried?: FindingFingerprintEntry[]): RoundContext =>
+    makeRoundContext(n, { findings: { count: entries.length, severityCounts: {}, entries, ...(carried && { carried }) } });
+  const finding = (title: string, line: number, more: Partial<Finding> = {}): Finding => ({ severity: 'warning', title, file: 'src/x.ts', line, description: 'd', reviewers: ['r'], ...more });
+  const keyOf = (e: FindingFingerprintEntry) => stringifyFindingFingerprint(e.fingerprint);
+  // `now` holds the files at the head by path: their lines, or an error for a file that cannot be read.
+  const carry = async (priorRounds: RoundContext[], now: Record<string, string[] | Error>, judged: Partial<ReviewResult> = {}) => {
+    const result = { findings: [], ...judged } as unknown as ReviewResult;
+    const read = jest.fn(async (path: string) => {
+      const file = now[path];
+      if (file instanceof Error) throw file;
+      return file ? `${file.join('\n')}\n` : null;
+    });
+    await carryBodyWarnings(result, priorRounds, { read });
+    return { titles: result.carried?.map(e => `${e.title} (round ${e.raisedIn})`), ended: result.carriedEnded?.map(e => e.reason), result, read };
+  };
+  const withX = (lines: string[]) => ({ ...then, 'src/x.ts': lines });
+  const retry = entry('Retry never ends', 2);
+  const nothing = entry('Nothing is returned', 3);
+  const twice = entry('Check runs twice', 2, {}, 'src/y.ts');
+  const first = round(1, [
+    retry,
+    nothing,
+    twice,
+    // A warning without a line, or on a line the file does not have, has no place to compare and is not carried.
+    entry('No line', 0),
+    entry('Past the end', 400),
+    entry('Cache never cleared', 4, { threadId: 'T2' }),
+  ]);
+  const all = ['Retry never ends (round 1)', 'Nothing is returned (round 1)', 'Check runs twice (round 1)'];
+
+  let info: jest.SpyInstance;
+  let warning: jest.SpyInstance;
+  beforeEach(() => {
+    info = jest.spyOn(core, 'info').mockImplementation(() => {});
+    warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    info.mockRestore();
+    warning.mockRestore();
+  });
+
+  it('lists a warning of the last review body again while the place it points at still reads the same', async () => {
+    const unchanged = await carry([first], then);
+    expect(unchanged.titles).toEqual(all);
+    expect([unchanged.result.findings, unchanged.ended, unchanged.read.mock.calls]).toEqual([[], undefined, [['src/x.ts'], ['src/y.ts']]]);
+    expect(unchanged.result.carried?.map(e => e.citedLine)).toEqual([
+      { hash: expect.stringMatching(/^[0-9a-f]{12}$/), count: 1 }, { hash: expect.stringMatching(/^[0-9a-f]{12}$/), count: 1 }, { hash: expect.stringMatching(/^[0-9a-f]{12}$/), count: 2 },
+    ]);
+    expect((await carry([], {})).result).toEqual({ findings: [] });
+
+    // Lines moving, as after a rebase, another indent, and an edit elsewhere in the file, here to another `return null;`, change nothing.
+    const x = then['src/x.ts'];
+    const other = x.indexOf('function f5() {') + 1;
+    const moved = ['import a;', '', ...x.map((line, i) => `  ${i === other ? '  return [];' : line}`)];
+    expect((await carry([first], withX(moved))).titles).toEqual(all);
+
+    // An edit to the line ends the warning, and the one on the line before it, whose next line changed.
+    const edited = await carry([first], withX(x.map((line, i) => i === 2 ? '  return [];' : line)));
+    expect([edited.titles, edited.ended]).toEqual([['Check runs twice (round 1)'], ['line_changed', 'line_changed']]);
+    expect(edited.result.carriedEnded).toEqual([{ key: keyOf(retry), reason: 'line_changed' }, { key: keyOf(nothing), reason: 'line_changed' }]);
+    // So does a line added right above the line, which leaves the line itself as it was.
+    const guarded = await carry([first], withX([x[0], '  if (!ready) return;', ...x.slice(1)]));
+    expect([guarded.titles, guarded.ended]).toEqual([['Nothing is returned (round 1)', 'Check runs twice (round 1)'], ['line_changed']]);
+    // Of two places reading the same, one edited is enough, and a file that is gone ends its warnings.
+    const once = await carry([first], { ...then, 'src/y.ts': [...then['src/y.ts'].slice(0, 5), 'check(1);', 'b();'] });
+    expect([once.titles, once.ended]).toEqual([all.slice(0, 2), ['line_changed']]);
+    const gone = await carry([first], { 'src/y.ts': then['src/y.ts'] });
+    expect([gone.titles, gone.ended]).toEqual([['Check runs twice (round 1)'], ['line_changed', 'line_changed']]);
+
+    // A file that cannot be read keeps its warnings.
+    const unread = await carry([first], withX(new Error('Server Error') as unknown as string[]));
+    expect([unread.titles, unread.ended]).toEqual([all, undefined]);
+    expect(warning).toHaveBeenCalledWith('Failed to read src/x.ts, so the warnings carried on it stay listed: Error: Server Error');
+  });
+
+  it('ends a carried warning that a finding of the round names, and records how that finding ended', async () => {
+    const named = await carry([first], then, {
+      findings: [finding('Loop has no cap', 80, { sameAs: keyOf(retry) })],
+      unpostedNotes: [finding('Nothing is returned', 3, { severity: 'suggestion' })],
+      allJudgedFindings: [finding('Check runs twice', 2, { severity: 'ignore', file: 'src/y.ts' })],
+    });
+    expect([named.titles, named.ended, named.read.mock.calls]).toEqual([undefined, ['restated', 'hidden_note', 'judge_dropped'], []]);
+    // A finding the judge kept and a later step left out counts too, and one about something else does not.
+    const leftOut = await carry([first], then, { allJudgedFindings: [finding('Retry never ends', 2), finding('Loop has no cap', 80)] });
+    expect([leftOut.titles, leftOut.ended]).toEqual([all.slice(1), ['left_out']]);
+
+    // A later round carries the warning with the place the first round read, and a restatement in other words names the first statement.
+    const carriedRetry = { ...retry, raisedIn: 1 };
+    const last = then['src/x.ts'].length;
+    const queue = entry('Queue grows without bound', last);
+    const second = round(2, [queue], [carriedRetry]);
+    const third = round(3, [entry('Queue has no limit', last, { raisedIn: 2, sameAs: keyOf(queue) })], [carriedRetry]);
+    expect((await carry([first, second], then)).titles).toEqual(['Queue grows without bound (round 2)', 'Retry never ends (round 1)']);
+    expect((await carry([first, second, third], then)).titles).toEqual(['Queue has no limit (round 2)', 'Retry never ends (round 1)']);
+    const again = await carry([first, second, third], then, { findings: [finding('Queue is unbounded', 90, { sameAs: keyOf(queue) })] });
+    expect([again.titles, again.ended]).toEqual([['Retry never ends (round 1)'], ['restated']]);
   });
 });
 

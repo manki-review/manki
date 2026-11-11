@@ -7,9 +7,9 @@ import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, r
 import { mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
-import { dynamicFence, fenceText, InstructionFile, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
+import { dynamicFence, fenceText, fileLines, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
-import { canLeaveOut, cellGrade, FOLLOW_UP_TAG, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
@@ -17,7 +17,7 @@ import { classifyRelatedWork } from './related-work';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
-import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
+import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
 import { disproof, refuteBlockers } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
@@ -2520,6 +2520,8 @@ interface EarlierFinding {
   recorded?: boolean;
   /** The round that first listed it in its review body. */
   raisedIn?: number;
+  /** The key a restatement records as `sameAs`: the key of the finding that first listed it, whichever round's entry is restated. */
+  firstKey?: string;
 }
 
 /**
@@ -2546,7 +2548,7 @@ function earlierFindings(priorRounds: RoundContext[], openThreads: OpenThread[],
     if (known) continue;
     const finding = { title: entry.title, file: entry.fingerprint.file, line: entry.fingerprint.lineStart, evidence: entry.evidence };
     const security = threads.some(t => t.threadId === entry.threadId && t.isSecurity);
-    byKey.set(key, entry.threadId ? { finding, keys: new Set([key]), threadId: entry.threadId, recorded: true, ...(security && { isSecurity: true }) } : { finding, keys: new Set([key]), raisedIn: round });
+    byKey.set(key, entry.threadId ? { finding, keys: new Set([key]), threadId: entry.threadId, recorded: true, ...(security && { isSecurity: true }) } : { finding, keys: new Set([key]), raisedIn: round, firstKey: entry.sameAs ?? key });
   }
   return [...threads, ...byKey.values()];
 }
@@ -2598,8 +2600,59 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
     const own = postedOnItsOwn(f);
     if (!link || link.variant) return own;
     core.info(`"${f.title}" restates "${link.earlier.finding.title}", which round ${link.earlier.raisedIn} listed`);
-    return { ...own, raisedIn: link.earlier.raisedIn };
+    return { ...own, raisedIn: link.earlier.raisedIn, sameAs: link.earlier.firstKey };
   });
+}
+
+/**
+ * Sets `result.carried` to the warnings the last of `priorRounds` listed only in its review body or carried itself, so a
+ * warning does not vanish because no finder raised it again. Only an entry with `citedLine` is carried. A warning leaves
+ * the list only for certain, and `result.carriedEnded` says why: a finding the judge graded this round names its problem,
+ * kept or not, or the file at the head has fewer places reading like its `citedLine` than when it was listed, or is gone.
+ * A file `head` cannot read keeps its warnings.
+ */
+export async function carryBodyWarnings(result: ReviewResult, priorRounds: RoundContext[], head: Pick<RepoFiles, 'read'>): Promise<void> {
+  const last = priorRounds.at(-1);
+  if (!last) return;
+  const warnings = [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => e.citedLine && !e.threadId);
+  const judged: Array<[CarriedEndReason, Finding[]]> = [
+    ['restated', result.findings],
+    ['hidden_note', result.unpostedNotes ?? []],
+    ['judge_dropped', (result.allJudgedFindings ?? []).filter(f => f.severity === 'ignore')],
+    ['left_out', result.allJudgedFindings ?? []],
+  ];
+  const read = new Map<string, Promise<string[] | undefined>>();
+  // A file that is gone has no lines. A file that cannot be read gives undefined, which ends no warning.
+  const linesOf = (file: string): Promise<string[] | undefined> => {
+    const lines = read.get(file) ?? head.read(file).then(content => content === null ? [] : fileLines(content), error => {
+      core.warning(`Failed to read ${file}, so the warnings carried on it stay listed: ${error}`);
+      return undefined;
+    });
+    read.set(file, lines);
+    return lines;
+  };
+  const carried: FindingFingerprintEntry[] = [];
+  const ended: CarriedEnd[] = [];
+  for (const entry of warnings) {
+    const key = stringifyFindingFingerprint(entry.fingerprint);
+    const { file, lineStart: line } = entry.fingerprint;
+    const located: Located = { title: entry.title ?? '', file, line, evidence: entry.evidence };
+    const names = (f: Finding) => f.sameAs === key || (!!f.sameAs && f.sameAs === entry.sameAs) || sameProblem(located, f);
+    const { hash, count } = entry.citedLine!;
+    let reason = judged.find(([, findings]) => findings.some(names))?.[0];
+    if (!reason) {
+      const lines = await linesOf(file);
+      if (lines && placesReading(lines, hash) < count) reason = 'line_changed';
+    }
+    if (reason) {
+      core.info(`No longer carrying the warning "${entry.title}" on ${file}:${line}: ${reason}`);
+      ended.push({ key, reason });
+    } else {
+      carried.push({ ...entry, raisedIn: entry.raisedIn ?? last.meta.round });
+    }
+  }
+  if (carried.length > 0) result.carried = carried;
+  if (ended.length > 0) result.carriedEnded = ended;
 }
 
 /** Returns `f` marked `ownThread` when it is a security finding no thread carries, so a plain thread with its title does not drop it. */

@@ -148,7 +148,7 @@ must_not_repeat: [P3]                    # earlier findings still in the code, w
 must_catch: []                           # problems still in the code or brought in by the push, with their grades
 ```
 
-An earlier open thread the key does not list should stay open. List an earlier finding the push leaves in place under `must_not_repeat`, unless the round should regrade it: then it is a `must_catch` item at the grade it earns. A ref older than follow-up support reviews such a case as a first round, so the release gate leaves out a case one side scored as a follow-up round and the other as a first round, and lists it.
+An earlier open thread the key does not list should stay open. List an earlier finding the push leaves in place under `must_not_repeat`, unless the round should regrade it: then it is a `must_catch` item at the grade it earns. An earlier warning posted in the body is carried into the result's `carried` list while its line and the two lines around it read the same at `head` as at the earlier round's `head` and no finding names it again. It is not a finding of the round, so the scoring does not read it, and it does not count as posted again for `must_not_repeat`. A ref older than follow-up support reviews such a case as a first round, so the release gate leaves out a case one side scored as a follow-up round and the other as a first round, and lists it.
 
 ### A case's own config
 

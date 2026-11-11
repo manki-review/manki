@@ -7,12 +7,13 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { extractCurrentCodeWindow } from './code-window';
 import { changedKeys, loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, filterDiff, filterRawDiff, hideSeenNotes, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
-import { ApprovalHeld, brokenConfig, buildRepoContext, capNotes, loadBaseConfig, RepoFiles, titleToSlug } from './github';
+import { citedLine } from './finding-fingerprint';
+import { ApprovalHeld, brokenConfig, buildRepoContext, capNotes, fileLines, loadBaseConfig, RepoFiles, titleToSlug } from './github';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { MAX_LOCKFILE_BYTES } from './static-signals';
 import type { ProviderInputs } from './providers';
 import type { PreviousFinding } from './recap';
-import { ReviewProgress, runReview } from './review';
+import { carryBodyWarnings, ReviewProgress, runReview } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
 import { makeScratchDir } from './tool-install';
@@ -292,7 +293,16 @@ async function followUpInputs(
     recap: { previousFindings: [], priorRounds: [] }, priorRoundCount: 0, maxAutoRounds: 0, diff: priorChange, changeDigest: changeDigest(priorChange), excludedFiles: [],
     openThreads: [], memoryLoadStatus: 'disabled',
   }, result, { judgeDurationMs: 0 });
-  return { previousFindings, openThreads, priorRounds: [record], priorChange, interRoundDiff };
+  // A pull request round records the line of a warning it lists only in the review body, which a later round compares.
+  const earlierFiles = gitRepoFiles(repoRoot, earlierHead);
+  const entries = await Promise.all(record.findings.entries.map(async (entry, i) => {
+    const { thread, severity, file, line } = earlier.findings[i];
+    if (thread || severity !== 'warning') return entry;
+    const content = await earlierFiles.read(file);
+    const cited = citedLine(content === null ? undefined : fileLines(content), line);
+    return { ...entry, posted: 'body' as const, ...(cited && { citedLine: cited }) };
+  }));
+  return { previousFindings, openThreads, priorRounds: [{ ...record, findings: { ...record.findings, entries } }], priorChange, interRoundDiff };
 }
 
 /**
@@ -363,6 +373,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       addCodeContext(result.findings, withLockfiles(diff, lockfiles));
       tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), followUp?.priorChange, followUp?.interRoundDiff ? parsePRDiff(followUp.interRoundDiff) : undefined);
       hideSeenNotes(result, followUp && withLockfiles(diff, lockfiles));
+      if (followUp) await carryBodyWarnings(result, followUp.priorRounds, gitRepoFiles(repoRoot, head));
       capNotes(result, followUp?.previousFindings ?? [], config.review?.notes);
     }
     const context = buildRoundContext({

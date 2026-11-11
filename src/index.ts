@@ -24,7 +24,7 @@ import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, replyClassOf, securityOverridesIn } from './recap';
 import { disproof } from './refute';
-import { filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
+import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals, fetchLockfiles } from './static-signals';
@@ -42,6 +42,7 @@ import {
   configFailed,
   loadBaseConfig,
   readConfigFile,
+  githubRepoFiles,
   fetchRepoContext,
   formatUnreviewedNotice,
   fetchFileContents,
@@ -1921,6 +1922,7 @@ async function runFullReview(
     if (priorRoundCount > 0 && (options.fullReview || !priorChange)) result.originsWithoutPrior = true;
     // Only the diff since the last round shows a line the push moved or restored, so without it no line counts as reviewed for certain.
     if (!options.fullReview) hideSeenNotes(result, interRoundDiff === undefined ? undefined : reviewed);
+    await carryBodyWarnings(result, recap.priorRounds, githubRepoFiles(octokit, owner, repo, commitSha));
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.

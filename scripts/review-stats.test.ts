@@ -210,6 +210,8 @@ describe('review stats', () => {
           // The reason a note was left out counts ahead of a pre-existing claim the diff contradicted.
           ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'reviewed', unpostedReason: 'reviewed_code', preExisting: { reason: 'Old.', check: 'touches_diff' },
         }, { ...makeFindingFingerprintEntry({ severity: 'nitpick' }), origin: 'earlier', raisedIn: 1, unpostedReason: 'listed_earlier' }, { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), unpostedReason: 'note_cap', posted: 'record' }],
+        carried: [{ ...makeFindingFingerprintEntry({ severity: 'warning' }), raisedIn: 1 }],
+        carriedEnded: [{ key: 'src/a.ts:3:3:x', reason: 'line_changed' }, { key: 'src/a.ts:4:4:y', reason: 'line_changed' }, { key: 'src/a.ts:5:5:z', reason: 'judge_dropped' }],
       },
       judge: {
         summary: '', fixClaimedThreads: ['T1', 'T2'],
@@ -270,6 +272,9 @@ describe('review stats', () => {
         'reviewed_code, suggestion': 1, 'listed_earlier, nitpick': 1, 'note_cap, suggestion': 1,
         'in_pr_suppression, warning': 1, 'ratchet, warning': 1, 'ratchet, severity not recorded': 1, 'resolved_thread, severity not recorded': 3,
         'own_proposal, severity not recorded': 4, 'test_file, severity not recorded': 5, 'static_signal, severity not recorded': 1,
+      },
+      'Warnings carried from an earlier review body (listed again per rounds since first listed, ended per reason)': {
+        'listed again, 1 round on': 1, 'ended, line_changed': 2, 'ended, judge_dropped': 1,
       },
       'Verdict reader per slice': { READY: 1, ADDRESS_FIRST: 1 },
       Approvals: { 'held: conflict': 1 },

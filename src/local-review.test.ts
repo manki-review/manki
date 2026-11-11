@@ -112,9 +112,10 @@ describe('reviewLocal', () => {
   it('reviews a follow-up round from an earlier round: its threads with the code now, its record, and the diff since', async () => {
     git(repo, 'checkout', '-q', 'feature');
     const lines = Array.from({ length: 20 }, (_, i) => `const v${i + 1} = ${i + 1};`);
-    const reviewed = commit(repo, 'Add b', { 'src/b.ts': `${lines.join('\n')}\n` });
+    const reviewed = commit(repo, 'Add b', { 'src/b.ts': `${lines.join('\n')}\n`, 'src/c.ts': 'start();\nreturn null;\nmiddle();\ncheck();\nend();\nlast();\n' });
     lines[19] = 'const v20 = 0;';
-    const fixed = commit(repo, 'Fix b', { 'src/b.ts': `${lines.join('\n')}\n` });
+    // The push also edits a file outside the diff, and in `src/c.ts` moves every line down and edits one line.
+    const fixed = commit(repo, 'Fix b', { 'src/b.ts': `${lines.join('\n')}\n`, 'src/c.ts': '// Checked.\nstart();\nreturn [];\nmiddle();\ncheck();\nend();\nlast();\n', 'guides/conventions.md': 'Name things clearly.\n' });
     git(repo, 'checkout', '-q', 'main');
     const note = { ...finding, severity: 'suggestion' as const, file: 'src/b.ts' };
     const findings = [
@@ -130,6 +131,10 @@ describe('reviewLocal', () => {
         { id: 'P4', severity: 'blocker' as const, title: 'Missing check', file: 'src/a.ts', line: 2, thread: 'fixed' as const },
         { id: 'P3', severity: 'suggestion' as const, title: 'Name the constant', file: 'src/a.ts', line: 1, gradeIfConfirmed: 'warning' as const },
         { id: 'P5', severity: 'warning' as const, title: 'Stale read', file: 'src/a.ts', line: 3, gradeIfConfirmed: 'blocker' as const, cell: { row: 'wrong' as const, column: 'rare' as const }, doubts: [REACH_DOUBT] },
+        { id: 'P6', severity: 'warning' as const, title: 'Tenth value is wrong', file: 'src/b.ts', line: 10 },
+        { id: 'P7', severity: 'warning' as const, title: 'Guide is vague', file: 'guides/conventions.md', line: 1 },
+        { id: 'P8', severity: 'warning' as const, title: 'Null is returned', file: 'src/c.ts', line: 2 },
+        { id: 'P9', severity: 'warning' as const, title: 'End runs late', file: 'src/c.ts', line: 5 },
       ],
     };
 
@@ -148,13 +153,25 @@ describe('reviewLocal', () => {
     expect(record.findings.entries.map(e => [e.title, e.threadId, e.severity, e.tags, e.gradeIfConfirmed])).toEqual([
       ['Wrong value', 'P1', 'blocker', ['security'], undefined], ['Unused constant', 'P2', 'warning', undefined, undefined], ['Missing check', 'P4', 'blocker', undefined, undefined],
       ['Name the constant', undefined, 'suggestion', undefined, 'warning'], ['Stale read', undefined, 'warning', undefined, 'blocker'],
+      ['Tenth value is wrong', undefined, 'warning', undefined, undefined], ['Guide is vague', undefined, 'warning', undefined, undefined],
+      ['Null is returned', undefined, 'warning', undefined, undefined], ['End runs late', undefined, 'warning', undefined, undefined],
     ]);
+    // A warning without a thread was listed in the review body, so its entry holds the place it points at. `src/a.ts` has no line 3.
+    expect(record.findings.entries.map(e => [e.posted, e.citedLine?.count]).slice(3)).toEqual([[undefined, undefined], ['body', undefined], ['body', 1], ['body', 1], ['body', 1], ['body', 1]]);
     // The earlier round's cell and doubts come back with its conditional grade, and an earlier finding without them has none.
-    expect(record.findings.entries.map(e => [e.cell, e.doubts]).slice(-2)).toEqual([[undefined, undefined], [{ row: 'wrong', column: 'rare' }, [REACH_DOUBT]]]);
+    expect(record.findings.entries.map(e => [e.cell, e.doubts]).slice(3, 5)).toEqual([[undefined, undefined], [{ row: 'wrong', column: 'rare' }, [REACH_DOUBT]]]);
     // A note on code the earlier round reviewed, or one it listed, is left out as in a pull request round.
     expect(review.result.findings.map(f => [f.file, f.line, f.origin])).toEqual([['src/a.ts', 2, 'reviewed'], ['src/b.ts', 2, 'reviewed'], ['src/b.ts', 20, 'new'], ['src/b.ts', 19, 'new']]);
     expect(review.context.findings.unposted?.map(e => [e.title, e.unpostedReason])).toEqual([['Rename', 'reviewed_code'], ['Name the constant', 'listed_earlier']]);
     expect(review.context.findings.count).toBe(4);
+    // A warning the earlier round listed in its body is carried while the place it points at reads the same, wherever
+    // that is now and whatever else the push changed in its file. One on a line the file does not have is not carried.
+    expect(review.result.carried?.map(e => [e.title, e.raisedIn])).toEqual([['Tenth value is wrong', 1], ['End runs late', 1]]);
+    expect(review.context.findings.carried).toEqual(review.result.carried);
+    // An edited line ends its warning, in a file outside the diff too.
+    expect(review.context.findings.carriedEnded).toEqual([
+      { key: 'guides/conventions.md:1:1:Guide-is-vague', reason: 'line_changed' }, { key: 'src/c.ts:2:2:Null-is-returned', reason: 'line_changed' },
+    ]);
     expect(review.context.meta).toMatchObject({ round: 2, commitSha: fixed });
   });
 
