@@ -689,7 +689,7 @@ export interface Finder {
   sentEffort: EffortLevel;
   /** How many tool calls the finder may make when its client has repository tools. */
   steps: number;
-  /** Set on a Deeper review when the model receives the same effort as without one. */
+  /** Set on a Deeper review when the model receives no more effort than without one. */
   deeperSameEffort?: true;
 }
 
@@ -804,7 +804,7 @@ export interface TeamRouting {
   weakerAllowed?: string[];
   /** A Deeper review ran: two finders on every group, at xhigh effort or one level above a configured effort. */
   deeper?: true;
-  /** Finders of a Deeper review whose model receives the same effort as without one. */
+  /** Finders of a Deeper review whose model receives no more effort than without one. */
   deeperSameEffort?: string[];
 }
 

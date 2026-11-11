@@ -3004,7 +3004,7 @@ describe('buildDashboard', () => {
       agentProgress: [{ name: 'Claude Sonnet 4.6 · high', status: 'reviewing' }, { name: 'Claude Opus 5.5 · xhigh', status: 'reviewing' }],
       routing: { group: 'pair', deeperSameEffort: ['Claude Sonnet 4.6 · high'] },
     };
-    const note = `${INDENT}_(the deeper review adds no effort for Claude Sonnet 4.6 · high: the model receives the same effort as without it)_`;
+    const note = `${INDENT}_(the deeper review adds no effort for Claude Sonnet 4.6 · high: the model receives no more effort than without it)_`;
     const md = buildDashboard(data);
     expect(md.indexOf(note)).toBeGreaterThan(md.indexOf('**Review (pair):**'));
     expect(md.indexOf(note)).toBeLessThan(md.indexOf('**Judge**'));

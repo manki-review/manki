@@ -1392,6 +1392,11 @@ describe('selectTeam', () => {
       expect(escalated.routing).toMatchObject({ group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'solo' });
       expect(readers(escalated)).toEqual([`${S} · high`, `${O} · high`]);
       expect(escalated.routing.deeperSameEffort).toEqual([`${S} · high`]);
+      // The built-in pair runs below a `max` the earlier group set, which is no more effort either.
+      const soloMax = makeConfig({ review: { groups: { solo: { reviewers: [{ effort: 'max' }] } } } });
+      const lowered = selectTeam(makeDiff({ files: code }), soloMax, t(false, true, false), true, clients);
+      expect(readers(lowered)).toEqual([`${S} · high`, `${O} · xhigh`]);
+      expect(lowered.routing.deeperSameEffort).toEqual([`${S} · high`]);
       // A quick check is no finder, so a finder that replaces it is added too.
       expect(selectTeam(makeDiff({ files: code }), makeConfig(), t(true, false, false), true, bothCapped).routing.deeperSameEffort).toBeUndefined();
 
@@ -5988,7 +5993,7 @@ describe('runReview triage', () => {
     expect(deeper.llmCalls!.filter(c => c.stage === 'reviewer').map(c => c.effort)).toEqual(['high', 'high']);
     expect(jest.mocked(capped.reviewer.sendMessage).mock.calls.map(call => call[2]?.effort)).toEqual(['xhigh', 'xhigh']);
     expect(deeperProgress).toContainEqual(expect.objectContaining({ phase: 'planning', routing: expect.objectContaining({ deeperSameEffort: sameEffort }) }));
-    expect(info).toHaveBeenCalledWith(`The deeper review adds no effort for ${sameEffort.join(', ')}: the model receives the same effort as without it`);
+    expect(info).toHaveBeenCalledWith(`The deeper review adds no effort for ${sameEffort.join(', ')}: the model receives no more effort than without it`);
     info.mockRestore();
   });
 

@@ -195,6 +195,7 @@ function quotaRoundSummary(quotaErrors: ReadonlyMap<string, QuotaError>, failedA
 const FAIL_SAFE_TRIAGE: Readonly<Triage> = Object.freeze({ trivial: false, subtle: true, paired: true });
 
 const DEEPER_EFFORT: Record<EffortLevel, EffortLevel> = { low: 'medium', medium: 'high', high: 'xhigh', xhigh: 'max', max: 'max' };
+const EFFORT_ORDER = Object.keys(DEEPER_EFFORT) as EffortLevel[];
 
 /**
  * Builds the round's readers. The PR's class, from its paths and the triage, picks a review group,
@@ -283,7 +284,9 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
     // A reader the deeper review added has no effort without it to compare with.
     const ref = (r: GroupReviewer): string => r.model ?? '@reviewer';
     const usual = escalatedFrom ? escalatedFrom.reviewers.find(r => r.role !== 'verifier' && ref(r) === ref(reviewer)) : reviewer;
-    const deeperSameEffort = deeper && usual !== undefined && sent(effort) === sent(askedEffort(usual, triage, false));
+    // The built-in pair can run below a tier the earlier group set, and no effort sent ranks below every tier.
+    const rank = (tier: EffortLevel | undefined): number => (tier ? EFFORT_ORDER.indexOf(tier) : -1);
+    const deeperSameEffort = deeper && usual !== undefined && rank(sent(effort)) <= rank(sent(askedEffort(usual, triage, false)));
     return { name, prompt, model, effort, sentEffort, steps, ...(deeperSameEffort && { deeperSameEffort }) };
   });
 }
@@ -703,7 +706,7 @@ export async function runReview(
     core.warning(`\`review.allow_weaker\` lets this ${routing.weakerAllowed.join(', ')} change run on the ${routing.group} group, below the floor of two finders on two models`);
   }
   core.info(`Review team: ${team.finders.map(f => f.name).join(', ')}, judge: ${judgeEffort}${plannerResult ? ` (${plannerResult.prType})` : ''}`);
-  if (routing.deeperSameEffort) core.info(`The deeper review adds no effort for ${routing.deeperSameEffort.join(', ')}: the model receives the same effort as without it`);
+  if (routing.deeperSameEffort) core.info(`The deeper review adds no effort for ${routing.deeperSameEffort.join(', ')}: the model receives no more effort than without it`);
   if (trivial) {
     core.info(`trivial decision: prType=${plannerResult?.prType}, lines=${diff.totalAdditions + diff.totalDeletions}, files=${diff.files.length}`);
   }
