@@ -33,7 +33,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, Finding, FindingSeverity, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
+import { ConfigSource, DashboardData, DisprovedFinding, Finding, FindingSeverity, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -1570,8 +1570,13 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
 async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string, unreadRecords?: string[]): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const { octokit, owner, repo, prNumber, commitSha, diff, recap } = run;
   // A finding on a parsed lockfile gets a thread on its line like any other.
+  const disproved = (result.allJudgedFindings ?? []).flatMap((f): DisprovedFinding[] => {
+    const by = f.severity === 'ignore' && disproof(f);
+    return by ? [{ title: f.title, file: f.file, line: f.line, reason: by.reason }] : [];
+  });
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, withLockfiles(diff, run.lockfiles), context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
+    disproved,
     draft: run.options.draft,
     configHold: run.configHold,
     memorySkip: run.memorySkip?.message,
@@ -1658,10 +1663,6 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   for (const { originalSeverity } of dropped) {
     droppedSeverities[originalSeverity] = (droppedSeverities[originalSeverity] ?? 0) + 1;
   }
-  const disproved = allJudgedForDashboard.flatMap(f => {
-    const by = f.severity === 'ignore' && disproof(f);
-    return by ? [{ title: f.title, file: f.file, line: f.line, reason: by.reason }] : [];
-  });
   const completeDashboard: DashboardData = {
     ...dashboard,
     phase: 'complete',
@@ -1673,8 +1674,6 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
     droppedSeverities,
     ...(result.suppressionCount && { suppressionCount: result.suppressionCount }),
     ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
-    ...(result.openLeads && { unfinishedChecks: result.openLeads.map(({ title, file, line, leadSince }) => ({ title, file, line, ...(leadSince && { leadSince }) })) }),
-    ...(disproved.length > 0 && { disproved }),
     judgeDurationMs: judgeEndTime - reviewEndTime,
   };
 

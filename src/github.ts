@@ -6,7 +6,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { DEFAULT_NOTES, loadConfig } from './config';
-import { AgentProgressEntry, leftOutUnproven, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, leftOutUnproven, BinaryFile, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -800,25 +800,8 @@ export function buildDashboard(data: DashboardData): string {
   }
   sections.push(judgeLines.join('\n'));
 
-  if (data.phase === 'complete') {
-    const where = (f: { title: string; file: string; line: number }) => `${sanitizeMarkdown(f.title)} (\`${sanitizeFilePath(f.file)}:${f.line}\`)`;
-    const disproved = listSection('Disproved by the judge', 'finding', (data.disproved ?? []).map(d => `${where(d)}: ${sanitizeMarkdown(d.reason)}`));
-    const unfinished = listSection('Not finished checking', 'lead', (data.unfinishedChecks ?? []).map(f => `${where(f)}${f.leadSince ? `, open since round ${f.leadSince}` : ''}`));
-    sections.push(...[disproved, unfinished].filter((section): section is string => section !== undefined));
-  }
-
   return sections.join('\n\n');
 }
-
-/** Renders a bold heading with the count, then the first `MAX_LISTED_FINDINGS` lines, or `undefined` for none. */
-function listSection(heading: string, noun: string, lines: string[]): string | undefined {
-  if (lines.length === 0) return undefined;
-  const shown = lines.slice(0, MAX_LISTED_FINDINGS).map(line => `${INDENT}${line}`);
-  const more = lines.length - shown.length;
-  return [`**${heading}:** ${countOf(lines.length, noun)}`, ...shown, ...(more > 0 ? [`${INDENT}and ${more} more`] : [])].join('\n');
-}
-
-const MAX_LISTED_FINDINGS = 10;
 
 /**
  * Post a "review in progress" comment on the PR.
@@ -1259,7 +1242,7 @@ function splitLead(text: string, maxSentences: number, maxLength: number): { lea
   return { lead: safeTruncate(lead, maxLength), rest: trimmed };
 }
 
-function findingLocation(finding: Finding): string {
+function findingLocation(finding: Pick<Finding, 'file' | 'line'>): string {
   return `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
 }
 
@@ -1522,10 +1505,45 @@ function isListedNote(finding: Finding): boolean {
   return isNote(finding.severity) && !isSecurityFinding(finding.tags, finding.reviewers);
 }
 
-/** Returns the line that says how many warnings of `unposted` the review leaves out because nothing proves them, and where to find them. */
-function formatUnprovenLine(unposted: Finding[]): string | null {
-  const unproven = unposted.filter(leftOutUnproven).length;
-  return unproven > 0 ? `<sub>${unproven} ${unproven === 1 ? 'warning is' : 'warnings are'} not listed, since nothing proves ${unproven === 1 ? 'it' : 'them'}. The progress comment names ${unproven === 1 ? 'it' : 'each'} under "Judge decisions".</sub>` : null;
+const MAX_LISTED_FINDINGS = 10;
+
+/** One finding the review checked and left out, with the line that says why. */
+type LeftOutEntry = Pick<Finding, 'title' | 'file' | 'line'> & { reason?: string };
+
+/** Renders a left out finding as a list item: the title and a link to its line, then the start of the reason on a line of its own. */
+function formatLeftOutEntry({ title, file, line, reason }: LeftOutEntry, linkTo: LineLink): string {
+  const location = file ? ` · [${inlineCode(findingLocation({ file, line }))}](${linkTo(file, line)})` : '';
+  const shown = reason && splitLead(sanitizeMarkdown(reason).replace(/\s+/g, ' '), 2, 300).lead;
+  return `- **${sanitizeMarkdown(title)}**${location}${shown ? `\n  ${shown}` : ''}`;
+}
+
+/**
+ * Returns the fold that lists what the round checked and left out: each finding of `disproved`, each warning of
+ * `result.unposted` that nothing proves, and each lead of `result.openLeads`. Every kind shows its first
+ * `MAX_LISTED_FINDINGS`. Returns none when there is nothing to list.
+ */
+function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], linkTo: LineLink): string | null {
+  const unproven = (result.unposted ?? []).flatMap((f): LeftOutEntry[] => {
+    const why = f.unpostedReason && leftOutUnproven(f) ? UNPOSTED_REASONS[f.unpostedReason] : undefined;
+    return why ? [{ ...f, reason: `${why[0].toUpperCase()}${why.slice(1)}.` }] : [];
+  });
+  const leads = (result.openLeads ?? []).map((f): LeftOutEntry => ({ ...f, reason: f.leadSince ? `Open since round ${f.leadSince}.` : undefined }));
+  const kinds = [
+    { heading: 'Disproved by a tool check', noun: 'finding', short: 'disproved', entries: disproved },
+    { heading: 'Not proven, so not listed', noun: 'warning', short: 'unproven', entries: unproven },
+    { heading: 'Not finished checking', noun: 'lead', short: 'not finished', entries: leads },
+  ].filter(kind => kind.entries.length > 0);
+  if (kinds.length === 0) return null;
+  const total = kinds.reduce((sum, kind) => sum + kind.entries.length, 0);
+  const split = kinds.length > 1 ? ` (${kinds.map(kind => `${kind.entries.length} ${kind.short}`).join(', ')})` : '';
+  const sections = kinds.map(({ heading, noun, entries }) => {
+    const more = entries.length - MAX_LISTED_FINDINGS;
+    const list = entries.slice(0, MAX_LISTED_FINDINGS).map(entry => formatLeftOutEntry(entry, linkTo)).join('\n');
+    return formatFindingSection(`${heading} · ${countOf(entries.length, noun)}`, [list, ...(more > 0 ? [`<sub>and ${more} more</sub>`] : [])]);
+  });
+  // A lead the judge never saw has no entry in that log, so the line shows only with a finding the judge decided.
+  const log = disproved.length + unproven.length > 0 ? ['<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>'] : [];
+  return `<details>\n<summary>Checked and left out: ${countOf(total, 'finding')}${split}</summary>\n\n${[...sections, ...log].join('\n\n')}\n\n</details>`;
 }
 
 /**
@@ -1567,8 +1585,10 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords }: {
+  { existingThreads = [], draft = false, configHold, noVerdict = false, skipped, memorySkip, restart, onPosted, unreadRecords, disproved = [] }: {
     existingThreads?: PreviousFinding[]; draft?: boolean; configHold?: ConfigHold; noVerdict?: boolean;
+    /** The dropped findings a tool check disproved, which the body lists as checked and left out. */
+    disproved?: DisprovedFinding[];
     /** The reviews whose round record could not be read while a thread stays open, named in the review's first line. */
     unreadRecords?: string[];
     /** Why the round ran without memory, with the fix. */
@@ -1721,14 +1741,14 @@ export async function postReview(
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
       formatCarriedWarnings(carried),
-      // The line points at the progress comment's "Judge decisions", which an incomplete round does not have.
-      result.reviewComplete && formatUnprovenLine(result.unposted ?? []),
       formatNotesSection(notes, result.unposted ?? [], links),
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
       formatRelatedWork(result.relatedWork, owner, repo),
       overrides,
       readyReport?.whatToTest,
+      // The fold points at the progress comment's "Judge decisions", which an incomplete round does not have.
+      result.reviewComplete && formatLeftOut(result, disproved, linkTo),
     ].filter((section): section is string => !!section);
     // A rule sets each section apart.
     return sections.length > 0 ? `${head}\n\n---\n\n${sections.join('\n\n---\n\n')}` : head;

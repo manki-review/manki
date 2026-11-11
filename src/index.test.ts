@@ -4034,7 +4034,7 @@ describe('runFullReview orchestration', () => {
         refutation: expect.objectContaining({ outcome: 'unsettled' }), pairRefutation: expect.objectContaining({ outcome: 'disproved' }),
       })]);
       // The second refuter's disproof drops it while the first abstains, so its reason is the one listed.
-      expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4].disproved).toEqual([{ title: 'Rename the helper', file: 'src/app.ts', line: 9, reason: 'r' }]);
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.disproved).toEqual([{ title: 'Rename the helper', file: 'src/app.ts', line: 9, reason: 'r' }]);
       expect(rc.slicing).toEqual({ files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] });
       // Each related repo carries the reads of every call of the round, a failed one too, and each call its own.
       expect(rc.relatedRepos).toEqual([{ repo: 'o/r', status: 'fetched', durationMs: 900, reads: 6 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }]);
