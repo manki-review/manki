@@ -1990,6 +1990,8 @@ describe('runReview', () => {
         root: '/work/pr-head', steps: 40, related: { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') },
       });
       expect(second).toEqual(first);
+      // No related repo was fetched before the finders ran, so the prompt gets no guide to name.
+      expect(first?.related).not.toHaveProperty('guides');
       expect(rest).toEqual([undefined, undefined, { root: '/work/pr-head', steps: 40 }, { root: '/work/pr-head', steps: 40 }]);
       expect(jest.mocked(withoutTools.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools)).toEqual([undefined, undefined]);
       // The judge gets the related repo rules only for a round whose finders could read them.
@@ -2012,16 +2014,17 @@ describe('runReview', () => {
     const reference = mkdtempSync(join(tmpdir(), 'manki-reference-'));
     writeFileSync(join(reference, 'fee.cpp'), 'CAmount ComputeFee(int n) { return n; }\n');
     writeFileSync(join(reference, 'AGENTS.md'), '# Repository map\n');
-    const fetchSpy = jest.spyOn(relatedRepos, 'fetchReferenceRepos').mockResolvedValue([{ repo: 'o/ref', dir: reference }]);
+    const unguided = mkdtempSync(join(tmpdir(), 'manki-reference-'));
+    const fetchSpy = jest.spyOn(relatedRepos, 'fetchReferenceRepos').mockResolvedValue([{ repo: 'o/ref', dir: reference }, { repo: 'o/unguided', dir: unguided }]);
     const clients = makeClients();
     Object.assign(clients.reviewer, { repoTools: true });
     let result: Awaited<ReturnType<typeof runReview>>;
     try {
-      result = await runReview(clients, { config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+      const related_repos = ['o/ref', 'o/unguided'].map(repo => ({ repo, kind: 'reference' as const }));
+      result = await runReview(clients, { config: makeConfig({ related_repos }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
     } finally {
       fetchSpy.mockRestore();
-      rmSync(root, { recursive: true, force: true });
-      rmSync(reference, { recursive: true, force: true });
+      for (const dir of [root, reference, unguided]) rmSync(dir, { recursive: true, force: true });
     }
 
     const uses = mockedRunJudgeAgent.mock.calls[0][2].usesOutsideDiff;
@@ -2035,10 +2038,10 @@ describe('runReview', () => {
       symbols: [{ name: 'ComputeFee', declared: 'cmd/fee.go:5', uses: ['cmd/use.go:3'] }],
       reference: [{ name: 'ComputeFee', lines: ['o/ref:fee.cpp:1'] }],
     });
-    // The finders are pointed to the guide of a reference fetched before they run, and the round record names it.
-    const finderRelated = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools?.related?.guides);
-    expect(finderRelated).toEqual(finderMessages.map(() => ({ 'o/ref': 'AGENTS.md' })));
-    expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }]);
+    // The finders are pointed to a guide only for the fetched reference whose checkout holds one, and the round record names it.
+    const finderGuides = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools?.related?.guides);
+    expect(finderGuides).toEqual(finderMessages.map(() => ({ 'o/ref': 'AGENTS.md' })));
+    expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/unguided', status: 'unused' }]);
   });
 
   it('asks the sibling comparisons alongside the finders and hands the judge their findings under their own reviewer name', async () => {
