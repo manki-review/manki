@@ -185,6 +185,14 @@ function checkFollowUp(
   });
 }
 
+/** The sets whose directory under `root` holds a case file named after `id`. */
+function caseFiles(id: string, root: string): CaseSet[] {
+  return CASE_SETS.filter((set) => {
+    const dir = join(root, CASE_DIRS[set]);
+    return existsSync(dir) && readdirSync(dir).includes(`${id}.yml`);
+  });
+}
+
 /**
  * Returns the set of the case `id`. Nothing else decides whether text of a case may be printed. A case is a tuning case
  * only when `bench/cases` under `root` holds a file named after its id and `bench/holdout` holds none. Any other case
@@ -192,11 +200,8 @@ function checkFollowUp(
  * stored report gives a case decide nothing.
  */
 export function caseSet(id: string, root = '.'): CaseSet {
-  const holds = (set: CaseSet) => {
-    const dir = join(root, CASE_DIRS[set]);
-    return existsSync(dir) && readdirSync(dir).includes(`${id}.yml`);
-  };
-  return holds('tuning') && !holds('holdout') ? 'tuning' : 'holdout';
+  const held = caseFiles(id, root);
+  return held.length === 1 && held[0] === 'tuning' ? 'tuning' : 'holdout';
 }
 
 /**
@@ -1391,26 +1396,42 @@ export function resolveVariants(args: Pick<BenchArgs, 'variants' | 'sets'>): Var
   });
 }
 
-/**
- * Reads a stored report. Throws when it calls a case a tuning case that `caseSet` does not, naming only the case, so
- * that no text of a hold-out case is printed by a wrong set: the report of a single case job of an older ref calls its
- * hold-out case a tuning case. `unchecked` is for the one reader that gives each case its set itself. A parser's
- * message quotes the file, which holds findings, so that error names only the file.
- */
-export function readReport(path: string, sets: 'checked' | 'unchecked' = 'checked', root = '.'): BenchReport {
+/** Reads a stored report as it is. No set in it is to be believed. A parser's message quotes the file, which holds findings, so the error names only the file. */
+export function readReportFile(path: string): BenchReport {
   const text = readFileSync(path, 'utf-8');
-  let report: BenchReport;
   try {
-    report = JSON.parse(text) as BenchReport;
+    return JSON.parse(text) as BenchReport;
   } catch {
     throw new Error(`The report ${path} is not valid JSON`);
   }
-  if (sets === 'unchecked') return report;
-  const wrong = [...new Set(report.variants.flatMap(v => v.cases).filter(c => c.set !== 'holdout' && caseSet(c.id, root) === 'holdout').map(c => c.id))];
-  if (wrong.length > 0) {
-    throw new Error(`The report ${path} calls ${wrong.join(', ')} a tuning case, which its id does not make it. A tuning case has a file named after its id in ${CASE_DIRS.tuning} and none in ${CASE_DIRS.holdout}.`);
-  }
-  return report;
+}
+
+/** A stored report with each case's set taken from the case files, and the ids of the cases it held that no case file holds. */
+interface StoredReport {
+  report: BenchReport;
+  removed: string[];
+}
+
+/**
+ * Reads a stored report to print or compare it. Each case takes its set from `caseSet`, never from the report. A case
+ * that no case file holds was removed or renamed since, so no current case compares with it: the report is returned
+ * without it, and its id in `removed`. Throws only when the report contradicts the case files: it calls a case a tuning
+ * case while `bench/holdout` holds the case's file, as the report of a single case job of an older ref does. That error
+ * names only the case.
+ */
+export function readReport(path: string, root = '.'): StoredReport {
+  const stored = readReportFile(path);
+  const ids = [...new Set(stored.variants.flatMap(v => v.cases.map(c => c.id)))];
+  const wrong = ids.filter(id => caseFiles(id, root).includes('holdout') && stored.variants.some(v => v.cases.some(c => c.id === id && c.set !== 'holdout')));
+  if (wrong.length > 0) throw new Error(`The report ${path} calls ${wrong.join(', ')} a tuning case, and ${CASE_DIRS.holdout} holds a case file for it.`);
+  const removed = ids.filter(id => caseFiles(id, root).length === 0);
+  const variants = stored.variants.map(v => variantReport(v, v.cases.filter(c => !removed.includes(c.id)).map(c => ({ ...c, set: caseSet(c.id, root) }))));
+  return { report: { ...stored, variants }, removed };
+}
+
+/** Names the cases a stored report held that no case file holds, in one line, or returns an empty string. */
+export function formatRemoved(removed: string[]): string {
+  return removed.length > 0 ? `Left out, no case file holds it: ${[...new Set(removed)].join(', ')}` : '';
 }
 
 function writeJson(path: string, value: unknown): void {
@@ -1433,7 +1454,7 @@ export function runBenchCommand(argv: string[], root = '.'): Promise<number> {
     const cache = loadMatcherCache(args.cache);
     const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
     if (args.rescore) {
-      const stored = readReport(args.rescore, 'checked', root);
+      const { report: stored, removed } = readReport(args.rescore, root);
       // A report holds one matcher model, and the gate refuses to compare reports matched by different ones.
       if (stored.matcherModel !== args.matcherModel) throw new Error(`The report was matched by ${stored.matcherModel}. Pass --matcher-model ${stored.matcherModel} to score it again.`);
       const { report, rescored, left } = await rescoreReport(stored, cases, matcher).finally(() => writeJson(args.cache, Object.fromEntries(cache)));
@@ -1441,6 +1462,7 @@ export function runBenchCommand(argv: string[], root = '.'): Promise<number> {
       writeJson(outPath, report);
       out(rescored.length > 0 ? `Scored again with the changed key: ${rescored.join(', ')}\n` : 'No case was scored again.\n');
       for (const { id, reason } of left) out(`Left as scored, ${id}: ${reason}.\n`);
+      if (removed.length > 0) out(`${formatRemoved(removed)}\n`);
       out(`Report: ${outPath}\n`);
       return 0;
     }

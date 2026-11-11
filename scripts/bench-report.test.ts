@@ -87,13 +87,32 @@ describe('formatReportSummary and the commands on a stored report', () => {
       expect(out).toHaveBeenLastCalledWith('Not listed, in another set: shown-1');
       out.mockClear();
 
-      const refused = `The report ${wrong} calls held-1 a tuning case, which its id does not make it. A tuning case has a file named after its id in bench/cases and none in bench/holdout.`;
+      const refused = `The report ${wrong} calls held-1 a tuning case, and bench/holdout holds a case file for it.`;
       for (const flags of [[], ['--set', 'both'], ['--set', 'holdout']]) expect(() => main(['unmatched', '--report', wrong, ...flags], root)).toThrow(new Error(refused));
       expect(() => main(['gate', '--baseline', right, '--candidate', wrong], root)).toThrow(new Error(refused));
       process.env.GITHUB_ACTIONS = 'true';
       expect(() => main(['unmatched', '--report', wrong], root)).toThrow(new Error(refused));
       expect(out).not.toHaveBeenCalled();
       expect(() => main(['unmatched', '--report', right, '--set', 'both'], root)).toThrow('The findings of hold-out cases are not listed in a workflow job');
+
+      // An old report can hold a case whose file was removed or renamed since. It is read without an error. Such a case is left out
+      // of the list and of the gate and named, whatever set the report gives it, and no text of it is printed.
+      delete process.env.GITHUB_ACTIONS;
+      const gone = (id: string, label: CaseSet) => reportOf({ ...tuning, id, set: label }, 'GONE-TEXT').variants[0].cases[0];
+      const current = JSON.parse(readFileSync(right, 'utf-8')) as BenchReport;
+      mkdirSync(join(root, 'old'));
+      const old = join(root, 'old', 'report.json');
+      writeFileSync(old, JSON.stringify({ ...current, variants: [{ ...current.variants[0], cases: [...current.variants[0].cases, gone('gone-1', 'tuning'), gone('gone-2', 'holdout')] }] }));
+      out.mockClear();
+      for (const flags of [[], ['--set', 'both']]) expect(main(['unmatched', '--report', old, ...flags], root)).toBe(0);
+      expect(printed()).toContain('src/SHOWN-TEXT.rs:3: title SHOWN-TEXT');
+      expect(printed()).toContain('src/HOLDOUT-TEXT.rs:3: title HOLDOUT-TEXT');
+      expect(out).toHaveBeenLastCalledWith('Left out, no case file holds it: gone-1, gone-2');
+      expect(main(['gate', '--baseline', old, '--candidate', old], root)).toBe(0);
+      expect(String(out.mock.lastCall)).toMatch(/\nShared hold-out cases \(1\): held-1\n\nLeft out, no case file holds it: gone-1, gone-2\n$/);
+      expect(printed()).not.toContain('GONE-TEXT');
+      out.mockClear();
+      process.env.GITHUB_ACTIONS = 'true';
 
       // `merge` gives each case the set `caseSet` names, whatever the case job's report says.
       expect(main(['merge', '--set', 'both', '--dir', join(root, 'wrong'), '--out', join(root, 'merged.json')], root)).toBe(0);

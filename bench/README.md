@@ -67,7 +67,7 @@ A false blocker is either a wrong blocker or a real defect the key does not list
 
 Of a hold-out case the bench prints the id and counts only. Its review, its matcher calls and the load of its config log nothing, and the summary leaves out its source and the reason of a failed run, which stay in the report file. Its findings are listed only on request, with `--set holdout`, and never in a workflow job, since the logs and summaries of this repository are public. On GitHub a hold-out case job shows no output of the bench at all, whatever its ref prints.
 
-A stored report is not trusted on the set of a case. `--rescore`, `bench-report unmatched` and `bench-report gate` refuse a report that calls a case a tuning case when its id does not make it one, with an error that names the case. The report of a single case job of a ref before v7.5 is such a report, since it calls its hold-out case a tuning case. `bench-report merge` reads those reports and writes the set each id gives into the merged report.
+A stored report is not trusted on the set of a case. `--rescore`, `bench-report unmatched` and `bench-report gate` take each case's set from its id. They refuse a report only when it contradicts the case files, which is when it calls a case a tuning case while `holdout/` holds the case's file. The report of a single case job of a ref before v7.5 is such a report. `bench-report merge` reads those reports and writes the set each id gives into the merged report. A case that was removed or renamed after a report was written has no case file any more, so it is left out of the list, the gate and the rescored report, and named in one line.
 
 ### Scoring a report again after a key change
 

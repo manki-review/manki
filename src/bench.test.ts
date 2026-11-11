@@ -781,13 +781,18 @@ describe('runBench and buildReport', () => {
           writeFileSync(join(root, 'report.json'), JSON.stringify({ ...report, variants: report.variants.map(v => ({ ...v, cases: v.cases.map(c => ({ ...c, set: c.id === 'held-1' ? held : shown })) })) }));
           return join(root, 'report.json');
         };
-        expect(readReport(stored('holdout'), 'checked', root).variants[0].cases.map(c => c.set)).toEqual(['tuning', 'holdout']);
-        const refused = (id: string) => new Error(`The report ${join(root, 'report.json')} calls ${id} a tuning case, which its id does not make it. A tuning case has a file named after its id in bench/cases and none in bench/holdout.`);
-        expect(() => readReport(stored('tuning'), 'checked', root)).toThrow(refused('held-1'));
-        // A report that calls a tuning case a hold-out case prints less of it, so it is read.
-        expect(readReport(stored('holdout', 'holdout'), 'checked', root).variants[0].cases.map(c => c.set)).toEqual(['holdout', 'holdout']);
-        // Without the repository's case files nothing says a case is a tuning case.
-        expect(() => readReport(stored('holdout'), 'checked', join(root, 'bench'))).toThrow(refused('shown-1'));
+        const sets = (path: string, from = root) => {
+          const { report: read, removed } = readReport(path, from);
+          return { sets: read.variants[0].cases.map(c => [c.id, c.set]), removed };
+        };
+        expect(sets(stored('holdout'))).toEqual({ sets: [['shown-1', 'tuning'], ['held-1', 'holdout']], removed: [] });
+        expect(() => readReport(stored('tuning'), root)).toThrow(new Error(`The report ${join(root, 'report.json')} calls held-1 a tuning case, and bench/holdout holds a case file for it.`));
+        // The case files give each case its set, whatever the report calls it.
+        expect(sets(stored('holdout', 'holdout'))).toEqual({ sets: [['shown-1', 'tuning'], ['held-1', 'holdout']], removed: [] });
+        // A case no case file holds is no contradiction. It is left out and named, and nothing of it is read as a tuning case.
+        rmSync(join(root, 'bench', 'holdout', 'held-1.yml'));
+        expect(sets(stored('tuning'))).toEqual({ sets: [['shown-1', 'tuning']], removed: ['held-1'] });
+        expect(sets(stored('holdout'), join(root, 'bench'))).toEqual({ sets: [], removed: ['shown-1', 'held-1'] });
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -1149,18 +1154,23 @@ describe('runBenchCommand', () => {
       expect(await runBenchCommand(['--rescore', join(dir, 'cut.json'), '--cases', cases], dir)).toBe(2);
       expect(stderr).toHaveBeenLastCalledWith(`manki bench: The report ${join(dir, 'cut.json')} is not valid JSON\n`);
 
-      // A report that calls a hold-out case a tuning case, as the report of a single case job of an older ref does, is refused by the id alone.
+      // A stored case that no case file holds was removed since: it is left out and named. A report that calls a hold-out case a tuning case,
+      // as the report of a single case job of an older ref does, is refused by the id alone.
       const [scoredCase] = stored.variants[0].cases;
       const finding = { severity: 'blocker' as const, title: 'title HOLDOUT-TEXT', file: 'src/HOLDOUT-TEXT.rs', line: 1, description: 'description HOLDOUT-TEXT' };
       const held = { ...scoredCase, id: 'held-1', source: 'source HOLDOUT-TEXT', runs: [{ ...scoredCase.runs[0], findings: [finding], error: 'failed on HOLDOUT-TEXT' }] };
       const mislabelled = join(dir, 'mislabelled.json');
       writeFileSync(mislabelled, JSON.stringify({ ...stored, variants: [{ ...stored.variants[0], cases: [scoredCase, held] }] }));
-      const refused = `manki bench: The report ${mislabelled} calls held-1 a tuning case, which its id does not make it. A tuning case has a file named after its id in bench/cases and none in bench/holdout.\n`;
-      expect(await runBenchCommand(['--rescore', mislabelled, '--cases', cases, '--cache', cache], dir)).toBe(2);
-      expect(stderr).toHaveBeenLastCalledWith(refused);
+      stdout.mockClear();
+      expect(await runBenchCommand(['--rescore', mislabelled, '--cases', cases, '--cache', cache], dir)).toBe(0);
+      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`Scored again with the changed key: demo-1\nLeft out, no case file holds it: held-1\nReport: ${join(dir, 'mislabelled.rescored.json')}\n`);
+      expect((JSON.parse(readFileSync(join(dir, 'mislabelled.rescored.json'), 'utf-8')) as BenchReport).variants[0].cases.map(c => c.id)).toEqual(['demo-1']);
+      const refused = `manki bench: The report ${mislabelled} calls held-1 a tuning case, and bench/holdout holds a case file for it.\n`;
       writeFileSync(join(holdout, 'held-1.yml'), CASE_YAML.replace('id: demo-1', 'id: held-1').replace('key_version: 2', 'key_version: 3'));
-      expect(await runBenchCommand(['--rescore', mislabelled, '--cases', cases, '--holdout', '--cache', cache], dir)).toBe(2);
-      expect(stderr).toHaveBeenLastCalledWith(refused);
+      for (const flags of [[], ['--holdout']]) {
+        expect(await runBenchCommand(['--rescore', mislabelled, '--cases', cases, ...flags, '--cache', cache], dir)).toBe(2);
+        expect(stderr).toHaveBeenLastCalledWith(refused);
+      }
       expect([...stdout.mock.calls, ...stderr.mock.calls].join('')).not.toContain('HOLDOUT-TEXT');
 
       // A stored case with no case file loaded is named, and is not counted as scored again.
