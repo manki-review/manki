@@ -349,6 +349,8 @@ export interface Finding {
   suppressedBy?: string;
   /** Why the review leaves the finding out. Only the round record keeps such a finding. */
   unpostedReason?: UnpostedReason;
+  /** Set on an unproven warning the refuter could have checked, had `MAX_DOUBT_CHECKS` other warnings not taken the round's checks. */
+  overCheckLimit?: true;
   /** Set on a warning nothing proves that is posted all the same, because it would be a blocker if it holds. */
   unconfirmed?: true;
   /** The finding's place in the judge's order of the notes, 0 for the one the author gains most from. Unset when the judge did not rank it. */
@@ -645,7 +647,7 @@ export const UNPOSTED_REASONS = {
   no_proof: 'it cites no lines that prove it',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
-/** Why nothing proves a warning: a check ran and settled nothing, no check ran, or the round checks nothing and no line is cited. */
+/** Why nothing proves a warning: a check ran and settled nothing, the round's checks did not reach it, or no check could decide and no line is cited. */
 export const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof'] as const satisfies readonly UnpostedReason[];
 export type UnprovenReason = typeof UNPROVEN_REASONS[number];
 

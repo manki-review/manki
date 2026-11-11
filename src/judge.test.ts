@@ -5590,9 +5590,10 @@ describe('judge grading fixture corpus', () => {
     const graded = result.findings[0];
     console.log(`[live-judge] ${fixture.name}: allowed=${fixture.allowed.join('|')} actual=${graded?.severity} cell=${JSON.stringify(graded?.cell)} gradeIfConfirmed=${graded?.gradeIfConfirmed} doubts=${JSON.stringify(graded?.doubts ?? [])} reasoning=${JSON.stringify(graded?.judgeNotes ?? '')}`);
     expect(fixture.allowed).toContain(graded?.severity);
-    // A proven warning needs no check with or without tools. An unproven one names a doubt or cites no lines, so tools would check it.
-    if (fixture.proven) expect([unprovenReason(graded, true), unprovenReason(graded, false)]).toEqual([undefined, undefined]);
-    if (fixture.proven === false) expect(unprovenReason(graded, true)).toBeDefined();
+    // A proven warning is posted even when no check reaches it. An unproven one names a doubt or cites no lines, so it is posted only once a check confirms it.
+    const unreached = unprovenReason({ ...graded, overCheckLimit: true });
+    if (fixture.proven) expect([unprovenReason(graded), unreached]).toEqual([undefined, undefined]);
+    if (fixture.proven === false) expect(unreached).toBe('not_checked');
   }, 600_000);
 });
 

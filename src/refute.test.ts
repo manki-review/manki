@@ -501,6 +501,10 @@ describe('refuteBlockers', () => {
       // A finding in the `rare` column of the `wrong` row is such a check.
       finding('Second warning to blocker', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'Any client reaches it', decides: 'grade' }] }),
       doubted('Doubted note', 'note'),
+      // A warning whose file the refuter cannot read, such as one the PR deletes or one with no file, takes none of the eight.
+      { ...doubted('Doubt in a deleted file', 'warning'), file: 'src/deleted.ts' },
+      { ...doubted('Doubt with no file', 'warning'), file: '' },
+      finding('No proof in a deleted file', { severity: 'warning', file: 'src/deleted.ts', ...noProof }),
       doubted('Doubted warning 1', 'warning'),
       doubted('Doubted warning 2', 'warning'),
       doubted('Doubted warning 3', 'warning'),
@@ -534,20 +538,23 @@ describe('refuteBlockers', () => {
     expect(client.messages.find(([, user]) => user.includes(': Warning without proof\n'))![1]).toMatch(/^## Warning no cited line proves: Warning without proof\n/);
     expect(client.messages[0][0]).toContain('a claimed build failure no CI result reports, a warning no cited line proves, or a finding that rests on premises the judge doubts');
 
-    // On a round with a refuter, a check that settles nothing and a check that never ran both leave a warning unproven.
-    const reasons = (refuterRan: boolean) => Object.fromEntries(result.filter(f => f.severity === 'warning').map(f => [f.title, unprovenReason(f, refuterRan)]));
-    expect(reasons(true)).toEqual({
+    // Only a check that settled nothing and the limit leave a doubted warning unproven. Where no check could run, the cited lines decide.
+    const reasons = (list: Finding[]) => Object.fromEntries(list.filter(f => f.severity === 'warning').map(f => [f.title, unprovenReason(f)]));
+    expect(reasons(result)).toEqual({
       'Warning to blocker': undefined, 'Second warning to blocker': undefined, 'Grade doubt at its grade': undefined, 'Proven warning': undefined,
       'Doubted warning 1': 'unsettled_check', 'Doubted warning 2': 'unsettled_check', 'Doubted warning 3': 'unsettled_check', 'Doubted warning 4': 'unsettled_check',
       'Doubted warning 5': 'unsettled_check', 'Doubted warning 6': 'unsettled_check', 'Doubted warning 7': 'unsettled_check', 'Warning without proof': 'unsettled_check',
       'Doubted warning 8': 'not_checked', 'Second warning without proof': 'not_checked',
-      'Tool alert without proof': 'not_checked', 'Security warning without proof': 'not_checked',
+      'Doubt in a deleted file': undefined, 'Doubt with no file': undefined, 'No proof in a deleted file': 'no_proof',
+      'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof',
     });
-    // Without one, only the cited lines decide.
-    expect(Object.entries(reasons(false)).filter(([, reason]) => reason).map(([title, reason]) => [title, reason])).toEqual([
-      ['Warning without proof', 'no_proof'], ['Tool alert without proof', 'no_proof'], ['Security warning without proof', 'no_proof'], ['Second warning without proof', 'no_proof'],
+    // Before any check, as on a round without tools, only the cited lines decide.
+    expect(Object.entries(reasons(findings)).filter(([, reason]) => reason)).toEqual([
+      ['No proof in a deleted file', 'no_proof'], ['Warning without proof', 'no_proof'], ['Tool alert without proof', 'no_proof'], ['Security warning without proof', 'no_proof'],
+      ['Second warning without proof', 'no_proof'],
     ]);
   });
+
 
   it('proves a warning by a check that confirms it, and leaves a blocker posted as a warning unproven until one does', async () => {
     const exists = [{ premise: 'The copy is never dropped', decides: 'defect' as const }];
@@ -556,25 +563,35 @@ describe('refuteBlockers', () => {
       'No proof confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
       'No proof disproved': { outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] },
       'Capped blocker unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
+      'Doubt and the call fails': new Error('overloaded'),
+      'No proof and the call fails': new Error('overloaded'),
     });
     const findings = [
       finding('Doubt confirmed', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists }),
       finding('No proof confirmed', { severity: 'warning', evidence: { checks: [], proof: [] } }),
       finding('No proof disproved', { severity: 'warning', evidence: { checks: [], proof: [] } }),
       finding('Capped blocker unsettled', { severity: 'warning', tags: ['unproven-blocker'] }),
+      finding('Doubt and the call fails', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists }),
+      finding('No proof and the call fails', { severity: 'warning', evidence: { checks: [], proof: [] } }),
       finding('Capped build claim', { severity: 'warning', tags: ['unconfirmed-build-claim'] }),
     ];
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
 
-    const result = await refuteBlockers(client, findings.slice(0, 4), { workspace, diff });
+    const result = await refuteBlockers(client, findings.slice(0, 6), { workspace, diff });
 
-    expect(result.map(f => [f.title, f.severity, f.evidence?.proof, f.severity === 'warning' && unprovenReason(f, true)])).toEqual([
+    expect(result.map(f => [f.title, f.severity, f.evidence?.proof, f.severity === 'warning' && unprovenReason(f)])).toEqual([
       ['Doubt confirmed', 'warning', ['src/math.ts:2'], undefined],
       ['No proof confirmed', 'warning', ['src/math.ts:2'], undefined],
       ['No proof disproved', 'ignore', [], false],
       ['Capped blocker unsettled', 'warning', ['src/math.ts:2'], 'unsettled_check'],
+      // A call that fails settles nothing either way, so an outage hides no warning that cites its proof.
+      ['Doubt and the call fails', 'warning', ['src/math.ts:2'], undefined],
+      ['No proof and the call fails', 'warning', [], 'no_proof'],
     ]);
-    // A cap for want of proof stands whatever lines are cited, with or without a refuter.
-    expect([unprovenReason(findings[3], true), unprovenReason(findings[3], false), unprovenReason(findings[4], false)]).toEqual(['not_checked', 'no_proof', 'no_proof']);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Could not check "Doubt and the call fails"'));
+    warnSpy.mockRestore();
+    // A cap for want of proof stands whatever lines are cited, checked or not.
+    expect([unprovenReason(findings[3]), unprovenReason(findings[6])]).toEqual(['no_proof', 'no_proof']);
 
     // One check that confirms every premise the defect rests on proves it, whatever it says of the grade and whatever a second check says.
     const answer = (outcome: 'confirmed' | 'disproved' | 'unsettled', premises: Array<'confirmed' | 'disproved' | 'unsettled'>) => ({
@@ -583,10 +600,10 @@ describe('refuteBlockers', () => {
     });
     const twoDoubts = finding('Two doubts', { severity: 'warning', doubts: [...exists, { premise: 'Any client reaches it', decides: 'grade' }] });
     expect([
-      unprovenReason({ ...twoDoubts, refutation: answer('unsettled', ['confirmed', 'disproved']) }, true),
-      unprovenReason({ ...twoDoubts, refutation: answer('unsettled', ['unsettled', 'confirmed']) }, true),
-      unprovenReason({ ...twoDoubts, refutation: answer('confirmed', ['confirmed', 'confirmed']), pairRefutation: answer('disproved', ['disproved', 'confirmed']) }, true),
-      unprovenReason({ ...twoDoubts, refutation: answer('unsettled', ['unsettled', 'unsettled']), pairRefutation: answer('unsettled', ['unsettled', 'unsettled']) }, true),
+      unprovenReason({ ...twoDoubts, refutation: answer('unsettled', ['confirmed', 'disproved']) }),
+      unprovenReason({ ...twoDoubts, refutation: answer('unsettled', ['unsettled', 'confirmed']) }),
+      unprovenReason({ ...twoDoubts, refutation: answer('confirmed', ['confirmed', 'confirmed']), pairRefutation: answer('disproved', ['disproved', 'confirmed']) }),
+      unprovenReason({ ...twoDoubts, refutation: answer('unsettled', ['unsettled', 'unsettled']), pairRefutation: answer('unsettled', ['unsettled', 'unsettled']) }),
     ]).toEqual([undefined, 'unsettled_check', undefined, 'unsettled_check']);
   });
 

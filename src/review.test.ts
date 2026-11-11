@@ -2505,8 +2505,10 @@ describe('runReview', () => {
         'The check confirmed the doubt': { ...proof, doubts, ...checked('confirmed') },
         'The check confirmed it without cited lines': checked('confirmed'),
         'The check settled nothing': { ...proof, doubts, ...checked('unsettled') },
-        'Doubted and past the limit of checks': { ...proof, doubts },
-        'No cited lines and never checked': {},
+        'Doubted and past the limit of checks': { ...proof, doubts, overCheckLimit: true },
+        // No check could decide, as when the refuter's call fails or it cannot read the file, so the cited lines do.
+        'Doubted and no check could run': { ...proof, doubts },
+        'No cited lines and no check could run': {},
         // Only a warning is left out.
         'A doubted note': { severity: 'note', doubts },
         'A blocker': { severity: 'blocker', ...proof },
@@ -2514,15 +2516,15 @@ describe('runReview', () => {
 
       expect(shown(result)).toEqual([
         ['Cited lines show it', undefined], ['The check confirmed the doubt', undefined], ['The check confirmed it without cited lines', undefined],
-        ['A doubted note', undefined], ['A blocker', undefined],
+        ['Doubted and no check could run', undefined], ['A doubted note', undefined], ['A blocker', undefined],
       ]);
       expect(recordedOnly(result)).toEqual([
         ['The check settled nothing', 'warning', 'unsettled_check'],
         ['Doubted and past the limit of checks', 'warning', 'not_checked'],
-        ['No cited lines and never checked', 'warning', 'not_checked'],
+        ['No cited lines and no check could run', 'warning', 'no_proof'],
       ]);
       // The judged list still holds each one, so the progress comment can name it.
-      expect(result.allJudgedFindings?.map(f => f.title)).toEqual(expect.arrayContaining(['The check settled nothing', 'No cited lines and never checked']));
+      expect(result.allJudgedFindings?.map(f => f.title)).toEqual(expect.arrayContaining(['The check settled nothing', 'No cited lines and no check could run']));
       // A warning never blocks, so leaving one out changes no outcome.
       expect(result.outcome).toBe('ADDRESS_FIRST');
     });
@@ -2544,7 +2546,7 @@ describe('runReview', () => {
         ['The judge held a blocker cell down', true], ['A blocker without cited lines', true], ['A build failure no CI result reports', true],
         ['A finder filed it as a blocker', true], ['A blocker the judge lowered', true], ['A security finding', undefined], ['A tool alert', undefined],
       ]);
-      expect(recordedOnly(result)).toEqual([['A warning nothing proves', 'warning', 'not_checked']]);
+      expect(recordedOnly(result)).toEqual([['A warning nothing proves', 'warning', 'no_proof']]);
       expect(result.outcome).toBe('READY');
     });
 

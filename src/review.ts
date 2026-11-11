@@ -105,11 +105,11 @@ function wouldBlockIfTrue(f: Finding): boolean {
  * a tool alert, a finding linked to one an earlier round already shows, and a finding that `wouldBlock`, which is
  * marked `unconfirmed`.
  */
-function hideUnprovenWarnings(findings: Finding[], refuterRan: boolean, wouldBlock = wouldBlockIfTrue): { posted: Finding[]; unposted: Finding[] } {
+function hideUnprovenWarnings(findings: Finding[], wouldBlock = wouldBlockIfTrue): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
   const unposted: Finding[] = [];
   for (const f of findings) {
-    const unpostedReason = f.severity === 'warning' && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) ? unprovenReason(f, refuterRan) : undefined;
+    const unpostedReason = f.severity === 'warning' && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) ? unprovenReason(f) : undefined;
     if (!unpostedReason || f.threadId || f.answeredIn || f.raisedIn !== undefined || f.sameAs || f.variantOf) {
       posted.push(f);
     } else if (wouldBlock(f)) {
@@ -1476,7 +1476,7 @@ export async function runReview(
   // A blocker folded into a thread raises that thread again, so the threads are graded once more over the folded findings.
   threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
   // After the fold into earlier findings, so a warning an earlier round already shows stays where it is.
-  const proven = hideUnprovenWarnings(finalFindings, !!refutation);
+  const proven = hideUnprovenWarnings(finalFindings);
   finalFindings = proven.posted;
   const unposted = proven.unposted;
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles);
@@ -1529,7 +1529,7 @@ export async function runReview(
       const folded = await foldIntoReaderBlockers(finalFindings, restated, foldWrap?.client);
       if (foldWrap?.getTotals().calls) logOutputTokens('LLM dedup of nearby findings', foldWrap.getTotals().usage);
       // The reader names only blockers, so each one would block if true: none is left out, and one nothing confirmed is marked.
-      const readerFindings = hideUnprovenWarnings(folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), !!refutation, () => true).posted;
+      const readerFindings = hideUnprovenWarnings(folded.blockers.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f), () => true).posted;
       finalFindings = [...folded.findings, ...readerFindings];
       threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
       // A reader whose every blocker was a claimed build failure CI does not report leaves the change ready.
