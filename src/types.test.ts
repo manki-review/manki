@@ -26,7 +26,7 @@ describe('migrateLegacySeverity', () => {
 });
 
 describe('migrateStoredSeverities', () => {
-  it('rewrites every stored severity of an older record, at any depth, adds up the counts of merged levels, and keeps a stored config and a field that only shares a name', () => {
+  it('rewrites every stored severity of an older record, at any depth, adds up the counts of merged levels, drops a grade step between merged levels, and keeps a stored config and a field that only shares a name', () => {
     const record = {
       meta: { round: 2, to: 5 },
       config: { severity: 'suggestion' },
@@ -37,6 +37,8 @@ describe('migrateStoredSeverities', () => {
         entries: [
           { title: 'A suggestion to rename', severity: 'suggestion', reviewerSeverity: 'nitpick', originalSeverity: 'required', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'nit', to: 'suggestion', by: 'judge' }] },
           { severity: 'warning', cell: { row: 'style', column: 'normal' } },
+          // A step between two levels that are now one is no grade change, and the steps around it still join up.
+          { severity: 'ignore', gradePath: [{ from: 'warning', to: 'suggestion', by: 'judge' }, { from: 'suggestion', to: 'nitpick', by: 'ratchet', reason: 'r' }, { from: 'nitpick', to: 'ignore', by: 'in_pr_suppression' }] },
         ],
         unposted: [{ severity: 'nitpick', unpostedReason: 'note_cap' }],
       },
@@ -53,8 +55,9 @@ describe('migrateStoredSeverities', () => {
       findings: {
         severityCounts: { blocker: 1, warning: 0, note: 5 },
         entries: [
-          { title: 'A suggestion to rename', severity: 'note', reviewerSeverity: 'note', originalSeverity: 'blocker', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'note', to: 'note', by: 'judge' }] },
+          { title: 'A suggestion to rename', severity: 'note', reviewerSeverity: 'note', originalSeverity: 'blocker', gradeIfConfirmed: 'blocker' },
           { severity: 'warning', cell: { row: 'style', column: 'normal' } },
+          { severity: 'ignore', gradePath: [{ from: 'warning', to: 'note', by: 'judge' }, { from: 'note', to: 'ignore', by: 'in_pr_suppression' }] },
         ],
         unposted: [{ severity: 'note', unpostedReason: 'note_cap' }],
       },
@@ -63,7 +66,7 @@ describe('migrateStoredSeverities', () => {
       staticSignals: [{ severity: 'note', tool: 'suggestion' }],
     });
     // A record of the current version, and a value that is no record, come back as they are.
-    const current = { findings: { severityCounts: { blocker: 0, warning: 1, note: 2 }, entries: [{ severity: 'note' }] } };
+    const current = { findings: { severityCounts: { blocker: 0, warning: 1, note: 2 }, entries: [{ severity: 'note', gradePath: [{ from: 'warning', to: 'note', by: 'judge' }] }] } };
     expect(migrateStoredSeverities(structuredClone(current))).toEqual(current);
     for (const value of [null, undefined, 'suggestion', 3]) expect(migrateStoredSeverities(value)).toBe(value);
   });

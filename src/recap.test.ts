@@ -686,7 +686,8 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'note', 'note', 'note']);
     expect(state.priorRounds[0].findings.severityCounts).toEqual({ blocker: 0, warning: 0, note: 2 });
     expect(state.priorRounds[0].findings.entries.map(e => [e.severity, e.reviewerSeverity, e.originalSeverity, e.gradePath])).toEqual([
-      ['note', 'note', undefined, [{ from: 'note', to: 'note', by: 'judge' }]],
+      // The step between the two old levels is no grade change any more, so the entry keeps no path.
+      ['note', 'note', undefined, undefined],
       ['note', undefined, 'blocker', undefined],
     ]);
   });

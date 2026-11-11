@@ -89,8 +89,8 @@ const CONFIG_FIELDS: ReadonlySet<string> = new Set(['config', 'overrides']);
 
 /**
  * Rewrites, in place, every severity in a parsed record that an older version of Manki wrote, at any depth, and
- * returns the record. A count keyed by severity is added to the count of the severity it migrates to. A stored config
- * is left as it is.
+ * returns the record. A count keyed by severity is added to the count of the severity it migrates to. A `gradePath`
+ * step between two levels that are now one is dropped. A stored config is left as it is.
  */
 export function migrateStoredSeverities<T>(record: T): T {
   migrateFields(record, SEVERITY_FIELDS);
@@ -106,6 +106,12 @@ function migrateFields(record: unknown, severityFields: ReadonlySet<string>): vo
       if (typeof value === 'string' && severityFields.has(key)) fields[key] = migrateLegacySeverity(value);
       else if (key === 'severityCounts' && value && typeof value === 'object') fields[key] = migrateSeverityCounts(value as Record<string, unknown>);
       else if (!CONFIG_FIELDS.has(key)) migrateFields(value, SEVERITY_FIELDS_OF.get(key) ?? SEVERITY_FIELDS);
+    }
+    // `gradeStep` writes no step between equal grades, so a step whose grades the migration made equal is dropped.
+    if (Array.isArray(fields.gradePath)) {
+      const steps = fields.gradePath.filter((step: Partial<GradeStep> | null) => !step || step.from !== step.to);
+      if (steps.length > 0) fields.gradePath = steps;
+      else delete fields.gradePath;
     }
   }
 }
