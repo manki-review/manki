@@ -1370,7 +1370,11 @@ export async function runReview(
         openLeads.push(...unsettled);
         finalFindings = [...finalFindings, ...kept.filter(f => !unsettled.includes(f))];
       } catch (error) {
-        core.warning(`The judge failed on the sweep's findings, so the round posts none of them: ${error}`);
+        // A round that lost what the sweep found is never complete, since a blocker may be among it.
+        core.warning(`The judge failed on the sweep's findings: ${error}`);
+        return incomplete(error instanceof QuotaError ? quotaSummary(error) : `The judge failed on the findings of the sweep. ${RETRY_HINT}`, {
+          sweeps, ...(openLeads.length > 0 && { openLeads }),
+        });
       }
     }
   }

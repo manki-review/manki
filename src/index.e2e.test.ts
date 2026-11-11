@@ -746,6 +746,27 @@ describe('runFullReview end to end', () => {
     expect(mockLLM.calls).not.toContain('verdict');
   });
 
+  it('ends INCOMPLETE and posts no finding when the judge leaves one of two findings out twice', async () => {
+    const skipped = { ...BLOCKER, title: 'Division by a zero count', line: 5, proof: ['src/math.ts:5'] };
+    // The judge grades the first finding a note in both replies and never mentions the second, which its finder filed as a blocker.
+    Object.assign(mockLLM.replies, {
+      reviewer: JSON.stringify([BLOCKER, skipped]),
+      judge: JSON.stringify({ summary: 'One note.', findings: [{ id: 1, title: BLOCKER.title, row: 'improvement', reasoning: 'Bounded by the caller.', confidence: 'high' }] }),
+    });
+
+    await reviewRound();
+
+    expect(mockLLM.calls.filter(stage => stage === 'judge')).toHaveLength(2);
+    expect(core.setFailed).toHaveBeenCalledWith(expect.stringContaining('The judge failed'));
+    expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED']);
+    expect(mockLLM.calls).not.toContain('verdict');
+    // Only the hidden round record names the findings. No thread, review body or comment shows one.
+    expect(mockGitHub.threads).toEqual([]);
+    const shown = [...postedReviews(), ...mockGitHub.comments].map(posted => posted.body.replace(/<!--[\s\S]*?-->/g, '')).join('\n');
+    expect(shown).not.toContain(skipped.title);
+    expect(shown).not.toContain(BLOCKER.title);
+  });
+
   it('posts the record of an incomplete round, which the next round does not read as an earlier round', async () => {
     Object.assign(mockLLM.replies, BLOCKER_REPLIES);
     await reviewRound();
