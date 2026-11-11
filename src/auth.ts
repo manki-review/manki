@@ -3,6 +3,7 @@ import * as github from '@actions/github';
 import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
+import { offerQueuedCheck, QueuedCheck } from './check-run';
 import { BOT_LOGIN, BotIdentity } from './github';
 import type { PrState, RunMode, StateReport, TokenServiceCall } from './types';
 import { redactSecretsDeep, registerSecret } from './utils';
@@ -49,6 +50,8 @@ export interface AuthResult {
 
 export interface TokenResult {
   token: string;
+  /** The queued `Manki` check the service created for this run's review, when it created one. */
+  queuedCheck?: QueuedCheck;
 }
 
 /** The token service gave no token, so the run cannot post as Manki. */
@@ -146,7 +149,8 @@ export async function resolveGitHubToken(tokenUrl: string, owner: string, repo: 
   for (let attempt = 1; !response; attempt++) {
     let failure: string;
     try {
-      const reply = await postToTokenService(tokenUrl, { owner, repo }, 'token');
+      // `takes_over_check` tells the service that this run takes over the queued check the reply names.
+      const reply = await postToTokenService(tokenUrl, { owner, repo, takes_over_check: true }, 'token');
       if (!reply) throw new TokenServiceError('no OIDC token, so the workflow needs `id-token: write`');
       if (reply.ok || reply.status < 500) {
         response = reply;
@@ -162,12 +166,14 @@ export async function resolveGitHubToken(tokenUrl: string, owner: string, repo: 
     await new Promise((resolve) => setTimeout(resolve, TOKEN_RETRY_DELAY_MS));
   }
   if (!response.ok) throw new TokenServiceError(`HTTP ${response.status}`);
-  const tokenData = response.data as { token?: unknown; expires_at?: unknown } | null;
+  const tokenData = response.data as { token?: unknown; expires_at?: unknown; check_run?: { id?: unknown; head_sha?: unknown } | null } | null;
   if (!tokenData || !tokenData.token || typeof tokenData.token !== 'string') throw new TokenServiceError('a reply without a token');
 
   core.info(`Using ${BOT_LOGIN} identity (token expires ${tokenData.expires_at})`);
   registerSecret(tokenData.token);
-  return { token: tokenData.token };
+  const { id, head_sha: headSha } = tokenData.check_run ?? {};
+  const queued = typeof id === 'number' && Number.isSafeInteger(id) && id > 0 && typeof headSha === 'string';
+  return { token: tokenData.token, ...(queued && { queuedCheck: { id, headSha } }) };
 }
 
 const RUN_MODES: ReadonlySet<string> = new Set<RunMode>(['again', 'deeper', 'draft']);
@@ -254,10 +260,11 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
   }
 
   const { owner, repo: repoName } = github.context.repo;
-  const { token } = await resolveGitHubToken(tokenServiceUrl(), owner, repoName);
+  const { token, queuedCheck } = await resolveGitHubToken(tokenServiceUrl(), owner, repoName);
 
   const octokit = createOctokit(token);
   serviceClients.add(octokit);
+  if (queuedCheck) offerQueuedCheck(octokit, queuedCheck);
   return { octokit, bot: { logins: [BOT_LOGIN] } };
 }
 

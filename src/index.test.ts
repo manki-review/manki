@@ -294,6 +294,7 @@ import * as interaction from './interaction';
 import * as ghUtils from './github';
 import { PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER } from './github';
 import * as diffModule from './diff';
+import { offerQueuedCheck } from './check-run';
 import * as configModule from './config';
 import * as reviewModule from './review';
 import { routingDigest } from './routing';
@@ -1913,6 +1914,36 @@ describe('runFullReview orchestration', () => {
       expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, {
         reviewed: { commit: 'abc123' }, approval: { commit: 'abc123', held: false }, pause: null,
       });
+    });
+
+    it.each([
+      ['takes over the queued check on the reviewed head, and completes it', 'abc123', false, 77],
+      ['creates its own check when the queued check sits on another head', 'def456', false, 901],
+      ['creates its own check when the queued check cannot be updated', 'abc123', true, 901],
+    ])('%s', async (_name, headSha, updateFails, id) => {
+      offerQueuedCheck(mockOctokitInstance as never, { id: 77, headSha });
+      if (updateFails) mockChecksUpdate.mockRejectedValueOnce(new Error('Not Found'));
+
+      await callRunFullReview();
+
+      const [first, ...rest] = mockChecksUpdate.mock.calls.map(([params]) => params);
+      const takeOver = expect.objectContaining({
+        check_run_id: 77, status: 'in_progress', details_url: 'https://github.com/test-owner/test-repo/actions/runs/12345',
+        output: { title: 'Review in progress', summary: 'The review run is linked from this check.' },
+      });
+      expect([first, ...rest]).toEqual([
+        ...(headSha === 'abc123' ? [takeOver] : []),
+        expect.objectContaining({ check_run_id: id, status: 'completed', conclusion: 'success' }),
+      ]);
+      expect(mockChecksCreate).toHaveBeenCalledTimes(id === 77 ? 0 : 1);
+      expect(jest.mocked(core.saveState)).toHaveBeenCalledWith('manki_check_run', String(id));
+      const warned = jest.mocked(core.warning).mock.calls.some(([message]) => String(message).includes('Could not take over the queued Manki check, creating a new one: Not Found'));
+      expect(warned).toBe(updateFails);
+
+      // The queued check is offered once, so a later check of the same client is created.
+      mockChecksCreate.mockClear();
+      await callRunFullReview();
+      expect(mockChecksCreate).toHaveBeenCalledTimes(1);
     });
 
     it.each([
