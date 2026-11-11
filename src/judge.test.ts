@@ -5086,16 +5086,17 @@ describe('runJudgeAgent cross-round suppression', () => {
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
 
     // The refuter runs before the ratchet, so a `rare` claim is checked even when the author agreed with the finding
-    // earlier: a confirmed one blocks, and the other is hidden after the one check it cost. A doubt whether the defect
-    // exists never raises a grade, so a finding the ratchet hides takes none of the round's few such checks.
+    // earlier: a confirmed one blocks, and the other is hidden after the one check it cost. A check on a doubt whether
+    // the defect exists or on a lead never raises a grade, so a finding the ratchet hides gets no such check.
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
-    const titles = ['Stale cache read', 'Lost update', 'Handle leak'];
+    const titles = ['Stale cache read', 'Lost update', 'Handle leak', 'Open lead'];
     const leak = [{ premise: 'Nothing closes the handle', decides: 'defect' }];
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({
-        id: i + 1, title, reasoning: 'r', confidence: 'medium', ...(title === 'Handle leak' ? { row: 'degraded', doubts: leak } : { row: 'wrong', column: 'rare' }),
+        id: i + 1, title, reasoning: 'r', confidence: 'medium',
+        ...(title === 'Handle leak' ? { row: 'degraded', doubts: leak } : title === 'Open lead' ? { row: 'degraded' } : { row: 'wrong', column: 'rare' }),
       })),
     }) });
     const refuterCalls: string[] = [];
@@ -5111,7 +5112,10 @@ describe('runJudgeAgent cross-round suppression', () => {
     try {
       const checked = await runJudgeAgent(mockClient, makeConfig(), {
         ...input, refutation: { client: refuter, workspace },
-        findings: titles.map((title, i) => makeFinding({ title, file: 'src/index.ts', line: 10 + i, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`] } })),
+        findings: titles.map((title, i) => makeFinding({
+          title, file: 'src/index.ts', line: 10 + i, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`] },
+          ...(title === 'Open lead' && { lead: { checked: 'read src/index.ts:13', left: 'find the callers' } }),
+        })),
         priorRounds: [roundContextFromLegacy({
           round: 1, commitSha: 'abc', timestamp: 't',
           findings: titles.map((title, i) => ({ fingerprint: { file: 'src/index.ts', lineStart: 10 + i, lineEnd: 10 + i, slug: titleToSlug(title) }, severity: 'warning' as const, title, authorReply: 'agree' as const })),
@@ -5121,10 +5125,11 @@ describe('runJudgeAgent cross-round suppression', () => {
         ['Stale cache read', 'blocker', { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, undefined],
         ['Lost update', 'ignore', { row: 'wrong', column: 'rare' }, ['suppressed-by-ratchet']],
         ['Handle leak', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-by-ratchet']],
+        ['Open lead', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-by-ratchet']],
       ]);
       expect(refuterCalls.sort()).toEqual(['Lost update', 'Stale cache read']);
       expect(checked.findings[2].doubts).toEqual(leak);
-      expect(checked.crossRoundSuppressed).toBe(2);
+      expect(checked.crossRoundSuppressed).toBe(3);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }

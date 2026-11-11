@@ -326,7 +326,7 @@ export interface RefuteOptions {
   outsideInput?: string;
   /** A second refuter, on another model, that checks each finding beside the first. */
   pair?: LLMClient;
-  /** Whether a later step hides `finding` at its grade. Such a finding takes none of the `MAX_DOUBT_CHECKS` checks, which never raise a grade. */
+  /** Whether a later step hides `finding` at its grade. Such a finding is checked only when a confirmation can raise it, and takes none of the `MAX_DOUBT_CHECKS` checks. */
   hiddenLater?: (finding: Finding) => boolean;
 }
 
@@ -367,6 +367,8 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   return mapWithConcurrency(reopened, MAX_PARALLEL_REFUTATIONS, async finding => {
     // A finding the judge dropped stays dropped, even when it was a lead.
     if (finding.severity === 'ignore' || !(alwaysChecked(finding) || doubtChecks.has(finding))) return finding;
+    // Only a check that can raise a finding changes what happens to one a later step hides.
+    if (!confirmedGrade(finding) && hiddenLater?.(finding)) return finding;
     if (!codeDigest(workspace, [finding.file])) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);
     return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation) : finding;
