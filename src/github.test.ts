@@ -4254,6 +4254,20 @@ describe('postReview fallback paths', () => {
         expect([threadSeverity(thread), threadMarkerSlug(thread), parseFindingData(thread)]).toEqual(['blocker', 'Forged-place', expect.objectContaining({ title: 'Forged place', file: fake, detached: true })]);
       }
     }
+
+    // A browser resolves `..`, so a file name with such a segment is shown as text and never linked, in the thread and in the body.
+    for (const files of [diff.files, []]) {
+      createReviewMock.mockClear();
+      createReviewComment.mockClear();
+      await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', { ...result, findings: [blocker('Outside', '../../../../evil/x', 10)] }, { ...diff, files });
+      const posted = [createReviewMock.mock.calls[0][0].body as string, ...createReviewComment.mock.calls.map(([c]) => (c as { body: string }).body)];
+      expect(posted).toHaveLength(files.length > 0 ? 2 : 1);
+      for (const text of posted) {
+        expect(text).toContain('`../../../../evil/x:10`');
+        expect(text).not.toContain('evil/x#L');
+      }
+      if (files.length > 0) expect(posted[1]).toContain(`This is in \`../../../../evil/x:10\`, not in the file this thread is on. ${where}`);
+    }
   });
 
   it('reads only Manki\'s own markers from a thread and a review body whose finding text holds marker-like text', async () => {

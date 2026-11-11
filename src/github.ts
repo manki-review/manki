@@ -1224,8 +1224,21 @@ function inlineCode(text: string): string {
   return longestRun > 0 ? `${ticks} ${text} ${ticks}` : `${ticks}${text}${ticks}`;
 }
 
-/** Returns the URL of `line` in `file` at the reviewed commit, or of the lines `line` to `end` when `end` is past `line`. */
-type LineLink = (file: string, line: number, end?: number) => string;
+/**
+ * Returns the URL of `line` in `file` at the reviewed commit, or of the lines `line` to `end` when `end` is past `line`.
+ * Returns `undefined` for a file name that `hasDotSegment`, which gets no link.
+ */
+type LineLink = (file: string, line: number, end?: number) => string | undefined;
+
+/** Whether `path` has a `.` or `..` segment. A browser resolves those, so a link built from it can leave the repository. */
+function hasDotSegment(path: string): boolean {
+  return path.split('/').some(segment => segment === '.' || segment === '..');
+}
+
+/** Returns `text` as a Markdown link to `url`, or `text` alone when there is no URL. */
+export function linked(text: string, url: string | undefined): string {
+  return url ? `[${text}](${url})` : text;
+}
 
 function repoUrl(serverUrl: string, owner: string, repo: string): string {
   return `${serverUrl.replace(/\/+$/, '')}/${owner}/${repo}`;
@@ -1234,7 +1247,7 @@ function repoUrl(serverUrl: string, owner: string, repo: string): string {
 export function buildLineLink(owner: string, repo: string, commitSha: string, serverUrl: string): LineLink {
   // `encodeURIComponent` keeps parentheses, and a `)` in a file name would end the Markdown link the URL goes into.
   const segment = (part: string): string => encodeURIComponent(part).replace(/[()]/g, c => `%${c.charCodeAt(0).toString(16)}`);
-  return (file, line, end = line) => `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(segment).join('/')}${line > 0 ? `#L${line}${end > line ? `-L${end}` : ''}` : ''}`;
+  return (file, line, end = line) => hasDotSegment(file) ? undefined : `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(segment).join('/')}${line > 0 ? `#L${line}${end > line ? `-L${end}` : ''}` : ''}`;
 }
 
 const WHAT_GOES_WRONG_LABEL = '**What goes wrong:**';
@@ -1330,7 +1343,7 @@ function formatFixDiff(finding: Finding, files: ReadonlyMap<string, readonly str
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, then its fold. */
 function formatFindingBlock(finding: Finding, links: CodeLinks, offerIssue = false): string {
   const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
-  if (finding.file) lines.push(`[${inlineCode(findingLocation(finding))}](${links.linkTo(finding.file, finding.line)})`);
+  if (finding.file) lines.push(linked(inlineCode(findingLocation(finding)), links.linkTo(finding.file, finding.line)));
   const fold = formatFold(bodyFixPart(finding, links.files), '', checksSection(finding, links, 'flagged'));
   const block = [...lines, ...formatFindingDescription(finding), ...(fold ? [fold] : [])].join('\n');
   return offerIssue ? `${block}\n\n${issueBoxFor(finding)}` : block;
@@ -1364,12 +1377,14 @@ const PREVIEW_CONTEXT = 2;
  */
 function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = false): string {
   const { linkTo, files } = links;
-  const location = finding.file ? ` · <a href="${linkTo(finding.file, finding.line)}"><code>${inlineHtml(findingLocation(finding))}</code></a>` : '';
+  const link = finding.file ? linkTo(finding.file, finding.line) : undefined;
+  const code = `<code>${inlineHtml(findingLocation(finding))}</code>`;
+  const location = finding.file ? ` · ${link ? `<a href="${link}">${code}</a>` : code}` : '';
   const summary = `<summary>${SEVERITY_EMOJI[finding.severity]} <b>${inlineHtml(sanitizeMarkdown(finding.title))}</b><br><sub>${inlineHtml(formatFindingHeader(finding))}${location}</sub></summary>`;
   const last = files.get(finding.file)?.length;
   // A diff already shows the flagged line, so the fold previews it only without one.
   const preview = !formatFixDiff(finding, files) && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
-    ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))]
+    ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))].flatMap(url => url ?? [])
     : [];
   const checks = checksSection(finding, links, 'flagged');
   const fix = bodyFixPart(finding, files);
@@ -1545,7 +1560,7 @@ type LeftOutEntry = Pick<Finding, 'title' | 'file' | 'line'> & { reason?: string
 
 /** Renders a left out finding as a list item: the title and a link to its line, then the start of the reason on a line of its own. */
 function formatLeftOutEntry({ title, file, line, reason }: LeftOutEntry, linkTo: LineLink): string {
-  const location = file ? ` · [${inlineCode(findingLocation({ file, line }))}](${linkTo(file, line)})` : '';
+  const location = file ? ` · ${linked(inlineCode(findingLocation({ file, line })), linkTo(file, line))}` : '';
   const shown = reason && splitLead(sanitizeMarkdown(reason).replace(/\s+/g, ' '), 2, 300).lead;
   return `- **${sanitizeMarkdown(title)}**${location}${shown ? `\n  ${shown}` : ''}`;
 }
@@ -2669,7 +2684,7 @@ function parseCheck(entry: string, known: readonly string[], atRoot = false): Ch
   const [cited, line, last, more] = match ? [1, 5, 9].map(i => match.slice(i, i + 4)).find(group => group[0] !== undefined)! : [];
   const resolved = match ? knownPath(sanitizeFilePath(cited), known, atRoot) : undefined;
   // The cited path and the file names it resolves against are both PR content, so only a plain repository path becomes a link.
-  const path = resolved && LINKABLE_PATH_RE.test(resolved) && !resolved.split('/').some(segment => segment === '.' || segment === '..') ? resolved : undefined;
+  const path = resolved && LINKABLE_PATH_RE.test(resolved) && !hasDotSegment(resolved) ? resolved : undefined;
   const at = path ? lineRange(path, last ? `${line}-${last}` : line) : undefined;
   const rest = oneLine(at ? entry.slice(match![0].length) : entry);
   // A sentence starts with a capital, but a text that opens with a path or a name stays as written.
@@ -2760,7 +2775,7 @@ function rangeLabel({ file, start, end }: CodeRange): string {
 }
 
 function linkedRange(range: CodeRange, linkTo: LineLink): string {
-  return `[${inlineCode(rangeLabel(range))}](${linkTo(range.file, range.start, range.end)})`;
+  return linked(inlineCode(rangeLabel(range)), linkTo(range.file, range.start, range.end));
 }
 
 function refutationPart(label: string, lead: string, check: Refutation, linkTo: LineLink, known: readonly string[]): FoldPart {
@@ -2847,7 +2862,7 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
     ...shown.map(({ range, checks: shared }) => {
       // The preview shows the code, so a bare location in it adds no line of its own.
       const said = shared.filter(c => c.text);
-      const link = linkTo(range.file, range.start, range.end);
+      const link = linkTo(range.file, range.start, range.end) ?? inlineCode(rangeLabel(range));
       if (said.length === 0) return link;
       return `${said.length === 1 ? said[0].text : `${said.map(c => `- ${c.text}`).join('\n')}\n`}\n${link}`;
     }),
@@ -2914,7 +2929,7 @@ const DETACHED_NOTE_END = 'GitHub only allows comments on changed files, so the 
 function detachedNote(finding: Finding, linkTo: LineLink): string {
   const file = sanitizeFilePath(encodeCommentBreakers(finding.file));
   const where = file
-    ? `This is in [\`${file}${finding.line > 0 ? `:${finding.line}` : ''}\`](${linkTo(finding.file, finding.line)}), not in the file this thread is on.`
+    ? `This is in ${linked(`\`${file}${finding.line > 0 ? `:${finding.line}` : ''}\``, linkTo(finding.file, finding.line))}, not in the file this thread is on.`
     : 'This is not tied to a file or line.';
   return `${where} ${DETACHED_NOTE_END}`;
 }

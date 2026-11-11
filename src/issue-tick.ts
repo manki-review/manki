@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, buildLineLink, findingLocation, sanitizeMarkdown } from './github';
+import { BotIdentity, buildLineLink, findingLocation, linked, sanitizeMarkdown } from './github';
 import { FILED_ISSUE_OPENER, filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
 import { findingFile, isGuarded, parseFindingData } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
@@ -64,7 +64,7 @@ async function fileOrLink(
   const existing = await findFiledIssue(octokit, bot, owner, repo, id);
   if (existing !== undefined) return { number: existing, existing: true };
   const permalink = buildLineLink(owner, repo, source.commit, github.context.serverUrl)(source.file, source.line);
-  const where = source.file ? ` at [\`${findingLocation(source)}\`](${permalink})` : '';
+  const where = source.file ? ` at ${linked(`\`${findingLocation(source)}\``, permalink)}` : '';
   const body = [
     postedText(source.text, id),
     `Found by Manki in #${prNumber}${where}. See the [${source.postedIn}](${source.postedAt}).`,
