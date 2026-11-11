@@ -736,13 +736,16 @@ export function buildJudgeUserMessage(
     const pushChangedFiles = filesChangedByPush(interRoundDiff);
     const earlierBlockers = earlierBlockerThreadIds(openThreads, priorRounds);
     const staysOpenReason = interRoundDiff === undefined ? 'the fix cannot be confirmed without the inter-round diff' : 'the push did not change this file';
+    const heldOpen = openThreads.filter(t => guardedThreadStaysOpen(t, pushChangedFiles));
     for (const t of openThreads) {
       const linkSuffix = t.threadUrl ? ` ([view](${t.threadUrl}))` : '';
-      const blocks = !earlierBlockers.has(t.threadId) ? ''
-        : guardedThreadStaysOpen(t, pushChangedFiles) ? ` (earlier blocker, stays open: ${staysOpenReason})` : ' (earlier blocker)';
-      parts.push(`- **${t.threadId}**${linkSuffix}: [${t.severity}] "${sanitize(t.title)}" at ${sanitize(t.file)}:${t.line}${blocks}`);
+      const marks = [...(earlierBlockers.has(t.threadId) ? ['earlier blocker'] : []), ...(heldOpen.includes(t) ? [`stays open: ${staysOpenReason}`] : [])];
+      parts.push(`- **${t.threadId}**${linkSuffix}: [${t.severity}] "${sanitize(t.title)}" at ${sanitize(t.file)}:${t.line}${marks.length > 0 ? ` (${marks.join(', ')})` : ''}`);
     }
     parts.push('');
+    if (heldOpen.length > 0) {
+      parts.push('A thread marked "stays open" is not resolved this round whatever you decide. In the summary, say that it is still open, and never write that its problem is fixed.\n');
+    }
 
     if (priorRounds && priorRounds.length > 0) {
       parts.push(`## Inter-Round Diff\n`);
