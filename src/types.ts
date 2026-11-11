@@ -649,6 +649,11 @@ export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
 export const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof'] as const satisfies readonly UnpostedReason[];
 export type UnprovenReason = typeof UNPROVEN_REASONS[number];
 
+/** Whether the review leaves `finding` out because nothing proves it. */
+export function leftOutUnproven(finding: Pick<Finding, 'unpostedReason'>): boolean {
+  return UNPROVEN_REASONS.some(reason => reason === finding.unpostedReason);
+}
+
 /** Where a round put a finding: a thread of its own, the review body, an earlier thread that carries it, or the round record only. */
 export type PostedPlace = 'thread' | 'body' | 'earlier_thread' | 'record';
 
@@ -2200,6 +2205,7 @@ export interface CitedLine {
  * Why a warning carried from an earlier review body is no longer listed: its line reads differently or its file is gone
  * (`line_changed`), or a finding the judge graded this round names it. That finding is listed (`restated`), a note the
  * review leaves out (`hidden_note`), dropped by the judge (`judge_dropped`) or left out by a later step (`left_out`).
+ * A warning left out because nothing proves it ends none.
  */
 export type CarriedEndReason = 'line_changed' | 'restated' | 'hidden_note' | 'judge_dropped' | 'left_out';
 

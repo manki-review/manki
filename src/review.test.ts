@@ -1944,6 +1944,7 @@ jest.mock('./judge', () => ({
   collectPriorBlockers: jest.requireActual('./judge').collectPriorBlockers,
   foldInto: jest.requireActual('./judge').foldInto,
   capUnconfirmedBuildClaim: jest.requireActual('./judge').capUnconfirmedBuildClaim,
+  findingKey: jest.requireActual('./judge').findingKey,
 }));
 
 // The pinned ast-grep build is downloaded at run time, so tests parse with the installed one.
@@ -6218,6 +6219,10 @@ describe('carryBodyWarnings', () => {
     // A finding the judge kept and a later step left out counts too, and one about something else does not.
     const leftOut = await carry([first], then, { allJudgedFindings: [finding('Retry never ends', 2), finding('Loop has no cap', 80)] });
     expect([leftOut.titles, leftOut.ended]).toEqual([all.slice(1), ['left_out']]);
+    // A warning left out because nothing proves it withdraws nothing, so the warning it names stays listed.
+    const unprovenAgain = finding('Retry never ends', 2, { unpostedReason: 'unsettled_check' });
+    const unproven = await carry([first], then, { unposted: [unprovenAgain], allJudgedFindings: [finding('Retry never ends', 2)] });
+    expect([unproven.titles, unproven.ended]).toEqual([all, undefined]);
 
     // A later round carries the warning with the place the first round read, and a restatement in other words names the first statement.
     const carriedRetry = { ...retry, raisedIn: 1 };

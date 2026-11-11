@@ -6,7 +6,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { DEFAULT_NOTES, loadConfig } from './config';
-import { AgentProgressEntry, UNPROVEN_REASONS, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, leftOutUnproven, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -1524,7 +1524,7 @@ function isListedNote(finding: Finding): boolean {
 
 /** Returns the line that says how many warnings of `unposted` the review leaves out because nothing proves them, and where to find them. */
 function formatUnprovenLine(unposted: Finding[]): string | null {
-  const unproven = unposted.filter(f => UNPROVEN_REASONS.some(reason => reason === f.unpostedReason)).length;
+  const unproven = unposted.filter(leftOutUnproven).length;
   return unproven > 0 ? `<sub>${unproven} ${unproven === 1 ? 'warning is' : 'warnings are'} not listed, since nothing proves ${unproven === 1 ? 'it' : 'them'}. The progress comment names ${unproven === 1 ? 'it' : 'each'} under "Judge decisions".</sub>` : null;
 }
 
