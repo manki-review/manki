@@ -12,7 +12,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, AuthorClearRole, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -2768,7 +2768,20 @@ const NOT_CHECKED: FindingChecks = {
 };
 
 /**
- * Returns how `finding` was checked: the check on its own line, a code preview with a sentence for up to
+ * Returns the part that names the rule a confirmed rule finding breaks, and says when that rule is why the finding
+ * blocks. The file name and the quote are repository text, so each shows as a code span or not at all.
+ */
+function rulePart(finding: Finding): FoldPart | undefined {
+  if (!breaksRule(finding) || !finding.rule) return undefined;
+  const quote = codeLine(finding.rule.quote);
+  const blocks = finding.severity === 'blocker' && finding.gradePath?.some(step => step.by === 'rule' && step.to === 'blocker');
+  const text = `This PR breaks a required rule of ${codeLine(finding.rule.file) || 'an instruction file'}${quote ? `: ${quote}` : '.'}`
+    + (blocks ? ' It blocks because this repository sets `review.rules: block`.' : '');
+  return { label: 'Repository rule', text, open: `**Repository rule:** ${text}` };
+}
+
+/**
+ * Returns how `finding` was checked: the rule it breaks, the check on its own line, a code preview with a sentence for up to
  * `MAX_CHECK_PREVIEWS` other places and the rest as links, then each refuter's outcome. A finding that cites nothing
  * says so, unless a tool reported it or it is an earlier round's finding.
  */
@@ -2777,7 +2790,8 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
   const checks = findingChecks(finding, known);
   const refutations = refutationParts(finding, linkTo, known);
   const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
-  if (checks.length === 0 && refutations.length === 0) {
+  const rule = rulePart(finding);
+  if (checks.length === 0 && refutations.length === 0 && !rule) {
     return { ...(finding.toolSource || finding.reviewers.length === 0 ? { parts: [], reads: [], outcomes: [] } : NOT_CHECKED), ...status };
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
@@ -2814,9 +2828,9 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
   const read = checks.filter(c => c.at).length;
   const other = checks.length - read;
   return {
-    parts: [...checked, ...refutations],
+    parts: [...(rule ? [rule] : []), ...checked, ...refutations],
     reads: [read && `${read} ${read === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
-    outcomes: [finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`].filter(o => typeof o === 'string'),
+    outcomes: [rule && 'breaks a repository rule', finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`].filter(o => typeof o === 'string'),
     ...status,
   };
 }
