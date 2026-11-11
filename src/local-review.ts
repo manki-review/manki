@@ -15,9 +15,10 @@ import type { PreviousFinding } from './recap';
 import { ReviewProgress, runReview } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext } from './round-context';
+import { makeScratchDir } from './tool-install';
 import { SECURITY_TAG } from './types';
 import type { ConfigSource, Finding, FindingSeverity, OpenThread, ParsedDiff, ReviewConfig, ReviewModels, ReviewResult, RoundContext, RoundOutcome } from './types';
-import { fetchWorkspace, runGit } from './workspace';
+import { fetchWorkspace, gitEnv, runGit } from './workspace';
 
 const DEFAULT_CONFIG_PATH = '.manki.yml';
 
@@ -90,8 +91,8 @@ export interface LocalReviewInput {
   base: string;
   head: string;
   /**
-   * A patch reviewed in place of the commits. The config and instructions are then read at `head`, and the
-   * repository tools read `head` with the patch applied.
+   * A patch reviewed in place of the commits. The config and instructions are then read at `head`, the config the
+   * patch leaves is checked as a pull request's own copy is, and the repository tools read `head` with the patch applied.
    */
   patch?: string;
   /** Replaces the config the base commit holds. */
@@ -144,6 +145,7 @@ function gitRepoFiles(root: string, commit: string): RepoFiles {
  * Loads the config at `base` the way a pull request round does, and logs the keys `head` changes. A config at `head` that
  * does not load gives a warning and `brokenHead`, which says whether it differs from the copy at `base`. With `overrides`,
  * they are set on top, and a base config that does not load throws instead of falling back to the defaults.
+ * `head` is a commit or a tree.
  */
 async function loadLocalConfig(
   root: string, base: string, head: string, configPath: string, overrides?: ConfigOverrides,
@@ -176,15 +178,30 @@ export async function loadConfigWithOverrides(repoRoot: string, base: string, ov
   return loadOverlaidConfig(await gitRepoFiles(repoRoot, base).read(configPath), configPath, overrides).config;
 }
 
-/** Applies `patch` to the checkout at `dir`. Throws when it does not apply. */
-async function applyPatch(dir: string, patch: string, head: string): Promise<void> {
-  const file = join(dir, '.git', 'manki-review.patch');
+/** Applies `patch` to the checkout at `dir`, or with `index` to that index file alone. Throws when it does not apply. */
+async function applyPatch(dir: string, patch: string, head: string, index?: string): Promise<void> {
+  const file = index ? `${index}.patch` : join(dir, '.git', 'manki-review.patch');
   // `git apply` reads a patch without its final newline as corrupt.
   writeFileSync(file, patch.endsWith('\n') ? patch : `${patch}\n`);
+  const env = index ? { ...gitEnv(), GIT_INDEX_FILE: index } : gitEnv();
   // A symlink the patch adds is written as a plain file holding its target, as `fetchWorkspace` checks one out.
-  await runGit(dir, ['-c', 'core.symlinks=false', 'apply', '--whitespace=nowarn', file]).catch((error: Error) => {
+  await runGit(dir, ['-c', 'core.symlinks=false', 'apply', ...(index ? ['--cached'] : []), '--whitespace=nowarn', file], env).catch((error: Error) => {
     throw new Error(`The patch does not apply to ${head.slice(0, 7)}: ${error.message}`);
   });
+}
+
+/** Returns the tree of `head` with `patch` applied. A scratch index builds it, so the checkout and its index stay as they are. */
+async function patchedTree(root: string, head: string, patch: string): Promise<string> {
+  const scratch = makeScratchDir('index');
+  const index = join(scratch, 'index');
+  const env = { ...gitEnv(), GIT_INDEX_FILE: index };
+  try {
+    await runGit(root, ['read-tree', head], env);
+    await applyPatch(root, patch, head, index);
+    return (await runGit(root, ['write-tree'], env)).trim();
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /** Reads the changed lockfiles Manki parses from `rev`, which holds their `side` of `fullDiff`. One git cannot show, or past `MAX_LOCKFILE_BYTES`, stays unread. */
@@ -271,7 +288,9 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
   const configPath = input.configPath ?? DEFAULT_CONFIG_PATH;
   const head = (await runGit(repoRoot, ['rev-parse', '--verify', `${input.head}^{commit}`])).trim();
   const base = patch === undefined ? (await runGit(repoRoot, ['merge-base', input.base, head])).trim() : head;
-  const loaded: Awaited<ReturnType<typeof loadLocalConfig>> = input.config ? { config: input.config, source: 'base' } : await loadLocalConfig(repoRoot, base, head, configPath, input.configOverrides);
+  // The head's copy of the config is the one the change leaves: the commit's, or the patched one.
+  const loaded: Awaited<ReturnType<typeof loadLocalConfig>> = input.config ? { config: input.config, source: 'base' }
+    : await loadLocalConfig(repoRoot, base, patch === undefined ? head : await patchedTree(repoRoot, head, patch), configPath, input.configOverrides);
   const { config } = loaded;
   const raw = patch ?? await runGit(repoRoot, [...DIFF_ARGS, base, head]);
   const { fullDiff, diff, excludedFiles, rawDiff } = reviewableDiff(raw, config.exclude_paths);
