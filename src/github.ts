@@ -510,6 +510,7 @@ async function resolveReferences(
 const INSTRUCTION_FILE_NAMES = ['AGENTS.md', 'CLAUDE.md'];
 const ROOT_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md', '.claude/CLAUDE.md', 'CONTRIBUTING.md'];
 const MAX_INSTRUCTIONS_CHARS = 30_000;
+const CONTEXT_BREAK = '\n\n---\n\n';
 
 /** Returns the repo description and the instruction files `buildRepoContext` reads at `ref`. */
 export async function fetchRepoContext(
@@ -528,7 +529,7 @@ export async function fetchRepoContext(
   } catch {
     // Skip
   }
-  return parts.join('\n\n---\n\n');
+  return parts.join(CONTEXT_BREAK);
 }
 
 /**
@@ -563,7 +564,19 @@ export async function buildRepoContext(files: RepoFiles, changedPaths: string[])
     parts.push(part);
     total += part.length;
   }
-  return parts.join('\n\n---\n\n');
+  return parts.join(CONTEXT_BREAK);
+}
+
+/** Returns the text `buildRepoContext` printed for the instruction file `path`, or undefined when `repoContext` lacks the file. */
+export function instructionFileText(repoContext: string, path: string): string | undefined {
+  if (!path.endsWith('.md') || path.includes('\n')) return undefined;
+  const heading = `${CONTEXT_BREAK}## ${path}\n\n`;
+  const context = CONTEXT_BREAK + repoContext;
+  const at = context.indexOf(heading);
+  if (at < 0) return undefined;
+  const text = context.slice(at + heading.length);
+  const next = text.search(/\n\n---\n\n## .+\.md\n\n/);
+  return next < 0 ? text : text.slice(0, next);
 }
 
 /** Returns each name's nearest subdirectory file above any changed file, deepest first. */

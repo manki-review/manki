@@ -7,7 +7,7 @@ import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, r
 import { mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
-import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
+import { dynamicFence, fenceText, instructionFileText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
 import { canLeaveOut, cellGrade, FOLLOW_UP_TAG, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
@@ -1735,7 +1735,7 @@ async function runReviewerOnSlice(
   }
   let findings: Finding[];
   try {
-    findings = parseFindings(response.content, finder.name);
+    findings = parseFindings(response.content, finder.name, repoContext);
   } catch (error) {
     throw new FinderReplyError(error instanceof Error ? error.message : String(error));
   }
@@ -1970,7 +1970,7 @@ export function buildReviewerUserMessage(
   return message;
 }
 
-export function parseFindings(responseText: string, reviewerName: string): Finding[] {
+export function parseFindings(responseText: string, reviewerName: string, repoContext = ''): Finding[] {
   core.debug(`${reviewerName} response length: ${responseText.length}`);
 
   if (responseText.trim().length === 0) {
@@ -2006,6 +2006,7 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
       ...((lead || f.notChecked === true) && { notChecked: true }),
       ...(lead && { lead }),
       ...preExistingOf(f),
+      ...ruleOf(f, repoContext),
     };
   });
 }
@@ -2020,6 +2021,26 @@ export function howToFixOf(f: Record<string, unknown>): Pick<Finding, 'howToFix'
 function preExistingOf(f: Record<string, unknown>): Pick<Finding, 'preExisting'> {
   const reason = f.preExisting === true ? textOf(f.preExistingReason) : '';
   return reason ? { preExisting: reason } : {};
+}
+
+// Longer than a single requirement word, so a word the file happens to hold does not pass for a quoted rule.
+const MIN_RULE_QUOTE_CHARS = 10;
+
+/** Returns `text` in lower case, without Markdown emphasis and code marks and with each run of whitespace as one space. */
+function plainText(text: string): string {
+  return text.toLowerCase().replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Reads `rule` with its `ruleFile`. The mark is kept only when `repoContext` holds that file and the file holds the
+ * quote, so a rule the reviewer made up or read in a file the PR edits is no rule finding.
+ */
+function ruleOf(f: Record<string, unknown>, repoContext: string): Pick<Finding, 'rule'> {
+  const file = textOf(f.ruleFile);
+  const quote = textOf(f.rule);
+  const source = instructionFileText(repoContext, file);
+  const plain = plainText(quote);
+  return source !== undefined && plain.length >= MIN_RULE_QUOTE_CHARS && plainText(source).includes(plain) ? { rule: { file, quote } } : {};
 }
 
 const EVIDENCE_LINE_CHARS = 300;

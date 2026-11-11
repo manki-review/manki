@@ -2955,8 +2955,11 @@ describe('runJudgeAgent', () => {
       ]);
     });
 
-    it('folds a duplicate into the earlier finding and merges reviewers', async () => {
-      const result = await runWith(three(), [
+    it('folds a duplicate into the earlier finding and merges reviewers, and keeps the rule only the duplicate names', async () => {
+      const rule = { file: 'CONTRIBUTING.md', quote: 'Every timer must be cleared on shutdown.' };
+      const findings = three();
+      findings[2].rule = rule;
+      const result = await runWith(findings, [
         verdict('Timer never cleared', 'warning'),
         verdict('Unrelated naming', 'nitpick', 0),
         verdict('Leaked timeout handle', 'blocker', 1),
@@ -2965,6 +2968,7 @@ describe('runJudgeAgent', () => {
       expect(result[0].severity).toBe('warning');
       expect(result[0].reviewers).toEqual(['Correctness', 'Reliability']);
       expect(result[1].reviewers).toEqual(['Style']);
+      expect(result.map(f => f.rule)).toEqual([rule, undefined]);
     });
 
     it('follows a chain of duplicates to the first finding', async () => {

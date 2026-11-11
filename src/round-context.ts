@@ -239,6 +239,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.gradeIfConfirmed && { gradeIfConfirmed: f.gradeIfConfirmed }),
     ...(f.doubts && { doubts: f.doubts }),
     ...(f.cell && { cell: f.cell }),
+    ...(f.rule && { rule: f.rule }),
   }));
   const toEntry = (f: Finding): FindingFingerprintEntry => ({
     fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
@@ -268,6 +269,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.judgeCell && { judgeCell: f.judgeCell }),
     ...(f.gradePath && { gradePath: f.gradePath }),
     ...(f.preExisting && f.preExistingCheck && { preExisting: { reason: f.preExisting.slice(0, 200), check: f.preExistingCheck } }),
+    ...(f.rule && { rule: f.rule }),
     ...(f.unpostedReason && { unpostedReason: f.unpostedReason }),
   });
   const unposted = [...(result.unpostedPreExisting ?? []), ...(result.unpostedNotes ?? [])].map((f): FindingFingerprintEntry => ({ ...toEntry(f), posted: 'record' }));

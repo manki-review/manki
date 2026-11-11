@@ -304,6 +304,8 @@ export interface Finding {
   preExisting?: string;
   /** How a claim in `preExisting` was checked against the diff: held, or the condition that failed. */
   preExistingCheck?: PreExistingCheck;
+  /** The required rule the reviewer says the change breaks: the loaded instruction file and the rule quoted from it. */
+  rule?: { file: string; quote: string };
 }
 
 /**
@@ -1784,6 +1786,8 @@ export interface RoundJudgeDrop {
   doubts?: Doubt[];
   /** Mirrors `Finding.cell`. A dropped finding has one only when a later stage dropped it. */
   cell?: GradeCell;
+  /** Mirrors `Finding.rule`. */
+  rule?: Finding['rule'];
 }
 
 export interface RoundAgentMetric {
@@ -2087,6 +2091,8 @@ export interface FindingFingerprintEntry {
   gradePath?: GradeStep[];
   /** The reviewer's pre-existing claim kept by the judge, and how it was checked against the diff. */
   preExisting?: { reason: string; check: PreExistingCheck };
+  /** Mirrors `Finding.rule`. */
+  rule?: Finding['rule'];
   /** Mirrors `Finding.unpostedReason`. */
   unpostedReason?: UnpostedReason;
   /**

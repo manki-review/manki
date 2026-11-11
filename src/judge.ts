@@ -1772,6 +1772,7 @@ export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (c
   survivor.variantOf ??= copy.variantOf;
   survivor.threadId ??= copy.threadId;
   survivor.howToFix ??= copy.howToFix;
+  survivor.rule ??= copy.rule;
   // Every merged copy must pass the pre-existing checks on its own, or the merged finding is not pre-existing.
   if (!copy.preExisting || (staysPreExisting && !staysPreExisting(copy))) delete survivor.preExisting;
   const evidence = mergeEvidence(survivor.evidence, copy.evidence);
