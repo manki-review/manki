@@ -1093,10 +1093,11 @@ describe('parseJudgeResponse', () => {
       { id: 2, title: 'B', row: 'serious', column: 'sometimes', reasoning: 'r', confidence: 'high', category: 'Bug', effort: 'huge' },
       { id: 3, title: 'C', severity: 'warning', reasoning: 'r', confidence: 'high', category: 'toString' },
       { id: 4, title: 'D', row: 'none', column: 'normal', reasoning: 'r', confidence: 'high' },
+      { id: 5, title: 'E', row: 'ignore', reasoning: 'r', confidence: 'high' },
     ] }));
-    expect(result.findings.map(f => [f.category, f.effort])).toEqual([['concurrency', 'larger'], [undefined, undefined], [undefined, undefined], [undefined, undefined]]);
-    // Only a row of the table or `none` is kept, and only an explicit `rare` is a rare column.
-    expect(result.findings.map(f => [f.row, f.column])).toEqual([['wrong', 'rare'], [undefined, undefined], [undefined, undefined], ['none', undefined]]);
+    expect(result.findings.map(f => [f.category, f.effort])).toEqual([['concurrency', 'larger'], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined]]);
+    // Only a row of the table or `none` is kept, and only an explicit `rare` is a rare column. `ignore`, the prompt's word for a dropped finding, reads as `none`.
+    expect(result.findings.map(f => [f.row, f.column])).toEqual([['wrong', 'rare'], [undefined, undefined], [undefined, undefined], ['none', undefined], ['none', undefined]]);
     // A fix that leaves part of the problem says so in the posted fix.
     const leaves = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
       { id: 1, title: 'Upload unbounded', row: 'degraded', reasoning: 'r', confidence: 'high', fixLeaves: ' The upload still has no timeout. ' },
@@ -1117,7 +1118,7 @@ describe('parseJudgeResponse', () => {
     expect(doubts.map(f => f.doubts)).toEqual([[{ premise: 'A caller passes `n` unchecked', decides: 'grade' }, { premise: 'The copy is never dropped', decides: 'defect' }], undefined, undefined]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned category "Bug", which is not one of correctness, security'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned effort "huge"'));
-    expect(warnSpy).toHaveBeenCalledWith('The judge named no known `row` for 2 of 4 findings, which keep the grade their reviewer gave');
+    expect(warnSpy).toHaveBeenCalledWith('The judge named no known `row` for 2 of 5 findings, which keep the grade their reviewer gave');
     warnSpy.mockRestore();
   });
 

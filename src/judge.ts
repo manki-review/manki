@@ -1172,7 +1172,9 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       const category = oneOf(FINDING_CATEGORIES, f.category, 'category');
       const effort = oneOf(FINDING_EFFORTS, f.effort, 'effort');
       const proof = parseProof(f.proof);
-      const row = f.row === 'none' || (typeof f.row === 'string' && Object.hasOwn(CELL_GRADES, f.row)) ? f.row as CellRow | 'none' : undefined;
+      // The prompt calls dropping a finding marking it `ignore`, so a judge can name that in place of `none`.
+      const row = f.row === 'none' || f.row === 'ignore' ? 'none' as const
+        : typeof f.row === 'string' && Object.hasOwn(CELL_GRADES, f.row) ? f.row as CellRow : undefined;
       const doubts = parseDoubts(f.doubts);
       const fixLeaves = typeof f.fixLeaves === 'string' ? f.fixLeaves.trim().slice(0, MAX_REMAINING_CHARS) : '';
       return {
