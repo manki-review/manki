@@ -4279,7 +4279,7 @@ describe('buildJudgeUserMessage with linked issues', () => {
 });
 
 describe('deduplicateFindings', () => {
-  it('removes findings with identical title and file, and keeps a pre-existing mark only when every copy has it', () => {
+  it('removes findings with identical title and file, keeps a pre-existing mark only when every copy has it, and keeps the first rule a copy quotes', () => {
     const findings = [
       makeFinding({ title: 'Null check', file: 'src/a.ts', line: 10, reviewers: ['R1'], preExisting: 'Old code.' }),
       makeFinding({ title: 'Null check', file: 'src/a.ts', line: 20, reviewers: ['R2'] }),
@@ -4290,6 +4290,11 @@ describe('deduplicateFindings', () => {
     expect(result[0].reviewers).toEqual(['R1']);
     expect(result[0].preExisting).toBeUndefined();
     expect(deduplicateFindings([findings[0], { ...findings[1], preExisting: 'Old code.' }])[0].preExisting).toBe('Old code.');
+    const rule = { file: 'AGENTS.md', quote: 'A pointer must be checked before use.' };
+    const other = { file: 'CONTRIBUTING.md', quote: 'Never read a pointer unchecked.' };
+    expect(result[0].rule).toBeUndefined();
+    expect(deduplicateFindings([findings[0], { ...findings[1], rule }])[0].rule).toEqual(rule);
+    expect(deduplicateFindings([{ ...findings[0], rule }, { ...findings[1], rule: other }, findings[1]])[0].rule).toEqual(rule);
 
     // A dropped copy on a changed line, or citing one as proof, ties the finding to this PR, so the mark goes.
     const diff = makeDiff([makeDiffFile({ path: 'src/a.ts', hunks: [{ oldStart: 18, oldLines: 5, newStart: 18, newLines: 5, content: '' }] })]);

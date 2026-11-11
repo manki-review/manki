@@ -159,15 +159,15 @@ describe('parseFindings', () => {
     expect(lead.description).toBe('A reviewer raised this as a suspicion it had not finished checking. It had checked: read src/c.ts:3. Still to check: find the writers.');
 
     const instructionFiles = [
-      { path: 'services/api/AGENTS.md', text: 'A change to a handler **must** come with an\n  integration test.\n\n---\n\n## notes.md\n\nPrefer short names.' },
+      { path: 'services/api/AGENTS.md', text: 'A change to a handler **must** come with an\n  integration test.\n\n---\n\n## notes.md\n\nNames must be short.' },
       { path: 'CONTRIBUTING.md', text: 'Every model change needs a `migration`.' },
     ];
     const rules = [
       ['Every model change needs a migration.', 'CONTRIBUTING.md'],
       // Line wraps, emphasis and case do not count, and a heading inside a file starts no new file.
       ['a change to a handler must come with an integration test.', 'services/api/AGENTS.md'],
-      ['Prefer short names.', 'services/api/AGENTS.md'],
-      ['Prefer short names.', 'notes.md'],
+      ['Names must be short.', 'services/api/AGENTS.md'],
+      ['Names must be short.', 'notes.md'],
       // The quote is in another loaded file, in no loaded file, in a file that is not loaded, or too short to be a rule.
       ['Every model change needs a migration.', 'services/api/AGENTS.md'],
       ['Every model change needs a rollback.', 'CONTRIBUTING.md'],
@@ -1872,19 +1872,21 @@ describe('findingsMatch', () => {
 });
 
 describe('intersectFindings', () => {
-  it('keeps findings that appear in at least threshold passes', () => {
+  it('keeps findings that appear in at least threshold passes, with the first rule a pass quotes', () => {
     const consistent = makeFinding({ file: 'src/a.ts', line: 10, title: 'Null check missing in handler' });
     const inconsistent = makeFinding({ file: 'src/b.ts', line: 20, title: 'Unused import detected here' });
+    const rule = { file: 'AGENTS.md', quote: 'A handler must check its input.' };
 
     const passes: Finding[][] = [
       [consistent, inconsistent],
-      [makeFinding({ file: 'src/a.ts', line: 11, title: 'Null check missing in handler' })],
-      [makeFinding({ file: 'src/a.ts', line: 10, title: 'Null check missing in handler' })],
+      [makeFinding({ file: 'src/a.ts', line: 11, title: 'Null check missing in handler', rule })],
+      [makeFinding({ file: 'src/a.ts', line: 10, title: 'Null check missing in handler', rule: { file: 'CONTRIBUTING.md', quote: 'Never trust a handler input.' } })],
     ];
 
     const result = intersectFindings(passes, 2);
     expect(result).toHaveLength(1);
-    expect(result[0].title).toBe('Null check missing in handler');
+    expect(result[0]).toEqual({ ...consistent, rule });
+    expect(consistent.rule).toBeUndefined();
   });
 
   it('returns all findings from any pass when threshold is 1', () => {

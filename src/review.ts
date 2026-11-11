@@ -326,9 +326,10 @@ export function intersectFindings(passes: Finding[][], threshold: number): Findi
 
   for (const pass of passes) {
     for (const f of pass) {
-      if (!allCandidates.some(c => findingsMatch(c, f))) {
-        allCandidates.push(f);
-      }
+      const seen = allCandidates.findIndex(c => findingsMatch(c, f));
+      if (seen < 0) allCandidates.push(f);
+      // The rule a later pass quotes stays, as it does for a duplicate the judge folds.
+      else if (f.rule && !allCandidates[seen].rule) allCandidates[seen] = { ...allCandidates[seen], rule: f.rule };
     }
   }
 
@@ -2041,7 +2042,8 @@ function plainText(text: string): string {
 
 /**
  * Reads `rule` with its `ruleFile`. The mark is kept only when `instructionFiles` holds that file and the file holds the
- * quote, so a rule the reviewer made up or read in a file the PR edits is no rule finding.
+ * quote, so a rule the reviewer made up or read in a file the PR edits is no rule finding. Whether the quote states a
+ * requirement is not checked.
  */
 function ruleOf(f: Record<string, unknown>, instructionFiles: readonly InstructionFile[]): Pick<Finding, 'rule'> {
   const file = textOf(f.ruleFile);
