@@ -1887,12 +1887,13 @@ function ownProposalOf(finding: Finding, provenanceMap?: ProvenanceEntry[]): Pro
 
 /**
  * Drops a finding below `warning` on code that applies a prior-round `suggestedFix`, so Manki does not
- * object to a change it asked for. A `warning` or `blocker` there means the new code is worse, and it stays.
+ * object to a change it asked for. A `warning` or `blocker` there means the new code is worse, and it stays. So does
+ * a note that `breaksRule`, which `gradeConfirmedRule` raises.
  */
 function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): void {
   const match = ownProposalOf(finding, provenanceMap);
   if (!match) return;
-  if (!isNote(finding.severity)) return;
+  if (!isNote(finding.severity) || breaksRule(finding)) return;
 
   finding.originalSeverity ??= finding.severity;
   Object.assign(finding, gradeStep(finding, 'ignore', 'own_proposal'));

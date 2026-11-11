@@ -4150,6 +4150,13 @@ describe('mapJudgedToFindings own-proposal drop', () => {
     expect(result[0].originalSeverity).toBe(severity);
     expect(result[0].tags).toEqual(['own-proposal-followup']);
     expect(result[0].judgeNotes).toContain('Own-proposal follow-up: implements round 2 finding "Clamp future time"');
+    // A note whose rule the judge confirmed stays, since the rule raises it above a note.
+    const quoted = [{ ...originals[0], rule: { file: 'AGENTS.md', quote: 'Every clamp needs a test.' }, evidence: { checks: [], proof: ['src/index.ts:10'] } }];
+    const [byRule] = mapJudgedToFindings(quoted, [{ ...judged[0], ruleIsRequirement: true, ruleBroken: true }], [makeProvenance()]);
+    expect([byRule.severity, byRule.rule?.verdict, byRule.tags]).toEqual([severity, 'confirmed', undefined]);
+    // A rule the judge did not confirm raises nothing, so that note is dropped like any other.
+    const [unconfirmed] = mapJudgedToFindings(quoted, [{ ...judged[0], ruleIsRequirement: true, ruleBroken: false }], [makeProvenance()]);
+    expect([unconfirmed.severity, unconfirmed.rule?.verdict]).toEqual(['ignore', 'not_broken']);
   });
 
   it('does not tag an ignore finding that overlaps provenance', () => {
