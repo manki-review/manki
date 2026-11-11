@@ -14,7 +14,7 @@ import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, Overl
 import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { classifyRelatedWork } from './related-work';
 import { makeScratchDir } from './tool-install';
-import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
+import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { disproof, refuteBlockers } from './refute';
@@ -201,7 +201,8 @@ const EFFORT_ORDER = Object.keys(DEEPER_EFFORT) as EffortLevel[];
  * Builds the round's readers. The PR's class, from its paths and the triage, picks a review group,
  * and each reader in the group becomes one finder. `planner.paired` pins the `paired` answer
  * before the PR is classified, and every floor class the PR matches is checked after routing.
- * A `deeper` review moves a group with fewer than two finders up to the built-in `pair` group.
+ * A `deeper` review moves a group with fewer than two finders up to the built-in `pair` group, where a finder the
+ * earlier group had runs at least at that group's effort.
  * With `clients`, each finder is named and recorded by the effort its client sends.
  */
 export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE, deeper = false, clients?: ReviewClients): TeamRoster {
@@ -265,11 +266,22 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
   const names = new Set<string>();
   const finders = group.reviewers.filter(r => r.role !== 'verifier');
   const risky = floor || finders.length >= 2;
+  // A group a deeper review moves up has at most one finder. The first finder of `group` on its model is that finder.
+  const identity = (r: GroupReviewer): string => modelIdentity(resolveReviewerModel(config, r.model));
+  const earlier = escalatedFrom?.reviewers.find(r => r.role !== 'verifier');
+  const kept = earlier && finders.find(r => identity(r) === identity(earlier));
   return group.reviewers.map(reviewer => {
     const model = resolveReviewerModel(config, reviewer.model);
     const client = clients && pickReviewerClient(clients, model).client;
     const sent = (tier: EffortLevel): EffortLevel | undefined => (client?.sentEffort ? client.sentEffort(tier) : tier);
-    const effort = askedEffort(reviewer, triage, deeper);
+    // A reader the deeper review added has no effort without it to compare with.
+    const usual = escalatedFrom ? (reviewer === kept ? earlier : undefined) : reviewer;
+    const usualEffort = usual && askedEffort(usual, triage, false);
+    // No effort sent ranks below every tier.
+    const rank = (tier: EffortLevel | undefined): number => (tier ? EFFORT_ORDER.indexOf(tier) : -1);
+    const deeperEffort = askedEffort(reviewer, triage, deeper);
+    // The built-in pair can ask for less than the earlier group set, and a deeper review never lowers a finder's effort.
+    const effort = deeper && usualEffort && rank(usualEffort) > rank(deeperEffort) ? usualEffort : deeperEffort;
     // A model that takes no effort keeps the asked tier in its name and record.
     const sentEffort = sent(effort) ?? effort;
     const verifier = reviewer.role === 'verifier';
@@ -281,12 +293,7 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
     for (let n = 2; names.has(name); n++) name = `${label} #${n}`;
     names.add(name);
     const steps = verifier ? QUICK_CHECK_STEPS : risky ? RISKY_FINDER_STEPS : FINDER_STEPS;
-    // A reader the deeper review added has no effort without it to compare with.
-    const ref = (r: GroupReviewer): string => r.model ?? '@reviewer';
-    const usual = escalatedFrom ? escalatedFrom.reviewers.find(r => r.role !== 'verifier' && ref(r) === ref(reviewer)) : reviewer;
-    // The built-in pair can run below a tier the earlier group set, and no effort sent ranks below every tier.
-    const rank = (tier: EffortLevel | undefined): number => (tier ? EFFORT_ORDER.indexOf(tier) : -1);
-    const deeperSameEffort = deeper && usual !== undefined && rank(sent(effort)) <= rank(sent(askedEffort(usual, triage, false)));
+    const deeperSameEffort = deeper && usualEffort !== undefined && rank(sent(effort)) <= rank(sent(usualEffort));
     return { name, prompt, model, effort, sentEffort, steps, ...(deeperSameEffort && { deeperSameEffort }) };
   });
 }

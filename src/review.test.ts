@@ -1392,11 +1392,29 @@ describe('selectTeam', () => {
       expect(escalated.routing).toMatchObject({ group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'solo' });
       expect(readers(escalated)).toEqual([`${S} · high`, `${O} · high`]);
       expect(escalated.routing.deeperSameEffort).toEqual([`${S} · high`]);
-      // The built-in pair runs below a `max` the earlier group set, which is no more effort either.
-      const soloMax = makeConfig({ review: { groups: { solo: { reviewers: [{ effort: 'max' }] } } } });
-      const lowered = selectTeam(makeDiff({ files: code }), soloMax, t(false, true, false), true, clients);
-      expect(readers(lowered)).toEqual([`${S} · high`, `${O} · xhigh`]);
-      expect(lowered.routing.deeperSameEffort).toEqual([`${S} · high`]);
+      // The built-in pair asks for less than a `max` the earlier group set. The kept finder stays at `max`, which is no
+      // more effort for it, and the added finder runs at the deeper effort.
+      const max1 = (model?: string) => makeConfig({ review: { groups: { deep: { reviewers: [{ ...(model && { model }), effort: 'max' }] } }, routing: { internal: 'deep' } } });
+      const kept = selectTeam(makeDiff({ files: code }), max1(), t(false, true, false), true, clients);
+      expect(kept.routing).toMatchObject({ group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'deep' });
+      expect(kept.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · max`, 'max'], [`${O} · xhigh`, 'xhigh']]);
+      expect(kept.routing.deeperSameEffort).toEqual([`${S} · max`]);
+      // The kept finder is the one on the earlier finder's model, however the group names that model.
+      for (const model of ['@reviewer_pair', 'claude-opus-5-5', 'anthropic/claude-opus-5-5']) {
+        const keptPair = selectTeam(makeDiff({ files: code }), max1(model), t(false, true, false), true, clients);
+        expect(keptPair.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · high`, 'xhigh'], [`${O} · max`, 'max']]);
+        expect(keptPair.routing.deeperSameEffort).toEqual([`${O} · max`]);
+      }
+      // When both pair finders run on that model, only the first is the kept one. The other is added and runs at the deeper effort.
+      for (const model of [undefined, '@reviewer_pair']) {
+        const oneModel = selectTeam(makeDiff({ files: code }), { ...max1(model), models: { reviewer_pair: 'claude-sonnet-5-5' } }, t(false, true, false), true, clients);
+        expect(oneModel.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · max`, 'max'], [`${S} · high`, 'xhigh']]);
+        expect(oneModel.routing.deeperSameEffort).toEqual([`${S} · max`]);
+      }
+      // A finder on a model the pair does not run is replaced, so no finder is kept.
+      const replaced = selectTeam(makeDiff({ files: code }), max1('gpt-5.5'), t(false, true, false), true, clients);
+      expect(replaced.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · high`, 'xhigh'], [`${O} · xhigh`, 'xhigh']]);
+      expect(replaced.routing.deeperSameEffort).toBeUndefined();
       // A quick check is no finder, so a finder that replaces it is added too.
       expect(selectTeam(makeDiff({ files: code }), makeConfig(), t(true, false, false), true, bothCapped).routing.deeperSameEffort).toBeUndefined();
 
