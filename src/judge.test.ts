@@ -224,7 +224,7 @@ describe('buildJudgeSystemPrompt', () => {
     }
     expect(prompt).toContain('If you can show the attacker gains no capability they do not already have');
     expect(prompt).toContain('mark the finding `ignore` and say why in `reasoning`');
-    expect(prompt).toContain('Never keep it on a lower row.');
+    expect(prompt).toContain('Never keep it on a lower row: Manki grades every finding you set `security` to true on by the `severe` row.');
     expect(prompt).toContain('A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation');
     expect(prompt).toContain('When one does, state the `improvement` row at most and name the TODO, unless it is a security defect.');
     expect(prompt).toContain('For a library, outside input is also anything a caller of its public API can pass, such as arguments, readers and byte streams. No caller inside the repository is needed.');
@@ -1787,6 +1787,10 @@ describe('runJudgeAgent', () => {
       ['Token in log', undefined],
     ]);
     expect(result.findings.map(f => f.category)).toEqual(['security', undefined, undefined]);
+    // A security finding is graded by the `severe` row, so the row the judge states cannot lower it.
+    expect(result.findings.map(f => [f.severity, f.cell])).toEqual([
+      ['blocker', { row: 'severe', column: 'normal', judgeRow: 'degraded' }], ['warning', { row: 'degraded', column: 'normal' }], ['blocker', { row: 'wrong', column: 'normal' }],
+    ]);
   });
 
   it('keeps a reviewer\'s pre-existing mark only when the judge keeps it and every merged copy is marked and off the diff, and hides one on a line the PR adds from the judge', async () => {
@@ -3588,6 +3592,7 @@ describe('mapJudgedToFindings', () => {
       proven('Doubted blocker'), proven('Doubted security', { tags: ['security'] }), proven('Marked security'), proven('Tool alert', { toolSource: 'clippy' }),
       proven('Rare with another doubt'), proven('Doubted warning'), proven('No row', { severity: 'warning' }), proven('Doubted reach'),
       proven('Severe with a reach doubt'), proven('Rare with the reach doubt'),
+      proven('Rare security'), proven('Tagged security', { tags: ['security'] }),
     ];
     const judged: JudgedFinding[] = [
       { id: 1, title: 'Doubted blocker', row: 'severe', doubts: [doubt], reasoning: 'r', confidence: 'high' },
@@ -3600,6 +3605,8 @@ describe('mapJudgedToFindings', () => {
       { id: 8, title: 'Doubted reach', row: 'wrong', column: 'normal', doubts: [reach], reasoning: 'r', confidence: 'high' },
       { id: 9, title: 'Severe with a reach doubt', row: 'severe', doubts: [reach], reasoning: 'r', confidence: 'high' },
       { id: 10, title: 'Rare with the reach doubt', row: 'wrong', column: 'rare', doubts: [{ ...REACH_DOUBT, decides: 'defect' }, doubt], reasoning: 'r', confidence: 'high' },
+      { id: 11, title: 'Rare security', row: 'degraded', column: 'rare', security: true, reasoning: 'r', confidence: 'high' },
+      { id: 12, title: 'Tagged security', row: 'wrong', column: 'rare', reasoning: 'r', confidence: 'high' },
     ];
     const result = mapJudgedToFindings(originals, judged);
     expect(result.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.doubts])).toEqual([
@@ -3618,14 +3625,20 @@ describe('mapJudgedToFindings', () => {
       ['Severe with a reach doubt', 'blocker', 'blocker', [reach]],
       // The claim of the `rare` column is listed once when the judge names it too, and it only ever decides the grade.
       ['Rare with the reach doubt', 'warning', 'blocker', [doubt, REACH_DOUBT]],
+      // A security finding is graded by the `severe` row, whatever row and column the judge states.
+      ['Rare security', 'blocker', undefined, undefined],
+      ['Tagged security', 'blocker', undefined, undefined],
     ]);
     expect(result.map(f => f.cell)).toEqual([
-      { row: 'severe', column: 'normal' }, { row: 'severe', column: 'normal' }, { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'rare' },
+      { row: 'severe', column: 'normal' }, { row: 'severe', column: 'normal' }, { row: 'severe', column: 'normal', judgeRow: 'wrong' }, { row: 'wrong', column: 'rare' },
       { row: 'wrong', column: 'rare' }, { row: 'degraded', column: 'normal' }, undefined, { row: 'wrong', column: 'normal' },
       { row: 'severe', column: 'normal' }, { row: 'wrong', column: 'rare' },
+      { row: 'severe', column: 'rare', judgeRow: 'degraded' }, { row: 'severe', column: 'rare', judgeRow: 'wrong' },
     ]);
     expect(warnSpy.mock.calls.map(([message]) => message)).toEqual([
-      'The judge marked "Marked security" a security finding on the `wrong` row, not `severe`',
+      'The judge put the security finding "Marked security" on the `wrong` row, so Manki grades it by `severe`',
+      'The judge put the security finding "Rare security" on the `degraded` row, so Manki grades it by `severe`',
+      'The judge put the security finding "Tagged security" on the `wrong` row, so Manki grades it by `severe`',
     ]);
     warnSpy.mockRestore();
   });
@@ -3805,13 +3818,13 @@ describe('mapJudgedToFindings own-proposal drop', () => {
   });
 
   it('preserves pre-existing tags when adding own-proposal-followup', () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion', line: 10, tags: ['security'] })];
+    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion', line: 10, tags: ['follow-up'] })];
     const judged: JudgedFinding[] = [
       { title: 'Bug', row: 'improvement', reasoning: 'Caveat.', confidence: 'high' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].tags).toContain('security');
+    expect(result[0].tags).toContain('follow-up');
     expect(result[0].tags).toContain('own-proposal-followup');
     expect(result[0].tags).toHaveLength(2);
   });
