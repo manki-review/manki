@@ -525,7 +525,7 @@ function relatedReposPrompt({ repos, guides }: RelatedRepoTools): string {
 
 ${list.join('\n')}
 
-A repo is fetched the first time you name it, which takes a while, so name one only for these checks:
+A repo not fetched yet is fetched the first time you name it, which takes a while, so name one only for these checks:
 - Read a **reference** whenever the PR title, description or changed code says the change matches it, or follows its spec or proposal: open the code the claim names and compare it with the change. A claim nobody compared leaves the PR's main promise unchecked.
 - Read a **reference** when the changed code implements or mirrors it, such as a spec, a file or wire format, another implementation or an API this code talks to. Compare both directions of each contract: what this code produces against what the reference accepts, and the reverse, along with limits, field order, field types and versions.
 - Read a **consumer** only when the PR changes public API or a wire or data format, to find the consumer's code that uses what changed.${guideRule}
