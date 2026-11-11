@@ -1519,14 +1519,16 @@ function formatLeftOutEntry({ title, file, line, reason }: LeftOutEntry, linkTo:
 
 /**
  * Returns the fold that lists what the round checked and left out: each finding of `disproved`, each warning of
- * `result.unposted` that nothing proves, and each lead of `result.openLeads`. Every kind shows its first
- * `MAX_LISTED_FINDINGS`. Returns none when there is nothing to list.
+ * `result.unposted` that nothing proves, each warning of `result.unpostedPreExisting`, which no check confirmed, and
+ * each lead of `result.openLeads`. Every kind shows its first `MAX_LISTED_FINDINGS`. Returns none when there is
+ * nothing to list.
  */
 function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], linkTo: LineLink): string | null {
-  const unproven = (result.unposted ?? []).flatMap((f): LeftOutEntry[] => {
-    const why = f.unpostedReason && leftOutUnproven(f) ? UNPOSTED_REASONS[f.unpostedReason] : undefined;
-    return why ? [{ ...f, reason: `${why[0].toUpperCase()}${why.slice(1)}.` }] : [];
-  });
+  const because = (f: Finding, why: string): LeftOutEntry => ({ ...f, reason: `${why[0].toUpperCase()}${why.slice(1)}.` });
+  const unproven = [
+    ...(result.unposted ?? []).flatMap(f => f.unpostedReason && leftOutUnproven(f) ? [because(f, UNPOSTED_REASONS[f.unpostedReason])] : []),
+    ...(result.unpostedPreExisting ?? []).filter(f => f.severity === 'warning').map(f => because(f, `${UNPOSTED_REASONS.pre_existing}, and no tool check confirmed it`)),
+  ];
   const leads = (result.openLeads ?? []).map((f): LeftOutEntry => ({ ...f, reason: f.leadSince ? `Open since round ${f.leadSince}.` : undefined }));
   const kinds = [
     { heading: 'Disproved by a tool check', noun: 'finding', short: 'disproved', entries: disproved },

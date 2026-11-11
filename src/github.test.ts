@@ -4509,12 +4509,14 @@ describe('postReview non-blocking findings', () => {
     const link = (line: number, file = 'src/a.ts'): string => `[\`${file}:${line}\`](https://github.com/owner/repo/blob/abc1234/${file}#L${line})`;
     const unproven = [nonBlocking('warning', 'Unsettled', 15, { unpostedReason: 'unsettled_check' }), nonBlocking('warning', 'Unchecked', 16, { unpostedReason: 'not_checked' }), nonBlocking('warning', 'Uncited', 17, { unpostedReason: 'no_proof' })];
     const capped = nonBlocking('note', 'Left out', 11, { unpostedReason: 'note_cap' });
+    // Of the findings on code the PR did not change, the fold lists the warnings, which no check confirmed.
+    const unpostedPreExisting = [nonBlocking('warning', 'Old loop', 18), nonBlocking('note', 'Old name', 19)];
     const leads = [nonBlocking('warning', 'Token may not read it', 3, { leadSince: 2 }), nonBlocking('note', 'Cache <b>may</b> go stale', 4)];
     const overflow = { title: 'Overflow', file: 'src/m.ts', line: 2, reason: 'Checked at <i>src/api.ts:3</i>.\nBoth inputs are bounded. A third sentence stays in the log.' };
     const log = '<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>';
 
     // Every kind has its heading and count, and the summary gives the total and the split.
-    const all = await bodyOf({ unposted: [...unproven, capped], openLeads: leads }, [overflow]);
+    const all = await bodyOf({ unposted: [...unproven, capped], unpostedPreExisting, openLeads: leads }, [overflow]);
     expect(all).toContain([
       'Summary',
       '',
@@ -4525,14 +4527,14 @@ describe('postReview non-blocking findings', () => {
       '---',
       '',
       '<details>',
-      '<summary>Checked and left out: 6 findings (1 disproved, 3 unproven, 2 not finished)</summary>',
+      '<summary>Checked and left out: 7 findings (1 disproved, 4 unproven, 2 not finished)</summary>',
       '',
       '#### Disproved by a tool check · 1 finding',
       '',
       `- **Overflow** · ${link(2, 'src/m.ts')}`,
       '  Checked at src/api.ts:3. Both inputs are bounded.',
       '',
-      '#### Not proven, so not listed · 3 warnings',
+      '#### Not proven, so not listed · 4 warnings',
       '',
       `- **Unsettled** · ${link(15)}`,
       '  A tool check could not confirm it.',
@@ -4540,6 +4542,8 @@ describe('postReview non-blocking findings', () => {
       '  Nothing proves it and no tool check ran on it.',
       `- **Uncited** · ${link(17)}`,
       '  It cites no lines that prove it.',
+      `- **Old loop** · ${link(18)}`,
+      '  On code this PR did not change, and no tool check confirmed it.',
       '',
       '#### Not finished checking · 2 leads',
       '',
@@ -4575,7 +4579,9 @@ describe('postReview non-blocking findings', () => {
 
     // An incomplete round's progress comment has no judge decisions, so its review has no fold. Neither has a round that left nothing out.
     expect(await bodyOf({ reviewComplete: false, unposted: unproven, openLeads: leads }, [overflow])).not.toContain('Checked and left out');
-    expect(await bodyOf({ unposted: [capped] })).not.toContain('Checked and left out');
+    expect(await bodyOf({ unposted: [capped], unpostedPreExisting: unpostedPreExisting.slice(1) })).not.toContain('Checked and left out');
+    // A warning on unchanged code is the judge's decision too, so a fold of those alone names the log.
+    expect(await bodyOf({ unpostedPreExisting })).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Not proven, so not listed · 1 warning\n\n- **Old loop** · ${link(18)}\n  On code this PR did not change, and no tool check confirmed it.\n\n${log}\n\n</details>`);
   });
 
   it('posts at most five non-blocking findings inline, most severe first, and lists the rest', async () => {
