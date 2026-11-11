@@ -2089,7 +2089,7 @@ describe('runJudgeAgent', () => {
       'Unseen in advice': { ruleUnseen: 'No migration adds the field' },
     };
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
-      summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', confidence: 'high', ...answers[title] })),
+      summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', ...answers[title] })),
     }) });
     const input: JudgeInput = { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 2 };
     const graded = async (rules?: 'warn' | 'block') => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), input)).findings
@@ -2125,7 +2125,7 @@ describe('runJudgeAgent', () => {
     expect(system).toContain('## Rule Findings');
     expect(system).toContain('"ruleIsRequirement": false,\n      "ruleBroken": false,\n      "ruleUnseen": "",');
     // A round without a rule finding gets neither the section nor the fields.
-    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'No rule quoted', row: 'improvement', reasoning: 'r', confidence: 'high', ...yes }] }) });
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'No rule quoted', row: 'improvement', reasoning: 'r', ...yes }] }) });
     const plain = await runJudgeAgent(mockClient, makeConfig({ review: { rules: 'block' } }), { ...input, findings: [findings[8]] });
     expect(plain.findings.map(f => [f.severity, f.rule])).toEqual([['note', undefined]]);
     expect(mockSendMessage.mock.calls.at(-1)![0]).not.toMatch(/Rule Findings|ruleBroken|ruleUnseen|Quoted rule/);
@@ -2147,6 +2147,8 @@ describe('runJudgeAgent', () => {
       'Another premise confirmed': { ...unseen, row: 'degraded', doubts: [{ premise: 'The loop reads the variable on each request', decides: 'defect' }] },
       // The judge's own doubt is about the damage. A disproof of it leaves the confirmed rule broken.
       'Damage disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
+      // The refuter's own answer that the defect does not exist can be about the rule, so it drops the warning.
+      'Defect disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
     };
     const titles = Object.keys(answers);
     const findings = titles.map((title, i) => makeFinding({
@@ -2156,6 +2158,7 @@ describe('runJudgeAgent', () => {
     const replies: Record<string, unknown> = {
       'Fact confirmed': premise('confirmed'), 'Fact disproved': premise('disproved'), 'Fact unsettled': premise('unsettled'),
       'Fact confirmed without a search': premise('confirmed'), 'Another premise confirmed': premise('confirmed'), 'Damage disproved': premise('disproved'),
+      'Defect disproved': { ...premise('unsettled'), outcome: 'disproved', proof: ['src/index.ts:3'] },
     };
     const refuterMessages: string[] = [];
     const refuter: LLMClient = {
@@ -2166,7 +2169,7 @@ describe('runJudgeAgent', () => {
       },
     };
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
-      summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', confidence: 'high', ...answers[title] })),
+      summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', ...answers[title] })),
     }) });
     const run = async (rules?: 'block') => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), {
       findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace },
@@ -2181,10 +2184,12 @@ describe('runJudgeAgent', () => {
         ['Fact confirmed without a search', grade, 'confirmed', `refutation: ${grade}`],
         ['Another premise confirmed', 'warning', 'unproven', 'judge: warning'],
         ['Damage disproved', grade, 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning'],
+        // No disproof lowers a blocker the rule raised.
+        ['Defect disproved', grade === 'blocker' ? grade : 'ignore', 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning, refutation: ignore'],
       ];
       expect(await graded()).toEqual(expected('warning'));
       expect(await graded('block')).toEqual(expected('blocker'));
-      expect(refuterMessages).toHaveLength(12);
+      expect(refuterMessages).toHaveLength(14);
 
       // The kept warning drops the damage the check disproved, so the next round's judge reads a warning with no cell to restate and no open doubt.
       const kept = (await run()).find(f => f.title === 'Damage disproved')!;

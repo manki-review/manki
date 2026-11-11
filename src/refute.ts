@@ -378,8 +378,8 @@ const linkedToEarlier = (finding: Finding): boolean => !!(finding.sameAs || find
  * the PR changed that `needsProof` and that nothing proves yet, in the order given: one the judge kept with a doubt
  * whether the defect exists, and one no cited line proves. Then come the warnings `preExisting` accepts, which are
  * posted only when a check confirms them, those with a doubt first. Then come the warnings of both kinds that are
- * `linkedToEarlier` or that `restatesEarlier` accepts. Last come the security findings the judge doubts, which are
- * posted either way. A round can judge findings in several calls, so only the first group is returned for a judge
+ * `linkedToEarlier` or that `restatesEarlier` accepts. Last come the findings the judge doubts that are posted without
+ * proof: a security finding and one that `breaksRule`. A round can judge findings in several calls, so only the first group is returned for a judge
  * call, and every later group once the round's last judge call is over, with `roundEnd`. The `limit` counts refuter
  * calls, so a warning `needsNoCall` accepts takes none of it and is returned as `reused`. A finding the judge would
  * grade higher if its doubts hold is always checked, since that check is how a warning becomes a blocker. A tool alert
