@@ -25,7 +25,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
+import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1971,8 +1971,3 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
   }
   return [...kept.values()];
 }
-
-export function findingKey(f: Pick<Finding, 'file' | 'line' | 'title'>): string {
-  return `${f.file}:${f.line}:${f.title}`;
-}
-
