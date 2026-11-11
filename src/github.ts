@@ -1327,7 +1327,7 @@ const PREVIEW_CONTEXT = 2;
 /**
  * Renders a finding listed in the review body as a closed fold. Its summary holds the title, the header line and
  * the location. Inside are what goes wrong, a permalink to the flagged lines, which GitHub shows as code, then the
- * parts of `formatFold` under their labels. The file's lines keep the permalink inside it, since GitHub shows a range
+ * parts of `formatFold` under their labels, with the finding's `checkStatus` in a line of its own after the fix. The file's lines keep the permalink inside it, since GitHub shows a range
  * past the end as a bare link.
  */
 function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = false): string {
@@ -1339,8 +1339,10 @@ function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = fals
   const preview = !formatFixDiff(finding, files) && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
     ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))]
     : [];
-  const parts = [bodyFixPart(finding, files), ...checksSection(finding, links, 'flagged').parts].filter(p => p !== undefined);
-  const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding), ...preview, ...parts.map(labelledPart)].join('\n\n')}\n\n</details>`;
+  const checks = checksSection(finding, links, 'flagged');
+  const fix = bodyFixPart(finding, files);
+  const parts = [...(fix ? [labelledPart(fix)] : []), ...(checks.status ? [`**How this was checked:** ${checks.status}`] : []), ...checks.parts.map(labelledPart)];
+  const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding), ...preview, ...parts].join('\n\n')}\n\n</details>`;
   // The box goes right under the fold, so it shows without opening it.
   return offerIssue ? `${fold}\n\n${issueBoxFor(finding)}` : fold;
 }
@@ -2723,7 +2725,7 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
   const refutations = refutationParts(finding, linkTo, known);
   const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
   if (checks.length === 0 && refutations.length === 0) {
-    return finding.toolSource || finding.reviewers.length === 0 ? { parts: [], reads: [], outcomes: [] } : { ...NOT_CHECKED, ...status };
+    return { ...(finding.toolSource || finding.reviewers.length === 0 ? { parts: [], reads: [], outcomes: [] } : NOT_CHECKED), ...status };
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
   const ownChecks = checks.filter(isOwn);

@@ -4411,7 +4411,7 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('note', 'Extract helper', 5, { suggestedFix: 'const x = helper();' }),
       nonBlocking('note', 'Token compared in variable time', 9, { tags: ['security'] }),
       nonBlocking('note', 'Missing file context', 0, { file: '', suggestedFix: 'Use the shared helper.', checkStatus: 'unconfirmed' }),
-      nonBlocking('note', 'Off the diff', 40, { howToFix: 'Run `b` only when `a` holds.', suggestedFix: 'if (a) {\n  b();\n}', evidence: { checks: ['read src/a.ts:40'], proof: [] } }),
+      nonBlocking('note', 'Off the diff', 40, { howToFix: 'Run `b` only when `a` holds.', suggestedFix: 'if (a) {\n  b();\n}', evidence: { checks: ['read src/a.ts:40'], proof: [] }, checkStatus: 'proven' }),
     ]), diff);
 
     const review = createReview.mock.calls[0][0];
@@ -4441,6 +4441,9 @@ describe('postReview non-blocking findings', () => {
       '**How to fix it**',
       'Use the shared helper.',
       '',
+      // A finding listed in the body names its check status in a line of its own, after the fix.
+      '**How this was checked:** not confirmed',
+      '',
       '</details>',
       '',
       '<!-- manki-issue-box -->',
@@ -4461,6 +4464,8 @@ describe('postReview non-blocking findings', () => {
       '  b();',
       '}',
       '```',
+      '',
+      '**How this was checked:** proven from the cited lines',
       '',
       '**Checked in the code**',
       '- Read `src/a.ts`:40',
