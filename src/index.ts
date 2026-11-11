@@ -33,7 +33,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, Finding, FindingSeverity, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
+import { ConfigSource, DashboardData, Finding, FindingSeverity, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, isNote, roundContextToFlatAliases, SECURITY_TAG, SEVERITY_ORDER, threadBlocks } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -1542,6 +1542,32 @@ async function reopenThreads(octokit: Octokit, threads: OpenThread[]): Promise<v
   }
 }
 
+/**
+ * Moves the notes the review leaves out from `result.findings` to `result.unpostedNotes`: a note on code an earlier
+ * round reviewed, and a note that restates a finding an earlier round listed. A security finding, a tool alert and a
+ * note that goes into an earlier thread are never left out.
+ */
+function hideSeenNotes(result: ReviewResult): void {
+  const reasonFor = (f: Finding): UnpostedReason | undefined => {
+    if (!isNote(f.severity) || f.threadId || f.answeredIn || f.toolSource || f.tags?.includes(SECURITY_TAG)) return undefined;
+    return f.origin === 'reviewed' ? 'reviewed_code' : f.origin === 'earlier' ? 'listed_earlier' : undefined;
+  };
+  const shown: Finding[] = [];
+  const hidden: Finding[] = [];
+  for (const f of result.findings) {
+    const unpostedReason = reasonFor(f);
+    if (!unpostedReason) {
+      shown.push(f);
+      continue;
+    }
+    core.info(`Recording ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it: ${unpostedReason}`);
+    hidden.push({ ...f, unpostedReason });
+  }
+  if (hidden.length === 0) return;
+  result.findings = shown;
+  result.unpostedNotes = hidden;
+}
+
 /** Turns an approval into a request for changes when a blocker thread it counted as fixed could not be resolved. */
 function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
   const blocking = threads.filter(threadBlocks);
@@ -1906,6 +1932,7 @@ async function runFullReview(
 
     addCodeContext(result.findings, withLockfiles(diff, lockfiles));
     tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
+    if (!options.fullReview) hideSeenNotes(result);
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.

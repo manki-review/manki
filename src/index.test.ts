@@ -283,7 +283,7 @@ jest.mock('./related-work', () => ({
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
 import { buildRoundRecap } from './round-context';
-import type { ParsedDiff, PrState, ReviewConfig, RunMode, ThreadEvaluation } from './types';
+import type { Finding, ParsedDiff, PrState, ReviewConfig, RunMode, ThreadEvaluation } from './types';
 import { SettingsView, withSettingsBlock } from './settings';
 import { registerSecret, withMarkers } from './utils';
 import { createLLMClient, LLMCall, parseModelSpec, removeSeededAuthFiles } from './providers';
@@ -2238,18 +2238,46 @@ describe('runFullReview orchestration', () => {
       expect(refused.endsWith(withSettingsBlock('', view('too big to review', { lastReviewed: 'ddd2222', boxes: new Set(['pause']) })).trimStart())).toBe(true);
     });
 
-    it('counts every finding as new code on a full review', async () => {
+    it('leaves out the notes of earlier rounds, and counts every finding as new code on a full review', async () => {
       seedPriorRounds([{ round: 1, commitSha: 'abc123', timestamp: '2025-01-01T00:00:00Z', findings: [] }]);
       const finding = { severity: 'suggestion' as const, title: 'Rename', file: 'src/app.ts', line: 2, description: 'd', reviewers: ['general'] };
+      const findings: Finding[] = [
+        finding,
+        { ...finding, severity: 'nitpick' as const, title: 'Listed before', raisedIn: 1 },
+        { ...finding, severity: 'warning' as const, title: 'Warning' },
+        { ...finding, severity: 'warning' as const, title: 'Warning listed before', raisedIn: 1 },
+        { ...finding, severity: 'blocker' as const, title: 'Blocker' },
+        { ...finding, title: 'Security note', tags: ['security'] },
+        { ...finding, title: 'Tool alert', toolSource: 'eslint' },
+        { ...finding, title: 'In a thread', threadId: 'PRRT_open' },
+        { ...finding, title: 'Answered', answeredIn: { threadId: 'PRRT_answered', answer: 'kept' } },
+      ];
       jest.mocked(reviewModule.runReview).mockImplementation(async () => ({
-        verdict: 'COMMENT', outcome: 'READY', summary: 's', findings: [{ ...finding }], highlights: [], reviewComplete: true, agentNames: ['general'],
+        verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: 's', findings: findings.map(f => ({ ...f })), highlights: [], reviewComplete: true, agentNames: ['general'],
       }));
 
       await runWith();
       await runWith({ fullReview: true });
+      // Without the PR's change at the last reviewed commit no code counts as reviewed, so only the restated note is left out.
+      jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed')).mockRejectedValueOnce(new Error('compare failed'));
+      seedPriorRounds([{ round: 1, commitSha: 'older1', timestamp: '2025-01-01T00:00:00Z', findings: [] }]);
+      await runWith();
 
-      const origins = jest.mocked(ghUtils.postReview).mock.calls.map(call => call[5].findings[0].origin);
-      expect(origins).toEqual(['reviewed', 'new']);
+      const [later, again, unknown] = jest.mocked(ghUtils.postReview).mock.calls.map(call => ({
+        posted: call[5].findings.map(f => [f.title, f.origin]),
+        unposted: call[7]!.findings.unposted?.map(e => [e.title, e.severity, e.origin, e.unpostedReason]),
+        count: call[7]!.findings.count,
+      }));
+      expect(later.posted).toEqual([
+        ['Warning', 'reviewed'], ['Warning listed before', 'earlier'], ['Blocker', 'reviewed'], ['Security note', 'reviewed'], ['Tool alert', 'reviewed'],
+        ['In a thread', 'reviewed'], ['Answered', 'reviewed'],
+      ]);
+      expect(later.unposted).toEqual([['Rename', 'suggestion', 'reviewed', 'reviewed_code'], ['Listed before', 'nitpick', 'earlier', 'listed_earlier']]);
+      expect(later.count).toBe(7);
+      expect(again.posted).toEqual(findings.map(f => [f.title, f.raisedIn ? 'earlier' : 'new']));
+      expect(again.unposted).toBeUndefined();
+      expect(unknown.posted).toEqual(findings.filter(f => f.title !== 'Listed before').map(f => [f.title, f.raisedIn ? 'earlier' : 'new']));
+      expect(unknown.unposted).toEqual([['Listed before', 'nitpick', 'earlier', 'listed_earlier']]);
     });
   });
 
