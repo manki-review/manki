@@ -638,6 +638,14 @@ export interface Refutation {
   model?: string;
 }
 
+/**
+ * Returns what `check` says about its finding. It is `disproved` when the refuter answered that the defect does not
+ * exist, whatever its `premises` add up to. Otherwise it is the check's `outcome`.
+ */
+export function outcomeOf(check: Refutation): RefutationOutcome {
+  return check.defect === 'disproved' ? 'disproved' : check.outcome;
+}
+
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 

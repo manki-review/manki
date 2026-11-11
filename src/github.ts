@@ -12,7 +12,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
+import { cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -2694,10 +2694,10 @@ function refutationPart(label: string, lead: string, { outcome, reason, proof }:
 /** Returns a part for each refuter that checked `finding`. */
 function refutationParts(finding: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
-  const pairLead = pairRefutation && REFUTATION_SUMMARY[pairRefutation.outcome];
-  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : REFUTATION_PART[refutation.outcome].text);
+  const pairLead = pairRefutation && REFUTATION_SUMMARY[outcomeOf(pairRefutation)];
+  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : REFUTATION_PART[outcomeOf(refutation)].text);
   return [
-    ...(refutation && lead ? [refutationPart(REFUTATION_PART[refutation.outcome].label, lead, refutation, linkTo, known)] : []),
+    ...(refutation && lead ? [refutationPart(REFUTATION_PART[outcomeOf(refutation)].label, lead, refutation, linkTo, known)] : []),
     ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`, pairRefutation, linkTo, known)] : []),
   ];
 }
@@ -2765,7 +2765,7 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
   return {
     parts: [...checked, ...refutations],
     reads: [read && `${read} ${read === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
-    outcomes: [finding.refutation && REFUTATION_SUMMARY[finding.refutation.outcome], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[finding.pairRefutation.outcome]}`].filter(o => typeof o === 'string'),
+    outcomes: [finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`].filter(o => typeof o === 'string'),
     ...status,
   };
 }

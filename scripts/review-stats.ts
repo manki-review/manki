@@ -18,7 +18,7 @@ import { summarizeCalls } from '../src/providers';
 import type { LLMCall } from '../src/providers';
 import { parseFindingData, threadMarkerSlug, threadSeverity } from '../src/recap';
 import { extractApprovalRecords } from '../src/review-record';
-import { SEVERITY_ORDER } from '../src/types';
+import { outcomeOf, SEVERITY_ORDER } from '../src/types';
 import type { ApprovalRecord, Refutation, ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
 import { aggregate, renderTable } from './fix-rate-report';
 import { githubToken, historyLines } from './review-history';
@@ -306,8 +306,8 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
         return true;
       };
       for (const { severity, refutation, pairRefutation } of refuted) {
-        if (fresh('first', refutation)) increment(stats.refutations, `${severity} ${refutation.outcome}`);
-        if (fresh('second', pairRefutation)) increment(stats.pairRefutations, `${refutation?.outcome ?? 'none'} / ${pairRefutation.outcome}`);
+        if (fresh('first', refutation)) increment(stats.refutations, `${severity} ${outcomeOf(refutation)}`);
+        if (fresh('second', pairRefutation)) increment(stats.pairRefutations, `${refutation ? outcomeOf(refutation) : 'none'} / ${outcomeOf(pairRefutation)}`);
       }
       stats.pairRefutationCalls.push(...(round.usage?.llmCalls ?? []).filter(c => c.agent === 'refute_pair'));
       const models = new Map((round.reviewers?.agentMetrics ?? []).map(a => [a.name, a.model ?? a.name]));

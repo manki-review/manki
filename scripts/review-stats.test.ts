@@ -54,7 +54,7 @@ describe('review stats', () => {
         // A finding a disproof dropped is listed with the judge's drops, and its refutations count too.
         dropped: [{
           title: 't', file: 'a', line: 1, reviewers: [],
-          refutation: unsettled('first'), pairRefutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: 'd' },
+          refutation: unsettled('first'), pairRefutation: { outcome: 'unsettled', defect: 'disproved', reason: 'r', files: [], codeDigest: 'd' },
         }],
       },
       // The blocker's answers are reused from round 1, so they count once. A lead left unsettled counts, a posted one does not.

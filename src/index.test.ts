@@ -3999,7 +3999,10 @@ describe('runFullReview orchestration', () => {
         allJudgedFindings: [{
           ...hidden, severity: 'ignore', gradePath: [{ from: 'note', to: 'ignore', by: 'refutation', reason: 'r' }],
           refutation: { outcome: 'unsettled', reason: 'Could not tell.', files: ['src/app.ts'], codeDigest: 'a' },
-          pairRefutation: { outcome: 'disproved', reason: 'r', proof: ['src/app.ts:9'], files: ['src/app.ts'], codeDigest: 'a' },
+          pairRefutation: {
+            outcome: 'unsettled', defect: 'disproved', reason: 'r', proof: ['src/app.ts:9'], premises: [{ premise: 'A caller passes it', outcome: 'unsettled', reason: 'None found.' }],
+            files: ['src/app.ts'], codeDigest: 'a',
+          },
         }],
         slicing: { files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] },
         changedSinceLastRoundCount: 2,
@@ -4030,9 +4033,9 @@ describe('runFullReview orchestration', () => {
       expect(rc.tokenService).toEqual(tokenService);
       expect(rc.judge.dropped).toEqual([expect.objectContaining({
         gradePath: [{ from: 'note', to: 'ignore', by: 'refutation', reason: 'r' }],
-        refutation: expect.objectContaining({ outcome: 'unsettled' }), pairRefutation: expect.objectContaining({ outcome: 'disproved' }),
+        refutation: expect.objectContaining({ outcome: 'unsettled' }), pairRefutation: expect.objectContaining({ outcome: 'unsettled', defect: 'disproved' }),
       })]);
-      // The second refuter's disproof drops it while the first abstains, so its reason is the one listed.
+      // The second refuter answers that the defect does not exist, while its premise and the first refuter settle nothing. Its reason is the one listed.
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.disproved).toEqual([{ title: 'Rename the helper', file: 'src/app.ts', line: 9, reason: 'r' }]);
       expect(rc.slicing).toEqual({ files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] });
       // Each related repo carries the reads of every call of the round, a failed one too, and each call its own.

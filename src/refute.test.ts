@@ -496,6 +496,61 @@ describe('refuteBlockers', () => {
     expect(client.calls.filter(([title]) => title === 'Premises not answered')).toHaveLength(2);
   });
 
+  it('drops a finding below blocker when the refuter answers that the defect does not exist, whatever its premises add up to', async () => {
+    const exists = { premise: 'No caller bounds `a`', decides: 'defect' as const };
+    const reached = { premise: 'A public handler passes `a` through', decides: 'grade' as const };
+    const rare = { row: 'wrong' as const, column: 'rare' as const };
+    const open = { outcome: 'unsettled', reason: 'No caller found.' };
+    const holds = { outcome: 'confirmed', reason: 'A handler passes it.', proof: ['src/api.ts:4'] };
+    const noDefect = (premise: object) => ({ outcome: 'disproved', reason: 'Both inputs are checked.', proof: ['src/api.ts:9'], premises: [premise] });
+    const columns = (f: Finding) => [f.title, f.severity, f.refutation?.outcome, f.refutation?.defect, f.pairRefutation?.defect, !!disproof(f), checkStatus(f)];
+
+    const client = fakeClient({
+      'Reach open': noDefect(open), 'Grade premise holds': noDefect(holds), 'Reach holds': noDefect(holds), 'Security finding': noDefect(open), 'Blocker': noDefect(open),
+    });
+    const alone = await refuteRound(client, [
+      finding('Reach open', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT] }),
+      finding('Grade premise holds', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: [reached], evidence: { checks: [], proof: [] } }),
+      finding('Reach holds', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT] }),
+      finding('Security finding', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: [exists], tags: ['security'] }),
+      finding('Blocker', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
+    ], { workspace, diff });
+
+    expect(alone.map(columns)).toEqual([
+      // The premises settle nothing, and the answer about the defect drops the warning.
+      ['Reach open', 'ignore', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
+      // A confirmed premise about the grade does not outweigh it.
+      ['Grade premise holds', 'ignore', 'confirmed', 'disproved', undefined, true, 'unconfirmed'],
+      // A confirmed reach makes the finding a blocker, and a disproof alone never clears a blocker.
+      ['Reach holds', 'blocker', 'confirmed', 'disproved', undefined, true, 'unconfirmed'],
+      ['Security finding', 'warning', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
+      ['Blocker', 'blocker', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
+    ]);
+    expect(alone[0].gradePath).toEqual([{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'Both inputs are checked.' }]);
+    expect(alone[0].judgeNotes).toBe(`Refutation disproved: Both inputs are checked.\n- Premise "${REACH_DOUBT.premise}" unsettled. No caller found.`);
+    // The disproof keeps the lines that disprove the defect, and a check that confirmed its premises keeps theirs.
+    expect(alone.map(f => f.refutation?.proof)).toEqual([['src/api.ts:9'], ['src/api.ts:4'], ['src/api.ts:4'], ['src/api.ts:9'], ['src/api.ts:9']]);
+    expect([alone[2].cell, alone[2].evidence?.proof]).toEqual([{ row: 'wrong', column: 'normal', judgeColumn: 'rare' }, ['src/math.ts:2', 'src/api.ts:4']]);
+
+    const doubted = (title: string) => finding(title, { severity: 'warning', gradeIfConfirmed: 'warning', doubts: [exists] });
+    const first = fakeClient({ 'Both say no defect': noDefect(open), 'Split on the defect': noDefect(open), 'Premise confirmed beside': noDefect(open) });
+    const pair = fakeClient({
+      'Both say no defect': noDefect(open),
+      'Split on the defect': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [open] },
+      'Premise confirmed beside': { reason: 'No caller bounds it.', premises: [{ outcome: 'confirmed', reason: 'No caller bounds it.', proof: ['src/api.ts:4'] }] },
+    });
+    const paired = await refuteBlockers(first, [doubted('Both say no defect'), doubted('Split on the defect'), doubted('Premise confirmed beside')], { workspace, diff, pair });
+
+    expect(paired.map(columns)).toEqual([
+      ['Both say no defect', 'ignore', 'unsettled', 'disproved', 'disproved', true, 'unconfirmed'],
+      // A confirmation against a disproof settles nothing, so the warning keeps its grade and is not confirmed.
+      ['Split on the defect', 'warning', 'unsettled', 'disproved', 'confirmed', false, 'unconfirmed'],
+      ['Premise confirmed beside', 'warning', 'unsettled', 'disproved', 'unsettled', false, 'unconfirmed'],
+    ]);
+    // The check that confirmed the defect keeps the split warning posted.
+    expect(paired.slice(1).map(unprovenReason)).toEqual([undefined, 'unsettled_check']);
+  });
+
   it('checks every finding a doubt holds below its conditional grade, and at most eight warnings nothing proves yet', async () => {
     const unsettled = { outcome: 'unsettled', reason: 'Could not tell.', premises: [] };
     const exists = [{ premise: 'The copy is never dropped', decides: 'defect' as const }];

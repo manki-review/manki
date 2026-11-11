@@ -12,7 +12,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { cellGrade, CheckStatus, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt } from './types';
+import { cellGrade, CheckStatus, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -125,7 +125,7 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
     ].find(({ title, file, line, refutation }) => refutation?.defect && file === finding.file && Math.abs(line - finding.line) <= LINE_TOLERANCE
       && titlesMatch(title, finding.title) && cited.every(f => refutation.files.includes(f))
       && codeDigest(workspace, refutation.files) === refutation.codeDigest
-      && (refutation.outcome !== 'disproved' || citesFindingCode(finding.file, refutation.proof ?? [], diff)));
+      && (outcomeOf(refutation) !== 'disproved' || citesFindingCode(finding.file, refutation.proof ?? [], diff)));
     if (stored?.refutation) return stored.refutation;
   }
   return undefined;
@@ -197,10 +197,11 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
       return { premise: doubt.premise, outcome: settle(OUTCOMES.find(o => o === answer.outcome) ?? 'unsettled', cited), reason: replyText(answer.reason), ...(cited.length > 0 && { proof: cited }) };
     });
     outcome = premisesOutcome(finding.doubts, premises);
-    // A disproof cites only the premises that disprove the defect, never lines that confirmed another premise or the defect.
+    // A disproof cites only what disproves the defect, never lines that confirmed a premise or the defect. Confirmed premises keep their lines.
     const doubts = finding.doubts;
-    const cites = (p: PremiseCheck, i: number): boolean => outcome === 'disproved' ? p.outcome === 'disproved' && doubts[i].decides === 'defect' : p.outcome !== 'unsettled';
-    proof = [...new Set([...premises.flatMap((p, i) => cites(p, i) ? p.proof ?? [] : []), ...(outcome !== 'disproved' && defect === 'confirmed' ? shown : [])])];
+    const disproved = outcome === 'disproved' || (outcome === 'unsettled' && defect === 'disproved');
+    const cites = (p: PremiseCheck, i: number): boolean => disproved ? p.outcome === 'disproved' && doubts[i].decides === 'defect' : p.outcome !== 'unsettled';
+    proof = [...new Set([...premises.flatMap((p, i) => cites(p, i) ? p.proof ?? [] : []), ...(defect === (disproved ? 'disproved' : 'confirmed') ? shown : [])])];
   }
   const files = refutationFiles(finding.file, proof);
   return { outcome, defect, reason, ...(rule && { rule }), ...(proof.length > 0 && { proof }), ...(premises && { premises }), files, codeDigest: codeDigest(workspace, files) ?? '' };
@@ -224,8 +225,9 @@ function reachConfirmed(checks: readonly Refutation[]): boolean {
 }
 
 /**
- * Returns the outcome `checks` agree on. An unsettled check abstains, and a confirmation against a disproof settles
- * nothing. That holds for a disproved premise too, which leaves its own check unsettled when it only decides the grade.
+ * Returns the `outcome` that `checks` agree on, which decides whether a grade is restored and whether a blocker is
+ * lowered. An unsettled check abstains, and a confirmation against a disproof settles nothing. That holds for a
+ * disproved premise too, which leaves its own check unsettled when it only decides the grade.
  */
 function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
   const votes = new Set(checks.map(r => r.outcome).filter(o => o !== 'unsettled'));
@@ -234,14 +236,20 @@ function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
   return outcome === 'confirmed' && checks.some(r => r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
 }
 
-/** Returns the refutation that disproves `finding`, when its checks agree it is disproved. */
+/**
+ * Returns the refutation that disproves `finding`, by `outcomeOf`: in a premise the defect rests on, or in its answer
+ * whether the defect exists. Returns none when another check confirmed a premise or the defect, since a confirmation
+ * against a disproof settles nothing.
+ */
 export function disproof(finding: Pick<Finding, RefutationField>): Refutation | undefined {
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
-  return agreedOutcome(checks) === 'disproved' ? checks.find(r => r.outcome === 'disproved') : undefined;
+  const disproves = (r: Refutation): boolean => outcomeOf(r) === 'disproved';
+  return checks.some(r => !disproves(r) && (r.outcome === 'confirmed' || confirmsDefect(r))) ? undefined : checks.find(disproves);
 }
 
-function refutationNote(label: string, { outcome, reason, rule, premises = [] }: Refutation): string {
-  return [`${label} ${outcome}: ${reason}${rule ? ` Rule checked: ${rule}` : ''}`, ...premises.map(p => `- Premise "${p.premise}" ${p.outcome}. ${p.reason}`.trimEnd())].join('\n');
+function refutationNote(label: string, check: Refutation): string {
+  const { reason, rule, premises = [] } = check;
+  return [`${label} ${outcomeOf(check)}: ${reason}${rule ? ` Rule checked: ${rule}` : ''}`, ...premises.map(p => `- Premise "${p.premise}" ${p.outcome}. ${p.reason}`.trimEnd())].join('\n');
 }
 
 /**
@@ -275,8 +283,8 @@ function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefi
 }
 
 /**
- * Grades `finding` by the outcome its refutations agree on. A disproof drops a finding graded below blocker, such as an
- * open lead or a capped blocker. It lowers a blocker only to the grade `gradeBeforeJudgeRaise` gives, never one that
+ * Grades `finding` by the outcome its refutations agree on. A `disproof` drops a finding graded below blocker, such as an
+ * open lead or a capped blocker, unless its confirmed premises make it a blocker. It lowers a blocker only to the grade `gradeBeforeJudgeRaise` gives, never one that
  * `restates` an earlier blocker, and such a finding loses its `cell`, so a later round does not restate the blocker
  * from it. An unsettled outcome keeps the grade, and a security finding changes only when confirmed. A confirmation
  * that raises a finding out of the `rare` column moves it to the `normal` one, where `capUnprovenBlocker` applies to it.
@@ -290,9 +298,15 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
     ...finding, ...(refutation && { refutation }), ...(pairRefutation && { pairRefutation }),
     judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${notes}` : notes,
   };
-  if (outcome !== 'confirmed' && finding.tags?.includes(SECURITY_TAG)) return graded;
+  const security = !!finding.tags?.includes(SECURITY_TAG);
+  if (outcome !== 'confirmed' && security) return graded;
+  const rareClaim = !!finding.cell && columnDecidesBlock(finding.cell.row) && finding.cell.column === 'rare';
+  // The `rare` column is all that keeps such a finding from blocking, so it rises only when `REACH_DOUBT` itself is confirmed.
+  const restored = outcome !== 'confirmed' || (rareClaim && !reachConfirmed(checks)) ? undefined : confirmedGrade(finding);
+  // A disproof alone never clears a blocker or a security finding, nor a finding its confirmed premises make a blocker.
+  const dropped = finding.severity === 'blocker' || security || restored === 'blocker' ? undefined : disproof(graded);
+  if (dropped) return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', dropped.reason) };
   if (outcome === 'disproved') {
-    if (finding.severity !== 'blocker') return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', decided!.reason) };
     const filed = restates ? undefined : gradeBeforeJudgeRaise(finding, refutation, pairRefutation);
     if (!filed) return graded;
     const reason = `${refutation!.model} and ${pairRefutation!.model} both disproved it, and no finder graded it a blocker`;
@@ -302,9 +316,6 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
   }
   if (outcome === 'confirmed') {
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
-    const rareClaim = !!finding.cell && columnDecidesBlock(finding.cell.row) && finding.cell.column === 'rare';
-    // The `rare` column is all that keeps such a finding from blocking, so it rises only when `REACH_DOUBT` itself is confirmed.
-    const restored = rareClaim && !reachConfirmed(checks) ? undefined : confirmedGrade(finding);
     // Lines that confirm only premises show no defect. They are added where they restore a grade, and never make a warning proven.
     const proof = [...new Set([...(finding.evidence?.proof ?? []), ...checks.flatMap(r => r.outcome === 'confirmed' && (restored || confirmsDefect(r)) ? r.proof ?? [] : [])])];
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
@@ -403,7 +414,7 @@ export function unprovenReason(finding: Finding): UnprovenReason | undefined {
 export function checkStatus(finding: Finding): CheckStatus {
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
   const refused = !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag)) || isUnconfirmedBuildClaim(finding)
-    || checks.some(check => check.outcome === 'disproved' || check.defect === 'disproved');
+    || checks.some(check => outcomeOf(check) === 'disproved');
   const confirmed = !refused && checks.some(confirmsDefect);
   const unfinished = checks.length > 0 || !!finding.lead || !!finding.notChecked || doubtsDefect(finding);
   const proven = !refused && !unfinished && !citesNoProof(finding);
@@ -480,7 +491,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     const label = field === 'pairRefutation' ? 'second refutation' : 'refutation';
     const prior = stored(field, finding);
     if (prior) {
-      core.info(`Reusing the ${prior.outcome} ${label} of "${finding.title}" from an earlier round, since the files it rests on are unchanged`);
+      core.info(`Reusing the ${outcomeOf(prior)} ${label} of "${finding.title}" from an earlier round, since the files it rests on are unchanged`);
       return prior;
     }
     try {
@@ -492,7 +503,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
         reply => ({ ...parseRefutation(reply.content, workspace, finding, diff), ...(reply.model && { model: reply.model }) }),
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
       );
-      core.info(`The ${label} of "${finding.title}": ${refutation.outcome}`);
+      core.info(`The ${label} of "${finding.title}": ${outcomeOf(refutation)}`);
       return refutation;
     } catch (error) {
       core.warning(`Could not check "${finding.title}" for a ${label}: ${error}`);

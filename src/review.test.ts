@@ -2324,6 +2324,7 @@ describe('runReview', () => {
     // What the refuter answers for each: whether the defect exists, then whether normal use reaches it.
     const answers: Record<string, [string, string]> = {
       'Old parser drops the last row': ['confirmed', 'unsettled'], 'Old cache may serve a stale entry': ['unsettled', 'unsettled'], 'Old retry sends twice': ['confirmed', 'confirmed'],
+      'Old lock is never released': ['disproved', 'unsettled'],
     };
     const titles = Object.keys(answers);
     const found = titles.map((title, i) => ({
@@ -2356,13 +2357,22 @@ describe('runReview', () => {
 
     expect(result.reviewComplete).toBe(true);
     // Each is asked once, about the reach and about the defect.
-    expect(refuterMessages.map(user => user.includes(`1. ${REACH_DOUBT.premise}`))).toEqual([true, true, true]);
+    expect(refuterMessages.map(user => user.includes(`1. ${REACH_DOUBT.premise}`))).toEqual([true, true, true, true]);
     // A confirmed defect is posted as a warning though its reach is open. A confirmed reach makes it a blocker, which code the PR did not change posts as a warning.
     expect(result.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags?.includes('pre-existing'), f.checkStatus])).toEqual([
       ['Old parser drops the last row', 'warning', undefined, true, 'confirmed'],
       ['Old retry sends twice', 'warning', 'blocker', true, 'confirmed'],
     ]);
     expect(result.unpostedPreExisting?.map(f => [f.title, f.severity, f.refutation?.defect])).toEqual([['Old cache may serve a stale entry', 'warning', 'unsettled']]);
+    // A disproved defect drops the warning though its reach is open, so it is no warning left out for want of a confirmation.
+    const dropped = result.allJudgedFindings?.filter(f => f.severity === 'ignore') ?? [];
+    expect(dropped.map(f => [f.title, f.refutation?.outcome, f.refutation?.defect, f.gradePath?.at(-1)?.by])).toEqual([['Old lock is never released', 'unsettled', 'disproved', 'refutation']]);
+    // So it ends a warning an earlier review body listed for the same problem.
+    const kept = lines('kept').split('\n');
+    const listed = { ...makeFindingFingerprintEntry({ title: dropped[0].title, file: 'src/old.ts', lineStart: dropped[0].line }), posted: 'body' as const, citedLine: citedLine(kept, dropped[0].line)! };
+    const earlier = makeRoundContext(1, { findings: { count: 1, severityCounts: {}, entries: [listed] } });
+    await carryBodyWarnings(result, [earlier], { read: async () => lines('kept') });
+    expect([result.carried, result.carriedEnded?.map(e => e.reason)]).toEqual([undefined, ['judge_dropped']]);
   });
 
   it('records what the checks at the round\'s end found when the verdict reader then fails', async () => {
