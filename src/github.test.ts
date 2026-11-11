@@ -134,16 +134,17 @@ describe('formatFindingComment', () => {
     // A confirmed rule finding names the rule first, as code spans, and says when the rule is why it blocks.
     const rule = { file: 'CONTRIBUTING.md', quote: 'Every new endpoint must be\nlisted in `docs/api.md`. @everyone <!-- x --> <b>' };
     const ruleLine = 'This PR breaks a required rule of `CONTRIBUTING.md`: `` Every new endpoint must be listed in `docs/api.md`. @everyone <\u200B!\u200B-\u200B- x -\u200B-\u200B> <b> ``';
-    const byRule = [{ from: 'note' as const, to: 'note' as const, by: 'judge' as const }, { from: 'note' as const, to: 'blocker' as const, by: 'rule' as const }];
-    const ruleBlocker = render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, gradePath: byRule });
+    // The cell its damage is graded by gives a note, so only the rule makes it a blocker.
+    const byRule = { cell: { row: 'improvement' as const, column: 'normal' as const } };
+    const ruleBlocker = render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...byRule });
     expect(ruleBlocker).toContain(`<summary>How this was checked: 1 place read, breaks a repository rule</summary>\n\n**Repository rule**\n${ruleLine} It blocks because this repository sets \`review.rules: block\`.\n\n**Checked in the code**\n`);
-    // A warning, and a blocker the rule did not raise, name the rule without the reason for blocking.
-    expect(render({ ...baseFinding, severity: 'warning', rule: { ...rule, verdict: 'confirmed' }, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] })).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
-    expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' } })).toContain(`**Repository rule**\n${ruleLine}\n\n**Checked in the code**`);
+    // A warning, and a blocker whose own damage blocks, name the rule without the reason for blocking.
+    expect(render({ ...baseFinding, severity: 'warning', rule: { ...rule, verdict: 'confirmed' }, ...byRule })).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
+    expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, cell: { row: 'severe', column: 'normal' } })).toContain(`**Repository rule**\n${ruleLine}\n\n**Checked in the code**`);
     // A quote with a hidden character is not printed, and a rule the judge did not confirm gives no line.
     expect(render({ ...baseFinding, severity: 'warning', rule: { file: 'AGENTS.md', quote: 'Every\u202E change needs a test.', verdict: 'confirmed' } })).toContain('**Repository rule:** This PR breaks a required rule of `AGENTS.md`.\n');
     for (const verdict of ['no_requirement', 'not_broken', 'unproven', undefined] as const) {
-      expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict }, gradePath: byRule })).not.toContain('rule');
+      expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict }, ...byRule })).not.toContain('rule');
     }
 
     // A committable suggestion stays open, so GitHub offers to commit it, and the fix in words goes in the fold.

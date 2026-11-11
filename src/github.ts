@@ -2769,12 +2769,13 @@ const NOT_CHECKED: FindingChecks = {
 
 /**
  * Returns the part that names the rule a confirmed rule finding breaks, and says when that rule is why the finding
- * blocks. The file name and the quote are repository text, so each shows as a code span or not at all.
+ * blocks: the cell its damage is graded by gives no blocker. The file name and the quote are repository text, so each
+ * shows as a code span or not at all.
  */
 function rulePart(finding: Finding): FoldPart | undefined {
   if (!breaksRule(finding) || !finding.rule) return undefined;
   const quote = codeLine(finding.rule.quote);
-  const blocks = finding.severity === 'blocker' && finding.gradePath?.some(step => step.by === 'rule' && step.to === 'blocker');
+  const blocks = finding.severity === 'blocker' && isGradeCell(finding.cell) && cellGrade(finding.cell.row, finding.cell.column) !== 'blocker';
   const text = `This PR breaks a required rule of ${codeLine(finding.rule.file) || 'an instruction file'}${quote ? `: ${quote}` : '.'}`
     + (blocks ? ' It blocks because this repository sets `review.rules: block`.' : '');
   return { label: 'Repository rule', text, open: `**Repository rule:** ${text}` };

@@ -364,7 +364,9 @@ export interface Finding {
 
 /**
  * What the judge said about a quoted rule: `confirmed` when the quote states a requirement, this PR breaks it, the
- * judge names no doubt that the defect exists and a proving line is cited. Any other answer names the first check that failed.
+ * judge names no doubt that the defect exists and a proving line is cited. It is `unproven` when code the judge could
+ * not see decides it, or when the judge says the rule is broken with a doubt or without a proving line. A refuter that
+ * confirms an `unproven` rule makes it `confirmed`. Any other answer names the first check that failed.
  */
 export type RuleVerdict = 'confirmed' | 'no_requirement' | 'not_broken' | 'unproven';
 
@@ -373,6 +375,8 @@ export interface RuleMark {
   file: string;
   quote: string;
   verdict?: RuleVerdict;
+  /** The fact the judge could not see that would make the rule broken. The rule is `confirmed` only once a refuter confirmed it. */
+  unseen?: string;
 }
 
 /** Whether the judge confirmed that `finding` breaks a required rule of the instruction files. */

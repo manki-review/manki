@@ -2063,6 +2063,7 @@ describe('runJudgeAgent', () => {
     const titles = [
       'Field without migration', 'Advice quoted', 'Rule kept', 'Doubted', 'No line cited', 'Dropped', 'Real defect too',
       'Missing without a search', 'No rule quoted', 'Schema drift', 'Schema drift, second finder',
+      'Unseen file', 'Unseen on a real defect', 'Unseen in advice',
     ];
     const findings = titles.map(title => makeFinding({
       title,
@@ -2083,19 +2084,23 @@ describe('runJudgeAgent', () => {
       'No rule quoted': yes,
       'Schema drift': {},
       'Schema drift, second finder': { ...yes, duplicateOf: 10 },
+      'Unseen file': { ...yes, ruleUnseen: ' No migration under `migrations/` adds the field ' },
+      'Unseen on a real defect': { ruleIsRequirement: true, ruleUnseen: 'No migration adds the field', row: 'degraded' },
+      'Unseen in advice': { ruleUnseen: 'No migration adds the field' },
     };
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', confidence: 'high', ...answers[title] })),
     }) });
     const input: JudgeInput = { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 2 };
     const graded = async (rules?: 'warn' | 'block') => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), input)).findings
-      .map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', ')]);
+      .map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', '), ...(f.rule?.unseen || f.doubts ? [f.gradeIfConfirmed, f.rule?.unseen, f.doubts?.map(d => d.premise)] : [])]);
 
     const expected = (grade: 'warning' | 'blocker') => [
       ['Field without migration', grade, 'confirmed', `rule: ${grade}`],
       ['Advice quoted', 'note', 'no_requirement', undefined],
       ['Rule kept', 'note', 'not_broken', undefined],
-      ['Doubted', 'note', 'unproven', undefined],
+      // A doubt whether the defect exists goes to the refuter, with the rule's grade as the grade a confirmation gives.
+      ['Doubted', 'note', 'unproven', undefined, grade, undefined, ['No migration exists outside the diff']],
       ['No line cited', 'note', 'unproven', undefined],
       ['Dropped', 'ignore', 'unproven', 'judge: ignore'],
       // The cell already gives a blocker, so the rule changes nothing.
@@ -2105,20 +2110,85 @@ describe('runJudgeAgent', () => {
       ['No rule quoted', 'note', undefined, undefined],
       // A folded copy's confirmed rule goes to the finding that stays.
       ['Schema drift', grade, 'confirmed', `rule: ${grade}`],
+      // A fact the judge could not see leaves the rule unproven whatever it says about the break, and becomes the doubt the refuter checks.
+      ['Unseen file', 'note', 'unproven', undefined, grade, 'No migration under `migrations/` adds the field', ['No migration under `migrations/` adds the field']],
+      // A finding graded by its own damage is not put at risk by a doubt about the rule.
+      ['Unseen on a real defect', 'warning', 'unproven', 'judge: warning', undefined, 'No migration adds the field', undefined],
+      ['Unseen in advice', 'note', 'no_requirement', undefined],
     ];
     expect(await graded()).toEqual(expected('warning'));
     expect(await graded('warn')).toEqual(expected('warning'));
     expect(await graded('block')).toEqual(expected('blocker'));
 
     const [system, user] = mockSendMessage.mock.calls[0];
-    expect(user.split("- **Quoted rule**, from `CONTRIBUTING.md`: Every model change needs a 'migration'.")).toHaveLength(10);
+    expect(user.split("- **Quoted rule**, from `CONTRIBUTING.md`: Every model change needs a 'migration'.")).toHaveLength(13);
     expect(system).toContain('## Rule Findings');
-    expect(system).toContain('"ruleIsRequirement": false,\n      "ruleBroken": false,');
+    expect(system).toContain('"ruleIsRequirement": false,\n      "ruleBroken": false,\n      "ruleUnseen": "",');
     // A round without a rule finding gets neither the section nor the fields.
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'No rule quoted', row: 'improvement', reasoning: 'r', confidence: 'high', ...yes }] }) });
     const plain = await runJudgeAgent(mockClient, makeConfig({ review: { rules: 'block' } }), { ...input, findings: [findings[8]] });
     expect(plain.findings.map(f => [f.severity, f.rule])).toEqual([['note', undefined]]);
-    expect(mockSendMessage.mock.calls.at(-1)![0]).not.toMatch(/Rule Findings|ruleBroken|Quoted rule/);
+    expect(mockSendMessage.mock.calls.at(-1)![0]).not.toMatch(/Rule Findings|ruleBroken|ruleUnseen|Quoted rule/);
+  });
+
+  it('confirms an unproven rule only when the refuter confirms the fact the judge could not see, and drops the finding when it disproves it', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
+    fs.mkdirSync(path.join(workspace, 'src'));
+    fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
+    const rule = { file: 'AGENTS.md', quote: 'Every environment variable the binary reads must be listed in `.env.example`.' };
+    const unseen = { ruleIsRequirement: true, ruleUnseen: '`.env.example` has no entry for the variable' };
+    const answers: Record<string, Record<string, unknown>> = {
+      'Fact confirmed': unseen,
+      'Fact disproved': unseen,
+      'Fact unsettled': unseen,
+      // The finder cites no search, and the refuter's check of the fact is that search.
+      'Fact confirmed without a search': unseen,
+      // The fact is no premise of a finding graded by its own damage, so the judge's other doubt cannot stand in for it.
+      'Another premise confirmed': { ...unseen, row: 'degraded', doubts: [{ premise: 'The loop reads the variable on each request', decides: 'defect' }] },
+      'Judge doubt confirmed': { ruleIsRequirement: true, ruleBroken: true, doubts: [{ premise: 'No other file lists the variable', decides: 'defect' }] },
+    };
+    const titles = Object.keys(answers);
+    const findings = titles.map((title, i) => makeFinding({
+      title, line: 10 + i, rule, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`], ...(title === 'Fact confirmed without a search' && { emptySearch: '' }) },
+    }));
+    const premise = (outcome: string) => ({ reason: `It is ${outcome}.`, premises: [{ outcome, reason: `It is ${outcome}.`, proof: ['src/index.ts:3'] }] });
+    const replies: Record<string, unknown> = {
+      'Fact confirmed': premise('confirmed'), 'Fact disproved': premise('disproved'), 'Fact unsettled': premise('unsettled'),
+      'Fact confirmed without a search': premise('confirmed'), 'Another premise confirmed': premise('confirmed'), 'Judge doubt confirmed': premise('confirmed'),
+    };
+    const refuterMessages: string[] = [];
+    const refuter: LLMClient = {
+      repoTools: true,
+      async sendMessage(_system, user) {
+        refuterMessages.push(user);
+        return { content: JSON.stringify(replies[titles.find(t => user.includes(`: ${t}\n`))!]) };
+      },
+    };
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({
+      summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', confidence: 'high', ...answers[title] })),
+    }) });
+    const graded = async (rules?: 'block') => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), {
+      findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace },
+    })).findings.map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', ')]);
+
+    try {
+      const expected = (grade: 'warning' | 'blocker') => [
+        ['Fact confirmed', grade, 'confirmed', `refutation: ${grade}`],
+        ['Fact disproved', 'ignore', 'unproven', 'refutation: ignore'],
+        ['Fact unsettled', 'note', 'unproven', undefined],
+        ['Fact confirmed without a search', grade, 'confirmed', `refutation: ${grade}`],
+        ['Another premise confirmed', 'warning', 'unproven', 'judge: warning'],
+        ['Judge doubt confirmed', grade, 'confirmed', `refutation: ${grade}`],
+      ];
+      expect(await graded()).toEqual(expected('warning'));
+      expect(await graded('block')).toEqual(expected('blocker'));
+      expect(refuterMessages).toHaveLength(12);
+      expect(refuterMessages[0]).toMatch(/^## Finding the judge could not settle without tools: Fact confirmed\n/);
+      expect(refuterMessages[0]).toContain("- **Premises the judge doubts**, to answer in order:\n  1. '.env.example' has no entry for the variable");
+      expect(refuterMessages.find(m => m.includes(': Another premise confirmed\n'))).not.toContain('.env.example');
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('calls judge with only openThreads when findings are empty', async () => {

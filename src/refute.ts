@@ -324,11 +324,21 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
     const raised = {
       ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', checks.find(r => outcomeOf(r) === 'confirmed')!.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
       ...(tags && { tags }), ...(rareClaim && restored && { cell: { ...finding.cell!, column: 'normal' as const, judgeColumn: 'rare' as const } }),
+      ...(settlesRule(finding, checks) && { rule: { ...finding.rule!, verdict: 'confirmed' as const } }),
     };
     // A finding that leaves the `rare` column becomes a blocker no cap has seen, and a confirmed reach is no search for what it says is missing.
     return rareClaim && restored ? capUnprovenBlocker(raised) : raised;
   }
   return graded;
+}
+
+/**
+ * Whether `checks` that confirm `finding` confirm its `unproven` rule. A check must have confirmed the fact the judge
+ * could not see, since no other confirmed premise stands in for it.
+ */
+function settlesRule({ rule }: Finding, checks: readonly Refutation[]): boolean {
+  if (rule?.verdict !== 'unproven') return false;
+  return !rule.unseen || checks.some(r => r.outcome === 'confirmed' && !!r.premises?.some(p => p.premise === rule.unseen && p.outcome === 'confirmed'));
 }
 
 const rank = (severity: FindingSeverity): number => SEVERITY_ORDER.indexOf(severity);
@@ -439,6 +449,8 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
   const prior = [...priorRounds].reverse().flatMap(r => r.findings.entries)
     .find(e => e.fingerprint.file === finding.file && Math.abs(e.fingerprint.lineStart - finding.line) <= LINE_TOLERANCE && titlesMatch(e.title ?? '', finding.title));
   if (!prior?.gradeIfConfirmed || prior.severity !== finding.severity || rank(prior.gradeIfConfirmed) >= rank(prior.severity)) return finding;
+  // An `unproven` rule can be what gave the earlier `gradeIfConfirmed`, and only this round's judge says whether the rule still stands.
+  if (prior.rule?.verdict === 'unproven') return finding;
   const settled = [prior.refutation, prior.pairRefutation].some(r => r && (r.outcome !== 'unsettled' || r.premises?.some(p => p.outcome === 'disproved')));
   if (settled) return finding;
   core.info(`"${finding.title}" keeps a grade an earlier round capped with an open doubt, so it is checked again`);
