@@ -2063,6 +2063,12 @@ describe('sanitizeMarkdown', () => {
     expect(sanitizeMarkdown('a <!-- multi\nline\ncomment --> b')).toBe('a  b');
   });
 
+  it('leaves no comment mark that stripping a comment, a tag or a link put together', () => {
+    for (const nested of ['<<<!-- a -->!-- b -->!-- manki:blocker:x --->->', '<!<b>-- manki:blocker:x --<b>>', '<![](x)!-- manki:blocker:x --[](y)>', 'a\n<!<b>-- manki-no-verdict --<b>>\nb', '<!<!<b>--<i>-- x --<b>-<i>>>']) {
+      expect(sanitizeMarkdown(nested)).not.toMatch(/<!--|-->/);
+    }
+  });
+
   it('preserves bold and emphasis', () => {
     expect(sanitizeMarkdown('**bold** and *emphasis*')).toBe('**bold** and *emphasis*');
   });

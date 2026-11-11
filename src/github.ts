@@ -2315,7 +2315,7 @@ function sanitizeMarkdown(text: string): string {
   result = result.replace(HTML_TAG_REGEX, '');
   result = result.replace(HTML_TAG_REGEX, '');
 
-  return fenceOwnCode(result
+  result = result
     .replace(HTML_UNCLOSED_TAG_REGEX, '')  // Unclosed tags at end of string
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Images: keep alt text only
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Links: keep text only
@@ -2323,7 +2323,11 @@ function sanitizeMarkdown(text: string): string {
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Second pass for nested brackets
     .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
-    .replace(/^\[[^\]]*\]:\s+.*$/gm, '')                             // Link/image definitions
+    .replace(/^\[[^\]]*\]:\s+.*$/gm, '');                            // Link/image definitions
+  // Each removal above can join the halves of a comment mark, so the marks go until none is left.
+  while (/<!--|-->/.test(result)) result = result.replace(/<!--|-->/g, '');
+
+  return fenceOwnCode(result
     // A zero-width space keeps GitHub from turning a bare URL into a link.
     .replace(/(https?|ftp):\/\//gi, '$1:\u200B//')
     .replace(/www\./gi, 'www\u200B.')
