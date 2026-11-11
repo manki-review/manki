@@ -92,7 +92,7 @@ config:
       secrets: true
   memory:
     enabled: true
-key_version: 1
+key_version: 2
 prior_round:
   head: 3b150e4de8b9a2bbf268b5859047440363a60b5c
   findings:
@@ -152,8 +152,3 @@ nice_to_have:
     mechanism: "`ExtNetInfo` encodes `purposes` in the caller's order, while Dash Core requires them ascending and unique."
     locations: ["dash/src/sml/masternode_list_entry/net_info.rs", "ExtNetInfo", "purposes"]
     source: "Manki v7.3.2 round 2"
-  - id: N2
-    severity: suggestion
-    mechanism: "ProRegTx still decodes version 3 with the version 2 layout and has no version check. Outside the PR's scope."
-    locations: ["dash/src/blockdata/transaction/special_transaction/provider_registration.rs"]
-    source: "owner /check review"
