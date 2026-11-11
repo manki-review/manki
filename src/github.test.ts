@@ -327,6 +327,10 @@ describe('formatFindingComment', () => {
     expect(steered).not.toMatch(/\]\(https:\/\/github\.com\/o\/r\/blob\/sha\/(?:a\)|\.\.)/);
     expect(steered).not.toContain('https://www.evil.com');
     expect(steered).toContain('<summary>How this was checked: 2 other checks</summary>');
+    // A check is shown on one line without its fences. Dropping a fence never joins the two halves of a tag.
+    const fenced = render({ ...baseFinding, evidence: { checks: ['````\n` <im```g src=x onerror=alert(1)>\n````'], proof: [] } });
+    expect(fenced).toContain('<im g src=x onerror=alert(1)>');
+    expect(fenced).not.toContain('<img');
     // A file name resolves to a changed path, which is PR content too, so one that could end the link stays plain text.
     const renamed = formatFindingComment({ ...baseFinding, evidence: { checks: ['cache.go:3 is safe', 'run.py:4 is fine'], proof: [] } },
       { ...links, changed: ['a)www.evil.com/cache.go', 'x/../../other/repo/blob/main/run.py'] });

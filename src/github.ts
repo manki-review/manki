@@ -2527,7 +2527,8 @@ const REFUTATION_SUMMARY: Record<RefutationOutcome, string> = { confirmed: 'doub
 
 /** Shortens model text to one plain line, so no raw tool output or code block reaches the comment. */
 function oneLine(text: string): string {
-  const line = balanceCodeSpans(sanitizeMarkdown(text).replace(/```/g, '').replace(/\s+/g, ' ').trim());
+  // A fence becomes a space, never nothing, so dropping it cannot join the two halves of a tag.
+  const line = balanceCodeSpans(sanitizeMarkdown(text).replace(/```/g, ' ').replace(/\s+/g, ' ').trim());
   return line.length <= MAX_CHECK_CHARS ? line : shortenLine(line);
 }
 
