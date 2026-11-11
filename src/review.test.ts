@@ -3428,6 +3428,12 @@ describe('runReview', () => {
     const outcomeAfter = async (file: string) => (await run(makeClients(), threaded, { openThreads: [thread], headSha: 'sha3', interRoundDiff: push(file) })).outcome;
     expect(await outcomeAfter('src/outside.ts')).toBe('READY');
     expect(await outcomeAfter('src/x.ts')).toBe('ADDRESS_FIRST');
+
+    // A thread of an earlier round that names it under another title does not carry it, even once that thread is resolved.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
+    const renamed = [listed(), listed({ fingerprint: { file: 'src/x.ts', lineStart: 30, lineEnd: 30, slug: 'Writers-race' }, title: 'Writers race', posted: 'thread', threadId: 'T3', sameAs: key, raisedIn: 1 }, 2)];
+    const second = await run(makeClients(), renamed, { previousFindings: [{ title: 'Writers race', file: 'src/x.ts', line: 30, severity: 'blocker', status: 'resolved', threadId: 'T3' }], headSha: 'sha3' });
+    expect([second.findings.map(f => [f.title, f.relisted]), second.outcome]).toEqual([[['Old issue', true]], 'ADDRESS_FIRST']);
   });
 
   it('clears an open blocker thread only when the round confirms the fix on a file the push changed', async () => {
