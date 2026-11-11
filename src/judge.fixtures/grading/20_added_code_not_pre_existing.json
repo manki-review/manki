@@ -8,7 +8,7 @@
     "title": "Invalidate leaves the old price in the category index",
     "file": "internal/catalog/prices.go",
     "line": 40,
-    "description": "The new `Invalidate` deletes the SKU from `bySKU` but not from `byCategory`. After a price change, `ForCategory` keeps returning the old price, so every category listing shows a price the store no longer charges.",
+    "description": "The new `Invalidate` deletes the SKU from `bySKU` but not from `byCategory`, and the reload in `Get` stores the new price in `bySKU` only. After a price change, `ForCategory` keeps returning the old price, so every category listing shows a price the store no longer charges.",
     "severity": "blocker",
     "reviewers": [
       "Correctness"
@@ -17,14 +17,17 @@
     "evidence": {
       "checks": [
         "internal/catalog/prices.go:40 deletes from `bySKU` only",
-        "internal/catalog/prices.go:33 `ForCategory` reads `byCategory`"
+        "internal/catalog/prices.go:33 `ForCategory` reads `byCategory`",
+        "internal/catalog/prices.go:26 `Get` stores a reloaded price in `bySKU` only"
       ],
       "proof": [
         "internal/catalog/prices.go:40",
-        "internal/catalog/prices.go:33"
-      ]
+        "internal/catalog/prices.go:33",
+        "internal/catalog/prices.go:26"
+      ],
+      "emptySearch": "grep -rn 'byCategory\\[' . finds one write, in `NewPriceCache` at internal/catalog/prices.go:52, which runs once at startup"
     },
     "suggestedFix": "Delete the SKU from its category map in `byCategory` as well."
   },
-  "prDiff": "diff --git a/internal/catalog/prices.go b/internal/catalog/prices.go\nindex 1111111..2222222 100644\n--- a/internal/catalog/prices.go\n+++ b/internal/catalog/prices.go\n@@ -30,6 +30,12 @@\n func (c *PriceCache) ForCategory(cat string) map[string]Price {\n \tc.mu.Lock()\n \tdefer c.mu.Unlock()\n \treturn c.byCategory[cat]\n }\n \n+// Invalidate drops a SKU after its price changes, so the next read loads the new price.\n+func (c *PriceCache) Invalidate(sku string) {\n+\tc.mu.Lock()\n+\tdefer c.mu.Unlock()\n+\tdelete(c.bySKU, sku)\n+}\n"
+  "prDiff": "diff --git a/internal/catalog/prices.go b/internal/catalog/prices.go\nindex 1111111..2222222 100644\n--- a/internal/catalog/prices.go\n+++ b/internal/catalog/prices.go\n@@ -8,28 +8,34 @@\n // PriceCache serves prices by SKU and by category. Both maps are filled once, at startup.\n type PriceCache struct {\n \tmu         sync.Mutex\n \tstore      Store\n \tbySKU      map[string]Price\n \tbyCategory map[string]map[string]Price\n }\n \n func (c *PriceCache) Get(sku string) (Price, error) {\n \tc.mu.Lock()\n \tdefer c.mu.Unlock()\n \tif p, ok := c.bySKU[sku]; ok {\n \t\treturn p, nil\n \t}\n \tp, err := c.store.Load(sku)\n \tif err != nil {\n \t\treturn Price{}, err\n \t}\n \tc.bySKU[sku] = p\n \treturn p, nil\n }\n \n func (c *PriceCache) ForCategory(cat string) map[string]Price {\n \tc.mu.Lock()\n \tdefer c.mu.Unlock()\n \treturn c.byCategory[cat]\n }\n \n+// Invalidate drops a SKU after its price changes, so the next read loads the new price.\n+func (c *PriceCache) Invalidate(sku string) {\n+\tc.mu.Lock()\n+\tdefer c.mu.Unlock()\n+\tdelete(c.bySKU, sku)\n+}\n"
 }
