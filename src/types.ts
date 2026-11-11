@@ -75,25 +75,39 @@ export function migrateLegacySeverity(severity: string): FindingSeverity | strin
   return severity;
 }
 
-/** The fields of a stored record that hold a severity. */
-const SEVERITY_FIELDS: ReadonlySet<string> = new Set(['severity', 'originalSeverity', 'reviewerSeverity', 'gradeIfConfirmed', 'recordedGrade', 'peakGrade', 'grade', 'from', 'to']);
+/** The fields that hold a severity wherever they sit in a stored record. */
+const SEVERITY_FIELDS: ReadonlySet<string> = new Set(['severity', 'originalSeverity', 'reviewerSeverity', 'gradeIfConfirmed', 'recordedGrade', 'peakGrade']);
+
+/** The severity fields of the entries of a list. `from`, `to` and `grade` are common names, so they count only in the list named here. */
+const SEVERITY_FIELDS_OF = new Map<string, ReadonlySet<string>>([
+  ['gradePath', new Set([...SEVERITY_FIELDS, 'from', 'to'])],
+  ['threadEvaluations', new Set([...SEVERITY_FIELDS, 'grade'])],
+]);
+
+/** The fields that hold a stored config, whose values are a user's own and never a stored severity. */
+const CONFIG_FIELDS: ReadonlySet<string> = new Set(['config', 'overrides']);
 
 /**
  * Rewrites, in place, every severity in a parsed record that an older version of Manki wrote, at any depth, and
- * returns the record. A count keyed by severity is added to the count of the severity it migrates to.
+ * returns the record. A count keyed by severity is added to the count of the severity it migrates to. A stored config
+ * is left as it is.
  */
 export function migrateStoredSeverities<T>(record: T): T {
+  migrateFields(record, SEVERITY_FIELDS);
+  return record;
+}
+
+function migrateFields(record: unknown, severityFields: ReadonlySet<string>): void {
   if (Array.isArray(record)) {
-    record.forEach(migrateStoredSeverities);
+    for (const entry of record) migrateFields(entry, severityFields);
   } else if (record && typeof record === 'object') {
     const fields = record as Record<string, unknown>;
     for (const [key, value] of Object.entries(fields)) {
-      if (typeof value === 'string' && SEVERITY_FIELDS.has(key)) fields[key] = migrateLegacySeverity(value);
+      if (typeof value === 'string' && severityFields.has(key)) fields[key] = migrateLegacySeverity(value);
       else if (key === 'severityCounts' && value && typeof value === 'object') fields[key] = migrateSeverityCounts(value as Record<string, unknown>);
-      else migrateStoredSeverities(value);
+      else if (!CONFIG_FIELDS.has(key)) migrateFields(value, SEVERITY_FIELDS_OF.get(key) ?? SEVERITY_FIELDS);
     }
   }
-  return record;
 }
 
 function migrateSeverityCounts(counts: Record<string, unknown>): Record<string, unknown> {

@@ -26,9 +26,12 @@ describe('migrateLegacySeverity', () => {
 });
 
 describe('migrateStoredSeverities', () => {
-  it('rewrites every stored severity of an older record, at any depth, and adds up the counts of merged levels', () => {
+  it('rewrites every stored severity of an older record, at any depth, adds up the counts of merged levels, and keeps a stored config and a field that only shares a name', () => {
     const record = {
       meta: { round: 2, to: 5 },
+      config: { severity: 'suggestion' },
+      variants: [{ name: 'base', overrides: { review: { from: 'suggestion', severity: 'nitpick' } } }],
+      recap: { reclassified: [{ threadId: 'T1', from: 'suggestion', to: 'nit', grade: 'nitpick' }] },
       findings: {
         severityCounts: { blocker: 1, warning: 0, suggestion: 2, nitpick: 3 },
         entries: [
@@ -37,12 +40,16 @@ describe('migrateStoredSeverities', () => {
         ],
         unposted: [{ severity: 'nitpick', unpostedReason: 'note_cap' }],
       },
-      threads: [{ threadId: 'T1', severity: 'nit', recordedGrade: 'suggestion', peakGrade: 'required', evaluation: { status: 'partly_addressed', grade: 'nitpick' } }],
+      threads: [{ threadId: 'T1', severity: 'nit', recordedGrade: 'suggestion', peakGrade: 'required' }],
+      judge: { threadEvaluations: [{ threadId: 'T1', status: 'partly_addressed', grade: 'nitpick', cell: { row: 'style', column: 'normal' } }] },
       staticSignals: [{ severity: 'note', tool: 'suggestion' }],
     };
     expect(migrateStoredSeverities(record)).toBe(record);
     expect(record).toEqual({
       meta: { round: 2, to: 5 },
+      config: { severity: 'suggestion' },
+      variants: [{ name: 'base', overrides: { review: { from: 'suggestion', severity: 'nitpick' } } }],
+      recap: { reclassified: [{ threadId: 'T1', from: 'suggestion', to: 'nit', grade: 'nitpick' }] },
       findings: {
         severityCounts: { blocker: 1, warning: 0, note: 5 },
         entries: [
@@ -51,7 +58,8 @@ describe('migrateStoredSeverities', () => {
         ],
         unposted: [{ severity: 'note', unpostedReason: 'note_cap' }],
       },
-      threads: [{ threadId: 'T1', severity: 'note', recordedGrade: 'note', peakGrade: 'blocker', evaluation: { status: 'partly_addressed', grade: 'note' } }],
+      threads: [{ threadId: 'T1', severity: 'note', recordedGrade: 'note', peakGrade: 'blocker' }],
+      judge: { threadEvaluations: [{ threadId: 'T1', status: 'partly_addressed', grade: 'note', cell: { row: 'style', column: 'normal' } }] },
       staticSignals: [{ severity: 'note', tool: 'suggestion' }],
     });
     // A record of the current version, and a value that is no record, come back as they are.

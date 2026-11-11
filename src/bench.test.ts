@@ -824,12 +824,15 @@ describe('runBench and buildReport', () => {
         expect(() => readReport(stored('tuning'), root)).toThrow(new Error(`The report ${join(root, 'report.json')} calls held-1 a tuning case, and bench/holdout holds a case file for it.`));
         // A case the report calls a hold-out case stays one, although only `bench/cases` holds its file.
         expect(sets(stored('holdout', 'holdout'))).toEqual({ sets: [['shown-1', 'holdout'], ['held-1', 'holdout']], removed: [] });
-        // A report an older version stored names that version's levels, and they are read as the levels they became.
-        const older = { ...report, variants: report.variants.map(v => ({ ...v, cases: v.cases.map(c => ({ ...c, items: c.items.map(item => ({ ...item, severity: 'nitpick' })) })) })) };
+        // A report an older version stored names that version's levels, and they are read as the levels they became. The config it stored is a user's own and stays as written.
+        const overrides = { review: { from: 'suggestion', severity: 'nitpick' } };
+        const older = { ...report, variants: report.variants.map(v => ({ ...v, overrides, cases: v.cases.map(c => ({ ...c, items: c.items.map(item => ({ ...item, severity: 'nitpick' })) })) })) };
         writeFileSync(join(root, 'report.json'), JSON.stringify(older));
-        const levels = readReport(join(root, 'report.json'), root).report.variants.flatMap(v => v.cases.flatMap(c => c.items.map(item => item.severity)));
+        const { report: read } = readReport(join(root, 'report.json'), root);
+        const levels = read.variants.flatMap(v => v.cases.flatMap(c => c.items.map(item => item.severity)));
         expect(levels.length).toBeGreaterThan(0);
         expect(new Set(levels)).toEqual(new Set(['note']));
+        expect(read.variants.map(v => v.overrides)).toEqual(read.variants.map(() => overrides));
         // A case no case file holds is no contradiction. It is left out and named, and nothing of it is read as a tuning case.
         rmSync(join(root, 'bench', 'holdout', 'held-1.yml'));
         expect(sets(stored('tuning'))).toEqual({ sets: [['shown-1', 'tuning']], removed: ['held-1'] });
