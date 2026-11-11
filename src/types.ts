@@ -865,7 +865,7 @@ export interface ReviewResult {
   sweeps?: RoundSweep[];
   /** The changed files the push since the last round touched, when an earlier round exists and its diff is known. */
   changedSinceLastRoundCount?: number;
-  /** The threads where a fix was claimed: confirmed by an earlier round, counted as resolved, or gone. */
+  /** The threads where a fix was claimed: confirmed by an earlier round, counted as resolved, agreed away by someone who may clear them, or gone. */
   fixClaimedThreadIds?: string[];
   inPrSuppressedCount?: number;
   agentResponseLengths?: Map<string, number>;
