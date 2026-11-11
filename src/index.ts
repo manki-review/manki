@@ -411,7 +411,7 @@ function tickedBoxes(settings: PrState): Set<SettingsBox> {
 
 /**
  * How a run reviews. Any box a writer ticked reviews even a draft, or an already reviewed, paused or too big PR.
- * `again` counts every finding as new, and `deeper` runs two finders on every group, each one effort level higher.
+ * `again` counts every finding as new, and `deeper` runs two finders on every group, at xhigh effort or one level above a configured effort.
  */
 function reviewModes({ runModes }: PrState): { forced: boolean; fullReview: boolean; deeper: boolean } {
   return { forced: runModes.size > 0, fullReview: runModes.has('again'), deeper: runModes.has('deeper') };

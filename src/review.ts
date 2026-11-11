@@ -194,7 +194,7 @@ function quotaRoundSummary(quotaErrors: ReadonlyMap<string, QuotaError>, failedA
 /** The answers used when the planner is disabled or fails: each takes the side that adds review. */
 const FAIL_SAFE_TRIAGE: Readonly<Triage> = Object.freeze({ trivial: false, subtle: true, paired: true });
 
-const DEEPER_EFFORT: Record<EffortLevel, EffortLevel> = { low: 'medium', medium: 'high', high: 'max', xhigh: 'max', max: 'max' };
+const DEEPER_EFFORT: Record<EffortLevel, EffortLevel> = { low: 'medium', medium: 'high', high: 'xhigh', xhigh: 'max', max: 'max' };
 
 /**
  * Builds the round's readers. The PR's class, from its paths and the triage, picks a review group,
@@ -243,7 +243,8 @@ function shortFocus(focus: string): string {
 
 /**
  * Builds one finder per reader of `group`, all on the same checklist. A group with two finders, or a PR in a floor class,
- * gets the most tool steps. A `deeper` review runs each finder one effort level higher.
+ * gets the most tool steps. `auto` effort is high on a subtle change and medium otherwise. A `deeper` review runs
+ * an `auto` finder at xhigh and any other finder one effort level higher.
  */
 function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean): Finder[] {
   const names = new Set<string>();
@@ -251,8 +252,9 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
   const risky = floor || finders.length >= 2;
   return group.reviewers.map(reviewer => {
     const model = resolveReviewerModel(config, reviewer.model);
-    const base: EffortLevel = !reviewer.effort || reviewer.effort === 'auto' ? (triage.subtle ? 'xhigh' : 'medium') : reviewer.effort;
-    const effort = deeper ? DEEPER_EFFORT[base] : base;
+    const effort: EffortLevel = !reviewer.effort || reviewer.effort === 'auto'
+      ? (deeper ? 'xhigh' : triage.subtle ? 'high' : 'medium')
+      : deeper ? DEEPER_EFFORT[reviewer.effort] : reviewer.effort;
     const verifier = reviewer.role === 'verifier';
     const custom = reviewer.focus ? [...config.reviewers, { name: 'This review group', focus: reviewer.focus }] : config.reviewers;
     const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom);
@@ -599,7 +601,7 @@ export interface ReviewOptions {
   finalRound?: boolean;
   /** The checked-out PR head, which finders and the judge on a client with `repoTools` read with read-only tools. */
   workspace?: string;
-  /** A Deeper review: two finders on every group, each one effort level higher. */
+  /** A Deeper review: two finders on every group, at xhigh effort or one level above a configured effort. */
   deeper?: boolean;
   /** Files the PR changes that `exclude_paths` left out of `diff`. A finding there is never pre-existing. */
   excludedPaths?: string[];
