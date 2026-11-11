@@ -6,14 +6,14 @@ See `README.md` for what manki does and `docs/getting-started.md` for installing
 
 ## Pipeline order
 
-The review stages are listed in this order: **planner, reviewer, judge, dedup**. Per-stage config keys (`models.{planner,reviewer,reviewer_pair,judge,dedup}`), logs and docs follow it, so keep new per-stage items in the same order. `reviewer_pair` is the second finder's model and sits next to `reviewer`. `fallback` is not a stage and comes last.
+The review stages are listed in this order: **planner, reviewer, judge, dedup**. Per-stage config keys (`models.{planner,reviewer,reviewer_pair,judge,refuter_pair,dedup}`), logs and docs follow it, so keep new per-stage items in the same order. `reviewer_pair` is the second finder's model and sits next to `reviewer`. `refuter_pair` is the second refuter's model and sits next to `judge`. `fallback` is not a stage and comes last.
 
 At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 
 1. **Planner** triages the change (`trivial`, `subtle`, `paired`) and picks the judge effort. `selectTeam` sorts the PR into a review class (`classifyPr` in `src/routing.ts`) and runs the class's review group: the trivial verifier alone, one finder, or two finders on different models. Every finder gets the same `buildFinderAgent` checklist, so a pair differs only in its models. Security-sensitive, CI or dependency, and data contract paths are floor classes that force two finders.
 2. **Finders** run in parallel and produce findings. A finder that fails after its retry makes the round incomplete. Alongside them, the sibling comparisons (`runComparisons` in `src/compare.ts`) ask one small call per sibling field or sibling implementation that `listUsesOutsideDiff` found, and add their findings to the finders'.
 3. **Dedup** drops findings matching resolved findings from earlier rounds, first statically, then with the `dedup` model.
-4. **Judge** evaluates the rest, merges same-round duplicates and states each finding's severity table cell, from which `mapJudgedToFindings` works out the grade. Memory suppressions then hide matching findings, never a blocker, a security finding or a tool alert. `determineOutcome` then decides whether any finding blocks.
+4. **Judge** evaluates the rest, merges same-round duplicates and states each finding's severity table cell, from which `mapJudgedToFindings` works out the grade. A judge with repository tools then tries to refute the blockers and the findings it doubted (`refuteBlockers` in `src/refute.ts`). Memory suppressions then hide matching findings, never a blocker, a security finding or a tool alert. `determineOutcome` then decides whether any finding blocks.
 5. **Verdict reader** runs only when nothing blocks. It reads the whole diff cold on the judge's client and returns `READY` or `ADDRESS_FIRST` (`src/verdict.ts`).
 
 ## Commit messages
@@ -24,6 +24,10 @@ At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 ## Changelog
 
 - Never edit `CHANGELOG.md` in a feature or fix PR. CI rejects it. The release PR writes the changelog from the merged PRs, so put what users need to know in the PR title and body.
+
+## Docs
+
+- A change to behavior, config, action inputs or review output updates the docs it affects in the same pull request. [Where to look](#where-to-look) says which file covers what.
 
 ## Code style
 
@@ -45,13 +49,17 @@ At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 - `src/config.ts`: config schema, defaults, validation (`DEFAULT_CONFIG`, `KNOWN_KEYS`, `validateConfig`).
 - `src/review.ts`: planner (`runPlanner`), team selection (`selectTeam`), parallel finder loop, dedup and judge calls, round outcome (`runReview`, `determineOutcome`).
 - `src/agents.ts`: the finder prompt (`buildFinderAgent`) and the trivial verifier.
+- `src/routing.ts`: review classes, groups and floors (`classifyPr`).
 - `src/judge.ts`: judge agent (`runJudgeAgent`).
+- `src/refute.ts`: the refuter (`refuteBlockers`).
 - `src/verdict.ts`: verdict reader (`runVerdictReader`).
 - `src/compare.ts`: sibling comparisons (`runComparisons`) on the questions `listUsesOutsideDiff` (`src/symbol-uses.ts`) finds.
 - `src/sweep.ts`: with `review.sweep`, one search of the diff per kept blocker for other instances of its defect class (`runSweeps`).
 - `src/recap.ts`: prior-round state from review threads, and dedup (static and LLM) against earlier findings.
 - `src/github.ts`: GitHub API helpers (diffs, progress comments, posting reviews).
-- `src/index.ts`: top-level orchestration per GitHub event.
+- `src/interaction.ts`: comment commands and replies in review threads.
+- `src/state.ts`: the approval check after a thread or review changes.
+- `src/index.ts`: top-level orchestration per dispatched event (`src/dispatch.ts`).
 - `action.yml`: action inputs/outputs.
 
 The `effort` level maps to provider-specific thinking or reasoning settings inside each client's `sendMessage`.
@@ -59,7 +67,12 @@ The `effort` level maps to provider-specific thinking or reasoning settings insi
 ## Where to look
 
 - Config schema + defaults: `src/config.ts`
-- Config reference: `docs/configuration.md`. A new or changed setting needs its entry in `scripts/config-reference.ts`, then `npm run config-reference`.
+- Config reference: `docs/configuration.md`. A new or changed setting needs its entry in `scripts/config-reference.ts`, then `npm run config-reference`, and its line in `.manki.yml.example`.
 - Action inputs/outputs: `action.yml`
-- User-facing docs: `README.md` and the pages in `docs/`
+- User-facing docs, by what each covers:
+  - `README.md`: overview, commands, local review. `docs/index.html`: the homepage.
+  - `docs/getting-started.md`: setup, the workflow, action inputs and outputs, events, the settings block.
+  - `docs/how-reviews-work.md`: pipeline, review groups, severity, review output, CI results, analyzers, related repositories, round records.
+  - `docs/memory.md`: review memory. `docs/security.md`: tokens, untrusted content, reviewer tools.
+  - `RELEASE.md`: release steps. This file: pipeline order and architecture.
 - Convention changes or open design questions: GitHub issues

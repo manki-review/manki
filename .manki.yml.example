@@ -52,6 +52,10 @@
 # instructions: |
 #   This is a Rust project. Focus on ownership and error handling.
 
+# A short phrase naming what the project is (default: none). The finders read
+# it as "This PR is in a blockchain consensus library project".
+# project: "blockchain consensus library"
+
 # Per-stage model selection
 # models:
 #   planner: claude-haiku-5-5      # fast pre-review planning pass
@@ -81,16 +85,22 @@
 
 # Planner stage (default: enabled)
 # A fast pre-review pass answers three questions about the nature of the change:
-# trivial (a single Trivial Change Verifier reads it), subtle (finders run at
-# high effort instead of medium) and paired (a second finder on another model
-# reads it too). An unclear answer takes the side that adds review. Disabled,
-# every round gets two finders at high effort.
-# `paired` pins the third answer: auto (default), always or never. It is
-# deprecated in favour of `review.routing`. A diff that touches a
+# trivial (a single quick check reads it), subtle (finders run at high effort
+# instead of medium) and paired (a second finder on another model reads it
+# too). An unclear answer takes the side that adds review. Disabled, every
+# round gets two finders at high effort. A diff that touches a
 # security-sensitive path, CI, a dependency manifest or a data contract
 # (migrations, SQL, protobuf, schemas, OpenAPI) always gets two finders.
 # planner:
 #   enabled: true
+
+# Judge stage. `effort` is low, medium, high, xhigh, max or auto (default),
+# which takes the level the planner picks. `tool_steps` is the number of
+# read-only repository tool calls the judge may make while it grades, on the
+# Claude or Codex CLI (default: 0, none).
+# judge:
+#   effort: auto
+#   tool_steps: 0
 
 # Review groups per class of PR. Read from the base branch only, so a PR cannot
 # weaken its own review. Each PR falls in the highest ranked matching class:
@@ -98,7 +108,7 @@
 # said paired), internal (30) or docs (20, planner said trivial). The first
 # three are floors: at least two finders on two distinct models, none at `low`
 # effort, unless `allow_weaker` names the class. Built-in groups: trivial (the
-# Trivial Change Verifier), solo (one finder) and pair (two finders). See
+# quick check), solo (one finder) and pair (two finders). See
 # docs/how-reviews-work.md, "Review groups".
 #
 # Minimal: two strong readers on security and data contract PRs only.
@@ -145,22 +155,30 @@
 #       - "A rounding error in a ledger balance, however rare."
 #     not_blocker:
 #       - "A slow export of the monthly report: `suggestion`."
+#   sweep: false                     # search the diff for other instances of each kept blocker's defect class
 
-# CI results the reviewers read as evidence (default: all on)
+# CI results the reviewers read as evidence (default: all on), and the
+# analyzers Manki runs itself.
 # Manki reads what CI reported on the PR head commit and keeps the results on
 # lines of the diff. A Manki suggestion or nitpick on the same file and line
 # is dropped. Warnings, blockers and security findings are kept. This block is read from the base branch,
 # never from the PR, so a PR cannot turn a source off. A source the workflow
-# token cannot read is skipped. See docs/how-reviews-work.md, "Reading CI results".
+# token cannot read is skipped. See docs/how-reviews-work.md, "Reading CI results"
+# and "Running Manki's analyzers".
 # static_analysis:
 #   checks: true             # check-run annotations, needs `checks: read`
 #   code_scanning: true      # code scanning alerts, needs `security-events: read`
 #   dependency_review: true  # vulnerable packages the PR adds
-#   analyzers:               # tools Manki runs itself (default: off), or `all`
-#     ast_grep: false        # Manki's ast-grep rules for JS, TS and Python
+#   wait_for_checks: []      # check runs to wait for, such as [lint, CodeQL]
+#   wait_timeout_seconds: 300
+#   analyzers:               # analyzers Manki runs itself, or `all`
+#     ast_grep: false        # Manki's ast-grep rules for JS, TS and Python. The Rust rules run in a Cargo repository
 #     secrets: false         # gitleaks on the added lines
 #     dependencies: false    # OSV-Scanner on the changed lockfiles, Cargo.lock included
 #     semgrep: false         # or `rules: [...]`, your Semgrep rule files
+#     actionlint: true       # on changed workflows, unless CI runs it
+#     zizmor: true           # on changed workflows, unless CI runs it
+#     shellcheck: true       # on changed shell scripts, unless CI runs it
 
 # Public github.com repos the review may read as context (default: none).
 # `reference`: a repo this one implements or ports. `consumer`: a repo that
@@ -170,22 +188,24 @@
 #   - { repo: dashpay/dash, kind: reference, paths: [src/] }
 #   - { repo: dashpay/platform, kind: consumer, ref: master, paths: ["packages/rs-*"] }
 
-# Where to post nit findings: 'issues' (separate GitHub issue) or 'comments' (inline PR comments)
-# nit_handling: issues
-
 # Multi-pass verification: run each reviewer N times with shuffled file ordering.
 # Only findings that appear consistently across passes are kept, reducing false positives.
 # Must be an integer between 1 and 5. Default: 1 (no multi-pass).
 # review_passes: 1
 
-# Hide the structured `Manki context` block as an HTML comment instead of a `<details>` block (default: true)
-# stats:
-#   hidden: true
+# How rounds end. After `max_auto_rounds` automatic rounds since Manki's last
+# approval, automatic review pauses until a review is started by hand, which
+# turns it back on for `rounds_after_restart` rounds. 0 turns the cap off.
+# convergence:
+#   max_auto_rounds: 10
+#   rounds_after_restart: 3
+#   test_path_patterns: ["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]   # test files, where later rounds drop the smallest findings
+#   suppress_resolved_threads: true   # a resolved thread suppresses matching findings in later rounds
 
-# On merge, count per severity and specialist how many posted findings were fixed,
-# dismissed or left untouched. Needs `closed` in the workflow's `pull_request` types.
-# Written to the job summary, and appended to `metrics/fix-rate.jsonl` in the
-# repo's memory when memory is enabled. Default: on when `memory.enabled` is true.
+# On merge, count per severity and finder how many posted findings were fixed,
+# dismissed or left untouched. Written to the job summary, and appended to
+# `metrics/fix-rate.jsonl` in the repo's memory when memory is enabled.
+# Default: on when `memory.enabled` is true.
 # metrics:
 #   fix_rate: true
 

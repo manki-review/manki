@@ -31,15 +31,15 @@
       <div class="pillars">
         <div class="pillar">
           <h3>Multi-stage pipeline</h3>
-          <p>Planner, Reviewer, Dedup, Judge. Each stage has a specific job; dedup removes repeats before the judge classifies what survives.</p>
+          <p>Planner, finders, dedup, judge and a verdict reader. Each stage has a specific job: dedup removes repeats before the judge classifies what survives, and the verdict reader reads the diff cold before an approval.</p>
         </div>
         <div class="pillar">
           <h3>Bring your own model</h3>
-          <p>Configure Claude today; multi-provider support coming soon. Your API key, your compute.</p>
+          <p>Anthropic, OpenAI and Gemini models, picked per stage. Your API key, your compute.</p>
         </div>
         <div class="pillar">
           <h3>Open source, self-hosted</h3>
-          <p>Runs as a GitHub Action in your repo. No SaaS dependency, no vendor lock-in, no subscription required.</p>
+          <p>Runs as a GitHub Action in your repo, on your runners. The Manki service only starts the runs. No vendor lock-in, no subscription required.</p>
         </div>
       </div>
     </div>
@@ -62,7 +62,7 @@
         <div class="pipeline-arrow" aria-hidden="true">&rarr;</div>
         <div class="pipeline-stage">
           <h4>Dedup</h4>
-          <p>Filters findings that match previously-dismissed ones</p>
+          <p>Drops findings that repeat resolved ones from earlier rounds</p>
         </div>
         <div class="pipeline-arrow" aria-hidden="true">&rarr;</div>
         <div class="pipeline-stage">
@@ -80,7 +80,7 @@
       <div class="why-list">
         <div class="why-item">
           <h4>Self-hosted</h4>
-          <p>Your code never leaves your CI runner. No data shared with third-party SaaS platforms.</p>
+          <p>Reviews run on your CI runner. Your code goes only to the model provider you choose.</p>
         </div>
         <div class="why-item">
           <h4>Multi-stage</h4>
@@ -115,7 +115,7 @@
           <div class="step-number">1</div>
           <div class="step-content">
             <h3>Install the GitHub App</h3>
-            <p>Grant manki access to post review comments on your repositories.</p>
+            <p>Grant manki access to post review comments on your repositories. The Manki service serves only the accounts it lists, so ask the maintainers to add yours.</p>
             <a href="https://github.com/apps/manki-review">Install manki-review &rarr;</a>
           </div>
         </div>
@@ -153,7 +153,7 @@ on:
 permissions:
   contents: read          # read repo files and diffs
   pull-requests: write    # post review comments and approvals
-  issues: write           # post progress comments on PRs
+  issues: write           # post a note on the PR when the token service gives no token
   id-token: write         # OIDC token for GitHub App identity
   actions: read           # verify workflow run is legitimate
 
@@ -187,16 +187,16 @@ jobs:
       <p style="text-align:center;color:#b0b8c4;margin-bottom:32px;">Real reviews on real PRs &mdash; no staged demos.</p>
       <div class="pr-cards">
         <div class="pr-card">
-          <span class="pr-title">run dedup before judge to fix stale summary</span>
-          <a href="https://github.com/manki-review/manki/pull/472" class="pr-link">View review &rarr;</a>
+          <span class="pr-title">report noise figures in the weekly stats</span>
+          <a href="https://github.com/manki-review/manki/pull/1415" class="pr-link">View review &rarr;</a>
         </div>
         <div class="pr-card">
-          <span class="pr-title">embed version in `manki-bot` comment marker</span>
-          <a href="https://github.com/manki-review/manki/pull/468" class="pr-link">View review &rarr;</a>
+          <span class="pr-title">point finders to a related repo's guide</span>
+          <a href="https://github.com/manki-review/manki/pull/1424" class="pr-link">View review &rarr;</a>
         </div>
         <div class="pr-card">
-          <span class="pr-title">progress dashboard — stage grouping, icons, no pre-planner flicker</span>
-          <a href="https://github.com/manki-review/manki/pull/469" class="pr-link">View review &rarr;</a>
+          <span class="pr-title">translate names before the related repo pre-search</span>
+          <a href="https://github.com/manki-review/manki/pull/1432" class="pr-link">View review &rarr;</a>
         </div>
       </div>
     </div>
@@ -209,15 +209,15 @@ jobs:
       <div class="faq-list">
         <details>
           <summary>Does manki work without Claude?</summary>
-          <div class="faq-answer">Not yet, but multi-provider support is planned. Today it requires an Anthropic API key or a Claude Max subscription.</div>
+          <div class="faq-answer">Yes. It runs on Anthropic, OpenAI or Gemini models, with an API key or the provider's CLI login, and each stage can use a different model.</div>
         </details>
         <details>
           <summary>How much does it cost to run?</summary>
-          <div class="faq-answer">You pay only for API usage. A typical PR review costs $0.05&ndash;$0.50 depending on diff size and model.</div>
+          <div class="faq-answer">You pay only for model usage. A review round typically costs about $1 to $3 at public API prices, depending on the diff and the models. With a subscription login, the rounds count against your plan instead.</div>
         </details>
         <details>
           <summary>Is my code sent to third parties?</summary>
-          <div class="faq-answer">Your code is sent to your configured AI provider's API (e.g., Anthropic). Manki itself stores nothing.</div>
+          <div class="faq-answer">Your code is sent to your configured AI provider's API (e.g., Anthropic). Manki stores none of it: its state lives in the PR's comments, and review memory, when you turn it on, in a memory repository.</div>
         </details>
         <details>
           <summary>How do I switch from a hosted review tool?</summary>
@@ -229,7 +229,7 @@ jobs:
         </details>
         <details>
           <summary>Can I customize the review?</summary>
-          <div class="faq-answer">Yes. Add extra checks for the finders under <code>reviewers:</code> in <code>.manki.yml</code>, pick the models for each stage including the second finder, and pin whether a second finder runs with <code>planner.paired</code>.</div>
+          <div class="faq-answer">Yes. Add extra checks for the finders under <code>reviewers:</code> in <code>.manki.yml</code>, pick the models for each stage including the second finder, and route classes of PRs to review groups under <code>review:</code>.</div>
         </details>
       </div>
     </div>
