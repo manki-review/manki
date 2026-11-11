@@ -57,6 +57,11 @@ function threadSeverity(body: string): FindingSeverity | 'unknown' {
   return token ? migrateLegacySeverity(token) as FindingSeverity : 'unknown';
 }
 
+/** The title slug in the marker of a Manki thread's first comment, or `undefined` for a comment without the marker. */
+function threadMarkerSlug(body: string): string | undefined {
+  return body.match(new RegExp(`<!-- manki:(?:${SEVERITY_TOKEN_PATTERN}):(.+?) -->`))?.[1];
+}
+
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
 const REOPENED_MARKER = '<!-- manki-reopened -->';
 
@@ -933,7 +938,7 @@ async function fetchReviewThreads(
       const rootSeverity = threadSeverity(firstComment?.body ?? '');
       const severity = rootSeverity;
 
-      const markerSlug = firstComment?.body?.match(new RegExp(`<!-- manki:(?:${SEVERITY_TOKEN_PATTERN}):(.+?) -->`))?.[1];
+      const markerSlug = threadMarkerSlug(firstComment?.body ?? '');
 
       const body = firstComment?.body ?? '';
       const data = isBotThread ? parseFindingData(body) : undefined;
@@ -1227,4 +1232,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };

@@ -3,36 +3,50 @@
  * thread replies, so a change to the review can be compared before and after. It only reads from GitHub.
  *
  * Usage:
- *   npm run review-stats -- --repo <owner/repo> [--last <n>]
+ *   npm run review-stats -- --repo <owner/repo> [--last <n>] [--fix-rate <fix-rate.jsonl>]
  *
+ * `--fix-rate` takes the repository's `metrics/fix-rate.jsonl` from its memory repo, for the fix rate per severity.
  * Reads the GitHub token from `GITHUB_TOKEN`, or from `gh auth token` when that is unset.
  */
 
 import * as github from '@actions/github';
+import { readFileSync } from 'fs';
 
+import { findPriorThreadId } from '../src/finding-fingerprint';
 import { replyOutcome } from '../src/interaction';
 import { summarizeCalls } from '../src/providers';
 import type { LLMCall } from '../src/providers';
-import { threadSeverity } from '../src/recap';
+import { parseFindingData, threadMarkerSlug, threadSeverity } from '../src/recap';
 import { extractApprovalRecords } from '../src/review-record';
+import { SEVERITY_ORDER } from '../src/types';
 import type { ApprovalRecord, Refutation, ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
+import { aggregate, renderTable } from './fix-rate-report';
 import { githubToken, historyLines } from './review-history';
 
 const DEFAULT_LAST = 40;
 const MANY_ROUNDS = 5;
-const SEVERITIES = ['blocker', 'warning', 'suggestion', 'nitpick'] as const;
+// A finding graded `ignore` is dropped, so no round posts one.
+const SEVERITIES: readonly string[] = SEVERITY_ORDER.filter(s => s !== 'ignore');
 const LIMIT_MARKS = [70, 80, 90] as const;
 
 type Posted = Parameters<typeof historyLines>[2]['reviews'][number];
 
 interface ThreadComment extends Posted {
   in_reply_to_id?: number | null;
+  pull_request_review_id?: number | null;
+  path?: string;
+  line?: number | null;
+  original_line?: number | null;
 }
+
+type PostedThread = Parameters<typeof findPriorThreadId>[1][number];
 
 /** One merged pull request: the records of its completed rounds in posting order, and the comments of its review threads. */
 export interface PrRecords {
   number: number;
   rounds: RoundContext[];
+  /** The id of the review that holds each of `rounds`. */
+  reviewIds: number[];
   /** The records of its incomplete rounds, which no later round read as an earlier round. */
   incompleteRounds: RoundContext[];
   /** The records of Manki's thread replies. */
@@ -54,6 +68,21 @@ interface FinderStats {
   wrapUps: number;
 }
 
+/**
+ * The findings the rounds posted at one severity. A finding the round put under an earlier thread, or one that matches a
+ * thread an earlier review opened, counts in none of the fields.
+ */
+interface SeverityStats {
+  posted: number;
+  /** Findings posted by a round that ended `READY`. */
+  inApprovedRounds: number;
+  /** Findings first raised by a round after the first. `onReviewedCode` counts those of them on code an earlier round reviewed. */
+  raisedLater: number;
+  onReviewedCode: number;
+}
+
+const noFindings = (): SeverityStats => ({ posted: 0, inApprovedRounds: 0, raisedLater: 0, onReviewedCode: 0 });
+
 /** The decision tallies the report lists, each as a table of how often each value occurred. */
 const DECISIONS = [
   'Prompt versions (rounds per stage and digest)',
@@ -62,6 +91,7 @@ const DECISIONS = [
   'Grade changes',
   'Pre-existing claims (how each was checked)',
   'Memory suppressions (findings hidden per suppression)',
+  'Findings recorded without posting (per reason and severity)',
   'Verdict reader per slice',
   'Approvals',
   'State check approvals',
@@ -82,9 +112,13 @@ export interface ReviewStats {
   rounds: number;
   /** Rounds that ended incomplete. They count in no other figure. */
   incompleteRounds: number;
-  severityCounts: Record<string, number>;
-  findings: number;
-  onReviewedCode: number;
+  /** Rounds that ended `READY`. */
+  approvedRounds: number;
+  /** Per PR with rounds after its first approved round, the number of those rounds. */
+  roundsAfterApproval: number[];
+  severities: Record<string, SeverityStats>;
+  /** The tables `aggregate` builds from the fix-rate lines of these PRs. */
+  fixRate: ReturnType<typeof aggregate>;
   blockerOutcomes: { fixed: number; withdrawn: number; other: number };
   finders: Map<string, FinderStats>;
   readerRounds: number;
@@ -158,11 +192,13 @@ export function prRecords(
         return [];
       }
     }));
-  const rounds = lines.filter(line => line.kind === 'round').map(line => line.record as RoundContext);
+  const rounds = lines.filter(line => line.kind === 'round').map(line => ({ record: line.record as RoundContext, reviewId: line.sourceId }));
+  const completed = rounds.filter(round => !round.record.meta?.incomplete);
   return {
     number,
-    rounds: rounds.filter(round => !round.meta?.incomplete),
-    incompleteRounds: rounds.filter(round => round.meta?.incomplete),
+    rounds: completed.map(round => round.record),
+    reviewIds: completed.map(round => round.reviewId),
+    incompleteRounds: rounds.filter(round => round.record.meta?.incomplete).map(round => round.record),
     replies: lines.filter(line => line.kind === 'reply').map(line => line.record as ReplyRecord),
     approvals,
     threadComments: posted.threadComments,
@@ -185,16 +221,33 @@ function blockerOutcomes(comments: ThreadComment[]): ReviewStats['blockerOutcome
   return outcomes;
 }
 
+/** Returns the threads Manki opened, each with the id of the review that posted it. */
+function mankiThreads(comments: ThreadComment[]): (PostedThread & { reviewId: number })[] {
+  return comments.flatMap(c => {
+    const markerSlug = c.user?.type === 'Bot' && !c.in_reply_to_id && c.body ? threadMarkerSlug(c.body) : undefined;
+    if (!markerSlug || !c.path || !c.pull_request_review_id) return [];
+    const data = parseFindingData(c.body ?? '');
+    return [{
+      threadId: String(c.id), file: c.path, line: c.line ?? 0, markerSlug, reviewId: c.pull_request_review_id,
+      ...(c.original_line && { originalLine: c.original_line }), ...(data?.file === c.path && data.line && { findingLine: data.line }),
+    }];
+  });
+}
+
 function finder(stats: ReviewStats, model: string): FinderStats {
   const found = stats.finders.get(model) ?? { rounds: 0, rawFindings: 0, keptOnly: 0, keptShared: 0, toolSteps: [], budgetedCalls: 0, wrapUps: 0 };
   stats.finders.set(model, found);
   return found;
 }
 
-/** Adds up the statistics over `prs`. A finder is keyed by the model it ran on, or by its name in records without one. */
-export function computeStats(prs: PrRecords[]): ReviewStats {
+/**
+ * Adds up the statistics over `prs`. A finder is keyed by the model it ran on, or by its name in records without one.
+ * `fixRateLines` are lines of the memory repo's `metrics/fix-rate.jsonl`, of which only those of `prs` count.
+ */
+export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): ReviewStats {
   const stats: ReviewStats = {
-    prs: 0, unreviewed: 0, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, incompleteRounds: 0, severityCounts: {}, findings: 0, onReviewedCode: 0,
+    prs: 0, unreviewed: 0, roundsPerPr: [], passedFirstRound: 0, manyRounds: 0, rounds: 0, incompleteRounds: 0, approvedRounds: 0, roundsAfterApproval: [], severities: {},
+    fixRate: aggregate(fixRateLines, new Set(prs.map(pr => pr.number))),
     blockerOutcomes: { fixed: 0, withdrawn: 0, other: 0 }, finders: new Map(), readerRounds: 0, readerBlockers: 0,
     refutations: new Map(), pairRefutations: new Map(), pairRefutationCalls: [], costPerPr: [], costPerRound: [], followUpRounds: 0, interRoundDiffCutOrUnknown: 0,
     decisions: new Map(), learningsLoaded: [], suppressionsLoaded: [], slicesPerRound: [], changedSinceLastRound: [], fixClaims: [],
@@ -210,17 +263,32 @@ export function computeStats(prs: PrRecords[]): ReviewStats {
     stats.roundsPerPr.push(pr.rounds.length);
     if (pr.rounds[0]?.meta.outcome === 'READY') stats.passedFirstRound++;
     if (pr.rounds.length >= MANY_ROUNDS) stats.manyRounds++;
+    const firstApproval = pr.rounds.findIndex(round => round.meta.outcome === 'READY');
+    if (firstApproval >= 0 && firstApproval < pr.rounds.length - 1) stats.roundsAfterApproval.push(pr.rounds.length - 1 - firstApproval);
     let prCost = 0;
     const answers = new Set<string>();
-    for (const round of pr.rounds) {
+    const threads = mankiThreads(pr.threadComments);
+    for (const [index, round] of pr.rounds.entries()) {
       stats.rounds++;
       const cost = round.usage?.estimatedCostUsd ?? 0;
       prCost += cost;
       stats.costPerRound.push(cost);
+      const approved = round.meta.outcome === 'READY';
+      if (approved) stats.approvedRounds++;
+      // A review's id grows with the order the reviews were posted in.
+      const earlierThreads = threads.filter(thread => thread.reviewId < pr.reviewIds[index]);
       for (const entry of round.findings?.entries ?? []) {
-        stats.findings++;
-        stats.severityCounts[entry.severity] = (stats.severityCounts[entry.severity] ?? 0) + 1;
-        if (entry.origin === 'reviewed') stats.onReviewedCode++;
+        // An entry's `threadId` names the earlier thread the finding restates or adds to. The review opens no thread for it,
+        // and none for a finding that matches a thread an earlier review opened.
+        if (entry.threadId || findPriorThreadId(entry.fingerprint, earlierThreads)) continue;
+        const severity = stats.severities[entry.severity] ??= noFindings();
+        severity.posted++;
+        if (approved) severity.inApprovedRounds++;
+        // A finding with the origin `earlier` restates one an earlier round listed.
+        if (round.meta.round > 1 && entry.origin && entry.origin !== 'earlier') {
+          severity.raisedLater++;
+          if (entry.origin === 'reviewed') severity.onReviewedCode++;
+        }
       }
       // A finding a disproof dropped is listed with the judge's drops, and a lead left unsettled only under `leads`.
       const refuted = [
@@ -300,7 +368,25 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
     stats.learningsLoaded.push(round.memory.loaded.learnings);
     stats.suppressionsLoaded.push(round.memory.loaded.suppressions);
   }
-  for (const hidden of round.memory?.suppressed ?? []) tally(stats, 'Memory suppressions (findings hidden per suppression)', hidden.suppressionId);
+  for (const hidden of round.memory?.suppressed ?? []) {
+    tally(stats, 'Memory suppressions (findings hidden per suppression)', hidden.suppressionId);
+    tally(stats, 'Findings recorded without posting (per reason and severity)', `memory_suppression, ${hidden.severity}`);
+  }
+  for (const entry of round.findings?.unposted ?? []) {
+    tally(stats, 'Findings recorded without posting (per reason and severity)', `${entry.preExisting?.check ?? 'no reason recorded'}, ${entry.severity}`);
+  }
+  // The record keeps these drops of judged findings as counts, without their severities.
+  const dropCounts = {
+    in_pr_suppression: round.judge?.inPrSuppressedCount,
+    ratchet: round.judge?.ratchetSuppressedCount,
+    resolved_thread: round.judge?.resolvedThreadSuppressedCount,
+    own_proposal: round.judge?.ownProposalDemotedCount,
+    test_file: round.dedup?.testNitSuppressedCount,
+    static_signal: round.dedup?.staticSignalMatches?.length,
+  };
+  for (const [reason, count] of Object.entries(dropCounts)) {
+    if (count) tally(stats, 'Findings recorded without posting (per reason and severity)', `${reason}, severity not recorded`, count);
+  }
   if (round.slicing) {
     stats.slicesPerRound.push(round.slicing.files.length);
     for (const slice of round.slicing.reader ?? []) tally(stats, 'Verdict reader per slice', slice.verdict);
@@ -374,7 +460,13 @@ function pairRefutationLines({ pairRefutations, pairRefutationCalls }: ReviewSta
 
 /** Renders the report, headed with `repo` when one is given. */
 export function renderStats(stats: ReviewStats, repo?: string): string {
-  const perRound = (count: number) => (stats.rounds > 0 ? (count / stats.rounds).toFixed(2) : '-');
+  const per = (count: number, rounds: number) => (rounds > 0 ? (count / rounds).toFixed(2) : '-');
+  const all = noFindings();
+  for (const severity of Object.values(stats.severities)) {
+    for (const key of Object.keys(all) as (keyof SeverityStats)[]) all[key] += severity[key];
+  }
+  const findingsRow = (name: string, s = noFindings()) =>
+    `| ${name} | ${s.posted} | ${per(s.posted, stats.rounds)} | ${s.inApprovedRounds} | ${per(s.inApprovedRounds, stats.approvedRounds)} | ${share(s.onReviewedCode, s.raisedLater)} |`;
   const finders = [...stats.finders.entries()].sort((a, b) => b[1].rounds - a[1].rounds || a[0].localeCompare(b[0]));
   const blockerThreads = stats.blockerOutcomes.fixed + stats.blockerOutcomes.withdrawn + stats.blockerOutcomes.other;
   const lines = [
@@ -389,17 +481,26 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     `- Passed after one round: ${share(stats.passedFirstRound, stats.prs)}`,
     `- Needed ${MANY_ROUNDS} or more rounds: ${share(stats.manyRounds, stats.prs)}`,
     `- Rounds that ended incomplete, counted in no other figure: ${stats.incompleteRounds}`,
+    `- Approved rounds: ${share(stats.approvedRounds, stats.rounds)}`,
+    `- PRs with rounds after their first approval: ${share(stats.roundsAfterApproval.length, stats.prs)}, ${stats.roundsAfterApproval.reduce((sum, n) => sum + n, 0)} such rounds`,
     '',
     '## Findings',
     '',
-    '| severity | total | per round |',
-    '| --- | ---: | ---: |',
-    ...[...SEVERITIES, ...Object.keys(stats.severityCounts).filter(s => !(SEVERITIES as readonly string[]).includes(s))]
-      .map(s => `| ${s} | ${stats.severityCounts[s] ?? 0} | ${perRound(stats.severityCounts[s] ?? 0)} |`),
+    '| severity | total | per round | in approved rounds | per approved round | first raised in a later round, on code an earlier round reviewed |',
+    '| --- | ---: | ---: | ---: | ---: | ---: |',
+    ...[...SEVERITIES, ...Object.keys(stats.severities).filter(s => !SEVERITIES.includes(s))].map(s => findingsRow(s, stats.severities[s])),
+    findingsRow('all', all),
     '',
-    `- On code an earlier round reviewed: ${share(stats.onReviewedCode, stats.findings)}`,
+    'The table leaves out a finding the round put under an earlier Manki thread, or that matches one by file, title and line. The script cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved, and another instance of a finding that went into its thread as a reply. A round that ran without the earlier round\'s change, which is a "Review again" run or a failed fetch of the change at the last reviewed commit, tags every finding `new`, so its findings on reviewed code are missing from the reviewed-code share and the share reads too low.',
+    '',
     `- Blocker threads: ${blockerThreads}, fixed ${stats.blockerOutcomes.fixed}, withdrawn ${stats.blockerOutcomes.withdrawn}, other ${stats.blockerOutcomes.other}`,
     `- Verdict reader blockers: ${stats.readerBlockers} in ${stats.readerRounds} rounds`,
+    '',
+    '## Fix rate',
+    '',
+    'From `metrics/fix-rate.jsonl`, for the PRs above. A finding counts as fixed when the judge marked its thread addressed or a later commit touched its lines, whether or not that commit fixed it.',
+    '',
+    ...renderTable('severity', stats.fixRate.get('severity') ?? new Map()),
     '',
     '## Finders',
     '',
@@ -474,14 +575,14 @@ function decisionTable(decision: Decision, counts: Map<string, number> | undefin
 }
 
 
-function parseArgs(args: string[]): { owner: string; repo: string; last: number } | undefined {
+function parseArgs(args: string[]): { owner: string; repo: string; last: number; fixRate?: string } | undefined {
   const value = (flag: string) => {
     const i = args.indexOf(flag);
     return i >= 0 ? args[i + 1] : undefined;
   };
   const [owner, repo, ...rest] = (value('--repo') ?? '').split('/');
   const last = Number(value('--last') ?? DEFAULT_LAST);
-  return owner && repo && rest.length === 0 && Number.isInteger(last) && last > 0 ? { owner, repo, last } : undefined;
+  return owner && repo && rest.length === 0 && Number.isInteger(last) && last > 0 ? { owner, repo, last, fixRate: value('--fix-rate') } : undefined;
 }
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -516,14 +617,15 @@ export async function fetchPrRecords(octokit: Octokit, owner: string, repo: stri
 async function main(args: string[]): Promise<number> {
   const parsed = parseArgs(args);
   if (!parsed) {
-    console.error('Usage: npm run review-stats -- --repo <owner/repo> [--last <n>]');
+    console.error('Usage: npm run review-stats -- --repo <owner/repo> [--last <n>] [--fix-rate <fix-rate.jsonl>]');
     return 1;
   }
-  const { owner, repo, last } = parsed;
+  const { owner, repo, last, fixRate } = parsed;
+  const fixRateLines = fixRate ? readFileSync(fixRate, 'utf-8').split('\n') : [];
   const octokit = github.getOctokit(githubToken());
   const prs: PrRecords[] = [];
   for (const { number } of await listMergedPrs(octokit, owner, repo, last)) prs.push(await fetchPrRecords(octokit, owner, repo, number));
-  process.stdout.write(renderStats(computeStats(prs), `${owner}/${repo}`));
+  process.stdout.write(renderStats(computeStats(prs, fixRateLines), `${owner}/${repo}`));
   return 0;
 }
 

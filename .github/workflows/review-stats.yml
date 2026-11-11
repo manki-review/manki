@@ -1,7 +1,8 @@
 name: Review statistics
 
 # Posts the review statistics of manki and token-service once a week on one tracking issue, so trends show without
-# anyone running the script. It only reads pull requests, and comments on that issue.
+# anyone running the script. It only reads pull requests and the fix rates in the central memory repository, and comments
+# on that issue.
 on:
   schedule:
     - cron: '17 6 * * 1'
@@ -31,9 +32,11 @@ jobs:
       - name: Build the report
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          MEMORY_REPO: manki-review/review-memory
         run: |
           for repo in manki-review/manki manki-review/token-service; do
-            npm run -s review-stats -- --repo "$repo"
+            gh api -H 'Accept: application/vnd.github.raw' "repos/$MEMORY_REPO/contents/$repo/metrics/fix-rate.jsonl" > fix-rate.jsonl
+            npm run -s review-stats -- --repo "$repo" --fix-rate fix-rate.jsonl
             echo
           done > report.md
       - name: Comment on the tracking issue, opening it the first time
