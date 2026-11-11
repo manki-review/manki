@@ -535,6 +535,12 @@ describe('refuteBlockers', () => {
       workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'serious', column: 'rare' } }), diff,
     });
     expect([unknown.severity, unknown.cell]).toEqual(['blocker', undefined]);
+    // A later cap lowered this finding below its stated cell, so the judge did not keep the earlier grade and no earlier doubt comes back.
+    const plain = fakeClient({ 'Sum overflows': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] } });
+    const [lowered] = await refuteBlockers(plain, [finding('Sum overflows', { severity: 'warning', line: 4, cell: { row: 'wrong', column: 'normal' }, tags: ['unproven-blocker'] })], {
+      workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'rare' }, doubts: [REACH_DOUBT] }), diff,
+    });
+    expect([lowered.severity, lowered.doubts, lowered.cell]).toEqual(['blocker', undefined, { row: 'wrong', column: 'normal' }]);
     client.calls.splice(1);
 
     // A grade with no doubt behind it, one a check settled, or one the judge changed is no capped grade.

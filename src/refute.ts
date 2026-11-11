@@ -11,7 +11,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { columnDecidesBlock, Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, isGradeCell, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
+import { cellGrade, columnDecidesBlock, Doubt, EffortLevel, Finding, FindingSeverity, gradeStep, isGradeCell, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -293,11 +293,13 @@ function doubtsToCheck(findings: readonly Finding[]): Finding[] {
 /**
  * Returns `finding` with the `gradeIfConfirmed`, doubts and cell of the latest earlier finding it matches, when a doubt capped
  * that earlier grade, no check settled it, and the judge kept the grade without naming a doubt of its own. Such a grade
- * is no anchor, so the refuter checks it. An earlier finding without a cell the table knows leaves `finding` none, since
- * the cell the judge stated this round does not give the grade a confirmation restores.
+ * is no anchor, so the refuter checks it. A finding a later cap lowered below the grade of its stated cell is returned
+ * as it is, since the judge did not keep the earlier grade. An earlier finding without a cell the table knows leaves
+ * `finding` none, since the cell the judge stated this round does not give the grade a confirmation restores.
  */
 function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[]): Finding {
   if (finding.gradeIfConfirmed || finding.severity === 'ignore' || finding.severity === 'blocker') return finding;
+  if (isGradeCell(finding.cell) && rank(cellGrade(finding.cell.row, finding.cell.column)) < rank(finding.severity)) return finding;
   const prior = [...priorRounds].reverse().flatMap(r => r.findings.entries)
     .find(e => e.fingerprint.file === finding.file && Math.abs(e.fingerprint.lineStart - finding.line) <= LINE_TOLERANCE && titlesMatch(e.title ?? '', finding.title));
   if (!prior?.gradeIfConfirmed || prior.severity !== finding.severity || rank(prior.gradeIfConfirmed) >= rank(prior.severity)) return finding;
