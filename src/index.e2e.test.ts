@@ -1401,5 +1401,33 @@ describe('runFullReview end to end', () => {
       expect(confirmations).toEqual([first === 'round' ? 'Fixed in c3c3c3c.' : 'Fixed. `add` checks the range before it sums.']);
       expect(thread.isResolved).toBe(true);
     });
+
+    it('pauses automatic review when a security blocker comes back after a maintainer dismissed it', async () => {
+      const security = (sameAs?: string) => JSON.stringify({
+        summary: 'One blocker.',
+        findings: [{ id: 1, title: BLOCKER.title, row: 'severe', security: true, reasoning: 'Outside input reaches it.', ...(sameAs && { sameAs }) }],
+      });
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: security() });
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+
+      await replyInThread(thread, '@manki dismiss', '', 'bob');
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, 'manki-review']);
+      expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
+
+      // The next push leaves the code as it was, and the round raises the blocker again. No agreement drops a blocker.
+      const readme = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+Sums are not checked.\n';
+      mockGitHub.headSha = 'e5'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = `${PR_DIFF}${readme}`;
+      mockGitHub.commitDiffs[mockGitHub.headSha] = readme;
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: security('P1') });
+      await reviewRound();
+
+      const again = postedReviews().at(-1)!;
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect([again.state, mockGitHub.roundContext(again).meta.outcome]).toEqual(['CHANGES_REQUESTED', 'NOT_CONVERGING']);
+      expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'blocker', title: BLOCKER.title })]);
+      expect(again.body).toContain('Needs a human');
+    });
   });
 });
