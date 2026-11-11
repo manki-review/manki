@@ -491,7 +491,7 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     ...[...SEVERITIES, ...Object.keys(stats.severities).filter(s => !SEVERITIES.includes(s))].map(s => findingsRow(s, stats.severities[s])),
     findingsRow('all', all),
     '',
-    'The table leaves out a finding the round put under an earlier Manki thread, or that matches one by file, title and line. The script cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved, and another instance of a finding that went into its thread as a reply.',
+    'The table leaves out a finding the round put under an earlier Manki thread, or that matches one by file, title and line. The script cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved, and another instance of a finding that went into its thread as a reply. A round that ran without the earlier round\'s change, which is a "Review again" run or a failed fetch of the change at the last reviewed commit, tags every finding `new`, so its findings on reviewed code are missing from the reviewed-code share and the share reads too low.',
     '',
     `- Blocker threads: ${blockerThreads}, fixed ${stats.blockerOutcomes.fixed}, withdrawn ${stats.blockerOutcomes.withdrawn}, other ${stats.blockerOutcomes.other}`,
     `- Verdict reader blockers: ${stats.readerBlockers} in ${stats.readerRounds} rounds`,
