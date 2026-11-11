@@ -229,8 +229,8 @@ export class OpenAIClient implements LLMClient {
     return this.auth.kind === 'oauth';
   }
 
-  sentEffort(effort: OpenAIReasoningEffort): OpenAIReasoningEffort {
-    return resolveReasoningEffort(this.model, effort) ?? effort;
+  sentEffort(effort: OpenAIReasoningEffort): OpenAIReasoningEffort | undefined {
+    return resolveReasoningEffort(this.model, effort);
   }
 
   async sendMessage(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {

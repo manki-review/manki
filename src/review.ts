@@ -209,11 +209,13 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
   const routing = resolveRouting(config.review);
   const classification = classifyPr(diff, pinned, routing.classes);
   let choice: GroupChoice = chooseGroup(routing, classification, ref => resolveReviewerModel(config, ref));
+  let escalatedFrom: ReviewGroup | undefined;
   if (deeper && choice.group.reviewers.filter(r => r.role !== 'verifier').length < 2) {
+    escalatedFrom = choice.group;
     choice = { name: FLOOR_FALLBACK_GROUP, group: BUILT_IN_GROUPS[FLOOR_FALLBACK_GROUP], source: 'deeper_review', escalatedFrom: choice.name };
   }
   const reviewClass = classification.name ? routing.classes[classification.name] : undefined;
-  const finders = buildFinders(choice.group, config, classification.triage, classification.floor !== undefined, deeper, clients);
+  const finders = buildFinders(choice.group, config, classification.triage, classification.floor !== undefined, deeper, clients, escalatedFrom);
   const sameEffort = finders.filter(f => f.deeperSameEffort).map(f => f.name);
   return {
     finders,
@@ -256,17 +258,19 @@ function askedEffort(reviewer: GroupReviewer, triage: Triage, deeper: boolean): 
 
 /**
  * Builds one finder per reader of `group`, all on the same checklist. A group with two finders, or a PR in a floor class,
- * gets the most tool steps.
+ * gets the most tool steps. `escalatedFrom` is the group the PR had before a `deeper` review moved it up to `group`.
  */
-function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean, clients?: ReviewClients): Finder[] {
+function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean, clients?: ReviewClients, escalatedFrom?: ReviewGroup): Finder[] {
   const names = new Set<string>();
   const finders = group.reviewers.filter(r => r.role !== 'verifier');
   const risky = floor || finders.length >= 2;
   return group.reviewers.map(reviewer => {
     const model = resolveReviewerModel(config, reviewer.model);
-    const sent = (tier: EffortLevel): EffortLevel => (clients && pickReviewerClient(clients, model).client.sentEffort?.(tier)) ?? tier;
+    const client = clients && pickReviewerClient(clients, model).client;
+    const sent = (tier: EffortLevel): EffortLevel | undefined => (client?.sentEffort ? client.sentEffort(tier) : tier);
     const effort = askedEffort(reviewer, triage, deeper);
-    const sentEffort = sent(effort);
+    // A model that takes no effort keeps the asked tier in its name and record.
+    const sentEffort = sent(effort) ?? effort;
     const verifier = reviewer.role === 'verifier';
     const custom = reviewer.focus ? [...config.reviewers, { name: 'This review group', focus: reviewer.focus }] : config.reviewers;
     const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom);
@@ -276,7 +280,10 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
     for (let n = 2; names.has(name); n++) name = `${label} #${n}`;
     names.add(name);
     const steps = verifier ? QUICK_CHECK_STEPS : risky ? RISKY_FINDER_STEPS : FINDER_STEPS;
-    const deeperSameEffort = deeper && sentEffort === sent(askedEffort(reviewer, triage, false));
+    // A reader the deeper review added has no effort without it to compare with.
+    const ref = (r: GroupReviewer): string => r.model ?? '@reviewer';
+    const usual = escalatedFrom ? escalatedFrom.reviewers.find(r => r.role !== 'verifier' && ref(r) === ref(reviewer)) : reviewer;
+    const deeperSameEffort = deeper && usual !== undefined && sent(effort) === sent(askedEffort(usual, triage, false));
     return { name, prompt, model, effort, sentEffort, steps, ...(deeperSameEffort && { deeperSameEffort }) };
   });
 }

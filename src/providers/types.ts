@@ -189,8 +189,11 @@ export interface LLMClient {
   warmupCLI?(): Promise<void>;
   /** Whether `sendMessage` gives the model the tools `SendMessageOptions.repoTools` asks for. */
   readonly repoTools?: boolean;
-  /** Returns the effort tier `sendMessage` sends for `effort`, which is lower when the model's scale stops below it. Unset when every tier is sent as asked. */
-  sentEffort?(effort: NonNullable<SendMessageOptions['effort']>): NonNullable<SendMessageOptions['effort']>;
+  /**
+   * Returns the effort tier `sendMessage` sends for `effort`, which is lower when the model's scale stops below it, or
+   * `undefined` when it sends none. Unset when every tier is sent as asked.
+   */
+  sentEffort?(effort: NonNullable<SendMessageOptions['effort']>): SendMessageOptions['effort'];
 }
 
 export type AnthropicAuth =

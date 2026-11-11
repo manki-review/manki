@@ -114,7 +114,7 @@ describe('resolveReasoningEffort', () => {
     expect(resolveReasoningEffort(model, 'high')).toBeUndefined();
     expect(resolveReasoningEffort(model, 'xhigh')).toBeUndefined();
     expect(resolveReasoningEffort(model, 'max')).toBeUndefined();
-    expect(new OpenAIClient({ auth: { kind: 'apiKey', key: 'k' }, model }).sentEffort('max')).toBe('max');
+    expect(new OpenAIClient({ auth: { kind: 'apiKey', key: 'k' }, model }).sentEffort('max')).toBeUndefined();
   });
 });
 

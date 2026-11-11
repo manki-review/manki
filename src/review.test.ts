@@ -1385,6 +1385,22 @@ describe('selectTeam', () => {
       const max = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer', effort: 'max' }, { model: '@reviewer_pair', effort: 'high' }] } } } });
       expect(team(t(false, true, true), true, max).routing.deeperSameEffort).toEqual([`${S} · max`]);
 
+      // A deeper review that moves a one-finder group up to the pair adds the second finder, so only the finder the
+      // group already had is compared, though neither model takes `xhigh`.
+      const bothCapped: ReviewClients = { ...clients, reviewerByModel: new Map([['claude-sonnet-5-5', noXhigh], ['claude-opus-5-5', noXhigh]]) };
+      const escalated = selectTeam(makeDiff({ files: code }), makeConfig(), t(false, true, false), true, bothCapped);
+      expect(escalated.routing).toMatchObject({ group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'solo' });
+      expect(readers(escalated)).toEqual([`${S} · high`, `${O} · high`]);
+      expect(escalated.routing.deeperSameEffort).toEqual([`${S} · high`]);
+      // A quick check is no finder, so a finder that replaces it is added too.
+      expect(selectTeam(makeDiff({ files: code }), makeConfig(), t(true, false, false), true, bothCapped).routing.deeperSameEffort).toBeUndefined();
+
+      // A model that takes no effort receives none either way. Its name and record keep the asked tier.
+      const noEffort: LLMClient = { sendMessage: jest.fn(), sentEffort: () => undefined };
+      const none = selectTeam(makeDiff({ files: code }), makeConfig(), t(false, true, true), true, { ...clients, reviewerByModel: new Map([['claude-sonnet-5-5', noEffort], ['claude-opus-5-5', everyTier]]) });
+      expect(none.finders.map(f => [f.name, f.sentEffort])).toEqual([[`${S} · xhigh`, 'xhigh'], [`${O} · xhigh`, 'xhigh']]);
+      expect(none.routing.deeperSameEffort).toEqual([`${S} · xhigh`]);
+
       // Outside a deeper review the name shows the sent effort and nothing is listed.
       const xhigh = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer', effort: 'xhigh' }, { model: '@reviewer_pair', effort: 'xhigh' }] } } } });
       const usual = team(t(false, true, true), false, xhigh);
