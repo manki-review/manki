@@ -1381,7 +1381,7 @@ describe('runFullReview end to end', () => {
       expect(answers().slice(2)).toEqual([`${kept}\n\n<!-- manki -->`]);
 
       // Her own agreement or dismissal there clears nothing, and Manki says that the finding keeps blocking.
-      const keepsBlocking = 'This is a blocking finding, so resolving the thread does not clear it. It keeps blocking until a maintainer other than the PR author, or a PR author with the `maintain` role or a higher one, clears it.';
+      const keepsBlocking = 'This is a blocking finding, so resolving the thread does not clear it. It keeps blocking until someone other than the PR author with write access clears it. A PR author can clear it only with the `maintain` role or a higher one.';
       await replyInThread(thread, 'I will handle it in a follow-up.', 'Agreed. A follow-up works.');
       await replyInThread(thread, '@manki dismiss', '');
       expect(answers().slice(3)).toEqual([`Agreed. A follow-up works.\n\n${keepsBlocking}\n\n<!-- manki -->`, `${keepsBlocking}\n\n<!-- manki -->`]);

@@ -546,7 +546,7 @@ describe('checkAndAutoApprove', () => {
     const NO_THREAD = 'names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
     const GONE = 'names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
     const NEXT_ROUND = 'The next review round decides. Push a commit or comment `@manki review` to start one.';
-    const FOLLOWS = 'Approval follows once it is resolved by someone allowed to. The PR author may not clear a blocking thread. Only a PR author with the `maintain` role or a higher one may.';
+    const FOLLOWS = 'Approval follows once it is resolved by someone allowed to. The PR author may not clear a blocking thread without the `maintain` role or a higher one.';
     const UNREAD = 'Manki cannot read the record of its review of `head-sh`, so it cannot tell what that review blocked on.';
     const UNNAMED = 'The record of Manki\'s review of `head-sh` does not say what it blocked on.';
 
@@ -874,8 +874,14 @@ describe('checkAndAutoApprove', () => {
       role,
     });
 
-    expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, { ...fallbackConfig(), ...(level && { author_clear_role: level }) })).toBe(approves);
+    const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, { ...fallbackConfig(), ...(level && { author_clear_role: level }) });
+    expect(result.approved).toBe(approves);
     expect(createReviewMock).toHaveBeenCalledTimes(approves ? 1 : 0);
+    // The reply names the role the repo asks for, and none while that is unknown.
+    if (!result.approved) {
+      const needs = level ? ` without the \`${level}\` role${level === 'admin' ? '' : ' or a higher one'}` : '';
+      expect((await result.why()).split('\n').at(-1)).toBe(`Approval follows once they are resolved by someone allowed to. The PR author may not clear a blocking thread${needs}.`);
+    }
 
     const byAuthor = approves && resolver === 'author';
     const replies = jest.mocked(octokit.graphql).mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply'));

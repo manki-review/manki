@@ -67,7 +67,7 @@ jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn(async (overrides: unknown[]) => overrides),
   approveOrSayWhy: jest.fn().mockResolvedValue({ approved: true }),
   authorResolvedNote: jest.fn().mockResolvedValue(undefined),
-  authorWithRole: jest.requireActual('./state').authorWithRole,
+  rolePhrase: jest.requireActual('./state').rolePhrase,
   fetchBotReviewThreads: jest.fn().mockResolvedValue([]),
   fixedMarker: jest.requireActual('./state').fixedMarker,
   reopenThread: jest.fn().mockResolvedValue(true),
@@ -831,17 +831,18 @@ describe('handleReviewCommentReply', () => {
 
     // An answer that cannot close an open blocking or security thread says who can.
     const staysOpen = kind !== 'warning' && !reason && !resolved && /^\**(Fixed|Agreed|Withdrawn)\./.test(reply);
-    const until = reply.startsWith('Fixed')
-      ? 'the next review confirms the fix, or a maintainer other than the PR author closes it'
-      : 'a maintainer other than the PR author, or a PR author with the `maintain` role or a higher one, closes it';
+    const other = 'someone other than the PR author with write access closes it';
+    const until = reply.startsWith('Fixed') ? `the next review confirms the fix, or ${other}` : other;
+    // Only an answer the PR author's own role could settle names the role.
+    const author = reply.startsWith('Fixed') ? '' : ' A PR author can close it only with the `maintain` role or a higher one.';
     // The note goes only on a thread that did open, and that the answer does not clear.
     const noted = authorResolved && reopens && !reason;
     // A thread that stays resolved by the PR author keeps blocking, which an answer that would settle it says.
     const keepsBlocking = !noted && sender === 'pr-author' && (authorResolved || resolver === 'pr-author') && /^\**(Fixed|Agreed|Withdrawn)\./.test(reply);
     const finding = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding`;
     const note = noted ? '\n\nReopened. The PR author cannot resolve it.'
-      : keepsBlocking ? `\n\n${finding}, so resolving the thread does not clear it. It keeps blocking until ${until.replace('closes', 'clears')}.`
-        : `\n\n${finding}, so the thread stays open until ${until}.`;
+      : keepsBlocking ? `\n\n${finding}, so resolving the thread does not clear it. It keeps blocking until ${until.replace('closes', 'clears')}.${author.replace('close', 'clear')}`
+        : `\n\n${finding}, so the thread stays open until ${until}.${author}`;
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${staysOpen || noted || keepsBlocking ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason && reopens ? [[octokit, 'PRRT_this', reason]] : []);
     // The reply record keeps what the reply decided for the thread.
@@ -1453,7 +1454,7 @@ describe('handleReviewCommentCommand', () => {
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(result === 'cleared' ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
     expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
     // A thread that stays resolved by the PR author still blocks, so the dismissal says it did not work.
-    const keepsBlocking = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding, so resolving the thread does not clear it. It keeps blocking until a maintainer other than the PR author, or a PR author with the \`maintain\` role or a higher one, clears it.`;
+    const keepsBlocking = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding, so resolving the thread does not clear it. It keeps blocking until someone other than the PR author with write access clears it. A PR author can clear it only with the \`maintain\` role or a higher one.`;
     const note = { failed: 'Could not resolve this thread. The run log has the reason.', refused: keepsBlocking, cleared: undefined, left: undefined }[result];
     expect(jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls).toEqual(
       note ? [[expect.objectContaining({ comment_id: 64, body: `${note}\n\n<!-- manki -->` })]] : [],

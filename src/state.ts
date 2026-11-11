@@ -285,7 +285,7 @@ async function announceSecurityOverrides(octokit: Octokit, overrides: Array<Requ
   const announced: SecurityOverride[] = [];
   for (const o of overrides) {
     try {
-      await replyToReviewThread(octokit, o.thread, `Finding dismissed by @${o.login}, the PR author, who has the \`${o.role}\` role on this repository.`, securityOverrideMarker(o.via, o.login));
+      await replyToReviewThread(octokit, o.thread, `Finding dismissed by @${o.login}, the PR author, who has ${rolePhrase(o.role)} on this repository.`, securityOverrideMarker(o.via, o.login));
       announced.push(o);
       core.info(`Recorded the security override by ${o.login} on thread ${o.thread}`);
     } catch (error) {
@@ -520,9 +520,9 @@ function unreviewedLine(headSha: string, halt?: { text: string }): string {
     : `Manki has not reviewed ${head} yet. A push review should start shortly, and approval follows from its verdict.`;
 }
 
-/** Names the PR authors that `clearRole`, the repo's `author_clear_role`, lets clear a guarded thread on their own PR. */
-function authorWithRole(clearRole: AuthorClearRole): string {
-  return `a PR author with the \`${clearRole}\` role${clearRole === 'admin' ? '' : ' or a higher one'}`;
+/** Names `role` in a note. With `orHigher`, `role` is the repo's `author_clear_role` and the phrase covers every role that setting allows. */
+function rolePhrase(role: AuthorClearRole, orHigher = false): string {
+  return `the \`${role}\` role${orHigher && role !== 'admin' ? ' or a higher one' : ''}`;
 }
 
 /**
@@ -537,7 +537,7 @@ function blockingThreadsLine(open: ReviewThread[], named: ReadonlySet<string>, c
     return `- ${t.threadUrl ? `[${title}](${t.threadUrl})` : title}${note}`;
   }).join('\n');
   const one = open.length === 1;
-  const lifts = `Approval follows once ${one ? 'it is' : 'they are'} resolved by someone allowed to. The PR author may not clear a blocking thread.${clearRole ? ` Only ${authorWithRole(clearRole)} may.` : ''}`;
+  const lifts = `Approval follows once ${one ? 'it is' : 'they are'} resolved by someone allowed to. The PR author may not clear a blocking thread${clearRole ? ` without ${rolePhrase(clearRole, true)}` : ''}.`;
   return `${one ? '1 thread blocks' : `${open.length} threads block`} the approval:\n${list}\n\n${instead ?? lifts}`;
 }
 
@@ -817,4 +817,4 @@ async function approveOrSayWhy(
   return { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, authorWithRole, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

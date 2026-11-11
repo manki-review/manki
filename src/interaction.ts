@@ -9,7 +9,7 @@ import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER } from './recap';
-import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, authorWithRole, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, unclearedThreads } from './state';
+import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
 import { AuthorClearRole, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage } from './round-context';
@@ -113,14 +113,14 @@ const REPLY_RESOLUTION_REASONS: Record<string, ResolutionReason> = { Fixed: 'ADD
  * keeps blocking. `clearRole` is the repo's `author_clear_role`, and without it the note names no PR author.
  */
 function staysOpenNote(isSecurity: boolean, fixed: boolean, clearRole: AuthorClearRole | undefined, resolved = false): string {
-  const verb = resolved ? 'clears' : 'closes';
-  const until = fixed
-    ? `the next review confirms the fix, or a maintainer other than the PR author ${verb} it`
-    : `a maintainer other than the PR author${clearRole ? `, or ${authorWithRole(clearRole)},` : ''} ${verb} it`;
+  const verb = resolved ? 'clear' : 'close';
+  const other = `someone other than the PR author with write access ${verb}s it`;
+  const until = fixed ? `the next review confirms the fix, or ${other}` : other;
+  const author = !fixed && clearRole ? ` A PR author can ${verb} it only with ${rolePhrase(clearRole, true)}.` : '';
   const kind = isSecurity ? 'security' : 'blocking';
-  return resolved
+  return (resolved
     ? `This is a ${kind} finding, so resolving the thread does not clear it. It keeps blocking until ${until}.`
-    : `This is a ${kind} finding, so the thread stays open until ${until}.`;
+    : `This is a ${kind} finding, so the thread stays open until ${until}.`) + author;
 }
 
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
