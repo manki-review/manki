@@ -201,7 +201,8 @@ const EFFORT_ORDER = Object.keys(DEEPER_EFFORT) as EffortLevel[];
  * Builds the round's readers. The PR's class, from its paths and the triage, picks a review group,
  * and each reader in the group becomes one finder. `planner.paired` pins the `paired` answer
  * before the PR is classified, and every floor class the PR matches is checked after routing.
- * A `deeper` review moves a group with fewer than two finders up to the built-in `pair` group.
+ * A `deeper` review moves a group with fewer than two finders up to the built-in `pair` group, where a finder the
+ * earlier group had runs at least at that group's effort.
  * With `clients`, each finder is named and recorded by the effort its client sends.
  */
 export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE, deeper = false, clients?: ReviewClients): TeamRoster {
@@ -273,9 +274,11 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
     const ref = (r: GroupReviewer): string => r.model ?? '@reviewer';
     const usual = escalatedFrom ? escalatedFrom.reviewers.find(r => r.role !== 'verifier' && ref(r) === ref(reviewer)) : reviewer;
     const usualEffort = usual && askedEffort(usual, triage, false);
-    // The built-in pair can run below a tier the earlier group set, and no effort sent ranks below every tier.
+    // No effort sent ranks below every tier.
     const rank = (tier: EffortLevel | undefined): number => (tier ? EFFORT_ORDER.indexOf(tier) : -1);
-    const effort = askedEffort(reviewer, triage, deeper);
+    const deeperEffort = askedEffort(reviewer, triage, deeper);
+    // The built-in pair can ask for less than the earlier group set, and a deeper review never lowers a finder's effort.
+    const effort = deeper && usualEffort && rank(usualEffort) > rank(deeperEffort) ? usualEffort : deeperEffort;
     // A model that takes no effort keeps the asked tier in its name and record.
     const sentEffort = sent(effort) ?? effort;
     const verifier = reviewer.role === 'verifier';

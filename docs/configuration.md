@@ -164,7 +164,7 @@ memory:
 | `review` | map | the built-in groups | Review groups and how PR classes route to them. Read from the base branch, so a PR cannot weaken its own review. See [Review groups](how-reviews-work.md#review-groups). |
 | `review.groups` | map of groups | `trivial`, `solo` and `pair` | Each group lists its `reviewers`. A group with a built-in name replaces it. |
 | `review.groups.<name>.reviewers[].model` | model id | `@reviewer` | A model id, `provider/model`, or `@reviewer` or `@reviewer_pair`, which resolve through `models`. |
-| `review.groups.<name>.reviewers[].effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | `auto` is high when the planner answers `subtle: true`, otherwise medium. A Deeper review runs an `auto` finder at xhigh. |
+| `review.groups.<name>.reviewers[].effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | `auto` is high when the planner answers `subtle: true`, otherwise medium. A Deeper review runs an `auto` finder at xhigh, and never below the effort the finder has without it. |
 | `review.groups.<name>.reviewers[].focus` | string | none | A line added to this finder's prompt. |
 | `review.groups.<name>.reviewers[].role` | `finder` or `verifier` | `finder` | `verifier` is the quick check of a trivial change. |
 | `review.classes` | map of classes | the built-in classes | Classes of your own, each with a unique `rank` and a `match` on `paths_any`, `triage` or both. On `security`, `supply_chain` and `data_contract`, `match.paths_any` adds paths to the built-in rule. |

@@ -1392,11 +1392,16 @@ describe('selectTeam', () => {
       expect(escalated.routing).toMatchObject({ group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'solo' });
       expect(readers(escalated)).toEqual([`${S} · high`, `${O} · high`]);
       expect(escalated.routing.deeperSameEffort).toEqual([`${S} · high`]);
-      // The built-in pair runs below a `max` the earlier group set, which is no more effort either.
-      const soloMax = makeConfig({ review: { groups: { solo: { reviewers: [{ effort: 'max' }] } } } });
-      const lowered = selectTeam(makeDiff({ files: code }), soloMax, t(false, true, false), true, clients);
-      expect(readers(lowered)).toEqual([`${S} · high`, `${O} · xhigh`]);
-      expect(lowered.routing.deeperSameEffort).toEqual([`${S} · high`]);
+      // The built-in pair asks for less than a `max` the earlier group set. The kept finder stays at `max`, which is no
+      // more effort for it, and the added finder runs at the deeper effort.
+      const max1 = (model?: string) => makeConfig({ review: { groups: { deep: { reviewers: [{ ...(model && { model }), effort: 'max' }] } }, routing: { internal: 'deep' } } });
+      const kept = selectTeam(makeDiff({ files: code }), max1(), t(false, true, false), true, clients);
+      expect(kept.routing).toMatchObject({ group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'deep' });
+      expect(kept.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · max`, 'max'], [`${O} · xhigh`, 'xhigh']]);
+      expect(kept.routing.deeperSameEffort).toEqual([`${S} · max`]);
+      const keptPair = selectTeam(makeDiff({ files: code }), max1('@reviewer_pair'), t(false, true, false), true, clients);
+      expect(keptPair.finders.map(f => [f.name, f.effort])).toEqual([[`${S} · high`, 'xhigh'], [`${O} · max`, 'max']]);
+      expect(keptPair.routing.deeperSameEffort).toEqual([`${O} · max`]);
       // A quick check is no finder, so a finder that replaces it is added too.
       expect(selectTeam(makeDiff({ files: code }), makeConfig(), t(true, false, false), true, bothCapped).routing.deeperSameEffort).toBeUndefined();
 
