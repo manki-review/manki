@@ -682,6 +682,16 @@ export function disproof(finding: Pick<Finding, 'refutation' | 'pairRefutation'>
   return checks.some(backs) ? undefined : checks.find(check => outcomeOf(check) === 'disproved');
 }
 
+/**
+ * Returns the refutation that disproved only the damage of a finding that `breaksRule`. Such a finding below blocker
+ * stays in the review, since the rule is broken either way. A check's own answer that the defect does not exist can be
+ * about the rule, so beside one this returns none.
+ */
+export function damageDisproof(finding: Pick<Finding, 'severity' | 'rule' | 'refutation' | 'pairRefutation'>): Refutation | undefined {
+  if (finding.severity === 'blocker' || finding.severity === 'ignore' || !breaksRule(finding)) return undefined;
+  return [finding.refutation, finding.pairRefutation].some(check => check?.defect === 'disproved') ? undefined : disproof(finding);
+}
+
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 

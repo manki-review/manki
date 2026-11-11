@@ -1519,7 +1519,7 @@ export async function runJudgeAgent(
     unpostedLater,
     // The match `foldIntoEarlierFindings` makes without a model. The threads are graded again before it runs, so it is not certain yet.
     restatesEarlier: finding => earlier.some(e => sameProblem(e.finding, finding)),
-    preExisting: staysPreExisting,
+    preExisting: staysPreExisting, rules: config.review?.rules,
   }) : mapped;
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked);
 
@@ -1668,7 +1668,7 @@ function ruleVerdict(finding: Finding, { row, ruleIsRequirement, ruleBroken, rul
   return row !== 'none' && !!finding.evidence?.proof.length ? 'confirmed' : 'unproven';
 }
 
-const ruleGrade = (rules: RulesMode = 'warn'): FindingSeverity => (rules === 'block' ? 'blocker' : 'warning');
+export const ruleGrade = (rules: RulesMode = 'warn'): FindingSeverity => (rules === 'block' ? 'blocker' : 'warning');
 
 /**
  * Raises a finding whose rule the judge confirmed to the grade `rules` gives: a warning, or a blocker with `block`.
@@ -1684,8 +1684,9 @@ export function gradeConfirmedRule(finding: Finding, rules?: RulesMode): Finding
 
 /**
  * Makes the fact in `rule.unseen` a doubt of a note whose rule is `unproven`, with the grade `rules` sets as its
- * `gradeIfConfirmed`. The refuter then checks the finding, and `applyRefutation` raises it and confirms the rule only
- * when every doubt holds. A finding graded above a note gets no such doubt, since a disproved doubt drops the finding
+ * `gradeIfConfirmed`. The refuter then checks the finding, and `applyRefutation` raises it and confirms the rule when
+ * a check confirms that fact. A note's cell promises no grade above a note, so the rule's grade replaces no promise
+ * of the damage. A finding graded above a note gets no such doubt, since a disproved doubt drops the finding
  * and one graded by its own damage must not go with it.
  */
 function doubtUnprovenRule(finding: Finding, rules?: RulesMode): Finding {

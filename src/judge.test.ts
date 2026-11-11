@@ -2131,7 +2131,7 @@ describe('runJudgeAgent', () => {
     expect(mockSendMessage.mock.calls.at(-1)![0]).not.toMatch(/Rule Findings|ruleBroken|ruleUnseen|Quoted rule/);
   });
 
-  it('confirms an unproven rule only when the refuter confirms the fact the judge could not see, drops the finding when it disproves that fact, and keeps a confirmed rule finding whose damage it disproves', async () => {
+  it('settles an unproven rule from the fact the judge could not see alone, whatever the refuter says about the damage, and keeps a confirmed rule finding whose damage it disproves', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
@@ -2149,47 +2149,81 @@ describe('runJudgeAgent', () => {
       'Damage disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
       // The refuter's own answer that the defect does not exist can be about the rule, so it drops the warning.
       'Defect disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
+      // A note whose damage the judge doubts too. The refuter answers the damage first, then the fact.
+      ...Object.fromEntries([
+        'Fact confirmed, damage disproved', 'Fact confirmed, damage unsettled', 'Fact confirmed, damage confirmed', 'Fact disproved, damage confirmed',
+        'Fact unsettled, damage confirmed', 'Fact confirmed, defect disproved',
+      ].map(title => [title, { ...unseen, doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] }])),
+      // The second refuter disproves the fact the first confirms.
+      'Fact disputed': unseen,
     };
     const titles = Object.keys(answers);
     const findings = titles.map((title, i) => makeFinding({
       title, line: 10 + i, rule, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`], ...(title === 'Fact confirmed without a search' && { emptySearch: '' }) },
     }));
-    const premise = (outcome: string) => ({ reason: `It is ${outcome}.`, premises: [{ outcome, reason: `It is ${outcome}.`, proof: ['src/index.ts:3'] }] });
+    const premise = (...outcomes: string[]) => ({ reason: `It is ${outcomes.at(-1)}.`, premises: outcomes.map(outcome => ({ outcome, reason: `It is ${outcome}.`, proof: ['src/index.ts:3'] })) });
     const replies: Record<string, unknown> = {
       'Fact confirmed': premise('confirmed'), 'Fact disproved': premise('disproved'), 'Fact unsettled': premise('unsettled'),
       'Fact confirmed without a search': premise('confirmed'), 'Another premise confirmed': premise('confirmed'), 'Damage disproved': premise('disproved'),
       'Defect disproved': { ...premise('unsettled'), outcome: 'disproved', proof: ['src/index.ts:3'] },
+      'Fact confirmed, damage disproved': premise('disproved', 'confirmed'), 'Fact confirmed, damage unsettled': premise('unsettled', 'confirmed'),
+      'Fact confirmed, damage confirmed': premise('confirmed', 'confirmed'), 'Fact disproved, damage confirmed': premise('confirmed', 'disproved'),
+      'Fact unsettled, damage confirmed': premise('confirmed', 'unsettled'),
+      'Fact confirmed, defect disproved': { ...premise('unsettled', 'confirmed'), outcome: 'disproved', proof: ['src/index.ts:3'] },
+      'Fact disputed': premise('confirmed'),
     };
     const refuterMessages: string[] = [];
-    const refuter: LLMClient = {
+    const answering = (answers: Record<string, unknown>): LLMClient => ({
       repoTools: true,
       async sendMessage(_system, user) {
         refuterMessages.push(user);
-        return { content: JSON.stringify(replies[titles.find(t => user.includes(`: ${t}\n`))!]) };
+        return { content: JSON.stringify(answers[titles.find(t => user.includes(`: ${t}\n`))!]) };
       },
-    };
+    });
+    const refuter = answering(replies);
+    const second = answering({ ...replies, 'Fact disputed': premise('disproved') });
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', ...answers[title] })),
     }) });
-    const run = async (rules?: 'block') => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), {
-      findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace },
+    const run = async (rules?: 'block', pair?: LLMClient) => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), {
+      findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace, ...(pair && { pair }) },
     })).findings;
-    const graded = async (rules?: 'block') => (await run(rules)).map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', ')]);
+    const graded = async (rules?: 'block', pair?: LLMClient) => (await run(rules, pair)).map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', ')]);
 
     try {
-      const expected = (grade: 'warning' | 'blocker') => [
-        ['Fact confirmed', grade, 'confirmed', `refutation: ${grade}`],
+      const expected = (grade: 'warning' | 'blocker', disputed: Array<string | undefined> = [grade, 'confirmed', `rule: ${grade}`]) => [
+        ['Fact confirmed', grade, 'confirmed', `rule: ${grade}`],
         ['Fact disproved', 'ignore', 'unproven', 'refutation: ignore'],
         ['Fact unsettled', 'note', 'unproven', undefined],
-        ['Fact confirmed without a search', grade, 'confirmed', `refutation: ${grade}`],
+        ['Fact confirmed without a search', grade, 'confirmed', `rule: ${grade}`],
         ['Another premise confirmed', 'warning', 'unproven', 'judge: warning'],
         ['Damage disproved', grade, 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning'],
         // No disproof lowers a blocker the rule raised.
         ['Defect disproved', grade === 'blocker' ? grade : 'ignore', 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning, refutation: ignore'],
+        // The confirmed fact confirms the rule and gives its grade, whatever the answer about the damage.
+        ['Fact confirmed, damage disproved', grade, 'confirmed', `rule: ${grade}`],
+        ['Fact confirmed, damage unsettled', grade, 'confirmed', `rule: ${grade}`],
+        ['Fact confirmed, damage confirmed', grade, 'confirmed', `rule: ${grade}`],
+        // A confirmed damage never stands in for the fact.
+        ['Fact disproved, damage confirmed', 'ignore', 'unproven', 'refutation: ignore'],
+        ['Fact unsettled, damage confirmed', 'note', 'unproven', undefined],
+        // An answer that the defect does not exist raises nothing and drops the note, like any finding below blocker.
+        ['Fact confirmed, defect disproved', 'ignore', 'unproven', 'refutation: ignore'],
+        ['Fact disputed', ...disputed],
       ];
       expect(await graded()).toEqual(expected('warning'));
       expect(await graded('block')).toEqual(expected('blocker'));
-      expect(refuterMessages).toHaveLength(14);
+      expect(refuterMessages).toHaveLength(28);
+      // Two refuters that disagree about the fact leave the rule unproven, and the note as it is.
+      expect(await graded(undefined, second)).toEqual(expected('warning', ['note', 'unproven', undefined]));
+      expect(await graded('block', second)).toEqual(expected('blocker', ['note', 'unproven', undefined]));
+
+      // The damage the check disproved goes from the warning the fact raised, as from 'Damage disproved' below. An unsettled damage keeps its doubts.
+      const byTitle = Object.fromEntries((await run()).map(f => [f.title, f]));
+      const raised = byTitle['Fact confirmed, damage disproved'];
+      expect([raised.cell, raised.doubts, raised.gradeIfConfirmed, raised.refutation?.outcome]).toEqual([undefined, undefined, undefined, 'disproved']);
+      expect(byTitle['Fact confirmed, damage unsettled'].doubts?.map(d => d.premise)).toEqual(['The service fails to start without the variable', '`.env.example` has no entry for the variable']);
+      expect(raised.evidence?.proof).toEqual(['src/index.ts:17', 'src/index.ts:3']);
 
       // The kept warning drops the damage the check disproved, so the next round's judge reads a warning with no cell to restate and no open doubt.
       const kept = (await run()).find(f => f.title === 'Damage disproved')!;

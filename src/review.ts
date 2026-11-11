@@ -1426,7 +1426,7 @@ export async function runReview(
     const checked = await refuteBlockers(refutation.client, kept, {
       workspace: refutation.workspace, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
       outsideInput: config.review?.outside_input, restatesEarlier: finding => earlier.some(e => sameProblem(e.finding, finding)),
-      preExisting: finding => unchangedCheck(finding) === 'pre_existing', roundEnd: true,
+      preExisting: finding => unchangedCheck(finding) === 'pre_existing', roundEnd: true, rules: config.review?.rules,
     });
     const after = new Map(kept.map((f, i) => [f, checked[i]]));
     allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
