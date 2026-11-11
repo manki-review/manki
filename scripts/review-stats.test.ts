@@ -29,7 +29,7 @@ describe('review stats', () => {
           {
             ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: disprovedBlocker, pairRefutation: confirmedBlocker,
           },
-          { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed' },
+          { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'new' },
         ],
       },
       reviewers: {
@@ -57,7 +57,16 @@ describe('review stats', () => {
         }],
       },
       // The blocker's answers are reused from round 1, so they count once. A lead left unsettled counts, a posted one does not.
-      findings: { count: 0, severityCounts: {}, entries: [], unposted: [{ ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: disprovedBlocker, pairRefutation: confirmedBlocker }] },
+      findings: {
+        count: 3, severityCounts: {},
+        // A finding that restates an earlier one was not first raised in this round.
+        entries: [
+          { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed' },
+          { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'new' },
+          { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'earlier' },
+        ],
+        unposted: [{ ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: disprovedBlocker, pairRefutation: confirmedBlocker }],
+      },
       leads: [
         { ...lead, outcome: 'unsettled', refutation: unsettled('lead first'), pairRefutation: unsettled('lead second') },
         { ...lead, outcome: 'confirmed', posted: true, refutation: confirmedBlocker },
@@ -88,7 +97,7 @@ describe('review stats', () => {
       usage: { estimatedCostUsd: 1 },
     });
     const later = [2, 3, 4, 5].map(round => makeRoundContext(round, {
-      meta: { prNumber: 2, commitSha: `c${round}`, round, timestamp: 't', mankiVersion: '7' },
+      meta: { prNumber: 2, commitSha: `c${round}`, round, timestamp: 't', mankiVersion: '7', ...(round === 2 && { outcome: 'READY' as const }) },
       judge: { summary: '', ...(round === 2 && { interRoundDiffState: 'changed', interRoundDiffTruncated: true }), ...(round >= 4 && { interRoundDiffState: 'empty' }) },
     }));
     // An incomplete round is counted apart: none of its findings, cost or round number reaches another figure.
@@ -101,10 +110,18 @@ describe('review stats', () => {
     expect([two.rounds.length, two.incompleteRounds]).toEqual([5, [failed]]);
 
     const unreviewed = prRecords('o/r', 3, { reviews: [{ id: 200, body: 'A person\'s review.', user: person }], threadComments: [] });
-    const stats = computeStats([one, two, unreviewed]);
+    const fixRate = (pr: number, posted: number) => JSON.stringify({ pr, counts: [{ severity: 'warning', specialist: 'Sonnet', posted, fixed: 1, dismissed: 0, untouched: posted - 1 }] });
+    // A fix-rate line of a PR outside the report does not count.
+    const stats = computeStats([one, two, unreviewed], [fixRate(1, 2), fixRate(9, 5)]);
     expect(stats).toMatchObject({
       prs: 2, unreviewed: 1, roundsPerPr: [2, 5], passedFirstRound: 0, manyRounds: 1, rounds: 7, incompleteRounds: 1,
-      severityCounts: { blocker: 1, warning: 1 }, findings: 2, onReviewedCode: 1,
+      // The first PR ended on its approval. The second ran three more rounds after its own.
+      approvedRounds: 2, roundsAfterApproval: [3],
+      severities: {
+        blocker: { posted: 1, inApprovedRounds: 0, raisedLater: 0, onReviewedCode: 0 },
+        warning: { posted: 2, inApprovedRounds: 1, raisedLater: 1, onReviewedCode: 1 },
+        suggestion: { posted: 2, inApprovedRounds: 2, raisedLater: 1, onReviewedCode: 0 },
+      },
       blockerOutcomes: { fixed: 1, withdrawn: 1, other: 1 },
       readerRounds: 1, readerBlockers: 2,
       costPerPr: [0.75, 1], costPerRound: [0.5, 0.25, 1, 0, 0, 0, 0],
@@ -123,7 +140,17 @@ describe('review stats', () => {
     expect(report).toContain('- Rounds that ended incomplete, counted in no other figure: 1');
     expect(report).toContain('- Rounds per PR: mean 3.5, median 3.5, max 5.0');
     expect(report).toContain('- Needed 5 or more rounds: 50% (1 of 2)');
-    expect(report).toContain('| blocker | 1 | 0.14 |');
+    expect(report).toContain('- Approved rounds: 29% (2 of 7)\n- PRs with rounds after their first approval: 50% (1 of 2), 3 such rounds');
+    expect(report).toContain([
+      '| severity | total | per round | in approved rounds | per approved round | first raised in a later round, on code an earlier round reviewed |',
+      '| --- | ---: | ---: | ---: | ---: | ---: |',
+      '| blocker | 1 | 0.14 | 0 | 0.00 | - |',
+      '| warning | 2 | 0.29 | 1 | 0.50 | 100% (1 of 1) |',
+      '| suggestion | 2 | 0.29 | 2 | 1.00 | 0% (0 of 1) |',
+      '| nitpick | 0 | 0.00 | 0 | 0.00 | - |',
+      '| all | 5 | 0.71 | 3 | 1.50 | 50% (1 of 2) |',
+    ].join('\n'));
+    expect(report).toContain('whether or not that commit fixed it.\n\n| severity | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| warning | 2 | 1 | 0 | 1 | 50% | 0% |\n\n## Finders');
     expect(report).toContain('- Blocker threads: 3, fixed 1, withdrawn 1, other 1');
     // The split and the answer the first refuter left unsettled both changed the outcome. The lead's two answers agreed.
     expect(report).toContain([
@@ -153,10 +180,11 @@ describe('review stats', () => {
       findings: {
         count: 1, severityCounts: {},
         entries: [{ ...makeFindingFingerprintEntry({ severity: 'warning' }), gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] }],
+        // An unposted finding of a record that says nothing about why still counts.
         unposted: [{
           ...makeFindingFingerprintEntry({ severity: 'suggestion' }), preExisting: { reason: 'Old.', check: 'pre_existing' },
           gradePath: [{ from: 'warning', to: 'suggestion', by: 'judge' }],
-        }],
+        }, makeFindingFingerprintEntry({ severity: 'nitpick' })],
       },
       judge: {
         summary: '', fixClaimedThreads: ['T1', 'T2'],
@@ -201,6 +229,7 @@ describe('review stats', () => {
       'Grade changes': { 'unproven: blocker to warning': 1, 'judge: warning to suggestion': 1, 'refutation: warning to ignore': 1 },
       'Pre-existing claims (how each was checked)': { pre_existing: 1 },
       'Memory suppressions (findings hidden per suppression)': { 'sup-1': 1 },
+      'Findings recorded without posting (per reason and severity)': { 'memory_suppression, nitpick': 1, 'pre_existing, suggestion': 1, 'no reason recorded, nitpick': 1 },
       'Verdict reader per slice': { READY: 1, ADDRESS_FIRST: 1 },
       Approvals: { 'held: conflict': 1 },
       'Thread reply decisions': { 'Fixed, stays_open': 1 },
@@ -260,6 +289,10 @@ describe('review stats', () => {
     const report = renderStats(computeStats([]));
     expect(report).toContain('- Rounds per PR: -');
     expect(report).toContain('- Passed after one round: -');
+    expect(report).toContain('- Approved rounds: -\n- PRs with rounds after their first approval: -, 0 such rounds');
+    expect(report).toContain('| all | 0 | - | 0 | - | - |');
+    expect(report).toContain('| severity | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n\nNo data.');
+    expect(report).toContain('### Findings recorded without posting (per reason and severity)\n\nNone recorded.');
     expect(report).toContain('No refutations.');
     expect(report).toContain('No second refuter.');
     // Calls that gave no answer still show what they cost.

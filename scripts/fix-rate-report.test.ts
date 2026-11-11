@@ -67,6 +67,8 @@ describe('fix-rate report', () => {
       '',
     ].join('\n'));
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('not JSON'));
+    // With a set of pull requests, only their lines count.
+    expect(aggregate(lines, new Set([40])).get('severity')).toEqual(new Map([['warning', { posted: 2, fixed: 1, dismissed: 1, untouched: 0 }]]));
     errorSpy.mockRestore();
   });
 

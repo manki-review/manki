@@ -26,17 +26,19 @@ const DIMENSIONS: ReadonlyArray<{ name: string; source: 'counts' | 'calibration'
   { name: 'judgeChecked', source: 'calibration' },
 ];
 
-export function aggregate(lines: string[]): Map<string, Map<string, Totals>> {
+/** Sums the fix-rate lines into one table per dimension. With `prs`, only the lines of those pull requests count. */
+export function aggregate(lines: string[], prs?: ReadonlySet<number>): Map<string, Map<string, Totals>> {
   const tables = new Map(DIMENSIONS.map(d => [d.name, new Map<string, Totals>()]));
   for (const line of lines) {
     if (!line.trim()) continue;
-    let parsed: Partial<Record<'counts' | 'calibration', Row[]>>;
+    let parsed: Partial<Record<'counts' | 'calibration', Row[]>> & { pr?: number };
     try {
       parsed = JSON.parse(line);
     } catch {
       console.error(`Skipping a line that is not JSON: ${line.slice(0, 80)}`);
       continue;
     }
+    if (prs && !prs.has(Number(parsed?.pr))) continue;
     for (const { name, source } of DIMENSIONS) {
       const table = tables.get(name)!;
       for (const row of parsed?.[source] ?? []) {
