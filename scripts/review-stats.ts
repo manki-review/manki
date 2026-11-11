@@ -90,6 +90,7 @@ const DECISIONS = [
   'Static analysis sources',
   'Grade changes',
   'Pre-existing claims (how each was checked)',
+  'Rule findings (the judge\'s answer and the grade)',
   'Memory suppressions (findings hidden per suppression)',
   'Findings recorded without posting (per reason and severity)',
   'Warnings carried from an earlier review body (listed again per rounds since first listed, ended per reason)',
@@ -366,6 +367,10 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
     tally(stats, 'Grade changes', `${step.by}: ${step.from} to ${step.to}`);
   }
   for (const entry of entries) if (entry.preExisting) tally(stats, 'Pre-existing claims (how each was checked)', entry.preExisting.check);
+  // A record written before the judge answered about a rule has the quote alone.
+  for (const { rule, severity } of [...entries, ...(round.judge?.dropped ?? []).map(drop => ({ ...drop, severity: 'dropped' }))]) {
+    if (rule) tally(stats, 'Rule findings (the judge\'s answer and the grade)', `${rule.verdict ?? 'not judged'}, ${severity}`);
+  }
   if (round.memory?.loaded) {
     stats.learningsLoaded.push(round.memory.loaded.learnings);
     stats.suppressionsLoaded.push(round.memory.loaded.suppressions);
