@@ -393,16 +393,17 @@ export function unprovenReason(finding: Finding): UnprovenReason | undefined {
 /**
  * Returns how `finding` was checked. It is `confirmed` when a check confirms the defect and none disproves it. It is
  * `proven` when it cites proof lines and nothing is left open: no check disproved it, no check of the whole finding
- * came back unsettled, the judge doubts no premise the defect rests on, and no cap for want of proof holds. Anything
- * else is `unconfirmed`, so a finding `unprovenReason` names is always `unconfirmed`.
+ * came back unsettled, and the judge doubts no premise the defect rests on. Anything else is `unconfirmed`, so a
+ * finding `unprovenReason` names is always `unconfirmed`. So is a finding no check can confirm, whatever a check said:
+ * one that still carries a cap for want of proof, and a claimed build failure no CI result reports.
  */
 export function checkStatus(finding: Finding): CheckStatus {
+  if (finding.tags?.some(tag => CHECKED_TAGS.includes(tag)) || isUnconfirmedBuildClaim(finding)) return 'unconfirmed';
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
   const disproved = checks.some(check => check.outcome === 'disproved');
   if (!disproved && checks.some(check => confirmsDefect(finding, check))) return 'confirmed';
   // A check that answered only premises says nothing about the defect unless one of them decides it.
-  const open = disproved || checks.some(check => check.outcome === 'unsettled' && !check.premises) || doubtsDefect(finding)
-    || citesNoProof(finding) || finding.tags?.some(tag => CHECKED_TAGS.includes(tag));
+  const open = disproved || checks.some(check => check.outcome === 'unsettled' && !check.premises) || doubtsDefect(finding) || citesNoProof(finding);
   return open ? 'unconfirmed' : 'proven';
 }
 

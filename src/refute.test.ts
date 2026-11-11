@@ -661,6 +661,42 @@ describe('refuteBlockers', () => {
     ]).toEqual(['confirmed', 'unconfirmed', 'unconfirmed', 'proven']);
   });
 
+  it('gives each kind of finding the refuter checks the status its check leaves it', async () => {
+    const exists = [{ premise: 'The copy is never dropped', decides: 'defect' as const }];
+    const noProof = { evidence: { checks: [], proof: [] } };
+    const buildClaim = { severity: 'warning' as const, buildClaim: true, toolEvidence: { status: 'none' as const, note: '' } };
+    // One row per kind: the finding, then its grade and status after a check that confirms it and after one that settles nothing.
+    const kinds: Array<[string, Partial<Finding>, [string, string], [string, string]]> = [
+      ['Blocker', {}, ['blocker', 'confirmed'], ['blocker', 'unconfirmed']],
+      ['Open lead', { lead: { checked: 'read src/math.ts:2', left: 'find the callers' }, notChecked: true }, ['blocker', 'confirmed'], ['blocker', 'unconfirmed']],
+      ['Blocker a doubt holds at a warning', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: exists }, ['blocker', 'confirmed'], ['warning', 'unconfirmed']],
+      ['Blocker capped for want of proof', { severity: 'warning', tags: ['unproven-blocker'], ...noProof }, ['blocker', 'confirmed'], ['warning', 'unconfirmed']],
+      // A confirmed reach is no search for what the finding says is missing, so the cap comes back and the finding is unconfirmed.
+      // While the reach is open it is a warning its cited lines prove, like any other with only a doubt about the grade.
+      ['Missing claim in the rare column', {
+        severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [REACH_DOUBT], evidence: { checks: [], proof: ['src/math.ts:2'], emptySearch: '' },
+      }, ['warning', 'unconfirmed'], ['warning', 'proven']],
+      // Reading code never confirms a build failure, capped from a blocker or graded a warning.
+      ['Capped build claim', { ...buildClaim, tags: ['unconfirmed-build-claim'] }, ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
+      ['Build claim graded a warning', { ...buildClaim, gradeIfConfirmed: 'warning', doubts: exists }, ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
+      ['Warning the judge doubts', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
+      ['Warning no cited line proves', { severity: 'warning', ...noProof }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
+      ['Warning on unchanged code', { severity: 'warning', preExisting: 'The loop predates this PR.' }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
+      ['Security warning the judge doubts', { severity: 'warning', tags: ['security'], doubts: exists }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
+    ];
+    const findings = kinds.map(([title, more]) => finding(title, more));
+    const ends = async (outcome: 'confirmed' | 'unsettled') => {
+      const reply = (f: Finding) => ({ outcome, reason: 'r', proof: ['src/math.ts:2'], ...(f.doubts && { premises: f.doubts.map(() => ({ outcome, reason: 'r', proof: ['src/math.ts:2'] })) }) });
+      const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, reply(f)])));
+      const result = await refuteBlockers(client, findings, { workspace, diff, preExisting: f => !!f.preExisting });
+      expect(client.calls.map(([title]) => title).sort()).toEqual(kinds.map(([title]) => title).sort());
+      return result.map(f => [f.title, [f.severity, checkStatus(f)]]);
+    };
+
+    expect(await ends('confirmed')).toEqual(kinds.map(([title, , confirmed]) => [title, confirmed]));
+    expect(await ends('unsettled')).toEqual(kinds.map(([title, , , unsettled]) => [title, unsettled]));
+  });
+
   it('checks a warning on code the PR did not change after the unproven ones, those with a doubt first, inside the same limit', async () => {
     const reach = [{ premise: 'Any client reaches it', decides: 'grade' as const }];
     const old = { severity: 'warning' as const, preExisting: 'The loop predates this PR.' };
