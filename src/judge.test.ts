@@ -423,8 +423,10 @@ describe('buildJudgeSystemPrompt', () => {
     // A thread is fixed only when every failure it names is gone, and a partial fix keeps it open at what remains.
     expect(prompt).toContain('- **addressed**: the current code at the flagged region clearly no longer exhibits any failure the original concern names, OR the inter-round diff contains an explicit fix for every one of them.');
     expect(prompt).toContain('- **partly_addressed**: the change removes some of the failures the original concern names, but at least one remains.');
-    expect(prompt).toContain("That is the thread's own grade when the remaining damage is the same as before. Applying the fix an earlier round suggested never lowers it, since that fix can itself cover only part.");
+    expect(prompt).toContain("and `row` and `column` to the Severity Table cell that remaining damage earns by the rules above. Manki works out the thread's grade from the cell. When the remaining damage is the same as before, state a cell that gives the thread's own grade. Applying the fix an earlier round suggested never lowers it, since that fix can itself cover only part. On the `wrong` row Manki grades what remains in the `normal` column whatever column you state, since nothing checks a `rare` claim on a thread.");
     expect(prompt).toContain('"status": "addressed" | "partly_addressed" | "not_addressed" | "uncertain"');
+    // The judge has no field for a grade of its own on a thread either.
+    expect(prompt.slice(prompt.indexOf('"threadEvaluations"'), prompt.indexOf('## Open Thread Evaluation'))).not.toContain('"grade"');
   });
 
   it.each([1, 3, 7])(
@@ -691,13 +693,13 @@ describe('buildJudgeUserMessage', () => {
     ];
     const rounds = [makeRoundContext(1, {
       findings: { count: 3, severityCounts: {}, entries },
-      judge: { summary: '', threadEvaluations: [{ threadId: 'PRRT_def', status: 'partly_addressed', reason: 'r', remaining: 'The upload\nstill has no timeout.', grade: 'suggestion' }] },
+      judge: { summary: '', threadEvaluations: [{ threadId: 'PRRT_def', status: 'partly_addressed', reason: 'r', remaining: 'The upload\nstill has no timeout.', grade: 'suggestion', cell: { row: 'degraded', column: 'rare' } }] },
     })];
     const followUp = (interRoundDiff: string) =>
       buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [...openThreads, agreed], rounds, interRoundDiff);
     const unpushed = followUp('');
     // The judge sees what an earlier round found still open after a partial fix, and the grade it gave that.
-    expect(unpushed).toContain('- **Partly fixed in an earlier round, still open**: The upload still has no timeout. (graded suggestion)');
+    expect(unpushed).toContain('- **Partly fixed in an earlier round, still open**: The upload still has no timeout. (graded suggestion, row degraded, column rare)');
     expect(unpushed.match(/Partly fixed in an earlier round/g)).toHaveLength(1);
 
     // An outdated thread shows the code it named when posted, and where that code is now or that it is gone, and the
@@ -1230,19 +1232,25 @@ describe('parseJudgeResponse', () => {
         { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in new diff' },
         { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Still applies' },
         { threadId: 'PRRT_ghi', status: 'uncertain', reason: 'No clear evidence' },
-        { threadId: 'PRRT_jkl', status: 'partly_addressed', reason: 'Size is checked', remaining: ' The upload still has no timeout. ', grade: 'warning' },
-        { threadId: 'PRRT_mno', status: 'partly_addressed', reason: 'r', remaining: 'Still slow.', grade: 'ignore' },
-        { threadId: 'PRRT_pqr', status: 'partly_addressed', reason: 'Some of it', grade: 'warning' },
+        { threadId: 'PRRT_jkl', status: 'partly_addressed', reason: 'Size is checked', remaining: ' The upload still has no timeout. ', row: ' Degraded ', grade: 'nitpick' },
+        { threadId: 'PRRT_mno', status: 'partly_addressed', reason: 'r', remaining: 'Still slow.', row: 'ignore', grade: 'suggestion' },
+        { threadId: 'PRRT_pqr', status: 'partly_addressed', reason: 'Some of it', row: 'degraded' },
+        { threadId: 'PRRT_stu', status: 'partly_addressed', reason: 'r', remaining: 'A slow client still holds the connection.', row: 'wrong', column: 'rare' },
+        { threadId: 'PRRT_vwx', status: 'partly_addressed', reason: 'r', remaining: 'The retry still logs twice.', row: 'degraded', column: 'Rare' },
       ],
     });
 
     const result = parseJudgeResponse(json);
     expect(result.threadEvaluations!.slice(3)).toEqual([
-      { threadId: 'PRRT_jkl', status: 'partly_addressed', reason: 'Size is checked', remaining: 'The upload still has no timeout.', grade: 'warning' },
-      // A grade that drops what remains is no grade, so the thread keeps its own.
+      // The grade of what remains comes from the cell the judge states, never from a grade it writes.
+      { threadId: 'PRRT_jkl', status: 'partly_addressed', reason: 'Size is checked', remaining: 'The upload still has no timeout.', cell: { row: 'degraded', column: 'normal' }, grade: 'warning' },
+      // Without a row of the table there is neither, so the thread keeps its own grade.
       { threadId: 'PRRT_mno', status: 'partly_addressed', reason: 'r', remaining: 'Still slow.' },
       // A partial fix that names nothing left over counts as not addressed.
       { threadId: 'PRRT_pqr', status: 'not_addressed', reason: 'Some of it' },
+      // Nothing checks a `rare` claim on a thread, so where the column decides the block what remains is graded as `normal`.
+      { threadId: 'PRRT_stu', status: 'partly_addressed', reason: 'r', remaining: 'A slow client still holds the connection.', cell: { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, grade: 'blocker' },
+      { threadId: 'PRRT_vwx', status: 'partly_addressed', reason: 'r', remaining: 'The retry still logs twice.', cell: { row: 'degraded', column: 'rare' }, grade: 'suggestion' },
     ]);
     result.threadEvaluations!.length = 3;
     expect(result.threadEvaluations![0]).toEqual({ threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in new diff' });
