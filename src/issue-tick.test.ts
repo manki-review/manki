@@ -104,6 +104,14 @@ describe('handleIssueBoxTick', () => {
     await tick(octokit, { ...comment(elsewhere), original_line: 1 });
 
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[1][0].body).toContain('[`src/store.ts:30`](https://github.com/o/r/blob/abc123/src/store.ts#L30)');
+
+    // That file name is finder output, so it can end neither the code span nor the link, and it mentions nobody.
+    const hostile = formatFindingComment(finding({ severity: 'blocker', file: 'src/a`b) @octocat (x.ts', line: 30 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    await tick(octokit, { ...comment(hostile), original_line: 1 });
+
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls[2][0].body).toContain(
+      'Found by Manki in #5 at [`src/a\'b) @octocat (x.ts:30`](https://github.com/o/r/blob/abc123/src/a%60b%29%20%40octocat%20%28x.ts#L30). See',
+    );
   });
 
   it('clears the box, says why in the thread and leaves the thread open when filing fails', async () => {
@@ -307,6 +315,6 @@ describe('handleReviewBoxTick', () => {
 
     await tickReview(octokit, { ...review, body });
 
-    expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain('[`src/a-->b.ts:3`](https://github.com/o/r/blob/abc123/src/a-->b.ts#L3)');
+    expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain('[`src/a--%3Eb.ts:3`](https://github.com/o/r/blob/abc123/src/a--%3Eb.ts#L3)');
   });
 });

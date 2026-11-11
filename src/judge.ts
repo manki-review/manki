@@ -961,12 +961,12 @@ export function buildJudgeUserMessage(
 
     if (f.toolSource) {
       parts.push(`### Finding ${i + 1}: tool alert`);
-      parts.push(`- **File**: ${f.file}:${f.line}`);
+      parts.push(`- **File**: ${sanitize(f.file)}:${f.line}`);
       parts.push(`- **Source**: tool alert, not a reviewer. ${UNTRUSTED_TOOL_TEXT}`);
       parts.push(fenceText(`tool: ${f.toolSource}\ntitle: ${f.title}\nmessage: ${f.description}`));
     } else {
       parts.push(`### Finding ${i + 1}: ${sanitizeForPromptEmbed(f.title)}`);
-      parts.push(`- **File**: ${f.file}:${f.line}`);
+      parts.push(`- **File**: ${sanitize(f.file)}:${f.line}`);
       // A name is embedded like any untrusted text, so none can carry instructions into the prompt.
       parts.push(`- **Reviewers**: ${f.reviewers.map(sanitizeForPromptEmbed).join(', ')}`);
       parts.push(`- **Description**: ${sanitizeForPromptEmbed(f.description)}`);

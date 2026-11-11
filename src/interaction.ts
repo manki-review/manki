@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, hasWriteAccess, inline, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
+import { BotIdentity, dynamicFence, findingLocation, hasWriteAccess, inline, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -286,12 +286,12 @@ async function saveWithdrawnLearning(memory: MemoryStore, owner: string, repo: s
   const id = `learn-${Date.now()}`;
   // The developer's own words, never the model's, since PR content the model read could steer what it writes.
   const reason = sanitizeMemoryField(developerReply.replace(/\s+/g, ' ').trim().slice(0, 300));
-  const content = `Findings like "${sanitizeMemoryField(title.slice(0, 120))}" do not apply on \`${path}\`: ${reason}`;
+  const content = `Findings like "${sanitizeMemoryField(title.slice(0, 120))}" do not apply on \`${findingLocation({ file: path, line: 0 })}\`: ${reason}`;
   await writeLearning(memory, {
     id, content, scope: 'repo', path, source: `${owner}/${repo}#${prNumber}`, created_at: new Date().toISOString().split('T')[0],
   });
   core.info(`Saved learning ${id} for ${path}`);
-  return `Saved a learning for \`${path}\`, so findings like this one are not raised there again. \`/manki forget ${id}\` removes it.`;
+  return `Saved a learning for \`${findingLocation({ file: path, line: 0 })}\`, so findings like this one are not raised there again. \`/manki forget ${id}\` removes it.`;
 }
 
 /**
@@ -958,7 +958,7 @@ function buildReplyContext(
   context += originalComment.replace(BOT_MARKER, '').trim();
 
   if (filePath) {
-    context += `\n\nFile: \`${filePath}\``;
+    context += `\n\nFile: \`${findingLocation({ file: filePath, line: 0 })}\``;
     if (line) context += ` (line ${line})`;
   }
 

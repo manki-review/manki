@@ -1231,8 +1231,10 @@ function repoUrl(serverUrl: string, owner: string, repo: string): string {
   return `${serverUrl.replace(/\/+$/, '')}/${owner}/${repo}`;
 }
 
-function buildLineLink(owner: string, repo: string, commitSha: string, serverUrl: string): LineLink {
-  return (file, line, end = line) => `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(encodeURIComponent).join('/')}${line > 0 ? `#L${line}${end > line ? `-L${end}` : ''}` : ''}`;
+export function buildLineLink(owner: string, repo: string, commitSha: string, serverUrl: string): LineLink {
+  // `encodeURIComponent` keeps parentheses, and a `)` in a file name would end the Markdown link the URL goes into.
+  const segment = (part: string): string => encodeURIComponent(part).replace(/[()]/g, c => `%${c.charCodeAt(0).toString(16)}`);
+  return (file, line, end = line) => `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(segment).join('/')}${line > 0 ? `#L${line}${end > line ? `-L${end}` : ''}` : ''}`;
 }
 
 const WHAT_GOES_WRONG_LABEL = '**What goes wrong:**';
@@ -1267,7 +1269,7 @@ function splitLead(text: string, maxSentences: number, maxLength: number): { lea
   return { lead: safeTruncate(lead, maxLength), rest: trimmed };
 }
 
-function findingLocation(finding: Pick<Finding, 'file' | 'line'>): string {
+export function findingLocation(finding: Pick<Finding, 'file' | 'line'>): string {
   return `${sanitizeFilePath(encodeCommentBreakers(finding.file))}${finding.line > 0 ? `:${finding.line}` : ''}`;
 }
 
@@ -1955,7 +1957,7 @@ async function submitReview(
       : '';
     core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);
 
-    const findingSummary = validComments.map(c => `- ${commentHeadline(c.body)} (\`${c.path}:${c.line}\`)`).join('\n');
+    const findingSummary = validComments.map(c => `- ${commentHeadline(c.body)} (\`${findingLocation({ file: c.path, line: c.line })}\`)`).join('\n');
     const bare = recordWithoutLineComments();
     const fallbackBody = fit(`${bodyWithoutLineComments()}\n\n**Findings (could not post inline):**\n${findingSummary}`, bare);
 

@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, sanitizeMarkdown } from './github';
+import { BotIdentity, buildLineLink, findingLocation, sanitizeMarkdown } from './github';
 import { filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
 import { findingFile, isGuarded, parseFindingData } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
@@ -64,9 +64,8 @@ async function fileOrLink(
 ): Promise<{ number: number; existing: boolean }> {
   const existing = await findFiledIssue(octokit, bot, owner, repo, id);
   if (existing !== undefined) return { number: existing, existing: true };
-  const location = `${source.file}${source.line > 0 ? `:${source.line}` : ''}`;
-  const permalink = `${github.context.serverUrl}/${owner}/${repo}/blob/${source.commit}/${source.file}${source.line > 0 ? `#L${source.line}` : ''}`;
-  const where = source.file ? ` at [\`${location}\`](${permalink})` : '';
+  const permalink = buildLineLink(owner, repo, source.commit, github.context.serverUrl)(source.file, source.line);
+  const where = source.file ? ` at [\`${findingLocation(source)}\`](${permalink})` : '';
   const body = [
     postedText(source.text, id),
     `Found by Manki in #${prNumber}${where}. See the [${source.postedIn}](${source.postedAt}).`,

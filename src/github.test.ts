@@ -963,7 +963,7 @@ describe('postReview reviewed-commit footer', () => {
       findings: [{
         severity: 'warning',
         title: 'Minor',
-        file: 'src/a.ts',
+        file: 'src/a`.ts',
         line: 10,
         description: 'Desc.',
         reviewers: [],
@@ -975,7 +975,7 @@ describe('postReview reviewed-commit footer', () => {
     };
 
     const diff: ParsedDiff = {
-      files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, content: '' }] }],
+      files: [{ path: 'src/a`.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, content: '' }] }],
       totalAdditions: 1,
       totalDeletions: 0,
     };
@@ -986,7 +986,7 @@ describe('postReview reviewed-commit footer', () => {
     expect(createReviewMock.mock.calls[0][0].body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning, which doesn't block\.\n\n\*\*Summary:\*\*/u);
     expect(fallbackBody).not.toContain('[Minor]');
     expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
-    expect(fallbackBody).toContain('**Findings (could not post inline):**\n- \u26A0\uFE0F **Warning, not blocking** **Minor** (`src/a.ts:10`)');
+    expect(fallbackBody).toContain('**Findings (could not post inline):**\n- \u26A0\uFE0F **Warning, not blocking** **Minor** (`src/a\'.ts:10`)');
   });
 
   it('preserves the footer even when the review body exceeds the truncation limit', async () => {
