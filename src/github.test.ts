@@ -4255,6 +4255,37 @@ describe('postReview fallback paths', () => {
       expect(update.body).toMatch(/- Reviewed \[`sha`\]\([^)]+\)\n[^\n]*\n\n<\/details>\n\n<!-- manki-bot -->/);
     });
 
+    it('records a finding GitHub refused as a thread as listed in the body, whichever post was refused', async () => {
+      const onLine: Finding = { severity: 'blocker', title: 'On changed line', file: 'src/a.ts', line: 2, description: 'Desc.', reviewers: [] };
+      const outside: Finding = { severity: 'blocker', title: 'Other file', file: 'src/b.ts', line: 5, description: 'Desc.', reviewers: [] };
+      const findings = [onLine, offLineBlocker, outside];
+      const context = makeContext({
+        findings: { count: 3, severityCounts: { blocker: 3 }, entries: findings.map(f => ({ fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, severity: 'blocker' as const })) },
+      });
+      const places = (body: string) => (JSON.parse(extractReviewRecords(body).records[0]) as RoundContext).findings.entries.map(e => e.posted);
+      const post = async (createReview: jest.Mock, createReviewComment: jest.Mock) => {
+        const { octokit, updateReview } = makeOctokit(createReviewComment, createReview);
+        await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context);
+        return [...createReview.mock.calls, ...updateReview.mock.calls].map(([args]) => places(args.body as string));
+      };
+      const taken = () => jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const refusedOnce = (error: Error) => jest.fn().mockRejectedValueOnce(error).mockResolvedValue({ data: { id: 7 } });
+      const lineError = new Error('pull_request_review_thread.line must be part of the diff');
+      const eventError = Object.assign(new Error('Unprocessable'), { status: 422 });
+
+      // Nothing refused: the two findings GitHub can anchor have a thread, the one in a file outside the diff does not.
+      expect(await post(taken(), taken())).toEqual([['thread', 'thread', 'body']]);
+      // The file-level comment is refused after the review posted, so the review is updated with a corrected record.
+      expect(await post(taken(), jest.fn().mockRejectedValue(new Error('refused')))).toEqual([['thread', 'thread', 'body'], ['thread', 'body', 'body']]);
+      // The line comments are refused: the first attempt never posts, and the review that does has no line thread.
+      expect(await post(refusedOnce(lineError), taken())).toEqual([['thread', 'thread', 'body'], ['body', 'thread', 'body']]);
+      // Both are refused.
+      expect(await post(refusedOnce(lineError), jest.fn().mockRejectedValue(new Error('refused'))))
+        .toEqual([['thread', 'thread', 'body'], ['body', 'thread', 'body'], ['body', 'body', 'body']]);
+      // GitHub refuses the review event, and the comment posted instead carries no line comment either.
+      expect((await post(refusedOnce(eventError), taken())).at(-1)).toEqual(['body', 'thread', 'body']);
+    });
+
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
       const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
       const { octokit, updateReview } = makeOctokit(createReviewComment);

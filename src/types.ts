@@ -2184,8 +2184,8 @@ export interface FindingFingerprintEntry {
   /** Mirrors `Finding.unpostedReason`. */
   unpostedReason?: UnpostedReason;
   /**
-   * Where the round put the finding. Records written before this field carry none. The record is written before the
-   * review posts, so `thread` stays when GitHub refuses the comment and the finding falls back to the body.
+   * Where the round put the finding. Records written before this field carry none. A finding GitHub refused as a
+   * thread falls back to the body and is recorded as `body`.
    */
   posted?: PostedPlace;
   /**
