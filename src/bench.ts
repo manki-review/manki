@@ -200,10 +200,10 @@ function caseFiles(id: string, root: string): CaseSet[] {
 }
 
 /**
- * Returns the set of the case `id`. Nothing else decides whether text of a case may be printed. A case is a tuning case
+ * Returns the set of the case `id`, which decides whether text of the case may be printed. A case is a tuning case
  * only when `bench/cases` under `root` holds a file named after its id and `bench/holdout` holds none. Any other case
- * is a hold-out case, also one that neither directory holds. The directory a case file was read from and the set a
- * stored report gives a case decide nothing.
+ * is a hold-out case, also one that neither directory holds. The directory a case file was read from decides nothing.
+ * A stored report can only make a case a hold-out case: `readReport` keeps the hold-out set a report gives a case.
  */
 export function caseSet(id: string, root = '.'): CaseSet {
   const held = caseFiles(id, root);
@@ -1441,7 +1441,7 @@ export function readReportFile(path: string): BenchReport {
   }
 }
 
-/** A stored report with each case's set taken from the case files, and the ids of the cases it held that no case file holds. */
+/** A stored report in which a case is a tuning case only when the report and the case files both say so, and the ids of the cases it held that no case file holds. */
 interface StoredReport {
   report: BenchReport;
   removed: string[];
