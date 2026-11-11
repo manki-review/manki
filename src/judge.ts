@@ -25,7 +25,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, IN_PR_SUPPRESSED_TAG, isGradeCell, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
+import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, IN_PR_SUPPRESSED_TAG, isGradeCell, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -655,7 +655,8 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "status": "addressed" | "partly_addressed" | "not_addressed" | "uncertain",
       "reason": "Brief explanation citing evidence from the inter-round diff or current code",
       "remaining": "For partly_addressed: what still goes wrong",
-      "grade": "blocker" | "warning" | "suggestion" | "nitpick"
+      "row": "severe" | "wrong" | "degraded" | "improvement" | "style",
+      "column": "normal" | "rare"
     }
   ]` : ''}
 }
@@ -666,7 +667,7 @@ ${hasOpenThreads ? `
 You MUST return exactly ${openThreadsCount} \`threadEvaluations\` entries, one for every open review thread listed in the user message. Omitting any thread is a contract violation that forces a retry. Status values:
 
 - **addressed**: the current code at the flagged region clearly no longer exhibits any failure the original concern names, OR the inter-round diff contains an explicit fix for every one of them. Either signal alone is sufficient: you may pick \`addressed\` even when the inter-round diff does not touch the thread's file, as long as the current code window plainly resolves the concern. (Note: when the inter-round diff is known-empty the resolver may override this verdict as a safety measure.)
-- **partly_addressed**: the change removes some of the failures the original concern names, but at least one remains. For example, an upload handler gets the size limit the concern asked for, but still has no timeout. Set \`remaining\` to what still goes wrong, in one or two plain sentences, and \`grade\` to the grade that remaining damage earns by the Severity Table and the rules above. That is the thread's own grade when the remaining damage is the same as before. Applying the fix an earlier round suggested never lowers it, since that fix can itself cover only part. The thread stays open, and Manki replies there with what remains.
+- **partly_addressed**: the change removes some of the failures the original concern names, but at least one remains. For example, an upload handler gets the size limit the concern asked for, but still has no timeout. Set \`remaining\` to what still goes wrong, in one or two plain sentences, and \`row\` and \`column\` to the Severity Table cell that remaining damage earns by the rules above. Manki works out the thread's grade from the cell. When the remaining damage is the same as before, state a cell that gives the thread's own grade. Applying the fix an earlier round suggested never lowers it, since that fix can itself cover only part. On the \`wrong\` row Manki grades what remains in the \`normal\` column whatever column you state, since nothing checks a \`rare\` claim on a thread. The thread stays open, and Manki replies there with what remains.
 - **not_addressed**: the current code still exhibits the concern (and the inter-round diff did not fix it). When the code window is unavailable and the inter-round diff does not touch the file, default to \`not_addressed\` rather than \`uncertain\`. That default never applies to an outdated thread, or to a thread whose Manki answer you have not answered: judge those by the rules below.
 - **uncertain**: insufficient evidence to decide. The downstream resolver treats this as not-addressed, so prefer it over a speculative \`addressed\`.
 
@@ -807,7 +808,7 @@ export function buildJudgeUserMessage(
       // A later round that found the thread open without naming a partial fix leaves the earlier note true.
       const latest = [...(priorRounds ?? [])].reverse().map(r => r.judge.threadEvaluations?.find(e => e.threadId === t.threadId && e.status === 'partly_addressed')).find(e => !!e);
       if (latest?.remaining) {
-        parts.push(`- **Partly fixed in an earlier round, still open**: ${sanitizeForPromptEmbed(latest.remaining.replace(/[\r\n]+/g, ' '))}${latest.grade ? ` (graded ${latest.grade})` : ''}`);
+        parts.push(`- **Partly fixed in an earlier round, still open**: ${sanitizeForPromptEmbed(latest.remaining.replace(/[\r\n]+/g, ' '))}${latest.grade ? ` (graded ${latest.grade}${isGradeCell(latest.cell) ? `, row ${latest.cell.row}, column ${latest.cell.column}` : ''})` : ''}`);
       }
       if (t.answer) {
         parts.push(`- **Manki's answer in this thread**: ${sanitizeForPromptEmbed(safeTruncate(t.answer.replace(/[\r\n]+/g, ' '), MAX_ANSWER_CHARS))}`);
@@ -1164,6 +1165,19 @@ function parseDoubts(value: unknown): Doubt[] {
   });
 }
 
+/**
+ * Returns the cell the judge states for what remains of a partly fixed thread, and the grade it gives. Nothing checks a
+ * `rare` claim on a thread, and a lower grade can lift the thread's block, so where the column decides the block the
+ * remainder is graded in the `normal` column. A reply that names no row of the table gives neither.
+ */
+function remainderCell(statedRow: unknown, statedColumn: unknown): Pick<ThreadEvaluation, 'cell' | 'grade'> {
+  const row = tableWord(statedRow);
+  if (!Object.hasOwn(CELL_GRADES, row)) return {};
+  const judgeColumn = tableWord(statedColumn) === 'rare' ? 'rare' : 'normal';
+  const column = columnDecidesBlock(row as CellRow) ? 'normal' : judgeColumn;
+  return { cell: { row: row as CellRow, column, ...(column !== judgeColumn && { judgeColumn }) }, grade: cellGrade(row as CellRow, column) };
+}
+
 /** Returns the thread evaluations in the `threadEvaluations` of a judge reply, or undefined when it is no list. */
 function parseThreadEvaluations(value: unknown): ThreadEvaluation[] | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -1173,9 +1187,8 @@ function parseThreadEvaluations(value: unknown): ThreadEvaluation[] | undefined 
       const evaluation = { threadId: String(t.threadId), status: validateThreadStatus(t.status), reason: typeof t.reason === 'string' ? t.reason : '' };
       if (evaluation.status !== 'partly_addressed') return evaluation;
       const remaining = typeof t.remaining === 'string' ? safeTruncate(t.remaining.trim(), MAX_REMAINING_CHARS) : '';
-      const grade = SEVERITY_ORDER.find(s => s === t.grade && s !== 'ignore');
       // A partial fix that names nothing left over gives the reply nothing to say, so the thread counts as not addressed.
-      return remaining ? { ...evaluation, remaining, ...(grade && { grade }) } : { ...evaluation, status: 'not_addressed' };
+      return remaining ? { ...evaluation, remaining, ...remainderCell(t.row, t.column) } : { ...evaluation, status: 'not_addressed' };
     });
 }
 

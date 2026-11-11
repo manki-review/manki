@@ -14,7 +14,7 @@ export type CellColumn = 'normal' | 'rare';
 export interface GradeCell {
   row: CellRow;
   column: CellColumn;
-  /** The column the judge stated, when Manki grades the finding in another one: a tool check moved it, or it is a security finding. */
+  /** The column the judge stated, when Manki grades in another one: a tool check moved the finding, it is a security finding, or the cell is what remains of a partly fixed thread. */
   judgeColumn?: CellColumn;
 }
 
@@ -1203,6 +1203,10 @@ export interface ThreadEvaluation {
    * the remaining damage earns, and on a thread an earlier partial fix lowered, its own grade once it is open again.
    */
   grade?: FindingSeverity;
+  /** For `partly_addressed`, the severity table cell that gives `grade`, as the judge stated it for what remains. A record from before cells has none. */
+  cell?: GradeCell;
+  /** The cell the judge stated for what remains when the thread keeps another grade than that cell gives. Only for the record: no prompt shows it. */
+  judgeCell?: GradeCell;
 }
 
 /**

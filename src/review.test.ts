@@ -34,7 +34,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { Finding, FindingSeverity, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
+import { cellGrade, Finding, FindingSeverity, GradeCell, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
 import { fingerprintEntriesFromLegacy, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
@@ -2975,9 +2975,9 @@ describe('runReview', () => {
     }
     openThread.severity = 'blocker';
 
-    // An outdated thread keeps the guard too, whether its code is gone or sits in a file the push did change.
-    for (const outdated of [{ postedCodeGone: true }, { movedTo: 'src/y.ts' }]) {
-      const guarded = await runWith(elsewhere, { ...openThread, postedCode: '>>> 10: old', postedCommit: 'sha0', ...outdated });
+    // An outdated thread keeps the guard too, whether its code is gone, was rewritten in an earlier push, or sits in a file the push did change.
+    for (const outdated of [{ postedCodeGone: true }, { currentCode: '>>> 10: rewritten' }, { movedTo: 'src/y.ts' }]) {
+      const guarded = await runWith(elsewhere, { ...openThread, postedCode: '>>> 10: old', postedCommit: 'sha0', currentCode: '>>> 10: near', ...outdated });
       expect([guarded.outcome, guarded.threadEvaluations?.[0].status]).toEqual(['ADDRESS_FIRST', 'uncertain']);
     }
 
@@ -2997,6 +2997,11 @@ describe('runReview', () => {
     expect(await gradeAfter(partly('warning'), touching)).toEqual(['warning', 'READY']);
     expect(await gradeAfter(partly(), touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
     expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    // An earlier push that rewrote an outdated thread's code is no push to its file, so the grade it carries holds.
+    const rewritten = { postedCode: '>>> 10: old', postedCommit: 'sha0', currentCode: '>>> 10: rewritten', postedCodeGone: true };
+    Object.assign(openThread, rewritten);
+    expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    for (const key of Object.keys(rewritten) as Array<keyof typeof rewritten>) delete openThread[key];
     expect(await gradeAfter(partly('warning'), touching, [repeat])).toEqual(['blocker', 'ADDRESS_FIRST']);
     openThread.severity = 'warning';
     expect(await gradeAfter(partly('blocker'), touching)).toEqual(['warning', 'READY']);
@@ -3005,6 +3010,23 @@ describe('runReview', () => {
     openThread.isSecurity = true;
     expect(await gradeAfter(partly('warning'), touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
     delete openThread.isSecurity;
+
+    // The record keeps the judge's cell as `cell` only when it gives the thread's grade, so no later prompt shows a cell next to another grade.
+    const cellsAfter = async (cell: GradeCell, diff: string, threadId = 'T1') => {
+      mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 's', threadEvaluations: [{ ...partly(cellGrade(cell.row, cell.column)), threadId, cell }] });
+      const [{ grade, cell: kept, judgeCell }] = (await runWith(diff)).threadEvaluations!;
+      return { grade, cell: kept, judgeCell };
+    };
+    const degraded: GradeCell = { row: 'degraded', column: 'normal' };
+    const severe: GradeCell = { row: 'severe', column: 'normal' };
+    const unchecked: GradeCell = { row: 'wrong', column: 'normal', judgeColumn: 'rare' };
+    expect(await cellsAfter(degraded, touching)).toEqual({ grade: 'warning', cell: degraded });
+    expect(await cellsAfter(unchecked, elsewhere)).toEqual({ grade: 'blocker', cell: unchecked });
+    expect(await cellsAfter(degraded, elsewhere)).toEqual({ grade: 'blocker', judgeCell: degraded });
+    openThread.severity = 'warning';
+    expect(await cellsAfter(severe, touching)).toEqual({ grade: 'warning', judgeCell: severe });
+    openThread.severity = 'blocker';
+    expect(await cellsAfter(degraded, touching, 'T9')).toEqual({});
 
     // A thread an earlier partial fix lowered can rise again, up to its own grade, with or without a push to its file.
     openThread.recordedGrade = 'suggestion';
