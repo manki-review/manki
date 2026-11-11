@@ -185,13 +185,13 @@ function checkFollowUp(
 }
 
 /**
- * Parses and checks one case file. Throws an error naming the file and the field that is wrong. A YAML error quotes
- * the file, so for a hold-out case it names only the file.
+ * Parses and checks one case file. Throws an error naming the file and the field that is wrong. A YAML error or
+ * warning quotes the file, so for a hold-out case the error names only the file and no warning is printed.
  */
 export function parseCase(text: string, file: string, set: CaseSet = 'tuning'): BenchCase {
   let raw: unknown;
   try {
-    raw = parseYaml(text);
+    raw = parseYaml(text, set === 'holdout' ? { logLevel: 'error' } : {});
   } catch (error) {
     throw caseError(file, set === 'holdout' ? 'is not valid YAML' : (error as Error).message);
   }
@@ -473,7 +473,7 @@ async function scoreKey(benchCase: BenchCase, { findings, outcome, complete: rev
       matches.push({ item: item.id, verdict: 'NONE', findings: [], reason: 'No finding names its files or symbols.' });
       continue;
     }
-    const decision = await matcher(item, candidates.map(i => findings[i]));
+    const decision = await quietly(benchCase, () => matcher(item, candidates.map(i => findings[i])));
     const named = decision.findings.map(i => candidates[i]);
     const severity = named.map(i => findings[i].severity).sort((a, b) => SEVERITY_ORDER.indexOf(a) - SEVERITY_ORDER.indexOf(b))[0];
     matches.push({ item: item.id, verdict: decision.verdict, findings: named, ...(severity && { severity }), reason: decision.reason });
@@ -765,6 +765,22 @@ interface Rescored {
   report: BenchReport;
   rescored: string[];
   left: Array<{ id: string; reason: string }>;
+}
+
+/**
+ * Runs `work`, and for a hold-out case lets nothing reach stdout or stderr while it runs. A review, a matcher call and
+ * a config load log what a model answered and what the case holds: finding titles, the reply to the matcher, config keys.
+ */
+async function quietly<T>(c: Pick<BenchCase, 'set'>, work: () => Promise<T>): Promise<T> {
+  if (c.set !== 'holdout') return work();
+  const [out, err] = [process.stdout.write, process.stderr.write];
+  process.stdout.write = process.stderr.write = (() => true) as typeof process.stdout.write;
+  try {
+    return await work();
+  } finally {
+    process.stdout.write = out;
+    process.stderr.write = err;
+  }
 }
 
 /** The detail of an error about a case, which is left out for a hold-out case, since it can quote the case or its findings. */
@@ -1143,20 +1159,6 @@ function failedRun(error: unknown, review?: LocalReview, outcome = 'FAILED'): Ru
   };
 }
 
-/** Wraps `work` so that nothing reaches stdout or stderr while it runs. */
-function silenced<A extends unknown[], R>(work: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
-  return async (...args) => {
-    const [out, err] = [process.stdout.write, process.stderr.write];
-    process.stdout.write = process.stderr.write = (() => true) as typeof process.stdout.write;
-    try {
-      return await work(...args);
-    } finally {
-      process.stdout.write = out;
-      process.stderr.write = err;
-    }
-  };
-}
-
 /**
  * Returns the time the related repos of a case are read at: the oldest author date among the change's own commits,
  * from the merge base of `base` and `head` to `head`. A commit replayed into another repository keeps its author date,
@@ -1204,7 +1206,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
     const checkout = checkouts.get(c.repo)!;
     // The review reads the repository's config at the merge base. Without a merge base the review fails on its own.
     const base = (await runGit(checkout, ['merge-base', c.base, c.head]).catch(() => c.base)).trim();
-    return loadConfigWithOverrides(checkout, base, overrides, c.config);
+    return quietly(c, () => loadConfigWithOverrides(checkout, base, overrides, c.config));
   };
   /** Why the config of a case does not load without any override, by case id. */
   const invalid = new Map<string, Error>();
@@ -1227,8 +1229,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
     for (const benchCase of cases) {
       const runs: RunScore[] = [];
       const configError = invalid.get(benchCase.id);
-      // A review logs the titles of its findings, so the review of a hold-out case logs nothing.
-      const review = benchCase.set === 'holdout' ? silenced(options.review ?? reviewLocal) : options.review ?? reviewLocal;
+      const review = (input: LocalReviewInput) => quietly(benchCase, () => (options.review ?? reviewLocal)(input));
       for (let i = 0; i < options.runs; i++) {
         if (configError) {
           runs.push(failedRun(configError, undefined, CONFIG_INVALID));

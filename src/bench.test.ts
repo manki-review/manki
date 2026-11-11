@@ -670,68 +670,99 @@ describe('runBench and buildReport', () => {
     expect(review).toHaveBeenCalledTimes(1);
   });
 
-  it('prints nothing of a hold-out case but its id and counts: no finding text, review log, source or failure reason', async () => {
+  it('prints nothing of a hold-out case but its id and counts: no finding text, review log, matcher reply, source or failure reason', async () => {
     const SECRET = 'HOLDOUT-TEXT';
     const cases: BenchCase[] = [{ ...benchCase, id: 'shown-1', title: 'SHOWN-TEXT', source: 'source SHOWN-TEXT' }, { ...benchCase, id: 'held-1', set: 'holdout', title: SECRET, source: `source ${SECRET}` }];
-    const seen = new Map<string, number>();
-    // Each case gets one complete review with a blocker and a warning the key does not list, then one that fails. Every review logs.
-    const review = jest.fn(async ({ title: text }: LocalReviewInput) => {
-      process.stdout.write(`info: finding ${text}\n`);
-      process.stderr.write(`warning: finding ${text}\n`);
-      seen.set(text!, (seen.get(text!) ?? 0) + 1);
-      if (seen.get(text!) === 2) throw new Error(`failed on ${text}`);
-      const finding = (severity: FindingSeverity) => makeFinding({ severity, title: `title ${text}`, description: `description ${text}`, howToFix: `fix ${text}`, suggestedFix: `code ${text}`, file: `src/${text}.rs` });
-      return makeReview('ADDRESS_FIRST', [finding('blocker'), finding('warning')]);
-    });
-    const none: Matcher = async () => ({ verdict: 'NONE', findings: [], reason: 'none' });
-    const options = { runs: 2, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, review };
+    // A review logs, and fails on its second run of a case when `failSecond` is set. Its blocker and warning are not in the key.
+    const reviewing = (failSecond: boolean) => {
+      const seen = new Map<string, number>();
+      return jest.fn(async ({ title: text }: LocalReviewInput) => {
+        process.stdout.write(`info: finding ${text}\n`);
+        process.stderr.write(`warning: finding ${text}\n`);
+        seen.set(text!, (seen.get(text!) ?? 0) + 1);
+        if (failSecond && seen.get(text!) === 2) throw new Error(`failed on ${text}`);
+        const finding = (severity: FindingSeverity) => makeFinding({ severity, title: `title ${text}`, description: `description ${text}`, howToFix: `fix ${text}`, suggestedFix: `code ${text}`, file: `src/${text}.rs` });
+        return makeReview('ADDRESS_FIRST', [finding('blocker'), finding('warning')]);
+      });
+    };
+    // The matcher's client logs each reply through `@actions/core`, as the provider clients do, and the reply quotes the finding.
+    const core = jest.requireActual<typeof import('@actions/core')>('@actions/core');
+    const matching = (usable: boolean): Matcher => llmMatcher({
+      sendMessage: async (_system: string, message: string) => {
+        const text = message.includes(SECRET) ? SECRET : 'SHOWN-TEXT';
+        const content = usable ? JSON.stringify({ verdict: 'NONE', findings: [], reason: `reason ${text}` }) : `The finding ${text} is`;
+        core.debug(content);
+        if (!usable) core.warning(`reply ended with: ${content}`);
+        return { content };
+      },
+    } as unknown as LLMClient, 'model-a', new Map());
+    const options = { checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs };
     const [out, err] = [jest.spyOn(process.stdout, 'write').mockImplementation(() => true), jest.spyOn(process.stderr, 'write').mockImplementation(() => true)];
-    let logged: string;
-    let results: Awaited<ReturnType<typeof runBench>>;
+    const logged = () => [...out.mock.calls, ...err.mock.calls].map(call => String(call[0])).join('');
     try {
-      results = await runBench(cases, { ...options, matcher: none });
-      logged = [...out.mock.calls, ...err.mock.calls].map(call => String(call[0])).join('');
+      const review = reviewing(true);
+      const results = await runBench(cases, { ...options, runs: 2, review, matcher: matching(true) });
+      expect(review).toHaveBeenCalledTimes(4);
+      for (const text of ['info: finding SHOWN-TEXT\nwarning: finding SHOWN-TEXT\n', '::debug::{"verdict":"NONE","findings":[],"reason":"reason SHOWN-TEXT"}']) expect(logged()).toContain(text);
+
+      const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, results);
+      // The report itself keeps the text, which the hold-out pass reads.
+      for (const text of [`description ${SECRET}`, `reason ${SECRET}`]) expect(JSON.stringify(report.variants[0].cases[1])).toContain(text);
+      const printed = () => [
+        formatBenchSummary(report), formatUnmatched(report.variants), formatGate(gateReports([report, { ...report, startedAt: '2026-11-09T01:00:00.000Z' }], [report])),
+      ].join('\n');
+      for (const text of ['shown-1 (source SHOWN-TEXT)', 'run 2: FAILED: failed on SHOWN-TEXT', 'src/SHOWN-TEXT.rs:1: title SHOWN-TEXT', '    description SHOWN-TEXT']) expect(printed()).toContain(text);
+      expect(printed()).toContain('\nheld-1\n');
+      expect(printed()).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates');
+      expect(printed()).toContain('  run 2: FAILED: the reason is in the report\n');
+      expect(printed()).not.toContain(SECRET);
+
+      // Only an explicit request lists hold-out findings, and never in a workflow job, whose log and summary are public.
+      expect(formatUnmatched(report.variants, ['holdout'])).toContain(`src/${SECRET}.rs:1: title ${SECRET}`);
+      process.env.GITHUB_ACTIONS = 'true';
+      try {
+        expect(() => formatUnmatched(report.variants, ['holdout'])).toThrow('The findings of hold-out cases are not listed in a workflow job');
+        expect(() => formatUnmatched(report.variants, ['tuning', 'holdout'])).toThrow('The findings of hold-out cases are not listed in a workflow job');
+        expect(printed()).not.toContain(SECRET);
+      } finally {
+        delete process.env.GITHUB_ACTIONS;
+      }
+
+      // A matcher reply that cannot be used fails the run with an error that quotes nothing, and the client's warning about it is not shown.
+      const unusable = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, await runBench(cases, { ...options, runs: 1, review: reviewing(false), matcher: matching(false) }));
+      expect(unusable.variants[0].cases.map(c => c.runs[0].error)).toEqual(["The matcher's answer for N1 is not a JSON object", "The matcher's answer for N1 is not a JSON object"]);
+      expect(logged()).toContain('::warning::reply ended with: The finding SHOWN-TEXT is');
+      expect(formatBenchSummary(unusable)).not.toContain(SECRET);
+
+      // Scoring a stored report again asks the matcher too. An error about a hold-out case names the case and nothing the case, its config or a model's reply holds.
+      const rekeyed = cases.map(c => ({ ...c, keyVersion: 3 }));
+      expect((await rescoreReport(report, rekeyed, matching(true))).rescored).toEqual(['shown-1', 'held-1']);
+      await expect(rescoreReport(report, [rekeyed[0]], matching(false))).rejects.toThrow(/^The matcher failed on case shown-1: The matcher's answer for N1 is not a JSON object$/);
+      await expect(rescoreReport(report, [rekeyed[1]], matching(false))).rejects.toThrow(/^The matcher failed on case held-1$/);
+      const quoting: Matcher = async (_item, findings) => {
+        throw new Error(`reply about ${findings[0].title}`);
+      };
+      await expect(rescoreReport(report, [rekeyed[0]], quoting)).rejects.toThrow(/^The matcher failed on case shown-1: reply about title SHOWN-TEXT$/);
+      await expect(rescoreReport(report, [rekeyed[1]], quoting)).rejects.toThrow(/^The matcher failed on case held-1$/);
+      await expect(runBench([cases[1]], { ...options, runs: 1, review: reviewing(false), matcher: matching(true), variants: [{ name: 'bad', overrides: { [SECRET]: true } }] })).rejects.toThrow(/^Variant bad does not load on case held-1$/);
+      expect(() => parseCase(`id: [${SECRET}`, 'held.yml', 'holdout')).toThrow(/^held\.yml: is not valid YAML$/);
+      expect(() => parseCase('id: [SHOWN-TEXT', 'shown.yml')).toThrow(/^shown\.yml: .*SHOWN-TEXT/s);
+      // The YAML parser warns with the line it warns about.
+      const warned = jest.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+      try {
+        parseCase(`${CASE_YAML}note: !custom ${SECRET}\n`, 'held.yml', 'holdout');
+        expect(warned).not.toHaveBeenCalled();
+        parseCase(`${CASE_YAML}note: !custom SHOWN-TEXT\n`, 'shown.yml');
+        expect(String(warned.mock.calls[0][0])).toContain('SHOWN-TEXT');
+      } finally {
+        warned.mockRestore();
+      }
+
+      expect(logged()).not.toContain(SECRET);
     } finally {
       out.mockRestore();
       err.mockRestore();
     }
-    expect(review).toHaveBeenCalledTimes(4);
-    expect(logged).toContain('info: finding SHOWN-TEXT\nwarning: finding SHOWN-TEXT\n');
-    expect(logged).not.toContain(SECRET);
-
-    const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, results);
-    // The report itself keeps the text, which the hold-out pass reads.
-    expect(JSON.stringify(report.variants[0].cases[1])).toContain(`description ${SECRET}`);
-    const printed = () => [
-      formatBenchSummary(report), formatUnmatched(report.variants), formatGate(gateReports([report, { ...report, startedAt: '2026-11-09T01:00:00.000Z' }], [report])),
-    ].join('\n');
-    for (const text of ['shown-1 (source SHOWN-TEXT)', 'run 2: FAILED: failed on SHOWN-TEXT', 'src/SHOWN-TEXT.rs:1: title SHOWN-TEXT', '    description SHOWN-TEXT']) expect(printed()).toContain(text);
-    expect(printed()).toContain('\nheld-1\n');
-    expect(printed()).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates');
-    expect(printed()).toContain('  run 2: FAILED: the reason is in the report\n');
-    expect(printed()).not.toContain(SECRET);
-
-    // Only an explicit request lists hold-out findings, and never in a workflow job, whose log and summary are public.
-    expect(formatUnmatched(report.variants, ['holdout'])).toContain(`src/${SECRET}.rs:1: title ${SECRET}`);
-    process.env.GITHUB_ACTIONS = 'true';
-    try {
-      expect(() => formatUnmatched(report.variants, ['holdout'])).toThrow('The findings of hold-out cases are not listed in a workflow job');
-      expect(() => formatUnmatched(report.variants, ['tuning', 'holdout'])).toThrow('The findings of hold-out cases are not listed in a workflow job');
-      expect(printed()).not.toContain(SECRET);
-    } finally {
-      delete process.env.GITHUB_ACTIONS;
-    }
-
-    // An error about a hold-out case names the case and nothing the case, its config or a model's reply holds.
-    const rekeyed = cases.map(c => ({ ...c, keyVersion: 3 }));
-    const quoting: Matcher = async (_item, findings) => {
-      throw new Error(`reply about ${findings[0].title}`);
-    };
-    await expect(rescoreReport(report, [rekeyed[0]], quoting)).rejects.toThrow(/^The matcher failed on case shown-1: reply about title SHOWN-TEXT$/);
-    await expect(rescoreReport(report, [rekeyed[1]], quoting)).rejects.toThrow(/^The matcher failed on case held-1$/);
-    await expect(runBench([cases[1]], { ...options, matcher: none, variants: [{ name: 'bad', overrides: { [SECRET]: true } }] })).rejects.toThrow(/^Variant bad does not load on case held-1$/);
-    expect(() => parseCase(`id: [${SECRET}`, 'held.yml', 'holdout')).toThrow(/^held\.yml: is not valid YAML$/);
-    expect(() => parseCase('id: [SHOWN-TEXT', 'shown.yml')).toThrow(/^shown\.yml: .*SHOWN-TEXT/s);
   });
 
   it('checks every checkout and every variant before the first review', async () => {
