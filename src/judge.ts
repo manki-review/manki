@@ -608,7 +608,7 @@ Set \`effort\` to how big the fix is: \`quick\` for a few lines in one place, \`
 
 ## Note Order
 
-A review lists only the first few findings whose cell gives \`suggestion\` or \`nitpick\`. In \`noteOrder\`, list the number N of each such "Finding N", starting with the one whose fix helps the author most.
+A review lists only the first few findings whose cell gives \`suggestion\` or \`nitpick\`. In \`noteOrder\`, list the number N of each such "Finding N", starting with the one whose fix helps the author most. A finding that prevents a likely future defect, closes a gap in the tests or stops a reader being misled comes before one that only tidies the code.
 
 ## Duplicate Detection
 

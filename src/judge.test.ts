@@ -460,7 +460,7 @@ describe('buildJudgeSystemPrompt', () => {
   it('asks for the order of the notes after the findings', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('## Note Order');
-    expect(prompt).toContain('In `noteOrder`, list the number N of each such "Finding N", starting with the one whose fix helps the author most.');
+    expect(prompt).toContain('In `noteOrder`, list the number N of each such "Finding N", starting with the one whose fix helps the author most. A finding that prevents a likely future defect, closes a gap in the tests or stops a reader being misled comes before one that only tidies the code.\n\n## Duplicate Detection');
     const schema = prompt.slice(prompt.indexOf('"findings": ['));
     expect(schema).toContain('  ],\n  "noteOrder": ["N of each finding graded suggestion or nitpick, the most useful first"]\n}');
     // The order comes after the findings and before the thread evaluations.
