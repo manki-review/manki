@@ -357,11 +357,11 @@ describe('createAuthenticatedOctokit', () => {
   const HEAD = 'a'.repeat(40);
 
   it.each([
-    ['takes over the queued check the token reply names', { id: 77, head_sha: HEAD }, 77],
-    ['creates a check when the reply names none, as the service before queued checks replies', undefined, 901],
-    ['creates a check when the reply names one without a numeric id', { id: '77', head_sha: HEAD }, 901],
-    ['creates a check when the reply names one without a head', { id: 77 }, 901],
-  ])('%s', async (_name, checkRun, expected) => {
+    ['takes over the queued check the token reply names', { id: 77, head_sha: HEAD }, { id: 77, headSha: HEAD }],
+    ['creates a check when the reply names none, as the service before queued checks replies', undefined, undefined],
+    ['creates a check when the reply names one without a numeric id', { id: '77', head_sha: HEAD }, undefined],
+    ['creates a check when the reply names one without a head', { id: 77 }, undefined],
+  ])('%s', async (_name, checkRun, queuedCheck) => {
     mockGetInput.mockReturnValue('');
     jest.spyOn(core, 'getIDToken').mockResolvedValue('oidc-token');
     mockFetch(async () => Response.json({ token: 'resolved-app-token', expires_at: '2026-12-31T00:00:00Z', ...(checkRun && { check_run: checkRun }) }));
@@ -369,12 +369,15 @@ describe('createAuthenticatedOctokit', () => {
     const create = jest.fn().mockResolvedValue({ data: { id: 901 } });
     mockGetOctokit.mockReturnValue({ rest: { checks: { update, create } } } as unknown as ReturnType<typeof github.getOctokit>);
 
+    // A reply that names no usable check offers none, whatever head the review then has.
+    expect(await resolveGitHubToken(TOKEN_URL, OWNER, REPO)).toEqual<TokenResult>({ token: 'resolved-app-token', ...(queuedCheck && { queuedCheck }) });
+
     const { octokit } = await createAuthenticatedOctokit();
     const check = await startReviewCheck(octokit, OWNER, REPO, HEAD);
 
-    expect(check?.id).toBe(expected);
-    expect(update.mock.calls.map(([params]) => params.check_run_id)).toEqual(expected === 77 ? [77] : []);
-    expect(create).toHaveBeenCalledTimes(expected === 77 ? 0 : 1);
+    expect(check?.id).toBe(queuedCheck ? 77 : 901);
+    expect(update.mock.calls.map(([params]) => params.check_run_id)).toEqual(queuedCheck ? [77] : []);
+    expect(create).toHaveBeenCalledTimes(queuedCheck ? 0 : 1);
   });
 
   it('uses custom manki_token_url when provided', async () => {
