@@ -5,7 +5,7 @@ import { ApprovalHeld, buildDashboard, capNotes, formatFoundAgainReply, formatUn
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { highlightCode } from './highlight';
-import { paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
+import { makeFindingFingerprintEntry, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { withMarkers } from './utils';
 import { extractReviewRecords } from './review-record';
 import type { PreviousFinding } from './recap';
@@ -3459,6 +3459,9 @@ describe('fetchConfigFile', () => {
 
     await expect(readConfigFile(notFound, 'owner', 'repo', 'main', '.manki.yml')).resolves.toBeNull();
     await expect(readConfigFile(serverError, 'owner', 'repo', 'main', '.manki.yml')).rejects.toThrow('Server Error');
+    // A file over 1 MB is there, and comes back without its content.
+    const tooLarge = { rest: { repos: { getContent: jest.fn().mockResolvedValue({ data: { type: 'file', content: '', encoding: 'none' } }) } } } as unknown as Parameters<typeof readConfigFile>[0];
+    await expect(readConfigFile(tooLarge, 'owner', 'repo', 'main', 'src/big.ts')).rejects.toThrow('src/big.ts is too large to read');
     await expect(fetchConfigFile(serverError, 'owner', 'repo', 'main', '.manki.yml')).resolves.toBeNull();
   });
 
@@ -4684,6 +4687,34 @@ describe('postReview non-blocking findings', () => {
     // A pre-existing finding stays under "Pre-existing", where its intro says it does not block.
     expect(third.body).toContain('### Pre-existing · 1 warning\n\nIt sits on code this PR did not change');
     expect(third.body).not.toMatch(/Restates an open thread|Another field the check misses|Missed by an earlier review/);
+    // Warnings an earlier round listed that this round did not raise again get one short list, and an approval counts them.
+    // The list shows the line the warning is on now, and only the file for one whose place is not a single one.
+    const carriedEntry = (title: string, lineStart: number, raisedIn: number, currentLine?: number) => ({ ...makeFindingFingerprintEntry({ title, lineStart }), raisedIn, currentLine });
+    const carriedBody = async (carried: ReviewResult['carried']): Promise<string> => {
+      const carrying = makeOctokit();
+      const result: ReviewResult = { ...buildResult([nonBlocking('warning', 'New off the diff', 40, { origin: 'new', tags: ['follow-up'] })]), outcome: 'READY', carried };
+      await postReview(carrying.octokit, 'owner', 'repo', 1, 'sha', result, diff, makeContext({ meta: { ...makeContext().meta, round: 3 } }));
+      return carrying.createReview.mock.calls[0][0].body;
+    };
+    const several = await carriedBody([carriedEntry('Retry never ends', 10, 1, 12), carriedEntry('Queue has no `limit`', 7, 2)]);
+    expect(several).toMatch(/^\u2705 \*\*Approved\.\*\* 3 warnings, none of which block\./u);
+    expect(several).toContain('### Earlier warnings, code unchanged · 2 warnings\n\nAn earlier round listed these, and this round did not raise them again. The line each points at still reads the same, so they stay listed. None of them blocks.\n\n- `src/a.ts:12`: Retry never ends (round 1)\n- `src/a.ts`: Queue has no `limit` (round 2)\n\n');
+    expect(several.indexOf('### Found this round')).toBeLessThan(several.indexOf('### Earlier warnings, code unchanged'));
+    expect(await carriedBody([carriedEntry('Retry never ends', 10, 1, 10)])).toContain('### Earlier warnings, code unchanged · 1 warning\n\nAn earlier round listed it, and this round did not raise it again. The line it points at still reads the same, so it stays listed. It doesn\'t block.\n\n- `src/a.ts:10`: Retry never ends (round 1)');
+    expect(await carriedBody(undefined)).not.toContain('Earlier warnings');
+    // The record keeps a hash of the line a warning listed only in the body points at, with the lines around it, and how
+    // many places of its file read the same. A line the file does not have gives none.
+    const recording = makeOctokit({ 'src/a.ts': 'load();\n  retry();\nend();\n\nload();\nretry();\nend();\n' });
+    const listed = [
+      nonBlocking('warning', 'On old code', 2, { origin: 'reviewed', tags: ['follow-up'] }), nonBlocking('warning', 'Past the end', 9, { origin: 'reviewed', tags: ['follow-up'] }),
+      nonBlocking('warning', 'On new code', 11, { origin: 'new', tags: ['follow-up'] }), nonBlocking('nitpick', 'Note', 1, { origin: 'new' }),
+    ];
+    const entries = listed.map(f => makeFindingFingerprintEntry({ title: f.title, severity: f.severity, lineStart: f.line }));
+    await postReview(recording.octokit, 'owner', 'repo', 1, 'sha', buildResult(listed), diff, makeContext({ findings: { count: listed.length, severityCounts: {}, entries } }), 1000);
+    const record = JSON.parse(extractReviewRecords(recording.createReview.mock.calls[0][0].body).records[0]);
+    expect(record.findings.entries.map((e: FindingFingerprintEntry) => [e.posted, e.citedLine])).toEqual([
+      ['body', { hash: expect.stringMatching(/^[0-9a-f]{12}$/), count: 2 }], ['body', undefined], ['thread', undefined], ['body', undefined],
+    ]);
     // A security finding on unchanged code still blocks, and its header says where it sits.
     expect(formatFindingComment(nonBlocking('blocker', 'Old SQL injection', 90, { tags: ['security', 'pre-existing'] }), TEST_LINKS).split('\n')[0]).toBe('\u{1F6AB} **Blocker** · Pre-existing');
   });

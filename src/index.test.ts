@@ -179,6 +179,7 @@ jest.mock('./recap', () => ({
   securityOverridesIn: jest.requireActual('./recap').securityOverridesIn,
   FOUND_AGAIN_MARKER: jest.requireActual('./recap').FOUND_AGAIN_MARKER,
   replyClassOf: jest.requireActual('./recap').replyClassOf,
+  titleOverlapType: jest.requireActual('./recap').titleOverlapType,
 }));
 
 jest.mock('./review', () => ({
@@ -194,6 +195,7 @@ jest.mock('./review', () => ({
   RETRY_HINT: jest.requireActual('./review').RETRY_HINT,
   stringifyFindingFingerprint: jest.requireActual('./review').stringifyFindingFingerprint,
   filesChangedByPush: jest.requireActual('./review').filesChangedByPush,
+  carryBodyWarnings: jest.requireActual('./review').carryBodyWarnings,
   selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', sentEffort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
@@ -201,10 +203,12 @@ jest.mock('./github', () => ({
   fetchPRDiff: jest.fn().mockResolvedValue(''),
   fetchConfigFile: jest.fn().mockResolvedValue(null),
   readConfigFile: jest.fn().mockResolvedValue(null),
+  githubRepoFiles: jest.fn(() => ({ read: jest.fn().mockResolvedValue(null), list: jest.fn().mockResolvedValue([]) })),
   loadBaseConfig: jest.requireActual('./github').loadBaseConfig,
   brokenConfig: jest.requireActual('./github').brokenConfig,
   configFailed: jest.requireActual('./github').configFailed,
   capNotes: jest.requireActual('./github').capNotes,
+  cachedFileLines: jest.requireActual('./github').cachedFileLines,
   fetchRepoContext: jest.fn().mockResolvedValue({ text: '', files: [] }),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),
@@ -310,7 +314,8 @@ import { RunCancelledError, stopWritesOn } from './abort';
 import * as fixRateModule from './fix-rate';
 import * as staticSignalsModule from './static-signals';
 import * as relatedWorkModule from './related-work';
-import { LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_BOT } from './test-utils';
+import { citedLine } from './finding-fingerprint';
+import { LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_BOT } from './test-utils';
 
 /**
  * Seed `RecapState.priorRounds` (the consumer surface for round cap,
@@ -2348,6 +2353,39 @@ describe('runFullReview orchestration', () => {
       expect(unmoved.unposted).toEqual([['Listed before', 'nitpick', 'earlier', 'listed_earlier']]);
       // The record says when the origins were tagged without the PR's change at the last reviewed commit.
       expect([later, again, unknown, unmoved].map(round => round.originsWithoutPrior)).toEqual([undefined, true, true, undefined]);
+    });
+
+    it('lists the warnings of the last review body again, read against the files at the head, and records the ones that end', async () => {
+      const then = ['start();', 'retry();', 'wait();', 'log();', 'queue.push(x);'];
+      const warning = (title: string, lineStart: number) => ({ ...makeFindingFingerprintEntry({ title, file: 'src/app.ts', lineStart }), posted: 'body' as const, citedLine: citedLine(then, lineStart) });
+      // Round 1 listed the retry warning, and round 2 carried it and listed another.
+      const retry = warning('Retry never ends', 2);
+      const rounds = [{ entries: [retry] }, { entries: [warning('Queue has no limit', 5)], carried: [{ ...retry, raisedIn: 1 }] }]
+        .map((findings, i) => makeRoundContext(i + 1, { findings: { count: 1, severityCounts: {}, ...findings } }));
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
+      const read = jest.fn().mockResolvedValue('start();\nretry();\nwait();\nlog();\nqueue.push(y);\n');
+      jest.mocked(ghUtils.githubRepoFiles).mockReturnValue({ read, list: jest.fn() });
+
+      await runWith();
+
+      expect(jest.mocked(ghUtils.githubRepoFiles)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 'abc123');
+      expect(read.mock.calls).toEqual([['src/app.ts']]);
+      const [, , , , , result, , record] = jest.mocked(ghUtils.postReview).mock.calls[0];
+      expect(result.carried?.map(e => [e.title, e.raisedIn])).toEqual([['Retry never ends', 1]]);
+      expect(record?.findings.carried).toEqual(result.carried);
+      expect(record?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:5:5:Queue-has-no-limit', reason: 'line_changed' }]);
+      expect([result.findings, record?.findings.count]).toEqual([[], 0]);
+      expect(result.carried?.map(e => e.currentLine)).toEqual([2]);
+
+      // A note that names a carried warning ends it as a hidden note when `review.notes` leaves the note out.
+      const note = (title: string, line: number): Finding => ({ severity: 'suggestion', title, file: 'src/app.ts', line, description: 'd', reviewers: ['general'] });
+      const notes = [note('One', 1), note('Two', 3), note('Three', 4), note('Retry never ends', 2)];
+      jest.mocked(reviewModule.runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 's', findings: notes, highlights: [], reviewComplete: true, agentNames: ['general'], allJudgedFindings: notes });
+      await runWith({ fullReview: true });
+      const capped = jest.mocked(ghUtils.postReview).mock.calls[1][7];
+      expect(capped?.findings.unposted?.map(e => [e.title, e.unpostedReason])).toEqual([['Retry never ends', 'note_cap']]);
+      expect(capped?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:5:5:Queue-has-no-limit', reason: 'line_changed' }, { key: 'src/app.ts:2:2:Retry-never-ends', reason: 'hidden_note' }]);
+      expect(capped?.findings.carried).toBeUndefined();
     });
   });
 

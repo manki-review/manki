@@ -24,7 +24,7 @@ import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
 import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, replyClassOf, securityOverridesIn } from './recap';
 import { disproof } from './refute';
-import { filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
+import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals, fetchLockfiles } from './static-signals';
@@ -42,6 +42,7 @@ import {
   configFailed,
   loadBaseConfig,
   readConfigFile,
+  githubRepoFiles,
   fetchRepoContext,
   formatUnreviewedNotice,
   fetchFileContents,
@@ -1936,6 +1937,7 @@ async function runFullReview(
     const replies = await replyInOpenThreads(run, result);
     // After the replies, so a note whose reply failed competes for a place like any other note.
     capNotes(result, recap.previousFindings, config.review?.notes);
+    await carryBodyWarnings(result, recap.priorRounds, githubRepoFiles(octokit, owner, repo, commitSha));
     const context = buildContext();
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     let posted: Awaited<ReturnType<typeof postRound>>;

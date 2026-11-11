@@ -752,6 +752,14 @@ export interface ReviewResult {
   unpostedPreExisting?: Finding[];
   /** The notes the review leaves out, each with `unpostedReason`. Only the round record keeps them. */
   unpostedNotes?: Finding[];
+  /**
+   * The warnings an earlier round listed only in its review body, which this round lists again in one short list. No
+   * finding of this round names them, and the line each points at still reads as it did. They are no findings of the
+   * round, so they never change its verdict.
+   */
+  carried?: FindingFingerprintEntry[];
+  /** The warnings an earlier round carried or listed in its body that this round no longer lists, each with the reason. */
+  carriedEnded?: CarriedEnd[];
   /** Set when a later round tagged `origin` without the PR's change at the last reviewed round, so no finding reads `reviewed`. */
   originsWithoutPrior?: true;
   /** How the diff was split, when it was read in several slices. */
@@ -2040,6 +2048,10 @@ export interface RoundFindings {
    * reads posted findings sees them.
    */
   unposted?: FindingFingerprintEntry[];
+  /** Mirrors `ReviewResult.carried`. Each entry keeps the `citedLine` of the round that listed it, and `raisedIn`. */
+  carried?: FindingFingerprintEntry[];
+  /** Mirrors `ReviewResult.carriedEnded`. */
+  carriedEnded?: CarriedEnd[];
   /** Mirrors `ReviewResult.originsWithoutPrior`. */
   originsWithoutPrior?: true;
 }
@@ -2075,6 +2087,8 @@ export interface FindingFingerprintEntry {
   origin?: FindingOrigin;
   /** Mirrors `Finding.raisedIn`. */
   raisedIn?: number;
+  /** Mirrors `Finding.sameAs`. */
+  sameAs?: string;
   /** Mirrors `Finding.category`. */
   category?: FindingCategory;
   /** Mirrors `Finding.effort`. */
@@ -2108,6 +2122,37 @@ export interface FindingFingerprintEntry {
    * review posts, so `thread` stays when GitHub refuses the comment and the finding falls back to the body.
    */
   posted?: PostedPlace;
+  /**
+   * Set on a warning the round listed only in its review body, so a later round can tell whether the place still reads
+   * the same. A warning without a line, or on a line the round could not read, has none.
+   */
+  citedLine?: CitedLine;
+  /**
+   * Set on a carried warning: the line its `citedLine` is on at the head of the round that carried it, when exactly one
+   * place of the file reads like it. `fingerprint` keeps the line of the round that listed the warning.
+   */
+  currentLine?: number;
+}
+
+/** The place a finding points at, as its file read at the head of the round that listed it. */
+export interface CitedLine {
+  /** A hash of the line with the line before and the line after it, each without the whitespace around it. */
+  hash: string;
+  /** How many places of the file read the same. */
+  count: number;
+}
+
+/**
+ * Why a warning carried from an earlier review body is no longer listed: its line reads differently or its file is gone
+ * (`line_changed`), or a finding the judge graded this round names it. That finding is listed (`restated`), a note the
+ * review leaves out (`hidden_note`), dropped by the judge (`judge_dropped`) or left out by a later step (`left_out`).
+ */
+export type CarriedEndReason = 'line_changed' | 'restated' | 'hidden_note' | 'judge_dropped' | 'left_out';
+
+export interface CarriedEnd {
+  /** The fingerprint key of the warning. */
+  key: string;
+  reason: CarriedEndReason;
 }
 
 /**

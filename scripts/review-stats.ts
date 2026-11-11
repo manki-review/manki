@@ -92,6 +92,7 @@ const DECISIONS = [
   'Pre-existing claims (how each was checked)',
   'Memory suppressions (findings hidden per suppression)',
   'Findings recorded without posting (per reason and severity)',
+  'Warnings carried from an earlier review body (listed again per rounds since first listed, ended per reason)',
   'Verdict reader per slice',
   'Approvals',
   'State check approvals',
@@ -375,6 +376,13 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
   }
   for (const entry of round.findings?.unposted ?? []) {
     tally(stats, 'Findings recorded without posting (per reason and severity)', `${entry.unpostedReason ?? entry.preExisting?.check ?? 'no reason recorded'}, ${entry.severity}`);
+  }
+  for (const entry of round.findings?.carried ?? []) {
+    const rounds = round.meta.round - (entry.raisedIn ?? round.meta.round);
+    tally(stats, 'Warnings carried from an earlier review body (listed again per rounds since first listed, ended per reason)', `listed again, ${rounds} ${rounds === 1 ? 'round' : 'rounds'} on`);
+  }
+  for (const end of round.findings?.carriedEnded ?? []) {
+    tally(stats, 'Warnings carried from an earlier review body (listed again per rounds since first listed, ended per reason)', `ended, ${end.reason}`);
   }
   // A drop's last grade step names its reason and the severity before it. A record too large to keep `judge.dropped` has only the counts.
   const dropSteps = (round.judge?.dropped ?? []).flatMap(drop => drop.gradePath?.at(-1) ?? []).filter(step => step.to === 'ignore');

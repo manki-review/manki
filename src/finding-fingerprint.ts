@@ -1,4 +1,24 @@
-import { FindingFingerprint, FindingFingerprintEntry, ThreadEvaluation } from './types';
+import { createHash } from 'crypto';
+
+import { CitedLine, FindingFingerprint, FindingFingerprintEntry, ThreadEvaluation } from './types';
+
+/** Returns, per line of a file, a hash of the line with the line before and the line after it, each without the whitespace around it. */
+function placeHashes(lines: string[]): string[] {
+  const trimmed = lines.map(line => line.trim());
+  return trimmed.map((_, i) => createHash('sha256').update(trimmed.slice(Math.max(0, i - 1), i + 2).join('\n')).digest('hex').slice(0, 12));
+}
+
+/** Returns the lines, counted from 1, of a file with `lines` that read like the place `hash` was taken from. */
+export function placesReading(lines: string[], hash: string): number[] {
+  return placeHashes(lines).flatMap((h, i) => h === hash ? [i + 1] : []);
+}
+
+/** Returns the `CitedLine` of `line`, counted from 1, in a file with `lines`, or undefined when the file has no such line. */
+export function citedLine(lines: string[] | undefined, line: number): CitedLine | undefined {
+  const hashes = placeHashes(lines ?? []);
+  const hash = hashes[line - 1];
+  return hash === undefined ? undefined : { hash, count: hashes.filter(h => h === hash).length };
+}
 
 /**
  * Index `threadEvaluations` by `threadId` for O(1) lookup.

@@ -6,11 +6,11 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { DEFAULT_NOTES, loadConfig } from './config';
-import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { findPriorThreadId } from './finding-fingerprint';
+import { citedLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { isDisprovedRaise, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
@@ -365,6 +365,8 @@ export async function readConfigFile(
     if ('content' in data && data.encoding === 'base64') {
       return Buffer.from(data.content, 'base64').toString('utf-8');
     }
+    // A file over 1 MB comes back without its content.
+    if (!Array.isArray(data) && data.type === 'file') throw new Error(`${configPath} is too large to read`);
     return null;
   } catch (error) {
     if ((error as { status?: number }).status === 404) return null;
@@ -424,7 +426,7 @@ export interface RepoFiles {
   list(): Promise<string[]>;
 }
 
-function githubRepoFiles(octokit: Octokit, owner: string, repo: string, ref: string): RepoFiles {
+export function githubRepoFiles(octokit: Octokit, owner: string, repo: string, ref: string): RepoFiles {
   return {
     read: (path) => readConfigFile(octokit, owner, repo, ref, path),
     list: async () => {
@@ -1362,6 +1364,14 @@ function formatFindingSection(heading: string, folds: string[], intro?: string, 
   return [`${level} ${heading}`, ...(intro ? [level === '####' ? `<sub>${intro}</sub>` : intro] : []), ...folds].join('\n\n');
 }
 
+/** Returns the warnings carried from earlier rounds as one short list, a line each with the round that listed it first. A warning without `currentLine` shows only its file. */
+function formatCarriedWarnings(carried: FindingFingerprintEntry[]): string | null {
+  const lines = carried.map(e => `${formatTraceEntry({ file: e.fingerprint.file, line: e.currentLine ?? 0, title: e.title ?? '' })} (round ${e.raisedIn})`);
+  return formatFindingSection(`Earlier warnings, code unchanged · ${formatSeverityCounts(carried)}`, lines.length > 0 ? [lines.join('\n')] : [], carried.length === 1
+    ? 'An earlier round listed it, and this round did not raise it again. The line it points at still reads the same, so it stays listed. It doesn\'t block.'
+    : 'An earlier round listed these, and this round did not raise them again. The line each points at still reads the same, so they stay listed. None of them blocks.', '###');
+}
+
 /**
  * Returns the findings listed in the review body in one section per origin, each headed by its counts per severity:
  * found this round (just "Findings" on a first round), still open from an earlier round's body, one section per round,
@@ -1579,6 +1589,7 @@ export async function postReview(
   const nonBlocking: Finding[] = [];
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
   const followUps = agreedFollowUps(existingThreads);
+  const carried = result.carried ?? [];
   const listedFiles = [...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file);
   const changed = diff?.files.map(f => f.path) ?? [];
   const cited = [...new Set(result.findings.flatMap(f => citedFiles(f, changed)))].slice(0, MAX_CITED_FILES);
@@ -1679,7 +1690,7 @@ export async function postReview(
    */
   const renderBody = (withoutLineThreads = false): string => {
     const threads = threadFindings.filter(f => !(withoutLineThreads && lineThreads.has(f)));
-    const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: [...bodyFindings, ...notes], hold }, limitWarning, unreadRecords);
+    const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: [...bodyFindings, ...notes], carried, hold }, limitWarning, unreadRecords);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
@@ -1697,6 +1708,7 @@ export async function postReview(
       generalFindings.length > 0 && `**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`,
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
+      formatCarriedWarnings(carried),
       formatNotesSection(notes, result.unpostedNotes ?? [], links),
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
@@ -1715,12 +1727,17 @@ export async function postReview(
   const postedComments = [...validComments, ...fileComments].map(highlight);
   const inBody = new Set([...bodyFindings, ...notes, ...unthreaded]);
   const placeOf = (f: Finding): PostedPlace => threadFindings.includes(f) ? 'thread' : inBody.has(f) ? 'body' : 'earlier_thread';
+  const recordPlace = (entry: FindingFingerprintEntry, f: Finding): FindingFingerprintEntry => {
+    const posted = placeOf(f);
+    const cited = posted === 'body' && f.severity === 'warning' ? citedLine(files.get(f.file), f.line) : undefined;
+    return { ...entry, posted, ...(cited && { citedLine: cited }) };
+  };
   const record = (context
     ? formatRecordTrailer({
       ...context,
       // The record's entries are built from `result.findings` in the same order. A record built from other findings keeps its entries as they are.
       ...(context.findings.entries.length === result.findings.length && {
-        findings: { ...context.findings, entries: context.findings.entries.map((entry, i) => ({ ...entry, posted: placeOf(result.findings[i]) })) },
+        findings: { ...context.findings, entries: context.findings.entries.map((entry, i) => recordPlace(entry, result.findings[i])) },
       }),
       output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
       ...(event === 'APPROVE' && { approval: { held: approvalHeld } }),
@@ -1954,9 +1971,9 @@ const APPROVED_LINE = '✅ **Approved.**';
 
 /** The first line of the review body for each outcome. Its emoji is the only one in the review. */
 const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: BlockerCounts, posted: PostedFindings) => string> = {
-  READY: (_result, _blockers, { threads, listed, hold }) => {
+  READY: (_result, _blockers, { threads, listed, carried, hold }) => {
     if (hold?.reason === 'unread') return `✅ **Approved, but a person must approve:** no model read ${hold.skipped.excluded.length + hold.skipped.binary.length} of the changed files.`;
-    const all = [...threads, ...listed].filter(f => !isBlockingFinding(f));
+    const all = [...[...threads, ...listed].filter(f => !isBlockingFinding(f)), ...carried];
     if (all.length === 0) return APPROVED_LINE;
     return `${APPROVED_LINE} ${formatSeverityCounts(all)}, ${all.length === 1 ? 'which doesn\'t block' : 'none of which block'}.`;
   },
@@ -1978,11 +1995,13 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockers: Block
 interface PostedFindings {
   threads: Finding[];
   listed: Finding[];
+  /** The warnings carried from earlier rounds, which an approval counts with the findings it lists. */
+  carried: FindingFingerprintEntry[];
   hold?: ApprovalHold;
 }
 
 /** Returns how many findings of each severity there are, most severe first, as "1 warning and 2 suggestions". */
-function formatSeverityCounts(findings: Finding[]): string {
+function formatSeverityCounts(findings: Array<Pick<FindingFingerprintEntry, 'severity'>>): string {
   const parts = SEVERITY_ORDER.flatMap(s => {
     const n = findings.filter(f => f.severity === s).length;
     return n > 0 ? [countOf(n, s)] : [];
@@ -2882,7 +2901,28 @@ export const MAX_CONTENT_API_BYTES = 1024 * 1024;
 async function fetchFileLines(octokit: Octokit, owner: string, repo: string, ref: string, files: string[]): Promise<Map<string, string[]>> {
   if (files.length === 0) return new Map();
   const contents = await fetchFileContents(octokit, owner, repo, ref, files, MAX_CONTENT_API_BYTES, Infinity);
-  return new Map([...contents].map(([path, text]) => [path, text.replace(/\r?\n$/, '').split(/\r?\n/)]));
+  return new Map([...contents].map(([path, text]) => [path, fileLines(text)]));
+}
+
+/** Returns the lines of a file with `content`, without the empty one a final line break leaves. */
+function fileLines(content: string): string[] {
+  return content.replace(/\r?\n$/, '').split(/\r?\n/);
+}
+
+/**
+ * Returns a reader for the lines of the files in `files` that reads each file once. A file that is gone has no lines.
+ * A file that cannot be read gives undefined, after a warning that ends with `consequence`.
+ */
+export function cachedFileLines(files: Pick<RepoFiles, 'read'>, consequence: string): (path: string) => Promise<string[] | undefined> {
+  const read = new Map<string, Promise<string[] | undefined>>();
+  return path => {
+    const lines = read.get(path) ?? files.read(path).then(content => content === null ? [] : fileLines(content), error => {
+      core.warning(`Failed to read ${path}, ${consequence}: ${error}`);
+      return undefined;
+    });
+    read.set(path, lines);
+    return lines;
+  };
 }
 
 export interface LinkedIssue {
