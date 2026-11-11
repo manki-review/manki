@@ -2268,7 +2268,7 @@ function relistThreadlessBlockers(findings: Finding[], priorRounds: FindingFinge
       file: p.fingerprint.file,
       line: p.fingerprint.lineStart,
       description: p.description ?? 'An earlier review listed this blocker without a thread and did not record its description. That review\'s body has it.',
-      reviewers: p.reviewers ?? [],
+      reviewers: p.reviewers ?? (p.specialist ? [p.specialist] : []),
       ...(p.tags?.includes(SECURITY_TAG) && { tags: [SECURITY_TAG] }),
       ...(p.category && { category: p.category }),
       ...(p.effort && { effort: p.effort }),

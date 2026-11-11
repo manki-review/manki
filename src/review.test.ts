@@ -3402,6 +3402,8 @@ describe('runReview', () => {
     const carried = await run(makeClients(), [listed({ threadId: 'T1' })], { previousFindings: [{ title: 'Old issue', file: 'src/outside.ts', line: 10, severity: 'blocker', status: 'resolved', threadId: 'T1' }] });
     expect([carried.findings, carried.outcome]).toEqual([[], 'READY']);
     expect((await run(makeClients(), [listed({ authorReplyClass: 'agree' })])).findings).toEqual([]);
+    // A record from before `reviewers` names only the retired security reviewer, and the blocker stays a security finding.
+    expect((await run(makeClients(), [listed({ reviewers: undefined, specialist: 'Security & Safety' })])).findings).toEqual([expect.objectContaining({ reviewers: ['Security & Safety'], ownThread: true })]);
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ severity: 'blocker', title: 'Writers race', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: key }], summary: 'Still there.' });
     expect((await run(makeClients(), [listed()])).findings.map(f => f.title)).toEqual(['Writers race']);
     // A finding that names it at a lower grade lifts nothing. The blocker is listed again and stands for it, so the defect shows once.
