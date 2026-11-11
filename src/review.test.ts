@@ -2271,6 +2271,51 @@ describe('runReview', () => {
     expect(result.unposted).toBeUndefined();
   });
 
+  it('answers once a round whether a finding sits on unchanged code, so a lockfile `exclude_paths` left out counts as changed in every step', async () => {
+    const lines = (word: string) => Array.from({ length: 30 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
+    const lock = (version: string) => lines('entry').replace('entry 5\n', `version = "${version}"\n`);
+    const { root, diff: full } = gitWorkspace({ 'src/app.ts': lines('old'), 'src/old.ts': lines('kept'), 'Cargo.lock': lock('0.4.2') }, { 'src/app.ts': lines('new'), 'Cargo.lock': lock('0.4.3') });
+    // `exclude_paths` takes the lockfile out of the diff, and the parsed lockfile carries its hunks.
+    const lockFile = full.files.find(f => f.path === 'Cargo.lock')!;
+    const diff = { ...full, files: full.files.filter(f => f !== lockFile) };
+    const lockfiles: LockfileDiff[] = [{ path: 'Cargo.lock', file: lockFile, changes: [{ kind: 'updated', name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', fields: [], flags: [], line: 5 }] }];
+    // Both sit in a file the PR did not touch and are marked pre-existing. Only the first cites a line the PR changed.
+    const titles = ['Loader breaks on the new hex', 'Loader ignores the lock entry'];
+    const found = [5, 20].map((cited, i) => ({
+      severity: 'warning', title: titles[i], file: 'src/old.ts', line: 15 + i, description: 'd', evidence: [`src/old.ts:${15 + i} reads it`], proof: [`src/old.ts:${15 + i}`, `Cargo.lock:${cited}`],
+      preExisting: true, preExistingReason: 'The loader predates this PR.',
+    }));
+    const refuterMessages: string[] = [];
+    const clients = makeClients();
+    // One finder reports them, so the judge merges no copies and each finding keeps its mark up to `markPreExisting`.
+    jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found) });
+    Object.assign(clients.judge, { repoTools: true });
+    jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
+      if (system.startsWith('You are a code review judge')) {
+        return { content: JSON.stringify({ summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'degraded', preExisting: true, reasoning: 'r' })) }) };
+      }
+      if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
+      refuterMessages.push(user.split('\n')[0]);
+      return { content: JSON.stringify({ outcome: 'confirmed', reason: 'It is ignored.', proof: ['src/old.ts:16'] }) };
+    });
+    mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+    let result: ReviewResult;
+    try {
+      result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, lockfiles, excludedPaths: ['Cargo.lock'] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(result.reviewComplete).toBe(true);
+    // The refuter checks only the warning on unchanged code. The other is on changed code for it too, and its cited lines prove it.
+    expect(refuterMessages).toEqual(['## Warning on code the PR did not change: Loader ignores the lock entry']);
+    expect(result.findings.map(f => [f.title, f.severity, f.preExistingCheck, f.tags?.includes('pre-existing') ?? false, f.checkStatus])).toEqual([
+      ['Loader breaks on the new hex', 'warning', 'touches_diff', false, 'proven'],
+      ['Loader ignores the lock entry', 'warning', 'pre_existing', true, 'confirmed'],
+    ]);
+    expect(result.unpostedPreExisting).toBeUndefined();
+  });
+
   it('sweeps the diff for other instances of each kept blocker\'s class with `review.sweep`, and judges what it finds', async () => {
     const original = { severity: 'blocker', title: 'Cache key misses the locale', file: 'src/cache.ts', line: 10, description: 'd', evidence: ['src/cache.ts:10 builds the key'], proof: ['src/cache.ts:10'] };
     const elsewhere = { ...original, title: 'Search key misses the tenant', file: 'src/search.ts', line: 40, evidence: ['src/search.ts:40 builds the key'], proof: ['src/search.ts:40'] };

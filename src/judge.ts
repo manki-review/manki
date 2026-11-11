@@ -20,13 +20,13 @@ import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, preExistingCheck, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
+import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
+import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -247,8 +247,8 @@ export function isEmptyInterRoundDiff(interRoundDiff: string | undefined): boole
 export interface JudgeInput {
   findings: Finding[];
   diff: ParsedDiff;
-  /** Files the PR changes that `exclude_paths` left out of `diff`. A finding there is never pre-existing. */
-  excludedPaths?: string[];
+  /** Says whether a finding sits on code the PR did not change, which only `pre_existing` means. The round has one such check for all its steps. Without it, no finding does. */
+  preExistingCheck?: (finding: Finding) => PreExistingCheck | undefined;
   /** The lockfiles Manki read into package lists. The judge reads those lists instead of their hunks. */
   lockfiles?: LockfileDiff[];
   rawDiff: string;
@@ -1458,9 +1458,8 @@ export async function runJudgeAgent(
 
   const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations: threadEvaluations ?? input.evaluatedThreads?.evaluations };
 
-  const excludedPaths = new Set(input.excludedPaths);
   // A copy the judge merges or drops must pass every pre-existing check itself, since only the kept finding is checked later.
-  const staysPreExisting = (copy: Finding): boolean => preExistingCheck(copy, diff, excludedPaths) === 'pre_existing';
+  const staysPreExisting = (copy: Finding): boolean => input.preExistingCheck?.(copy) === 'pre_existing';
   // A claim hidden from the judge goes back on the finding, so the round record shows the claim and why it failed.
   const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
   const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting), staysPreExisting)

@@ -130,22 +130,22 @@ function priorRefutation(finding: Finding, field: RefutationField, workspace: st
   return undefined;
 }
 
-function findingKind(finding: Finding): string {
+function findingKind(finding: Finding, unchanged: boolean): string {
   if (finding.lead) return 'Open lead';
   if (finding.gradeIfConfirmed) return 'Finding the judge could not settle without tools';
   if (finding.tags?.includes(UNBUILT_TAG)) return 'Claimed build failure';
   if (finding.severity === 'warning' && !finding.tags?.includes(UNPROVEN_TAG)) {
-    return finding.preExisting && finding.evidence?.proof.length ? 'Warning on code the PR did not change' : 'Warning no cited line proves';
+    return unchanged && finding.evidence?.proof.length ? 'Warning on code the PR did not change' : 'Warning no cited line proves';
   }
   return 'Blocker';
 }
 
-function buildRefuteMessage(finding: Finding, usesOutsideDiff = '', outsideInput = '', diff?: ParsedDiff): string {
+function buildRefuteMessage(finding: Finding, unchanged: boolean, usesOutsideDiff = '', outsideInput = '', diff?: ParsedDiff): string {
   // A doubt the judge named can be whether the PR causes the defect, which only the PR's change settles.
   const cited = finding.gradeIfConfirmed ? refutationFiles(finding.file, finding.evidence?.proof) : [];
   const changed = diff?.files.filter(f => cited.includes(f.path)).map(shortenLongLines) ?? [];
   const lines = [
-    `## ${findingKind(finding)}: ${sanitizeForPromptEmbed(finding.title)}`,
+    `## ${findingKind(finding, unchanged)}: ${sanitizeForPromptEmbed(finding.title)}`,
     '',
     `- **Location**: ${sanitizeForPromptEmbed(finding.file)}:${finding.line}`,
     `- **Description**: ${sanitizeForPromptEmbed(finding.description)}`,
@@ -476,7 +476,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     }
     try {
       const refutation = await sendWithParseRetry(
-        buildRefuteMessage(finding, usesOutsideDiff, outsideInput, diff),
+        buildRefuteMessage(finding, !!preExisting?.(finding), usesOutsideDiff, outsideInput, diff),
         message => refuter.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
           ...(effort && { effort }), repoTools: { root: workspace, steps: REFUTE_STEPS }, timeoutMs: REFUTE_TIMEOUT_MS,
         }),

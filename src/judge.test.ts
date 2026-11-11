@@ -1907,6 +1907,7 @@ describe('runJudgeAgent', () => {
       refuterMessages.length = 0;
       const unchanged = await runJudgeAgent(mockClient, makeConfig(), {
         findings: [old('Old lock order', 'The lock order predates this PR.'), old('Lock order')], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace },
+        preExistingCheck: f => preExistingCheck(f, makeDiff(), new Set()),
       });
       expect(refuterMessages.map(m => m.split('\n')[0])).toEqual(['## Warning on code the PR did not change: Old lock order']);
       expect(unchanged.findings.map(f => [f.title, f.severity, f.refutation?.outcome])).toEqual([['Old lock order', 'warning', 'confirmed'], ['Lock order', 'warning', undefined]]);
@@ -1998,6 +1999,7 @@ describe('runJudgeAgent', () => {
     // The diff shows lines 1-20 of src/index.ts and adds only line 15.
     const hunk = makeHunk({ oldLines: 19, content: Array.from({ length: 20 }, (_, i) => `${i === 14 ? '+' : ' '}line ${i + 1}`).join('\n') });
     const off = (line: number) => ({ line, evidence: { checks: [], proof: [] } });
+    const diff = makeDiff([makeDiffFile({ hunks: [hunk] }), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] })]);
     const input: JudgeInput = {
       findings: [
         makeFinding({ title: 'Unbounded retry', preExisting: old }),
@@ -2017,8 +2019,7 @@ describe('runJudgeAgent', () => {
         // A defect in a line the PR adds is its own, so the judge never sees the claim, but the finding keeps it for the record.
         makeFinding({ title: 'New parser misses the old state', preExisting: old, ...off(15) }),
       ],
-      diff: makeDiff([makeDiffFile({ hunks: [hunk] }), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] })]),
-      excludedPaths: ['gen/parser.ts'], rawDiff: '', repoContext: '', agentCount: 2,
+      diff, preExistingCheck: f => preExistingCheck(f, diff, new Set(['gen/parser.ts'])), rawDiff: '', repoContext: '', agentCount: 2,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);

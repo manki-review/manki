@@ -68,16 +68,16 @@ function postedWhenPreExisting(f: Finding): boolean {
 }
 
 /**
- * Tags each finding on code this PR did not change as pre-existing. A non-security blocker among them becomes a
- * warning, so no check that reads the severity, in this round or a later one, lets it block.
+ * Tags each finding that `checkOf` finds on code this PR did not change as pre-existing. A non-security blocker among
+ * them becomes a warning, so no check that reads the severity, in this round or a later one, lets it block.
  * Only the findings `postedWhenPreExisting` accepts are `posted`. The rest are `unposted`, for the round record only.
  */
-function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: ReadonlySet<string>): { posted: Finding[]; unposted: Finding[] } {
+function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => PreExistingCheck | undefined): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
   const unposted: Finding[] = [];
   for (const f of findings) {
     // A claim the diff or the files contradict is kept with why, so the record shows which condition failed.
-    const check = preExistingCheck(f, diff, excludedPaths);
+    const check = checkOf(f);
     if (check !== 'pre_existing') {
       posted.push(check ? { ...f, preExistingCheck: check } : f);
       continue;
@@ -682,6 +682,9 @@ export async function runReview(
   const lockfileChanges = formatLockfileChanges(lockfiles);
   // The planner, the routing and the claim checks see a parsed lockfile even when `exclude_paths` leaves it out of `diff`.
   const diffWithLockfiles = withLockfiles(diff, lockfiles);
+  const excludedPaths = new Set(options.excludedPaths);
+  // One answer for the whole round, so the judge, the refuter and `markPreExisting` cannot disagree on a finding.
+  const unchangedCheck = (finding: Finding): PreExistingCheck | undefined => preExistingCheck(finding, diffWithLockfiles, excludedPaths);
   // Searched while the planner runs, since no model call depends on it before the finders.
   const usesPromise = listUsesOutsideDiff(workspace, diff, { excludePaths: config.exclude_paths });
   const modelFallbacks: RoundModelFallback[] = [];
@@ -1281,7 +1284,7 @@ export async function runReview(
   const judgeInput: JudgeInput = {
     findings: findingsForJudge,
     diff: diffWithLockfiles,
-    ...(options.excludedPaths && { excludedPaths: options.excludedPaths }),
+    preExistingCheck: unchangedCheck,
     lockfiles,
     rawDiff,
     memory: memory ?? undefined,
@@ -1414,8 +1417,7 @@ export async function runReview(
     memorySuppressed = suppressed;
   }
   // After the suppressions, so a blocker the PR did not touch keeps their blocker guard.
-  const excludedPaths = new Set(options.excludedPaths);
-  const { posted, unposted: unpostedPreExisting } = markPreExisting(finalFindings, diff, excludedPaths);
+  const { posted, unposted: unpostedPreExisting } = markPreExisting(finalFindings, unchangedCheck);
   finalFindings = posted;
 
   // Mechanism B: drop low-severity findings on test files starting at round 2.
