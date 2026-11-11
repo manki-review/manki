@@ -245,12 +245,17 @@ async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: P
       core.warning(`Failed to reply on thread ${f.threadId}, leaving it resolved: ${error}`);
       continue;
     }
-    try {
-      await unresolveReviewThread(octokit, f.threadId);
-      core.info(`Reopened thread ${f.threadId} that the PR author resolved`);
-    } catch (error) {
-      core.warning(`Failed to reopen thread ${f.threadId}: ${error}`);
-    }
+    await reopenThread(octokit, f.threadId);
+  }
+}
+
+/** Reopens the thread `threadId` that the PR author resolved. A failure is logged and leaves the thread resolved. */
+async function reopenThread(octokit: Octokit, threadId: string): Promise<void> {
+  try {
+    await unresolveReviewThread(octokit, threadId);
+    core.info(`Reopened thread ${threadId} that the PR author resolved`);
+  } catch (error) {
+    core.warning(`Failed to reopen thread ${threadId}: ${error}`);
   }
 }
 
