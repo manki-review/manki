@@ -355,7 +355,7 @@ describe('scoreRun', () => {
       { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.' },
     ]);
 
-    const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted', description: 'Drops the lock.\n```rust\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' }), makeFinding({ severity: 'suggestion', title: 'A note' })];
+    const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted\n```', description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' }), makeFinding({ severity: 'suggestion', title: 'A note' })];
     const warned = await scoreRun(benchCase, makeReview('READY', warnings), stub({ N1: { verdict: 'MATCH', findings: [0], reason: 'same' } }));
     expect(warned).toMatchObject({ falseBlockers: 0, unexpectedWarnings: 1, extraFindings: 2 });
     const unscored = buildReport(
@@ -364,11 +364,12 @@ describe('scoreRun', () => {
     );
     expect(unscored.variants[0].summary.unexpectedWarnings).toBe(1);
     expect(formatBenchSummary(unscored)).toContain('0 false blockers, 1 unexpected warnings, 2 extra');
-    expect(warned.findings[1]).toEqual({ severity: 'warning', title: 'Unlisted', file: 'src/other.rs', line: 1, description: 'Drops the lock.\n```rust\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' });
+    expect(warned.findings[1]).toEqual({ severity: 'warning', title: 'Unlisted\n```', file: 'src/other.rs', line: 1, description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' });
     expect(formatUnmatched(unscored.variants)).toBe([
       '### Unexpected warnings on tuning cases', '',
       "Warnings that match no key item. Add each real defect to its case's `must_catch`, or to `nice_to_have` when a good review may leave it out, and bump the case's `key_version`.", '',
-      '```text', 'base demo-1 key v2 run 1: src/other.rs:1: Unlisted', '    Drops the lock.', '    ```rust', '    unlock();', '    ```', '```', '',
+      // A line break in the title, or a bare carriage return in the description, starts no line of its own that could close the block.
+      '```text', 'base demo-1 key v2 run 1: src/other.rs:1: Unlisted ```', '    Drops the lock.', '    ```rust', '    unlock();', '    ```', '```', '',
     ].join('\n'));
   });
 

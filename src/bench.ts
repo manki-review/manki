@@ -992,12 +992,13 @@ const SET_LABELS: Record<CaseSet, string> = { tuning: 'tuning', holdout: 'hold-o
  * case's key version goes up. Returns an empty string when there is none.
  */
 export function formatUnmatched(variants: VariantReport[], sets: CaseSet[] = ['tuning']): string {
+  const oneLine = (text: string) => text.replace(/\s*[\r\n]+\s*/g, ' ');
   const list = (severity: FindingSeverity) => variants.flatMap(v => v.cases.filter(c => sets.includes(c.set)).flatMap(c => c.runs.flatMap((run, i) => {
     if (!run.complete) return [];
     return unmatchedFindings(c, run).filter(f => f.severity === severity).flatMap(f => [
-      `${v.name} ${c.id} key v${c.keyVersion} run ${i + 1}: ${f.file}:${f.line}: ${f.title}`,
-      // The indent keeps a code fence inside a description from closing the block.
-      ...(f.description?.trim().split('\n').map(line => `    ${line}`) ?? []),
+      `${v.name} ${c.id} key v${c.keyVersion} run ${i + 1}: ${oneLine(f.file)}:${f.line}: ${oneLine(f.title)}`,
+      // The text comes from a model reading outside code. Every line of it starts inside the block, and the indent keeps a code fence in it from closing the block.
+      ...(f.description?.trim().split(/\r\n|\r|\n/).map(line => `    ${line}`) ?? []),
     ]);
   })));
   const on = `on ${sets.map(set => SET_LABELS[set]).join(' and ')} cases`;
