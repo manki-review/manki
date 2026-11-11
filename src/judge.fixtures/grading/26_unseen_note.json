@@ -1,0 +1,18 @@
+{
+  "name": "unseen-note",
+  "case": "unseen-note",
+  "allowed": [
+    "ignore"
+  ],
+  "finding": {
+    "title": "The comment says three retries, but `httpx.MaxRetries` is 5",
+    "file": "cmd/sync/main.go",
+    "line": 22,
+    "description": "The new comment says a failed page is fetched again up to three times. `MaxRetries` in `internal/httpx/client.go` is 5, so the comment states a limit the client does not have. Say five, or leave the number out.",
+    "severity": "note",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/cmd/sync/main.go b/cmd/sync/main.go\nindex 1111111..2222222 100644\n--- a/cmd/sync/main.go\n+++ b/cmd/sync/main.go\n@@ -21,5 +21,10 @@ func run(ctx context.Context, cfg Config) error {\n \tclient := httpx.NewClient(cfg.BaseURL)\n+\t// A failed page is fetched again up to three times before the sync stops.\n+\torders, err := client.FetchAll(ctx, \"/orders\")\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"sync orders: %w\", err)\n+\t}\n \tstore, err := openStore(cfg.DataDir)\n \tif err != nil {\n \t\treturn err\n \t}\n"
+}

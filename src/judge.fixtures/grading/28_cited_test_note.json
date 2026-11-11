@@ -1,0 +1,27 @@
+{
+  "name": "cited-test-note",
+  "case": "cited-test-note",
+  "allowed": [
+    "note"
+  ],
+  "finding": {
+    "title": "No test passes an unknown unit to `parse_duration`",
+    "file": "src/duration.rs",
+    "line": 17,
+    "description": "The three tests in `tests/duration.rs` parse `90s` and `5m` and reject an empty string. None passes a unit the function does not know, so the `UnknownUnit` branch on line 17 runs in no test. Add a test that parses `3d` and expects `ParseError::UnknownUnit('d')`.",
+    "severity": "note",
+    "reviewers": [
+      "Correctness"
+    ],
+    "evidence": {
+      "checks": [
+        "tests/duration.rs:7 parses `90s`",
+        "tests/duration.rs:12 parses `5m`",
+        "tests/duration.rs:17 passes an empty string and expects `ParseError::Empty`"
+      ],
+      "proof": [],
+      "emptySearch": "grep `UnknownUnit` under tests/: no match"
+    }
+  },
+  "prDiff": "diff --git a/src/duration.rs b/src/duration.rs\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/src/duration.rs\n@@ -0,0 +1,19 @@\n+use std::time::Duration;\n+\n+#[derive(Debug, PartialEq)]\n+pub enum ParseError {\n+    Empty,\n+    BadNumber,\n+    UnknownUnit(char),\n+}\n+\n+pub fn parse_duration(text: &str) -> Result<Duration, ParseError> {\n+    let unit = text.chars().last().ok_or(ParseError::Empty)?;\n+    let digits = &text[..text.len() - unit.len_utf8()];\n+    let amount: u64 = digits.parse().map_err(|_| ParseError::BadNumber)?;\n+    match unit {\n+        's' => Ok(Duration::from_secs(amount)),\n+        'm' => Ok(Duration::from_secs(amount * 60)),\n+        other => Err(ParseError::UnknownUnit(other)),\n+    }\n+}\ndiff --git a/tests/duration.rs b/tests/duration.rs\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/tests/duration.rs\n@@ -0,0 +1,18 @@\n+use std::time::Duration;\n+\n+use timeparse::{parse_duration, ParseError};\n+\n+#[test]\n+fn parses_seconds() {\n+    assert_eq!(parse_duration(\"90s\"), Ok(Duration::from_secs(90)));\n+}\n+\n+#[test]\n+fn parses_minutes() {\n+    assert_eq!(parse_duration(\"5m\"), Ok(Duration::from_secs(300)));\n+}\n+\n+#[test]\n+fn rejects_empty_input() {\n+    assert_eq!(parse_duration(\"\"), Err(ParseError::Empty));\n+}\n"
+}
