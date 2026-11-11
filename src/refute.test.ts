@@ -703,6 +703,20 @@ describe('refuteBlockers', () => {
     const [settled] = await refuteBlockers(status, [doubted], { workspace, diff });
     expect([status.calls.map(([title]) => title), checkStatus(settled)]).toEqual([['Unproven 1', 'Security with a doubt'], 'confirmed']);
 
+    // The whole order: warnings on changed code, warnings on unchanged code, warnings linked to an earlier finding, then a doubted security finding.
+    const order = ['Unproven 1', 'Old with a doubt', 'Linked on changed code', 'Old and linked', 'Security with a doubt'];
+    const listed = [
+      doubted,
+      finding('Old and linked', { ...old, doubts: reach, variantOf: 'src/math.ts:1:earlier' }),
+      finding('Linked on changed code', { severity: 'warning', evidence: { checks: [], proof: [] }, sameAs: 'src/math.ts:1:earlier' }),
+      ...findings.filter(f => order.includes(f.title)),
+    ];
+    for (const left of [1, 2, 3, 4, 5]) {
+      const picking = fakeClient(Object.fromEntries(listed.map(f => [f.title, answer('unsettled')])));
+      await refuteBlockers(picking, listed, { workspace, diff, preExisting: f => f.title.startsWith('Old'), doubtBudget: { left } });
+      expect(picking.calls.map(([title]) => title).sort()).toEqual(order.slice(0, left).sort());
+    }
+
     // Without the mark, a warning its cited lines prove takes no check.
     const unmarked = fakeClient({ 'Old plain': answer('unsettled') });
     await refuteBlockers(unmarked, [findings[1]], { workspace, diff });
