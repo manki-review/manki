@@ -518,9 +518,10 @@ describe('refuteBlockers', () => {
       // A warning no cited line proves is checked like a doubted one, and a note is not.
       finding('Warning without proof', { severity: 'warning', ...noProof }),
       finding('Note without proof', { severity: 'note', ...noProof }),
-      // A tool alert names its own location, and a security finding is checked only for a doubt.
+      // A tool alert and a security finding are posted whatever a check says, so neither takes one of the eight.
       finding('Tool alert without proof', { severity: 'warning', toolSource: 'CodeQL', ...noProof }),
       finding('Security warning without proof', { severity: 'warning', tags: ['security'], ...noProof }),
+      { ...doubted('Security warning with a doubt', 'warning'), tags: ['security'] },
       doubted('Doubted warning 4', 'warning'),
       doubted('Doubted warning 5', 'warning'),
       doubted('Doubted warning 6', 'warning'),
@@ -550,7 +551,7 @@ describe('refuteBlockers', () => {
       'Doubted warning 8': 'not_checked', 'Second warning without proof': 'not_checked',
       'Doubt in a deleted file': undefined, 'Doubt with no file': undefined, 'No proof in a deleted file': 'no_proof',
       'Left out later with a doubt': undefined, 'Left out later without proof': 'no_proof',
-      'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof',
+      'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof', 'Security warning with a doubt': undefined,
     });
     // The judge calls of one round share the eight, so a later call checks only what an earlier one left.
     const doubtBudget = { left: 3 };

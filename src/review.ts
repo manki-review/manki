@@ -18,7 +18,7 @@ import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
-import { disproof, MAX_DOUBT_CHECKS, refuteBlockers, unprovenReason } from './refute';
+import { disproof, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
@@ -97,16 +97,16 @@ function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: R
 }
 
 /**
- * Splits off the warnings nothing proves, by `unprovenReason`, as `unposted` with that reason, for the round record
- * only. A warning is left out only when it is certain that no rule keeps it, so these stay `posted`: a security finding,
- * a tool alert, a finding `foldIntoEarlierFindings` or the judge put under one an earlier round still shows, and a
- * finding that `wouldBlock`, which is marked `unconfirmed`.
+ * Splits off the warnings that `needsProof` and that nothing proves, by `unprovenReason`, as `unposted` with that
+ * reason, for the round record only. A warning is left out only when it is certain that no rule keeps it, so these
+ * stay `posted` too: a finding `foldIntoEarlierFindings` or the judge put under one an earlier round still shows, and
+ * a finding that `wouldBlock`, which is marked `unconfirmed`.
  */
 function hideUnprovenWarnings(findings: Finding[], wouldBlock = wouldBlockIfTrue): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
   const unposted: Finding[] = [];
   for (const f of findings) {
-    const unpostedReason = f.severity === 'warning' && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers) ? unprovenReason(f) : undefined;
+    const unpostedReason = needsProof(f) ? unprovenReason(f) : undefined;
     if (!unpostedReason || f.threadId || f.answeredIn || f.raisedIn !== undefined) {
       posted.push(f);
     } else if (wouldBlock(f)) {

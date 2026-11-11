@@ -323,19 +323,24 @@ function alwaysChecked(finding: Finding): boolean {
 const doubtsDefect = (finding: Finding): boolean => !!finding.doubts?.some(d => d.decides === 'defect');
 const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.length;
 
+/** Whether the review posts `finding` only when something proves it. A tool alert and a security finding are posted either way. */
+export function needsProof(finding: Finding): boolean {
+  return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers);
+}
+
 /**
- * Returns the warnings to check with tools because nothing proves them yet, at most `limit`, in the order
- * given, and those `over` that limit: one the judge kept with a doubt whether the defect exists, and one no cited line
- * proves. A finding the judge would grade higher if its doubts hold is always checked, since that check is how a
- * warning becomes a blocker. A tool alert is left out, and a security finding is checked only for a doubt. A warning
- * `noCheck` accepts takes none of the checks, since a check could not run on it or could not change what the review shows.
+ * Returns the warnings to check with tools because nothing proves them yet, at most `limit`, in the order given, and
+ * those `over` that limit. A warning gets one of these checks only when the result can change whether the review
+ * shows it. So it must be one that `needsProof`, with a doubt of the judge whether the defect exists or no cited line
+ * that proves it, and none that `noCheck` accepts: a check could not run on that one, or a later step decides about it
+ * whatever the check says. A finding the judge would grade higher if its doubts hold is always checked, since that
+ * check is how a warning becomes a blocker.
  */
 function doubtsToCheck(findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean): { checked: Finding[]; over: Finding[] } {
-  const unproven = findings.filter(f => f.severity === 'warning' && !alwaysChecked(f) && !f.toolSource
-    && (doubtsDefect(f) || (citesNoProof(f) && !isSecurityFinding(f.tags, f.reviewers))) && !noCheck(f));
+  const unproven = findings.filter(f => needsProof(f) && !alwaysChecked(f) && (doubtsDefect(f) || citesNoProof(f)) && !noCheck(f));
   const over = unproven.slice(limit);
   for (const skipped of over) {
-    core.info(`Not checking "${skipped.title}", since ${MAX_DOUBT_CHECKS} other unproven warnings took this round's checks`);
+    core.info(`Not checking "${skipped.title}", since the round's ${MAX_DOUBT_CHECKS} checks of unproven warnings are used up`);
   }
   return { checked: unproven.slice(0, limit), over };
 }

@@ -2188,8 +2188,8 @@ describe('runReview', () => {
     const agreed = (title: string, line: number): LegacyHandoverFindingFixture =>
       ({ fingerprint: { file: 'src/app.ts', lineStart: line, lineEnd: line, slug: titleToSlug(title) }, severity: 'warning', title, authorReply: 'agree' });
     const judged = (r: ReviewResult, title: string) => r.allJudgedFindings?.filter(f => f.title === title).map(f => [f.severity, f.tags]);
-    // One row per step that keeps a warning out of the review whatever a check says: the warning, what makes the step
-    // hide it, and how the round ends for it. A new such step gets a row here.
+    // One row per case where no outcome of a check changes whether the review shows the warning: the warning, what
+    // makes it such a case, and how the round ends for it. A new step that hides a warning gets a row here.
     const hidden: Array<{ step: string; title: string; finding?: object; verdict?: object; options?: Partial<Parameters<typeof runReview>[1]>; ends: (r: ReviewResult) => unknown; as: unknown }> = [
       {
         step: 'cross-round suppression', title: 'Agreed last round',
@@ -2215,6 +2215,11 @@ describe('runReview', () => {
         step: 'unposted pre-existing warning', title: 'Old loop', finding: { file: 'src/old.ts', proof: ['src/old.ts:15'], preExisting: true, preExistingReason: 'The loop predates this PR.' },
         verdict: { preExisting: true },
         ends: r => r.unpostedPreExisting?.map(f => [f.title, f.preExistingCheck]), as: [['Old loop', 'pre_existing']],
+      },
+      {
+        // No step hides a security finding, so no outcome of a check changes whether the review shows it.
+        step: 'security finding', title: 'Token in the log', verdict: { security: true },
+        ends: r => r.findings.filter(f => f.title === 'Token in the log').map(f => [f.severity, f.tags?.includes('security')]), as: [['warning', true]],
       },
       {
         // No check can run on a file the refuter cannot read, so the cited lines decide.
