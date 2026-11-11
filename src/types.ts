@@ -2127,6 +2127,11 @@ export interface FindingFingerprintEntry {
    * the same. A warning without a line, or on a line the round could not read, has none.
    */
   citedLine?: CitedLine;
+  /**
+   * Set on a carried warning: the line its `citedLine` is on at the head of the round that carried it, when exactly one
+   * place of the file reads like it. `fingerprint` keeps the line of the round that listed the warning.
+   */
+  currentLine?: number;
 }
 
 /** The place a finding points at, as its file read at the head of the round that listed it. */

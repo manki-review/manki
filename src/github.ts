@@ -1364,9 +1364,9 @@ function formatFindingSection(heading: string, folds: string[], intro?: string, 
   return [`${level} ${heading}`, ...(intro ? [level === '####' ? `<sub>${intro}</sub>` : intro] : []), ...folds].join('\n\n');
 }
 
-/** Returns the warnings carried from earlier rounds as one short list, a line each with the round that listed it first. */
+/** Returns the warnings carried from earlier rounds as one short list, a line each with the round that listed it first. A warning without `currentLine` shows only its file. */
 function formatCarriedWarnings(carried: FindingFingerprintEntry[]): string | null {
-  const lines = carried.map(e => `${formatTraceEntry({ file: e.fingerprint.file, line: e.fingerprint.lineStart, title: e.title ?? '' })} (round ${e.raisedIn})`);
+  const lines = carried.map(e => `${formatTraceEntry({ file: e.fingerprint.file, line: e.currentLine ?? 0, title: e.title ?? '' })} (round ${e.raisedIn})`);
   return formatFindingSection(`Earlier warnings, code unchanged · ${formatSeverityCounts(carried)}`, lines.length > 0 ? [lines.join('\n')] : [], carried.length === 1
     ? 'An earlier round listed it, and this round did not raise it again. The line it points at still reads the same, so it stays listed. It doesn\'t block.'
     : 'An earlier round listed these, and this round did not raise them again. The line each points at still reads the same, so they stay listed. None of them blocks.', '###');
@@ -2905,7 +2905,7 @@ async function fetchFileLines(octokit: Octokit, owner: string, repo: string, ref
 }
 
 /** Returns the lines of a file with `content`, without the empty one a final line break leaves. */
-export function fileLines(content: string): string[] {
+function fileLines(content: string): string[] {
   return content.replace(/\r?\n$/, '').split(/\r?\n/);
 }
 

@@ -2609,7 +2609,9 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
  * warning does not vanish because no finder raised it again. Only an entry with `citedLine` is carried. A warning leaves
  * the list only for certain, and `result.carriedEnded` says why: a finding the judge graded this round names its problem,
  * kept or not, or the file at the head has fewer places reading like its `citedLine` than when it was listed, or is gone.
- * A file `head` cannot read keeps its warnings.
+ * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
+ * its `citedLine`, which is also the line a finding of this round is compared with. Call it after the last step that
+ * takes a finding out of `result.findings`, so each reason says where the naming finding ended up.
  */
 export async function carryBodyWarnings(result: ReviewResult, priorRounds: RoundContext[], head: Pick<RepoFiles, 'read'>): Promise<void> {
   const last = priorRounds.at(-1);
@@ -2626,20 +2628,20 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
   const ended: CarriedEnd[] = [];
   for (const entry of warnings) {
     const key = stringifyFindingFingerprint(entry.fingerprint);
-    const { file, lineStart: line } = entry.fingerprint;
-    const located: Located = { title: entry.title ?? '', file, line, evidence: entry.evidence };
-    const names = (f: Finding) => f.sameAs === key || (!!f.sameAs && f.sameAs === entry.sameAs) || sameProblem(located, f);
+    const { file } = entry.fingerprint;
     const { hash, count } = entry.citedLine!;
-    let reason = judged.find(([, findings]) => findings.some(names))?.[0];
-    if (!reason) {
-      const lines = await linesOf(file);
-      if (lines && placesReading(lines, hash) < count) reason = 'line_changed';
-    }
+    const lines = await linesOf(file);
+    const places = lines && placesReading(lines, hash);
+    // Only a single place says where the warning is now. Without one, the line of the round that listed it stays the one compared.
+    const currentLine = places?.length === 1 ? places[0] : undefined;
+    const located: Located = { title: entry.title ?? '', file, line: currentLine ?? entry.fingerprint.lineStart, evidence: entry.evidence };
+    const names = (f: Finding) => f.sameAs === key || (!!f.sameAs && f.sameAs === entry.sameAs) || sameProblem(located, f);
+    const reason = judged.find(([, findings]) => findings.some(names))?.[0] ?? (places && places.length < count ? 'line_changed' : undefined);
     if (reason) {
-      core.info(`No longer carrying the warning "${entry.title}" on ${file}:${line}: ${reason}`);
+      core.info(`No longer carrying the warning "${entry.title}" on ${file}:${located.line}: ${reason}`);
       ended.push({ key, reason });
     } else {
-      carried.push({ ...entry, raisedIn: entry.raisedIn ?? last.meta.round });
+      carried.push({ ...entry, raisedIn: entry.raisedIn ?? last.meta.round, currentLine });
     }
   }
   if (carried.length > 0) result.carried = carried;

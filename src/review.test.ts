@@ -6063,7 +6063,7 @@ describe('carryBodyWarnings', () => {
       return file ? `${file.join('\n')}\n` : null;
     });
     await carryBodyWarnings(result, priorRounds, { read });
-    return { titles: result.carried?.map(e => `${e.title} (round ${e.raisedIn})`), ended: result.carriedEnded?.map(e => e.reason), result, read };
+    return { titles: result.carried?.map(e => `${e.title} (round ${e.raisedIn})`), lines: result.carried?.map(e => e.currentLine), ended: result.carriedEnded?.map(e => e.reason), result, read };
   };
   const withX = (lines: string[]) => ({ ...then, 'src/x.ts': lines });
   const retry = entry('Retry never ends', 2);
@@ -6095,6 +6095,8 @@ describe('carryBodyWarnings', () => {
     const unchanged = await carry([first], then);
     expect(unchanged.titles).toEqual(all);
     expect([unchanged.result.findings, unchanged.ended, unchanged.read.mock.calls]).toEqual([[], undefined, [['src/x.ts'], ['src/y.ts']]]);
+    // An entry says the line its place is on now. Of two places reading the same, neither is named.
+    expect(unchanged.lines).toEqual([2, 3, undefined]);
     expect(unchanged.result.carried?.map(e => e.citedLine)).toEqual([
       { hash: expect.stringMatching(/^[0-9a-f]{12}$/), count: 1 }, { hash: expect.stringMatching(/^[0-9a-f]{12}$/), count: 1 }, { hash: expect.stringMatching(/^[0-9a-f]{12}$/), count: 2 },
     ]);
@@ -6104,7 +6106,8 @@ describe('carryBodyWarnings', () => {
     const x = then['src/x.ts'];
     const other = x.indexOf('function f5() {') + 1;
     const moved = ['import a;', '', ...x.map((line, i) => `  ${i === other ? '  return [];' : line}`)];
-    expect((await carry([first], withX(moved))).titles).toEqual(all);
+    const shifted = await carry([first], withX(moved));
+    expect([shifted.titles, shifted.lines]).toEqual([all, [4, 5, undefined]]);
 
     // An edit to the line ends the warning, and the one on the line before it, whose next line changed.
     const edited = await carry([first], withX(x.map((line, i) => i === 2 ? '  return [];' : line)));
@@ -6121,7 +6124,7 @@ describe('carryBodyWarnings', () => {
 
     // A file that cannot be read keeps its warnings.
     const unread = await carry([first], withX(new Error('Server Error') as unknown as string[]));
-    expect([unread.titles, unread.ended]).toEqual([all, undefined]);
+    expect([unread.titles, unread.lines, unread.ended]).toEqual([all, [undefined, undefined, undefined], undefined]);
     expect(warning).toHaveBeenCalledWith('Failed to read src/x.ts, so the warnings carried on it stay listed: Error: Server Error');
   });
 
@@ -6131,7 +6134,7 @@ describe('carryBodyWarnings', () => {
       unpostedNotes: [finding('Nothing is returned', 3, { severity: 'suggestion' })],
       allJudgedFindings: [finding('Check runs twice', 2, { severity: 'ignore', file: 'src/y.ts' })],
     });
-    expect([named.titles, named.ended, named.read.mock.calls]).toEqual([undefined, ['restated', 'hidden_note', 'judge_dropped'], []]);
+    expect([named.titles, named.ended]).toEqual([undefined, ['restated', 'hidden_note', 'judge_dropped']]);
     // A finding the judge kept and a later step left out counts too, and one about something else does not.
     const leftOut = await carry([first], then, { allJudgedFindings: [finding('Retry never ends', 2), finding('Loop has no cap', 80)] });
     expect([leftOut.titles, leftOut.ended]).toEqual([all.slice(1), ['left_out']]);
@@ -6146,6 +6149,17 @@ describe('carryBodyWarnings', () => {
     expect((await carry([first, second, third], then)).titles).toEqual(['Queue has no limit (round 2)', 'Retry never ends (round 1)']);
     const again = await carry([first, second, third], then, { findings: [finding('Queue is unbounded', 90, { sameAs: keyOf(queue) })] });
     expect([again.titles, again.ended]).toEqual([['Retry never ends (round 1)'], ['restated']]);
+
+    // A finding is compared with the line the warning is on now: forty lines down, one there names it and one on the listed line does not.
+    const far = withX([...Array.from({ length: 40 }, () => '// Note.'), ...then['src/x.ts']]);
+    const there = await carry([first], far, { findings: [finding('Retry never ends', 42)] });
+    expect([there.titles, there.ended]).toEqual([all.slice(1), ['restated']]);
+    const stale = await carry([first], far, { findings: [finding('Retry never ends', 2)] });
+    expect([stale.titles, stale.lines]).toEqual([all, [42, 43, undefined]]);
+    // Each round reads the line again, so a carried entry never keeps the line of an earlier head.
+    const down = round(2, [], [{ ...carriedRetry, currentLine: 42 }, { ...nothing, raisedIn: 1, currentLine: 43 }]);
+    expect((await carry([first, down], then)).lines).toEqual([2, 3]);
+    expect((await carry([first, down], withX(new Error('Server Error') as unknown as string[]))).lines).toEqual([undefined, undefined]);
   });
 });
 

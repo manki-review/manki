@@ -179,6 +179,7 @@ jest.mock('./recap', () => ({
   securityOverridesIn: jest.requireActual('./recap').securityOverridesIn,
   FOUND_AGAIN_MARKER: jest.requireActual('./recap').FOUND_AGAIN_MARKER,
   replyClassOf: jest.requireActual('./recap').replyClassOf,
+  titleOverlapType: jest.requireActual('./recap').titleOverlapType,
 }));
 
 jest.mock('./review', () => ({
@@ -207,7 +208,6 @@ jest.mock('./github', () => ({
   brokenConfig: jest.requireActual('./github').brokenConfig,
   configFailed: jest.requireActual('./github').configFailed,
   capNotes: jest.requireActual('./github').capNotes,
-  fileLines: jest.requireActual('./github').fileLines,
   cachedFileLines: jest.requireActual('./github').cachedFileLines,
   fetchRepoContext: jest.fn().mockResolvedValue({ text: '', files: [] }),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
@@ -2375,6 +2375,17 @@ describe('runFullReview orchestration', () => {
       expect(record?.findings.carried).toEqual(result.carried);
       expect(record?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:5:5:Queue-has-no-limit', reason: 'line_changed' }]);
       expect([result.findings, record?.findings.count]).toEqual([[], 0]);
+      expect(result.carried?.map(e => e.currentLine)).toEqual([2]);
+
+      // A note that names a carried warning ends it as a hidden note when `review.notes` leaves the note out.
+      const note = (title: string, line: number): Finding => ({ severity: 'suggestion', title, file: 'src/app.ts', line, description: 'd', reviewers: ['general'] });
+      const notes = [note('One', 1), note('Two', 3), note('Three', 4), note('Retry never ends', 2)];
+      jest.mocked(reviewModule.runReview).mockResolvedValueOnce({ verdict: 'APPROVE', outcome: 'READY', summary: 's', findings: notes, highlights: [], reviewComplete: true, agentNames: ['general'], allJudgedFindings: notes });
+      await runWith({ fullReview: true });
+      const capped = jest.mocked(ghUtils.postReview).mock.calls[1][7];
+      expect(capped?.findings.unposted?.map(e => [e.title, e.unpostedReason])).toEqual([['Retry never ends', 'note_cap']]);
+      expect(capped?.findings.carriedEnded).toEqual([{ key: 'src/app.ts:5:5:Queue-has-no-limit', reason: 'line_changed' }, { key: 'src/app.ts:2:2:Retry-never-ends', reason: 'hidden_note' }]);
+      expect(capped?.findings.carried).toBeUndefined();
     });
   });
 

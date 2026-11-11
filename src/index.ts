@@ -1922,7 +1922,6 @@ async function runFullReview(
     if (priorRoundCount > 0 && (options.fullReview || !priorChange)) result.originsWithoutPrior = true;
     // Only the diff since the last round shows a line the push moved or restored, so without it no line counts as reviewed for certain.
     if (!options.fullReview) hideSeenNotes(result, interRoundDiff === undefined ? undefined : reviewed);
-    await carryBodyWarnings(result, recap.priorRounds, githubRepoFiles(octokit, owner, repo, commitSha));
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
@@ -1938,6 +1937,7 @@ async function runFullReview(
     const replies = await replyInOpenThreads(run, result);
     // After the replies, so a note whose reply failed competes for a place like any other note.
     capNotes(result, recap.previousFindings, config.review?.notes);
+    await carryBodyWarnings(result, recap.priorRounds, githubRepoFiles(octokit, owner, repo, commitSha));
     const context = buildContext();
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     let posted: Awaited<ReturnType<typeof postRound>>;
