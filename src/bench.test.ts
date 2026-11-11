@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { isMap, isScalar, parseDocument } from 'yaml';
 
-import { BenchCase, BenchReport, buildReport, candidateFindings, formatBenchSummary, formatGate, formatUnmatchedBlockers, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, BenchReport, buildReport, candidateFindings, formatBenchSummary, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
@@ -350,9 +350,12 @@ describe('scoreRun', () => {
       finders: [{ name: 'finder-a', model: 'claude-sonnet-5-5', toolSteps: 4, filesRead: 3 }],
       costUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 90,
     });
-    expect(score.findings[2]).toEqual({ severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1 });
+    expect(score.findings.slice(1, 3)).toEqual([
+      { severity: 'blocker', title: 'Lock dropped', file: 'src/lock.rs', line: 1, description: 'Calls `unlock` early.' },
+      { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.' },
+    ]);
 
-    const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted' }), makeFinding({ severity: 'suggestion', title: 'A note' })];
+    const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted', description: 'Drops the lock.\n```rust\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' }), makeFinding({ severity: 'suggestion', title: 'A note' })];
     const warned = await scoreRun(benchCase, makeReview('READY', warnings), stub({ N1: { verdict: 'MATCH', findings: [0], reason: 'same' } }));
     expect(warned).toMatchObject({ falseBlockers: 0, unexpectedWarnings: 1, extraFindings: 2 });
     const unscored = buildReport(
@@ -361,6 +364,12 @@ describe('scoreRun', () => {
     );
     expect(unscored.variants[0].summary.unexpectedWarnings).toBe(1);
     expect(formatBenchSummary(unscored)).toContain('0 false blockers, 1 unexpected warnings, 2 extra');
+    expect(warned.findings[1]).toEqual({ severity: 'warning', title: 'Unlisted', file: 'src/other.rs', line: 1, description: 'Drops the lock.\n```rust\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' });
+    expect(formatUnmatched(unscored.variants)).toBe([
+      '### Unexpected warnings on tuning cases', '',
+      "Warnings that match no key item. Add each real defect to its case's `must_catch`, or to `nice_to_have` when a good review may leave it out, and bump the case's `key_version`.", '',
+      '```text', 'base demo-1 key v2 run 1: src/other.rs:1: Unlisted', '    Drops the lock.', '    ```rust', '    unlock();', '    ```', '```', '',
+    ].join('\n'));
   });
 
   it('gives half credit one tier low and none two tiers low, skips the matcher without candidates, and calls an approval of a blocker case wrong', async () => {
@@ -411,16 +420,19 @@ describe('scoreRun on a follow-up case', () => {
     const reworded = await scoreRun(followUp, review(), async item => (item.id === 'P2' ? { verdict: 'PARTIAL', findings: [0], reason: 'other mechanism' } : decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' }));
     expect(reworded).toMatchObject({ falseBlockers: 1, extraFindings: 1, followUp: { repeats: 1 } });
     const incomplete = await scoreRun(followUp, review(false), matcher);
-    const listed = (benchCase: BenchCase) => formatUnmatchedBlockers(buildReport(
+    const listed = (benchCase: BenchCase, sets?: Array<BenchCase['set']>) => formatUnmatched(buildReport(
       { startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a' },
       [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [score, reworded, incomplete] }] }],
-    ).variants);
-    expect(listed(followUp)).toBe([
-      '### Unmatched blockers on tuning cases', '',
+    ).variants, sets);
+    const blockers = (on: string) => [
+      `### Unmatched blockers on ${on} cases`, '',
       "Blockers that match no key item. Add each real defect to its case's `must_catch` and bump the case's `key_version`.", '',
-      '```text', 'base demo-1 key v2 run 2: src/conn.rs:1: Write has no timeout', '```', '',
-    ].join('\n'));
+      '```text', 'base demo-1 key v2 run 2: src/conn.rs:1: Write has no timeout', '    Something.', '```', '',
+    ].join('\n');
+    expect(listed(followUp)).toBe(blockers('tuning'));
     expect(listed({ ...followUp, set: 'holdout' })).toBe('');
+    expect(listed({ ...followUp, set: 'holdout' }, ['holdout'])).toBe(blockers('hold-out'));
+    expect(listed(followUp, ['tuning', 'holdout'])).toBe(blockers('tuning and hold-out'));
 
     const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase: followUp, runs: [score] }] }]);
     expect(report.variants[0].cases[0].items.slice(3)).toEqual([
@@ -633,7 +645,7 @@ describe('runBench and buildReport', () => {
 
     const [{ results: [failed] }] = await runBench([benchCase], { ...options, matcher: broken });
     expect(failed.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: false, error: 'no such model', costUsd: 1.25, mustCatchRecall: null });
-    expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1 }]);
+    expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1, description: 'Something.' }]);
     expect(review).toHaveBeenCalledTimes(2);
   });
 

@@ -1,17 +1,19 @@
 /**
  * The steps of the benchmark workflow around `manki bench`. It lists the cases to run as a job matrix, merges the
- * report of each case job into one, and applies the release gate to merged reports. It calls no model.
+ * report of each case job into one, applies the release gate to merged reports, and lists the findings of a report
+ * that match no key item. It calls no model.
  *
  * Usage:
  *   npm run bench-report -- matrix --set <holdout|tuning|both> [--cases "<id> ..."]
  *   npm run bench-report -- merge --set <set> [--cases "<id> ..."] --dir <case reports> --out <report.json> [--ref <ref>] [--commit <sha>]
  *   npm run bench-report -- gate --baseline <report.json> [--baseline ...] --candidate <report.json> [--candidate ...]
+ *   npm run bench-report -- unmatched --report <report.json> [--set <holdout|tuning|both>]
  */
 
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-import { BenchCase, BenchReport, CaseSet, formatBenchSummary, formatComparison, formatGate, formatUnmatchedBlockers, gateReports, loadCases, mergeReports, parseCase } from '../src/bench';
+import { BenchCase, BenchReport, CaseSet, formatBenchSummary, formatComparison, formatGate, formatUnmatched, gateReports, loadCases, mergeReports, parseCase } from '../src/bench';
 
 const SET_DIRS: Record<CaseSet, string> = { tuning: 'bench/cases', holdout: 'bench/holdout' };
 const SET_CHOICES: Record<string, CaseSet[]> = { holdout: ['holdout'], tuning: ['tuning'], both: ['tuning', 'holdout'] };
@@ -49,8 +51,8 @@ export function benchMatrix(cases: BenchCase[], root = '.'): MatrixEntry[] {
 }
 
 /**
- * Returns the Markdown summary of a merged report: the comparison table, the unmatched blockers on tuning cases, then
- * every case and run in a fold.
+ * Returns the Markdown summary of a merged report: the comparison table, the unmatched blockers and unexpected warnings
+ * on tuning cases, then every case and run in a fold.
  */
 export function formatReportSummary(report: BenchReport): string {
   const cases = report.variants[0]?.cases ?? [];
@@ -62,7 +64,7 @@ export function formatReportSummary(report: BenchReport): string {
     '',
     formatComparison(report.variants),
     '',
-    ...[formatUnmatchedBlockers(report.variants)].filter(Boolean),
+    ...[formatUnmatched(report.variants)].filter(Boolean),
     '<details><summary>Every case and run</summary>',
     '',
     '```text',
@@ -109,8 +111,12 @@ function main(argv: string[]): number {
   } else if (command === 'gate') {
     const [baseline, candidate] = ['--baseline', '--candidate'].map(flag => (flags.get(flag) ?? []).map(readReport));
     console.log(`## Release gate\n\n${formatGate(gateReports(baseline, candidate))}`);
+  } else if (command === 'unmatched') {
+    const sets = SET_CHOICES[one('--set') ?? 'tuning'];
+    if (!sets) throw new Error(`--set must be one of ${Object.keys(SET_CHOICES).join(', ')}`);
+    console.log(formatUnmatched(readReport(required('--report')).variants, sets) || 'Every blocker and warning matches a key item.');
   } else {
-    throw new Error('Usage: npm run bench-report -- <matrix|merge|gate> [options], see the top of scripts/bench-report.ts');
+    throw new Error('Usage: npm run bench-report -- <matrix|merge|gate|unmatched> [options], see the top of scripts/bench-report.ts');
   }
   return 0;
 }
