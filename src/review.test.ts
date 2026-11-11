@@ -1552,6 +1552,32 @@ describe('selectTeam', () => {
     // Reuse and repository rules come right after tests.
     expect(focus).toMatch(/\n7\. Tests: [^\n]*\n8\. Reuse: [^\n]*\n9\. Repository rules: [^\n]*\n10\. Contract breaks: [^\n]*\n11\. Narrowed input: /);
     expect({ focus }).toMatchSnapshot();
+
+    // A related repo adds the check for its kind at its place in the order, for a finder that can read it: one with
+    // repository tools on a checked-out PR head. Without a repo of that kind, or for any other finder, the check is not shown.
+    const withTools: LLMClient = { sendMessage: jest.fn(), repoTools: true };
+    const noTools: LLMClient = { sendMessage: jest.fn() };
+    const focusesWith = (related: Array<'reference' | 'consumer'>, clients?: ReviewClients, workspace?: string) => {
+      const related_repos = related.map(kind => ({ repo: `acme/${kind}`, kind }));
+      return selectTeam(plainDiff, makeConfig({ reviewers, related_repos }), { trivial: false, subtle: true, paired: true }, false, clients, workspace).finders.map(f => f.prompt.focus);
+    };
+    const toolClients: ReviewClients = { reviewer: withTools, judge: withTools };
+    const focusWith = (...related: Array<'reference' | 'consumer'>) => focusesWith(related, toolClients, '/work/pr-head')[0];
+    expect(focusWith()).toBe(focus);
+    expect(focusesWith(['reference', 'consumer'])).toEqual([focus, focus]);
+    expect(focusesWith(['reference', 'consumer'], toolClients)).toEqual([focus, focus]);
+    expect(focusesWith(['reference', 'consumer'], { reviewer: noTools, judge: withTools }, '/work/pr-head')).toEqual([focus, focus]);
+    // In a pair, only the finder whose client has the tools gets the checks.
+    const mixed = focusesWith(['consumer'], { reviewer: noTools, reviewerByModel: new Map([['claude-opus-5-5', withTools]]), judge: withTools }, '/work/pr-head');
+    expect(mixed.filter(f => f === focus)).toHaveLength(1);
+    expect(mixed.filter(f => f.includes('Consumers:'))).toHaveLength(1);
+    const withReference = focusWith('reference');
+    expect(withReference).toMatch(/\n4\. Reference behaviour: [^\n]*\n5\. Specifications: when the change touches a wire format, a protocol message or a rule a specification defines, such as a validation or consensus rule, and a \*\*reference\*\* related repo holds that specification, search it for the name of the message, field or rule and compare the change with what it says\. [^\n]*\n6\. Error paths: /);
+    expect(withReference).not.toContain('Consumers:');
+    const withConsumer = focusWith('consumer');
+    expect(withConsumer).toMatch(/\n12\. Readers: [^\n]*\n13\. Consumers: for each public type, function or serialized format the change alters, find its uses in each \*\*consumer\*\* related repo and check that they still work with the change\. Start from the lines under "In the Consumer Repos" when that section is given\. [^\n]*\n14\. Sibling state: /);
+    expect(withConsumer).not.toContain('Specifications:');
+    expect(focusWith('consumer', 'reference')).toMatch(/\n5\. Specifications: [^\n]*\n6\. Error paths: [\s\S]*\n13\. Readers: [^\n]*\n14\. Consumers: [^\n]*\n15\. Sibling state: /);
   });
 
   describe('configured routing', () => {
@@ -2139,6 +2165,11 @@ describe('runReview', () => {
       consumer: [{ name: 'ComputeFee', lines: ['o/app:app.ts:1'] }],
       translation: { names: [{ repo: 'o/ref', name: 'ComputeFee', as: 'CalcFee', lines: 1 }] },
     });
+    // A finder with repository tools on the checked-out head gets the checklist items for the configured kinds.
+    for (const [system] of jest.mocked(clients.reviewer.sendMessage).mock.calls) {
+      expect(system).toContain('. Specifications: when the change touches a wire format');
+      expect(system).toContain('. Consumers: for each public type, function or serialized format the change alters');
+    }
     // One call on the dedup model translates the names for the search, under its own stage.
     expect(jest.mocked(clients.dedup!.sendMessage)).toHaveBeenCalledTimes(1);
     expect(jest.mocked(clients.dedup!.sendMessage).mock.calls[0][1]).toContain('```\nComputeFee\n```');

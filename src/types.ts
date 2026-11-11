@@ -412,8 +412,11 @@ export interface RoundReferenceUse {
 export interface RoundNameTranslation {
   /** Why no name was translated, so the search ran with the original names only. */
   skipped?: string;
-  /** Each translated name searched for: the repo, the diff's name, the name searched as, and the lines of the repo that hold it. */
-  names?: Array<{ repo: string; name: string; as: string; lines: number }>;
+  /**
+   * Each translated name searched for: the repo, the diff's name, the name searched as, and the lines of the repo that
+   * hold it. `failed` is set when the search for it, or for the diff's names in that repo, failed, so `lines` says nothing.
+   */
+  names?: Array<{ repo: string; name: string; as: string; lines: number; failed?: true }>;
 }
 
 export interface RoundUsesSymbol {

@@ -193,9 +193,10 @@ const EFFORT_ORDER = Object.keys(DEEPER_EFFORT) as EffortLevel[];
  * before the PR is classified, and every floor class the PR matches is checked after routing.
  * A `deeper` review moves a group with fewer than two finders up to the built-in `pair` group, where a finder the
  * earlier group had runs at least at that group's effort.
- * With `clients`, each finder is named and recorded by the effort its client sends.
+ * With `clients`, each finder is named and recorded by the effort its client sends. With `workspace`, the PR head
+ * checked out for the tools, a finder whose client has repository tools also gets the checks on the related repos.
  */
-export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE, deeper = false, clients?: ReviewClients): TeamRoster {
+export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE, deeper = false, clients?: ReviewClients, workspace?: string): TeamRoster {
   const pin = config.planner?.paired ?? 'auto';
   const pinned: Triage = { ...triage, paired: pin === 'auto' ? triage.paired : pin === 'always' };
   const routing = resolveRouting(config.review);
@@ -207,7 +208,7 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
     choice = { name: FLOOR_FALLBACK_GROUP, group: BUILT_IN_GROUPS[FLOOR_FALLBACK_GROUP], source: 'deeper_review', escalatedFrom: choice.name };
   }
   const reviewClass = classification.name ? routing.classes[classification.name] : undefined;
-  const finders = buildFinders(choice.group, config, classification.triage, classification.floor !== undefined, deeper, clients, escalatedFrom);
+  const finders = buildFinders(choice.group, config, classification.triage, classification.floor !== undefined, deeper, clients, escalatedFrom, workspace);
   const sameEffort = finders.filter(f => f.deeperSameEffort).map(f => f.name);
   return {
     finders,
@@ -252,7 +253,7 @@ function askedEffort(reviewer: GroupReviewer, triage: Triage, deeper: boolean): 
  * Builds one finder per reader of `group`, all on the same checklist. A group with two finders, or a PR in a floor class,
  * gets the most tool steps. `escalatedFrom` is the group the PR had before a `deeper` review moved it up to `group`.
  */
-function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean, clients?: ReviewClients, escalatedFrom?: ReviewGroup): Finder[] {
+function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean, clients?: ReviewClients, escalatedFrom?: ReviewGroup, workspace?: string): Finder[] {
   const names = new Set<string>();
   const finders = group.reviewers.filter(r => r.role !== 'verifier');
   const risky = floor || finders.length >= 2;
@@ -276,7 +277,8 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
     const sentEffort = sent(effort) ?? effort;
     const verifier = reviewer.role === 'verifier';
     const custom = reviewer.focus ? [...config.reviewers, { name: 'This review group', focus: reviewer.focus }] : config.reviewers;
-    const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom);
+    // A finder reads a related repo only through repository tools on the checked-out PR head.
+    const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom, workspace && client?.repoTools ? config.related_repos : []);
     const label = verifier ? `Quick check · ${modelDisplayName(model)}`
       : [modelDisplayName(model), sentEffort, ...(reviewer.focus ? [shortFocus(reviewer.focus)] : [])].join(' · ');
     let name = label;
@@ -688,7 +690,7 @@ export async function runReview(
     plannerSource = plannerResult ? 'planner' : 'heuristic_fallback';
     plannerFallbackReason = outcome.fallbackReason;
   }
-  const team = selectTeam(diffWithLockfiles, config, plannerResult ?? undefined, options.deeper, clients);
+  const team = selectTeam(diffWithLockfiles, config, plannerResult ?? undefined, options.deeper, clients, workspace);
   const setEffort = config.judge?.effort;
   const judgeEffort = setEffort && setEffort !== 'auto' ? setEffort : plannerResult?.judgeEffort ?? 'high';
   // What the round has produced so far. A round that ends incomplete keeps it all in its record.
