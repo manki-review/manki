@@ -776,6 +776,10 @@ describe('buildJudgeUserMessage', () => {
     expect(unpushed).toContain('"Token logged" at src/log.ts:7 (stays open: the push did not change this file)\n');
     const staysOpenRule = 'A thread marked "stays open" is not resolved this round whatever you decide. In the summary, say that it is still open, and never write that its problem is fixed.';
     expect(unpushed).toContain(staysOpenRule);
+    // A thread on another file than its finding's can name no file, and GitHub reports it on line 1.
+    const nowhere = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [{ ...openThreads[0], file: '', line: 1 }], rounds, '');
+    expect(nowhere).toContain('"Null check missing" not tied to a file (earlier blocker, stays open: only a person can clear a thread that is not tied to a file)\n');
+    expect(nowhere).toContain(`### ${openThreads[0].threadId} — not tied to a file\n`);
 
     const pushed = 'diff --git a/src/foo.ts b/src/foo.ts\n--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -10,1 +10,1 @@\n-a\n+b\n';
     expect(followUp(pushed)).toMatch(/"Null check missing" at src\/foo\.ts:10 \(earlier blocker\)\n/);
