@@ -147,14 +147,14 @@ memory:
 | `drafts` | `skip` or `review` | `skip` | `skip` reviews a draft only on request, `review` reviews it automatically. A draft review never approves and does not count toward `convergence.max_auto_rounds`. |
 | `auto_review_max_lines` | positive integer | `8000` | Reviewable lines, after `exclude_paths`, above which a PR gets no automatic review, only a request to split it, with Review again in its settings block. Read from the base branch. |
 | `max_diff_lines` | positive integer | `15000` | Reviewable lines above which Manki never reviews a PR, even when forced. Read from the base branch. |
-| `slice_lines` | integer, at least 200 | `1500` | Changed lines a finder or the verdict reader reads in one call. A larger diff is read in slices of this size, and of at most 200,000 characters, four at a time. Read from the base branch. |
+| `slice_lines` | integer, at least 200 | `1500` | Changed lines a finder or the verdict reader reads in one call. A larger diff is read in slices of about this size, and of at most 200,000 characters, four at a time. Read from the base branch. |
 | `models` | map | see below | The model of each stage. A model id picks its provider: `claude-*` is Anthropic, `gpt-*` and the o-series are OpenAI, `gemini-*` is Gemini. `provider/model` names one explicitly. |
 | `models.planner` | model id | `claude-haiku-5-5` | The planner, a fast pass that triages the change before the review. |
 | `models.reviewer` | model id | `claude-sonnet-5-5` | The finder on every round, and `@reviewer` in a review group. |
 | `models.reviewer_pair` | model id | the other Claude tier of `models.reviewer` | The second finder on paired rounds, and `@reviewer_pair` in a review group. |
 | `models.judge` | model id | `claude-opus-5-5` | The judge, which filters the findings and sets their severity, the verdict reader and the refuter. |
 | `models.refuter_pair` | model id | off | A second refuter on another model that checks every finding the first refuter checks, at the same time. The first runs on `models.judge`. A split keeps the judge's grade and shows both reasons. Two disproofs lower a blocker only when the judge alone raised it above every finder's grade. It needs repository tools, so the Claude or Codex CLI. See [Severity tiers](how-reviews-work.md#severity-tiers). |
-| `models.dedup` | model id | `claude-haiku-5-5` | The dedup pass against findings already posted on the PR. |
+| `models.dedup` | model id | `claude-haiku-5-5` | The dedup pass against resolved findings from earlier rounds, and the small side calls: same-defect checks, related work and name translation. |
 | `models.fallback` | model id | `models.reviewer` | Reruns a stage once when a provider's safety filter refuses it. A stage already on this model moves to its other Claude tier. |
 | `planner` | map | see below | The planner stage. |
 | `planner.enabled` | boolean | `true` | Run the planner. Without it, every round takes the side that adds review: two finders at high effort. |
@@ -170,7 +170,7 @@ memory:
 | `review.classes` | map of classes | the built-in classes | Classes of your own, each with a unique `rank` and a `match` on `paths_any`, `triage` or both. On `security`, `supply_chain` and `data_contract`, `match.paths_any` adds paths to the built-in rule. |
 | `review.routing` | map of class to group | the built-in routes | The group per class. A class left out keeps its built-in group. |
 | `review.default_group` | group name | `pair` | The group for a class with no route. |
-| `review.allow_weaker` | list of class names | none | Floor classes allowed to route to a group below the floor. Without it, such a route fails the run. |
+| `review.allow_weaker` | list of class names | none | Floor classes allowed to route to a group below the floor. Without it, a `review` block with such a route does not load. |
 | `review.critical_paths` | list of globs | none | Critical areas, where any wrong result is severe even in a rare internal edge case. Globs or the path aliases. The judge grades a wrong result there as severe damage. See [Review groups](how-reviews-work.md#review-groups). |
 | `review.outside_input` | string | none | What counts as outside input in your repository. The judge treats a failure this input can trigger as reachable. |
 | `review.examples` | map with `blocker` and `not_blocker` lists | none | Worked examples from your repository, which the judge reads next to its built-in examples. |
