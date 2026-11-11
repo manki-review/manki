@@ -5365,8 +5365,8 @@ describe('judge grading fixture corpus', () => {
       ...(fixture.pr && { prContext: { ...fixture.pr, baseBranch: 'main' } }),
     });
 
-    const actual = result.findings[0]?.severity;
-    console.log(`[live-judge] ${fixture.name}: allowed=${fixture.allowed.join('|')} actual=${actual} reasoning=${JSON.stringify(result.findings[0]?.judgeNotes ?? '')}`);
-    expect(fixture.allowed).toContain(actual);
+    const graded = result.findings[0];
+    console.log(`[live-judge] ${fixture.name}: allowed=${fixture.allowed.join('|')} actual=${graded?.severity} cell=${JSON.stringify(graded?.cell)} gradeIfConfirmed=${graded?.gradeIfConfirmed} doubts=${JSON.stringify(graded?.doubts ?? [])} reasoning=${JSON.stringify(graded?.judgeNotes ?? '')}`);
+    expect(fixture.allowed).toContain(graded?.severity);
   }, 600_000);
 });
