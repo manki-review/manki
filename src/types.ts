@@ -800,7 +800,7 @@ export interface ReviewResult {
   agentNames: string[];
   allJudgedFindings?: Finding[];
   rawFindings?: Finding[];
-  /** Open leads below blocker, which are listed in the progress comment and never posted. */
+  /** Open leads below blocker, which the review body lists as not finished checking and never posts. */
   openLeads?: Finding[];
   /** How each open lead of the round ended, carried-over ones included. */
   leads?: RoundLead[];
@@ -1429,11 +1429,10 @@ export interface DashboardData {
   heuristicFallback?: boolean;
   /** The review class and group the round's readers came from, shown in the review header, and the finders a Deeper review gave no more effort. */
   routing?: Pick<TeamRouting, 'class' | 'group' | 'deeperSameEffort'>;
-  /** Open leads below blocker that the reviewers did not finish checking. They are listed, never posted. */
-  unfinishedChecks?: Pick<Finding, 'title' | 'file' | 'line' | 'leadSince'>[];
-  /** Blockers and open leads the judge disproved with tools, with the reason. They are dropped. */
-  disproved?: (Pick<Finding, 'title' | 'file' | 'line'> & { reason: string })[];
 }
+
+/** A finding the judge dropped because a tool check disproved it, with the reason the check gave. */
+export type DisprovedFinding = Pick<Finding, 'title' | 'file' | 'line'> & { reason: string };
 
 export interface JudgeDecision {
   title: string;

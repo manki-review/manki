@@ -3,7 +3,7 @@ import { randomBytes } from 'crypto';
 
 import { ApprovalHeld, buildDashboard, capNotes, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
-import { DashboardData, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
+import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { highlightCode } from './highlight';
 import { makeFindingFingerprintEntry, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { withMarkers } from './utils';
@@ -2826,21 +2826,6 @@ describe('buildDashboard', () => {
     expect(md).not.toContain('before the judge');
     expect(buildDashboard({ ...data, rawFindingCount: 1, keptCount: 0, droppedCount: 0, suppressionCount: 0, llmDedupCount: 1 }))
       .toContain(`**Judge:** 0 kept · 0 dropped\n${INDENT}before the judge: 1 dropped as a repeat of an earlier resolved finding`);
-    expect(md).not.toContain('Not finished checking');
-  });
-
-  it('lists the open leads the reviewers did not finish checking once the review is complete', () => {
-    const leads = Array.from({ length: 12 }, (_, i) => ({ title: `Lead <b>${i}</b>`, file: 'src/`a`.ts', line: i + 1 }));
-    const md = buildDashboard({ phase: 'complete', lineCount: 10, agentCount: 1, unfinishedChecks: leads });
-
-    expect(md).toContain(`\n\n**Not finished checking:** 12 leads\n${INDENT}Lead 0 (\`src/'a'.ts:1\`)\n`);
-    expect(md).toContain(`${INDENT}Lead 9 (\`src/'a'.ts:10\`)\n${INDENT}and 2 more`);
-    expect(buildDashboard({ phase: 'reviewed', lineCount: 10, agentCount: 1, unfinishedChecks: leads })).not.toContain('Not finished checking');
-    const carried = buildDashboard({ phase: 'complete', lineCount: 10, agentCount: 1, unfinishedChecks: [{ title: 'Token may not read it', file: 'src/a.ts', line: 3, leadSince: 2 }] });
-    expect(carried).toContain(`**Not finished checking:** 1 lead\n${INDENT}Token may not read it (\`src/a.ts:3\`), open since round 2`);
-
-    const disproved = buildDashboard({ phase: 'complete', lineCount: 10, agentCount: 1, unfinishedChecks: leads.slice(0, 1), disproved: [{ title: 'Overflow', file: 'src/m.ts', line: 2, reason: 'Checked at <i>src/api.ts:3</i>.' }] });
-    expect(disproved).toContain(`\n\n**Disproved by the judge:** 1 finding\n${INDENT}Overflow (\`src/m.ts:2\`): Checked at src/api.ts:3.\n\n**Not finished checking:** 1 lead\n`);
   });
 
   it('renders per-agent detail and the review class and group in the complete phase', () => {
@@ -4499,18 +4484,84 @@ describe('postReview non-blocking findings', () => {
     expect(uncapped).not.toContain('not listed');
     expect(`${under}${alone}`).not.toContain('Left out');
     expect(review.body).not.toContain('not listed');
+  });
 
-    // A line of its own counts the warnings left out because nothing proves them, and says where each is named.
+  it('lists what the round checked and left out in one fold at the end of the body', async () => {
+    const { octokit, createReview } = makeOctokit();
+    const bodyOf = async (result: Partial<ReviewResult>, disproved: DisprovedFinding[] = []): Promise<string> => {
+      await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), ...result }, diff, undefined, undefined, { disproved });
+      return createReview.mock.calls.at(-1)![0].body;
+    };
+    const link = (line: number, file = 'src/a.ts'): string => `[\`${file}:${line}\`](https://github.com/owner/repo/blob/abc1234/${file}#L${line})`;
     const unproven = [nonBlocking('warning', 'Unsettled', 15, { unpostedReason: 'unsettled_check' }), nonBlocking('warning', 'Unchecked', 16, { unpostedReason: 'not_checked' }), nonBlocking('warning', 'Uncited', 17, { unpostedReason: 'no_proof' })];
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: [unproven[0], ...leftOut] }, diff);
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unposted: unproven }, diff);
-    const [one, three] = createReview.mock.calls.slice(-2).map(call => call[0].body as string);
-    expect(one).toMatch(/^Summary\n\n---\n\n<sub>1 warning is not listed, since nothing proves it\. The progress comment names it under "Judge decisions"\.<\/sub>\n\n---\n\n<sub>2 notes are not listed\.<\/sub>/);
-    expect(three).toMatch(/^Summary\n\n---\n\n<sub>3 warnings are not listed, since nothing proves them\. The progress comment names each under "Judge decisions"\.<\/sub>/);
-    expect(`${one}${three}`).not.toMatch(/Unsettled|Unchecked|Uncited/);
-    // An incomplete round's progress comment names no judge decisions, so its review points at none.
-    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), reviewComplete: false, unposted: unproven }, diff);
-    expect(createReview.mock.calls.at(-1)![0].body).not.toContain('Judge decisions');
+    const capped = nonBlocking('note', 'Left out', 11, { unpostedReason: 'note_cap' });
+    const leads = [nonBlocking('warning', 'Token may not read it', 3, { leadSince: 2 }), nonBlocking('note', 'Cache <b>may</b> go stale', 4)];
+    const overflow = { title: 'Overflow', file: 'src/m.ts', line: 2, reason: 'Checked at <i>src/api.ts:3</i>.\nBoth inputs are bounded. A third sentence stays in the log.' };
+    const log = '<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>';
+
+    // Every kind has its heading and count, and the summary gives the total and the split.
+    const all = await bodyOf({ unposted: [...unproven, capped], openLeads: leads }, [overflow]);
+    expect(all).toContain([
+      'Summary',
+      '',
+      '---',
+      '',
+      '<sub>1 note is not listed.</sub>',
+      '',
+      '---',
+      '',
+      '<details>',
+      '<summary>Checked and left out: 6 findings (1 disproved, 3 unproven, 2 not finished)</summary>',
+      '',
+      '#### Disproved by a tool check · 1 finding',
+      '',
+      `- **Overflow** · ${link(2, 'src/m.ts')}`,
+      '  Checked at src/api.ts:3. Both inputs are bounded.',
+      '',
+      '#### Not proven, so not listed · 3 warnings',
+      '',
+      `- **Unsettled** · ${link(15)}`,
+      '  A tool check could not confirm it.',
+      `- **Unchecked** · ${link(16)}`,
+      '  Nothing proves it and no tool check ran on it.',
+      `- **Uncited** · ${link(17)}`,
+      '  It cites no lines that prove it.',
+      '',
+      '#### Not finished checking · 2 leads',
+      '',
+      `- **Token may not read it** · ${link(3)}`,
+      '  Open since round 2.',
+      `- **Cache may go stale** · ${link(4)}`,
+      '',
+      log,
+      '',
+      '</details>',
+      '',
+      '<details>',
+      '<summary>About this review</summary>',
+    ].join('\n'));
+
+    // One kind needs no split, and a kind with no entries has no heading.
+    const one = await bodyOf({}, [overflow]);
+    expect(one).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Disproved by a tool check · 1 finding\n\n- **Overflow** · ${link(2, 'src/m.ts')}\n  Checked at src/api.ts:3. Both inputs are bounded.\n\n${log}\n\n</details>`);
+    expect(one).not.toMatch(/Not proven|Not finished/);
+    expect(await bodyOf({ unposted: unproven.slice(0, 1), openLeads: leads.slice(0, 1) })).toContain('<summary>Checked and left out: 2 findings (1 unproven, 1 not finished)</summary>');
+    // The judge never saw a lead that was only listed, so a fold of leads names no log.
+    const leadsOnly = await bodyOf({ openLeads: leads });
+    expect(leadsOnly).toContain('<summary>Checked and left out: 2 findings</summary>');
+    expect(leadsOnly).not.toContain('Judge decisions');
+
+    // Each kind lists its first ten. A reason ends at its second sentence, or its first when two pass 300 characters.
+    const many = Array.from({ length: 12 }, (_, i) => ({ title: `Finding ${i}`, file: 'src/`a`.ts', line: i + 1, reason: `${'Long reason. '.repeat(i === 0 ? 1 : 0)}${'x'.repeat(290)}. More than fits here.` }));
+    const long = await bodyOf({}, [...many, { title: 'No file', file: '', line: 0, reason: `${'y'.repeat(400)}. More.` }]);
+    expect(long).toContain(`#### Disproved by a tool check · 13 findings\n\n- **Finding 0** · [\`src/'a'.ts:1\`](https://github.com/owner/repo/blob/abc1234/src/%60a%60.ts#L1)\n  Long reason.\n- **Finding 1** · `);
+    expect(long).toContain(`#L2)\n  ${'x'.repeat(290)}.\n- **Finding 2**`);
+    expect(long).toMatch(/- \*\*Finding 9\*\* [^\n]+\n {2}x+\.\n\n<sub>and 3 more<\/sub>\n\n<sub>The progress comment/);
+    expect(await bodyOf({}, [{ title: 'No file', file: '', line: 0, reason: `${'y'.repeat(400)}. More.` }])).toContain(`- **No file**\n  ${'y'.repeat(300)}...\n\n`);
+
+    // An incomplete round's progress comment has no judge decisions, so its review has no fold. Neither has a round that left nothing out.
+    expect(await bodyOf({ reviewComplete: false, unposted: unproven, openLeads: leads }, [overflow])).not.toContain('Checked and left out');
+    expect(await bodyOf({ unposted: [capped] })).not.toContain('Checked and left out');
   });
 
   it('posts at most five non-blocking findings inline, most severe first, and lists the rest', async () => {

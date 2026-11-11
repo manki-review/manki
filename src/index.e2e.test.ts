@@ -605,9 +605,8 @@ describe('runFullReview end to end', () => {
       await reviewRound();
 
       expect(mockLLM.tools).toContainEqual(['refute', { root: workspace, steps: 15 }]);
-      const progress = mockGitHub.comments.find(c => c.body.startsWith('✅ **Review complete**'))!.body;
-      expect(progress).not.toContain('Disproved by the judge');
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      expect(postedReviews()[0].body).not.toContain('Checked and left out');
       // A disproof never clears a blocker, so it is posted with the refuter's reason.
       expect(mockGitHub.threads.map(t => t.comments[0].body)).toEqual([expect.stringContaining('a disproof alone never clears a blocker or a security finding, so please check it yourself. Both inputs are bounded at src/api.ts:3.')]);
       // The refutation call is recorded under its own label, so it is no judge retry.
@@ -682,7 +681,8 @@ describe('runFullReview end to end', () => {
     await reviewRound();
 
     const progress = mockGitHub.comments.find(c => c.body.startsWith('✅ **Review complete**'))!.body;
-    expect(progress).toContain('**Not finished checking:** 1 lead\n&nbsp;&nbsp;&nbsp;&nbsp;Cache may go stale (`src/math.ts:2`)');
+    expect(progress).not.toContain('Not finished checking');
+    expect(postedReviews()[0].body).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Not finished checking · 1 lead\n\n- **Cache may go stale** · [\`src/math.ts:2\`](https://github.com/${OWNER}/${REPO}/blob/${HEAD_SHA}/src/math.ts#L2)\n\n</details>`);
     expect(progress).toContain('Dropped: "Sum may overflow" (ignore, high confidence)');
     // The listed lead never reached the judge, so it is no duplicate the judge merged.
     const record = mockGitHub.roundContext(postedReviews()[0]);
