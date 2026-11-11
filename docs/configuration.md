@@ -193,7 +193,7 @@ memory:
 | `related_repos[].repo` | `owner/name` | required | A public repository on github.com. |
 | `related_repos[].kind` | `reference` or `consumer` | required | `reference` for a repository this one implements, `consumer` for one that depends on it. |
 | `related_repos[].ref` | branch, tag or full commit hash | the default branch | What to read. Write a name that looks like a short commit hash as `refs/heads/<name>` or `refs/tags/<name>`. |
-| `related_repos[].paths` | list of up to 20 paths or globs | the whole repository | The only paths fetched. |
+| `related_repos[].paths` | list of up to 20 paths or globs | the whole repository | The only paths fetched, along with a root `AGENTS.md` and `CLAUDE.md`. |
 | `review_passes` | integer from 1 to 5 | `1` | Runs each finder this many times with the files in shuffled order, and keeps only the findings the passes agree on. |
 | `noise_level` | `low`, `medium` or `high` | `low` | `low` tells the finders to leave out style, formatting and anything a formatter or linter catches, except a break of a rule in the repository's own `AGENTS.md`, `CLAUDE.md` or `CONTRIBUTING.md`, which is reported with the rule quoted. `high` asks for borderline suggestions too. |
 | `instructions` | string | none | Extra context for the finders. They also read the root `AGENTS.md`, `CLAUDE.md` and `CONTRIBUTING.md`, the nearest `AGENTS.md` and `CLAUDE.md` above each changed file, and the `.md` files these link to. |

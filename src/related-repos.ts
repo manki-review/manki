@@ -13,6 +13,8 @@ const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
 // Git sends no credential, so a private repo fails, and runs no hook or fsmonitor of a clone.
 const GIT_CONFIG = { 'credential.helper': '', 'core.hooksPath': devNull, 'core.fsmonitor': 'false' };
+// A repo's guide is the first of these at its root.
+const GUIDE_FILES = ['AGENTS.md', 'CLAUDE.md'];
 
 export interface RelatedRepoLoaderOptions {
   /** Time limit for fetching one repo. */
@@ -116,6 +118,18 @@ export async function fetchReferenceRepos(related: RelatedRepoTools, options: Re
   return fetched.flatMap(result => (result.status === 'fulfilled' ? [result.value] : []));
 }
 
+/**
+ * Returns the guide file at the root of each of `checkouts` that has one, by `owner/name`, or `undefined` when none
+ * has. Only a regular file counts, so a guide is never a link that leaves the checkout.
+ */
+export function relatedRepoGuides(checkouts: ReferenceCheckout[]): Record<string, string> | undefined {
+  const guides = checkouts.flatMap(({ repo, dir }) => {
+    const guide = GUIDE_FILES.find(name => lstatSync(join(dir, name), { throwIfNoEntry: false })?.isFile());
+    return guide ? [[repo, guide]] : [];
+  });
+  return guides.length > 0 ? Object.fromEntries(guides) : undefined;
+}
+
 /** Returns the checkout directory of each related repo a tool server of the round in `stateDir` fetched, by `owner/name`. */
 export function fetchedRelatedRepos(stateDir: string): Map<string, string> {
   const done = readdirSync(stateDir).filter(f => f.endsWith('.done'));
@@ -126,13 +140,14 @@ const MAX_REASON_CHARS = 300;
 
 /**
  * Returns how each of `repos` fared in the round in `stateDir`: fetched, failed with the reason, or unused when no tool
- * call named it, with how long a fetch took from its lock to its outcome. Warns about each repo it could not fetch.
+ * call named it, with how long a fetch took from its lock to its outcome, and the guide of `guides` the finders were
+ * pointed to. Warns about each repo it could not fetch.
  */
-export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string): RoundRelatedRepo[] {
+export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guides: Record<string, string> = {}): RoundRelatedRepo[] {
   const files = new Set(readdirSync(stateDir));
   return repos.map(({ repo, ref }) => {
     const marker = encodeURIComponent(repo);
-    const base = { repo, ...(ref && { ref }) };
+    const base = { repo, ...(ref && { ref }), ...(guides[repo] && { guide: guides[repo] }) };
     if (!files.has(`${marker}.lock`)) return { ...base, status: 'unused' as const };
     const took = (outcome: string) => ({ durationMs: Math.max(0, Math.round(statSync(join(stateDir, outcome)).mtimeMs - statSync(join(stateDir, `${marker}.lock`)).mtimeMs)) });
     if (files.has(`${marker}.done`)) return { ...base, status: 'fetched' as const, ...took(`${marker}.done`) };
@@ -144,7 +159,7 @@ export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string): Rou
 }
 
 /**
- * Fetches one commit of `repo`, with only its `paths`, into its directory under `cacheDir`, reusing the objects of a
+ * Fetches one commit of `repo`, with only its `paths` and `GUIDE_FILES`, into its directory under `cacheDir`, reusing the objects of a
  * clone already there, and returns that directory. Throws when it cannot be fetched in time, as a private or missing
  * repo cannot.
  */
@@ -174,7 +189,7 @@ async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutM
     removeUnlessRealDirectory(cacheDir, log);
     removeUnlessRealDirectory(dirname(dir), log);
     await initReusingObjects(dir, init, git, log);
-    await git(...(repo.paths ? ['sparse-checkout', 'set', '--no-cone', ...repo.paths.map(sparsePattern)] : ['sparse-checkout', 'disable']));
+    await git(...(repo.paths ? ['sparse-checkout', 'set', '--no-cone', ...[...GUIDE_FILES, ...repo.paths].map(sparsePattern)] : ['sparse-checkout', 'disable']));
     await git('fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', repo.ref ?? 'HEAD');
     await git('checkout', '-q', '--force', '--detach', 'FETCH_HEAD');
     // With no refs to negotiate from, the fetch sends every tree of a new commit again. Repacking keeps one copy in the cache.

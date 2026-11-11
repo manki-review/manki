@@ -301,6 +301,8 @@ export interface RoundRelatedRepo {
   durationMs?: number;
   /** Tool calls that read the repo, over every call of the round. */
   reads?: number;
+  /** The guide file at the repo's root that the finders were pointed to as a map of the repo. */
+  guide?: string;
 }
 
 /** What the "Uses Outside the Diff" section showed the finders, as locations without the quoted code. */
@@ -987,7 +989,7 @@ export interface RelatedRepo {
   kind: RelatedRepoKind;
   /** Branch, tag or full commit hash to read. Defaults to the repo's default branch. */
   ref?: string;
-  /** Paths or globs to fetch, relative to the repo root. Defaults to the whole repo. */
+  /** Paths or globs to fetch, relative to the repo root, next to the root `AGENTS.md` and `CLAUDE.md`. Defaults to the whole repo. */
   paths?: string[];
 }
 
@@ -998,6 +1000,8 @@ export interface RelatedRepoTools {
   cacheDir: string;
   /** The round's own directory, where the tool servers record which repo one of them fetched or failed to fetch. */
   stateDir: string;
+  /** The guide file at the root of each repo fetched before the finders run, by `owner/name`. Only the prompt uses it. */
+  guides?: Record<string, string>;
 }
 
 export interface StaticAnalysisConfig {
