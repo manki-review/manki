@@ -2,6 +2,7 @@ import { execFileSync } from 'child_process';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { isMap, isScalar, parseDocument } from 'yaml';
 
 import { BenchCase, BenchReport, buildReport, candidateFindings, formatBenchSummary, formatGate, formatUnmatchedBlockers, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
@@ -85,6 +86,19 @@ must_keep_open:
     mechanism: The read timeout is set, the write timeout is not.
 must_not_repeat: [P3]
 `;
+
+/**
+ * Returns what a case file may not hold: the upstream organisation's name outside the `config:` block, whose
+ * `related_repos` may name its repositories, and anywhere a linked reference to a repository outside the forks.
+ */
+function foreignReferences(text: string): string[] {
+  const { contents } = parseDocument(text);
+  const config = isMap(contents) ? contents.items.find(pair => isScalar(pair.key) && pair.key.value === 'config')?.value : undefined;
+  const [from, to] = (isMap(config) && config.range) || [0, 0];
+  const named = `${text.slice(0, from)}${text.slice(to)}`.match(/dashpay\//gi) ?? [];
+  const linked = [...text.matchAll(/([\w.-]+)\/[\w.-]+#\d+/g)].filter(m => m[1] !== 'xdustinface' && m[1] !== 'manki-review').map(m => m[0]);
+  return [...named, ...linked];
+}
 
 function makeFinding(overrides: Partial<Finding>): Finding {
   return { severity: 'warning', title: 'A finding', file: 'src/other.rs', line: 1, description: 'Something.', reviewers: ['reviewer'], ...overrides };
@@ -192,12 +206,19 @@ describe('parseCase', () => {
     const unloadable: string[] = [];
     for (const c of cases.filter(own => own.config)) await loadConfigWithOverrides('', '', {}, c.config).catch(() => unloadable.push(c.id));
     expect(unloadable).toEqual([]);
-    for (const file of files) {
-      const text = readFileSync(file, 'utf-8');
-      expect(text).not.toMatch(/dashpay\//i);
-      const references = [...text.matchAll(/([\w.-]+)\/[\w.-]+#\d+/g)].map(m => m[1]);
-      expect(references.filter(owner => owner !== 'xdustinface' && owner !== 'manki-review')).toEqual([]);
-    }
+    expect(files.flatMap(file => foreignReferences(readFileSync(file, 'utf-8')).map(found => `${file}: ${found}`))).toEqual([]);
+  });
+
+  it('lets only the config of a case name an upstream repository, and no part of it link to one', () => {
+    const related = (repo: string) => `${CASE_YAML}# The reference repositories.\nconfig:\n  related_repos:\n    - { repo: ${repo}, kind: reference }\n  instructions: Follow the reference.\n# After the config.\nkey_note: last\n`;
+    expect(foreignReferences(related('dashpay/dash'))).toEqual([]);
+    expect(foreignReferences(related('dashpay/dash').replace('source: demo upstream PR 7', 'source: dashpay/dash PR 7'))).toEqual(['dashpay/']);
+    expect(foreignReferences(related('dashpay/dash').replace('# The reference repositories.', '# From dashpay/dash.'))).toEqual(['dashpay/']);
+    expect(foreignReferences(related('dashpay/dash').replace('# After the config.', '# After dashpay/dash.'))).toEqual(['dashpay/']);
+    expect(foreignReferences(related('dashpay/dash').replace('key_note: last', 'key_note: DashPay/dips'))).toEqual(['DashPay/']);
+    expect(foreignReferences(related('owner/demo').replace('Follow the reference.', 'See other/repo#12.'))).toEqual(['other/repo#12']);
+    expect(foreignReferences(`${CASE_YAML}config: dashpay/dash\n`)).toEqual(['dashpay/']);
+    expect(foreignReferences(CASE_YAML.replace('demo upstream PR 7', 'xdustinface/demo#7 and manki-review/manki#8'))).toEqual([]);
   });
 });
 
