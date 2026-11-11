@@ -5031,6 +5031,11 @@ describe('runFullReview orchestration', () => {
     // Rewritten code that no changed file holds is gone, so the judge sees the head's code near the same line.
     expect(gone).toMatchObject({ line: 2, postedCodeGone: true });
     expect(gone.movedTo).toBeUndefined();
+    // The thread says only that its code is gone, with no field a guard could read as a push to its file.
+    expect(Object.keys(gone).sort()).toEqual([
+      'currentCode', 'description', 'file', 'howToFix', 'line', 'postedCode', 'postedCodeGone', 'postedCommit', 'severity', 'suggestedFix', 'threadId', 'threadUrl', 'title',
+    ]);
+    expect(gone.postedCode).not.toBe(gone.currentCode);
     expect(gone.currentCode).toContain('>>> 2:   queue.push(job);');
     // Code that exactly one other changed file holds unchanged is shown there, and the thread keeps its own file.
     expect(elsewhere).toMatchObject({ file: 'src/threads.ts', line: 1, movedTo: 'src/helpers.ts' });

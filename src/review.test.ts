@@ -2975,9 +2975,9 @@ describe('runReview', () => {
     }
     openThread.severity = 'blocker';
 
-    // An outdated thread keeps the guard too, whether its code is gone or sits in a file the push did change.
-    for (const outdated of [{ postedCodeGone: true }, { movedTo: 'src/y.ts' }]) {
-      const guarded = await runWith(elsewhere, { ...openThread, postedCode: '>>> 10: old', postedCommit: 'sha0', ...outdated });
+    // An outdated thread keeps the guard too, whether its code is gone, was rewritten in an earlier push, or sits in a file the push did change.
+    for (const outdated of [{ postedCodeGone: true }, { currentCode: '>>> 10: rewritten' }, { movedTo: 'src/y.ts' }]) {
+      const guarded = await runWith(elsewhere, { ...openThread, postedCode: '>>> 10: old', postedCommit: 'sha0', currentCode: '>>> 10: near', ...outdated });
       expect([guarded.outcome, guarded.threadEvaluations?.[0].status]).toEqual(['ADDRESS_FIRST', 'uncertain']);
     }
 
@@ -2997,6 +2997,11 @@ describe('runReview', () => {
     expect(await gradeAfter(partly('warning'), touching)).toEqual(['warning', 'READY']);
     expect(await gradeAfter(partly(), touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
     expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    // An earlier push that rewrote an outdated thread's code is no push to its file, so the grade it carries holds.
+    const rewritten = { postedCode: '>>> 10: old', postedCommit: 'sha0', currentCode: '>>> 10: rewritten', postedCodeGone: true };
+    Object.assign(openThread, rewritten);
+    expect(await gradeAfter(partly('warning'), elsewhere)).toEqual(['blocker', 'ADDRESS_FIRST']);
+    for (const key of Object.keys(rewritten) as Array<keyof typeof rewritten>) delete openThread[key];
     expect(await gradeAfter(partly('warning'), touching, [repeat])).toEqual(['blocker', 'ADDRESS_FIRST']);
     openThread.severity = 'warning';
     expect(await gradeAfter(partly('blocker'), touching)).toEqual(['warning', 'READY']);

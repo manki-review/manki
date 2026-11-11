@@ -96,7 +96,7 @@ const MATH_TS = 'export function add(a: number, b: number): number {\n  const su
 interface FakeUser { login: string; type: string }
 interface FakeComment { id: number; body: string; user: FakeUser; created_at: string; updated_at: string; reactions?: { eyes: number } }
 interface FakeReview { id: number; body: string; state: string; commit_id: string; user: FakeUser; submitted_at: string }
-interface FakeThreadComment { databaseId: number; body: string; url: string; authorAssociation: string; author: { login: string } }
+interface FakeThreadComment { databaseId: number; body: string; url: string; authorAssociation: string; author: { login: string }; originalCommit?: { oid: string } }
 interface FakeThread { id: string; isResolved: boolean; resolvedBy: { login: string } | null; path: string; line: number; startLine: number | null; originalLine: number; comments: FakeThreadComment[] }
 interface FakeFailure { method: string; path: RegExp; status: number }
 
@@ -118,6 +118,8 @@ class FakeGitHub {
   /** The commits each head adds on top of the head before it, oldest first, and the diff of each commit. A head adds only itself by default. */
   pushedCommits: Record<string, string[]> = {};
   commitDiffs: Record<string, string> = {};
+  /** `src/math.ts` at a commit that changed it. Every other commit holds `MATH_TS`. */
+  mathAt: Record<string, string> = {};
   mergeable: boolean | null = true;
   /** The repository's other open PRs, as the GraphQL API lists them. */
   openPrs: Array<{ number: number; title: string; body: string; isDraft: boolean; files: { nodes: Array<{ path: string }> } }> = [];
@@ -236,7 +238,7 @@ class FakeGitHub {
     if (method === 'POST' && route === `/pulls/${PR_NUMBER}/reviews`) {
       const review = { id: this.nextId++, body: body.body, state: REVIEW_STATES[body.event], commit_id: body.commit_id, user, submitted_at: now };
       this.reviews.push(review);
-      for (const c of body.comments ?? []) this.addThread(c.path, c.line, c.body, login);
+      for (const c of body.comments ?? []) this.addThread(c.path, c.line, c.body, login, false, body.commit_id);
       return json(review);
     }
     if ((match = route.match(/^\/pulls\/\d+\/reviews\/(\d+)(\/dismissals)?$/))) {
@@ -262,7 +264,8 @@ class FakeGitHub {
       return json({ type: 'file', encoding: 'base64', size: config.length, content: Buffer.from(config).toString('base64') });
     }
     if (method === 'GET' && route === `/contents/src/math.ts`) {
-      return json({ type: 'file', encoding: 'base64', size: MATH_TS.length, content: Buffer.from(MATH_TS).toString('base64') });
+      const content = this.mathAt[searchParams.get('ref') ?? ''] ?? MATH_TS;
+      return json({ type: 'file', encoding: 'base64', size: content.length, content: Buffer.from(content).toString('base64') });
     }
     if (method === 'GET' && (match = route.match(/^\/actions\/runs\/(\d+)$/))) {
       return json({ id: Number(match[1]), status: this.activeRuns.includes(Number(match[1])) ? 'in_progress' : 'completed', conclusion: null });
@@ -277,11 +280,14 @@ class FakeGitHub {
   };
 
   /** Adds a review thread whose first comment is `body`. GraphQL reports a bot without its `[bot]` suffix. */
-  addThread(path: string, line: number, body: string, login: string, isResolved = false): FakeThread {
+  addThread(path: string, line: number, body: string, login: string, isResolved = false, commit?: string): FakeThread {
     const id = `PRRT_${this.threads.length + 1}`;
     const thread = {
       id, isResolved, resolvedBy: null, path, line, startLine: null, originalLine: line,
-      comments: [{ databaseId: this.nextId++, body, url: `https://github.com/${OWNER}/${REPO}/pull/${PR_NUMBER}#discussion_${id}`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') } }],
+      comments: [{
+        databaseId: this.nextId++, body, url: `https://github.com/${OWNER}/${REPO}/pull/${PR_NUMBER}#discussion_${id}`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') },
+        ...(commit && { originalCommit: { oid: commit } }),
+      }],
     };
     this.threads.push(thread);
     return thread;
@@ -398,8 +404,10 @@ class FakeLLM {
   repoTools = false;
   /** The stages called with repository tools, and the tools each was given. */
   tools: [Stage, SendMessageOptions['repoTools']][] = [];
+  /** The user message of the latest call to each stage. */
+  asked: Partial<Record<Stage, string>> = {};
 
-  async sendMessage(system: string, _user: string, options?: SendMessageOptions): Promise<{ content: string }> {
+  async sendMessage(system: string, user: string, options?: SendMessageOptions): Promise<{ content: string }> {
     const stage: Stage = system.startsWith('You give the final merge-readiness verdict') ? 'verdict'
       : system.startsWith('You are a code review judge') ? 'judge'
         : system.startsWith('You check one finding') ? 'refute'
@@ -408,6 +416,7 @@ class FakeLLM {
           : system.includes('"judgeEffort"') ? 'planner'
             : 'reviewer';
     this.calls.push(stage);
+    this.asked[stage] = user;
     if (options?.repoTools) this.tools.push([stage, options.repoTools]);
     this.onCall?.(stage);
     const signal = options?.signal;
@@ -917,6 +926,46 @@ describe('runFullReview end to end', () => {
     expect(rebased.body).toContain('**Still open from earlier reviews:**\n- `src/math.ts:2`: Sum is never range checked ([view thread](https://github.com/acme/widgets/pull/42#discussion_PRRT_1))');
     expect(mockGitHub.threads).toHaveLength(1);
 
+    // A push rewrites the thread's lines and bounds only one input, so GitHub shows the thread outdated, without a line.
+    // The judge calls what remains rare. Nothing checks that claim on a thread, so the thread keeps blocking.
+    const rewritten = MATH_TS.replace('  const sum = a + b;\n  return sum;', '  const total = clamp(a) + b;\n  return total;');
+    const rewrite = 'diff --git a/src/math.ts b/src/math.ts\n--- a/src/math.ts\n+++ b/src/math.ts\n@@ -2,2 +2,2 @@\n-  const sum = a + b;\n-  return sum;\n+  const total = clamp(a) + b;\n+  return total;\n';
+    const partlyFixed = (cell: Record<string, string>) => JSON.stringify({
+      summary: 'One input is bounded.', findings: [],
+      threadEvaluations: [{ threadId: 'PRRT_1', status: 'partly_addressed', reason: 'Only `a` is clamped.', remaining: 'A large `b` still overflows.', ...cell }],
+    });
+    const pushTo = (head: string, commitDiff: string, prDiff: string) => {
+      mockGitHub.headSha = head;
+      mockGitHub.mathAt[head] = rewritten;
+      mockGitHub.prDiffs[head] = prDiff;
+      mockGitHub.commitDiffs[head] = commitDiff;
+      mockGitHub.threads[0].line = 0;
+    };
+    const rewrittenPr = PR_DIFF.replace('+  const sum = a + b;\n+  return sum;', '+  const total = clamp(a) + b;\n+  return total;');
+    pushTo('d4'.repeat(20), rewrite, rewrittenPr);
+    Object.assign(mockLLM.replies, READY_REPLIES, { judge: partlyFixed({ row: 'wrong', column: 'rare' }) });
+    await reviewRound();
+    const partly = postedReviews().at(-1)!;
+    expect(partly.state).toBe('CHANGES_REQUESTED');
+    expect(mockGitHub.roundContext(partly).judge.threadEvaluations).toEqual([
+      expect.objectContaining({ threadId: 'PRRT_1', status: 'partly_addressed', cell: { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, grade: 'blocker' }),
+    ]);
+
+    // The next push changes only the README. The thread's code differs from the code it was posted on, but this push
+    // did not touch its file, so a lower row for what remains cannot lift the block either.
+    const readme = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+Sums are clamped.\n';
+    pushTo('e5'.repeat(20), readme, `${rewrittenPr}${readme}`);
+    mockLLM.replies.judge = partlyFixed({ row: 'degraded' });
+    await reviewRound();
+    const guarded = postedReviews().at(-1)!;
+    expect(mockLLM.asked.judge).toContain('>>> 2:   const sum = a + b;');
+    expect(mockLLM.asked.judge).toContain('  const total = clamp(a) + b;');
+    expect(guarded.state).toBe('CHANGES_REQUESTED');
+    expect(mockGitHub.roundContext(guarded).judge.threadEvaluations).toEqual([
+      expect.objectContaining({ threadId: 'PRRT_1', status: 'partly_addressed', cell: { row: 'degraded', column: 'normal' }, grade: 'blocker' }),
+    ]);
+    expect(mockGitHub.threads[0].isResolved).toBe(false);
+
     // Two commits since the last review: the first rewrites the thread's line, the second only changes the README. GitHub
     // then shows the thread outdated, without a line, so its file stands in for it. Only the first commit changed that file.
     mockGitHub.headSha = 'c3'.repeat(20);
@@ -931,8 +980,9 @@ describe('runFullReview end to end', () => {
     });
     await reviewRound();
 
-    expect(postedReviews()[2].state).toBe('APPROVED');
-    expect(mockGitHub.roundContext(postedReviews()[2]).judge.interRoundDiffState).toBe('changed');
+    const fixed = postedReviews().at(-1)!;
+    expect(fixed.state).toBe('APPROVED');
+    expect(mockGitHub.roundContext(fixed).judge.interRoundDiffState).toBe('changed');
     const [thread] = mockGitHub.threads;
     expect(thread.isResolved).toBe(true);
     expect(mockGitHub.writes).toContain('POST /resolve');
