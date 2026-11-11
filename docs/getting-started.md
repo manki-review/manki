@@ -21,7 +21,7 @@ Install Manki on a GitHub repository: the App, a provider credential and the wor
    - Set to 1 required review. Manki's APPROVE counts as a review
    - Check **"Dismiss stale pull request approvals when new commits are pushed"**
 
-> **Note**: If the action finds blocking issues, it posts REQUEST_CHANGES which blocks the merge. Non-blocking suggestions still result in APPROVE.
+> **Note**: If the action finds blocking issues, it posts REQUEST_CHANGES which blocks the merge. Warnings and notes still result in APPROVE.
 
 When Manki posts a new review, it dismisses its own earlier REQUEST_CHANGES review. If a ruleset turns on **Restrict who can dismiss reviews** (in its **Require a pull request before merging** rule), add the App Manki posts as to the allowed actors: the Manki app, or your own App. Otherwise GitHub refuses the dismissal, and the old REQUEST_CHANGES keeps blocking the merge after Manki approves.
 

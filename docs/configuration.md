@@ -175,7 +175,7 @@ memory:
 | `review.outside_input` | string | none | What counts as outside input in your repository. The judge treats a failure this input can trigger as reachable. |
 | `review.examples` | map with `blocker` and `not_blocker` lists | none | Worked examples from your repository, which the judge reads next to its built-in examples. |
 | `review.sweep` | boolean | `false` | After the judge keeps a blocker, search the whole diff for other instances of its defect class, at most three blockers a round. Their findings go through dedup and the judge like any finding. See [Sweeping for a defect class](how-reviews-work.md#sweeping-for-a-defect-class). |
-| `review.notes` | non-negative integer | `3` | How many notes a review lists at most. A note is a finding below a warning: a suggestion or a nitpick. A note gets no thread. The review body lists the notes in one collapsed section, and the round record keeps the ones left out. `0` lists none. A security finding is never a note. See [Severity tiers](how-reviews-work.md#severity-tiers). |
+| `review.notes` | non-negative integer | `3` | How many notes a review lists at most. A note is a finding below a warning: an optional improvement, never a defect. A note gets no thread. The review body lists the notes in one collapsed section, and the round record keeps the ones left out. `0` lists none. A security finding is never a note. See [Severity tiers](how-reviews-work.md#severity-tiers). |
 | `static_analysis` | map | see below | Which CI results the reviewers read as evidence, and Manki's own analyzers. Read from the base branch. See [Reading CI results](how-reviews-work.md#reading-ci-results). |
 | `static_analysis.checks` | boolean | `true` | Read check-run annotations. Needs `checks: read` in the workflow. |
 | `static_analysis.code_scanning` | boolean | `true` | Read open code scanning alerts. Needs `security-events: read` in the workflow. |
@@ -204,7 +204,7 @@ memory:
 | `convergence` | map | see below | How rounds end. See [Severity tiers](how-reviews-work.md#severity-tiers). |
 | `convergence.max_auto_rounds` | non-negative integer | `10` | Automatic rounds since Manki last approved. After the last one, automatic review pauses until a review is started by hand, and the notice asks the author to reconsider the approach. `0` turns the cap off. |
 | `convergence.rounds_after_restart` | non-negative integer | `3` | Automatic rounds that a review started by hand, with `@manki review` or a settings box, turns back on while automatic review is paused. A restart never leaves fewer rounds than the cap still allows. When they pass without an approval, automatic review pauses again until the next one. `0` grants none, so after a round-cap pause a restart reviews only the round asked for. |
-| `convergence.test_path_patterns` | list of globs | `["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]` | Test files. From the second round, suggestions and nitpicks on them are dropped, except security findings and tool alerts. |
+| `convergence.test_path_patterns` | list of globs | `["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/__tests__/**"]` | Test files. From the second round, notes on them are dropped, except security findings and tool alerts. |
 | `convergence.suppress_resolved_threads` | boolean | `true` | A finding whose thread a person resolved, or Manki resolved as addressed, suppresses matching findings in later rounds. |
 | `memory` | map | see below | Review memory. See [Review memory](memory.md). |
 | `memory.enabled` | boolean | `false` | Read learnings and suppressions, and write new ones. Without `memory.repo`, a public repo's memory lives in the central memory repository, which holds only public repos' memory and which the token service reads and writes for the run. A private repo needs `memory.repo`. |
@@ -219,7 +219,7 @@ These still load, with a warning.
 | Setting | Type | Default | What it does |
 |---------|------|---------|--------------|
 | `planner.paired` | `auto`, `always` or `never` | `auto` | Pins the planner's `paired` answer. Route classes with `review.routing` instead. |
-| `nit_handling` | `issues` or `comments` | none | Ignored. Nitpicks are listed in the review body. |
+| `nit_handling` | `issues` or `comments` | none | Ignored. Notes are listed in the review body. |
 | `review_level` | any | none | Ignored. The planner sets how many finders read each PR. |
 | `review_thresholds` | any | none | Ignored. Line counts no longer size the review. |
 | `stats` | any | none | Ignored. The round record is always a hidden comment in the review. |

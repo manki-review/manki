@@ -159,13 +159,13 @@
 #     blocker:
 #       - "A rounding error in a ledger balance, however rare."
 #     not_blocker:
-#       - "A slow export of the monthly report: `suggestion`."
+#       - "A slow export of the monthly report: `note`."
 #   sweep: false                     # search the diff for other instances of each kept blocker's defect class
 
 # CI results the reviewers read as evidence (default: all on), and the
 # analyzers Manki runs itself.
 # Manki reads what CI reported on the PR head commit and keeps the results on
-# lines of the diff. A Manki suggestion or nitpick on the same file and line
+# lines of the diff. A Manki note on the same file and line
 # is dropped. Warnings, blockers and security findings are kept. This block is read from the base branch,
 # never from the PR, so a PR cannot turn a source off. A source the workflow
 # token cannot read is skipped. See docs/how-reviews-work.md, "Reading CI results"
