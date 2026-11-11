@@ -212,6 +212,8 @@ describe('fetchBotReviewThreads', () => {
     const finding = (severity: Finding['severity'], title: string, tags?: string[]): Finding => ({
       severity, title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
     });
+    // A warning on code an earlier round reviewed, which has a thread like any other warning.
+    const late = makeGraphqlFetchThreadNode({ id: 'l', body: formatFindingComment({ ...finding('warning', 'Missed before', ['follow-up']), origin: 'reviewed' }, TEST_LINKS) });
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
         makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('note', 'Extract helper'), TEST_LINKS) }),
@@ -228,6 +230,7 @@ describe('fetchBotReviewThreads', () => {
         makeGraphqlFetchThreadNode({ id: 'ps', body: formatFindingComment(finding('blocker', 'Security, partly fixed', ['security']), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'pr', body: formatFindingComment(finding('blocker', 'Open again'), TEST_LINKS) }),
         makeGraphqlFetchThreadNode({ id: 'pa', body: formatFindingComment(finding('blocker', 'Came back'), TEST_LINKS) }),
+        late,
       ]),
     );
     // The round records keep the grade a partial fix left each thread, and only Manki's records count.
@@ -247,7 +250,7 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(threadsOctokit(graphqlMock, reviews), TEST_BOT, 'owner', 'repo', 1);
 
     // A blocker thread Manki found partly fixed blocks only while what remains is a blocker.
-    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true], ['ps', true], ['pr', true], ['pa', true]]);
+    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true], ['ps', true], ['pr', true], ['pa', true], ['l', false]]);
     expect(threads.find(t => t.id === 'x')?.isSecurity).toBe(true);
     expect(unclearedThreads(threads.filter(t => !['b', 'f', 'pb', 'pf', 'ps', 'pr', 'pa'].includes(t.id)), TEST_BOT)).toEqual([]);
     expect(unclearedThreads(threads, TEST_BOT)).not.toEqual([]);
@@ -256,10 +259,13 @@ describe('fetchBotReviewThreads', () => {
     const resolved = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now'), TEST_LINKS), isResolved: true })])), reviews);
     expect((await fetchBotReviewThreads(resolved, TEST_BOT, 'owner', 'repo', 1)).map(t => [t.id, t.isBlocking])).toEqual([['f', true]]);
 
-    // Without the round records a raise could hide, so every thread blocks and auto-approve waits.
-    const unread = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('note', 'Extract helper'), TEST_LINKS), isResolved: true })])));
+    // Without the round records a raise could hide, so every thread blocks and auto-approve waits, also for the open
+    // thread of a warning an earlier round missed.
+    const unread = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('note', 'Extract helper'), TEST_LINKS), isResolved: true }), late])));
     jest.mocked(unread.paginate).mockRejectedValueOnce(new Error('rate limited'));
-    expect((await fetchBotReviewThreads(unread, TEST_BOT, 'owner', 'repo', 1)).map(t => [t.id, t.isBlocking])).toEqual([['s', true]]);
+    const unreadThreads = await fetchBotReviewThreads(unread, TEST_BOT, 'owner', 'repo', 1);
+    expect(unreadThreads.map(t => [t.id, t.isBlocking])).toEqual([['s', true], ['l', true]]);
+    expect(unclearedThreads(unreadThreads, TEST_BOT).map(t => t.id)).toEqual(['l']);
   });
 
   it('filters out non-bot threads', async () => {
