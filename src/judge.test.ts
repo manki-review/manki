@@ -5091,15 +5091,16 @@ describe('runJudgeAgent cross-round suppression', () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
-    const titles = ['Stale cache read', 'Lost update', 'Handle leak', 'Open lead'];
+    const titles = ['Stale cache read', 'Lost update', 'Handle leak', 'Open lead', 'Leaky retry'];
     const leak = [{ premise: 'Nothing closes the handle', decides: 'defect' }];
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({
         id: i + 1, title, reasoning: 'r', confidence: 'medium',
-        ...(title === 'Handle leak' ? { row: 'degraded', doubts: leak } : title === 'Open lead' ? { row: 'degraded' } : { row: 'wrong', column: 'rare' }),
+        ...(['Handle leak', 'Leaky retry'].includes(title) ? { row: 'degraded', doubts: leak } : title === 'Open lead' ? { row: 'degraded' } : { row: 'wrong', column: 'rare' }),
       })),
     }) });
     const refuterCalls: string[] = [];
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
     const refuter: LLMClient = {
       repoTools: true,
       async sendMessage(_system, user) {
@@ -5118,19 +5119,24 @@ describe('runJudgeAgent cross-round suppression', () => {
         })),
         priorRounds: [roundContextFromLegacy({
           round: 1, commitSha: 'abc', timestamp: 't',
-          findings: titles.map((title, i) => ({ fingerprint: { file: 'src/index.ts', lineStart: 10 + i, lineEnd: 10 + i, slug: titleToSlug(title) }, severity: 'warning' as const, title, authorReply: 'agree' as const })),
+          findings: titles.slice(0, 4).map((title, i) => ({ fingerprint: { file: 'src/index.ts', lineStart: 10 + i, lineEnd: 10 + i, slug: titleToSlug(title) }, severity: 'warning' as const, title, authorReply: 'agree' as const })),
         })],
+        inPrSuppressions: [{ fingerprint: { file: 'src/index.ts', lineStart: 14, lineEnd: 14, slug: titleToSlug('Leaky retry') }, reason: 'resolved-thread' }],
       });
       expect(checked.findings.map(f => [f.title, f.severity, f.cell, f.tags])).toEqual([
         ['Stale cache read', 'blocker', { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, undefined],
         ['Lost update', 'ignore', { row: 'wrong', column: 'rare' }, ['suppressed-by-ratchet']],
         ['Handle leak', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-by-ratchet']],
         ['Open lead', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-by-ratchet']],
+        ['Leaky retry', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-in-pr']],
       ]);
       expect(refuterCalls.sort()).toEqual(['Lost update', 'Stale cache read']);
       expect(checked.findings[2].doubts).toEqual(leak);
-      expect(checked.crossRoundSuppressed).toBe(3);
+      expect([checked.crossRoundSuppressed, checked.inPrSuppressedCount]).toEqual([3, 1]);
+      // Asking whether a finding will be hidden logs nothing, so the log names each hidden finding once.
+      expect(infoSpy.mock.calls.filter(([line]) => String(line).startsWith('In-PR suppression'))).toHaveLength(1);
     } finally {
+      infoSpy.mockRestore();
       fs.rmSync(workspace, { recursive: true, force: true });
     }
   });

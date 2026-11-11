@@ -1466,14 +1466,14 @@ export async function runJudgeAgent(
   const hiddenClaims = new Map(input.findings.flatMap((f, i) => (f.preExisting && !findings[i].preExisting ? [[findingKey(f), f.preExisting] as const] : [])));
   const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, linkablePriorFindings(priorRounds, openThreads ?? input.evaluatedThreads?.openThreads), staysPreExisting), staysPreExisting)
     .map(f => (hiddenClaims.has(findingKey(f)) ? { ...f, preExisting: hiddenClaims.get(findingKey(f)) } : f));
-  const suppress = (list: Finding[]) => {
+  const suppress = (list: Finding[], quiet = false) => {
     const crossRound = applyCrossRoundSuppression(list, priorRounds, crossRoundOptions);
-    return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions) };
+    return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet) };
   };
   // The suppressions hide findings by grade, so the refuter settles each grade first.
   const checked = refutation ? await refuteBlockers(refutation.client, mapped, {
     workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort, diff, usesOutsideDiff, outsideInput: config.review?.outside_input,
-    hiddenLater: finding => suppress([finding]).findings[0].severity === 'ignore',
+    hiddenLater: finding => suppress([finding], true).findings[0].severity === 'ignore',
   }) : mapped;
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked);
 
@@ -1492,7 +1492,8 @@ export async function runJudgeAgent(
  * Flip findings whose fingerprint matches an in-PR suppression to `ignore` and
  * tag them with `IN_PR_SUPPRESSED_TAG`. Returns the new findings array and the
  * number of findings that were suppressed on this pass (idempotent: a finding
- * already tagged with `IN_PR_SUPPRESSED_TAG` is not double-counted).
+ * already tagged with `IN_PR_SUPPRESSED_TAG` is not double-counted). With `quiet`
+ * it logs nothing, for a caller that only asks whether a finding would be hidden.
  *
  * `required` findings are protected from suppression (mirrors the cross-round
  * ratchet guard): a prior resolved or author-agreed thread must not silently
@@ -1502,6 +1503,7 @@ export async function runJudgeAgent(
 export function applyInPrSuppression(
   findings: Finding[],
   suppressions: InPrSuppression[] | undefined,
+  quiet = false,
 ): { findings: Finding[]; count: number } {
   if (!suppressions || suppressions.length === 0) {
     return { findings, count: 0 };
@@ -1517,7 +1519,7 @@ export function applyInPrSuppression(
     if (finding.severity !== 'ignore') {
       count++;
       const attribution = match.authorLogin ? ` [reply by @${match.authorLogin}]` : '';
-      core.info(`In-PR suppression (${match.reason}): "${finding.title}" at ${finding.file}:${finding.line}${attribution}`);
+      if (!quiet) core.info(`In-PR suppression (${match.reason}): "${finding.title}" at ${finding.file}:${finding.line}${attribution}`);
       next.originalSeverity = next.originalSeverity ?? finding.severity;
       Object.assign(next, gradeStep(finding, 'ignore', 'in_pr_suppression', match.reason));
     }
