@@ -1268,7 +1268,7 @@ function splitLead(text: string, maxSentences: number, maxLength: number): { lea
 }
 
 function findingLocation(finding: Pick<Finding, 'file' | 'line'>): string {
-  return `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
+  return `${sanitizeFilePath(encodeCommentBreakers(finding.file))}${finding.line > 0 ? `:${finding.line}` : ''}`;
 }
 
 /**
@@ -1782,7 +1782,7 @@ export async function postReview(
     const sections = [
       formatNeedsHuman(result, restart),
       (blockingThreads || stillOpen.length > 0) && [blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n'),
-      detached.length > 0 && `**Blockers not on a changed file:**\n\n${detached.map(formatTraceEntry).join('\n')}\n\nGitHub only allows comments on changed files, so the thread of each is on \`${sanitizeFilePath(anchor ?? '')}\`.`,
+      detached.length > 0 && `**Blockers not on a changed file:**\n\n${detached.map(formatTraceEntry).join('\n')}\n\nGitHub only allows comments on changed files, so the thread of each is on \`${sanitizeFilePath(encodeCommentBreakers(anchor ?? ''))}\`.`,
       generalFindings.length > 0 && `**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`,
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
@@ -2046,6 +2046,11 @@ function sanitizeFilePath(file: string): string {
   return file.replace(/`/g, "'").replace(/[\n\r]/g, ' ');
 }
 
+/** Encodes the characters of `text` that open or close an HTML comment or end its line, so a file name can neither end one of Manki's hidden markers nor fake one. */
+function encodeCommentBreakers(text: string): string {
+  return text.replace(/[<>\r\n]/g, encodeURIComponent);
+}
+
 function mapVerdictToEvent(verdict: ReviewVerdict): 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES' {
   switch (verdict) {
     case 'APPROVE': return 'APPROVE';
@@ -2203,7 +2208,7 @@ function safeThreadUrl(url: string | undefined): string | null {
 }
 
 function formatTraceEntry(p: Pick<VerdictTraceEntry, 'file' | 'title' | 'line' | 'threadUrl'>): string {
-  const file = sanitizeFilePath(p.file);
+  const file = sanitizeFilePath(encodeCommentBreakers(p.file));
   const location = !file ? '' : p.line ? `\`${file}:${p.line}\`: ` : `\`${file}\`: `;
   const title = sanitizeMarkdown(p.title || '(untitled)');
   const safeUrl = safeThreadUrl(p.threadUrl);
@@ -2885,15 +2890,15 @@ function formatFold(fix: FoldPart | undefined, why: string, checks: FindingCheck
  * description, so two findings on one line whose titles differ only in punctuation get boxes of their own.
  */
 function issueBoxFor(finding: Finding): string {
-  // A file name with `-->` or a line break would end the hidden comment that carries the id, so those are encoded.
-  const file = finding.file.replace(/[%<>\r\n]/g, encodeURIComponent);
+  // The `%` is encoded too, so the id reads back as the file name.
+  const file = encodeCommentBreakers(finding.file.replace(/%/g, '%25'));
   const hash = createHash('sha256').update(`${finding.title}\n${finding.description}`).digest('hex').slice(0, 12);
   return issueBox(`${file}:${finding.line}:${hash}`);
 }
 
 /** Returns the lines that open a thread posted on another file than its finding's, saying where the problem is. */
 function detachedNote(finding: Finding, linkTo: LineLink): string {
-  const file = sanitizeFilePath(finding.file);
+  const file = sanitizeFilePath(encodeCommentBreakers(finding.file));
   const where = file
     ? `This is in [\`${file}${finding.line > 0 ? `:${finding.line}` : ''}\`](${linkTo(finding.file, finding.line)}), not in the file this thread is on.`
     : 'This is not tied to a file or line.';
