@@ -1,5 +1,5 @@
 import type { LLMCall } from './providers';
-import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
+import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS, withoutRuleDoubt } from './judge';
 import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { MANKI_VERSION, RepoContext } from './github';
 import type { MemorySkip } from './memory';
@@ -238,7 +238,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.cell && { cell: f.cell }),
     ...(f.rule && { rule: f.rule }),
   }));
-  const toEntry = (f: Finding): FindingFingerprintEntry => ({
+  const recorded = (f: Finding): FindingFingerprintEntry => ({
     fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
     ...((f.threadId ?? f.answeredIn?.threadId) && { threadId: f.threadId ?? f.answeredIn?.threadId }),
     severity: f.severity,
@@ -270,6 +270,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.rule && { rule: f.rule }),
     ...(f.unpostedReason && { unpostedReason: f.unpostedReason }),
   });
+  const toEntry = (f: Finding): FindingFingerprintEntry => recorded(withoutRuleDoubt(f));
   const unposted = [...(result.unpostedPreExisting ?? []), ...(result.unposted ?? [])].map((f): FindingFingerprintEntry => ({ ...toEntry(f), posted: 'record' }));
   return {
     meta: {

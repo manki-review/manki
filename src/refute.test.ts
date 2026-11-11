@@ -1040,8 +1040,6 @@ describe('refuteBlockers', () => {
       [{ refutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: '' } }, {}],
       [{}, { severity: 'note' }],
       [{}, { title: 'Unrelated finding' }],
-      // An unproven rule can be what gave the earlier grade, and this round's judge did not say the rule still stands.
-      [{ rule: { file: 'AGENTS.md', quote: 'Every sum must be checked.', verdict: 'unproven' } }, {}],
     ] as [Record<string, unknown>, Partial<Finding>][]) {
       const [kept] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', ...current })], { workspace, priorRounds: rounds(entry), diff });
       expect(kept.gradeIfConfirmed).toBeUndefined();

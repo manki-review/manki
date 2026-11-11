@@ -460,8 +460,6 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
   const prior = [...priorRounds].reverse().flatMap(r => r.findings.entries)
     .find(e => e.fingerprint.file === finding.file && Math.abs(e.fingerprint.lineStart - finding.line) <= LINE_TOLERANCE && titlesMatch(e.title ?? '', finding.title));
   if (!prior?.gradeIfConfirmed || prior.severity !== finding.severity || rank(prior.gradeIfConfirmed) >= rank(prior.severity)) return finding;
-  // An `unproven` rule can be what gave the earlier `gradeIfConfirmed`, and only this round's judge says whether the rule still stands.
-  if (prior.rule?.verdict === 'unproven') return finding;
   const settled = [prior.refutation, prior.pairRefutation].some(r => r && (r.outcome !== 'unsettled' || r.premises?.some(p => p.outcome === 'disproved')));
   if (settled) return finding;
   core.info(`"${finding.title}" keeps a grade an earlier round capped with an open doubt, so it is checked again`);
