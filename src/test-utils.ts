@@ -127,6 +127,7 @@ export function makeFindingFingerprintEntry(
     ...(overrides.reviewers !== undefined && { reviewers: overrides.reviewers }),
     ...(overrides.specialist !== undefined && { specialist: overrides.specialist }),
     ...(overrides.suggestedFix !== undefined && { suggestedFix: overrides.suggestedFix }),
+    ...(overrides.posted !== undefined && { posted: overrides.posted }),
     title,
   };
 }

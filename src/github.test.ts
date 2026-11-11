@@ -4172,7 +4172,7 @@ describe('postReview fallback paths', () => {
 
     it('skips a file-level comment only when an open thread was posted for the same finding', async () => {
       const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
-      const { octokit } = makeOctokit(createReviewComment);
+      const { octokit, createReview } = makeOctokit(createReviewComment);
       const thread = (title: string, line: number, status: 'open' | 'resolved' | 'replied') => ({
         title, file: 'src/a.ts', line, severity: 'blocker' as const, markerSlug: titleToSlug(title), threadId: `T-${title}`, status,
       });
@@ -4182,7 +4182,10 @@ describe('postReview fallback paths', () => {
       // A finding taken out of its thread is posted on its own, even beside an open thread with its title.
       findings.push({ ...offLineBlocker, title: 'File thread', ownThread: true });
 
-      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, undefined, undefined, {
+      const context = makeContext({
+        findings: { count: findings.length, severityCounts: {}, entries: findings.map(f => ({ fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, severity: 'blocker' as const })) },
+      });
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context, undefined, {
         existingThreads: [
           thread('File thread', 0, 'open'),
           thread('Nearby line thread', 37, 'replied'),
@@ -4194,6 +4197,11 @@ describe('postReview fallback paths', () => {
 
       const posted = createReviewComment.mock.calls.map(c => (c[0].body as string).match(/<!-- manki:blocker:(.+?) -->/)?.[1]);
       expect(posted).toEqual(['Resolved-thread', 'Far-line-thread', 'Other-file', 'File-thread']);
+      // The record names the open thread each skipped blocker was left to, so resolving that thread can lift the block.
+      const record = JSON.parse(extractReviewRecords(createReview.mock.calls[0][0].body as string).records[0]) as RoundContext;
+      expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([
+        ['earlier_thread', 'T-File thread'], ['earlier_thread', 'T-Nearby line thread'], ['thread', undefined], ['thread', undefined], ['thread', undefined], ['thread', undefined],
+      ]);
     });
 
     it('points a blocker linked to an open thread, or repeating an answered one, at that thread instead of posting a new one', async () => {
@@ -4247,6 +4255,37 @@ describe('postReview fallback paths', () => {
       expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\n<details>\n<summary>About this review')))).toBe(true);
       expect(update.body).toContain('**Blockers that could not be posted as threads:**\n\n**Blocker**\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)');
       expect(update.body).toMatch(/- Reviewed \[`sha`\]\([^)]+\)\n[^\n]*\n\n<\/details>\n\n<!-- manki-bot -->/);
+    });
+
+    it('records a finding GitHub refused as a thread as listed in the body, whichever post was refused', async () => {
+      const onLine: Finding = { severity: 'blocker', title: 'On changed line', file: 'src/a.ts', line: 2, description: 'Desc.', reviewers: [] };
+      const outside: Finding = { severity: 'blocker', title: 'Other file', file: 'src/b.ts', line: 5, description: 'Desc.', reviewers: [] };
+      const findings = [onLine, offLineBlocker, outside];
+      const context = makeContext({
+        findings: { count: 3, severityCounts: { blocker: 3 }, entries: findings.map(f => ({ fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, severity: 'blocker' as const })) },
+      });
+      const places = (body: string) => (JSON.parse(extractReviewRecords(body).records[0]) as RoundContext).findings.entries.map(e => e.posted);
+      const post = async (createReview: jest.Mock, createReviewComment: jest.Mock) => {
+        const { octokit, updateReview } = makeOctokit(createReviewComment, createReview);
+        await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context);
+        return [...createReview.mock.calls, ...updateReview.mock.calls].map(([args]) => places(args.body as string));
+      };
+      const taken = () => jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const refusedOnce = (error: Error) => jest.fn().mockRejectedValueOnce(error).mockResolvedValue({ data: { id: 7 } });
+      const lineError = new Error('pull_request_review_thread.line must be part of the diff');
+      const eventError = Object.assign(new Error('Unprocessable'), { status: 422 });
+
+      // Nothing refused: the two findings GitHub can anchor have a thread, the one in a file outside the diff does not.
+      expect(await post(taken(), taken())).toEqual([['thread', 'thread', 'body']]);
+      // The file-level comment is refused after the review posted, so the review is updated with a corrected record.
+      expect(await post(taken(), jest.fn().mockRejectedValue(new Error('refused')))).toEqual([['thread', 'thread', 'body'], ['thread', 'body', 'body']]);
+      // The line comments are refused: the first attempt never posts, and the review that does has no line thread.
+      expect(await post(refusedOnce(lineError), taken())).toEqual([['thread', 'thread', 'body'], ['body', 'thread', 'body']]);
+      // Both are refused.
+      expect(await post(refusedOnce(lineError), jest.fn().mockRejectedValue(new Error('refused'))))
+        .toEqual([['thread', 'thread', 'body'], ['body', 'thread', 'body'], ['body', 'body', 'body']]);
+      // GitHub refuses the review event, and the comment posted instead carries no line comment either.
+      expect((await post(refusedOnce(eventError), taken())).at(-1)).toEqual(['body', 'thread', 'body']);
     });
 
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
@@ -4674,17 +4713,26 @@ describe('postReview non-blocking findings', () => {
       { title: 'Fallback line', file: 'src/a.ts', line: 1, findingLine: 30, severity: 'note' as const, status: 'open' as const, threadId: 'T3', markerSlug: 'Fallback-line' },
     ];
 
-    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
+    const findings = [
       nonBlocking('note', 'Extract helper', 5),
       nonBlocking('note', 'Fallback line', 30),
       nonBlocking('note', 'Worse retry', 11, { answeredIn: { threadId: 'T2', answer: 'Withdrawn. Fine.' } }),
-    ]), diff, undefined, undefined, { existingThreads });
+    ];
+    // The record entry of the answered thread's finding has its thread already, as `buildRoundContext` writes it.
+    const context = makeContext({
+      findings: { count: 3, severityCounts: {}, entries: findings.map(f => ({ fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, severity: 'note' as const, ...(f.answeredIn && { threadId: f.answeredIn.threadId }) })) },
+    });
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, context, undefined, { existingThreads });
 
     const review = createReview.mock.calls[0][0];
     expect(review.comments).toEqual([]);
-    expect(review.body).not.toContain('Extract helper');
-    expect(review.body).not.toContain('Fallback line');
-    expect(review.body).not.toContain('Worse retry');
+    const visible = (review.body as string).slice(0, review.body.indexOf('<!-- manki-stats'));
+    expect(visible).not.toContain('Extract helper');
+    expect(visible).not.toContain('Fallback line');
+    expect(visible).not.toContain('Worse retry');
+    // The record says which thread carries each finding.
+    const record = JSON.parse(extractReviewRecords(review.body as string).records[0]) as RoundContext;
+    expect(record.findings.entries.map(e => [e.posted, e.threadId])).toEqual([['earlier_thread', 'T1'], ['earlier_thread', 'T3'], ['earlier_thread', 'T2']]);
   });
 
   it('lists the findings of closed threads Manki agreed to leave for later as follow-ups', async () => {

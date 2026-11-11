@@ -4,18 +4,19 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, NO_VERDICT_MARKER, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, inline, NO_VERDICT_MARKER, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, isOverrideCandidate, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
-import { formatApprovalRecord } from './review-record';
+import { fetchPriorRoundContexts, isOverrideCandidate, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadMarkerSlug, threadSeverity } from './recap';
+import { formatApprovalRecord, hasReviewRecord } from './review-record';
+import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
 import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 type PullHead = { head: { sha: string }; base: { ref: string } };
-type ReviewEntry = { body?: string | null; state?: string; commit_id?: string | null; user?: { login?: string; type?: string } | null };
+type ReviewEntry = { id: number; body?: string | null; state?: string; commit_id?: string | null; user?: { login?: string; type?: string } | null };
 
 const BOT_MARKER = '<!-- manki -->';
 const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
@@ -69,6 +70,8 @@ interface ReviewThread {
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after an admin check. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
   findingTitle: string;
+  /** Where the thread was posted, for which finding and on which commit. Absent for a thread without a finding marker. */
+  place?: { file: string; line: number; originalLine?: number; findingLine?: number; markerSlug: string; commit?: string };
   /** URL of the thread's first comment. */
   threadUrl?: string;
   /** The head commits on which a Manki reply in this thread confirmed the fix, from `fixedMarker`. */
@@ -97,12 +100,16 @@ async function fetchBotReviewThreads(
     id: string;
     isResolved: boolean;
     resolvedBy?: { login: string } | null;
+    path?: string | null;
+    line?: number | null;
+    originalLine?: number | null;
     comments: {
       nodes: Array<{
         databaseId?: number | null;
         body: string;
         url?: string;
         author: { login: string } | null;
+        originalCommit?: { oid: string } | null;
       }>;
     };
   }>(octokit, owner, repo, prNumber, `
@@ -111,6 +118,9 @@ async function fetchBotReviewThreads(
     resolvedBy {
       login
     }
+    path
+    line
+    originalLine
     comments(first: 100) {
       nodes {
         databaseId
@@ -118,6 +128,9 @@ async function fetchBotReviewThreads(
         url
         author {
           login
+        }
+        originalCommit {
+          oid
         }
       }
     }
@@ -142,7 +155,15 @@ async function fetchBotReviewThreads(
       const isBlocking = 'priorRoundsIncomplete' in records || threadBlocks({ severity, ...(recorded && { recordedGrade: recorded }), isSecurity });
       // The marker's slug turned every other character into a hyphen, so the finding data keeps the real title.
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
-      const findingTitle = parseFindingData(body)?.title?.trim() || (titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown');
+      const data = parseFindingData(body);
+      const findingTitle = data?.title?.trim() || (titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown');
+      const markerSlug = threadMarkerSlug(body);
+      const findingLine = data && data.file === thread.path ? data.line : undefined;
+      const commit = thread.comments.nodes[0]?.originalCommit?.oid;
+      const place = thread.path && markerSlug ? {
+        file: thread.path, line: thread.line ?? 0, markerSlug,
+        ...(thread.originalLine && { originalLine: thread.originalLine }), ...(findingLine && { findingLine }), ...(commit && { commit }),
+      } : undefined;
 
       const rootCommentId = thread.comments.nodes[0]?.databaseId;
       const resolvedByLogin = thread.resolvedBy?.login;
@@ -161,6 +182,7 @@ async function fetchBotReviewThreads(
         ...(isSecurity && { isSecurity: true }),
         ...(recordedOverride && { recordedOverride }),
         findingTitle,
+        ...(place && { place }),
         ...(threadUrl && { threadUrl }),
         ...(fixedOn.length > 0 && { fixedOn }),
       };
@@ -251,14 +273,14 @@ async function announceSecurityOverrides(octokit: Octokit, overrides: SecurityOv
 }
 
 /**
- * Check if every blocking bot review thread is resolved. Note threads
- * posted by older versions never block, matching the verdict's bar.
- * A resolved thread counts only when Manki resolved it, which it does after the judge marks it
+ * Returns the bot review threads that hold an approval: every blocking thread, and every thread in `named`, that is
+ * not cleared. Note threads posted by older versions never block, matching the verdict's bar.
+ * A resolved thread is cleared only when Manki resolved it, which it does after the judge marks it
  * addressed or a maintainer agrees, when `mayClearSecurityThread` accepts the resolver,
  * or when the PR author resolved it as a repo admin (`prAuthorIsAdmin`).
  */
-function areAllFindingsResolved(threads: ReviewThread[], bot: BotIdentity, prAuthorLogin?: string, prAuthorIsAdmin = false): boolean {
-  return threads.every(t => !t.isBlocking || (t.isResolved && (
+function unclearedThreads(threads: ReviewThread[], bot: BotIdentity, prAuthorLogin?: string, prAuthorIsAdmin = false, named: ReadonlySet<string> = new Set()): ReviewThread[] {
+  return threads.filter(t => (t.isBlocking || named.has(t.id)) && !(t.isResolved && (
     isBotLogin(bot, t.resolvedByLogin) || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin)
     || !!securityOverrideOf(t, prAuthorLogin, prAuthorIsAdmin)
   )));
@@ -391,29 +413,100 @@ function isBotReview(bot: BotIdentity, r: ReviewEntry): boolean {
 }
 
 /**
- * Whether a Manki review covers the head of `pr`. That is a verdict on the head that is not dismissed,
- * or the standing verdict on a commit whose PR diff equals the head's, as after a rebase.
+ * Returns the commit whose Manki review covers the head of `pr`, or `undefined` when none does. That is the head with a
+ * verdict that is not dismissed, or the commit of the standing verdict when its PR diff equals the head's, as after a rebase.
  */
-async function reviewCoversHead(
+async function coveredCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
   pr: PullHead, reviews: ReviewEntry[],
-): Promise<boolean> {
-  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha && !r.body?.includes(NO_VERDICT_MARKER))) return true;
+): Promise<string | undefined> {
+  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha && !r.body?.includes(NO_VERDICT_MARKER))) return pr.head.sha;
   const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha);
   if (standing) core.info(`No change since the reviewed commit ${standing.commitSha.slice(0, 7)}, so its review covers ${pr.head.sha.slice(0, 7)}`);
-  return !!standing;
+  return standing?.commitSha;
 }
 
-/** Returns why auto-approve has to wait because no Manki review covers the head yet, or `undefined` when one does. */
-async function explainUnreviewedHead(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config?: ReviewConfig): Promise<string | undefined> {
-  const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-  const head = `\`${pr.head.sha.slice(0, 7)}\``;
-  const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });
-  if (await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews)) return undefined;
-  const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
+/**
+ * Whether `review` is the approval Manki posts again on a new head while the PR's change equals the approved one. It has
+ * no round record and blocks on nothing, since a round or auto-approve gave the approval it restates. A push may have
+ * dismissed it since.
+ */
+function restatesApproval(review: ReviewEntry): boolean {
+  return (review.state === 'APPROVED' || review.state === 'DISMISSED') && !!review.body?.startsWith(APPROVED_LINE) && !hasReviewRecord(review.body);
+}
+
+/** How a PR with a block that resolving threads cannot lift gets its next verdict. */
+const NEXT_ROUND_LINE = 'The next review round decides. Push a commit or comment `@manki review` to start one.';
+
+/**
+ * Returns what resolving threads can do about the newest round Manki posted on `commitSha`: `held` says why it cannot
+ * lift that round's block, and `named` holds the live threads that carry its blockers. The record alone never proves a
+ * thread. A thread carries a blocker when the record gives its `threadId` and the thread exists, or when the record
+ * says the round posted the blocker as a thread and one of the threads posted on `commitSha` matches it. A standing
+ * approval posted again on `commitSha` blocks on nothing. Anything else is unknown and holds the approval: a record
+ * that cannot be read, a round that blocked without naming a blocker, and a blocker without a live thread.
+ */
+function blockOf(
+  reviews: ReviewEntry[], bot: BotIdentity, commitSha: string, threads: ReviewThread[], owner: string, repo: string, prNumber: number,
+): { held?: string; named: Set<string> } {
+  const sha = `\`${commitSha.slice(0, 7)}\``;
+  // An auto-approval and a round without a verdict decide nothing about blockers, so the round before them stands.
+  const review = reviews.filter(r => isBotReview(bot, r) && r.commit_id === commitSha && !r.body?.includes(NO_VERDICT_MARKER) && !r.body?.includes(AUTO_APPROVE_MARKER)).at(-1);
+  if (review && restatesApproval(review)) return { named: new Set() };
+  const round = review && parseContextBlocks([{ body: review.body ?? '', id: review.id }], owner, repo, prNumber).rounds.at(0);
+  if (!round || round.meta.commitSha !== commitSha) {
+    return { held: `Manki cannot read the record of its review of ${sha}, so it cannot tell what that review blocked on.`, named: new Set() };
+  }
+  const blockers = [
+    ...round.findings.entries.filter(e => e.severity === 'blocker').map(e => ({ title: e.title, file: e.fingerprint.file, threadId: e.threadId, posted: e.posted === 'thread' ? e.fingerprint : undefined })),
+    ...(round.judge.verdictTrace?.unresolvedPriors ?? []).map(p => ({ title: p.title, file: p.file, threadId: p.threadId, posted: undefined })),
+  ];
+  if (round.verdict !== 'APPROVE' && blockers.length === 0) {
+    return { held: `The record of Manki's review of ${sha} does not say what it blocked on.`, named: new Set() };
+  }
+  const live = new Set(threads.map(t => t.id));
+  // Only a thread posted on the round's own commit can be the round's, and each one carries a single blocker.
+  let own = threads.flatMap(t => t.place?.commit === commitSha ? [{ threadId: t.id, ...t.place }] : []);
+  const named = new Set<string>();
+  const loose: typeof blockers = [];
+  for (const b of blockers) {
+    const carrier = b.threadId && live.has(b.threadId) ? b.threadId : b.posted && findPriorThreadId(b.posted, own);
+    if (!carrier) loose.push(b);
+    else named.add(carrier);
+    own = own.filter(t => t.threadId !== carrier);
+  }
+  const told = (claim: string, list: typeof loose): string[] => {
+    if (list.length === 0) return [];
+    const lines = list.map(b => `- ${sanitizeMarkdown(b.title ?? 'Untitled blocker')}${b.file ? ` (${inline(b.file)})` : ''}`).join('\n');
+    return [`The record of Manki's review of ${sha} ${claim} for ${list.length === 1 ? '1 blocker' : `${list.length} blockers`}, so resolving threads cannot lift the block:\n${lines}`];
+  };
+  const claimed = (b: typeof loose[number]): boolean => !!b.threadId || !!b.posted;
+  const held = [...told('names no thread', loose.filter(b => !claimed(b))), ...told('names a thread that does not exist', loose.filter(claimed))].join('\n\n');
+  return { ...(held && { held }), named };
+}
+
+/** Says that no Manki review covers `headSha` and, from `halt`, why none will start on its own. */
+function unreviewedLine(headSha: string, halt?: { text: string }): string {
+  const head = `\`${headSha.slice(0, 7)}\``;
   return halt
     ? `Manki has not reviewed ${head}. ${halt.text}`
     : `Manki has not reviewed ${head} yet. A push review should start shortly, and approval follows from its verdict.`;
+}
+
+/**
+ * Lists the threads `open` that hold an approval, for a person who asks why there is none. `named` holds the threads
+ * the covering review blocks on whatever grade they show. `instead` replaces the last line when resolving them is not enough.
+ */
+function blockingThreadsLine(open: ReviewThread[], named: ReadonlySet<string>, instead?: string): string {
+  const list = open.map(t => {
+    const title = sanitizeMarkdown(t.findingTitle);
+    const note = t.isResolved ? ` (resolved by ${inline(t.resolvedByLogin ?? 'someone')}, who may not clear it)`
+      : !t.isBlocking && named.has(t.id) ? ' (Manki\'s latest review blocks on this thread)' : '';
+    return `- ${t.threadUrl ? `[${title}](${t.threadUrl})` : title}${note}`;
+  }).join('\n');
+  const one = open.length === 1;
+  const lifts = `Approval follows once ${one ? 'it is' : 'they are'} resolved by someone allowed to. The PR author may not clear a blocking thread, unless they are a repo admin.`;
+  return `${one ? '1 thread blocks' : `${open.length} threads block`} the approval:\n${list}\n\n${instead ?? lifts}`;
 }
 
 /** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. */
@@ -513,6 +606,9 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
   }
 }
 
+/** What `approveOrSayWhy` decided. `standing` marks an approval that was already there. `why` tells a person why the PR is not approved and what lifts that. */
+type ApprovalCheck = { approved: true; standing?: true } | { approved: false; why: () => Promise<string> };
+
 /** Post an approval review if all findings are resolved. */
 async function checkAndAutoApprove(
   octokit: Octokit,
@@ -522,6 +618,19 @@ async function checkAndAutoApprove(
   prNumber: number,
   config?: ReviewConfig,
 ): Promise<boolean> {
+  return (await approveOrSayWhy(octokit, bot, owner, repo, prNumber, config)).approved;
+}
+
+/** Post an approval review if all findings are resolved, and return the decision with its reason. */
+async function approveOrSayWhy(
+  octokit: Octokit,
+  bot: BotIdentity,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  config?: ReviewConfig,
+): Promise<ApprovalCheck> {
+  const withheld = (why: string | (() => Promise<string>)): ApprovalCheck => ({ approved: false, why: typeof why === 'string' ? async () => why : why });
   const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
 
   const totalCount = threads.length;
@@ -539,7 +648,7 @@ async function checkAndAutoApprove(
   });
   if (pr.draft) {
     core.info('Skipping auto-approve — the PR is a draft');
-    return false;
+    return withheld(approvalHoldLine({ reason: 'draft' }));
   }
 
   const prAuthorLogin = pr.user?.login;
@@ -551,24 +660,29 @@ async function checkAndAutoApprove(
   });
   await announceSecurityOverrides(octokit, overrides.filter(o => !o.announced));
 
-  if (!areAllFindingsResolved(threads, bot, prAuthorLogin, prAuthorIsAdmin)) {
+  const listReviews = () => octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });
+  const uncleared = (named?: ReadonlySet<string>) => unclearedThreads(threads, bot, prAuthorLogin, prAuthorIsAdmin, named);
+  if (uncleared().length > 0) {
     core.info('Not all blocking findings resolved — skipping auto-approve');
-    return false;
+    // Only the reply reads the covering review here, to list every thread that blocks and to say when resolving them is not enough.
+    return withheld(async () => {
+      const reviews = await listReviews();
+      const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, reviews);
+      if (!covered) return blockingThreadsLine(uncleared(), new Set(), unreviewedLine(pr.head.sha, config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config)));
+      const block = blockOf(reviews, bot, covered, threads, owner, repo, prNumber);
+      return blockingThreadsLine(uncleared(block.named), block.named, block.held && `${block.held}\n\n${NEXT_ROUND_LINE}`);
+    });
   }
 
-  const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
-    owner,
-    repo,
-    pull_number: prNumber,
-    per_page: 100,
-  });
+  const reviews = await listReviews();
   const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(bot, r) && r.state !== 'DISMISSED');
   const latestBotReview = botReviews[botReviews.length - 1];
 
   // Stale-SHA gate: bail unless a Manki review covers the current HEAD. This covers
   // every variant: stale prior review, absent commit_id, all reviews DISMISSED, or
   // no bot review at all.
-  if (!await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews)) {
+  const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, reviews);
+  if (!covered) {
     const staleSha =
       reviews.filter((r: ReviewEntry) => isBotReview(bot, r) && r.commit_id !== pr.head.sha).slice(-1)[0]?.commit_id ?? 'unknown';
     core.warning(
@@ -581,24 +695,37 @@ async function checkAndAutoApprove(
     } else {
       core.info(`A push review covers ${pr.head.sha.slice(0, 7)}, so no withheld notice is posted`);
     }
-    return false;
+    return withheld(unreviewedLine(pr.head.sha, halt));
   }
 
   if (latestBotReview?.state === 'APPROVED') {
     core.info('Already approved — skipping duplicate approval');
-    return true;
+    return { approved: true, standing: true };
   }
 
   // The review that covers the head is the latest one, or any on the head, as when a no-verdict round follows it.
   const held = (r?: ReviewEntry) => !!r?.body?.includes(HELD_FOR_PERSON_MARKER);
   if (held(latestBotReview) || botReviews.some(r => r.commit_id === pr.head.sha && held(r))) {
     core.info('The review that covers the head holds its approval for a person, such as for unread files — skipping auto-approve');
-    return false;
+    return withheld('Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.');
   }
 
-  if (await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, reason => approvalRecord('held', reason, pr.head.sha))) {
+  const block = blockOf(reviews, bot, covered, threads, owner, repo, prNumber);
+  if (block.held) {
+    core.info(`${block.held}\nSkipping auto-approve, the next review round decides`);
+    return withheld(`${block.held}\n\n${NEXT_ROUND_LINE}`);
+  }
+  // A thread the record names for a blocker blocks whatever its own severity says.
+  const open = uncleared(block.named);
+  if (open.length > 0) {
+    core.info('A thread the covering review blocks on is not resolved — skipping auto-approve');
+    return withheld(blockingThreadsLine(open, block.named));
+  }
+
+  const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, reason => approvalRecord('held', reason, pr.head.sha));
+  if (hold) {
     await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
-    return false;
+    return withheld(approvalHoldLine(hold === 'conflict' ? { reason: hold, baseRef: pr.base.ref } : { reason: 'draft' }));
   }
 
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
@@ -655,7 +782,7 @@ async function checkAndAutoApprove(
   }
 
   await deleteAutoApproveProgressComment(octokit, owner, repo, progressCommentId);
-  return true;
+  return { approved: true };
 }
 
-export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, deleteThreadReply, explainUnreviewedHead, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

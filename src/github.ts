@@ -1471,18 +1471,19 @@ function formatReplyFinding(finding: Finding): string[] {
   ];
 }
 
-/** Whether an unresolved Manki thread was already posted for this finding. */
-function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): boolean {
+/** Returns the ID of the unresolved Manki thread already posted for this finding, unless the finding is posted on its own. */
+function openThreadFor(finding: Finding, existingThreads: PreviousFinding[]): string | undefined {
+  if (finding.ownThread) return undefined;
   const open = existingThreads.filter(t => t.status !== 'resolved' && t.threadId && t.markerSlug);
   const fingerprint = { file: finding.file, lineStart: finding.line, lineEnd: finding.line, slug: titleToSlug(finding.title) };
-  return findPriorThreadId(fingerprint, open) !== undefined;
+  return findPriorThreadId(fingerprint, open);
 }
 
-/** Returns why an earlier thread carries a non-blocking finding, which is then not posted again. */
-function carriedBy(finding: Finding, existingThreads: PreviousFinding[]): string | undefined {
+/** Returns why an earlier thread carries a non-blocking finding, which is then not posted again. `matched` is its `openThreadFor`. */
+function carriedBy(finding: Finding, matched: string | undefined): string | undefined {
   if (finding.answeredIn) return `it goes as a reply in its answered thread ${finding.answeredIn.threadId}`;
   if (finding.threadId) return `${finding.variantOf ? 'it goes as a reply in' : 'it restates'} the open thread ${finding.threadId}`;
-  return !finding.ownThread && hasOpenThread(finding, existingThreads) ? 'an open thread already carries it' : undefined;
+  return matched ? `the open thread ${matched} already carries it` : undefined;
 }
 
 /**
@@ -1492,7 +1493,7 @@ function carriedBy(finding: Finding, existingThreads: PreviousFinding[]): string
  * listed, so it stays in place and counts toward no limit.
  */
 export function capNotes(result: ReviewResult, existingThreads: PreviousFinding[], limit = DEFAULT_NOTES): void {
-  const listable = new Set(result.findings.filter(f => isListedNote(f) && !carriedBy(f, existingThreads)));
+  const listable = new Set(result.findings.filter(f => isListedNote(f) && !carriedBy(f, openThreadFor(f, existingThreads))));
   const rank = (f: Finding): number => f.noteRank ?? Number.MAX_SAFE_INTEGER;
   const ordered = [...listable].sort((a, b) => rank(a) - rank(b));
   const capped = new Set(ordered.filter(canLeaveOut).slice(limit));
@@ -1616,6 +1617,8 @@ export async function postReview(
   const notes: Finding[] = [];
   /** The blockers the body shows because no thread can hold them. */
   const unthreaded: Finding[] = [];
+  /** The findings left to an open thread that matches them, with that thread's ID, which the record keeps. */
+  const leftTo = new Map<Finding, string>();
   let carriedBlockers = 0;
   const carriedThreadIds = new Set<string>();
   const nonBlocking: Finding[] = [];
@@ -1629,10 +1632,12 @@ export async function postReview(
   const links: CodeLinks = { linkTo, files, changed };
 
   for (const f of result.findings) {
+    const matched = openThreadFor(f, existingThreads);
     if (!isBlockingFinding(f)) {
-      const carried = carriedBy(f, existingThreads);
+      const carried = carriedBy(f, matched);
       if (carried) {
         core.info(`Skipping "${f.title}" on ${f.file}: ${carried}`);
+        if (matched) leftTo.set(f, matched);
       } else if (isListedNote(f)) {
         notes.push(f);
       } else if (isPreExisting(f) || f.origin === 'reviewed' || f.origin === 'earlier') {
@@ -1676,8 +1681,9 @@ export async function postReview(
     } else if (!diffFile) {
       invalidComments.push(formatFindingBlock(f, links, true));
       unthreaded.push(f);
-    } else if (!f.ownThread && hasOpenThread(f, existingThreads)) {
-      core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: an open thread already carries it`);
+    } else if (matched) {
+      core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
+      leftTo.set(f, matched);
     } else {
       fileComments.push({ path: f.file, body: commentBody, finding: f });
       threadFindings.push(f);
@@ -1760,23 +1766,28 @@ export async function postReview(
   const body = highlightCode(renderBody(), codeTokens);
   const postedComments = [...validComments, ...fileComments].map(highlight);
   const inBody = new Set([...bodyFindings, ...notes, ...unthreaded]);
-  const placeOf = (f: Finding): PostedPlace => threadFindings.includes(f) ? 'thread' : inBody.has(f) ? 'body' : 'earlier_thread';
-  const recordPlace = (entry: FindingFingerprintEntry, f: Finding): FindingFingerprintEntry => {
-    const posted = placeOf(f);
-    const cited = posted === 'body' && f.severity === 'warning' ? citedLine(files.get(f.file), f.line) : undefined;
-    return { ...entry, posted, ...(cited && { citedLine: cited }) };
+  // The record with each finding's place. A finding in `refused` got no thread from GitHub, so the body carries it.
+  const recordFor = (refused: ReadonlySet<Finding> = new Set()): string => {
+    const placeOf = (f: Finding): PostedPlace => refused.has(f) || inBody.has(f) ? 'body' : threadFindings.includes(f) ? 'thread' : 'earlier_thread';
+    const recordPlace = (entry: FindingFingerprintEntry, f: Finding): FindingFingerprintEntry => {
+      const posted = placeOf(f);
+      const cited = posted === 'body' && f.severity === 'warning' ? citedLine(files.get(f.file), f.line) : undefined;
+      const threadId = entry.threadId ?? (posted === 'earlier_thread' ? leftTo.get(f) : undefined);
+      return { ...entry, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }) };
+    };
+    return (context
+      ? formatRecordTrailer({
+        ...context,
+        // The record's entries are built from `result.findings` in the same order. A record built from other findings keeps its entries as they are.
+        ...(context.findings.entries.length === result.findings.length && {
+          findings: { ...context.findings, entries: context.findings.entries.map((entry, i) => recordPlace(entry, result.findings[i])) },
+        }),
+        output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
+        ...(event === 'APPROVE' && { approval: { held: approvalHeld } }),
+      }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
+      : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
   };
-  const record = (context
-    ? formatRecordTrailer({
-      ...context,
-      // The record's entries are built from `result.findings` in the same order. A record built from other findings keeps its entries as they are.
-      ...(context.findings.entries.length === result.findings.length && {
-        findings: { ...context.findings, entries: context.findings.entries.map((entry, i) => recordPlace(entry, result.findings[i])) },
-      }),
-      output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
-      ...(event === 'APPROVE' && { approval: { held: approvalHeld } }),
-    }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
-    : '') + (noVerdict ? `\n\n${NO_VERDICT_MARKER}` : '') + (standingHold ? `\n\n${HELD_FOR_PERSON_MARKER}` : '');
+  const record = recordFor();
 
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
@@ -1791,14 +1802,15 @@ export async function postReview(
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
   const withoutLineThreads = (): string => highlightCode(renderBody(true), codeTokens);
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads);
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(lineThreads));
   onPosted?.();
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
     const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links, true)).join('\n\n')}`, codeTokens);
+    const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : lineThreads)]));
     // Truncate the existing body, never the blocking findings appended to it or the round record.
-    const room = REVIEW_BODY_BUDGET - section.length - record.length;
+    const room = REVIEW_BODY_BUDGET - section.length - refusedRecord.length;
     if (room <= 0) {
       throw new Error(`Could not post blocking findings as threads or fit them in review #${review.id}: ${titles}`);
     }
@@ -1808,7 +1820,7 @@ export async function postReview(
         repo,
         pull_number: prNumber,
         review_id: review.id,
-        body: appendReviewFooter(`${truncateBody(review.body, room)}${section}${record}`, reviewedCommitFooter),
+        body: appendReviewFooter(`${truncateBody(review.body, room)}${section}${refusedRecord}`, reviewedCommitFooter),
       });
     } catch (error) {
       throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
@@ -1841,10 +1853,12 @@ async function submitReview(
   reviewedCommitFooter: string,
   /** The body without the line comments listed as threads, for when GitHub refuses their lines. */
   bodyWithoutLineComments: () => string = () => body,
-): Promise<{ id: number; body: string }> {
+  /** The record for a review posted without its line comments, where no finding of theirs has a thread. */
+  recordWithoutLineComments: () => string = () => record,
+): Promise<{ id: number; body: string; lineComments: boolean }> {
   const event = mapVerdictToEvent(verdict);
-  const fit = (text: string): string => truncateBody(text, REVIEW_BODY_BUDGET - record.length);
-  const compose = (text: string): string => appendReviewFooter(`${text}${record}`, reviewedCommitFooter);
+  const fit = (text: string, trailer = record): string => truncateBody(text, REVIEW_BODY_BUDGET - trailer.length);
+  const compose = (text: string, trailer = record): string => appendReviewFooter(`${text}${trailer}`, reviewedCommitFooter);
   assertWritesAllowed();
   try {
     const { data: review } = await octokit.rest.pulls.createReview({
@@ -1858,7 +1872,7 @@ async function submitReview(
     });
 
     core.info(`Posted review #${review.id} with verdict ${verdict}`);
-    return { id: review.id, body: fit(body) };
+    return { id: review.id, body: fit(body), lineComments: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const isLineError = errorMessage.includes('pull_request_review_thread.line') ||
@@ -1868,7 +1882,8 @@ async function submitReview(
     if (isLineError && validComments.length > 0) {
       core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
       const allAsBody = validComments.map(c => `- ${commentHeadline(c.body)}`).join('\n');
-      const lineErrFallbackBody = fit(`${bodyWithoutLineComments()}\n\n**Inline comments could not be posted:**\n${allAsBody}`);
+      const bare = recordWithoutLineComments();
+      const lineErrFallbackBody = fit(`${bodyWithoutLineComments()}\n\n**Inline comments could not be posted:**\n${allAsBody}`, bare);
 
       const { data: review } = await octokit.rest.pulls.createReview({
         owner,
@@ -1876,12 +1891,12 @@ async function submitReview(
         pull_number: prNumber,
         commit_id: commitSha,
         event,
-        body: compose(lineErrFallbackBody),
+        body: compose(lineErrFallbackBody, bare),
         comments: [],
       });
 
       core.info(`Posted review #${review.id} without inline comments (line validation failed)`);
-      return { id: review.id, body: lineErrFallbackBody };
+      return { id: review.id, body: lineErrFallbackBody, lineComments: false };
     }
 
     // Only a 422 is GitHub refusing this review event (e.g. approving or requesting
@@ -1898,7 +1913,8 @@ async function submitReview(
     core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);
 
     const findingSummary = validComments.map(c => `- ${commentHeadline(c.body)} (\`${c.path}:${c.line}\`)`).join('\n');
-    const fallbackBody = fit(`${bodyWithoutLineComments()}\n\n**Findings (could not post inline):**\n${findingSummary}`);
+    const bare = recordWithoutLineComments();
+    const fallbackBody = fit(`${bodyWithoutLineComments()}\n\n**Findings (could not post inline):**\n${findingSummary}`, bare);
 
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
@@ -1906,12 +1922,12 @@ async function submitReview(
       pull_number: prNumber,
       commit_id: commitSha,
       event: 'COMMENT',
-      body: compose(fallbackBody),
+      body: compose(fallbackBody, bare),
       comments: [],
     });
 
     core.info(`Posted fallback COMMENT review #${review.id} (original verdict: ${verdict})`);
-    return { id: review.id, body: fallbackBody };
+    return { id: review.id, body: fallbackBody, lineComments: false };
   }
 }
 

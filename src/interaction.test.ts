@@ -63,8 +63,7 @@ jest.mock('./review', () => ({
 
 jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn(async (overrides: unknown[]) => overrides),
-  checkAndAutoApprove: jest.fn().mockResolvedValue(false),
-  explainUnreviewedHead: jest.fn().mockResolvedValue(undefined),
+  approveOrSayWhy: jest.fn().mockResolvedValue({ approved: true }),
   fetchBotReviewThreads: jest.fn().mockResolvedValue([]),
   fixedMarker: jest.requireActual('./state').fixedMarker,
   resolveReviewThread: jest.fn().mockResolvedValue(undefined),
@@ -532,10 +531,9 @@ describe('handlePRComment', () => {
     setContext({ comment: { id: 42, body: '@manki check', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
     const octokit = createMockOctokit();
     const config = { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig;
-    (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(true);
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, config);
     expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, 'eyes');
-    expect(state.checkAndAutoApprove).toHaveBeenCalledWith(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, config);
+    expect(state.approveOrSayWhy).toHaveBeenCalledWith(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, config);
   });
 
   it('dispatches generic question when no known command', async () => {
@@ -1210,57 +1208,24 @@ describe('handleCheck (via handlePRComment)', () => {
     );
   });
 
-  it('reports open blocking issues when not auto-approved', async () => {
+  it('replies with the reason the approval check gives, and posts nothing after a new approval', async () => {
     setContext({ comment: { id: 42, body: '@manki check', user: { type: 'User' }, author_association: 'OWNER' } });
-    (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(false);
-    (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce([
-      // The title comes from the model, so its links and hidden markers must not reach the comment.
-      { findingTitle: 'Null deref in [`parse`](https://example.com)<!-- manki-bot -->', isBlocking: true, isResolved: false },
-      { findingTitle: 'Style nit', isBlocking: false, isResolved: false },
-    ]);
-    const octokit = createMockOctokit();
-    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig);
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('1 blocking thread is still open:\n- Null deref in `parse`\n\nApproval follows') }),
-    );
-  });
-
-  it('reports why it did not approve when no blocking issues are open', async () => {
-    setContext({ comment: { id: 42, body: '@manki check', user: { type: 'User' }, author_association: 'OWNER' } });
-    (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(false).mockResolvedValueOnce(false);
-    (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce([]).mockResolvedValueOnce([]);
     const config = { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig;
     const octokit = createMockOctokit();
-    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, config);
-    expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('No blocking threads are open, but the approval did not go through') }),
-    );
+    const check = async (result: state.ApprovalCheck) => {
+      (state.approveOrSayWhy as jest.Mock).mockResolvedValueOnce(result);
+      await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, config);
+      return (octokit.rest.issues.createComment as unknown as jest.Mock).mock.calls.map(([c]: [{ body: string }]) => c.body);
+    };
 
-    // A head no review covers yet gets the concrete reason instead.
-    (state.explainUnreviewedHead as jest.Mock).mockResolvedValueOnce('A review of `abc1234` is running or queued.');
-    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, config);
-    expect(state.explainUnreviewedHead).toHaveBeenLastCalledWith(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, config);
-    expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
-      expect.objectContaining({ body: expect.stringMatching(/^A review of `abc1234` is running or queued\.\n/) }),
-    );
-
-    // A lookup that fails still gets the generic reply.
-    (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(false);
-    (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce([]);
-    (state.explainUnreviewedHead as jest.Mock).mockRejectedValueOnce(new Error('API 502'));
-    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, config);
+    // The approval review is the answer to a check that approves.
+    expect(await check({ approved: true })).toEqual([]);
+    const why = '1 thread blocks the approval:\n- Null deref\n\nApproval follows once it is resolved by someone allowed to.';
+    expect(await check({ approved: false, why: async () => why })).toEqual([`${why}\n\n<!-- manki -->`]);
+    expect((await check({ approved: true, standing: true })).at(-1)).toBe('This PR already has Manki\'s approval.\n\n<!-- manki -->');
+    // A reason that cannot be read still gets a reply.
+    expect((await check({ approved: false, why: () => Promise.reject(new Error('API 502')) })).at(-1)).toBe('The approval did not go through. The workflow log has the reason.\n\n<!-- manki -->');
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('API 502'));
-    expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('No blocking threads are open, but the approval did not go through') }),
-    );
-  });
-
-  it('does not post comment when auto-approve succeeds', async () => {
-    setContext({ comment: { id: 42, body: '@manki check', user: { type: 'User' }, author_association: 'OWNER' } });
-    (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(true);
-    const octokit = createMockOctokit();
-    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig);
-    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
   });
 });
 
