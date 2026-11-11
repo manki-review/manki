@@ -167,6 +167,8 @@ describe('refuteBlockers', () => {
       'Unseen confirm and abstain': confirmed('src/math.ts:2'),
       'Unseen split': confirmed('src/math.ts:2'),
       'First fails': new Error('CLI crashed'),
+      'Reach confirmed and disproved': { reason: 'A handler passes it.', premises: [confirmed('src/api.ts:4')] },
+      'Grade premise confirmed and disproved': { reason: 'A handler passes it.', premises: [confirmed('src/api.ts:4')] },
     });
     const pair = fakeClient({
       'Both confirm': confirmed('src/api.ts:4'),
@@ -180,6 +182,8 @@ describe('refuteBlockers', () => {
       'Unseen confirm and abstain': unsettled,
       'Unseen split': disproved('Both inputs are checked.'),
       'First fails': disproved('Both inputs are checked.'),
+      'Reach confirmed and disproved': { reason: 'Only the job produces it.', premises: [{ outcome: 'disproved', reason: 'Only the job produces it.', proof: ['src/math.ts:1'] }] },
+      'Grade premise confirmed and disproved': { reason: 'Only tests call it.', premises: [{ outcome: 'disproved', reason: 'Only tests call it.', proof: ['src/math.ts:1'] }] },
     });
     const findings = [
       finding('Both confirm'),
@@ -193,6 +197,8 @@ describe('refuteBlockers', () => {
       finding('Unseen confirm and abstain', { severity: 'warning', gradeIfConfirmed: 'blocker' }),
       finding('Unseen split', { severity: 'warning', gradeIfConfirmed: 'blocker', evidence: { checks: [], proof: ['src/math.ts:2', 'src/api.ts:9'] } }),
       finding('First fails'),
+      finding('Reach confirmed and disproved', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [REACH_DOUBT] }),
+      finding('Grade premise confirmed and disproved', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'normal' }, doubts: [{ premise: 'A public handler passes `a` through', decides: 'grade' }] }),
     ];
 
     const result = await refuteBlockers(client, findings, { workspace, effort: 'high', diff, pair });
@@ -216,6 +222,13 @@ describe('refuteBlockers', () => {
       ['Unseen split', 'warning', 'confirmed', 'disproved', undefined],
       // A failed call leaves the grade to the other refuter.
       ['First fails', 'blocker', undefined, 'disproved', 'Both inputs are checked.'],
+      // A disproved premise that only decides the grade leaves its own check unsettled, but the other refuter's confirmation
+      // still never raises the finding or moves it out of the `rare` column.
+      ['Reach confirmed and disproved', 'warning', 'confirmed', 'unsettled', undefined],
+      ['Grade premise confirmed and disproved', 'warning', 'confirmed', 'unsettled', undefined],
+    ]);
+    expect(result.slice(-2).map(f => [f.cell, f.refutation?.premises?.[0].outcome, f.pairRefutation?.premises?.[0].outcome])).toEqual([
+      [{ row: 'wrong', column: 'rare' }, 'confirmed', 'disproved'], [{ row: 'wrong', column: 'normal' }, 'confirmed', 'disproved'],
     ]);
     expect(result[0].evidence?.proof).toEqual(['src/math.ts:2', 'src/api.ts:4']);
     expect(result[1].gradePath).toBeUndefined();

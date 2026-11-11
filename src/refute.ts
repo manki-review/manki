@@ -214,10 +214,15 @@ function reachConfirmed(checks: readonly Refutation[]): boolean {
   return checks.some(r => r.outcome === 'confirmed' && r.premises?.some(p => p.premise === REACH_DOUBT.premise && p.outcome === 'confirmed'));
 }
 
-/** Returns the outcome `checks` agree on. An unsettled check abstains, and a confirmation against a disproof settles nothing. */
+/**
+ * Returns the outcome `checks` agree on. An unsettled check abstains, and a confirmation against a disproof settles
+ * nothing. That holds for a disproved premise too, which leaves its own check unsettled when it only decides the grade.
+ */
 function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
   const votes = new Set(checks.map(r => r.outcome).filter(o => o !== 'unsettled'));
-  return votes.size === 1 ? [...votes][0] : 'unsettled';
+  if (votes.size !== 1) return 'unsettled';
+  const [outcome] = votes;
+  return outcome === 'confirmed' && checks.some(r => r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
 }
 
 /** Returns the refutation that disproves `finding`, when its checks agree it is disproved. */
