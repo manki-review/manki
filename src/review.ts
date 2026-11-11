@@ -2630,7 +2630,8 @@ async function foldIntoEarlierFindings(findings: Finding[], earlier: EarlierFind
  * warning does not vanish because no finder raised it again. Only an entry with `citedLine` is carried. A warning leaves
  * the list only for certain, and `result.carriedEnded` says why: a finding the judge graded this round names its problem,
  * kept or not, or the file at the head has fewer places reading like its `citedLine` than when it was listed, or is gone.
- * A finding left out because nothing proves it does not count, so it ends no carried warning.
+ * A finding left out because nothing proves it does not count, so it ends no carried warning. Neither does a warning on
+ * code the PR did not change that no check confirmed.
  * A file `head` cannot read keeps its warnings. A carried entry gets `currentLine` when one place of the file reads like
  * its `citedLine`, which is also the line a finding of this round is compared with. Call it after the last step that
  * takes a finding out of `result.findings`, so each reason says where the naming finding ended up.
@@ -2639,8 +2640,9 @@ export async function carryBodyWarnings(result: ReviewResult, priorRounds: Round
   const last = priorRounds.at(-1);
   if (!last) return;
   const warnings = [...last.findings.entries, ...(last.findings.carried ?? [])].filter(e => e.citedLine && !e.threadId);
-  // A warning left out because nothing proves it withdraws nothing, so the warning an earlier round listed stays listed.
-  const unproven = new Set((result.unposted ?? []).filter(leftOutUnproven).map(findingKey));
+  // A warning left out because nothing proves or confirms it withdraws nothing, so the warning an earlier round listed stays listed.
+  const unconfirmed = (result.unpostedPreExisting ?? []).filter(f => f.severity === 'warning');
+  const unproven = new Set([...(result.unposted ?? []).filter(leftOutUnproven), ...unconfirmed].map(findingKey));
   const settled = (findings: Finding[]) => findings.filter(f => !unproven.has(findingKey(f)));
   const judged: Array<[CarriedEndReason, Finding[]]> = [
     ['restated', result.findings],

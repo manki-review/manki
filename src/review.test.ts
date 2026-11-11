@@ -6327,6 +6327,12 @@ describe('carryBodyWarnings', () => {
     const unprovenAgain = finding('Retry never ends', 2, { unpostedReason: 'unsettled_check' });
     const unproven = await carry([first], then, { unposted: [unprovenAgain], allJudgedFindings: [finding('Retry never ends', 2)] });
     expect([unproven.titles, unproven.ended]).toEqual([all, undefined]);
+    // Neither does a warning on unchanged code that no check confirmed. A note there is a grade of the judge, so it ends the warning.
+    const old = (severity: Finding['severity']) => finding('Retry never ends', 2, { severity, tags: ['pre-existing'], preExistingCheck: 'pre_existing' });
+    const unconfirmed = await carry([first], then, { unpostedPreExisting: [old('warning')], allJudgedFindings: [finding('Retry never ends', 2)] });
+    expect([unconfirmed.titles, unconfirmed.ended]).toEqual([all, undefined]);
+    const lowered = await carry([first], then, { unpostedPreExisting: [old('note')], allJudgedFindings: [finding('Retry never ends', 2, { severity: 'note' })] });
+    expect([lowered.titles, lowered.ended]).toEqual([all.slice(1), ['left_out']]);
 
     // A later round carries the warning with the place the first round read, and a restatement in other words names the first statement.
     const carriedRetry = { ...retry, raisedIn: 1 };
