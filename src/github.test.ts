@@ -3459,6 +3459,9 @@ describe('fetchConfigFile', () => {
 
     await expect(readConfigFile(notFound, 'owner', 'repo', 'main', '.manki.yml')).resolves.toBeNull();
     await expect(readConfigFile(serverError, 'owner', 'repo', 'main', '.manki.yml')).rejects.toThrow('Server Error');
+    // A file over 1 MB is there, and comes back without its content.
+    const tooLarge = { rest: { repos: { getContent: jest.fn().mockResolvedValue({ data: { type: 'file', content: '', encoding: 'none' } }) } } } as unknown as Parameters<typeof readConfigFile>[0];
+    await expect(readConfigFile(tooLarge, 'owner', 'repo', 'main', 'src/big.ts')).rejects.toThrow('src/big.ts is too large to read');
     await expect(fetchConfigFile(serverError, 'owner', 'repo', 'main', '.manki.yml')).resolves.toBeNull();
   });
 

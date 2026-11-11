@@ -365,6 +365,8 @@ export async function readConfigFile(
     if ('content' in data && data.encoding === 'base64') {
       return Buffer.from(data.content, 'base64').toString('utf-8');
     }
+    // A file over 1 MB comes back without its content.
+    if (!Array.isArray(data) && data.type === 'file') throw new Error(`${configPath} is too large to read`);
     return null;
   } catch (error) {
     if ((error as { status?: number }).status === 404) return null;
