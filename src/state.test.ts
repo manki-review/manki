@@ -371,47 +371,48 @@ describe('reopenAuthorResolvedThreads', () => {
 
   const mutation = (call: unknown[]) => [String(call[0]).match(/unresolveReviewThread|addPullRequestReviewThreadReply/)?.[0], (call[1] as { threadId: string }).threadId];
 
-  it('replies with the markers, then reopens, for flagged threads only', async () => {
+  it('reopens, then replies with the markers, for flagged threads only', async () => {
     const graphql = jest.fn().mockResolvedValue({});
 
     await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_author', true), previous('T_other', false)]);
 
     expect(graphql.mock.calls.map(mutation)).toEqual([
-      ['addPullRequestReviewThreadReply', 'T_author'],
       ['unresolveReviewThread', 'T_author'],
+      ['addPullRequestReviewThreadReply', 'T_author'],
     ]);
-    expect(graphql.mock.calls[0][1].body).toMatch(/^Reopened\. A security finding needs a maintainer or a fix/);
-    expect(graphql.mock.calls[0][1].body).toContain('push a fix and Manki will check it');
-    expect(graphql.mock.calls[0][1].body.endsWith(`\n\n${BOT_MARKER}\n${REOPENED_MARKER}`)).toBe(true);
+    expect(graphql.mock.calls[1][1].body).toMatch(/^Reopened\. A security finding needs a maintainer or a fix/);
+    expect(graphql.mock.calls[1][1].body).toContain('push a fix and Manki will check it');
+    expect(graphql.mock.calls[1][1].body.endsWith(`\n\n${BOT_MARKER}\n${REOPENED_MARKER}`)).toBe(true);
 
     // While automatic review is paused a push is not reviewed, so the reply asks for `@manki review`.
     graphql.mockClear();
     await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_author', true)], true);
-    const pausedReply = graphql.mock.calls[0][1].body;
+    const pausedReply = graphql.mock.calls[1][1].body;
     expect(pausedReply).toContain('Automatic review is paused, so after pushing a fix comment `@manki review` and Manki will check it.');
     expect(pausedReply).not.toContain('push a fix and Manki will check it');
 
     graphql.mockClear();
     await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [{ ...previous('T_plain', true), isSecurity: false }]);
-    expect(graphql.mock.calls[0][1].body).toMatch(/^Reopened\. A blocking finding needs a maintainer or a fix/);
+    expect(graphql.mock.calls[1][1].body).toMatch(/^Reopened\. A blocking finding needs a maintainer or a fix/);
   });
 
-  it('skips the reopen when the reply fails, and keeps going when the reopen fails', async () => {
+  // The reply's marker stops every later reopen, so a thread that stayed resolved must not get it.
+  it('posts no reply when the reopen fails, and keeps going when the reply fails', async () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const graphql = jest.fn()
-      .mockRejectedValueOnce(new Error('reply refused'))
-      .mockResolvedValueOnce({})
       .mockRejectedValueOnce(new Error('reopen refused'))
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error('reply refused'))
       .mockResolvedValue({});
 
     await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_1', true), previous('T_2', true), previous('T_3', true)]);
 
     expect(graphql.mock.calls.map(mutation)).toEqual([
-      ['addPullRequestReviewThreadReply', 'T_1'],
-      ['addPullRequestReviewThreadReply', 'T_2'],
+      ['unresolveReviewThread', 'T_1'],
       ['unresolveReviewThread', 'T_2'],
-      ['addPullRequestReviewThreadReply', 'T_3'],
+      ['addPullRequestReviewThreadReply', 'T_2'],
       ['unresolveReviewThread', 'T_3'],
+      ['addPullRequestReviewThreadReply', 'T_3'],
     ]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('reply refused'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('reopen refused'));

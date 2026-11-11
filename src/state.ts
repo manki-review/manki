@@ -250,24 +250,25 @@ async function authorResolvedNote(
 async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: PreviousFinding[], paused = false): Promise<void> {
   for (const f of previousFindings) {
     if (!f.reopen || !f.threadId) continue;
-    // The reply goes first: its marker is what stops a later round from reopening the thread again.
+    // The thread opens first. The reply's marker stops every later reopen, so it must never sit on a thread that stayed resolved.
+    if (!await reopenThread(octokit, f.threadId)) continue;
     try {
       await replyToReviewThread(octokit, f.threadId, reopenReply(!!f.isSecurity, paused), REOPENED_MARKER);
     } catch (error) {
-      core.warning(`Failed to reply on thread ${f.threadId}, leaving it resolved: ${error}`);
-      continue;
+      core.warning(`Reopened thread ${f.threadId}, but failed to say why: ${error}`);
     }
-    await reopenThread(octokit, f.threadId);
   }
 }
 
-/** Reopens the thread `threadId` that the PR author resolved. A failure is logged and leaves the thread resolved. */
-async function reopenThread(octokit: Octokit, threadId: string): Promise<void> {
+/** Reopens the thread `threadId` that the PR author resolved, and returns whether that worked. A failure is logged and leaves the thread resolved. */
+async function reopenThread(octokit: Octokit, threadId: string): Promise<boolean> {
   try {
     await unresolveReviewThread(octokit, threadId);
     core.info(`Reopened thread ${threadId} that the PR author resolved`);
+    return true;
   } catch (error) {
     core.warning(`Failed to reopen thread ${threadId}: ${error}`);
+    return false;
   }
 }
 
