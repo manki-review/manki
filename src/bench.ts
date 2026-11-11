@@ -656,6 +656,13 @@ function summarize(cases: CaseReport[]): VariantSummary {
   };
 }
 
+/** The findings of a reported run that match no key item. */
+function unmatchedFindings(c: CaseReport, run: RunScore): RunScore['findings'] {
+  const repeatIds = new Set(c.items.filter(item => item.tier === 'must_keep_open' || item.tier === 'must_not_repeat').map(item => item.id));
+  const matched = matchedFindings(run.matches, id => repeatIds.has(id));
+  return run.findings.filter((_, n) => !matched.has(n));
+}
+
 export function buildReport(meta: Pick<BenchReport, 'startedAt' | 'runsPerCase' | 'matcherModel'>, variants: VariantResults[]): BenchReport {
   return {
     mankiVersion: MANKI_VERSION, ...meta,
@@ -861,14 +868,10 @@ function minutes(ms: number | null): string {
  * keys never grow this way. Returns an empty string when there is none.
  */
 export function formatUnmatchedBlockers(variants: VariantReport[]): string {
-  const lines = variants.flatMap(v => v.cases.filter(c => c.set === 'tuning').flatMap((c) => {
-    const repeatIds = new Set(c.items.filter(item => item.tier === 'must_keep_open' || item.tier === 'must_not_repeat').map(item => item.id));
-    return c.runs.flatMap((run, i) => {
-      if (!run.complete) return [];
-      const matched = matchedFindings(run.matches, id => repeatIds.has(id));
-      return run.findings.flatMap((f, n) => (f.severity === 'blocker' && !matched.has(n) ? [`${v.name} ${c.id} key v${c.keyVersion} run ${i + 1}: ${f.file}:${f.line}: ${f.title}`] : []));
-    });
-  }));
+  const lines = variants.flatMap(v => v.cases.filter(c => c.set === 'tuning').flatMap(c => c.runs.flatMap((run, i) => {
+    if (!run.complete) return [];
+    return unmatchedFindings(c, run).flatMap(f => (f.severity === 'blocker' ? [`${v.name} ${c.id} key v${c.keyVersion} run ${i + 1}: ${f.file}:${f.line}: ${f.title}`] : []));
+  })));
   if (lines.length === 0) return '';
   return [
     '### Unmatched blockers on tuning cases', '',
