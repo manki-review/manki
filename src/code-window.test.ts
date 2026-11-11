@@ -1,4 +1,5 @@
 import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
+import { expectLinearTime } from './test-utils';
 
 describe('extractCurrentCodeWindow', () => {
   function makeFile(lineCount: number): string {
@@ -93,12 +94,14 @@ describe('locatePostedLine', () => {
     expect(locatePostedLine(posted, 2, 'nothing here')).toBeUndefined();
   });
 
-  it('stays linear on a head file of many repeated lines, which the PR author controls', () => {
-    const repeated = [...Array(200_000).fill(''), ...Array(100_000).fill('  return parse(data);'), ...body].join('\n');
-    const started = Date.now();
-    expect(locatePostedLine(posted, 2, repeated)).toBe(300_002);
-    expect(Date.now() - started).toBeLessThan(2000);
-  });
+  it('stays linear on a head file of many repeated lines, which the PR author controls', async () => {
+    await expectLinearTime((size) => {
+      const repeated = [...Array(2 * size).fill(''), ...Array(size).fill('  return parse(data);'), ...body].join('\n');
+      const started = performance.now();
+      expect(locatePostedLine(posted, 2, repeated)).toBe(3 * size + 2);
+      return performance.now() - started;
+    }, 100_000);
+  }, 60_000);
 
   it('finds the posted code in another file only when exactly one holds its whole window unchanged', () => {
     const whole = ['// header', ...body.map(l => `  ${l}`)].join('\n');

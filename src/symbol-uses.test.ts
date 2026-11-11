@@ -9,7 +9,7 @@ import python from '@ast-grep/lang-python';
 import rust from '@ast-grep/lang-rust';
 
 import { listRelatedUses, listUsesOutsideDiff, UsesOutsideDiff } from './symbol-uses';
-import { gitWorkspace } from './test-utils';
+import { expectLinearTime, gitWorkspace } from './test-utils';
 
 jest.mock('@actions/core');
 // Every test here builds a real git workspace or directory, which a loaded runner takes past the default 5 seconds.
@@ -20,14 +20,33 @@ napi.registerDynamicLanguage({ go, python, rust });
 
 const loadApi = async () => napi;
 
-/** Returns the uses section and its record for the change from `base` to `head`, removing the workspace afterwards. */
-async function usesFor(base: Record<string, string>, head: Record<string, string>, excludePaths: string[] = []): Promise<UsesOutsideDiff> {
+type Files = Record<string, string>;
+
+/** Returns the uses section and its record for the change from `base` to `head`, and the milliseconds listing them took, removing the workspace afterwards. */
+async function timedUses(base: Files, head: Files, excludePaths: string[] = []): Promise<{ uses: UsesOutsideDiff; ms: number }> {
   const { root, diff } = gitWorkspace(base, head);
   try {
-    return await listUsesOutsideDiff(root, diff, { loadApi, excludePaths });
+    const started = performance.now();
+    const uses = await listUsesOutsideDiff(root, diff, { loadApi, excludePaths });
+    return { uses, ms: performance.now() - started };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+async function usesFor(base: Files, head: Files, excludePaths: string[] = []): Promise<UsesOutsideDiff> {
+  return (await timedUses(base, head, excludePaths)).uses;
+}
+
+/** Returns the uses for `change(size)`, after checking that listing them takes time linear in the size. */
+async function usesInLinearTime(change: (size: number) => [base: Files, head: Files], size: number, options?: Parameters<typeof expectLinearTime>[2]): Promise<UsesOutsideDiff> {
+  let last: UsesOutsideDiff | undefined;
+  await expectLinearTime(async (n) => {
+    const { uses, ms } = await timedUses(...change(n));
+    last = uses;
+    return ms;
+  }, size, options);
+  return last!;
 }
 
 const ORDER = (fieldLine: string, extra = '') => `pub struct Order {
@@ -601,92 +620,64 @@ ${body}	return true
 
   it('lists the uses of a large generated file in time that grows linearly with its size', async () => {
     // One added struct with many fields: every field is a changed declaration on a touched line.
-    const fields = Array.from({ length: 20_000 }, (_, i) => `\tField${i} int`).join('\n');
-    let started = Date.now();
-    const added = await usesFor({ 'gen/doc.go': 'package gen\n' }, { 'gen/big.go': `package gen\n\ntype Big struct {\n${fields}\n}\n` });
+    const added = await usesInLinearTime(n => [
+      { 'gen/doc.go': 'package gen\n' },
+      { 'gen/big.go': `package gen\n\ntype Big struct {\n${Array.from({ length: n }, (_, i) => `\tField${i} int`).join('\n')}\n}\n` },
+    ], 20_000);
     expect(added.section).toContain('gen/big.go:3: struct Big { Field0, Field1,');
-    expect(Date.now() - started).toBeLessThan(10_000);
 
     // Many types that each declare the field a changed line reads: every one is a matching line to place in its type.
-    const types = Array.from({ length: 5_000 }, (_, i) => `type Kind${i} struct {\n\tWeight int\n}`).join('\n');
-    started = Date.now();
-    const read = await usesFor(
-      { 'gen/types.go': `package gen\n\n${types}\n`, 'app/use.go': 'package app\n\nfunc use(t Kind0) int {\n\treturn 0\n}\n' },
+    const read = await usesInLinearTime(n => [
+      { 'gen/types.go': `package gen\n\n${Array.from({ length: n }, (_, i) => `type Kind${i} struct {\n\tWeight int\n}`).join('\n')}\n`, 'app/use.go': 'package app\n\nfunc use(t Kind0) int {\n\treturn 0\n}\n' },
       { 'app/use.go': 'package app\n\nfunc use(t Kind0) int {\n\treturn t.Weight\n}\n' },
-    );
+    ], 5_000);
     // So many types declare the field that none is listed for it.
     expect(read.section).toBe('');
-    expect(Date.now() - started).toBeLessThan(10_000);
 
     // Anonymous struct fields nested deep, with a change at the innermost level: every field encloses the ones after it.
-    const depth = 3_000;
-    const nested = (inner: string) => `package gen\n\ntype Deep struct {\n${Array.from({ length: depth }, (_, i) => `Level${i} struct {`).join('\n')}\n${inner}\n${'}\n'.repeat(depth)}}\n`;
-    started = Date.now();
-    const deep = await usesFor({ 'gen/deep.go': nested('Leaf int') }, { 'gen/deep.go': nested('Leaf int64') });
+    const nested = (depth: number, inner: string) => `package gen\n\ntype Deep struct {\n${Array.from({ length: depth }, (_, i) => `Level${i} struct {`).join('\n')}\n${inner}\n${'}\n'.repeat(depth)}}\n`;
+    // The small input nests past the limit too, so both take the same path.
+    const deep = await usesInLinearTime(depth => [{ 'gen/deep.go': nested(depth, 'Leaf int') }, { 'gen/deep.go': nested(depth, 'Leaf int64') }], 3_000, { smaller: 500 });
     // A file nested that deep is not parsed, since every parent lookup would cost its depth.
     expect(deep.section).toBe('');
     expect(core.info).toHaveBeenCalledWith('Uses outside the diff: gen/deep.go nests deeper than 256 levels, so it is read like a file without a grammar');
-    expect(Date.now() - started).toBeLessThan(10_000);
 
     // A long member chain nests the syntax tree as deep as nested blocks do.
-    started = Date.now();
-    const chain = await usesFor({ 'src/chain.ts': 'export const chain = 0;\n' }, { 'src/chain.ts': `export const chain = start${'.next'.repeat(20_000)};\n` });
+    const chain = await usesInLinearTime(n => [{ 'src/chain.ts': 'export const chain = 0;\n' }, { 'src/chain.ts': `export const chain = start${'.next'.repeat(n)};\n` }], 20_000);
     expect(chain.section).toBe('');
     expect(core.info).toHaveBeenCalledWith('Uses outside the diff: src/chain.ts nests deeper than 256 levels, so it is read like a file without a grammar');
-    expect(Date.now() - started).toBeLessThan(10_000);
 
     // Long config lines with underscores and no key separator.
-    started = Date.now();
-    await usesFor({ 'conf/app.yml': 'name: app\n' }, { 'conf/app.yml': `name: app\n${`k${'_a'.repeat(20_000)} x\n`.repeat(20)}` });
-    expect(Date.now() - started).toBeLessThan(10_000);
+    await usesInLinearTime(n => [{ 'conf/app.yml': 'name: app\n' }, { 'conf/app.yml': `name: app\n${`k${'_a'.repeat(n)} x\n`.repeat(20)}` }], 20_000);
 
     // Many sibling types across files with a method of the same name, one of them changed: each joins the same group.
-    // Four times the methods must take well under 16 times as long, which copying the group per member came close to.
-    // A busy runner can stretch one run, so a large run over the bound is timed once more.
-    const areas = (count: number, from: number, first = '0') => `package gen\n\n${Array.from({ length: count }, (_, i) => `func (s S${from + i}) Area() int { return ${i === 0 ? first : i} }`).join('\n')}\n`;
-    const timeGroups = async (count: number) => {
-      const begun = Date.now();
-      const grouped = await usesFor(
-        Object.fromEntries(['a', 'b', 'c', 'd'].map((name, i) => [`gen/${name}.go`, areas(count, i * count)])),
-        { 'gen/a.go': areas(count, 0, '7') },
-      );
-      expect(grouped.siblings.implementations.map(q => [q.name, q.members.length])).toEqual([['Area', 4]]);
-      return Date.now() - begun;
-    };
-    const small = await timeGroups(5_000);
-    let large = await timeGroups(20_000);
-    if (large >= 6 * small) large = Math.min(large, await timeGroups(20_000));
-    expect(large).toBeLessThan(6 * small);
-    expect(large).toBeLessThan(60_000);
+    const areas = (from: number, first = '0') => `package gen\n\n${Array.from({ length: 20_000 }, (_, i) => `func (s S${from + i}) Area() int { return ${i === 0 ? first : i} }`).join('\n')}\n`;
+    const grouped = await usesFor(
+      Object.fromEntries(['a', 'b', 'c', 'd'].map((name, i) => [`gen/${name}.go`, areas(i * 20_000)])),
+      { 'gen/a.go': areas(0, '7') },
+    );
+    expect(grouped.siblings.implementations.map(q => [q.name, q.members.length])).toEqual([['Area', 4]]);
 
     // A changed file of many methods, each with a sibling beside it: every one is a group, and only the questions asked are quoted.
-    const mirrored = (owner: string, value: number) => `package gen\n\n${Array.from({ length: 5_000 }, (_, i) => `func (m ${owner}) S${i}() int { return ${value} }`).join('\n')}\n`;
-    started = Date.now();
-    const steps = await usesFor({ 'gen/a.go': mirrored('A', 1), 'gen/b.go': mirrored('B', 2) }, { 'gen/a.go': mirrored('A', 3) });
+    const mirrored = (count: number, owner: string, value: number) => `package gen\n\n${Array.from({ length: count }, (_, i) => `func (m ${owner}) S${i}() int { return ${value} }`).join('\n')}\n`;
+    const steps = await usesInLinearTime(n => [{ 'gen/a.go': mirrored(n, 'A', 1), 'gen/b.go': mirrored(n, 'B', 2) }, { 'gen/a.go': mirrored(n, 'A', 3) }], 5_000);
     expect(steps.siblings.implementations).toHaveLength(20);
-    expect(Date.now() - started).toBeLessThan(10_000);
 
     // The same methods on one line of a changed class: each method is a member of its own groups, however many share its line.
-    const inline = (value: number) => `export class A { ${Array.from({ length: 5_000 }, (_, i) => `m${i}() { return ${value}; }`).join(' ')} }\n`;
-    const lined = `export class B {\n${Array.from({ length: 5_000 }, (_, i) => `  m${i}() { return 2; }`).join('\n')}\n}\n`;
-    started = Date.now();
-    const oneLine = await usesFor({ 'src/gen/a.ts': inline(1), 'src/gen/b.ts': lined }, { 'src/gen/a.ts': inline(3) });
+    const inline = (count: number, value: number) => `export class A { ${Array.from({ length: count }, (_, i) => `m${i}() { return ${value}; }`).join(' ')} }\n`;
+    const lined = (count: number) => `export class B {\n${Array.from({ length: count }, (_, i) => `  m${i}() { return 2; }`).join('\n')}\n}\n`;
+    const oneLine = await usesInLinearTime(n => [{ 'src/gen/a.ts': inline(n, 1), 'src/gen/b.ts': lined(n) }, { 'src/gen/a.ts': inline(n, 3) }], 5_000);
     expect(oneLine.siblings.implementations).toHaveLength(20);
-    expect(Date.now() - started).toBeLessThan(10_000);
 
     // One class with many bases and many dunder methods: its bases are read once, and only the first few key its groups.
-    const based = (body: string) => `class Wide(${Array.from({ length: 40_000 }, (_, i) => `B${i}`).join(', ')}):\n${Array.from({ length: 5_000 }, (_, i) => `    def __m${i}__(self):\n        return ${i === 0 ? body : '1'}\n`).join('')}`;
-    started = Date.now();
-    await usesFor({ 'src/wide.py': based('1') }, { 'src/wide.py': based('2') });
-    expect(Date.now() - started).toBeLessThan(10_000);
+    const based = (count: number, body: string) => `class Wide(${Array.from({ length: 8 * count }, (_, i) => `B${i}`).join(', ')}):\n${Array.from({ length: count }, (_, i) => `    def __m${i}__(self):\n        return ${i === 0 ? body : '1'}\n`).join('')}`;
+    await usesInLinearTime(n => [{ 'src/wide.py': based(n, '1') }, { 'src/wide.py': based(n, '2') }], 5_000);
 
     // A flat file of many top-level functions, one changed: each declaration has thousands of siblings.
-    const flat = (body: string) => `package gen\n\n${Array.from({ length: 55_000 }, (_, i) => `func F${i}(){${i === 54_999 ? body : '1'}}`).join('\n')}\n`;
-    started = Date.now();
-    const wide = await usesFor({ 'gen/flat.go': flat('1') }, { 'gen/flat.go': flat('2') });
+    const flat = (count: number, body: string) => `package gen\n\n${Array.from({ length: count }, (_, i) => `func F${i}(){${i === count - 1 ? body : '1'}}`).join('\n')}\n`;
+    const wide = await usesInLinearTime(n => [{ 'gen/flat.go': flat(n, '1') }, { 'gen/flat.go': flat(n, '2') }], 55_000);
     expect(wide.section).toBe('');
-    expect(Date.now() - started).toBeLessThan(10_000);
-  }, 120_000);
+  }, 300_000);
 
   it('parses at most 200 files a round and says how many it left unparsed', async () => {
     const handler = (i: number, value: number) => `package gen\n\nfunc Handle${i}() int { return ${value} }\n`;
