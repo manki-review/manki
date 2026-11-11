@@ -27,8 +27,9 @@ import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { preExistingCheck, truncateDiff } from './review';
 import { parsePRDiff } from './diff';
+import { extractJSON } from './json';
 import { VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation } from './types';
+import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation, isNote } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -5500,5 +5501,56 @@ describe('judge grading fixture corpus', () => {
     const graded = result.findings[0];
     console.log(`[live-judge] ${fixture.name}: allowed=${fixture.allowed.join('|')} actual=${graded?.severity} cell=${JSON.stringify(graded?.cell)} gradeIfConfirmed=${graded?.gradeIfConfirmed} doubts=${JSON.stringify(graded?.doubts ?? [])} reasoning=${JSON.stringify(graded?.judgeNotes ?? '')}`);
     expect(fixture.allowed).toContain(graded?.severity);
+  }, 600_000);
+});
+
+interface NoteOrderFixture {
+  name: string;
+  /** The title of the finding the judge should rank last. */
+  formatting: string;
+  findings: Finding[];
+  prDiff: string;
+}
+
+describe('judge note order fixture corpus', () => {
+  const fixtures = loadFixtures<NoteOrderFixture>('noteOrder');
+
+  it.each(fixtures)('fixture $name points each finding at a diff line, and names its formatting point', (fixture) => {
+    const diff = parsePRDiff(fixture.prDiff);
+    for (const finding of fixture.findings) expect(extractCodeContext(finding, diff)).toContain(`>>> ${finding.line}:`);
+    expect(fixture.findings.map(f => f.title)).toContain(fixture.formatting);
+  });
+
+  // Live replay against a real LLM, gated like the thread-evaluation corpus above.
+  const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
+  const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-5-5';
+  (runLive ? it : it.skip).each(fixtures)('live judge names every note of $name once in `noteOrder`, with the formatting point last', async (fixture) => {
+    const model = new AnthropicClient({ auth: { kind: 'oauth', token: '' }, model: liveModel });
+    const replies: string[] = [];
+    const client: LLMClient = {
+      sendMessage: async (...args) => {
+        const reply = await model.sendMessage(...args);
+        replies.push(reply.content);
+        return reply;
+      },
+    };
+
+    const result = await runJudgeAgent(client, makeConfig(), {
+      findings: fixture.findings,
+      diff: parsePRDiff(fixture.prDiff),
+      rawDiff: fixture.prDiff,
+      repoContext: '',
+      agentCount: 1,
+      isFollowUp: false,
+    });
+
+    const { noteOrder } = JSON.parse(extractJSON(replies.at(-1) ?? '')) as { noteOrder?: unknown };
+    const notes = result.findings.filter(f => isNote(f.severity));
+    console.log(`[live-judge] ${fixture.name}: noteOrder=${JSON.stringify(noteOrder)} graded=${JSON.stringify(result.findings.map(f => [f.title, f.severity, f.noteRank]))}`);
+    expect(notes.length).toBeGreaterThanOrEqual(3);
+    // As many entries as notes, and every note at a place of its own, so `noteOrder` names each note once and nothing else.
+    expect(noteOrder).toHaveLength(notes.length);
+    expect(notes.map(f => f.noteRank).sort()).toEqual(notes.map((_, i) => i));
+    expect(notes.find(f => f.title === fixture.formatting)?.noteRank).toBe(notes.length - 1);
   }, 600_000);
 });
