@@ -22,7 +22,7 @@ import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, wit
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
-import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, isGuarded, PreviousFinding, RecapState, replyClassOf, securityOverridesIn } from './recap';
+import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, replyClassOf, replyShownToJudge, securityOverridesIn } from './recap';
 import { disproof } from './refute';
 import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
@@ -1042,29 +1042,32 @@ async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: st
 
 /** Collects the open review threads with the code now at each, and the contents of the files the review reads. */
 async function collectOpenThreads(
-  target: RunTarget, recap: RecapState, diff: ParsedDiff, lockfiles: LockfileDiff[],
+  target: RunTarget, recap: RecapState, diff: ParsedDiff, lockfiles: LockfileDiff[], prAuthorLogin: string | undefined,
 ): Promise<{ openThreads: OpenThread[]; fileContents?: Map<string, string> }> {
   const { octokit, owner, repo, commitSha } = target;
   const baseOpenThreads = recap.previousFindings
     .filter((f): f is PreviousFinding & { threadId: string } =>
       (f.status === 'open' || f.status === 'replied') && f.threadId != null && f.threadId !== '')
-    .map(f => ({
-      threadId: f.threadId,
-      threadUrl: f.threadUrl,
-      title: f.title,
-      file: f.file,
-      // A thread posted on a fallback line sits away from its finding, and the judge has to look at the finding.
-      line: currentFindingLine(f),
-      severity: f.severity,
-      ...(f.recordedGrade && { recordedGrade: f.recordedGrade }),
-      ...(f.peakGrade && { peakGrade: f.peakGrade }),
-      ...(f.isSecurity && { isSecurity: true }),
-      description: f.description,
-      suggestedFix: f.suggestedFix,
-      howToFix: f.howToFix,
-      ...(f.answer && { answer: f.answer }),
-      ...(isGuarded(f) && f.authorReplyText && { authorReplyText: f.authorReplyText }),
-    }));
+    .map(f => {
+      const authorReplyText = replyShownToJudge(f, prAuthorLogin);
+      return {
+        threadId: f.threadId,
+        threadUrl: f.threadUrl,
+        title: f.title,
+        file: f.file,
+        // A thread posted on a fallback line sits away from its finding, and the judge has to look at the finding.
+        line: currentFindingLine(f),
+        severity: f.severity,
+        ...(f.recordedGrade && { recordedGrade: f.recordedGrade }),
+        ...(f.peakGrade && { peakGrade: f.peakGrade }),
+        ...(f.isSecurity && { isSecurity: true }),
+        description: f.description,
+        suggestedFix: f.suggestedFix,
+        howToFix: f.howToFix,
+        ...(f.answer && { answer: f.answer }),
+        ...(authorReplyText && { authorReplyText }),
+      };
+    });
 
   // Fetch full file contents for changed files so reviewers have surrounding context.
   // Also fetch each open thread's file (if missing from changed files) so the judge
@@ -1858,7 +1861,7 @@ async function runFullReview(
     const digest = changeDigest(fullDiff);
     const countsTowardCap = !options.draft && isNewChange({ commitSha, changeDigest: digest }, recap.priorRounds.at(-1));
 
-    const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff, lockfiles);
+    const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff, lockfiles, prAuthorLogin);
     const [{ interRoundDiff, priorChange, linkedIssues, relatedWork, staticSignals, staticAnalysis }, workspace] = await Promise.all([
       collectRoundSignals(target, config, recap, diff, fullDiff, lockfiles, configPath, prContext),
       fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])]),

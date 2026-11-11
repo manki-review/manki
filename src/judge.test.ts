@@ -730,6 +730,8 @@ describe('buildJudgeUserMessage', () => {
     expect(raisedAgain).toContain('The upload still has no timeout. (graded blocker)\n');
     const unchanged = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads.map(t => ({ ...t, recordedGrade: 'note' as const })), rounds, '');
     expect(unchanged).toContain('The upload still has no timeout. (graded note, row degraded, column rare)\n');
+    // A thread without a reply for the judge shows none.
+    expect(unchanged).not.toContain('Latest reply from a developer in this thread');
 
     // An outdated thread shows the code it named when posted, and where that code is now or that it is gone, and the
     // judge sees Manki's own answer in the thread.

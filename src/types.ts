@@ -1310,7 +1310,10 @@ export interface OpenThread extends FindingMetadata {
   currentCode?: string;
   /** Manki's latest answer to a developer in the thread, such as a "Fixed." reply with its evidence. */
   answer?: string;
-  /** The latest reply a person wrote in a guarded thread. It is untrusted text: a claim the judge answers, never evidence. */
+  /**
+   * The latest reply in a guarded thread, when the PR author or someone with write access wrote it. It is untrusted
+   * text: a claim the judge answers, never evidence.
+   */
   authorReplyText?: string;
   /**
    * For an outdated thread, the code around its finding on the commit it was posted on, `postedCommit`. `currentCode`

@@ -410,6 +410,16 @@ function replyClassOf(pf: PreviousFinding): AuthorReplyClass {
   return replyClass === 'agree' && authorCannotClear(pf) && !pf.authorReplyMayClear ? 'none' : replyClass;
 }
 
+/**
+ * Returns the latest reply on a guarded thread for the judge to read, when the PR author or someone with write access
+ * wrote it. Anyone can comment on a PR, so a reply by anyone else is left out, and so is one whose writer is unknown.
+ */
+function replyShownToJudge(pf: PreviousFinding, prAuthorLogin: string | undefined): string | undefined {
+  if (!isGuarded(pf) || !pf.authorReplyText || !pf.authorReplyLogin) return undefined;
+  const byPrAuthor = !!prAuthorLogin && pf.authorReplyLogin.toLowerCase() === prAuthorLogin.toLowerCase();
+  return byPrAuthor || pf.authorReplyMayClear ? pf.authorReplyText : undefined;
+}
+
 interface RecapState {
   previousFindings: PreviousFinding[];
   priorRounds: RoundContext[];
@@ -1231,4 +1241,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
+export { blockersToRecheck, currentFindingLine, DuplicateMatch, FOUND_AGAIN_MARKER, recordedThreadGrades, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, parseContextBlocks, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadMarkerSlug, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, replyShownToJudge, llmDeduplicateFindings, llmSameDefects, parseFindingFromComment };
