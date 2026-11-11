@@ -2212,9 +2212,16 @@ describe('runReview', () => {
         ends: r => r.memorySuppressed?.map(f => [f.title, f.suppressedBy]), as: [['Remembered pattern', 'sup-1']],
       },
       {
-        // No step hides a security finding, so no outcome of a check changes whether the review shows it.
-        step: 'security finding', title: 'Token in the log', verdict: { security: true },
-        ends: r => r.findings.filter(f => f.title === 'Token in the log').map(f => [f.severity, f.tags?.includes('security')]), as: [['warning', true]],
+        // No step hides a warning on code the PR did not change, since a check that confirms it posts it. It waits behind
+        // every other unproven warning instead, so here the eight postable ones leave it no check.
+        step: 'pre-existing warning the checks did not reach', title: 'Old loop', finding: { file: 'src/old.ts', proof: ['src/old.ts:15'], preExisting: true, preExistingReason: 'The loop predates this PR.' },
+        verdict: { preExisting: true },
+        ends: r => r.unpostedPreExisting?.map(f => [f.title, f.preExistingCheck]), as: [['Old loop', 'pre_existing']],
+      },
+      {
+        // A check of a security finding changes only the status it shows, so it comes last and the eight postable ones leave it none.
+        step: 'security finding the checks did not reach', title: 'Token in the log', verdict: { security: true },
+        ends: r => r.findings.filter(f => f.title === 'Token in the log').map(f => [f.severity, f.tags?.includes('security'), f.checkStatus]), as: [['warning', true, 'unconfirmed']],
       },
       {
         // No check can run on a file the refuter cannot read, so the cited lines decide.
@@ -2945,11 +2952,14 @@ describe('runReview', () => {
 
     // Only blockers and warnings a tool check confirmed are posted. The rest stay in the round record.
     const oldSuggestion = blocker('Old helper could be shorter', 'src/a.ts', 60, { severity: 'note' });
+    // No check ran on this one, as on a round without tools, after a refuter call that failed, or in a file the refuter cannot read.
     const oldUnsure = blocker('Old retry may spin', 'src/a.ts', 70, { severity: 'warning', evidence: { checks: [], proof: ['src/a.ts:70'] } });
+    const oldUnsettled = { ...oldUnsure, title: 'Old lock may leak', line: 72, refutation: { outcome: 'unsettled' as const, reason: 'Could not tell.', files: ['src/a.ts'], codeDigest: 'abc' } };
+    const oldUnreached = { ...oldUnsure, title: 'Old cache may grow', line: 74, overCheckLimit: true as const };
     const oldSure = blocker('Old timeout is never cleared', 'src/a.ts', 80, {
       severity: 'warning', evidence: { checks: [], proof: ['src/a.ts:80'] }, refutation: { outcome: 'confirmed', reason: 'Nothing clears it.', files: ['src/a.ts'], codeDigest: 'abc' },
     });
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile, oldSuggestion, oldUnsure, oldSure], summary: 'Old defects.' });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile, oldSuggestion, oldUnsure, oldUnsettled, oldUnreached, oldSure], summary: 'Old defects.' });
     const pre = await run(makeClients());
     expect(pre.outcome).toBe('READY');
     expect(pre.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags])).toEqual([
@@ -2957,10 +2967,14 @@ describe('runReview', () => {
       ['Old race in the pool', 'warning', 'blocker', ['pre-existing', 'follow-up']],
       ['Old timeout is never cleared', 'warning', undefined, ['pre-existing', 'follow-up']],
     ]);
-    expect(pre.unpostedPreExisting?.map(f => [f.title, f.tags])).toEqual([
-      ['Old helper could be shorter', ['pre-existing']],
-      ['Old retry may spin', ['pre-existing']],
+    // A warning no check confirmed is recorded as pre-existing and not posted, whether no check ran, it settled nothing or did not reach it.
+    expect(pre.unpostedPreExisting?.map(f => [f.title, f.tags, f.preExistingCheck])).toEqual([
+      ['Old helper could be shorter', ['pre-existing'], 'pre_existing'],
+      ['Old retry may spin', ['pre-existing'], 'pre_existing'],
+      ['Old lock may leak', ['pre-existing'], 'pre_existing'],
+      ['Old cache may grow', ['pre-existing'], 'pre_existing'],
     ]);
+    expect(pre.unposted).toBeUndefined();
     // The record keeps how each claim was checked, and the lowered blocker's grade step with the reviewer's reason.
     expect(pre.findings.map(f => f.preExistingCheck)).toEqual(['pre_existing', 'pre_existing', 'pre_existing']);
     expect(pre.findings[0].gradePath?.at(-1)).toEqual({ from: 'blocker', to: 'warning', by: 'pre_existing', reason: old });

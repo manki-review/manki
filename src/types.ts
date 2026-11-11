@@ -348,7 +348,7 @@ export interface Finding {
   suppressedBy?: string;
   /** Why the review leaves the finding out. Only the round record keeps such a finding. */
   unpostedReason?: UnpostedReason;
-  /** Set on an unproven warning the refuter could have checked, had `MAX_DOUBT_CHECKS` other warnings not taken the round's checks. */
+  /** Set on a warning the refuter could have checked, had `MAX_DOUBT_CHECKS` other warnings not taken the round's checks. */
   overCheckLimit?: true;
   /** How the finding was checked. Set on each blocker and warning a round posts, except a tool alert. */
   checkStatus?: CheckStatus;

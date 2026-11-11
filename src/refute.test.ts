@@ -521,7 +521,8 @@ describe('refuteBlockers', () => {
       // A warning no cited line proves is checked like a doubted one, and a note is not.
       finding('Warning without proof', { severity: 'warning', ...noProof }),
       finding('Note without proof', { severity: 'note', ...noProof }),
-      // A tool alert and a security finding are posted whatever a check says, so neither takes one of the eight.
+      // A tool alert is posted whatever a check says, and so is a security finding. A check of one the judge doubts only
+      // settles its status, so it comes after every other warning, which here is past the limit.
       finding('Tool alert without proof', { severity: 'warning', toolSource: 'CodeQL', ...noProof }),
       finding('Security warning without proof', { severity: 'warning', tags: ['security'], ...noProof }),
       { ...doubted('Security warning with a doubt', 'warning'), tags: ['security'] },
@@ -544,7 +545,7 @@ describe('refuteBlockers', () => {
       'Note to warning', 'Second warning to blocker', 'Warning to blocker', 'Warning without proof',
     ]);
     expect(client.messages.find(([, user]) => user.includes(': Warning without proof\n'))![1]).toMatch(/^## Warning no cited line proves: Warning without proof\n/);
-    expect(client.messages[0][0]).toContain('a claimed build failure no CI result reports, a warning no cited line proves, or a finding that rests on premises the judge doubts');
+    expect(client.messages[0][0]).toContain('a claimed build failure no CI result reports, a warning no cited line proves, a warning on code the pull request did not change, or a finding that rests on premises the judge doubts');
 
     // Only a check that settled nothing and the limit leave a doubted warning unproven. Where no check could run, the cited lines decide.
     const reasons = (list: Finding[]) => Object.fromEntries(list.filter(f => f.severity === 'warning').map(f => [f.title, unprovenReason(f)]));
@@ -556,7 +557,7 @@ describe('refuteBlockers', () => {
       'Linked to an open thread': 'not_checked', 'Matches an earlier finding': 'not_checked',
       'Doubt in a deleted file': undefined, 'Doubt with no file': undefined, 'No proof in a deleted file': 'no_proof',
       'Left out later with a doubt': undefined, 'Left out later without proof': 'no_proof',
-      'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof', 'Security warning with a doubt': undefined,
+      'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof', 'Security warning with a doubt': 'not_checked',
     });
     // The judge calls of one round share the eight, so a later call checks only what an earlier one left.
     const doubtBudget = { left: 3 };
@@ -658,6 +659,54 @@ describe('refuteBlockers', () => {
       // A check that leaves only a premise about the grade open says nothing against the cited lines.
       checkStatus({ ...gradeDoubt, refutation: { ...answer('unsettled', ['unsettled']), premises: [{ premise: 'Any client reaches it', outcome: 'unsettled', reason: 'r' }] } }),
     ]).toEqual(['confirmed', 'unconfirmed', 'unconfirmed', 'proven']);
+  });
+
+  it('checks a warning on code the PR did not change after the unproven ones, those with a doubt first, inside the same limit', async () => {
+    const reach = [{ premise: 'Any client reaches it', decides: 'grade' as const }];
+    const old = { severity: 'warning' as const, preExisting: 'The loop predates this PR.' };
+    const findings = [
+      // One nothing proves waits behind the warnings on changed code too, so it never takes a check one of them needs.
+      finding('Old without proof', { ...old, evidence: { checks: [], proof: [] } }),
+      finding('Old plain', old),
+      finding('Old with a doubt', { ...old, doubts: reach }),
+      finding('Old confirmed', { ...old, doubts: reach }),
+      // A security warning is posted wherever it sits, so it takes no check.
+      finding('Old security', { ...old, tags: ['security'] }),
+      // No check can run on these two, so nothing confirms them: the call fails, or the refuter cannot read the file.
+      finding('Old and the call fails', { ...old, doubts: reach }),
+      finding('Old in a deleted file', { ...old, doubts: reach, file: 'src/deleted.ts' }),
+      finding('Proven on changed code', { severity: 'warning' }),
+      ...Array.from({ length: 5 }, (_, i) => finding(`Unproven ${i + 1}`, { severity: 'warning', evidence: { checks: [], proof: [] } })),
+    ];
+    const answer = (outcome: 'confirmed' | 'unsettled') => ({ outcome, reason: 'r', proof: ['src/math.ts:2'], premises: [{ outcome, reason: 'r', proof: ['src/math.ts:2'] }] });
+    const client = fakeClient({ ...Object.fromEntries(findings.map(f => [f.title, answer('unsettled')])), 'Old confirmed': answer('confirmed'), 'Old and the call fails': new Error('overloaded') });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+
+    const result = await refuteBlockers(client, findings, { workspace, diff, preExisting: f => f.title.startsWith('Old') });
+
+    warnSpy.mockRestore();
+    // The five unproven warnings on changed code take the first checks and the three readable ones with a doubt the last, which leaves none for the other two.
+    expect(client.calls.map(([title]) => title).sort()).toEqual(['Old and the call fails', 'Old confirmed', 'Old with a doubt', ...Array.from({ length: 5 }, (_, i) => `Unproven ${i + 1}`)]);
+    expect(client.messages.find(([, user]) => user.includes(': Old with a doubt\n'))![1]).toMatch(/^## Warning on code the PR did not change: Old with a doubt\n/);
+    expect(client.messages[0][0]).toContain('a warning no cited line proves, a warning on code the pull request did not change, or a finding that rests on premises the judge doubts');
+    // Only the confirmed one is `confirmed`, the status that posts a warning on unchanged code.
+    expect(result.slice(0, 7).map(f => [f.title, f.severity, checkStatus(f)])).toEqual([
+      ['Old without proof', 'warning', 'unconfirmed'], ['Old plain', 'warning', 'proven'], ['Old with a doubt', 'warning', 'proven'], ['Old confirmed', 'warning', 'confirmed'], ['Old security', 'warning', 'proven'],
+      ['Old and the call fails', 'warning', 'proven'], ['Old in a deleted file', 'warning', 'proven'],
+    ]);
+
+    // A check of a doubted security finding only settles its status, so it runs once every check that decides a posting has its place.
+    const doubted = finding('Security with a doubt', { severity: 'warning', tags: ['security'], doubts: [{ premise: 'The copy is never dropped', decides: 'defect' }] });
+    const status = fakeClient({ 'Security with a doubt': answer('confirmed'), 'Unproven 1': answer('unsettled') });
+    await refuteBlockers(status, [doubted, findings.find(f => f.title === 'Unproven 1')!], { workspace, diff, doubtBudget: { left: 1 } });
+    expect(status.calls.map(([title]) => title)).toEqual(['Unproven 1']);
+    const [settled] = await refuteBlockers(status, [doubted], { workspace, diff });
+    expect([status.calls.map(([title]) => title), checkStatus(settled)]).toEqual([['Unproven 1', 'Security with a doubt'], 'confirmed']);
+
+    // Without the mark, a warning its cited lines prove takes no check.
+    const unmarked = fakeClient({ 'Old plain': answer('unsettled') });
+    await refuteBlockers(unmarked, [findings[1]], { workspace, diff });
+    expect(unmarked.calls).toEqual([]);
   });
 
   it('asks for the general rule a finding relies on, and drops a build claim that unchanged code relying on the same rule disproves', async () => {

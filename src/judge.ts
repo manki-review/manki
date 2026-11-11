@@ -1483,6 +1483,7 @@ export async function runJudgeAgent(
     unpostedLater,
     // The match `foldIntoEarlierFindings` makes without a model. The threads are graded again before it runs, so it is not certain yet.
     restatesEarlier: finding => earlier.some(e => sameProblem(e.finding, finding)),
+    preExisting: staysPreExisting,
   }) : mapped;
   const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked);
 

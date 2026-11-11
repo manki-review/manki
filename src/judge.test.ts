@@ -1899,6 +1899,17 @@ describe('runJudgeAgent', () => {
       expect(userMessage).toContain('(src/lock.ts:150)');
       expect(userMessage).not.toContain('(src/lock.ts:180)');
       expect(userMessage).not.toContain('(src/bundle.js:2)');
+
+      // A warning on code the PR did not change is posted only when a check confirms it, so the refuter checks one its cited lines already prove.
+      const old = (title: string, preExisting?: string) => makeFinding({ title, severity: 'warning', file: 'src/lock.ts', line: 30, evidence: { checks: [], proof: ['src/lock.ts:30'] }, preExisting });
+      mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: ['Old lock order', 'Lock order'].map((title, i) => ({ id: i + 1, title, row: 'degraded', preExisting: true, reasoning: 'r' })) }) });
+      replies['Old lock order'] = { outcome: 'confirmed', reason: 'Both paths take the lock.', proof: ['src/lock.ts:30'] };
+      refuterMessages.length = 0;
+      const unchanged = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [old('Old lock order', 'The lock order predates this PR.'), old('Lock order')], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace },
+      });
+      expect(refuterMessages.map(m => m.split('\n')[0])).toEqual(['## Warning on code the PR did not change: Old lock order']);
+      expect(unchanged.findings.map(f => [f.title, f.severity, f.refutation?.outcome])).toEqual([['Old lock order', 'warning', 'confirmed'], ['Lock order', 'warning', undefined]]);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }

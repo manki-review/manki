@@ -29,8 +29,9 @@ const LINE_TOLERANCE = 5;
 // Blockers posted as warnings for want of proof a tool could find.
 const CHECKED_TAGS: readonly string[] = [UNPROVEN_TAG, UNBUILT_TAG];
 /**
- * The warnings a round checks because nothing proves them yet, one refuter call each. Every other check runs uncapped.
- * A round posts about one warning on average, so this binds only on a round with many unproven ones.
+ * The warnings a round checks because nothing proves them yet or because they sit on code the PR did not change, one
+ * refuter call each. Every other check runs uncapped. A round posts about one warning on average, so this binds only on
+ * a round with many such warnings.
  */
 export const MAX_DOUBT_CHECKS = 8;
 
@@ -38,7 +39,7 @@ type RefutationField = 'refutation' | 'pairRefutation';
 
 const REFUTE_SYSTEM_PROMPT = `You check one finding a code review raised on a pull request, using read-only tools on the PR's head commit.
 
-The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, a warning no cited line proves, or a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade. Try to refute it, then follow the failure path from its trigger to the damage.
+The finding is a blocker, an open lead (a suspicion a reviewer could not finish checking), a claimed build failure no CI result reports, a warning no cited line proves, a warning on code the pull request did not change, or a finding that rests on premises the judge doubts, such as code outside the diff being as the finding says, the failure path being reached, or a premise that would lower its grade. Try to refute it, then follow the failure path from its trigger to the damage.
 
 To refute it:
 - Look for a concrete reason the failure cannot happen, such as an earlier check, a type or an existing test.
@@ -133,7 +134,9 @@ function findingKind(finding: Finding): string {
   if (finding.lead) return 'Open lead';
   if (finding.gradeIfConfirmed) return 'Finding the judge could not settle without tools';
   if (finding.tags?.includes(UNBUILT_TAG)) return 'Claimed build failure';
-  if (finding.severity === 'warning' && !finding.tags?.includes(UNPROVEN_TAG)) return 'Warning no cited line proves';
+  if (finding.severity === 'warning' && !finding.tags?.includes(UNPROVEN_TAG)) {
+    return finding.preExisting && finding.evidence?.proof.length ? 'Warning on code the PR did not change' : 'Warning no cited line proves';
+  }
   return 'Blocker';
 }
 
@@ -332,28 +335,35 @@ export function needsProof(finding: Finding): boolean {
 const linkedToEarlier = (finding: Finding): boolean => !!(finding.sameAs || finding.variantOf || finding.threadId || finding.answeredIn);
 
 /**
- * Returns the warnings to check with tools because nothing proves them yet, at most `limit`, and those `over` that
- * limit. A warning gets one of these checks only when the result can change whether the review shows it. So it must
- * be one that `needsProof`, with a doubt of the judge whether the defect exists or no cited line that proves it, and
- * none that `noCheck` accepts: a check could not run on that one, or a later step decides about it whatever the check
- * says. The order is the one given, with the warnings that are `linkedToEarlier` or that `restatesEarlier` accepts
- * after the others. The `limit` counts refuter calls, so a warning `needsNoCall` accepts takes none of it and is
+ * Returns the warnings to check with tools, at most `limit`, and those `over` that limit. A check that decides whether
+ * the review shows a warning comes before one that only changes the status it shows. First come the warnings on code
+ * the PR changed that `needsProof` and that nothing proves yet, in the order given: one the judge kept with a doubt
+ * whether the defect exists, and one no cited line proves. Then come the warnings `preExisting` accepts, which are
+ * posted only when a check confirms them, those with a doubt first. Then come the warnings of both kinds that are
+ * `linkedToEarlier` or that `restatesEarlier` accepts. Last come the security findings the judge doubts, which are
+ * posted either way. The `limit` counts refuter calls, so a warning `needsNoCall` accepts takes none of it and is
  * returned as `reused`. A finding the judge would grade higher if its doubts hold is always checked, since that check
- * is how a warning becomes a blocker.
+ * is how a warning becomes a blocker. A tool alert is left out. A warning `noCheck` accepts takes none of the checks: a
+ * check could not run on it, or a later step decides about it whatever the check says.
  */
 function doubtsToCheck(
   findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean, restatesEarlier: (finding: Finding) => boolean, needsNoCall: (finding: Finding) => boolean,
+  preExisting?: (finding: Finding) => boolean,
 ): { checked: Finding[]; reused: Finding[]; over: Finding[] } {
   const last = (finding: Finding): boolean => linkedToEarlier(finding) || restatesEarlier(finding);
-  const open = findings.filter(f => needsProof(f) && !alwaysChecked(f) && (doubtsDefect(f) || citesNoProof(f)) && !noCheck(f));
+  const warnings = findings.filter(f => f.severity === 'warning' && !alwaysChecked(f) && !f.toolSource);
+  const unchanged = warnings.filter(f => needsProof(f) && preExisting?.(f));
+  const unproven = warnings.filter(f => needsProof(f) && !unchanged.includes(f) && (doubtsDefect(f) || citesNoProof(f)));
+  const statusOnly = warnings.filter(f => !needsProof(f) && doubtsDefect(f));
+  const deciding = [...unproven, ...unchanged.filter(f => f.doubts?.length), ...unchanged.filter(f => !f.doubts?.length)];
+  const open = [...deciding.filter(f => !last(f)), ...deciding.filter(last), ...statusOnly].filter(f => !noCheck(f));
   const reused = open.filter(needsNoCall);
-  const calling = open.filter(f => !reused.includes(f));
-  const unproven = [...calling.filter(f => !last(f)), ...calling.filter(last)];
-  const over = unproven.slice(limit);
+  const ordered = open.filter(f => !reused.includes(f));
+  const over = ordered.slice(limit);
   for (const skipped of over) {
-    core.info(`Not checking "${skipped.title}", since the round's ${MAX_DOUBT_CHECKS} checks of unproven warnings are used up`);
+    core.info(`Not checking "${skipped.title}", since the round's ${MAX_DOUBT_CHECKS} checks of warnings are used up`);
   }
-  return { checked: unproven.slice(0, limit), reused, over };
+  return { checked: ordered.slice(0, limit), reused, over };
 }
 
 /** Whether `check` confirms that the defect of `finding` exists: the whole finding, or every premise the defect rests on. */
@@ -441,6 +451,8 @@ export interface RefuteOptions {
   restatesEarlier?: (finding: Finding) => boolean;
   /** How many of the round's `MAX_DOUBT_CHECKS` checks are left. Each one this call makes lowers it, so the judge calls of one round share them. */
   doubtBudget?: { left: number };
+  /** Whether `finding` sits on code the PR did not change. A warning there is posted only when a check confirms it. */
+  preExisting?: (finding: Finding) => boolean;
 }
 
 /**
@@ -450,7 +462,7 @@ export interface RefuteOptions {
  * finding is reused without a new check while the files it rests on are unchanged, except for a finding with a
  * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, preExisting }: RefuteOptions): Promise<Finding[]> {
   // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
   const stored = (field: RefutationField, finding: Finding): Refutation | undefined =>
     finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
@@ -482,7 +494,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   const noCheck = (finding: Finding): boolean => !!unpostedLater?.(finding) || !!hiddenLater?.(finding) || !checkable(finding);
   // `MAX_DOUBT_CHECKS` counts refuter calls, so a warning takes none when each refuter asked about it reuses a stored outcome.
   const needsNoCall = (finding: Finding): boolean => !!stored('refutation', finding) && (!pair || !!stored('pairRefutation', finding));
-  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall);
+  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall, preExisting);
   if (doubtBudget) doubtBudget.left -= picked.checked.length;
   const doubtChecks = new Set([...picked.checked, ...picked.reused]);
   const overLimit = new Set(picked.over);
