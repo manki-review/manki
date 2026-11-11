@@ -14,9 +14,7 @@ export type CellColumn = 'normal' | 'rare';
 export interface GradeCell {
   row: CellRow;
   column: CellColumn;
-  /** The row the judge stated, when Manki grades the finding by another one, as it does for a security finding. */
-  judgeRow?: CellRow;
-  /** The column the judge stated, when a tool check moved the finding to another one. */
+  /** The column the judge stated, when Manki grades the finding in another one: a tool check moved it, or it is a security finding. */
   judgeColumn?: CellColumn;
 }
 

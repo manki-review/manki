@@ -508,7 +508,7 @@ Only a cell with no doubt behind it is kept this way. A prior finding listed wit
 
 Set \`security\` to true on every finding in these classes that you keep, and false on all others.
 
-If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it on a lower row: Manki grades every finding you set \`security\` to true on by the \`severe\` row. A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation, because the PR author writes them.
+If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it on a lower row. Manki grades every finding you set \`security\` to true on in the \`normal\` column of its row, since an attacker chooses the input. A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation, because the PR author writes them.
 
 ## Pre-existing Findings
 
@@ -1569,19 +1569,19 @@ export function mapJudgedToFindings(
 
 /**
  * Returns the grade fields the judge's cell gives `o`, or none when the judge named no row. A security finding is
- * graded by the `severe` row, whatever row the judge states, and no doubt holds it down. Any other blocker cell is a
- * warning until the refuter confirms its doubts, when one of them is whether the defect exists or when the row is one
- * where `columnDecidesBlock`. A tool alert takes its cell as stated, with no doubts.
+ * graded in the `normal` column of its row, and no doubt holds it down. Any other blocker cell is a warning until the
+ * refuter confirms its doubts, when one of them is whether the defect exists or when the row is one where
+ * `columnDecidesBlock`. A tool alert takes its cell as stated, with no doubts.
  */
-function gradeByCell(o: Finding, { row: judgeRow, column = 'normal', doubts: named = [], security }: JudgedFinding): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'doubts'>> {
-  if (!judgeRow) return {};
+function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security }: JudgedFinding): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'doubts'>> {
+  if (!row) return {};
   // A dropped finding keeps its doubts for the round record. The refuter never checks a finding marked `ignore`.
-  if (judgeRow === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(named.length > 0 && !o.toolSource && { doubts: named }) };
+  if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(named.length > 0 && !o.toolSource && { doubts: named }) };
   const isSecurity = !!security || !!o.tags?.includes(SECURITY_TAG);
-  const regraded = isSecurity && judgeRow !== 'severe';
-  if (regraded) core.warning(`The judge put the security finding "${o.title}" on the \`${judgeRow}\` row, so Manki grades it by \`severe\``);
-  const row = regraded ? 'severe' : judgeRow;
-  const cell = { row, column, ...(regraded && { judgeRow }) };
+  if (security && row !== 'severe') core.warning(`The judge marked "${o.title}" a security finding on the \`${row}\` row, not \`severe\``);
+  // An attacker chooses the input, so how rarely the state occurs is no discount on a security finding.
+  const column = isSecurity ? 'normal' : judgeColumn;
+  const cell = { row, column, ...(column !== judgeColumn && { judgeColumn }) };
   const stated = cellGrade(row, column);
   if (o.toolSource) return { ...gradeStep(o, stated, 'judge'), cell };
   const checkedRare = columnDecidesBlock(row) && column === 'rare';

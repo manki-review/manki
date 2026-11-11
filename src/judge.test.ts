@@ -224,7 +224,7 @@ describe('buildJudgeSystemPrompt', () => {
     }
     expect(prompt).toContain('If you can show the attacker gains no capability they do not already have');
     expect(prompt).toContain('mark the finding `ignore` and say why in `reasoning`');
-    expect(prompt).toContain('Never keep it on a lower row: Manki grades every finding you set `security` to true on by the `severe` row.');
+    expect(prompt).toContain('Never keep it on a lower row. Manki grades every finding you set `security` to true on in the `normal` column of its row, since an attacker chooses the input.');
     expect(prompt).toContain('A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation');
     expect(prompt).toContain('When one does, state the `improvement` row at most and name the TODO, unless it is a security defect.');
     expect(prompt).toContain('For a library, outside input is also anything a caller of its public API can pass, such as arguments, readers and byte streams. No caller inside the repository is needed.');
@@ -1777,7 +1777,7 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 'One injection.',
       findings: [
-        { id: 1, title: 'Reply prompt takes injected instructions', row: 'degraded', reasoning: 'r', confidence: 'high', security: true, category: 'correctness' },
+        { id: 1, title: 'Reply prompt takes injected instructions', row: 'degraded', column: 'rare', reasoning: 'r', confidence: 'high', security: true, category: 'correctness' },
         { id: 2, title: 'Off by one', row: 'degraded', reasoning: 'r', confidence: 'high', security: false, category: 'security' },
         { id: 3, title: 'Token in log', row: 'wrong', reasoning: 'r', confidence: 'high', security: 'yes' },
       ],
@@ -1794,9 +1794,9 @@ describe('runJudgeAgent', () => {
       ['Token in log', undefined],
     ]);
     expect(result.findings.map(f => f.category)).toEqual(['security', undefined, undefined]);
-    // A security finding is graded by the `severe` row, so the row the judge states cannot lower it.
+    // A security finding keeps the row the judge states and is graded in the `normal` column, so `rare` is no discount on it.
     expect(result.findings.map(f => [f.severity, f.cell])).toEqual([
-      ['blocker', { row: 'severe', column: 'normal', judgeRow: 'degraded' }], ['warning', { row: 'degraded', column: 'normal' }], ['blocker', { row: 'wrong', column: 'normal' }],
+      ['warning', { row: 'degraded', column: 'normal', judgeColumn: 'rare' }], ['warning', { row: 'degraded', column: 'normal' }], ['blocker', { row: 'wrong', column: 'normal' }],
     ]);
   });
 
@@ -3632,20 +3632,19 @@ describe('mapJudgedToFindings', () => {
       ['Severe with a reach doubt', 'blocker', 'blocker', [reach]],
       // The claim of the `rare` column is listed once when the judge names it too, and it only ever decides the grade.
       ['Rare with the reach doubt', 'warning', 'blocker', [doubt, REACH_DOUBT]],
-      // A security finding is graded by the `severe` row, whatever row and column the judge states.
-      ['Rare security', 'blocker', undefined, undefined],
+      // A security finding is graded in the `normal` column of the row the judge states, since an attacker chooses the input.
+      ['Rare security', 'warning', undefined, undefined],
       ['Tagged security', 'blocker', undefined, undefined],
     ]);
     expect(result.map(f => f.cell)).toEqual([
-      { row: 'severe', column: 'normal' }, { row: 'severe', column: 'normal' }, { row: 'severe', column: 'normal', judgeRow: 'wrong' }, { row: 'wrong', column: 'rare' },
+      { row: 'severe', column: 'normal' }, { row: 'severe', column: 'normal' }, { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'rare' },
       { row: 'wrong', column: 'rare' }, { row: 'degraded', column: 'normal' }, undefined, { row: 'wrong', column: 'normal' },
       { row: 'severe', column: 'normal' }, { row: 'wrong', column: 'rare' },
-      { row: 'severe', column: 'rare', judgeRow: 'degraded' }, { row: 'severe', column: 'rare', judgeRow: 'wrong' },
+      { row: 'degraded', column: 'normal', judgeColumn: 'rare' }, { row: 'wrong', column: 'normal', judgeColumn: 'rare' },
     ]);
     expect(warnSpy.mock.calls.map(([message]) => message)).toEqual([
-      'The judge put the security finding "Marked security" on the `wrong` row, so Manki grades it by `severe`',
-      'The judge put the security finding "Rare security" on the `degraded` row, so Manki grades it by `severe`',
-      'The judge put the security finding "Tagged security" on the `wrong` row, so Manki grades it by `severe`',
+      'The judge marked "Marked security" a security finding on the `wrong` row, not `severe`',
+      'The judge marked "Rare security" a security finding on the `degraded` row, not `severe`',
     ]);
     warnSpy.mockRestore();
   });
@@ -3825,13 +3824,13 @@ describe('mapJudgedToFindings own-proposal drop', () => {
   });
 
   it('preserves pre-existing tags when adding own-proposal-followup', () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion', line: 10, tags: ['follow-up'] })];
+    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion', line: 10, tags: ['security'] })];
     const judged: JudgedFinding[] = [
       { title: 'Bug', row: 'improvement', reasoning: 'Caveat.', confidence: 'high' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].tags).toContain('follow-up');
+    expect(result[0].tags).toContain('security');
     expect(result[0].tags).toContain('own-proposal-followup');
     expect(result[0].tags).toHaveLength(2);
   });
