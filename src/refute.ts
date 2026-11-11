@@ -357,7 +357,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   const reopened = findings.map(f => reopenCappedGrade(f, priorRounds));
   const doubtChecks = new Set(doubtsToCheck(reopened));
   return mapWithConcurrency(reopened, MAX_PARALLEL_REFUTATIONS, async finding => {
-    // A finding the judge or a suppression dropped stays dropped, even when it was a lead.
+    // A finding the judge dropped stays dropped, even when it was a lead.
     if (finding.severity === 'ignore' || !(alwaysChecked(finding) || doubtChecks.has(finding))) return finding;
     if (!codeDigest(workspace, [finding.file])) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);

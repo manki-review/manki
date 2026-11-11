@@ -5048,7 +5048,7 @@ describe('runJudgeAgent cross-round suppression', () => {
     mockSendMessage.mockReset();
   });
 
-  it('reports crossRoundSuppressed when prior ratchet fires', async () => {
+  it('reports crossRoundSuppressed when prior ratchet fires, on the grade the refuter settled', async () => {
     const judgedResponse = JSON.stringify({
       summary: 'Unchanged.',
       findings: [
@@ -5081,6 +5081,44 @@ describe('runJudgeAgent cross-round suppression', () => {
     expect(result.crossRoundDemoted).toBeUndefined();
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
+
+    // The refuter runs before the ratchet, so a `rare` claim is checked even when the author agreed with the finding
+    // earlier: a confirmed one blocks, and the other is hidden after the one check it cost.
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
+    fs.mkdirSync(path.join(workspace, 'src'));
+    fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
+    const titles = ['Stale cache read', 'Lost update'];
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({
+      summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'wrong', column: 'rare', reasoning: 'r', confidence: 'medium' })),
+    }) });
+    const refuterCalls: string[] = [];
+    const refuter: LLMClient = {
+      repoTools: true,
+      async sendMessage(_system, user) {
+        const title = titles.find(t => user.includes(`: ${t}\n`))!;
+        refuterCalls.push(title);
+        const premise = title === 'Stale cache read' ? { outcome: 'confirmed', reason: 'A request reads it.', proof: ['src/index.ts:4'] } : { outcome: 'unsettled', reason: 'No path found.' };
+        return { content: JSON.stringify({ reason: premise.reason, premises: [premise] }) };
+      },
+    };
+    try {
+      const checked = await runJudgeAgent(mockClient, makeConfig(), {
+        ...input, refutation: { client: refuter, workspace },
+        findings: titles.map((title, i) => makeFinding({ title, file: 'src/index.ts', line: 10 + i, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`] } })),
+        priorRounds: [roundContextFromLegacy({
+          round: 1, commitSha: 'abc', timestamp: 't',
+          findings: titles.map((title, i) => ({ fingerprint: { file: 'src/index.ts', lineStart: 10 + i, lineEnd: 10 + i, slug: titleToSlug(title) }, severity: 'warning' as const, title, authorReply: 'agree' as const })),
+        })],
+      });
+      expect(checked.findings.map(f => [f.title, f.severity, f.cell, f.tags])).toEqual([
+        ['Stale cache read', 'blocker', { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, undefined],
+        ['Lost update', 'ignore', { row: 'wrong', column: 'rare' }, ['suppressed-by-ratchet']],
+      ]);
+      expect(refuterCalls.sort()).toEqual(['Lost update', 'Stale cache read']);
+      expect(checked.crossRoundSuppressed).toBe(1);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('reports crossRoundDemoted when prior contradiction fires on a suggestion', async () => {
