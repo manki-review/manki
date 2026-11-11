@@ -1,7 +1,7 @@
 # Migrating from v6 to v7
 
 1. Pin the action to `manki-review/manki@v7`.
-2. Make `.github/workflows/manki.yml` the dispatched workflow from [Step 3](getting-started.md#step-3-add-the-workflow). It runs only on `workflow_dispatch`, with no job `if` and no `concurrency` block. Delete every other workflow that runs Manki, such as an event-driven one or a `manki-dispatch.yml`. Manki fails a run that the Manki service did not start.
+2. Make `.github/workflows/manki.yml` the dispatched workflow from [Step 3](getting-started.md#step-3-add-the-workflow). It runs only on `workflow_dispatch`, with no job `if` and no `concurrency` block. Delete every other workflow that runs Manki, such as an event-driven one or a `manki-dispatch.yml`. A run that the Manki service did not start gets no token from it and fails, unless it posts as [your own GitHub App](getting-started.md#your-own-github-app).
 3. Install the [Manki App](https://github.com/apps/manki-review) and approve its Actions and Checks permissions. The service only serves the accounts it lists, so ask the Manki maintainers to add yours.
 4. Remove `concurrency_lock_ttl_seconds` from the workflow and from `.manki.yml`. The service orders the runs of each PR, so the lock is gone.
 5. Check the changed defaults:

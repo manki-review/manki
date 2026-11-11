@@ -49,7 +49,7 @@ Manki can post as an App you create, with the `github_app_id` and `github_app_pr
 
 ## Step 2: Authentication Secrets
 
-> **Do you need a GitHub token?** No. `github_token` defaults to the workflow's own token. Manki reviews and posts with the GitHub App's token (Step 1) as `manki-review[bot]`, and uses the workflow token only to read the dispatched event and CI results. When the token service times out or fails, Manki tries once more. Without an App token it fails the run and says so on the PR with the workflow token. Review memory of a public repo needs no token either: the token service keeps it in the central memory repository for you. Only a memory repo of your own, which a private repo needs, takes the `memory_repo_token` input, see [Review memory](memory.md).
+> **Do you need a GitHub token?** No. `github_token` defaults to the workflow's own token. Manki reviews and posts with the GitHub App's token (Step 1) as `manki-review[bot]`, and uses the workflow token only to read the dispatched event and CI results. When the token service times out, cannot be reached or answers with a server error, Manki tries once more. A refusal is not tried again. Without an App token it fails the run and says so on the PR with the workflow token. Review memory of a public repo needs no token either: the token service keeps it in the central memory repository for you. Only a memory repo of your own, which a private repo needs, takes the `memory_repo_token` input, see [Review memory](memory.md).
 
 ### Choosing a provider
 
@@ -204,7 +204,7 @@ jobs:
           # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Only with your own memory repo in `memory.repo`
 ```
 
-The job has no `if` and no `concurrency` block, since the service filters and orders the events. It needs no checkout: Manki reads `.manki.yml` on the base branch, and the PR's copy at its head commit to check that it loads, through the API. The service finds the workflow by its `workflow_dispatch` inputs, so the file name is free. Keep the `run-name` line and the inputs as they are, and add no other trigger to the file: the service reads the PR from the run name, and skips a file with more triggers. No other workflow may run Manki on events such as `pull_request`: while one is on the default branch, the service starts nothing for the repository and logs why, since each event would otherwise run twice. Manki fails a run that the service did not start.
+The job has no `if` and no `concurrency` block, since the service filters and orders the events. It needs no checkout: Manki reads `.manki.yml` on the base branch, and the PR's copy at its head commit to check that it loads, through the API. The service finds the workflow by its `workflow_dispatch` inputs, so the file name is free. Keep the `run-name` line and the inputs as they are, and add no other trigger to the file: the service reads the PR from the run name, and skips a file with more triggers. No other workflow may run Manki on events such as `pull_request`: while one is on the default branch, the service starts nothing for the repository and logs why, since each event would otherwise run twice. A run that the service did not start gets no token from it and fails, unless it posts as [your own GitHub App](#your-own-github-app).
 
 #### Workflow examples per provider
 

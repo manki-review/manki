@@ -170,7 +170,7 @@ memory:
 | `review.classes` | map of classes | the built-in classes | Classes of your own, each with a unique `rank` and a `match` on `paths_any`, `triage` or both. On `security`, `supply_chain` and `data_contract`, `match.paths_any` adds paths to the built-in rule. |
 | `review.routing` | map of class to group | the built-in routes | The group per class. A class left out keeps its built-in group. |
 | `review.default_group` | group name | `pair` | The group for a class with no route. |
-| `review.allow_weaker` | list of class names | none | Floor classes allowed to route to a group below the floor. Without it, a `review` block with such a route does not load. |
+| `review.allow_weaker` | list of class names | none | Floor classes allowed to route to a group below the floor. Without it, a config with such a route does not load: Manki reviews with the defaults and holds the approval. |
 | `review.critical_paths` | list of globs | none | Critical areas, where any wrong result is severe even in a rare internal edge case. Globs or the path aliases. The judge grades a wrong result there as severe damage. See [Review groups](how-reviews-work.md#review-groups). |
 | `review.outside_input` | string | none | What counts as outside input in your repository. The judge treats a failure this input can trigger as reachable. |
 | `review.examples` | map with `blocker` and `not_blocker` lists | none | Worked examples from your repository, which the judge reads next to its built-in examples. |
