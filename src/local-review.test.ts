@@ -78,7 +78,8 @@ describe('reviewLocal', () => {
         content: readFileSync(join(options.workspace!, 'src/a.ts'), 'utf-8'),
         log: git(options.workspace!, 'log', '--format=%H'),
       };
-      return { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as RoundOutcome, summary: 'One blocker', findings: [{ ...finding }], highlights: [], reviewComplete: true, agentNames: ['reviewer'] } as ReviewResult & { outcome: RoundOutcome };
+      const notes = ['Note one', 'Note two', 'Note three', 'Note four'].map(title => ({ ...finding, severity: 'suggestion' as const, title }));
+      return { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as RoundOutcome, summary: 'One blocker', findings: [{ ...finding }, ...notes], highlights: [], reviewComplete: true, agentNames: ['reviewer'] } as ReviewResult & { outcome: RoundOutcome };
     });
 
     const review = await reviewLocal({ repoRoot: repo, base: 'main', head: 'feature~1', providerInputs: inputs });
@@ -100,6 +101,9 @@ describe('reviewLocal', () => {
     expect(review.head).toBe(head);
     expect(review.approvalHeld).toBe(false);
     expect(review.result.findings[0].codeContext).toContain('const b = 3;');
+    // The result holds the notes a review would list, and the record keeps the one past `review.notes`.
+    expect(review.result.findings.map(f => f.title)).toEqual([finding.title, 'Note one', 'Note two', 'Note three']);
+    expect(review.context.findings.unposted).toMatchObject([{ title: 'Note four', unpostedReason: 'note_cap', posted: 'record' }]);
     expect(review.context.meta).toMatchObject({ prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, outcome: 'ADDRESS_FIRST' });
   });
 

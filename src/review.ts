@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
-import { cellGrade, FOLLOW_UP_TAG, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { cellGrade, FOLLOW_UP_TAG, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
@@ -1719,7 +1719,7 @@ async function runReviewerOnSlice(
 ): Promise<AgentResult> {
   const { effort, language, workspace, related, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges, retryNote } = options;
   const tools = !!workspace && !!client.repoTools;
-  const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, config.noise_level, tools);
+  const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, tools);
   const message = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, earlierBlockers, sliceNote, usesOutsideDiff, lockfileChanges });
   const userMessage = retryNote ? `${message}\n\n${retryNote}` : message;
 
@@ -1749,7 +1749,6 @@ export function buildReviewerSystemPrompt(
   reviewer: ReviewerAgent,
   config: ReviewConfig,
   language?: string,
-  noiseLevel: NoiseLevel = 'low',
   tools = false,
 ): string {
   let prompt = `You are a code reviewer specializing in: ${reviewer.focus}
@@ -1861,14 +1860,13 @@ These rules hold in every round. A later round searches the whole PR as fully as
 
 ${WRITING_RULES}`;
 
-  if (noiseLevel === 'low') {
-    prompt += `
+  prompt += `
 
-## Noise Level: low
+## What Not to Report
 
 Frame every potential suggestion or nitpick through this lens: would a senior engineer mention this in a review where their time is the bottleneck? If the answer is no, do not include it. This lens never drops a blocker, a warning or a security issue.
 
-### Categories that are NEVER findings at this noise level
+### Categories that are NEVER findings
 
 Do not flag any of the following as a style point:
 
@@ -1882,15 +1880,6 @@ Do not flag any of the following as a style point:
 If a potential finding falls into any of these categories, omit it from your response entirely. Do not downgrade it to \`nitpick\` or \`ignore\`. Just drop it.
 
 Two cases are exempt from this list. One that changes behavior, such as indentation in Python or YAML, is a defect. One that breaks a rule of the repository's own instruction files, such as \`AGENTS.md\`, \`CLAUDE.md\` or \`CONTRIBUTING.md\`, is reported with the rule quoted.`;
-  }
-  // 'medium' intentionally adds no extra section so the prompt matches the pre-noise_level body verbatim.
-  if (noiseLevel === 'high') {
-    prompt += `
-
-## Noise Level: high
-
-Surface marginal suggestions: in addition to substantive findings, actively include borderline observations that you would normally consider too minor to mention. Wording polish, micro-refactors, stylistic alternatives, and speculative improvements are all welcome at this level. Use \`suggestion\` or \`nitpick\` severity for these. The goal is breadth: prefer including a marginal observation over omitting it.`;
-  }
 
   if (config.instructions) {
     prompt += `\n\n## Additional Instructions\n\n${config.instructions}`;

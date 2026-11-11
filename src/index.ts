@@ -60,6 +60,7 @@ import {
   updateProgressDashboard,
   dismissPreviousReviews,
   postReview,
+  capNotes,
   formatOpenBlockers,
   unreadRecordsLine,
   withheldSummary,
@@ -1911,6 +1912,7 @@ async function runFullReview(
     const reviewed = withLockfiles(diff, lockfiles);
     addCodeContext(result.findings, reviewed);
     tagFindingOrigins(result.findings, reviewed, options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
+    if (priorRoundCount > 0 && (options.fullReview || !priorChange)) result.originsWithoutPrior = true;
     // Only the diff since the last round shows a line the push moved or restored, so without it no line counts as reviewed for certain.
     if (!options.fullReview) hideSeenNotes(result, interRoundDiff === undefined ? undefined : reviewed);
 
@@ -1926,6 +1928,7 @@ async function runFullReview(
     blockOnOpenThreads(result, stillOpen.map(t => ({ ...t, recordedGrade: 'blocker' as const })));
     const unreadRecords = withheld ? recap.unreadRecords ?? [] : undefined;
     const replies = await replyInOpenThreads(run, result);
+    capNotes(result, recap.previousFindings, config.review?.notes);
     const context = buildContext();
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     let posted: Awaited<ReturnType<typeof postRound>>;

@@ -457,7 +457,19 @@ describe('buildJudgeSystemPrompt', () => {
     expect(schema.indexOf('"effort"')).toBeLessThan(schema.indexOf('"reasoning"'));
   });
 
-  it('carries no `noise_level` calibration note', () => {
+  it('asks for the order of the notes after the findings', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    expect(prompt).toContain('## Note Order');
+    expect(prompt).toContain('In `noteOrder`, list the number N of each "Finding N" whose cell gives `suggestion` or `nitpick`, starting with the one the author gains most from acting on.');
+    expect(prompt).toContain('Leave out a finding you mark `ignore` or fold with `duplicateOf`.');
+    const schema = prompt.slice(prompt.indexOf('"findings": ['));
+    expect(schema).toContain('  ],\n  "noteOrder": ["N of each finding graded suggestion or nitpick, the most useful first"]\n}');
+    // The order comes after the findings and before the thread evaluations.
+    const withThreads = buildJudgeSystemPrompt(makeConfig(), 5, true, 2);
+    expect(withThreads.indexOf('"noteOrder"')).toBeLessThan(withThreads.indexOf('"threadEvaluations": ['));
+  });
+
+  it('carries no calibration note', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).not.toContain('Calibration note');
     expect(prompt).not.toContain('choose the higher one');
@@ -1098,6 +1110,21 @@ describe('extractCodeContext', () => {
 });
 
 describe('parseJudgeResponse', () => {
+  it('ranks each finding by its place in `noteOrder`, and leaves a finding the judge did not list unranked', () => {
+    const entry = (id: number | undefined, title: string) => ({ ...(id && { id }), title, row: 'improvement', reasoning: 'r', confidence: 'high' });
+    const entries = [entry(1, 'A'), entry(2, 'B'), entry(3, 'C'), entry(4, 'D'), entry(undefined, 'E')];
+    const ranks = (noteOrder: unknown) => parseJudgeResponse(JSON.stringify({ summary: 's', findings: entries, noteOrder })).findings.map(f => f.noteRank);
+
+    // A number as a string counts, a number that names no finding takes its place without a finding, and a repeat is ignored.
+    expect(ranks([3, '1', 9, 3, 'four', 4])).toEqual([1, undefined, 0, 5, undefined]);
+    for (const absent of [undefined, null, 'none', {}, []]) expect(ranks(absent)).toEqual([undefined, undefined, undefined, undefined, undefined]);
+
+    const base = { severity: 'suggestion' as const, file: 'src/a.ts', description: 'd', reviewers: ['r'] };
+    const judged = parseJudgeResponse(JSON.stringify({ summary: 's', findings: entries.slice(0, 3), noteOrder: [3, 1] })).findings;
+    const mapped = mapJudgedToFindings(['A', 'B', 'C'].map((title, i) => ({ ...base, title, line: i + 1 })), judged);
+    expect(mapped.map(f => [f.title, f.noteRank])).toEqual([['A', 1], ['B', undefined], ['C', 0]]);
+  });
+
   it('keeps a category and an effort from the fixed lists, drops any other value with a warning, and refuses a finding that names no known `row`', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const result = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
@@ -2889,28 +2916,6 @@ describe('runJudgeAgent', () => {
     expect(block('Slow loop')).toContain('- **Already answered**: Manki answered the developer about this problem in its review thread: "Withdrawn. The loop runs once."');
     expect(block('Wrong fee')).not.toContain('Already answered');
     expect(mockSendMessage.mock.calls[0][0]).toContain('Mark it `ignore` unless the code at that spot changed since that answer and is worse now');
-  });
-
-  it('sends the same system prompt whatever `noise_level` is', async () => {
-    mockSendMessage.mockResolvedValue({ content: '{"summary":"x","findings":[]}' });
-    const input: JudgeInput = {
-      findings: [],
-      diff: makeDiff(),
-      rawDiff: '',
-      repoContext: '',
-      agentCount: 5,
-    };
-    const withoutLevel = makeConfig();
-    delete (withoutLevel as Partial<ReviewConfig>).noise_level;
-
-    for (const config of [makeConfig({ noise_level: 'low' }), makeConfig({ noise_level: 'medium' }), makeConfig({ noise_level: 'high' }), withoutLevel]) {
-      await runJudgeAgent(mockClient, config, input);
-    }
-
-    const prompts = mockSendMessage.mock.calls.map(([systemPrompt]) => systemPrompt);
-    expect(prompts).toHaveLength(4);
-    expect(new Set(prompts).size).toBe(1);
-    expect(prompts[0]).toBe(buildJudgeSystemPrompt(makeConfig(), input.agentCount, input.isFollowUp, 0));
   });
 
   describe('duplicateOf folding', () => {

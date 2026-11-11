@@ -916,20 +916,18 @@ describe('buildReviewerSystemPrompt', () => {
   });
 
   it('asks every finder for a full search in every round, with brevity only for suggestions and nitpicks', () => {
-    for (const noise of ['low', 'medium', 'high'] as const) {
-      const prompt = buildReviewerSystemPrompt(buildFinderAgent([]), makeConfig(), undefined, noise, true);
-      expect(prompt).toContain('These rules hold in every round. A later round searches the whole PR as fully as the first one.');
-      expect(prompt).toContain('Report every blocker, every warning and every security issue you find in this pass, not only the strongest.');
-      expect(prompt).toContain('Follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome');
-      expect(prompt).toContain('search the whole PR for the same kind of defect before you report it. Report one finding at the first location, and list every location in `proof` and `evidence`. Never stop at the first instance.');
-      expect(prompt).toContain('Quality over quantity applies to suggestions and nitpicks only. Never leave out a blocker, a warning or a security issue you can back with code.');
-      expect(prompt).toContain('in unchanged code whose behavior the change breaks');
-      expect(prompt).toContain('Look for all of them, not only the first or the worst.');
-      // The proof requirement stays.
-      expect(prompt).toContain('A `blocker` must list in `proof` the `file:line` of each line that shows the failure.');
-      expect(prompt).toContain('Start each line with its `file:line` and quote the key code it refers to in backticks');
-      expect(prompt).not.toMatch(/not to explore|Don't comment on unchanged code|only flag issues in the changed code|not pedantic/);
-    }
+    const prompt = buildReviewerSystemPrompt(buildFinderAgent([]), makeConfig(), undefined, true);
+    expect(prompt).toContain('These rules hold in every round. A later round searches the whole PR as fully as the first one.');
+    expect(prompt).toContain('Report every blocker, every warning and every security issue you find in this pass, not only the strongest.');
+    expect(prompt).toContain('Follow every path the change affects: the callers of changed code, the code it calls, and other routes to the same outcome');
+    expect(prompt).toContain('search the whole PR for the same kind of defect before you report it. Report one finding at the first location, and list every location in `proof` and `evidence`. Never stop at the first instance.');
+    expect(prompt).toContain('Quality over quantity applies to suggestions and nitpicks only. Never leave out a blocker, a warning or a security issue you can back with code.');
+    expect(prompt).toContain('in unchanged code whose behavior the change breaks');
+    expect(prompt).toContain('Look for all of them, not only the first or the worst.');
+    // The proof requirement stays.
+    expect(prompt).toContain('A `blocker` must list in `proof` the `file:line` of each line that shows the failure.');
+    expect(prompt).toContain('Start each line with its `file:line` and quote the key code it refers to in backticks');
+    expect(prompt).not.toMatch(/not to explore|Don't comment on unchanged code|only flag issues in the changed code|not pedantic/);
     expect(buildReviewerSystemPrompt(reviewer, makeConfig())).toContain('Frame every potential suggestion or nitpick through this lens');
     expect(buildReviewerSystemPrompt(reviewer, makeConfig())).toContain('This lens never drops a blocker, a warning or a security issue.');
   });
@@ -950,110 +948,43 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).not.toMatch(/[\u2014\u2013]| -- /);
   });
 
-  describe('noise_level', () => {
-    it('defaults to "low" guidance when noiseLevel is omitted', () => {
+  describe('what not to report', () => {
+    it('tells every finder what is never a finding, whatever the repository sets', () => {
       const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
-      expect(prompt).toContain('## Noise Level: low');
-      expect(prompt).toContain('senior engineer');
-      expect(prompt).toContain('Categories that are NEVER findings');
-    });
-
-    it('emits the senior-engineer framing and exclusion list at "low"', () => {
-      const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, 'low');
-      expect(prompt).toContain('## Noise Level: low');
+      expect(prompt).toContain('## What Not to Report');
       expect(prompt).toContain('would a senior engineer mention this in a review where their time is the bottleneck');
-      expect(prompt).toContain('Whitespace, indentation');
-      expect(prompt).toContain('Import ordering');
-      expect(prompt).toContain('Trailing commas, semicolons');
-      expect(prompt).toContain('Comment formatting');
+      expect(prompt).toContain('Categories that are NEVER findings');
+      expect(prompt).not.toContain('Noise Level');
+      expect(prompt).not.toContain('Surface marginal suggestions');
       expect(prompt).not.toContain('Naming conventions');
       expect(prompt).not.toContain('regardless of severity');
       expect(prompt).toContain('Do not flag any of the following as a style point:');
       expect(prompt).toContain('Two cases are exempt from this list. One that changes behavior, such as indentation in Python or YAML, is a defect. One that breaks a rule of the repository\'s own instruction files, such as `AGENTS.md`, `CLAUDE.md` or `CONTRIBUTING.md`, is reported with the rule quoted.');
-      expect(prompt).toContain('formatter');
-      expect(prompt).toContain('default-config linter');
+      for (const category of ['Whitespace, indentation', 'Import ordering', 'Trailing commas, semicolons', 'quote style', 'Comment formatting', 'formatter', 'default-config linter']) {
+        expect(prompt).toContain(category);
+      }
       expect(prompt).toContain('omit it from your response entirely');
+      expect(prompt).toContain('Do not downgrade it to `nitpick` or `ignore`');
+      for (const grade of ['**blocker**', '**warning**', '**suggestion**', '**nitpick**', '**ignore**']) expect(prompt).toContain(grade);
     });
 
-    it('reproduces the pre-noise_level prompt body verbatim at "medium"', () => {
-      const medium = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, 'medium');
-      expect(medium).toMatchSnapshot();
+    it('matches the prompt snapshot', () => {
+      expect(buildReviewerSystemPrompt(reviewer, makeConfig())).toMatchSnapshot();
     });
 
     it('asks for evidence from every reviewer, and for open leads only from one with tools', () => {
-      const without = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, 'medium');
-      const withTools = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, 'medium', true);
+      const without = buildReviewerSystemPrompt(reviewer, makeConfig());
+      const withTools = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, true);
       expect(without).toContain('A `blocker` must list in `proof`');
       expect(without).not.toContain('"lead": true');
       expect(withTools).toContain('Report each suspicion you were still checking as an open lead');
       expect(withTools).toContain('Set `"notChecked": true`');
     });
 
-    it('invites marginal suggestions at "high"', () => {
-      const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, 'high');
-      expect(prompt).toContain('## Noise Level: high');
-      expect(prompt).toContain('Surface marginal suggestions');
-      expect(prompt).toContain('marginal');
-      expect(prompt).not.toContain('Categories that are NEVER findings');
-    });
-
-    it('preserves severity guidelines at every noise level', () => {
-      for (const level of ['low', 'medium', 'high'] as const) {
-        const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, level);
-        expect(prompt).toContain('**blocker**');
-        expect(prompt).toContain('**warning**');
-        expect(prompt).toContain('**suggestion**');
-        expect(prompt).toContain('**nitpick**');
-        expect(prompt).toContain('**ignore**');
-      }
-    });
-
-    it('keeps `medium` and `high` differing only by the high-only suffix (no custom instructions)', () => {
-      const medium = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, 'medium');
-      const high = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, 'high');
-      expect(high.startsWith(medium)).toBe(true);
-      expect(high.length).toBeGreaterThan(medium.length);
-    });
-
-    it('includes the high-only suffix before custom instructions when instructions are set', () => {
-      const config = makeConfig({ instructions: 'Focus on security.' });
-      const medium = buildReviewerSystemPrompt(reviewer, config, undefined, 'medium');
-      const high = buildReviewerSystemPrompt(reviewer, config, undefined, 'high');
-      expect(high).toContain('Surface marginal suggestions');
-      expect(high).toContain('## Additional Instructions');
-      expect(high.indexOf('Surface marginal suggestions')).toBeLessThan(high.indexOf('## Additional Instructions'));
-      expect(medium).not.toContain('Surface marginal suggestions');
-    });
-
-    it.each(['low', 'high'] as const)(
-      'places the noise-level section before custom instructions at "%s"',
-      (level) => {
-        const config = makeConfig({ instructions: 'Focus on TypeScript best practices.' });
-        const prompt = buildReviewerSystemPrompt(reviewer, config, undefined, level);
-        const noiseIdx = prompt.indexOf(`## Noise Level: ${level}`);
-        const instructionsIdx = prompt.indexOf('## Additional Instructions');
-        expect(noiseIdx).toBeGreaterThan(-1);
-        expect(instructionsIdx).toBeGreaterThan(noiseIdx);
-      },
-    );
-
-    it('prompt at "low" contains all exclusion-list categories', () => {
-      const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, 'low');
-      const styleNitCategories = [
-        'Whitespace',
-        'Import ordering',
-        'Trailing commas',
-        'semicolons',
-        'quote style',
-        'Comment formatting',
-        'formatter',
-        'default-config linter',
-      ];
-      for (const category of styleNitCategories) {
-        expect(prompt).toContain(category);
-      }
-      expect(prompt).toContain('omit it from your response entirely');
-      expect(prompt).toContain('Do not downgrade it to `nitpick` or `ignore`');
+    it('places the section before custom instructions', () => {
+      const prompt = buildReviewerSystemPrompt(reviewer, makeConfig({ instructions: 'Focus on TypeScript best practices.' }));
+      expect(prompt.indexOf('## What Not to Report')).toBeGreaterThan(-1);
+      expect(prompt.indexOf('## Additional Instructions')).toBeGreaterThan(prompt.indexOf('## What Not to Report'));
     });
   });
 });
@@ -3499,33 +3430,15 @@ describe('runReview', () => {
     expect(laterCall[0]).toContain(WRITING_RULES);
   });
 
-  it('forwards config.noise_level to buildReviewerSystemPrompt for each agent', async () => {
-    const clients = makeClients();
-    const config = makeConfig({ noise_level: 'medium' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-
-    await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
-
-    const reviewerMock = clients.reviewer.sendMessage as jest.Mock;
-    expect(reviewerMock).toHaveBeenCalled();
-
-    const prompt = buildReviewerSystemPrompt(buildFinderAgent([]), config, undefined, 'medium');
-    expect(reviewerMock.mock.calls.map(call => call[0])).toEqual([prompt, prompt]);
-  });
-
-  it('defaults reviewer noise_level to "low" when config omits it', async () => {
+  it('sends each finder the reviewer system prompt', async () => {
     const clients = makeClients();
     const config = makeConfig();
-    delete (config as Partial<ReviewConfig>).noise_level;
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
 
     await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
 
-    const reviewerMock = clients.reviewer.sendMessage as jest.Mock;
-    expect(reviewerMock).toHaveBeenCalled();
-
-    const [firstCall] = reviewerMock.mock.calls;
-    expect(firstCall[0]).toBe(buildReviewerSystemPrompt(buildFinderAgent([]), config, undefined, 'low'));
+    const prompt = buildReviewerSystemPrompt(buildFinderAgent([]), config);
+    expect(jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[0])).toEqual([prompt, prompt]);
   });
 
   it.each<[string, () => Promise<LLMResponse>, string]>([

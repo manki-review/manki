@@ -322,6 +322,8 @@ export interface JudgedFinding {
   effort?: FindingEffort;
   /** The `file:line` locations the judge cites as showing the failure. */
   proof?: string[];
+  /** The finding's place in the judge's `noteOrder`, 0 first. Unset when the judge did not list it. */
+  noteRank?: number;
 }
 
 /** A finding from an earlier round, with the commit of the latest round that raised it. */
@@ -604,6 +606,10 @@ Set \`category\` to the kind of problem the finding names, picking the closest o
 
 Set \`effort\` to how big the fix is: \`quick\` for a few lines in one place, \`moderate\` for several places or a small redesign, \`larger\` for a design change or work across modules.
 
+## Note Order
+
+A review lists only the first few findings graded \`suggestion\` or \`nitpick\`, so order them. In \`noteOrder\`, list the number N of each "Finding N" whose cell gives \`suggestion\` or \`nitpick\`, starting with the one the author gains most from acting on. A finding that prevents a likely future defect, closes a gap in the tests or stops a reader being misled comes before one that only tidies the code. Of two with the same gain, the smaller fix comes first. Leave out a finding you mark \`ignore\` or fold with \`duplicateOf\`.
+
 ## Duplicate Detection
 
 Reviewers often report one defect twice, in different words, on different lines or under different titles. For each finding, set \`duplicateOf\` to the number N of an EARLIER "Finding N" that names the same underlying defect, or 0 when it is its own. Judge by what goes wrong in the code, never by wording. Two separate bugs in one function are two findings, however similar they read. When you cannot tell, treat them as separate.
@@ -648,7 +654,8 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "reasoning": "Your verdict first, then 1-2 sentences on why",
       "proof": ["file:line of each line that shows the failure, for a blocker"]
     }
-  ]${hasOpenThreads ? `,
+  ],
+  "noteOrder": ["N of each finding graded suggestion or nitpick, the most useful first"]${hasOpenThreads ? `,
   "threadEvaluations": [
     {
       "threadId": "PRRT_xxx",
@@ -1243,7 +1250,11 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
 
   // New object format with summary + findings + threadEvaluations
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    const findings = Array.isArray(parsed.findings) ? parseFindings(parsed.findings) : [];
+    const order: Array<number | undefined> = Array.isArray(parsed.noteOrder) ? parsed.noteOrder.map(parseFindingNumber) : [];
+    const findings = (Array.isArray(parsed.findings) ? parseFindings(parsed.findings) : []).map(f => {
+      const noteRank = f.id === undefined ? -1 : order.indexOf(f.id);
+      return noteRank < 0 ? f : { ...f, noteRank };
+    });
     const summary = typeof parsed.summary === 'string' && parsed.summary
       ? parsed.summary
       : 'Review complete.';
@@ -1586,6 +1597,7 @@ export function mapJudgedToFindings(
       if (finding.tags?.includes(SECURITY_TAG)) finding.category = 'security';
       else if (match.category && match.category !== 'security') finding.category = match.category;
       if (match.effort) finding.effort = match.effort;
+      if (match.noteRank !== undefined) finding.noteRank = match.noteRank;
       if (match.fixLeaves) finding.howToFix = [finding.howToFix?.trim(), `This fix leaves part of the problem: ${match.fixLeaves}`].filter(Boolean).join(' ');
       if (match.proof) finding.evidence = mergeEvidence(finding.evidence, { checks: [], proof: match.proof });
       applyOwnProposal(finding, provenanceMap);

@@ -61,7 +61,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     enabled: false,
     repo: '',
   },
-  noise_level: 'low',
   drafts: 'skip',
   review_passes: 1,
   convergence: {
@@ -102,7 +101,6 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'static_analysis',
   'related_repos',
   'nit_handling',
-  'noise_level',
   'drafts',
   'review_passes',
   'convergence',
@@ -117,7 +115,10 @@ const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
 const MAX_JUDGE_TOOL_STEPS = 100;
 
 export const MODEL_KEYS: ReadonlySet<string> = new Set(['planner', 'reviewer', 'reviewer_pair', 'judge', 'refuter_pair', 'dedup', 'fallback']);
-export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'critical_paths', 'outside_input', 'examples', 'sweep']);
+/** How many notes a review lists when `review.notes` is not set. */
+export const DEFAULT_NOTES = 3;
+
+export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'critical_paths', 'outside_input', 'examples', 'sweep', 'notes']);
 export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus', 'role']);
 const EFFORT_CHOICES = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
@@ -339,7 +340,7 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
 
   if ('nit_handling' in config) {
     if (config.nit_handling === 'issues' || config.nit_handling === 'comments') {
-      warnings.push("`nit_handling: '" + config.nit_handling + "'` is deprecated and ignored, surviving nit findings now post inline. See https://github.com/manki-review/manki/issues/738 for context.");
+      warnings.push("`nit_handling: '" + config.nit_handling + "'` is deprecated and ignored. See https://github.com/manki-review/manki/issues/738 for context.");
     } else {
       warnings.push(`\`nit_handling: '${String(config.nit_handling)}'\` is not a recognized value. Remove it from your config.`);
     }
@@ -347,13 +348,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
 
   if ('drafts' in config && config.drafts !== 'skip' && config.drafts !== 'review') {
     errors.push('`drafts` must be one of: skip, review');
-  }
-
-  if ('noise_level' in config) {
-    const valid = new Set(['low', 'medium', 'high']);
-    if (typeof config.noise_level !== 'string' || !valid.has(config.noise_level)) {
-      errors.push('`noise_level` must be one of: low, medium, high');
-    }
   }
 
   if ('review_passes' in config) {
@@ -600,6 +594,7 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
     errors.push('`review.outside_input` must be a non-empty string');
   }
   if ('sweep' in review && typeof review.sweep !== 'boolean') errors.push('`review.sweep` must be true or false');
+  if ('notes' in review && !(Number.isInteger(review.notes) && (review.notes as number) >= 0)) errors.push('`review.notes` must be a non-negative integer');
   if ('examples' in review) {
     const examples = review.examples;
     if (!isObject(examples) || Object.keys(examples).length === 0) {

@@ -690,6 +690,32 @@ describe('runFullReview end to end', () => {
     expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
   });
 
+  it('lists the notes in the judge\'s order without a thread, and records the note past `review.notes`', async () => {
+    const titles = ['Reuse the range helper', 'Name the limit', 'Cover the empty input', 'Say why the sum is kept'];
+    const notes = titles.map((title, i) => ({ ...BLOCKER, severity: 'suggestion', title, line: i + 1, description: `Note ${i + 1}.` }));
+    Object.assign(mockLLM.replies, {
+      reviewer: JSON.stringify(notes),
+      judge: JSON.stringify({
+        summary: 'Four small points.',
+        findings: notes.map((n, i) => ({ id: i + 1, title: n.title, row: 'improvement', reasoning: 'Works, could be better.', confidence: 'high' })),
+        noteOrder: [3, 1, 4, 2],
+      }),
+    });
+
+    await reviewRound();
+
+    const [review] = postedReviews();
+    expect(review.state).toBe('APPROVED');
+    expect(mockGitHub.threads).toEqual([]);
+    const listed = [...review.body.matchAll(/<summary>\u2728 <b>([^<]+)<\/b>/gu)].map(m => m[1]);
+    expect(listed).toEqual(['Cover the empty input', 'Reuse the range helper', 'Say why the sum is kept']);
+    expect(review.body).toContain('<summary><b>3 notes</b> · not blocking</summary>');
+    expect(review.body).toContain('<sub>Not listed: 1 note over the `review.notes` limit.</sub>');
+    const { findings } = mockGitHub.roundContext(review);
+    expect(findings.entries.map(e => [e.title, e.posted])).toEqual(listed.map(title => [title, 'body']));
+    expect(findings.unposted).toMatchObject([{ title: 'Name the limit', unpostedReason: 'note_cap', posted: 'record' }]);
+  });
+
   it('ends INCOMPLETE and never approves when a reviewer reply does not parse, and a later run still reviews the commit', async () => {
     mockLLM.replies.reviewer = 'I could not finish the review.';
 
@@ -1042,14 +1068,16 @@ describe('runFullReview end to end', () => {
     expect(thread.comments.at(-1)?.body).toMatch(/^Fixed in f1f1f1f\./);
   });
 
+  // A finding below `warning` gets a thread only when it is a security finding.
   it.each([
-    ['blocker', 'CHANGES_REQUESTED'],
-    ['suggestion', 'APPROVED'],
-  ])('posts one review when a %s thread the round counts as fixed cannot be resolved', async (severity, state) => {
+    ['blocker', 'blocker', 'CHANGES_REQUESTED'],
+    ['security suggestion', 'suggestion', 'APPROVED'],
+  ])('posts one review when a %s thread the round counts as fixed cannot be resolved', async (_label, severity, state) => {
     const finding = { ...BLOCKER, severity };
+    const cell = severity === 'blocker' ? { row: 'wrong' } : { row: 'improvement', security: true };
     Object.assign(mockLLM.replies, {
       reviewer: JSON.stringify([finding]),
-      judge: JSON.stringify({ summary: 'One finding.', findings: [{ id: 1, title: finding.title, row: severity === 'blocker' ? 'wrong' : 'improvement', reasoning: 'Reachable.', confidence: 'high' }] }),
+      judge: JSON.stringify({ summary: 'One finding.', findings: [{ id: 1, title: finding.title, ...cell, reasoning: 'Reachable.', confidence: 'high' }] }),
     });
     await reviewRound();
     expect(mockGitHub.threads).toHaveLength(1);

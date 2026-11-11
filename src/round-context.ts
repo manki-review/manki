@@ -270,7 +270,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.preExisting && f.preExistingCheck && { preExisting: { reason: f.preExisting.slice(0, 200), check: f.preExistingCheck } }),
     ...(f.unpostedReason && { unpostedReason: f.unpostedReason }),
   });
-  const unposted = [...(result.unpostedPreExisting ?? []), ...(result.unpostedNotes ?? [])].map(toEntry);
+  const unposted = [...(result.unpostedPreExisting ?? []), ...(result.unpostedNotes ?? [])].map((f): FindingFingerprintEntry => ({ ...toEntry(f), posted: 'record' }));
   return {
     meta: {
       prNumber,
@@ -413,6 +413,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       severityCounts: severityMap,
       entries: result.findings.map(toEntry),
       ...(unposted.length > 0 && { unposted }),
+      ...(result.originsWithoutPrior && { originsWithoutPrior: true }),
     },
     usage,
     verdict: result.verdict,

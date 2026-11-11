@@ -5,14 +5,14 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { loadConfig } from './config';
-import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, UNPOSTED_REASONS } from './types';
+import { DEFAULT_NOTES, loadConfig } from './config';
+import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, UNPOSTED_REASONS, UnpostedReason } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { isDisprovedRaise, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
+import { isDisprovedRaise, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -1161,7 +1161,7 @@ const SEVERITY_EMOJI: Record<FindingSeverity, string> = {
 /** Shown under a finding the judge kept with low confidence. */
 const LOW_CONFIDENCE_NOTE = '_Manki is not sure this applies, so please check it._';
 
-/** Non-blocking findings posted as line comments per review. The rest go in the body list. */
+/** Non-blocking findings posted as line comments per review. The rest go in the body list. A note is never one of them. */
 const MAX_NON_BLOCKING_INLINE = 5;
 
 /** Whether a warning was deferred as a follow-up. */
@@ -1460,10 +1460,51 @@ function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): bo
   return findPriorThreadId(fingerprint, open) !== undefined;
 }
 
+/** Returns why an earlier thread carries a non-blocking finding, which is then not posted again. */
+function carriedBy(finding: Finding, existingThreads: PreviousFinding[]): string | undefined {
+  if (finding.answeredIn) return `it goes as a reply in its answered thread ${finding.answeredIn.threadId}`;
+  if (finding.threadId) return `${finding.variantOf ? 'it goes as a reply in' : 'it restates'} the open thread ${finding.threadId}`;
+  return !finding.ownThread && hasOpenThread(finding, existingThreads) ? 'an open thread already carries it' : undefined;
+}
+
 /**
- * Post the review. Blocking findings become threads. Non-blocking findings on a changed line
+ * Puts the notes of `result.findings` last, in the judge's order, and keeps the first `limit` of them. The others move
+ * to `result.unpostedNotes`, marked `note_cap`. A note the judge did not rank follows the ranked ones, in the order
+ * returned. A note an earlier thread carries is not listed, so it stays in place and counts toward no limit.
+ */
+export function capNotes(result: ReviewResult, existingThreads: PreviousFinding[], limit = DEFAULT_NOTES): void {
+  const listable = new Set(result.findings.filter(f => isListedNote(f) && !carriedBy(f, existingThreads)));
+  const rank = (f: Finding): number => f.noteRank ?? Number.MAX_SAFE_INTEGER;
+  const ordered = [...listable].sort((a, b) => rank(a) - rank(b));
+  const capped = ordered.slice(limit).map((f): Finding => ({ ...f, unpostedReason: 'note_cap' }));
+  result.findings = [...result.findings.filter(f => !listable.has(f)), ...ordered.slice(0, limit)];
+  if (capped.length > 0) result.unpostedNotes = [...(result.unpostedNotes ?? []), ...capped];
+}
+
+/** Whether the review lists the finding as a note. A security finding below `warning` keeps its thread instead. */
+function isListedNote(finding: Finding): boolean {
+  return isNote(finding.severity) && !isSecurityFinding(finding.tags, finding.reviewers);
+}
+
+/**
+ * Returns the notes of a review as one collapsed section, a fold per note, in the order given. A line under it says
+ * how many notes of `unposted` the review left out, and why.
+ */
+function formatNotesSection(notes: Finding[], unposted: Finding[], links: CodeLinks): string | null {
+  const listed = notes.length > 0
+    && `<details>\n<summary><b>${countOf(notes.length, 'note')}</b> · not blocking</summary>\n\n${notes.map(f => formatFindingFold(f, links, true)).join('\n\n')}\n\n</details>`;
+  const reasons = (Object.keys(UNPOSTED_REASONS) as UnpostedReason[]).flatMap(reason => {
+    const count = unposted.filter(f => f.unpostedReason === reason).length;
+    return count > 0 ? [`${countOf(count, 'note')} ${UNPOSTED_REASONS[reason]}`] : [];
+  });
+  const unlisted = reasons.length > 0 && `<sub>Not listed: ${reasons.join(', ')}.</sub>`;
+  return [listed, unlisted].filter(Boolean).join('\n\n') || null;
+}
+
+/**
+ * Post the review. Blocking findings become threads. Other findings on a changed line
  * become line comments marked "not blocking", up to `MAX_NON_BLOCKING_INLINE` and most severe
- * first. The rest go in the body.
+ * first. The rest go in the body. A note never gets a thread: the body lists the notes in one collapsed section.
  *
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
  * gets a file-level comment. A finding that one of the open `existingThreads` already carries
@@ -1511,8 +1552,11 @@ export async function postReview(
   /** The findings posted as threads this round, counted in the verdict line, and those among them posted as line comments. */
   const threadFindings: Finding[] = [];
   const lineThreads = new Set<Finding>();
-  /** The findings listed as folds in the review body, under one section per severity. */
+  /** The findings listed as folds in the review body, under one section per origin. */
   const bodyFindings: Finding[] = [];
+  const notes: Finding[] = [];
+  /** The blockers the body shows because no thread can hold them. */
+  const unthreaded: Finding[] = [];
   let carriedBlockers = 0;
   const carriedThreadIds = new Set<string>();
   const nonBlocking: Finding[] = [];
@@ -1526,12 +1570,11 @@ export async function postReview(
 
   for (const f of result.findings) {
     if (!isBlockingFinding(f)) {
-      if (f.answeredIn) {
-        core.info(`Skipping "${f.title}" on ${f.file}: it goes as a reply in its answered thread ${f.answeredIn.threadId}`);
-      } else if (f.threadId) {
-        core.info(`Skipping "${f.title}" on ${f.file}: ${f.variantOf ? 'it goes as a reply in' : 'it restates'} the open thread ${f.threadId}`);
-      } else if (!f.ownThread && hasOpenThread(f, existingThreads)) {
-        core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
+      const carried = carriedBy(f, existingThreads);
+      if (carried) {
+        core.info(`Skipping "${f.title}" on ${f.file}: ${carried}`);
+      } else if (isListedNote(f)) {
+        notes.push(f);
       } else if (isPreExisting(f) || f.origin === 'reviewed' || f.origin === 'earlier') {
         bodyFindings.push(f);
       } else {
@@ -1560,6 +1603,7 @@ export async function postReview(
     const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
     if (!f.file || (f.line <= 0 && !diffFile)) {
       generalFindings.push(formatFindingBlock(f, links, true));
+      unthreaded.push(f);
       continue;
     }
 
@@ -1571,6 +1615,7 @@ export async function postReview(
       lineThreads.add(f);
     } else if (!diffFile) {
       invalidComments.push(formatFindingBlock(f, links, true));
+      unthreaded.push(f);
     } else if (!f.ownThread && hasOpenThread(f, existingThreads)) {
       core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: an open thread already carries it`);
     } else {
@@ -1617,7 +1662,7 @@ export async function postReview(
    */
   const renderBody = (withoutLineThreads = false): string => {
     const threads = threadFindings.filter(f => !(withoutLineThreads && lineThreads.has(f)));
-    const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: bodyFindings, hold }, limitWarning, unreadRecords);
+    const lead = formatLead(result, blockingFindings, blockerCounts, { threads, listed: [...bodyFindings, ...notes], hold }, limitWarning, unreadRecords);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
       head += `\n\n**Memory skipped:** ${memorySkip}`;
@@ -1635,6 +1680,7 @@ export async function postReview(
       generalFindings.length > 0 && `**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`,
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
+      formatNotesSection(notes, result.unpostedNotes ?? [], links),
       skipped && skippedFileList(skipped) && `### Not read by any model · ${countOf(skipped.excluded.length + skipped.binary.length, 'file')}\n\nA person needs to look at these before the PR merges.\n\n${skippedFileList(skipped)}`,
       formatFindingSection(`📌 ${countOf(followUps.length, 'follow-up')} agreed for later`, followUps.map(f => formatFindingFold(f, links)), 'Agreed in their threads as later work. None of them blocks.'),
       formatRelatedWork(result.relatedWork, owner, repo),
@@ -1650,9 +1696,15 @@ export async function postReview(
   const highlight = <T extends { body: string }>(c: T): T => ({ ...c, body: highlightCode(c.body, codeTokens) });
   const body = highlightCode(renderBody(), codeTokens);
   const postedComments = [...validComments, ...fileComments].map(highlight);
+  const inBody = new Set([...bodyFindings, ...notes, ...unthreaded]);
+  const placeOf = (f: Finding): PostedPlace => threadFindings.includes(f) ? 'thread' : inBody.has(f) ? 'body' : 'earlier_thread';
   const record = (context
     ? formatRecordTrailer({
       ...context,
+      // The record's entries are built from `result.findings` in the same order. A record built from other findings keeps its entries as they are.
+      ...(context.findings.entries.length === result.findings.length && {
+        findings: { ...context.findings, entries: context.findings.entries.map((entry, i) => ({ ...entry, posted: placeOf(result.findings[i]) })) },
+      }),
       output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) },
       ...(event === 'APPROVE' && { approval: { held: approvalHeld } }),
     }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
