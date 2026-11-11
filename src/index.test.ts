@@ -231,7 +231,8 @@ jest.mock('./github', () => ({
   formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
   unreadRecordsLine: jest.requireActual('./github').unreadRecordsLine,
   withheldSummary: jest.requireActual('./github').withheldSummary,
-  listedSummary: jest.requireActual('./github').listedSummary,
+  roundSentence: jest.requireActual('./github').roundSentence,
+  roundSummary: jest.requireActual('./github').roundSummary,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   hasWriteAccess: jest.fn().mockResolvedValue(true),
@@ -1931,6 +1932,23 @@ describe('runFullReview orchestration', () => {
       mockChecksUpdate.mockClear();
       await callRunFullReview();
       expect(completedCheck()).toMatchObject({ conclusion: 'success', output: { title: 'Approved', summary: 'Approved' } });
+
+      // A round that requests changes then says what blocks: its top blocker, or the earlier threads still open.
+      const blocking = { verdict: 'REQUEST_CHANGES' as const, outcome: 'ADDRESS_FIRST' as const, summary: 'A retry that fails is never reported.', highlights: [], reviewComplete: true, agentNames: ['general'], allJudgedFindings: [disproved] };
+      const blocker: Finding = { severity: 'blocker', title: 'Off by one', file: 'src/app.ts', line: 1, description: 'Reads past the end. The last item is lost. Stop one earlier.', reviewers: ['Verdict reader'] };
+      const open = { file: 'src/app.ts', title: 'Stale cache', fingerprint: 'src/app.ts:3:3:stale-cache', line: 3 };
+      const checkOf = async (more: Partial<Awaited<ReturnType<typeof reviewModule.runReview>>>) => {
+        jest.mocked(reviewModule.runReview).mockResolvedValueOnce({ ...blocking, findings: [], ...more });
+        mockChecksUpdate.mockClear();
+        await callRunFullReview();
+        return completedCheck();
+      };
+      expect(await checkOf({ findings: [blocker], verdictReason: 'verdict_reader' })).toMatchObject({
+        conclusion: 'failure', output: { title: 'Changes requested', summary: 'Reads past the end. The last item is lost.' },
+      });
+      expect(await checkOf({ verdictReason: 'prior_unaddressed', verdictTrace: { survivingBlockers: [], unresolvedPriors: [open] } })).toMatchObject({
+        conclusion: 'failure', output: { title: 'Changes requested', summary: '**Still open from earlier reviews:**\n- `src/app.ts:3`: Stale cache' },
+      });
     });
 
     it.each([

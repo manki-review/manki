@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, capNotes, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, listedSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
+import { ApprovalHeld, buildDashboard, capNotes, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { highlightCode } from './highlight';
@@ -1773,16 +1773,18 @@ describe('postReview body lead', () => {
     const droppedBy = (by: GradeChange): Finding => ({ ...kept, title: 'Timeout is never reset', line: 12, severity: 'ignore', gradePath: [{ from: 'warning', to: 'ignore', by }] });
     const round = (more: Partial<ReviewResult>): ReviewResult => ({ ...ready, verdictReport: undefined, summary, findings: [], ...more });
     // The refuter disproved the round's only finding, or a later step took it out of the round.
-    expect(listedSummary(round({ allJudgedFindings: [droppedBy('refutation')] }))).toBe('');
-    expect(listedSummary(round({ allJudgedFindings: [kept] }))).toBe('');
+    expect(roundSentence(round({ allJudgedFindings: [droppedBy('refutation')] }))).toBe('');
+    expect(roundSentence(round({ allJudgedFindings: [kept] }))).toBe('');
     // One of the findings the judge kept is still listed. One an earlier thread carries is in `findings` too.
-    expect(listedSummary(round({ allJudgedFindings: [kept, droppedBy('refutation')], findings: [kept] }))).toBe(summary);
-    expect(listedSummary(round({ allJudgedFindings: [kept], findings: [{ ...kept, threadId: 'PRRT_1' }] }))).toBe(summary);
+    expect(roundSentence(round({ allJudgedFindings: [kept, droppedBy('refutation')], findings: [kept] }))).toBe(summary);
+    expect(roundSentence(round({ allJudgedFindings: [kept], findings: [{ ...kept, threadId: 'PRRT_1' }] }))).toBe(summary);
     // The judge kept nothing itself, so its summary describes no finding a later step could take out.
-    expect(listedSummary(round({ allJudgedFindings: [droppedBy('judge')] }))).toBe(summary);
-    expect(listedSummary(round({}))).toBe(summary);
+    expect(roundSentence(round({ allJudgedFindings: [droppedBy('judge')] }))).toBe(summary);
+    expect(roundSentence(round({}))).toBe(summary);
+    // A finding a finder filed as `ignore` has no grade step when the judge drops it too.
+    expect(roundSentence(round({ allJudgedFindings: [{ ...droppedBy('judge'), gradePath: undefined }, { ...droppedBy('judge'), gradePath: [] }] }))).toBe(summary);
     // An incomplete round's summary says why the round did not finish.
-    expect(listedSummary(round({ reviewComplete: false, summary: 'The judge failed', allJudgedFindings: [kept] }))).toBe('The judge failed');
+    expect(roundSentence(round({ reviewComplete: false, summary: 'The judge failed', allJudgedFindings: [kept] }))).toBe('The judge failed');
 
     const about = aboutFold('[`abcdef1`](https://github.com/owner/repo/commit/abcdef1234)');
     const disproved = await postedBody(round({ allJudgedFindings: [droppedBy('refutation')] }));
@@ -1794,9 +1796,15 @@ describe('postReview body lead', () => {
     const blocking = round({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReason: 'required_present', allJudgedFindings: [kept] });
     const top = await postedBody({ ...blocking, findings: [blocker] });
     expect(lead(top.body).split('\n\n').slice(0, 2)).toEqual(['\u{1F534} **Changes requested:** 1 blocker.', '**What blocks:** `total / pageSize` rounds down.']);
+    // The check and the command line output show the same sentence, at most two sentences of the description.
+    expect(roundSummary({ ...blocking, findings: [{ ...blocker, description: 'It rounds down. The last page is lost. Use `ceil`.' }] })).toBe('It rounds down. The last page is lost.');
     const open = { file: 'src/a.ts', title: 'Stale cache', fingerprint: 'src/a.ts:3:3:stale-cache', line: 3 };
     const earlier = await postedBody({ ...blocking, verdictReason: 'prior_unaddressed', verdictTrace: { survivingBlockers: [], unresolvedPriors: [open] } });
     expect(lead(earlier.body)).toBe(`\u{1F534} **Changes requested:** 1 blocker still open from an earlier review.\n\n---\n\n**Still open from earlier reviews:**\n- \`src/a.ts:3\`: Stale cache\n\n${about}`);
+    // The review lists the threads in their own section, so only the check and the command line output take the list as what blocks.
+    const priors = { ...blocking, verdictReason: 'prior_unaddressed' as const, verdictTrace: { survivingBlockers: [], unresolvedPriors: [open] } };
+    expect([roundSentence(priors), roundSummary(priors)]).toEqual(['', '**Still open from earlier reviews:**\n- `src/a.ts:3`: Stale cache']);
+    expect(roundSummary(round({ allJudgedFindings: [droppedBy('refutation')] }))).toBe('');
   });
 
   it('counts new blockers apart from those still open from an earlier review', async () => {
