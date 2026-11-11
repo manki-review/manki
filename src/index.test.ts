@@ -6339,7 +6339,9 @@ describe('runFullReview orchestration', () => {
       const notice = pauseNotice();
       expect(notice).toContain('came back after a fix');
       expect(notice).toContain(PAUSE_NOTICE_MARKER);
-      expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), previousFindings, true);
+      expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(
+        expect.anything(), TEST_BOT, 'test-owner', 'test-repo', expect.any(Number), expect.anything(), { previousFindings, priorRounds: rounds },
+      );
       // A security override is recorded in its thread once, even while review is paused.
       expect(jest.mocked(stateModule.announceSecurityOverrides)).toHaveBeenCalledWith(expect.anything(), [
         { thread: 'T_new', login: 'owner', via: 'resolve', announced: false },
@@ -7365,7 +7367,7 @@ describe('handleReviewStateCheck', () => {
       instructions: '',
       memory: { enabled: false, repo: '' },
     });
-    // A last round that did not converge pauses automatic review, which the reopen note has to say.
+    // The reopen note says whether a push starts a review, which it reads from the config and the rounds.
     const round = roundContextFromLegacy({ round: 1, commitSha: 'sha1', timestamp: '2025-01-01T00:00:00Z', findings: [] });
     round.meta.outcome = 'NOT_CONVERGING';
     const previousFindings = [{ title: 'Token leaks into logs', file: 'src/a.ts', line: 3, severity: 'blocker' as const, status: 'open' as const, threadId: 'T_1', reopen: true }];
@@ -7374,7 +7376,9 @@ describe('handleReviewStateCheck', () => {
     await handleReviewStateCheck();
 
     expect(jest.mocked(recapModule.fetchRecapState)).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, 'author');
-    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), previousFindings, true);
+    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(
+      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, expect.objectContaining({ auto_approve: false }), { previousFindings, priorRounds: [round] },
+    );
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'auto_approve is disabled — skipping state check',
     );
@@ -7400,7 +7404,9 @@ describe('handleReviewStateCheck', () => {
 
     await handleReviewStateCheck();
 
-    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), [], false);
+    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(
+      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 5, expect.objectContaining({ auto_approve: true }), expect.objectContaining({ previousFindings: [] }),
+    );
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
       expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 5, expect.objectContaining({ auto_approve: true }),
     );

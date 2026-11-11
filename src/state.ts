@@ -8,7 +8,7 @@ import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, Bot
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadMarkerSlug, threadSeverity } from './recap';
+import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadMarkerSlug, threadSeverity } from './recap';
 import { formatApprovalRecord, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
@@ -227,9 +227,10 @@ async function deleteThreadReply(octokit: Octokit, commentId: string): Promise<v
   await octokit.graphql('mutation($id: ID!) { deletePullRequestReviewComment(input: { id: $id }) { clientMutationId } }', { id: commentId });
 }
 
-function reopenReply(isSecurity: boolean, paused: boolean): string {
-  const next = paused
-    ? 'A reviewer with write access can resolve it. Automatic review is paused, so after pushing a fix comment `@manki review` and Manki will check it.'
+/** Returns the reply that says why a thread is reopened. With `halt`, a push starts no review, so the reply asks for the review command. */
+function reopenReply(isSecurity: boolean, halt: Awaited<ReturnType<typeof autoReviewHalt>>): string {
+  const next = halt
+    ? `A reviewer with write access can resolve it. Automatic review is ${halt.cause === 'auto_review_off' ? 'off' : 'paused'}, so after pushing a fix comment \`@manki review\` and Manki will check it.`
     : 'A reviewer with write access can resolve it, or push a fix and Manki will check it.';
   return `Reopened. A ${isSecurity ? 'security' : 'blocking'} finding needs a maintainer or a fix: the PR author cannot resolve it. ${next}`;
 }
@@ -243,17 +244,21 @@ async function authorResolvedNote(
 ): Promise<string | undefined> {
   const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin);
   const finding = recap.previousFindings.find(f => f.reopen && f.threadId === threadId);
-  return finding && reopenReply(!!finding.isSecurity, pauseState(recap, config).paused);
+  return finding && reopenReply(!!finding.isSecurity, await autoReviewHalt(octokit, bot, owner, repo, prNumber, config, recap));
 }
 
-/** Reopens each guarded thread the PR author resolved and replies once to say why. While `paused`, the reply says a push alone is not reviewed. */
-async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: PreviousFinding[], paused = false): Promise<void> {
-  for (const f of previousFindings) {
+/** Reopens each guarded thread of `recap` that the PR author resolved, and replies once to say why. */
+async function reopenAuthorResolvedThreads(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config: ReviewConfig, recap: RecapState,
+): Promise<void> {
+  if (!recap.previousFindings.some(f => f.reopen && f.threadId)) return;
+  const halt = await autoReviewHalt(octokit, bot, owner, repo, prNumber, config, recap);
+  for (const f of recap.previousFindings) {
     if (!f.reopen || !f.threadId) continue;
     // The thread opens first. The reply's marker stops every later reopen, so it must never sit on a thread that stayed resolved.
     if (!await reopenThread(octokit, f.threadId)) continue;
     try {
-      await replyToReviewThread(octokit, f.threadId, reopenReply(!!f.isSecurity, paused), REOPENED_MARKER);
+      await replyToReviewThread(octokit, f.threadId, reopenReply(!!f.isSecurity, halt), REOPENED_MARKER);
     } catch (error) {
       core.warning(`Reopened thread ${f.threadId}, but failed to say why: ${error}`);
     }
@@ -410,9 +415,13 @@ function pauseState({ priorRounds, lastApprovalAt }: Pick<RecapState, 'priorRoun
   return { capRounds, roundsLeft, capReached, paused: reason !== undefined, ...(reason && { reason }), ...(restart && { restart }) };
 }
 
-/** Returns why no automatic review will run on a new head commit, with how to start one, or `undefined` when a push review will run. */
+/**
+ * Returns why no automatic review will run on a new head commit, with how to start one, or `undefined` when a push review will run.
+ * Reads the PR's rounds unless `rounds` holds them.
+ */
 async function autoReviewHalt(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config: ReviewConfig,
+  rounds?: Pick<RecapState, 'priorRounds' | 'lastApprovalAt'>,
 ): Promise<{ cause: 'auto_review_off' | 'settings_paused' | 'automatic_pause'; text: string } | undefined> {
   if (!config.auto_review) {
     return { cause: 'auto_review_off', text: 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.' };
@@ -420,7 +429,7 @@ async function autoReviewHalt(
   if ((await fetchPrState(owner, repo, prNumber, github.context.runId))?.settings.paused) {
     return { cause: 'settings_paused', text: 'Automatic review is paused in the settings block. Untick **Pause automatic reviews** there, or comment `@manki review`, to review it.' };
   }
-  const { reason, restart } = pauseState(await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
+  const { reason, restart } = pauseState(rounds ?? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
   return reason
     ? { cause: 'automatic_pause', text: `${reason} Automatic review is paused. Tick **Review again** in the settings block, or comment \`@manki review\`, to review it.${restart ? ` ${restart}` : ''}` }
     : undefined;

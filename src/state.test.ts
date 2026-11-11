@@ -371,10 +371,13 @@ describe('reopenAuthorResolvedThreads', () => {
 
   const mutation = (call: unknown[]) => [String(call[0]).match(/unresolveReviewThread|addPullRequestReviewThreadReply/)?.[0], (call[1] as { threadId: string }).threadId];
 
+  const reopen = (graphql: jest.Mock, previousFindings: PreviousFinding[], config = DEFAULT_CONFIG, priorRounds: RoundContext[] = []) =>
+    reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, TEST_BOT, 'owner', 'repo', 1, config, { previousFindings, priorRounds });
+
   it('reopens, then replies with the markers, for flagged threads only', async () => {
     const graphql = jest.fn().mockResolvedValue({});
 
-    await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_author', true), previous('T_other', false)]);
+    await reopen(graphql, [previous('T_author', true), previous('T_other', false)]);
 
     expect(graphql.mock.calls.map(mutation)).toEqual([
       ['unresolveReviewThread', 'T_author'],
@@ -384,16 +387,30 @@ describe('reopenAuthorResolvedThreads', () => {
     expect(graphql.mock.calls[1][1].body).toContain('push a fix and Manki will check it');
     expect(graphql.mock.calls[1][1].body.endsWith(`\n\n${BOT_MARKER}\n${REOPENED_MARKER}`)).toBe(true);
 
-    // While automatic review is paused a push is not reviewed, so the reply asks for `@manki review`.
     graphql.mockClear();
-    await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_author', true)], true);
-    const pausedReply = graphql.mock.calls[1][1].body;
-    expect(pausedReply).toContain('Automatic review is paused, so after pushing a fix comment `@manki review` and Manki will check it.');
-    expect(pausedReply).not.toContain('push a fix and Manki will check it');
-
-    graphql.mockClear();
-    await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [{ ...previous('T_plain', true), isSecurity: false }]);
+    await reopen(graphql, [{ ...previous('T_plain', true), isSecurity: false }]);
     expect(graphql.mock.calls[1][1].body).toMatch(/^Reopened\. A blocking finding needs a maintainer or a fix/);
+
+    // With nothing to reopen, the settings are not read.
+    jest.mocked(authModule.fetchPrState).mockClear();
+    await reopen(graphql, [previous('T_other', false)]);
+    expect(authModule.fetchPrState).not.toHaveBeenCalled();
+  });
+
+  // A push starts no review then, so the reply asks for `@manki review`.
+  it.each<[string, string, typeof DEFAULT_CONFIG, number, boolean]>([
+    ['the round cap is reached', 'paused', DEFAULT_CONFIG, 10, false],
+    ['`auto_review` is off', 'off', AUTO_REVIEW_OFF, 1, false],
+    ['the Pause box is ticked', 'paused', DEFAULT_CONFIG, 1, true],
+  ])('asks for the review command when %s', async (_label, word, config, rounds, boxTicked) => {
+    const graphql = jest.fn().mockResolvedValue({});
+    if (boxTicked) jest.mocked(authModule.fetchPrState).mockResolvedValueOnce({ settings: { paused: true }, runModes: new Set(), queuedModes: new Set() });
+
+    await reopen(graphql, [previous('T_author', true)], config, Array.from({ length: rounds }, (_, i) => makeRoundContext(i + 1)));
+
+    const reply = graphql.mock.calls[1][1].body;
+    expect(reply).toContain(`Automatic review is ${word}, so after pushing a fix comment \`@manki review\` and Manki will check it.`);
+    expect(reply).not.toContain('push a fix and Manki will check it');
   });
 
   // The reply's marker stops every later reopen, so a thread that stayed resolved must not get it.
@@ -405,7 +422,7 @@ describe('reopenAuthorResolvedThreads', () => {
       .mockRejectedValueOnce(new Error('reply refused'))
       .mockResolvedValue({});
 
-    await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_1', true), previous('T_2', true), previous('T_3', true)]);
+    await reopen(graphql, [previous('T_1', true), previous('T_2', true), previous('T_3', true)]);
 
     expect(graphql.mock.calls.map(mutation)).toEqual([
       ['unresolveReviewThread', 'T_1'],
