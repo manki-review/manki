@@ -309,7 +309,7 @@ describe('refuteBlockers', () => {
     expect(client.messages.find(([, user]) => user.includes(': Unbuilt confirmed\n'))![1]).toContain('## Claimed build failure: Unbuilt confirmed');
   });
 
-  it('checks each premise the judge doubts on its own, and raises a finding only when every premise is confirmed', async () => {
+  it('checks each premise the judge doubts on its own, raises a finding only when every premise is confirmed, and then moves it out of the `rare` column', async () => {
     const exists = { premise: 'No caller bounds `a`', decides: 'defect' as const };
     const reached = { premise: 'A public handler passes `a` through', decides: 'grade' as const };
     const confirmed = (proof: string) => ({ outcome: 'confirmed', reason: 'It holds.', proof: [proof] });
@@ -321,18 +321,23 @@ describe('refuteBlockers', () => {
       'Blocker defect disproved': { reason: 'Bounded.', premises: [{ outcome: 'disproved', reason: 'The signature bounds it.', proof: ['src/math.ts:1'] }] },
       'Disproved beside a confirmed premise': { reason: 'Bounded.', premises: [{ outcome: 'disproved', reason: 'Bounded.', proof: ['src/math.ts:1'] }, confirmed('src/api.ts:4')] },
       'Premises not answered': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
+      'Doubt confirmed in the normal column': { reason: 'It holds.', premises: [confirmed('src/math.ts:2')] },
+      'Rare claim not answered': { outcome: 'confirmed', reason: 'A handler passes it.', proof: ['src/api.ts:4'] },
     });
+    const rare = { row: 'wrong' as const, column: 'rare' as const };
     const findings = [
-      finding('Every premise confirmed', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists, reached], judgeNotes: 'warning. Unsure.' }),
+      finding('Every premise confirmed', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [exists, reached], judgeNotes: 'warning. Unsure.' }),
       // One answer never stands for another premise, so a grade rests on every premise the judge named.
-      finding('One premise confirmed', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists, reached] }),
+      finding('One premise confirmed', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [exists, reached] }),
       // A doubt whether the defect exists is checked at the grade the judge kept.
       finding('Defect disproved', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: [exists] }),
       // The premise that lowered the grade holds, so the finding keeps the grade the judge gave.
-      finding('Lowering premise holds', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [reached] }),
+      finding('Lowering premise holds', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [reached] }),
       finding('Blocker defect disproved', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
       finding('Disproved beside a confirmed premise', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: [exists, reached] }),
       finding('Premises not answered', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
+      finding('Doubt confirmed in the normal column', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'normal' }, doubts: [exists] }),
+      finding('Rare claim not answered', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [reached] }),
     ];
 
     const result = await refuteBlockers(client, findings, { workspace, diff });
@@ -347,6 +352,17 @@ describe('refuteBlockers', () => {
       ['Disproved beside a confirmed premise', 'ignore', 'disproved', ['disproved', 'confirmed']],
       // A reply that skips the premises is asked once more, then leaves the grade to the judge.
       ['Premises not answered', 'blocker', undefined, undefined],
+      ['Doubt confirmed in the normal column', 'blocker', 'confirmed', ['confirmed']],
+      ['Rare claim not answered', 'warning', undefined, undefined],
+    ]);
+    // Only a confirmation moves a finding to the `normal` column. The stored premise answer tells the rest apart: the
+    // `rare` claim held (disproved), no one could tell (unsettled), or no check answered (none stored).
+    expect(result.filter(f => f.cell).map(f => [f.title, f.cell, f.refutation?.premises?.at(-1)?.outcome])).toEqual([
+      ['Every premise confirmed', { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, 'confirmed'],
+      ['One premise confirmed', rare, 'unsettled'],
+      ['Lowering premise holds', rare, 'disproved'],
+      ['Doubt confirmed in the normal column', { row: 'wrong', column: 'normal' }, 'confirmed'],
+      ['Rare claim not answered', rare, undefined],
     ]);
     expect(result[0].refutation).toMatchObject({
       proof: ['src/math.ts:2', 'src/api.ts:4'],
@@ -361,6 +377,7 @@ describe('refuteBlockers', () => {
     const message = client.messages.find(([, user]) => user.includes(': Every premise confirmed\n'))!;
     expect(message[1]).toContain("- **Premises the judge doubts**, to answer in order:\n  1. No caller bounds 'a'\n  2. A public handler passes 'a' through");
     expect(message[0]).toContain('When the message lists premises the judge doubts, answer each one in `premises`, one entry per premise in the order listed.');
+    expect(message[0]).toContain('- A premise that normal use or outside input can produce a state is such a doubt about the state: the judge holds that only the code\'s own logic produces it. Confirm it when a caller, stored data, concurrent use of a public API or documented usage produces the state, and cite the lines of that path. Disprove it only when the code shows nothing but its own logic produces the state.');
     expect(client.calls.filter(([title]) => title === 'Premises not answered')).toHaveLength(2);
   });
 
@@ -373,7 +390,8 @@ describe('refuteBlockers', () => {
       finding('Nitpick to suggestion', { severity: 'nitpick', gradeIfConfirmed: 'suggestion' }),
       finding('Suggestion to warning', { severity: 'suggestion', gradeIfConfirmed: 'warning' }),
       finding('Warning to blocker', { severity: 'warning', gradeIfConfirmed: 'blocker' }),
-      finding('Second warning to blocker', { severity: 'warning', gradeIfConfirmed: 'blocker' }),
+      // A finding in the `rare` column of the `wrong` row is such a check.
+      finding('Second warning to blocker', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'Any client reaches it', decides: 'grade' }] }),
       doubted('Doubted suggestion', 'suggestion'),
       doubted('Doubted warning 1', 'warning'),
       doubted('Doubted warning 2', 'warning'),
@@ -469,6 +487,12 @@ describe('refuteBlockers', () => {
     const [reopened] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4 })], { workspace, priorRounds: rounds({ refutation: premise('unsettled') }), diff });
     expect([reopened.severity, reopened.gradeIfConfirmed, reopened.doubts]).toEqual(['blocker', 'blocker', doubts]);
     expect(client.calls).toHaveLength(1);
+    // The earlier round's cell comes back with its doubt, in place of the cell the judge stated without one.
+    const [recelled] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: { row: 'degraded', column: 'normal' } })], {
+      workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'rare' } }), diff,
+    });
+    expect([recelled.severity, recelled.cell]).toEqual(['blocker', { row: 'wrong', column: 'normal', judgeColumn: 'rare' }]);
+    client.calls.pop();
 
     // A grade with no doubt behind it, one a check settled, or one the judge changed is no capped grade.
     for (const [entry, current] of [

@@ -236,6 +236,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.gradePath && { gradePath: f.gradePath }),
     ...(f.gradeIfConfirmed && { gradeIfConfirmed: f.gradeIfConfirmed }),
     ...(f.doubts && { doubts: f.doubts }),
+    ...(f.cell && { cell: f.cell }),
   }));
   const toEntry = (f: Finding): FindingFingerprintEntry => ({
     fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
@@ -261,6 +262,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.pairRefutation && { pairRefutation: f.pairRefutation }),
     ...(f.gradeIfConfirmed && { gradeIfConfirmed: f.gradeIfConfirmed }),
     ...(f.doubts && { doubts: f.doubts }),
+    ...(f.cell && { cell: f.cell }),
     ...(f.gradePath && { gradePath: f.gradePath }),
     ...(f.preExisting && f.preExistingCheck && { preExisting: { reason: f.preExisting.slice(0, 200), check: f.preExistingCheck } }),
   });

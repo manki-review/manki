@@ -4141,6 +4141,7 @@ describe('runFullReview orchestration', () => {
         toolEvidence: { status: 'contradicted' as const, note: 'src/gone.ts is not changed in this diff.' },
         gradeIfConfirmed: 'blocker' as const,
         doubts: [{ premise: 'Shutdown runs while a request is in flight', decides: 'grade' as const }],
+        cell: { row: 'wrong' as const, column: 'normal' as const, judgeColumn: 'rare' as const },
       }, {
         severity: 'warning' as const,
         title: 'js/sql-injection: Query built from user input',
@@ -4161,6 +4162,7 @@ describe('runFullReview orchestration', () => {
         severity: 'ignore' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', reviewers: ['Concurrency'],
         reviewerSeverity: 'suggestion' as const, judgeConfidence: 'high' as const, judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
         gradeIfConfirmed: 'suggestion' as const, doubts: [{ premise: 'Callers read the old name', decides: 'defect' as const }],
+        cell: { row: 'improvement' as const, column: 'normal' as const },
       }],
       highlights: [], reviewComplete: true, agentNames: ['Concurrency'],
     });
@@ -4178,6 +4180,7 @@ describe('runFullReview orchestration', () => {
       title: 'Rename helper', file: 'src/app.ts', line: 7, reviewers: ['Concurrency'],
       reviewerSeverity: 'suggestion', judgeConfidence: 'high', judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
       gradeIfConfirmed: 'suggestion', doubts: [{ premise: 'Callers read the old name', decides: 'defect' }],
+      cell: { row: 'improvement', column: 'normal' },
     }]);
     expect(rc!.findings.entries.map(e => [e.toolEvidence, e.toolSource])).toEqual([['contradicted', undefined], ['confirmed', 'CodeQL']]);
     // A first round has no earlier change to compare with, so every finding is new.
@@ -4189,6 +4192,8 @@ describe('runFullReview orchestration', () => {
     expect(entry.originalSeverity).toBe('warning');
     expect([entry.category, entry.effort]).toEqual(['concurrency', 'moderate']);
     expect([entry.gradeIfConfirmed, entry.doubts]).toEqual(['blocker', [{ premise: 'Shutdown runs while a request is in flight', decides: 'grade' }]]);
+    // The cell the grade was worked out from, and the column the judge stated before a check moved it.
+    expect(entry.cell).toEqual({ row: 'wrong', column: 'normal', judgeColumn: 'rare' });
   });
 
   it('splits judge suppression counters by tag in RoundContext.judge', async () => {
