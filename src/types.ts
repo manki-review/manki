@@ -104,6 +104,17 @@ export const FOLLOW_UP_TAG = 'follow-up' as const;
 export const VERDICT_READER_NAME = 'Verdict reader';
 /** Marks a security defect, which blocks at every round and never becomes a follow-up. */
 export const SECURITY_TAG = 'security' as const;
+
+// Priors saved before the generalist finders carry this reviewer instead of the judge's `security` tag.
+const LEGACY_SECURITY_AGENT_NAME = 'Security & Safety';
+
+/**
+ * Whether a finding or prior is a security defect, which the judge tags `SECURITY_TAG`.
+ * A prior also counts when the retired Security & Safety reviewer raised it.
+ */
+export function isSecurityFinding(tags: string[] | undefined, priorReviewers: ReadonlyArray<string | undefined> = []): boolean {
+  return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
+}
 /** Marks a finding on lines outside every hunk of the PR's diff. Unless it is a security finding, it never blocks. */
 export const PRE_EXISTING_TAG = 'pre-existing' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */

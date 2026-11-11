@@ -59,7 +59,6 @@ jest.mock('./github', () => ({
 
 jest.mock('./review', () => ({
   truncateDiff: jest.fn((s: string) => s),
-  isSecurityFinding: jest.requireActual('./review').isSecurityFinding,
 }));
 
 jest.mock('./state', () => ({
