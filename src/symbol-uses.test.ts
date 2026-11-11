@@ -755,6 +755,10 @@ describe('listReferenceUses', () => {
       'src/depends/lib.c': 'int MAX_REQUEST_BODY_LENGTH;\n',
       'src/test/server_tests.cpp': 'auto data = randbytes(MAX_REQUEST_BODY_LENGTH);\nauto more = randbytes(MAX_REQUEST_BODY_LENGTH);\n',
       'doc/http.md': 'Requests stop at MAX_REQUEST_BODY_LENGTH.\n',
+      // The root guide files are never searched, while a guide in a subdirectory is ordinary content.
+      'AGENTS.md': 'MAX_HEADER_COUNT and MAX_REQUEST_BODY_LENGTH limit a request. CRetryPolicy retries it.\n',
+      'CLAUDE.md': 'See MAX_HEADER_COUNT.\n',
+      'doc/AGENTS.md': 'CRetryPolicy lives in `src/http/`.\n',
     };
     for (const [path, content] of Object.entries(files)) {
       mkdirSync(dirname(join(dir, path)), { recursive: true });
@@ -789,7 +793,7 @@ describe('listReferenceUses', () => {
           { name: 'retry_delay', lines: ['example/server:src/http/retry.h:2', 'example/server:src/a_util.cpp:1'] },
           { name: 'URLInfo', lines: ['example/server:src/protocol.cpp:1'] },
           { name: 'MAX_SIZE', lines: ['example/server:src/serialize.h:1', 'example/server:src/server.cpp:1'] },
-          { name: 'CRetryPolicy', lines: ['example/server:src/http/retry.h:1'] },
+          { name: 'CRetryPolicy', lines: ['example/server:src/http/retry.h:1', 'example/server:doc/AGENTS.md:1'] },
         ],
         referenceMissing: ['MAX_HEADER_COUNT'],
       });

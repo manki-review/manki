@@ -13,8 +13,8 @@ const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
 // Git sends no credential, so a private repo fails, and runs no hook or fsmonitor of a clone.
 const GIT_CONFIG = { 'credential.helper': '', 'core.hooksPath': devNull, 'core.fsmonitor': 'false' };
-// A repo's guide is the first of these at its root.
-const GUIDE_FILES = ['AGENTS.md', 'CLAUDE.md'];
+/** The files that can be a repo's guide, at its root. The first one found is the guide. */
+export const GUIDE_FILES = ['AGENTS.md', 'CLAUDE.md'];
 
 export interface RelatedRepoLoaderOptions {
   /** Time limit for fetching one repo. */

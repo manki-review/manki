@@ -10,6 +10,7 @@ import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-gr
 import { addedLines, findExcludePattern, rebuildRawDiff } from './diff';
 import { fenceText } from './github';
 import { resolveInRoot } from './mcp-server';
+import { GUIDE_FILES } from './related-repos';
 import { DiffFile, DiffHunk, ParsedDiff, ReferenceCheckout, RoundReferenceUse, RoundUses, RoundUsesSymbol } from './types';
 import { escapeRegExp } from './utils';
 import { gitEnv } from './workspace';
@@ -506,7 +507,8 @@ export async function listReferenceUses(checkouts: ReferenceCheckout[], names: s
   for (const { repo, dir } of checkouts) {
     let hits: Hit[];
     try {
-      hits = await grepWords(dir, names.flatMap(nameVariants), { onDisk: true, ignoreCase: true });
+      // The root guide files are left out, so their text reaches a prompt only through a finder's own read.
+      hits = (await grepWords(dir, names.flatMap(nameVariants), { onDisk: true, ignoreCase: true })).filter(hit => !GUIDE_FILES.includes(hit.file));
     } catch (error) {
       core.warning(`Skipped the search of the reference repo ${repo}: ${error instanceof Error ? error.message : String(error)}`);
       continue;
