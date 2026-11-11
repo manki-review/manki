@@ -747,7 +747,7 @@ export function mergeReports(parts: BenchReport[], cases: BenchCase[], meta: Pic
   };
 }
 
-/** A report scored again, the cases scored again, and each case with a changed key that was left as scored. */
+/** A report scored again, the cases scored again, and each case left as scored although its key changed or no case file says whether it did. */
 interface Rescored {
   report: BenchReport;
   rescored: string[];
@@ -764,8 +764,8 @@ function unscorable(benchCase: BenchCase, runs: RunScore[]): string | undefined 
 /**
  * Scores the stored runs of `report` again for each case of `cases` whose key version is not the report's. The matcher
  * reads the findings each run stored, so a changed key costs matcher calls and no review. Only complete runs are scored
- * again. A case that `unscorable` names stays as scored and is listed in `left`, and so stays out of a gate against a
- * report with the new key version.
+ * again. A case that `unscorable` names, or that is not among `cases`, stays as scored and is listed in `left`, and so
+ * stays out of a gate against a report with the new key version.
  */
 export async function rescoreReport(report: BenchReport, cases: BenchCase[], matcher: Matcher): Promise<Rescored> {
   const rescored = new Set<string>();
@@ -775,6 +775,7 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
     const again: CaseReport[] = [];
     for (const c of scored) {
       const benchCase = cases.find(b => b.id === c.id);
+      if (!benchCase) left.set(c.id, c.set === 'holdout' ? 'its case file was not loaded, which for a hold-out case takes --holdout' : 'no case file was loaded for it');
       if (!benchCase || benchCase.keyVersion === c.keyVersion) {
         again.push(c);
         continue;
@@ -1235,7 +1236,7 @@ interface BenchArgs {
 }
 
 const USAGE = `Usage: manki bench --checkout <owner/name>=<dir> [options]
-       manki bench --rescore <report.json> [--cases <dir>] [--holdout] [--case <id>] [--cache <file>] [--out <file>]
+       manki bench --rescore <report.json> [--cases <dir>] [--holdout] [--cache <file>] [--out <file>]
 
 Reviews each benchmark case from a local checkout, matches the findings to the case's answer
 key with an LLM, prints recall per item and severity, and writes a JSON report.
@@ -1334,6 +1335,7 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     }
     const providerInputs = readProviderInputsFromEnv();
     if (!hasAnyProviderCredentials(providerInputs)) throw new Error(`No credentials set.\n\n${USAGE}`);
+    if (args.rescore && args.only.length > 0) throw new Error('--case does not apply to --rescore, which scores every case with a changed key again');
     const cases = loadCases({ tuning: args.cases, ...(args.holdout && { holdout: HOLDOUT_DIR }) }, args.only);
     const cache = loadMatcherCache(args.cache);
     const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
@@ -1345,7 +1347,7 @@ export function runBenchCommand(argv: string[]): Promise<number> {
       const outPath = args.out ?? args.rescore.replace(/(\.json)?$/, '.rescored.json');
       writeJson(outPath, report);
       out(rescored.length > 0 ? `Scored again with the changed key: ${rescored.join(', ')}\n` : 'No case was scored again.\n');
-      for (const { id, reason } of left) out(`Left as scored, ${id} has a changed key but ${reason}.\n`);
+      for (const { id, reason } of left) out(`Left as scored, ${id}: ${reason}.\n`);
       out(`Report: ${outPath}\n`);
       return 0;
     }

@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { isMap, isScalar, parseDocument } from 'yaml';
@@ -875,7 +875,14 @@ describe('mergeReports and gateReports', () => {
     expect(unread).toMatchObject({ rescored: [], left: [{ id: 'demo-2', reason: 'its report holds no text of the findings' }] });
     expect(unread.report.variants[0].cases[1]).toBe(bare.variants[0].cases[1]);
     const followUp = parseCase(FOLLOW_UP_YAML.replace('id: demo-1', 'id: demo-2').replace('key_version: 2', 'key_version: 3'), 'demo-2.yml', 'holdout');
-    expect(await rescoreReport(stored, [followUp], matcher)).toMatchObject({ rescored: [], left: [{ id: 'demo-2', reason: 'its runs reviewed a first round' }] });
+    expect(await rescoreReport(stored, [followUp], matcher)).toMatchObject({
+      rescored: [], left: [{ id: 'demo-1', reason: 'its case file was not loaded, which for a hold-out case takes --holdout' }, { id: 'demo-2', reason: 'its runs reviewed a first round' }],
+    });
+    // A case no case file was loaded for is never counted as scored again, with or without a changed key.
+    const mixed = report([[first, [await run(first, 'blocker')]], [tuning, [await run(tuning, 'blocker')]]]);
+    expect(await rescoreReport(mixed, [], matcher)).toMatchObject({
+      rescored: [], left: [{ id: 'demo-1', reason: 'its case file was not loaded, which for a hold-out case takes --holdout' }, { id: 'demo-3', reason: 'no case file was loaded for it' }],
+    });
   });
 });
 
@@ -987,6 +994,16 @@ describe('runBenchCommand', () => {
 
       expect(await runBenchCommand(['--rescore', report, '--cases', dir, '--cache', cache, '--matcher-model', 'claude-opus-5-5'])).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('The report was matched by claude-sonnet-5-5. Pass --matcher-model claude-sonnet-5-5 to score it again.'));
+      expect(await runBenchCommand(['--rescore', report, '--cases', dir, '--case', 'demo-1'])).toBe(2);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('--case does not apply to --rescore'));
+
+      // A stored case with no case file loaded is named, and is not counted as scored again.
+      stdout.mockClear();
+      const other = join(dir, 'other');
+      mkdirSync(other);
+      writeFileSync(join(other, 'other.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-9'));
+      expect(await runBenchCommand(['--rescore', report, '--cases', other, '--cache', cache])).toBe(0);
+      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`No case was scored again.\nLeft as scored, demo-1: no case file was loaded for it.\nReport: ${join(dir, 'report.rescored.json')}\n`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
