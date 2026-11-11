@@ -12,6 +12,8 @@ import { listRelatedUses, listUsesOutsideDiff, UsesOutsideDiff } from './symbol-
 import { gitWorkspace } from './test-utils';
 
 jest.mock('@actions/core');
+// Every test here builds a real git workspace or directory, which a loaded runner takes past the default 5 seconds.
+jest.setTimeout(30_000);
 
 // The grammars are registered once per process, so every test file registers the same ones.
 napi.registerDynamicLanguage({ go, python, rust });
