@@ -143,10 +143,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     : undefined;
 
   // Judge calibration metrics
-  const confidenceDistribution = { high: 0, medium: 0, low: 0 };
-  for (const f of allJudged) {
-    if (f.judgeConfidence) confidenceDistribution[f.judgeConfidence]++;
-  }
   const severityChanges = allJudged.filter(f => f.judgeNotes).length;
   const regrades = { up: 0, down: 0 };
   for (const f of allJudged) {
@@ -233,7 +229,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     line: f.line,
     reviewers: f.reviewers,
     ...(f.reviewerSeverity && { reviewerSeverity: f.reviewerSeverity }),
-    ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
     ...(f.judgeNotes && { judgeNotes: f.judgeNotes }),
     ...(f.refutation && { refutation: f.refutation }),
     ...(f.pairRefutation && { pairRefutation: f.pairRefutation }),
@@ -251,7 +246,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.suggestedFix && { suggestedFix: f.suggestedFix.slice(0, 300) }),
     ...(f.title && { title: f.title.slice(0, 200) }),
     ...(f.judgeNotes && { judgeNotes: f.judgeNotes }),
-    ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
+    ...(f.checkStatus && { checkStatus: f.checkStatus }),
     ...(f.tags && f.tags.length > 0 && { tags: f.tags.filter(t => ALLOWED_FINGERPRINT_TAGS.has(t)) }),
     ...(f.originalSeverity && { originalSeverity: f.originalSeverity }),
     ...(f.reviewerSeverity && { reviewerSeverity: f.reviewerSeverity }),
@@ -365,7 +360,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       summary: result.summary,
       ...(result.judgeEffort && { effort: result.judgeEffort }),
       ...(judgeDrops.length > 0 && { dropped: judgeDrops }),
-      confidenceDistribution,
       severityChanges,
       ...((regrades.up > 0 || regrades.down > 0) && { regrades }),
       mergedDuplicates,

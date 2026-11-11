@@ -12,7 +12,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { cellGrade, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt } from './types';
+import { cellGrade, CheckStatus, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -378,6 +378,22 @@ export function unprovenReason(finding: Finding): UnprovenReason | undefined {
   if (checks.length > 0) return open ? 'unsettled_check' : undefined;
   if (finding.overCheckLimit) return open ? 'not_checked' : undefined;
   return lacksProof ? 'no_proof' : undefined;
+}
+
+/**
+ * Returns how `finding` was checked. It is `confirmed` when a check confirms the defect and none disproves it. It is
+ * `proven` when it cites proof lines and nothing is left open: no check disproved it, no check of the whole finding
+ * came back unsettled, the judge doubts no premise the defect rests on, and no cap for want of proof holds. Anything
+ * else is `unconfirmed`, so a finding `unprovenReason` names is always `unconfirmed`.
+ */
+export function checkStatus(finding: Finding): CheckStatus {
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
+  const disproved = checks.some(check => check.outcome === 'disproved');
+  if (!disproved && checks.some(check => confirmsDefect(finding, check))) return 'confirmed';
+  // A check that answered only premises says nothing about the defect unless one of them decides it.
+  const open = disproved || checks.some(check => check.outcome === 'unsettled' && !check.premises) || doubtsDefect(finding)
+    || citesNoProof(finding) || finding.tags?.some(tag => CHECKED_TAGS.includes(tag));
+  return open ? 'unconfirmed' : 'proven';
 }
 
 /**

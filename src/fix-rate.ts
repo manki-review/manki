@@ -32,7 +32,8 @@ interface SpecialistKey {
 
 interface CalibrationKey {
   severity: string;
-  confidence: string;
+  /** How the finding was checked, its `checkStatus`. */
+  checkStatus: string;
   toolEvidence: string;
   category: string;
   effort: string;
@@ -49,7 +50,7 @@ export interface PostedFinding {
 
 /**
  * Records how many posted findings of a merged pull request were fixed, dismissed or left
- * untouched, per severity and specialist (`counts`) and per severity, judge confidence, tool
+ * untouched, per severity and specialist (`counts`) and per severity, check status, tool
  * evidence, category, effort, whether the finding had evidence and whether the judge checked
  * it (`calibration`). Writes one JSON line to the job summary, and appends it to
  * `metrics/fix-rate.jsonl` in the repo's memory when `memory` is given. The line carries
@@ -95,7 +96,7 @@ export async function recordFixRate(
     tally<SpecialistKey>(counts, { severity: entry.severity, specialist }, outcome);
     tally<CalibrationKey>(calibration, {
       severity: entry.severity,
-      confidence: entry.judgeConfidence ?? 'unknown',
+      checkStatus: entry.checkStatus ?? 'unknown',
       toolEvidence: entry.toolEvidence ?? 'unknown',
       category: entry.category ?? 'unknown',
       effort: entry.effort ?? 'unknown',

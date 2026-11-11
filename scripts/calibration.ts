@@ -74,7 +74,6 @@ export interface SetEntry {
   title: string;
   comment: string;
   judgeNotes?: string;
-  judgeConfidence?: string;
   label: 'real' | 'false';
   labelSource: LabelSource;
   threadUrl?: string;
@@ -258,7 +257,6 @@ export function selectSet(findings: LabelledFinding[], limit = DEFAULT_SET_LIMIT
       title: f.entry.title ?? f.entry.fingerprint.slug,
       comment: f.thread!.comments[0].body.replace(/<!--[\s\S]*?-->/g, '').replace(AI_CONTEXT_BLOCK, '').trim().replace(SEVERITY_HEADER, '').trim(),
       ...(f.entry.judgeNotes && { judgeNotes: f.entry.judgeNotes }),
-      ...(f.entry.judgeConfidence && { judgeConfidence: f.entry.judgeConfidence }),
       label: f.label as 'real' | 'false',
       labelSource: f.source,
       ...(f.thread!.comments[0].url && { threadUrl: f.thread!.comments[0].url }),

@@ -5,7 +5,7 @@ import { join } from 'path';
 import * as core from '@actions/core';
 
 import { LLMClient, SendMessageOptions } from './providers';
-import { disproof, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, disproof, refuteBlockers, unprovenReason } from './refute';
 import { Finding, OpenThread, ParsedDiff, REACH_DOUBT, RoundContext } from './types';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -581,6 +581,16 @@ describe('refuteBlockers', () => {
       ['No proof in a deleted file', 'no_proof'], ['Left out later without proof', 'no_proof'], ['Warning without proof', 'no_proof'], ['Tool alert without proof', 'no_proof'], ['Security warning without proof', 'no_proof'],
       ['Second warning without proof', 'no_proof'],
     ]);
+    // A warning either list names is never shown as proven or confirmed.
+    const statuses = Object.fromEntries(result.map(f => [f.title, checkStatus(f)]));
+    for (const title of Object.keys(reasons(result))) {
+      if (reasons(result)[title] || reasons(findings)[title]) expect([title, statuses[title]]).toEqual([title, 'unconfirmed']);
+    }
+    // A doubted warning no check could run on is posted for its cited lines, and says that nothing confirmed it.
+    expect([statuses['Doubt in a deleted file'], statuses['Doubt with no file']]).toEqual(['unconfirmed', 'unconfirmed']);
+    // Cited lines with no doubt whether the defect exists prove a finding. A check of the whole finding that settles nothing leaves it unconfirmed.
+    expect([statuses['Proven warning'], statuses['Grade doubt at its grade'], statuses['Doubted blocker']]).toEqual(['proven', 'proven', 'unconfirmed']);
+    expect(checkStatus({ ...finding('Checked blocker'), refutation: { outcome: 'unsettled', reason: 'Could not tell.', files: ['src/math.ts'], codeDigest: 'abc' } })).toBe('unconfirmed');
   });
 
 
@@ -633,6 +643,21 @@ describe('refuteBlockers', () => {
       unprovenReason({ ...twoDoubts, refutation: answer('confirmed', ['confirmed', 'confirmed']), pairRefutation: answer('disproved', ['disproved', 'confirmed']) }),
       unprovenReason({ ...twoDoubts, refutation: answer('unsettled', ['unsettled', 'unsettled']), pairRefutation: answer('unsettled', ['unsettled', 'unsettled']) }),
     ]).toEqual([undefined, 'unsettled_check', undefined, 'unsettled_check']);
+
+    expect(result.filter(f => f.severity !== 'ignore').map(f => [f.title, checkStatus(f)])).toEqual([
+      ['Doubt confirmed', 'confirmed'], ['No proof confirmed', 'confirmed'], ['Capped blocker unsettled', 'unconfirmed'],
+      // A call that fails confirms nothing, so the warning it leaves posted says so.
+      ['Doubt and the call fails', 'unconfirmed'], ['No proof and the call fails', 'unconfirmed'],
+    ]);
+    const gradeDoubt = finding('Grade doubt', { severity: 'warning', doubts: [{ premise: 'Any client reaches it', decides: 'grade' }] });
+    expect([
+      checkStatus({ ...twoDoubts, refutation: answer('unsettled', ['confirmed', 'disproved']) }),
+      checkStatus({ ...twoDoubts, refutation: answer('unsettled', ['unsettled', 'confirmed']) }),
+      // A second check that disproves the finding leaves it unconfirmed, though the warning stays posted.
+      checkStatus({ ...twoDoubts, refutation: answer('confirmed', ['confirmed', 'confirmed']), pairRefutation: answer('disproved', ['disproved', 'confirmed']) }),
+      // A check that leaves only a premise about the grade open says nothing against the cited lines.
+      checkStatus({ ...gradeDoubt, refutation: { ...answer('unsettled', ['unsettled']), premises: [{ premise: 'Any client reaches it', outcome: 'unsettled', reason: 'r' }] } }),
+    ]).toEqual(['confirmed', 'unconfirmed', 'unconfirmed', 'proven']);
   });
 
   it('asks for the general rule a finding relies on, and drops a build claim that unchanged code relying on the same rule disproves', async () => {

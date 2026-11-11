@@ -2212,11 +2212,6 @@ describe('runReview', () => {
         ends: r => r.memorySuppressed?.map(f => [f.title, f.suppressedBy]), as: [['Remembered pattern', 'sup-1']],
       },
       {
-        step: 'unposted pre-existing warning', title: 'Old loop', finding: { file: 'src/old.ts', proof: ['src/old.ts:15'], preExisting: true, preExistingReason: 'The loop predates this PR.' },
-        verdict: { preExisting: true },
-        ends: r => r.unpostedPreExisting?.map(f => [f.title, f.preExistingCheck]), as: [['Old loop', 'pre_existing']],
-      },
-      {
         // No step hides a security finding, so no outcome of a check changes whether the review shows it.
         step: 'security finding', title: 'Token in the log', verdict: { security: true },
         ends: r => r.findings.filter(f => f.title === 'Token in the log').map(f => [f.severity, f.tags?.includes('security')]), as: [['warning', true]],
@@ -2583,7 +2578,7 @@ describe('runReview', () => {
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ summary: 'ok', findings: input.findings.map(f => ({ ...f, ...judged[f.title] })) }));
       return runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', ...(tools && { workspace: '/work/pr-head' }) });
     };
-    const shown = (result: Awaited<ReturnType<typeof runReview>>) => result.findings.map(f => [f.title, f.unconfirmed]);
+    const shown = (result: Awaited<ReturnType<typeof runReview>>) => result.findings.map(f => [f.title, f.checkStatus]);
     const recordedOnly = (result: Awaited<ReturnType<typeof runReview>>) => result.unposted?.map(f => [f.title, f.severity, f.unpostedReason]);
 
     it('posts a warning only when cited lines or a tool check prove it, and records the others with the reason', async () => {
@@ -2604,8 +2599,9 @@ describe('runReview', () => {
       }, true);
 
       expect(shown(result)).toEqual([
-        ['Cited lines show it', undefined], ['The check confirmed the doubt', undefined], ['The check confirmed it without cited lines', undefined],
-        ['Doubted and no check could run', undefined], ['A doubted note', undefined], ['A blocker', undefined],
+        ['Cited lines show it', 'proven'], ['The check confirmed the doubt', 'confirmed'], ['The check confirmed it without cited lines', 'confirmed'],
+        // Only a blocker or a warning says how it was checked. A doubt no check could settle leaves a posted warning unconfirmed.
+        ['Doubted and no check could run', 'unconfirmed'], ['A doubted note', undefined], ['A blocker', 'proven'],
       ]);
       expect(recordedOnly(result)).toEqual([
         ['The check settled nothing', 'warning', 'unsettled_check'],
@@ -2633,8 +2629,8 @@ describe('runReview', () => {
       }, true);
 
       expect(shown(result)).toEqual([
-        ['The judge held a blocker cell down', true], ['A blocker without cited lines', true], ['A build failure no CI result reports', true],
-        ['A finder filed it as a blocker', true], ['A blocker the judge lowered', true], ['A security finding', undefined], ['A tool alert', undefined],
+        ['The judge held a blocker cell down', 'unconfirmed'], ['A blocker without cited lines', 'unconfirmed'], ['A build failure no CI result reports', 'unconfirmed'],
+        ['A finder filed it as a blocker', 'unconfirmed'], ['A blocker the judge lowered', 'unconfirmed'], ['A security finding', 'unconfirmed'], ['A tool alert', undefined],
       ]);
       expect(recordedOnly(result)).toEqual([['A warning nothing proves', 'warning', 'no_proof']]);
       expect(result.outcome).toBe('READY');
@@ -2648,7 +2644,8 @@ describe('runReview', () => {
         'A security finding without cited lines': { tags: [SECURITY_TAG] },
       }, false);
 
-      expect(shown(result)).toEqual([['Cited lines with a doubt', undefined], ['A blocker without cited lines', true], ['A security finding without cited lines', undefined]]);
+      // The doubt stays open without a check, so the warning the cited lines keep says that it is not confirmed.
+      expect(shown(result)).toEqual([['Cited lines with a doubt', 'unconfirmed'], ['A blocker without cited lines', 'unconfirmed'], ['A security finding without cited lines', 'unconfirmed']]);
       expect(recordedOnly(result)).toEqual([['No cited lines', 'warning', 'no_proof']]);
     });
   });
@@ -2862,7 +2859,7 @@ describe('runReview', () => {
       })]);
       expect(refuted.verdictTrace?.survivingBlockers).toEqual([expect.objectContaining({ file: 'a.ts', title: 'The cache is never invalidated.' })]);
       const comment = formatFindingComment(refuted.findings[0], TEST_LINKS);
-      expect(comment).toMatch(/<summary>How to fix it and 1 place read · doubt found<\/summary>\n\n\*\*How to fix it\*\*\nClear the cache on every write\.\n\n\*\*Checked in the code\*\*\nOn the commented line: Builds the cache\n\n\*\*Doubt found\*\*\n[^\n]*Every write clears the cache first\./);
+      expect(comment).toMatch(/<summary>How to fix it and 1 place read · not confirmed<\/summary>\n\n\*\*How to fix it\*\*\nClear the cache on every write\.\n\n\*\*Checked in the code\*\*\nOn the commented line: Builds the cache\n\n\*\*Doubt found\*\*\n[^\n]*Every write clears the cache first\./);
 
       // A second refuter on another model checks it too. Two disproofs still leave it blocking, posted with both reasons.
       const refuterPair = { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ outcome: 'disproved', reason: 'Only tests read the cache.', proof: ['a.ts:2'] }) }) };
@@ -2946,10 +2943,12 @@ describe('runReview', () => {
     const excluded = blocker('Generated client drops the auth header', 'gen/client.ts', 8);
     const run = (clients: ReviewClients) => runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', excludedPaths: ['gen/client.ts'] });
 
-    // Only blockers and warnings the judge is highly confident in are posted. The rest stay in the round record.
+    // Only blockers and warnings a tool check confirmed are posted. The rest stay in the round record.
     const oldSuggestion = blocker('Old helper could be shorter', 'src/a.ts', 60, { severity: 'note' });
-    const oldUnsure = blocker('Old retry may spin', 'src/a.ts', 70, { severity: 'warning', judgeConfidence: 'medium' });
-    const oldSure = blocker('Old timeout is never cleared', 'src/a.ts', 80, { severity: 'warning', judgeConfidence: 'high', evidence: { checks: [], proof: ['src/a.ts:80'] } });
+    const oldUnsure = blocker('Old retry may spin', 'src/a.ts', 70, { severity: 'warning', evidence: { checks: [], proof: ['src/a.ts:70'] } });
+    const oldSure = blocker('Old timeout is never cleared', 'src/a.ts', 80, {
+      severity: 'warning', evidence: { checks: [], proof: ['src/a.ts:80'] }, refutation: { outcome: 'confirmed', reason: 'Nothing clears it.', files: ['src/a.ts'], codeDigest: 'abc' },
+    });
     mockedRunJudgeAgent.mockResolvedValue({ findings: [oldLine, oldFile, oldSuggestion, oldUnsure, oldSure], summary: 'Old defects.' });
     const pre = await run(makeClients());
     expect(pre.outcome).toBe('READY');

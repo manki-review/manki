@@ -280,7 +280,6 @@ export interface Finding {
   reviewers: string[];
   codeContext?: string;
   judgeNotes?: string;
-  judgeConfidence?: 'high' | 'medium' | 'low';
   tags?: string[];
   originalSeverity?: FindingSeverity;
   /**
@@ -351,8 +350,8 @@ export interface Finding {
   unpostedReason?: UnpostedReason;
   /** Set on an unproven warning the refuter could have checked, had `MAX_DOUBT_CHECKS` other warnings not taken the round's checks. */
   overCheckLimit?: true;
-  /** Set on a warning nothing proves that is posted all the same, because it would be a blocker if it holds. */
-  unconfirmed?: true;
+  /** How the finding was checked. Set on each blocker and warning a round posts, except a tool alert. */
+  checkStatus?: CheckStatus;
   /** The finding's place in the judge's order of the notes, 0 for the one the author gains most from. Unset when the judge did not rank it. */
   noteRank?: number;
   /** Why the defect exists without this PR's change, when the reviewer says so. The judge must keep it, or it is cleared. */
@@ -655,6 +654,14 @@ export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
 /** Why nothing proves a warning: a check ran and settled nothing, the round's checks did not reach it, or no check could decide and no line is cited. */
 const UNPROVEN_REASONS = ['unsettled_check', 'not_checked', 'no_proof'] as const satisfies readonly UnpostedReason[];
 export type UnprovenReason = typeof UNPROVEN_REASONS[number];
+
+/** How a blocker or a warning was checked, with the words that say it to a reader. */
+export const CHECK_STATUSES = {
+  proven: 'proven from the cited lines',
+  confirmed: 'confirmed with tools',
+  unconfirmed: 'not confirmed',
+} as const;
+export type CheckStatus = keyof typeof CHECK_STATUSES;
 
 /** Whether the review leaves `finding` out because nothing proves it. */
 export function leftOutUnproven(finding: Pick<Finding, 'unpostedReason'>): boolean {
@@ -1365,7 +1372,6 @@ export interface ReviewStats {
 
   // Judge calibration
   judgeMetrics?: {
-    confidenceDistribution: { high: number; medium: number; low: number };
     severityChanges: number;
     mergedDuplicates: number;
     inPrSuppressedCount?: number;
@@ -1439,7 +1445,6 @@ export interface JudgeDecision {
   severity: FindingSeverity;
   originalSeverity?: FindingSeverity;
   reasoning: string;
-  confidence: 'high' | 'medium' | 'low';
   /** Whether the finding is among the round's findings. One the judge kept and a later step took out is not. */
   kept: boolean;
   /** Set on an open lead the judge's tools left unsettled, which is listed as not finished instead of posted. */
@@ -1855,7 +1860,6 @@ export interface RoundJudgeDrop {
   line: number;
   reviewers: string[];
   reviewerSeverity?: FindingSeverity;
-  judgeConfidence?: 'high' | 'medium' | 'low';
   judgeNotes?: string;
   refutation?: Refutation;
   pairRefutation?: Refutation;
@@ -1909,7 +1913,6 @@ export interface RoundJudge {
   effort?: EffortLevel;
   /** Findings the judge dropped. The kept ones are in `RoundFindings.entries`. */
   dropped?: RoundJudgeDrop[];
-  confidenceDistribution?: { high: number; medium: number; low: number };
   severityChanges?: number;
   /** Findings the judge graded above (`up`) or below (`down`) the reviewer's severity. */
   regrades?: { up: number; down: number };
@@ -2136,8 +2139,8 @@ export interface FindingFingerprintEntry {
   title?: string;
   /** Judge reasoning for the verdict on this finding. Mirrors `Finding.judgeNotes`. */
   judgeNotes?: string;
-  /** Judge confidence in the verdict. Mirrors `Finding.judgeConfidence`. */
-  judgeConfidence?: 'high' | 'medium' | 'low';
+  /** Mirrors `Finding.checkStatus`. */
+  checkStatus?: CheckStatus;
   /** Tags applied by the judge (e.g. `OWN_PROPOSAL_TAG`, `SECURITY_TAG`). Preserves the exact string constants from `Finding.tags`. */
   tags?: string[];
   /** Pre-demotion severity, when the judge demoted the finding. Mirrors `Finding.originalSeverity`. */

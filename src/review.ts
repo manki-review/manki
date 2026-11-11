@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
-import { canLeaveOut, findingKey, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, findingKey, isBlockingSeverity, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
@@ -18,7 +18,7 @@ import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge, placesReading } from './finding-fingerprint';
-import { disproof, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, disproof, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReason } from './refute';
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
@@ -62,9 +62,9 @@ export function preExistingCheck(f: Finding, diff: ParsedDiff, excludedPaths: Re
   return touchesChangedCode(f, diff) ? 'touches_diff' : 'pre_existing';
 }
 
-/** Whether a finding on code the PR did not change is worth an author's time: a security finding, a blocker, or a warning the judge is highly confident in. */
-export function postedWhenPreExisting(f: Finding): boolean {
-  return isSecurityFinding(f.tags, f.reviewers) || f.severity === 'blocker' || (f.severity === 'warning' && f.judgeConfidence === 'high');
+/** Whether a finding on code the PR did not change is worth an author's time: a security finding, a blocker, or a warning a tool check confirmed. */
+function postedWhenPreExisting(f: Finding): boolean {
+  return isSecurityFinding(f.tags, f.reviewers) || f.severity === 'blocker' || (f.severity === 'warning' && checkStatus(f) === 'confirmed');
 }
 
 /**
@@ -100,17 +100,15 @@ function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: R
  * Splits off the warnings that `needsProof` and that nothing proves, by `unprovenReason`, as `unposted` with that
  * reason, for the round record only. A warning is left out only when it is certain that no rule keeps it, so these
  * stay `posted` too: a finding `foldIntoEarlierFindings` or the judge put under one an earlier round still shows, and
- * a finding that `wouldBlock`, which is marked `unconfirmed`.
+ * a finding that `wouldBlock`. Each posted blocker and warning that no tool reported gets its `checkStatus`.
  */
 function hideUnprovenWarnings(findings: Finding[], wouldBlock = wouldBlockIfTrue): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
   const unposted: Finding[] = [];
   for (const f of findings) {
     const unpostedReason = needsProof(f) ? unprovenReason(f) : undefined;
-    if (!unpostedReason || f.threadId || f.answeredIn || f.raisedIn !== undefined) {
-      posted.push(f);
-    } else if (wouldBlock(f)) {
-      posted.push({ ...f, unconfirmed: true });
+    if (!unpostedReason || f.threadId || f.answeredIn || f.raisedIn !== undefined || wouldBlock(f)) {
+      posted.push(isBlockingSeverity(f.severity) && !f.toolSource ? { ...f, checkStatus: checkStatus(f) } : f);
     } else {
       core.info(`Recording warning "${f.title}" on ${f.file}:${f.line} without posting it: ${UNPOSTED_REASONS[unpostedReason]}`);
       unposted.push({ ...f, unpostedReason });

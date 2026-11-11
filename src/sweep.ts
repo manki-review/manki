@@ -5,8 +5,9 @@ import { fenceText } from './github';
 import { extractJSON } from './json';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, SendMessageOptions } from './providers';
+import { checkStatus } from './refute';
 import { CLAIMS_MISSING_RULE, parseFindings, parseLocation, PRE_EXISTING_RULE, truncateDiff } from './review';
-import { EffortLevel, Finding, RoundSweep, SECURITY_TAG } from './types';
+import { CheckStatus, EffortLevel, Finding, RoundSweep, SECURITY_TAG } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
@@ -17,7 +18,7 @@ const SWEEP_TIMEOUT_MS = 600_000;
 const MAX_CLASS_CHARS = 300;
 // A finding this close to a line the blocker cites restates the blocker.
 const OWN_LINE_TOLERANCE = 3;
-const CONFIDENCE_ORDER = ['high', 'medium', 'low'];
+const STATUS_ORDER: readonly CheckStatus[] = ['confirmed', 'proven', 'unconfirmed'];
 
 function systemPrompt(tools: boolean): string {
   return `A code review found the blocker below in a pull request. You look for the same kind of mistake everywhere else in the PR's diff.
@@ -71,9 +72,9 @@ function sweepMessage(blocker: Finding, rawDiff: string, tools: boolean): string
   ].join('\n');
 }
 
-/** Returns the blockers to sweep, the security ones and those the judge was surest of first. */
+/** Returns the blockers to sweep, the security ones and the best checked first. */
 function byPriority(blockers: readonly Finding[]): Finding[] {
-  const rank = (f: Finding): number => (f.tags?.includes(SECURITY_TAG) ? 0 : 3) + CONFIDENCE_ORDER.indexOf(f.judgeConfidence ?? 'medium');
+  const rank = (f: Finding): number => (f.tags?.includes(SECURITY_TAG) ? 0 : 3) + STATUS_ORDER.indexOf(checkStatus(f));
   return [...blockers].sort((a, b) => rank(a) - rank(b));
 }
 

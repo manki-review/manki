@@ -5,7 +5,7 @@
  * Usage:
  *   npm run review-stats -- --repo <owner/repo> [--last <n>] [--fix-rate <fix-rate.jsonl>]
  *
- * `--fix-rate` takes the repository's `metrics/fix-rate.jsonl` from its memory repo, for the fix rate per severity.
+ * `--fix-rate` takes the repository's `metrics/fix-rate.jsonl` from its memory repo, for the fix rate per severity and per check status.
  * Reads the GitHub token from `GITHUB_TOKEN`, or from `gh auth token` when that is unset.
  */
 
@@ -517,6 +517,8 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     'From `metrics/fix-rate.jsonl`, for the PRs above. A finding counts as fixed when the judge marked its thread addressed or a later commit touched its lines, whether or not that commit fixed it.',
     '',
     ...renderTable('severity', stats.fixRate.get('severity') ?? new Map()),
+    '',
+    ...renderTable('checkStatus', stats.fixRate.get('checkStatus') ?? new Map()),
     '',
     '## Finders',
     '',

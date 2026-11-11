@@ -20,7 +20,7 @@ type Row = Totals & Record<string, unknown>;
 const DIMENSIONS: ReadonlyArray<{ name: string; source: 'counts' | 'calibration' }> = [
   { name: 'severity', source: 'counts' },
   { name: 'specialist', source: 'counts' },
-  { name: 'confidence', source: 'calibration' },
+  { name: 'checkStatus', source: 'calibration' },
   { name: 'toolEvidence', source: 'calibration' },
   { name: 'category', source: 'calibration' },
   { name: 'effort', source: 'calibration' },

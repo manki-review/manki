@@ -20,7 +20,7 @@ import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, postedWhenPreExisting, preExistingCheck, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
+import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, preExistingCheck, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
@@ -302,7 +302,6 @@ export interface JudgedFinding {
   /** The column the judge states, `normal` when it names none. */
   column?: CellColumn;
   reasoning: string;
-  confidence: 'high' | 'medium' | 'low';
   /** Number of the earlier "Finding N" this one repeats. */
   duplicateOf?: number;
   /** Number of the prior finding "PN" this finding names again. */
@@ -643,7 +642,6 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "category": "correctness" | "security" | "reliability" | "data" | "concurrency" | "performance" | "compatibility" | "testing" | "maintainability" | "documentation" | "style",
       "effort": "quick" | "moderate" | "larger",
       "fixLeaves": "",
-      "confidence": "high" | "medium" | "low",
       "reasoning": "Your verdict first, then 1-2 sentences on why",
       "proof": ["file:line of each line that shows the failure, for a blocker or a warning"]
     }
@@ -1209,7 +1207,6 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         row,
         ...(tableWord(f.column) === 'rare' && { column: 'rare' as const }),
         reasoning: String(f.reasoning || ''),
-        confidence: validateConfidence(f.confidence),
         ...(duplicateOf && { duplicateOf }),
         ...(sameAs !== undefined && { sameAs }),
         ...(variantOf !== undefined && { variantOf }),
@@ -1260,13 +1257,6 @@ function parsePriorId(value: unknown): number | undefined {
 function priorKey(priorFindings: PriorFinding[], id: number | undefined): string | undefined {
   const prior = id === undefined ? undefined : priorFindings[id - 1];
   return prior && stringifyFindingFingerprint(prior.entry.fingerprint);
-}
-
-function validateConfidence(value: unknown): 'high' | 'medium' | 'low' {
-  if (value === 'high' || value === 'medium' || value === 'low') {
-    return value;
-  }
-  return 'medium';
 }
 
 function validateThreadStatus(value: unknown): ThreadEvaluation['status'] {
@@ -1480,10 +1470,10 @@ export async function runJudgeAgent(
     return { ...crossRound, ...applyInPrSuppression(crossRound.findings, inPrSuppressions, quiet) };
   };
   // Each step after the refuter that keeps a warning out of the review whatever a check says belongs here: the
-  // suppressions above, which drop it or make it a note, the memory suppressions and `markPreExisting`.
+  // suppressions above, which drop it or make it a note, and the memory suppressions. `markPreExisting` is none, since
+  // it posts a warning a check confirmed.
   const unpostedLater = (finding: Finding): boolean => suppress([finding], true).findings[0].severity !== finding.severity
-    || applySuppressions([finding], memory?.suppressions ?? [], true).suppressed.length > 0
-    || (staysPreExisting(finding) && !postedWhenPreExisting(finding));
+    || applySuppressions([finding], memory?.suppressions ?? [], true).suppressed.length > 0;
   const earlier = earlierFindings(priorRounds ?? [], openThreads ?? input.evaluatedThreads?.openThreads ?? [], crossRoundOptions.threadEvaluations);
   // The suppressions hide findings by grade, so the refuter settles each grade first.
   const checked = refutation ? await refuteBlockers(refutation.client, mapped, {
@@ -1579,7 +1569,6 @@ export function mapJudgedToFindings(
     Object.assign(finding, gradeByCell(o, match));
     if (finding.severity !== o.severity) finding.reviewerSeverity = o.severity;
     finding.judgeNotes = match.reasoning;
-    finding.judgeConfidence = match.confidence;
     if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
     if (match.buildClaim) finding.buildClaim = true;
     // The header calls a finding security only when it carries the security tag.
