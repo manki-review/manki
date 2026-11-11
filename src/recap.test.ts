@@ -530,7 +530,7 @@ describe('fetchRecapState', () => {
         line: 20,
         comments: {
           nodes: [{
-            body: '<!-- manki:note:Rename-var --> \u{1F4A1} **Suggestion**: Rename variable\n\nBetter name.',
+            body: '<!-- manki:suggestion:Rename-var --> \u{1F4A1} **Suggestion**: Rename variable\n\nBetter name.',
             author: { login: 'manki-review[bot]' },
           }],
         },
@@ -618,7 +618,7 @@ describe('fetchRecapState', () => {
         isResolved: false,
         comments: {
           nodes: [{
-            body: '<!-- manki:note:Style-issue --> \u{1F4DD} **Nitpick**: Style issue\n\nMinor.',
+            body: '<!-- manki:nitpick:Style-issue --> \u{1F4DD} **Nitpick**: Style issue\n\nMinor.',
             author: { login: 'manki-review[bot]' },
           }],
         },
@@ -710,7 +710,7 @@ describe('fetchRecapState', () => {
         line: 20,
         comments: {
           nodes: [{
-            body: '<!-- manki:note:LLM-dedup --> 💡 **Suggestion** <sub>[medium confidence]</sub>: LLM dedup only compares against resolved findings\n\nDetails.',
+            body: '<!-- manki:suggestion:LLM-dedup --> 💡 **Suggestion** <sub>[medium confidence]</sub>: LLM dedup only compares against resolved findings\n\nDetails.',
             author: { login: 'manki-review[bot]' },
           }],
         },
@@ -1005,7 +1005,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [
             {
-              body: '<!-- manki:note:unused-var --> 💡 **Suggestion**: Unused variable\n\nDesc.',
+              body: '<!-- manki:suggestion:unused-var --> 💡 **Suggestion**: Unused variable\n\nDesc.',
               author: { login: 'manki-review[bot]' },
             },
             { body: 'Working on it.', author: { login: 'someone-else' } },
@@ -1118,7 +1118,7 @@ describe('fetchRecapState', () => {
   it('skips `suggestedFix` when AI context JSON has no `fix` field', async () => {
     const aiContext = JSON.stringify({ flaggedBy: ['Reviewer'], confidence: 'high' });
     const body = [
-      '<!-- manki:note:Rename --> 💡 **Suggestion**: Rename for clarity',
+      '<!-- manki:suggestion:Rename --> 💡 **Suggestion**: Rename for clarity',
       '',
       'The variable name is misleading.',
       '',
@@ -2326,7 +2326,7 @@ const makeCommentBody = (description: string, aiContextJson?: string): string =>
   const ai = aiContextJson
     ? `\n<details>\n<summary>AI context</summary>\n\n\`\`\`json\n${aiContextJson}\n\`\`\`\n</details>`
     : '';
-  return `🟠 ✨ **Suggestion**: Title text\n\n${description}\n\n<details>\n<summary>Suggested fix</summary>\n\n\`\`\`suggestion\nsome fix\n\`\`\`\n</details>${ai}\n\n<!-- manki:note:Title-text -->`;
+  return `🟠 ✨ **Suggestion**: Title text\n\n${description}\n\n<details>\n<summary>Suggested fix</summary>\n\n\`\`\`suggestion\nsome fix\n\`\`\`\n</details>${ai}\n\n<!-- manki:suggestion:Title-text -->`;
 };
 
 describe('parseFindingFromComment', () => {
@@ -2348,13 +2348,13 @@ describe('parseFindingFromComment', () => {
   });
 
   it('extracts description truncated by code-fence stop marker and appends truncation marker', () => {
-    const body = `🟠 ✨ **Suggestion**: Title\n\nDescription with\n\`\`\`code\nexample\n\`\`\`\nmore text\n\n<!-- manki:note:Title -->`;
+    const body = `🟠 ✨ **Suggestion**: Title\n\nDescription with\n\`\`\`code\nexample\n\`\`\`\nmore text\n\n<!-- manki:suggestion:Title -->`;
     const result = parseFindingFromComment(body);
     expect(result.description).toBe('Description with…(truncated)');
   });
 
   it('extracts description terminated by <!-- manki: stop marker without truncation marker', () => {
-    const body = `🟠 ✨ **Suggestion**: Title\n\nSome description\n<!-- manki:note:Title -->`;
+    const body = `🟠 ✨ **Suggestion**: Title\n\nSome description\n<!-- manki:suggestion:Title -->`;
     const result = parseFindingFromComment(body);
     expect(result.description).toBe('Some description');
   });

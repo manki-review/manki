@@ -138,7 +138,7 @@ describe('fetchBotReviewThreads', () => {
           id: 't3', body: `<!-- manki:warning:-parse--drops-a-field --> **Warning**\n\n<!-- manki-finding: ${JSON.stringify({ title: '`parse` drops a field' })} -->`,
         }),
         makeGraphqlFetchThreadNode({
-          id: 't2', body: '<!-- manki:note:rename-var --> **Suggestion**: rename var', isResolved: true,
+          id: 't2', body: '<!-- manki:suggestion:rename-var --> **Suggestion**: rename var', isResolved: true,
           // Only Manki's own reply counts as a fix confirmation, not a developer who copies its marker.
           replies: [
             { body: `Fixed in abababa.\n\n${fixedMarker('ab'.repeat(20))}`, author: { login: 'manki-review' } },
