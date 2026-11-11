@@ -811,7 +811,7 @@ export function buildJudgeUserMessage(
       if (t.postedCode) {
         parts.push(`- **Outdated thread.** The code it named when it was posted, at \`${(t.postedCommit ?? '').slice(0, 7)}\`:`);
         fenced(t.postedCode);
-        parts.push(t.postedCodeGone ? '- **Now**: that code is not found in the file any more. The head\'s code near the same line:' : '- **Now**: where that code sits at the head:');
+        parts.push(t.postedCodeGone ? '- **Now**: that code is not found in the file any more. The head\'s code near the same line:' : t.movedTo ? `- **Now**: that code is not found in the file any more. The same code sits in \`${sanitize(t.movedTo)}\` at the head:` : '- **Now**: where that code sits at the head:');
       }
       fenced(t.currentCode && t.currentCode.length > 0 ? t.currentCode : '(no current code available)');
       parts.push('');

@@ -100,12 +100,13 @@ describe('locatePostedLine', () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
-  it('finds the posted code in the file that holds the most of it, or in none', () => {
-    const part = posted.replace('function read(path)', 'function load(path)');
-    const whole = ['// header', ...body].join('\n');
+  it('finds the posted code in another file only when exactly one holds its whole window unchanged', () => {
+    const whole = ['// header', ...body.map(l => `  ${l}`)].join('\n');
+    const part = posted.replace('return null', 'throw new Error()');
     expect(locatePostedFile(posted, 2, [['src/part.ts', part], ['src/whole.ts', whole]])).toEqual({ file: 'src/whole.ts', line: 3 });
-    // The first file wins a tie.
-    expect(locatePostedFile(posted, 2, [['src/a.ts', whole], ['src/b.ts', posted]])).toEqual({ file: 'src/a.ts', line: 3 });
+    // A file that holds only part of the window does not hold the code, and two files that hold it give no certain place.
+    expect(locatePostedFile(posted, 2, [['src/part.ts', part]])).toBeUndefined();
+    expect(locatePostedFile(posted, 2, [['src/a.ts', whole], ['src/b.ts', posted]])).toBeUndefined();
     expect(locatePostedFile(posted, 2, [['src/other.ts', 'nothing here']])).toBeUndefined();
     expect(locatePostedFile(posted, 2, [])).toBeUndefined();
   });

@@ -2852,9 +2852,11 @@ describe('runReview', () => {
     }
     openThread.severity = 'blocker';
 
-    // An outdated thread whose code is gone keeps the guard too: only a push to its file counts as a change.
-    const outdated = await runWith(elsewhere, { ...openThread, postedCode: '>>> 10: old', postedCommit: 'sha0', postedCodeGone: true });
-    expect([outdated.outcome, outdated.threadEvaluations?.[0].status]).toEqual(['ADDRESS_FIRST', 'uncertain']);
+    // An outdated thread keeps the guard too, whether its code is gone or sits in a file the push did change.
+    for (const outdated of [{ postedCodeGone: true }, { movedTo: 'src/y.ts' }]) {
+      const guarded = await runWith(elsewhere, { ...openThread, postedCode: '>>> 10: old', postedCommit: 'sha0', ...outdated });
+      expect([guarded.outcome, guarded.threadEvaluations?.[0].status]).toEqual(['ADDRESS_FIRST', 'uncertain']);
+    }
 
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.', threadEvaluations: [addressed] });

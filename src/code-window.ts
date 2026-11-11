@@ -36,11 +36,11 @@ const MIN_LOCATABLE_CHARS = 4;
 const MIN_MATCHING_LINES = 3;
 
 /**
- * Returns where line `line` of `posted` sits in `current` and how many lines of the posted window around it line up
- * there: the place where the most do, the one nearest `line` when several tie, or `undefined` when fewer than
- * `MIN_MATCHING_LINES` do. One generic line, such as `return result;`, never places the code on its own.
+ * Returns where line `line` of `posted` sits in `current`: the place where the most lines of the posted window around
+ * it line up again, the one nearest `line` when several tie, or `undefined` when fewer than `MIN_MATCHING_LINES` do.
+ * One generic line, such as `return result;`, never places the code on its own.
  */
-function placePostedLine(posted: string, line: number, current: string): { line: number; matching: number } | undefined {
+export function locatePostedLine(posted: string, line: number, current: string): number | undefined {
   const old = posted.split('\n');
   const now = current.split('\n');
   // Indexed in one pass, and only lines long enough to vote, so a file of repeated short lines stays linear.
@@ -64,24 +64,30 @@ function placePostedLine(posted: string, line: number, current: string): { line:
     const bestVotes = best === undefined ? 0 : votes.get(best)!;
     if (n > bestVotes || (n === bestVotes && Math.abs(anchor - line) < Math.abs(best! - line))) best = anchor;
   }
-  return best === undefined ? undefined : { line: best, matching: votes.get(best)! };
+  return best;
 }
 
-/** Returns the line `placePostedLine` finds for line `line` of `posted` in `current`. */
-export function locatePostedLine(posted: string, line: number, current: string): number | undefined {
-  return placePostedLine(posted, line, current)?.line;
+/** Whether the code around line `line` of `posted` differs from the code around line `now` of `current`. Indentation does not count. */
+function postedCodeChanged(posted: string, line: number, current: string, now: number): boolean {
+  const old = posted.split('\n');
+  const cur = current.split('\n');
+  for (let d = -OPEN_THREAD_CODE_WINDOW; d <= OPEN_THREAD_CODE_WINDOW; d++) {
+    const was = old[line - 1 + d];
+    if (was !== undefined && was.trim() !== (cur[now - 1 + d] ?? '').trim()) return true;
+  }
+  return false;
 }
 
 /**
- * Returns the file of `files`, each a path with its content, that holds line `line` of `posted`, and the line there.
- * The file where the most lines of the posted window line up wins, the first one when several tie. Returns `undefined`
- * when `placePostedLine` finds the code in none.
+ * Returns the one file of `files`, each a path with its content, that holds the whole posted window around line `line`
+ * of `posted` unchanged, and the line there. Returns `undefined` when no file does or several do, since the code's
+ * place is then not certain.
  */
 export function locatePostedFile(posted: string, line: number, files: Iterable<readonly [string, string]>): { file: string; line: number } | undefined {
-  let best: { file: string; line: number; matching: number } | undefined;
+  const held: { file: string; line: number }[] = [];
   for (const [file, content] of files) {
-    const place = placePostedLine(posted, line, content);
-    if (place && place.matching > (best?.matching ?? 0)) best = { file, ...place };
+    const at = locatePostedLine(posted, line, content);
+    if (at !== undefined && !postedCodeChanged(posted, line, content, at)) held.push({ file, line: at });
   }
-  return best && { file: best.file, line: best.line };
+  return held.length === 1 ? held[0] : undefined;
 }

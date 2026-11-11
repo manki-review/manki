@@ -4932,14 +4932,17 @@ describe('runFullReview orchestration', () => {
     const moved = ['// moved down', '', '', posted].join('\n');
     const dropped = ['function retry(job) {', '  job.attempts += 1;', '  queue.push(job);', '  return job;', '}'].join('\n');
     const rewritten = ['function retry(job) {', '  queue.push(job);', '}'].join('\n');
-    // A helper left its file, and another file the PR changes holds it.
+    // A helper left its file, and one other file the PR changes holds it unchanged.
     const helper = ['function closeThread(thread) {', '  thread.resolved = true;', '  notify(thread.author);', '  return save(thread);', '}'].join('\n');
     jest.mocked(ghUtils.fetchFileContents).mockImplementation(async (_o, _ow, _r, ref) => new Map([
       ['src/app.ts', ref === 'c0ffee' ? posted : moved], ['src/gone.ts', ref === 'c0ffee' ? dropped : rewritten],
       // The head's copy of this file is not read, as when it is over the size limit.
       ...(ref === 'c0ffee' ? [['src/unread.ts', posted] as const] : []),
       ['src/small.ts', 'exit(1);'],
-      ['src/threads.ts', ref === 'c0ffee' ? helper : 'export {};'], ['src/helpers.ts', ['// helpers', helper].join('\n')],
+      ['src/threads.ts', ref === 'c0ffee' ? helper : 'export {};'], ['src/helpers.ts', ['// helpers', helper, '', posted].join('\n')],
+      // Both changed files hold this code at the head, and only part of the next one is in a changed file.
+      ['src/twice.ts', ref === 'c0ffee' ? posted : 'export {};'],
+      ['src/partial.ts', ref === 'c0ffee' ? [helper, 'export const closed = [];'].join('\n') : 'export {};'],
     ]));
     const outdated = { severity: 'blocker' as const, status: 'open' as const, line: 0, originalLine: 2, originalCommit: 'c0ffee' };
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
@@ -4952,13 +4955,15 @@ describe('runFullReview orchestration', () => {
         // A small file that did not change at all holds the code where it was, though too few of its lines can vote.
         { ...outdated, title: 'Untouched', file: 'src/small.ts', threadId: 'PRRT_small', originalLine: 1 },
         { ...outdated, title: 'Moved to another file', file: 'src/threads.ts', threadId: 'PRRT_elsewhere' },
+        { ...outdated, title: 'In two other files', file: 'src/twice.ts', threadId: 'PRRT_twice' },
+        { ...outdated, title: 'Partly in another file', file: 'src/partial.ts', threadId: 'PRRT_partial' },
       ],
       priorRounds: [],
     });
 
     await callRunFullReview();
 
-    const [found, gone, unread, past, small, elsewhere] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
+    const [found, gone, unread, past, small, elsewhere, twice, partial] = jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads!;
     expect(small).toMatchObject({ line: 1, postedCode: '>>> 1: exit(1);', currentCode: '>>> 1: exit(1);' });
     expect(small.postedCodeGone).toBeUndefined();
     expect(past.postedCode).toBeUndefined();
@@ -4971,13 +4976,18 @@ describe('runFullReview orchestration', () => {
     expect(found.postedCodeGone).toBeUndefined();
     // Rewritten code that no changed file holds is gone, so the judge sees the head's code near the same line.
     expect(gone).toMatchObject({ line: 2, postedCodeGone: true });
+    expect(gone.movedTo).toBeUndefined();
     expect(gone.currentCode).toContain('>>> 2:   queue.push(job);');
-    // Code found in another changed file is not gone: the judge sees it there by name, and the thread keeps its own file.
-    expect(elsewhere).toMatchObject({ file: 'src/threads.ts', line: 1 });
+    // Code that exactly one other changed file holds unchanged is shown there, and the thread keeps its own file.
+    expect(elsewhere).toMatchObject({ file: 'src/threads.ts', line: 1, movedTo: 'src/helpers.ts' });
     expect(elsewhere.postedCodeGone).toBeUndefined();
-    expect(elsewhere.currentCode).toMatch(/^\(not found in `src\/threads\.ts` any more, found in `src\/helpers\.ts`\)\n/);
     expect(elsewhere.currentCode).toContain('>>> 3:   thread.resolved = true;');
-    expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'c0ffee', ['src/app.ts', 'src/gone.ts', 'src/unread.ts', 'src/small.ts', 'src/threads.ts']);
+    // Code that two files hold, or that a file holds only in part, has no certain place, so it counts as gone.
+    for (const unsure of [twice, partial]) {
+      expect(unsure).toMatchObject({ line: 1, postedCodeGone: true, currentCode: '>>> 1: export {};' });
+      expect(unsure.movedTo).toBeUndefined();
+    }
+    expect(jest.mocked(ghUtils.fetchFileContents)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'c0ffee', ['src/app.ts', 'src/gone.ts', 'src/unread.ts', 'src/small.ts', 'src/threads.ts', 'src/twice.ts', 'src/partial.ts']);
   });
 
   it('deduplicates open-thread file paths against changed files when fetching contents', async () => {

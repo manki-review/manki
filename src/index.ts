@@ -1110,7 +1110,7 @@ async function collectOpenThreads(
     }
     // An unchanged file holds the code where it was, however few of its lines could vote.
     const now = old === current ? posted.line : locatePostedLine(old, posted.line, current);
-    // Another file the PR changes can hold code that left its file.
+    // Code that left its file counts as moved only when exactly one other file the PR changes holds it unchanged.
     const elsewhere = now === undefined
       ? locatePostedFile(old, posted.line, changedFilePaths.flatMap(p => p !== t.file && fileContents?.has(p) ? [[p, fileContents.get(p)!] as const] : []))
       : undefined;
@@ -1121,10 +1121,8 @@ async function collectOpenThreads(
       line: near,
       postedCode: extractCurrentCodeWindow(new Map([[t.file, old]]), t.file, posted.line),
       postedCommit: posted.commit,
-      ...(now === undefined && !elsewhere && { postedCodeGone: true }),
-      currentCode: elsewhere
-        ? `(not found in \`${t.file}\` any more, found in \`${elsewhere.file}\`)\n${extractCurrentCodeWindow(fileContents, elsewhere.file, elsewhere.line)}`
-        : extractCurrentCodeWindow(contents, t.file, near),
+      ...(elsewhere ? { movedTo: elsewhere.file } : now === undefined && { postedCodeGone: true }),
+      currentCode: elsewhere ? extractCurrentCodeWindow(fileContents, elsewhere.file, elsewhere.line) : extractCurrentCodeWindow(contents, t.file, near),
     };
   });
   return { openThreads, fileContents };
