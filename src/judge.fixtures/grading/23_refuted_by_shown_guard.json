@@ -1,0 +1,32 @@
+{
+  "name": "refuted-by-shown-guard",
+  "case": "refuted-by-shown-guard",
+  "allowed": [
+    "warning",
+    "suggestion",
+    "nitpick",
+    "ignore"
+  ],
+  "finding": {
+    "title": "`Shutdown` and `run` can both close `done`",
+    "file": "internal/stream/stream.go",
+    "line": 36,
+    "description": "`Shutdown` closes `done` when the subscriber disconnects, and `run` closes it again when the source ends. Closing a closed channel panics, so a disconnect that races the end of the source may crash the process.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "evidence": {
+      "checks": [
+        "internal/stream/stream.go:36 `Shutdown` ends the stream",
+        "internal/stream/stream.go:24 `run` ends it again on return"
+      ],
+      "proof": [
+        "internal/stream/stream.go:36",
+        "internal/stream/stream.go:24"
+      ]
+    },
+    "suggestedFix": "Close `done` in one place only."
+  },
+  "prDiff": "diff --git a/internal/stream/stream.go b/internal/stream/stream.go\nindex 1111111..2222222 100644\n--- a/internal/stream/stream.go\n+++ b/internal/stream/stream.go\n@@ -10,23 +10,33 @@\n // Stream relays events to one subscriber until the source ends or the subscriber leaves.\n type Stream struct {\n \tsrc       Source\n \tout       chan Event\n \tdone      chan struct{}\n \tcloseOnce sync.Once\n }\n \n+// finish closes done once, whichever side ends the stream first.\n+func (s *Stream) finish() {\n+\ts.closeOnce.Do(func() { close(s.done) })\n+}\n+\n func (s *Stream) run() {\n+\tdefer s.finish()\n \tfor {\n \t\tev, err := s.src.Next()\n \t\tif err != nil {\n-\t\t\ts.closeOnce.Do(func() { close(s.done) })\n \t\t\treturn\n \t\t}\n \t\ts.out <- ev\n \t}\n }\n \n+// Shutdown ends the stream when the subscriber disconnects.\n+func (s *Stream) Shutdown() {\n+\ts.finish()\n+}\n+\n // Done is closed once the stream has ended.\n func (s *Stream) Done() <-chan struct{} {\n \treturn s.done\n }\n"
+}

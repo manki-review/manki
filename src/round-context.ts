@@ -148,8 +148,10 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
   const severityChanges = allJudged.filter(f => f.judgeNotes).length;
   const regrades = { up: 0, down: 0 };
   for (const f of allJudged) {
-    if (!f.reviewerSeverity) continue;
-    const judgeGrade = f.originalSeverity ?? f.severity;
+    // A later step can move the finding again, so the judge's grade is where its own step ends.
+    const judgeGrade = f.gradePath?.find(step => step.by === 'judge')?.to ?? f.originalSeverity ?? f.severity;
+    // A merged duplicate can be filed at the judge's grade, which is no regrade.
+    if (!f.reviewerSeverity || f.reviewerSeverity === judgeGrade) continue;
     regrades[SEVERITY_ORDER.indexOf(judgeGrade) < SEVERITY_ORDER.indexOf(f.reviewerSeverity) ? 'up' : 'down']++;
   }
   const mergedDuplicates = allJudged.length > 0
@@ -263,6 +265,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.gradeIfConfirmed && { gradeIfConfirmed: f.gradeIfConfirmed }),
     ...(f.doubts && { doubts: f.doubts }),
     ...(f.cell && { cell: f.cell }),
+    ...(f.judgeCell && { judgeCell: f.judgeCell }),
     ...(f.gradePath && { gradePath: f.gradePath }),
     ...(f.preExisting && f.preExistingCheck && { preExisting: { reason: f.preExisting.slice(0, 200), check: f.preExistingCheck } }),
     ...(f.unpostedReason && { unpostedReason: f.unpostedReason }),

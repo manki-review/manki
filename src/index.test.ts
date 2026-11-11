@@ -2584,7 +2584,8 @@ describe('runFullReview orchestration', () => {
 
     const findings = [
       { severity: 'blocker' as const, reviewerSeverity: 'warning' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'confirmed' },
-      { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
+      // A merged duplicate was filed at the judge's grade, which is no regrade.
+      { severity: 'suggestion' as const, reviewerSeverity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
       { severity: 'nitpick' as const, originalSeverity: 'warning' as const, reviewerSeverity: 'suggestion' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'], judgeConfidence: 'low' as const },
     ];
     const unsettledLead = { severity: 'warning' as const, title: 'Token may not read the repo', file: 'src/app.ts', line: 3, description: 'd', reviewers: ['general'], lead: { checked: 'read it', left: 'check the repo' } };
@@ -2634,7 +2635,7 @@ describe('runFullReview orchestration', () => {
     }));
     expect(statsArg!.findings.entries.map(e => [e.severity, e.originalSeverity, e.reviewerSeverity])).toEqual([
       ['blocker', undefined, 'warning'],
-      ['suggestion', undefined, undefined],
+      ['suggestion', undefined, 'suggestion'],
       ['nitpick', 'warning', 'suggestion'],
     ]);
     // A pre-existing finding Manki did not post is recorded apart, so nothing that reads posted findings counts it.

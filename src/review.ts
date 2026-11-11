@@ -1473,8 +1473,8 @@ export async function runReview(
         const checked = capUnconfirmedBuildClaim(f.file ? { ...f, toolEvidence: checkFindingClaims(f, claimSources) } : f);
         return sameAs ? { ...checked, sameAs } : checked;
       });
-      // A disproof never lowers a blocker, so the outcome stands and the refutation only shows what it found. It drops a
-      // claimed build failure that was posted as a warning.
+      // A disproof never lowers a blocker of the reader's, so the outcome stands and the refutation only shows what it
+      // found. It drops a claimed build failure that was posted as a warning.
       const refuted = (refutation
         ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
         : readerBlockers).filter(f => f.severity !== 'ignore');
@@ -2109,7 +2109,7 @@ function withEarlierLeads(
 function recordLeads(leads: Finding[], listed: Finding[], judged: Finding[], posted: Finding[], round: number): RoundLead[] {
   return leads.map(l => {
     const verdict = judged.find(j => sameLead(j, l) && j.line === l.line) ?? judged.find(j => sameLead(j, l));
-    // A disproof never lowers a blocker, so a disproved blocker lead keeps its grade and its `lead` flag.
+    // A disproof never lowers a blocker lead, so a disproved one keeps its grade and its `lead` flag.
     const outcome: LeadOutcome = listed.includes(l) ? 'not_checked'
       : !verdict ? 'dropped'
       : disproof(verdict) ? 'disproved'

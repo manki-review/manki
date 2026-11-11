@@ -1,6 +1,6 @@
 # Judge grading fixture corpus
 
-Each `*.json` file holds one reviewer finding, which claims a `blocker` in all but `own-proposal-objection`, the PR diff it sits in, and the grades the judge may return (`allowed`). Every fixture without `blocker` in `allowed` breaks exactly one rule of the blocker definition. The others cover cases a rule could wrongly clear.
+Each `*.json` file holds one reviewer finding, which claims a `blocker` in all but `own-proposal-objection` and `refuted-by-shown-guard`, the PR diff it sits in, and the grades the judge may return (`allowed`). Every fixture without `blocker` in `allowed` breaks exactly one rule of the blocker definition. The others cover cases a rule could wrongly clear.
 
 `judge.test.ts` checks that the corpus covers every case once and that each finding points at a line of its diff. A live replay, gated on `RUN_JUDGE_LIVE_FIXTURES=1`, sends each fixture through `runJudgeAgent` against a real model and checks the grade is allowed. CI does not run it. Run it after changing the judge prompt or model.
 
@@ -30,3 +30,4 @@ Each `*.json` file holds one reviewer finding, which claims a `blocker` in all b
 | `20_added_code_not_pre_existing.json` | `blocker` | A new Go `Invalidate` clears one of two price maps, so category listings keep the old price. The reviewer calls it pre-existing because the second map was never pruned, but the gap is in lines the PR adds. |
 | `21_rare_claim_reachable.json` | `blocker` | A new Python `Session.refresh()` races `close()` and leaks a socket. The window looks like a rare timing case, but the docstring tells users to call `refresh()` from a background thread, so normal use produces it. |
 | `22_sibling_path_incomplete_fix.json` | `blocker` | The PR adds a write check to `POST /items` and leaves `PUT /items/:id` open. The reviewer calls the open route pre-existing because its lines are unchanged, but it is the defect the PR fixes, left in a sibling path. |
+| `23_refuted_by_shown_guard.json` | not `blocker` | A reviewer files as a `warning` that a Go stream's `Shutdown` and `run` can both close one channel, which would panic. Both go through a `sync.Once` the diff shows, so the judge has no ground to raise the finding to a blocker. |

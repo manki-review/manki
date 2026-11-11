@@ -153,7 +153,7 @@ memory:
 | `models.reviewer` | model id | `claude-sonnet-5-5` | The finder on every round, and `@reviewer` in a review group. |
 | `models.reviewer_pair` | model id | the other Claude tier of `models.reviewer` | The second finder on paired rounds, and `@reviewer_pair` in a review group. |
 | `models.judge` | model id | `claude-opus-5-5` | The judge, which filters the findings and sets their severity, the verdict reader and the refuter. |
-| `models.refuter_pair` | model id | off | A second refuter on another model that checks every finding the first refuter checks, at the same time. The first runs on `models.judge`. A split keeps the judge's grade and shows both reasons, and no disproof lowers a blocker. It needs repository tools, so the Claude or Codex CLI. See [Severity tiers](how-reviews-work.md#severity-tiers). |
+| `models.refuter_pair` | model id | off | A second refuter on another model that checks every finding the first refuter checks, at the same time. The first runs on `models.judge`. A split keeps the judge's grade and shows both reasons. Two disproofs lower a blocker only when the judge alone raised it above every finder's grade. It needs repository tools, so the Claude or Codex CLI. See [Severity tiers](how-reviews-work.md#severity-tiers). |
 | `models.dedup` | model id | `claude-haiku-5-5` | The dedup pass against findings already posted on the PR. |
 | `models.fallback` | model id | `models.reviewer` | Reruns a stage once when a provider's safety filter refuses it. A stage already on this model moves to its other Claude tier. |
 | `planner` | map | see below | The planner stage. |

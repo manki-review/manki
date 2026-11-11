@@ -45,8 +45,8 @@ jest.mock('@actions/github', () => {
 
 jest.mock('./providers', () => ({
   ...jest.requireActual('./providers'),
-  createLLMClient: () => ({
-    sendMessage: (system: string, user: string, options?: SendMessageOptions) => mockLLM.sendMessage(system, user, options),
+  createLLMClient: (_provider: string, model: string) => ({
+    sendMessage: async (system: string, user: string, options?: SendMessageOptions) => ({ ...await mockLLM.sendMessage(system, user, options), model }),
     get repoTools() { return mockLLM.repoTools; },
   }),
 }));
@@ -620,6 +620,55 @@ describe('runFullReview end to end', () => {
       expect(mockLLM.calls).toContain('judge');
       expect(mockLLM.calls).not.toContain('refute');
       expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'CHANGES_REQUESTED']);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('posts a blocker only the judge raised at its finder\'s grade once two refuters on different models disprove it', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-e2e-head-'));
+    mkdirSync(join(workspace, 'src'));
+    writeFileSync(join(workspace, 'src', 'math.ts'), 'export const add = (a: number, b: number) => a + b;\n');
+    writeFileSync(join(workspace, 'src', 'api.ts'), 'export const MAX = 1000;\nexport const bounded = (n: number) => n <= MAX;\nif (!bounded(input)) throw new Error();\n');
+    try {
+      mockLLM.repoTools = true;
+      jest.mocked(fetchWorkspace).mockResolvedValue(workspace);
+      mockGitHub.configs = { main: 'models:\n  judge: claude-opus-5-5\n  refuter_pair: claude-sonnet-5-5\n' };
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES, {
+        reviewer: JSON.stringify([{ ...BLOCKER, severity: 'warning' }]),
+        refute: JSON.stringify({ outcome: 'disproved', reason: 'Both inputs are bounded at src/api.ts:3.', proof: ['src/math.ts:1', 'src/api.ts:3'] }),
+      });
+
+      await reviewRound();
+
+      expect(mockLLM.calls.filter(stage => stage === 'refute')).toHaveLength(2);
+      expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
+      const [comment] = mockGitHub.threads.map(t => t.comments[0].body);
+      expect(comment).toContain('**Warning, not blocking**');
+      expect(comment).toContain('a second check on another model agreed, so this does not block. Please check it yourself. Both inputs are bounded at src/api.ts:3.');
+      const [entry] = mockGitHub.roundContext(postedReviews()[0]).findings.entries;
+      expect(entry).toMatchObject({
+        severity: 'warning', reviewerSeverity: 'warning', judgeCell: { row: 'wrong', column: 'normal' },
+        refutation: { outcome: 'disproved', model: 'claude-opus-5-5' }, pairRefutation: { outcome: 'disproved', model: 'claude-sonnet-5-5' },
+        gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'refutation', reason: 'claude-opus-5-5 and claude-sonnet-5-5 both disproved it, and no finder graded it a blocker' }],
+      });
+      expect(entry.cell).toBeUndefined();
+      // The judge's raise still counts as one, though the finding is back at its finder's grade.
+      expect(mockGitHub.roundContext(postedReviews()[0]).judge.regrades).toEqual({ up: 1, down: 0 });
+
+      // The next round's judge sees the finding at its finder's grade with no cell, so it has no blocker cell to restate.
+      // When it states one anyway for the same finding, both stored answers are reused and the finding stays a warning.
+      mockLLM.calls = [];
+      mockLLM.replies.judge = JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, row: 'wrong', reasoning: 'Reachable from any caller.', confidence: 'high', sameAs: 'P1' }] });
+      await forcedRound();
+
+      expect(mockLLM.asked.judge).toMatch(/"severity": "warning",\n\s+"title": "Sum is never range checked"/);
+      expect(mockLLM.asked.judge).toContain('- **P1** (round 1, warning): "Sum is never range checked"');
+      expect(mockLLM.calls).toContain('judge');
+      expect(mockLLM.calls).not.toContain('refute');
+      const again = postedReviews().at(-1)!;
+      expect(again.state).toBe('APPROVED');
+      expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'warning', threadId: 'PRRT_1' })]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
