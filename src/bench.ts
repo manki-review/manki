@@ -765,8 +765,8 @@ function figure(value: number): string {
 
 /**
  * Applies the release gate to each variant both sides scored, on the hold-out cases both scored with the same key
- * version. A side with an incomplete review decides nothing, and so does a baseline with fewer than `GATE_RUNS` runs per
- * case. Each figure may get worse by at most `GATE_MARGIN` per run, and a change within it on a single candidate run asks
+ * version. A side with an incomplete review, or a case whose config does not load, decides nothing, and so does a
+ * baseline with fewer than `GATE_RUNS` runs per case. Each figure may get worse by at most `GATE_MARGIN` per run, and a change within it on a single candidate run asks
  * for a rerun, decided on the mean. Throws when the reports of a side reviewed different commits or hold one run twice,
  * the baseline reviewed the candidate's commit, or the reports were matched by different models.
  */
@@ -794,15 +794,22 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
     const shared = every[0].cases.filter(c => c.set === 'holdout'
       && every.every(v => v.cases.some(o => o.id === c.id && o.set === 'holdout' && o.keyVersion === c.keyVersion))).map(c => c.id);
     if (shared.length === 0) return { variant: name, verdict: 'NO DECISION', reason: 'The baseline and the candidate share no hold-out case with the same key version.', shared };
-    const incomplete = (side: VariantReport[]) => shared.filter(id => side.some((v) => {
+    const runsOf = (side: VariantReport[], id: string) => side.flatMap(v => v.cases.find(c => c.id === id)!.runs);
+    const unloadable = (side: VariantReport[]) => shared.filter(id => runsOf(side, id).some(run => run.outcome === CONFIG_INVALID));
+    const incomplete = (side: VariantReport[]) => shared.filter(id => !unloadable(side).includes(id) && side.some((v) => {
       const runs = v.cases.find(c => c.id === id)!.runs;
       return runs.length === 0 || runs.some(run => !run.complete);
     }));
-    const [baseIncomplete, candIncomplete] = [incomplete(base), incomplete(cand)];
-    if (baseIncomplete.length > 0 || candIncomplete.length > 0) {
-      const sides = [['baseline', baseIncomplete], ['candidate', candIncomplete]] as const;
-      const listed = sides.filter(([, ids]) => ids.length > 0).map(([side, ids]) => `The ${side} has incomplete reviews on ${ids.join(', ')}.`);
-      return { variant: name, verdict: 'NO DECISION', reason: `${listed.join(' ')} A run with incomplete reviews does not count, so run that side again.`, shared };
+    const listed = (ids: (side: VariantReport[]) => string[], sentence: (side: string, ids: string) => string) =>
+      ([['baseline', ids(base)], ['candidate', ids(cand)]] as const).filter(([, found]) => found.length > 0).map(([side, found]) => sentence(side, found.join(', ')));
+    const noConfig = listed(unloadable, (side, ids) => `The ${side} has no review of ${ids}, because the case's config does not load.`);
+    const noReview = listed(incomplete, (side, ids) => `The ${side} has incomplete reviews on ${ids}.`);
+    if (noConfig.length > 0 || noReview.length > 0) {
+      const reason = [
+        ...noConfig, ...(noConfig.length > 0 ? ['Another run changes nothing until each such case holds a `config:` that loads.'] : []),
+        ...noReview, ...(noReview.length > 0 ? ['A run with incomplete reviews does not count, so run that side again.'] : []),
+      ].join(' ');
+      return { variant: name, verdict: 'NO DECISION', reason, shared };
     }
     // A ref without follow-up cases reviews one as a first round, so its figures do not compare with a follow-up round's.
     const unlike = shared.filter(id => new Set(every.flatMap(v => v.cases.find(c => c.id === id)!.runs.map(run => !!run.followUp))).size > 1);

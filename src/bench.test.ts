@@ -697,10 +697,16 @@ describe('mergeReports and gateReports', () => {
     expect(gateReports([baseline, again(baseline)], [rerun, again(rerun)])[0]).toMatchObject({ verdict: 'PASS', candidate: { runs: 2, found: 1 } });
   });
 
-  it('decides nothing on an incomplete run or without a shared hold-out case, and leaves a case with another key version out', async () => {
+  it('decides nothing on an incomplete run, a config that does not load or without a shared hold-out case, and leaves a case with another key version out', async () => {
     const baseline = report([[first, [await run(first, 'blocker')]], [second, [await run(second, 'blocker')]]]);
     expect(gateReports([baseline, again(baseline)], [report([[first, [await run(first, 'blocker', 0, false)]], [second, [await run(second, 'blocker')]]])])[0]).toMatchObject({
       verdict: 'NO DECISION', reason: 'The candidate has incomplete reviews on demo-1. A run with incomplete reviews does not count, so run that side again.',
+    });
+    const unloadable = report([[first, [{ ...await run(first, 'blocker', 0, false), outcome: 'CONFIG_INVALID' }]], [second, [await run(second, 'blocker', 0, false)]]]);
+    expect(gateReports([baseline, again(baseline)], [unloadable])[0]).toMatchObject({
+      verdict: 'NO DECISION',
+      reason: "The candidate has no review of demo-1, because the case's config does not load. Another run changes nothing until each such case holds a `config:` that loads. "
+        + 'The candidate has incomplete reviews on demo-2. A run with incomplete reviews does not count, so run that side again.',
     });
     const rekeyed = report([[first, [await run(first, 'blocker')]], [{ ...second, keyVersion: 3 }, [await run(second)]]]);
     expect(gateReports([baseline, again(baseline)], [rekeyed])[0]).toMatchObject({ verdict: 'PASS', shared: ['demo-1'] });
