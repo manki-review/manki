@@ -1022,11 +1022,13 @@ function failedRun(error: unknown, review?: LocalReview, outcome = 'FAILED'): Ru
 }
 
 /**
- * Returns the time the related repos of a case are read at: the oldest author date among the commits of its change,
+ * Returns the time the related repos of a case are read at: the oldest author date among the change's own commits,
  * from the merge base of `base` and `head` to `head`. A commit replayed into another repository keeps its author date,
  * and the head of a follow-up case can be newer than the merge of the change it follows up, so the head's own dates can
- * come too late. Throws when the commits or one of their dates cannot be read, so a case never reads newer related code
- * for want of a date.
+ * come too late. The change's own commits are those on the first-parent line of `head`, so a branch merged into the
+ * change, such as its base branch, adds none of its older commits. A `head` that merges the change in has only merges
+ * on that line, and then every commit of the range counts. Throws when the commits or one of their dates cannot be
+ * read, so a case never reads newer related code for want of a date.
  */
 async function changeDate(checkout: string, c: BenchCase): Promise<string> {
   const undated = (reason: string) => new Error(`Case ${c.id} has no date to read its related repos at: ${reason}`);
@@ -1034,7 +1036,10 @@ async function changeDate(checkout: string, c: BenchCase): Promise<string> {
     throw undated(`${what} cannot be read. Git said: ${error.message.trim()}`);
   });
   const mergeBase = (await git(['merge-base', c.base, c.head], 'the merge base of its base and head')).trim();
-  const dates = (await git(['log', '--format=%aI', `${mergeBase}..${c.head}`], 'the commits of its change')).split('\n').filter(Boolean);
+  const authored = async (...only: string[]) =>
+    (await git(['log', ...only, '--format=%aI', `${mergeBase}..${c.head}`], 'the commits of its change')).split('\n').filter(Boolean);
+  const own = await authored('--first-parent', '--no-merges');
+  const dates = own.length > 0 ? own : await authored();
   if (dates.length === 0) throw undated('its head holds no commit past the merge base.');
   const unread = dates.find(date => Number.isNaN(Date.parse(date)));
   if (unread) throw undated(`\`${unread}\` is not a date.`);
@@ -1093,14 +1098,15 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
         }
         let local: LocalReview | undefined;
         try {
+          const config = await load(benchCase, variant.overrides);
           local = await review({
             repoRoot: checkouts.get(benchCase.repo)!, base: benchCase.base, head: benchCase.head, title: benchCase.title, body: benchCase.body,
-            ...(benchCase.priorRound && { earlier: benchCase.priorRound }), relatedReposAsOf: await changeDate(checkouts.get(benchCase.repo)!, benchCase),
+            ...(benchCase.priorRound && { earlier: benchCase.priorRound }),
+            // Only a case with related repos needs a date, so a change that cannot be dated fails no other case.
+            ...(config.related_repos?.length && { relatedReposAsOf: await changeDate(checkouts.get(benchCase.repo)!, benchCase) }),
             providerInputs: options.providerInputs, signal: options.signal,
             // The case's own config replaces the repository's. Without one, the overrides are set on the repository's.
-            ...(benchCase.config
-              ? { config: await load(benchCase, variant.overrides) }
-              : Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
+            ...(benchCase.config ? { config } : Object.keys(variant.overrides).length > 0 && { configOverrides: variant.overrides }),
           });
           const reviewed = local;
           // The matcher is tried twice before a finished review is given up, and the cache keeps what it already decided.
