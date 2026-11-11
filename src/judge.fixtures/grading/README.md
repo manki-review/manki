@@ -1,10 +1,12 @@
 # Judge grading fixture corpus
 
-Each `*.json` file holds one reviewer finding, which claims a `blocker` in all but `own-proposal-objection`, `refuted-by-shown-guard`, the two warning fixtures and the two note fixtures, the PR diff it sits in, and the grades the judge may return (`allowed`). Every fixture without `blocker` in `allowed` breaks exactly one rule of the blocker definition, except the two warning fixtures and the two note fixtures. The others cover cases a rule could wrongly clear.
+Each `*.json` file holds one reviewer finding, which claims a `blocker` in all but `own-proposal-objection`, `refuted-by-shown-guard`, the two warning fixtures and the three note fixtures, the PR diff it sits in, and the grades the judge may return (`allowed`). Every fixture without `blocker` in `allowed` breaks exactly one rule of the blocker definition, except the two warning fixtures and the three note fixtures. The others cover cases a rule could wrongly clear.
 
 The two warning fixtures also set `proven`. A warning is posted only when it is proven, so the judge must tell a warning the code shown proves from one that rests on code it cannot see. With `proven: true` the graded finding has to cite proving lines and name no doubt whether the defect exists. With `proven: false` it has to name such a doubt or cite no lines, so that a tool check runs before it is posted.
 
-The two note fixtures hold the same kind of note, a comment that states a number the code does not have. The judge keeps the one whose number the diff shows. It drops the one whose number sits in a file it cannot see, since a note it cannot check is not worth a reader's time, while `unproven-warning` shows that a warning in the same position stays.
+Two of the note fixtures hold the same kind of note, a comment that states a number the code does not have. The judge keeps the one whose number the diff shows. It drops the one whose number sits in a file it cannot see, since a note it cannot check is not worth a reader's time, while `unproven-warning` shows that a warning in the same position stays.
+
+The judge is shown the diff of a file only when the finding sits on it or cites it in a proving line or an evidence line. The third note fixture is a missing test as a finder reports it: no proving line, and evidence lines that start with the test file's `file:line`. Those lines put the test file in front of the judge, so it can check the note and keeps it.
 
 `judge.test.ts` checks that the corpus covers every case once and that each finding points at a line of its diff. A live replay, gated on `RUN_JUDGE_LIVE_FIXTURES=1`, sends each fixture through `runJudgeAgent` against a real model and checks the grade is allowed. CI does not run it. Run it after changing the judge prompt or model.
 
@@ -39,3 +41,4 @@ The two note fixtures hold the same kind of note, a comment that states a number
 | `25_unproven_warning.json` | `warning`, not proven | A Kotlin invoice renderer moves a tax rate lookup into the loop over line items. The finding says each call asks a remote service, but the diff does not show `rateFor`, so the defect rests on code the judge cannot see. |
 | `26_unseen_note.json` | `ignore` | A Go comment says a failed page is retried three times. The finding says the client's `MaxRetries` is 5, but that constant sits in a file the diff does not show, so the note rests on code the judge cannot see. |
 | `27_shown_note.json` | `note` | A C# doc summary says messages go out in batches of 20. The diff shows `BatchSize` is 50 two lines above, so the judge can check the note and keeps it. |
+| `28_cited_test_note.json` | `note` | A new Rust `parse_duration` has no test for its unknown unit branch. The finding cites no proving line, but its evidence lines name the lines of the test file it read, so the judge is shown that file. |

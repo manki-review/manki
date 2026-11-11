@@ -25,7 +25,7 @@ import { LLMClient, QuotaError, RefusalError, SendMessageOptions } from './provi
 import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { preExistingCheck, truncateDiff } from './review';
+import { parseProof, preExistingCheck, truncateDiff } from './review';
 import { unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
@@ -1439,8 +1439,13 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
 
     const input: JudgeInput = {
-      findings: [makeFinding({ evidence: { checks: [], proof: ['src/caller.ts:4'] } })],
-      diff: makeDiff([makeDiffFile(), makeDiffFile({ path: 'src/caller.ts', hunks: [makeHunk({ content: ` ${'c'.repeat(30_000)}\n+call();` })] }), makeDiffFile({ path: 'src/other.ts', hunks: [makeHunk({ content: '+const unused = 1;' })] })]),
+      findings: [makeFinding({ evidence: { checks: ['`src/caller.test.ts`:2 never runs `call()`', 'grep `call(` under src/other.ts: no match'], proof: ['src/caller.ts:4'] } })],
+      diff: makeDiff([
+        makeDiffFile(),
+        makeDiffFile({ path: 'src/caller.ts', hunks: [makeHunk({ content: ` ${'c'.repeat(30_000)}\n+call();` })] }),
+        makeDiffFile({ path: 'src/caller.test.ts', hunks: [makeHunk({ content: '+it.todo("calls");' })] }),
+        makeDiffFile({ path: 'src/other.ts', hunks: [makeHunk({ content: '+const unused = 1;' })] }),
+      ]),
       rawDiff: 'diff --git a/src/index.ts b/src/index.ts\n+const unused = 1;',
       repoContext: '',
       agentCount: 5,
@@ -1457,6 +1462,8 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('## Pull Request Diff');
     expect(userMessage).toContain('diff --git a/src/index.ts b/src/index.ts');
     expect(userMessage).toContain('diff --git a/src/caller.ts b/src/caller.ts');
+    // A file an evidence line starts with is shown like one a proving line names. A file named later in the line is not.
+    expect(userMessage).toContain('diff --git a/src/caller.test.ts b/src/caller.test.ts');
     expect(userMessage).toContain('more characters of this line cut');
     expect(userMessage).not.toContain('diff --git a/src/other.ts');
   });
@@ -5406,6 +5413,11 @@ interface ThreadFixture {
   interRoundDiff: string;
 }
 
+/** The files whose diff the judge is shown for `finding`: its own, and each one a proving line or an evidence line cites. */
+function shownFiles(finding: Finding): string[] {
+  return [finding.file, ...[...(finding.evidence?.proof ?? []), ...parseProof(finding.evidence?.checks)].map(location => location.replace(/:[\d-]+$/, ''))];
+}
+
 function loadFixtures<T>(corpus: string): T[] {
   const dir = path.join(__dirname, 'judge.fixtures', corpus);
   return fs.readdirSync(dir)
@@ -5529,6 +5541,7 @@ const GRADING_CASES = [
   'unproven-warning',
   'unseen-note',
   'shown-note',
+  'cited-test-note',
 ] as const;
 
 const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix'];
@@ -5568,12 +5581,14 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, and a note the code shown proves or leaves open, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, a note the code shown proves or leaves open, and a missing-test note that cites the test file, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 
-  it.each(fixtures)('fixture $name points at a diff line, and allows a blocker only when all tests pass', (fixture) => {
-    expect(extractCodeContext(fixture.finding, parsePRDiff(fixture.prDiff))).toContain(`>>> ${fixture.finding.line}:`);
+  it.each(fixtures)('fixture $name points at a diff line, shows the judge every diff file, and allows a blocker only when all tests pass', (fixture) => {
+    const diff = parsePRDiff(fixture.prDiff);
+    expect(extractCodeContext(fixture.finding, diff)).toContain(`>>> ${fixture.finding.line}:`);
+    expect(diff.files.map(f => f.path).filter(path => !shownFiles(fixture.finding).includes(path))).toEqual([]);
     expect(fixture.allowed.includes('blocker')).toBe(BLOCKER_CASES.includes(fixture.case) || fixture.case === 'own-proposal-worse');
     expect(fixture.priorRound !== undefined).toBe(PRIOR_ROUND_CASES.includes(fixture.case));
     expect(fixture.pr !== undefined).toBe(fixture.case === 'declared-gap');
@@ -5626,8 +5641,8 @@ describe('judge note order fixture corpus', () => {
   it.each(fixtures)('fixture $name points each finding at a diff line, shows the judge every diff file, and names its formatting point', (fixture) => {
     const diff = parsePRDiff(fixture.prDiff);
     for (const finding of fixture.findings) expect(extractCodeContext(finding, diff)).toContain(`>>> ${finding.line}:`);
-    // The judge is shown only the files a finding sits on or cites as proof, so it cannot check a claim about any other file.
-    const shown = new Set(fixture.findings.flatMap(f => [f.file, ...(f.evidence?.proof ?? []).map(location => location.replace(/:[\d-]+$/, ''))]));
+    // The judge is shown only the files a finding sits on or cites, so it cannot check a claim about any other file.
+    const shown = new Set(fixture.findings.flatMap(shownFiles));
     expect(diff.files.map(f => f.path).filter(path => !shown.has(path))).toEqual([]);
     expect(fixture.findings.map(f => f.title)).toContain(fixture.formatting);
   });

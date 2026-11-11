@@ -880,7 +880,7 @@ export function buildJudgeUserMessage(
 
   if (prDiff && prDiff.trim().length > 0) {
     parts.push(`## Pull Request Diff\n`);
-    parts.push('The PR diff of every file with a finding, a proving line or an open thread. Use it to check each finding\'s claim against the actual change, and whether the flagged code is part of this PR.\n');
+    parts.push('The PR diff of every file with a finding, a line a finding cites or an open thread. Use it to check each finding\'s claim against the actual change, and whether the flagged code is part of this PR.\n');
     parts.push(`${UNTRUSTED_DIFF_NOTE}\n`);
     const diffContent = truncateDiff(prDiff);
     const fence = dynamicFence(diffContent);
@@ -1372,8 +1372,8 @@ export async function runJudgeAgent(
     ];
   };
   // The judge gets each finding's code and the hunks of the files it judges, never a cut copy of the whole diff.
-  const proofFiles = (f: Finding) => (f.evidence?.proof ?? []).map(location => location.replace(/:\d+(?:-\d+)?$/, ''));
-  const judgedFiles = new Set([...findings.flatMap(f => [f.file, ...proofFiles(f)]), ...(openThreads ?? []).map(t => t.file)]);
+  const citedFiles = (f: Finding) => [...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks)].map(location => location.replace(/:\d+(?:-\d+)?$/, ''));
+  const judgedFiles = new Set([...findings.flatMap(f => [f.file, ...citedFiles(f)]), ...(openThreads ?? []).map(t => t.file)]);
   const judgedDiff = rebuildRawDiff({ ...diff, files: diff.files.filter(f => judgedFiles.has(f.path) && !listed.has(f.path)).map(shortenLongLines) });
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))), repoContext, openThreads ?? input.evaluatedThreads?.openThreads);
 
