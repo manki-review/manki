@@ -1,0 +1,47 @@
+{
+  "name": "mixed-worth",
+  "formatting": "Missing space after the comma in the import",
+  "findings": [
+    {
+      "title": "Missing space after the comma in the import",
+      "file": "billing/retry.py",
+      "line": 4,
+      "description": "`RateLimited,TransientError` has no space after the comma. Write `RateLimited, TransientError`, as PEP 8 asks.",
+      "severity": "nitpick",
+      "reviewers": [
+        "Correctness"
+      ]
+    },
+    {
+      "title": "The last failed attempt still sleeps before giving up",
+      "file": "billing/retry.py",
+      "line": 18,
+      "description": "After the fifth `TransientError` the loop sleeps for the full backoff, about 3.2 seconds, and only then reaches the `raise` on line 20. No retry follows that sleep, so every call that gives up is delayed for nothing. Skip the sleep on the last attempt.",
+      "severity": "warning",
+      "reviewers": [
+        "Correctness"
+      ]
+    },
+    {
+      "title": "The docstring says the function returns None, but it raises",
+      "file": "billing/retry.py",
+      "line": 10,
+      "description": "The docstring says `fetch_with_retry` returns None when every attempt fails. Line 20 raises `TransientError` instead. A caller that trusts the docstring checks for None and never catches the error.",
+      "severity": "suggestion",
+      "reviewers": [
+        "Correctness"
+      ]
+    },
+    {
+      "title": "No test runs the `RateLimited` branch",
+      "file": "billing/retry.py",
+      "line": 15,
+      "description": "Both new tests in `tests/test_retry.py` raise only `TransientError`. Nothing runs the `RateLimited` branch on lines 15 and 16, so a change to how `retry_after` is read breaks rate-limited calls with no failing test. Add a test whose session raises `RateLimited` once.",
+      "severity": "suggestion",
+      "reviewers": [
+        "Correctness"
+      ]
+    }
+  ],
+  "prDiff": "diff --git a/billing/retry.py b/billing/retry.py\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/billing/retry.py\n@@ -0,0 +1,20 @@\n+import random\n+import time\n+\n+from billing.errors import RateLimited,TransientError\n+\n+MAX_ATTEMPTS = 5\n+\n+\n+def fetch_with_retry(session, url, timeout=2.0):\n+    \"\"\"Fetch url. Returns None when every attempt fails.\"\"\"\n+    wait = 0.2\n+    for _ in range(MAX_ATTEMPTS):\n+        try:\n+            return session.get(url, timeout=timeout)\n+        except RateLimited as err:\n+            time.sleep(err.retry_after)\n+        except TransientError:\n+            time.sleep(wait + random.random() * 0.1)\n+            wait *= 2\n+    raise TransientError(f\"gave up on {url} after {MAX_ATTEMPTS} attempts\")\ndiff --git a/tests/test_retry.py b/tests/test_retry.py\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/tests/test_retry.py\n@@ -0,0 +1,30 @@\n+import pytest\n+\n+from billing.errors import TransientError\n+from billing.retry import MAX_ATTEMPTS, fetch_with_retry\n+\n+\n+class FlakySession:\n+    def __init__(self, failures):\n+        self.failures = failures\n+        self.calls = 0\n+\n+    def get(self, url, timeout):\n+        self.calls += 1\n+        if self.calls <= self.failures:\n+            raise TransientError(\"boom\")\n+        return \"ok\"\n+\n+\n+def test_retries_transient_errors(monkeypatch):\n+    monkeypatch.setattr(\"time.sleep\", lambda _: None)\n+    session = FlakySession(failures=2)\n+    assert fetch_with_retry(session, \"/invoices\") == \"ok\"\n+    assert session.calls == 3\n+\n+\n+def test_gives_up_after_max_attempts(monkeypatch):\n+    monkeypatch.setattr(\"time.sleep\", lambda _: None)\n+    session = FlakySession(failures=MAX_ATTEMPTS)\n+    with pytest.raises(TransientError):\n+        fetch_with_retry(session, \"/invoices\")\n"
+}

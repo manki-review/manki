@@ -27,8 +27,9 @@ import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { preExistingCheck, truncateDiff } from './review';
 import { parsePRDiff } from './diff';
+import { extractJSON } from './json';
 import { VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation } from './types';
+import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation, isNote } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -457,7 +458,18 @@ describe('buildJudgeSystemPrompt', () => {
     expect(schema.indexOf('"effort"')).toBeLessThan(schema.indexOf('"reasoning"'));
   });
 
-  it('carries no `noise_level` calibration note', () => {
+  it('asks for the order of the notes after the findings', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    expect(prompt).toContain('## Note Order');
+    expect(prompt).toContain('In `noteOrder`, list the number N of each such "Finding N", starting with the one whose fix helps the author most. A finding that prevents a likely future defect, closes a gap in the tests or stops a reader being misled comes before one that only tidies the code.\n\n## Duplicate Detection');
+    const schema = prompt.slice(prompt.indexOf('"findings": ['));
+    expect(schema).toContain('  ],\n  "noteOrder": ["N of each finding graded suggestion or nitpick, the most useful first"]\n}');
+    // The order comes after the findings and before the thread evaluations.
+    const withThreads = buildJudgeSystemPrompt(makeConfig(), 5, true, 2);
+    expect(withThreads.indexOf('"noteOrder"')).toBeLessThan(withThreads.indexOf('"threadEvaluations": ['));
+  });
+
+  it('carries no calibration note', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).not.toContain('Calibration note');
     expect(prompt).not.toContain('choose the higher one');
@@ -1098,6 +1110,21 @@ describe('extractCodeContext', () => {
 });
 
 describe('parseJudgeResponse', () => {
+  it('ranks each finding by its place in `noteOrder`, and leaves a finding the judge did not list unranked', () => {
+    const entry = (id: number | undefined, title: string) => ({ ...(id && { id }), title, row: 'improvement', reasoning: 'r', confidence: 'high' });
+    const entries = [entry(1, 'A'), entry(2, 'B'), entry(3, 'C'), entry(4, 'D'), entry(undefined, 'E')];
+    const ranks = (noteOrder: unknown) => parseJudgeResponse(JSON.stringify({ summary: 's', findings: entries, noteOrder })).findings.map(f => f.noteRank);
+
+    // A number as a string counts, a number that names no finding takes its place without a finding, and a repeat is ignored.
+    expect(ranks([3, '1', 9, 3, 'four', 4])).toEqual([1, undefined, 0, 5, undefined]);
+    for (const absent of [undefined, null, 'none', {}, []]) expect(ranks(absent)).toEqual([undefined, undefined, undefined, undefined, undefined]);
+
+    const base = { severity: 'suggestion' as const, file: 'src/a.ts', description: 'd', reviewers: ['r'] };
+    const judged = parseJudgeResponse(JSON.stringify({ summary: 's', findings: entries.slice(0, 3), noteOrder: [3, 1] })).findings;
+    const mapped = mapJudgedToFindings(['A', 'B', 'C'].map((title, i) => ({ ...base, title, line: i + 1 })), judged);
+    expect(mapped.map(f => [f.title, f.noteRank])).toEqual([['A', 1], ['B', undefined], ['C', 0]]);
+  });
+
   it('keeps a category and an effort from the fixed lists, drops any other value with a warning, and refuses a finding that names no known `row`', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const result = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
@@ -2889,28 +2916,6 @@ describe('runJudgeAgent', () => {
     expect(block('Slow loop')).toContain('- **Already answered**: Manki answered the developer about this problem in its review thread: "Withdrawn. The loop runs once."');
     expect(block('Wrong fee')).not.toContain('Already answered');
     expect(mockSendMessage.mock.calls[0][0]).toContain('Mark it `ignore` unless the code at that spot changed since that answer and is worse now');
-  });
-
-  it('sends the same system prompt whatever `noise_level` is', async () => {
-    mockSendMessage.mockResolvedValue({ content: '{"summary":"x","findings":[]}' });
-    const input: JudgeInput = {
-      findings: [],
-      diff: makeDiff(),
-      rawDiff: '',
-      repoContext: '',
-      agentCount: 5,
-    };
-    const withoutLevel = makeConfig();
-    delete (withoutLevel as Partial<ReviewConfig>).noise_level;
-
-    for (const config of [makeConfig({ noise_level: 'low' }), makeConfig({ noise_level: 'medium' }), makeConfig({ noise_level: 'high' }), withoutLevel]) {
-      await runJudgeAgent(mockClient, config, input);
-    }
-
-    const prompts = mockSendMessage.mock.calls.map(([systemPrompt]) => systemPrompt);
-    expect(prompts).toHaveLength(4);
-    expect(new Set(prompts).size).toBe(1);
-    expect(prompts[0]).toBe(buildJudgeSystemPrompt(makeConfig(), input.agentCount, input.isFollowUp, 0));
   });
 
   describe('duplicateOf folding', () => {
@@ -5496,5 +5501,56 @@ describe('judge grading fixture corpus', () => {
     const graded = result.findings[0];
     console.log(`[live-judge] ${fixture.name}: allowed=${fixture.allowed.join('|')} actual=${graded?.severity} cell=${JSON.stringify(graded?.cell)} gradeIfConfirmed=${graded?.gradeIfConfirmed} doubts=${JSON.stringify(graded?.doubts ?? [])} reasoning=${JSON.stringify(graded?.judgeNotes ?? '')}`);
     expect(fixture.allowed).toContain(graded?.severity);
+  }, 600_000);
+});
+
+interface NoteOrderFixture {
+  name: string;
+  /** The title of the finding the judge should rank last. */
+  formatting: string;
+  findings: Finding[];
+  prDiff: string;
+}
+
+describe('judge note order fixture corpus', () => {
+  const fixtures = loadFixtures<NoteOrderFixture>('noteOrder');
+
+  it.each(fixtures)('fixture $name points each finding at a diff line, and names its formatting point', (fixture) => {
+    const diff = parsePRDiff(fixture.prDiff);
+    for (const finding of fixture.findings) expect(extractCodeContext(finding, diff)).toContain(`>>> ${finding.line}:`);
+    expect(fixture.findings.map(f => f.title)).toContain(fixture.formatting);
+  });
+
+  // Live replay against a real LLM, gated like the thread-evaluation corpus above.
+  const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
+  const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-5-5';
+  (runLive ? it : it.skip).each(fixtures)('live judge names every note of $name once in `noteOrder`, with the formatting point last', async (fixture) => {
+    const model = new AnthropicClient({ auth: { kind: 'oauth', token: '' }, model: liveModel });
+    const replies: string[] = [];
+    const client: LLMClient = {
+      sendMessage: async (...args) => {
+        const reply = await model.sendMessage(...args);
+        replies.push(reply.content);
+        return reply;
+      },
+    };
+
+    const result = await runJudgeAgent(client, makeConfig(), {
+      findings: fixture.findings,
+      diff: parsePRDiff(fixture.prDiff),
+      rawDiff: fixture.prDiff,
+      repoContext: '',
+      agentCount: 1,
+      isFollowUp: false,
+    });
+
+    const { noteOrder } = JSON.parse(extractJSON(replies.at(-1) ?? '')) as { noteOrder?: unknown };
+    const notes = result.findings.filter(f => isNote(f.severity));
+    console.log(`[live-judge] ${fixture.name}: noteOrder=${JSON.stringify(noteOrder)} graded=${JSON.stringify(result.findings.map(f => [f.title, f.severity, f.noteRank]))}`);
+    expect(notes.length).toBeGreaterThanOrEqual(3);
+    // As many entries as notes, and every note at a place of its own, so `noteOrder` names each note once and nothing else.
+    expect(noteOrder).toHaveLength(notes.length);
+    expect(notes.map(f => f.noteRank).sort()).toEqual(notes.map((_, i) => i));
+    expect(notes.find(f => f.title === fixture.formatting)?.noteRank).toBe(notes.length - 1);
   }, 600_000);
 });

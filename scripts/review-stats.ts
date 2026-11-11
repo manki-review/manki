@@ -278,14 +278,15 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
       // A review's id grows with the order the reviews were posted in.
       const earlierThreads = threads.filter(thread => thread.reviewId < pr.reviewIds[index]);
       for (const entry of round.findings?.entries ?? []) {
-        // An entry's `threadId` names the earlier thread the finding restates or adds to. The review opens no thread for it,
-        // and none for a finding that matches a thread an earlier review opened.
-        if (entry.threadId || findPriorThreadId(entry.fingerprint, earlierThreads)) continue;
+        // A record without `posted` is read by the rules the review posts by. An entry's `threadId` names the earlier thread
+        // the finding restates or adds to, and a finding that matches a thread an earlier review opened gets no thread either.
+        const carried = entry.posted ? entry.posted === 'earlier_thread' : !!entry.threadId || findPriorThreadId(entry.fingerprint, earlierThreads) !== undefined;
+        if (carried) continue;
         const severity = stats.severities[entry.severity] ??= noFindings();
         severity.posted++;
         if (approved) severity.inApprovedRounds++;
         // A finding with the origin `earlier` restates one an earlier round listed.
-        if (round.meta.round > 1 && entry.origin && entry.origin !== 'earlier') {
+        if (round.meta.round > 1 && !round.findings?.originsWithoutPrior && entry.origin && entry.origin !== 'earlier') {
           severity.raisedLater++;
           if (entry.origin === 'reviewed') severity.onReviewedCode++;
         }
@@ -375,7 +376,13 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
   for (const entry of round.findings?.unposted ?? []) {
     tally(stats, 'Findings recorded without posting (per reason and severity)', `${entry.unpostedReason ?? entry.preExisting?.check ?? 'no reason recorded'}, ${entry.severity}`);
   }
-  // The record keeps these drops of judged findings as counts, without their severities.
+  // A drop's last grade step names its reason and the severity before it. A record too large to keep `judge.dropped` has only the counts.
+  const dropSteps = (round.judge?.dropped ?? []).flatMap(drop => drop.gradePath?.at(-1) ?? []).filter(step => step.to === 'ignore');
+  const withSeverity = (reason: string): number => {
+    const steps = dropSteps.filter(step => step.by === reason);
+    for (const step of steps) tally(stats, 'Findings recorded without posting (per reason and severity)', `${reason}, ${step.from}`);
+    return steps.length;
+  };
   const dropCounts = {
     in_pr_suppression: round.judge?.inPrSuppressedCount,
     ratchet: round.judge?.ratchetSuppressedCount,
@@ -385,7 +392,8 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
     static_signal: round.dedup?.staticSignalMatches?.length,
   };
   for (const [reason, count] of Object.entries(dropCounts)) {
-    if (count) tally(stats, 'Findings recorded without posting (per reason and severity)', `${reason}, severity not recorded`, count);
+    const unsplit = (count ?? 0) - withSeverity(reason);
+    if (unsplit > 0) tally(stats, 'Findings recorded without posting (per reason and severity)', `${reason}, severity not recorded`, unsplit);
   }
   if (round.slicing) {
     stats.slicesPerRound.push(round.slicing.files.length);
@@ -491,7 +499,7 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     ...[...SEVERITIES, ...Object.keys(stats.severities).filter(s => !SEVERITIES.includes(s))].map(s => findingsRow(s, stats.severities[s])),
     findingsRow('all', all),
     '',
-    'The table leaves out a finding the round put under an earlier Manki thread, or that matches one by file, title and line. The script cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved, and another instance of a finding that went into its thread as a reply. A round that ran without the earlier round\'s change, which is a "Review again" run or a failed fetch of the change at the last reviewed commit, tags every finding `new`, so its findings on reviewed code are missing from the reviewed-code share and the share reads too low. A suggestion or nitpick on reviewed code is not posted, so it counts in none of these either, and shows under `reviewed_code` in the table of findings recorded without posting.',
+    'The table leaves out a finding the round put under an earlier Manki thread, such as another instance of a finding that went into its thread as a reply. A record from before the `posted` field does not say where a finding went. For those the script leaves out a finding that names an earlier thread, or that matches one by file, title and line. It cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved. A round that ran without the earlier round\'s change, which is a "Review again" run or a failed fetch of the change at the last reviewed commit, tags every finding `new`. A record that says so is left out of the reviewed-code share. An older record does not say so, and its findings on reviewed code are missing from the share, so the share reads too low. A suggestion or nitpick on reviewed code is not posted, so it counts in none of these either, and shows under `reviewed_code` in the table of findings recorded without posting.',
     '',
     `- Blocker threads: ${blockerThreads}, fixed ${stats.blockerOutcomes.fixed}, withdrawn ${stats.blockerOutcomes.withdrawn}, other ${stats.blockerOutcomes.other}`,
     `- Verdict reader blockers: ${stats.readerBlockers} in ${stats.readerRounds} rounds`,

@@ -115,6 +115,12 @@ const LEGACY_SECURITY_AGENT_NAME = 'Security & Safety';
 export function isSecurityFinding(tags: string[] | undefined, priorReviewers: ReadonlyArray<string | undefined> = []): boolean {
   return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
 }
+
+/** Whether a step may leave the finding out of the review. Only a note can be left out, and never a security finding or a tool alert. */
+export function canLeaveOut(f: Finding): boolean {
+  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers);
+}
+
 /** Marks a finding on lines outside every hunk of the PR's diff. Unless it is a security finding, it never blocks. */
 export const PRE_EXISTING_TAG = 'pre-existing' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
@@ -292,6 +298,8 @@ export interface Finding {
   suppressedBy?: string;
   /** Why the review leaves the note out. Only the round record keeps such a note. */
   unpostedReason?: UnpostedReason;
+  /** The finding's place in the judge's order of the notes, 0 for the one the author gains most from. Unset when the judge did not rank it. */
+  noteRank?: number;
   /** Why the defect exists without this PR's change, when the reviewer says so. The judge must keep it, or it is cleared. */
   preExisting?: string;
   /** How a claim in `preExisting` was checked against the diff: held, or the condition that failed. */
@@ -563,12 +571,19 @@ export interface Refutation {
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves a note out, with the words that say it to a reader. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
+  note_cap: 'over the `review.notes` limit',
+  pre_existing: 'on code this PR did not change',
+  memory_suppression: 'hidden by a memory suppression',
+  static_signal_match: 'a CI tool reports the same line',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
+
+/** Where a round put a finding: a thread of its own, the review body, an earlier thread that carries it, or the round record only. */
+export type PostedPlace = 'thread' | 'body' | 'earlier_thread' | 'record';
 
 /** What was cited to back a finding. */
 export interface FindingEvidence {
@@ -729,6 +744,8 @@ export interface ReviewResult {
   unpostedPreExisting?: Finding[];
   /** The notes the review leaves out, each with `unpostedReason`. Only the round record keeps them. */
   unpostedNotes?: Finding[];
+  /** Set when a later round tagged `origin` without the PR's change at the last reviewed round, so no finding reads `reviewed`. */
+  originsWithoutPrior?: true;
   /** How the diff was split, when it was read in several slices. */
   slicing?: RoundSlicing;
   /** The configured related repos, with the outcome of each fetch. */
@@ -885,7 +902,6 @@ export interface PlannerResult extends Triage {
 
 export type ReviewLevel = 'auto' | 'small' | 'medium' | 'large';
 
-export type NoiseLevel = 'low' | 'medium' | 'high';
 
 export type PairedPin = 'auto' | 'always' | 'never';
 
@@ -909,6 +925,8 @@ export interface ReviewRoutingConfig {
   examples?: { blocker?: string[]; not_blocker?: string[] };
   /** Whether each blocker the judge keeps starts a search of the diff for other instances of its defect class. */
   sweep?: boolean;
+  /** How many notes a review lists at most. */
+  notes?: number;
 }
 
 /** How a round's review group was picked. */
@@ -1005,12 +1023,10 @@ export interface ReviewConfig {
   /** Public repos the review may read as context. Always read from the base branch, so a PR cannot make Manki fetch another repo. */
   related_repos?: RelatedRepo[];
   /**
-   * @deprecated Removed in v5.1.0. All surviving findings post inline as PR
-   * review comments. The field is still parsed so old configs don't fail,
+   * @deprecated Removed in v5.1.0. The field is still parsed so old configs don't fail,
    * but the value is ignored and a one-line warning is emitted at run start.
    */
   nit_handling?: 'issues' | 'comments';
-  noise_level?: NoiseLevel;
   /** `skip` reviews a draft PR only on request, `review` reviews it automatically. A draft review never approves. */
   drafts?: 'skip' | 'review';
   review_passes?: number;
@@ -1347,7 +1363,7 @@ export interface JudgeDecision {
   kept: boolean;
   /** Set on an open lead the judge's tools left unsettled, which is listed as not finished instead of posted. */
   listed?: true;
-  /** Mirrors `Finding.unpostedReason`, on a note the judge kept and the review leaves out. */
+  /** Why the review leaves out a finding the judge kept. */
   unpostedReason?: UnpostedReason;
 }
 
@@ -2012,6 +2028,8 @@ export interface RoundFindings {
    * reads posted findings sees them.
    */
   unposted?: FindingFingerprintEntry[];
+  /** Mirrors `ReviewResult.originsWithoutPrior`. */
+  originsWithoutPrior?: true;
 }
 
 export interface FindingFingerprintEntry {
@@ -2071,6 +2089,11 @@ export interface FindingFingerprintEntry {
   preExisting?: { reason: string; check: PreExistingCheck };
   /** Mirrors `Finding.unpostedReason`. */
   unpostedReason?: UnpostedReason;
+  /**
+   * Where the round put the finding. Records written before this field carry none. The record is written before the
+   * review posts, so `thread` stays when GitHub refuses the comment and the finding falls back to the body.
+   */
+  posted?: PostedPlace;
 }
 
 /**

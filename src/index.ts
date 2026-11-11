@@ -33,7 +33,7 @@ import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { ConfigSource, DashboardData, Finding, FindingSeverity, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
+import { ConfigSource, DashboardData, Finding, FindingSeverity, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -60,6 +60,7 @@ import {
   updateProgressDashboard,
   dismissPreviousReviews,
   postReview,
+  capNotes,
   formatOpenBlockers,
   unreadRecordsLine,
   withheldSummary,
@@ -1617,7 +1618,12 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   const listed = new Set(result.openLeads);
   // Kept findings are copies of the judged ones, so a judged finding counts as kept by its file, line and title.
   const keptKeys = new Set(result.findings.map(findingKey));
-  const unpostedReasons = new Map((result.unpostedNotes ?? []).map(f => [findingKey(f), f.unpostedReason]));
+  const unpostedReasons = new Map<string, UnpostedReason | undefined>([
+    ...(result.unpostedNotes ?? []).map(f => [findingKey(f), f.unpostedReason] as const),
+    ...(result.unpostedPreExisting ?? []).map(f => [findingKey(f), 'pre_existing'] as const),
+    ...(result.memorySuppressed ?? []).map(f => [findingKey(f), 'memory_suppression'] as const),
+    ...(result.staticSignalMatches ?? []).map(m => [findingKey({ ...m, title: m.droppedTitle }), 'static_signal_match'] as const),
+  ]);
   const judgeDecisions = allJudgedForDashboard.map(f => {
     const judgeKept = f.severity !== 'ignore' && !listed.has(f);
     const originalSeverity = judgeKept
@@ -1632,7 +1638,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
       // A finding a later step took out counts as dropped below, so it is not listed as kept here.
       kept: judgeKept && keptKeys.has(findingKey(f)),
       ...(listed.has(f) && { listed: true as const }),
-      ...(unpostedReason && { unpostedReason }),
+      ...(judgeKept && unpostedReason && { unpostedReason }),
       originalSeverity,
     };
   });
@@ -1911,6 +1917,7 @@ async function runFullReview(
     const reviewed = withLockfiles(diff, lockfiles);
     addCodeContext(result.findings, reviewed);
     tagFindingOrigins(result.findings, reviewed, options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
+    if (priorRoundCount > 0 && (options.fullReview || !priorChange)) result.originsWithoutPrior = true;
     // Only the diff since the last round shows a line the push moved or restored, so without it no line counts as reviewed for certain.
     if (!options.fullReview) hideSeenNotes(result, interRoundDiff === undefined ? undefined : reviewed);
 
@@ -1926,6 +1933,8 @@ async function runFullReview(
     blockOnOpenThreads(result, stillOpen.map(t => ({ ...t, recordedGrade: 'blocker' as const })));
     const unreadRecords = withheld ? recap.unreadRecords ?? [] : undefined;
     const replies = await replyInOpenThreads(run, result);
+    // After the replies, so a note whose reply failed competes for a place like any other note.
+    capNotes(result, recap.previousFindings, config.review?.notes);
     const context = buildContext();
     const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
     let posted: Awaited<ReturnType<typeof postRound>>;

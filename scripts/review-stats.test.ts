@@ -101,9 +101,24 @@ describe('review stats', () => {
       },
       usage: { estimatedCostUsd: 1 },
     });
+    // A record that says where each finding went is read as it says: a finding under an earlier thread is left out, and
+    // one posted again beside a matching earlier thread counts. A round that tagged origins without the earlier change
+    // counts its findings, but not as first raised later.
+    const placed: Record<number, RoundContext['findings']> = {
+      3: {
+        count: 3, severityCounts: {},
+        entries: [
+          { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed', posted: 'body' },
+          { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'new', posted: 'earlier_thread' },
+          { ...makeFindingFingerprintEntry({ severity: 'warning', title: 'Minor', lineStart: 10 }), origin: 'reviewed', posted: 'thread' },
+        ],
+      },
+      4: { count: 1, severityCounts: {}, originsWithoutPrior: true, entries: [{ ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'new', posted: 'thread' }] },
+    };
     const later = [2, 3, 4, 5].map(round => makeRoundContext(round, {
       meta: { prNumber: 2, commitSha: `c${round}`, round, timestamp: 't', mankiVersion: '7', ...(round === 2 && { outcome: 'READY' as const }) },
       judge: { summary: '', ...(round === 2 && { interRoundDiffState: 'changed', interRoundDiffTruncated: true }), ...(round >= 4 && { interRoundDiffState: 'empty' }) },
+      ...(placed[round] && { findings: placed[round] }),
     }));
     // An incomplete round is counted apart: none of its findings, cost or round number reaches another figure.
     // It follows the approval and is no round after it, and its finding on reviewed code counts nowhere.
@@ -112,7 +127,8 @@ describe('review stats', () => {
       findings: { count: 1, severityCounts: {}, entries: [{ ...makeFindingFingerprintEntry({ severity: 'blocker' }), origin: 'reviewed' }] },
       usage: { estimatedCostUsd: 9 },
     });
-    const two = prRecords('o/r', 2, { reviews: [reader, later[0], failed, ...later.slice(1)].map((context, i) => review(100 + i, context)), threadComments: [] });
+    const earlierThread = { id: 80, body: '**Warning**: Minor <!-- manki:warning:Minor -->', user: bot, pull_request_review_id: 100, path: 'src/a.ts', line: 10 };
+    const two = prRecords('o/r', 2, { reviews: [reader, later[0], failed, ...later.slice(1)].map((context, i) => review(100 + i, context)), threadComments: [earlierThread] });
     expect([two.rounds.length, two.incompleteRounds]).toEqual([5, [failed]]);
 
     const unreviewed = prRecords('o/r', 3, { reviews: [{ id: 200, body: 'A person\'s review.', user: person }], threadComments: [] });
@@ -125,7 +141,7 @@ describe('review stats', () => {
       approvedRounds: 2, roundsAfterApproval: [3],
       severities: {
         blocker: { posted: 1, inApprovedRounds: 0, raisedLater: 0, onReviewedCode: 0 },
-        warning: { posted: 2, inApprovedRounds: 1, raisedLater: 1, onReviewedCode: 1 },
+        warning: { posted: 5, inApprovedRounds: 1, raisedLater: 3, onReviewedCode: 3 },
         suggestion: { posted: 2, inApprovedRounds: 2, raisedLater: 1, onReviewedCode: 0 },
       },
       blockerOutcomes: { fixed: 1, withdrawn: 1, other: 1 },
@@ -151,10 +167,10 @@ describe('review stats', () => {
       '| severity | total | per round | in approved rounds | per approved round | first raised in a later round, on code an earlier round reviewed |',
       '| --- | ---: | ---: | ---: | ---: | ---: |',
       '| blocker | 1 | 0.14 | 0 | 0.00 | - |',
-      '| warning | 2 | 0.29 | 1 | 0.50 | 100% (1 of 1) |',
+      '| warning | 5 | 0.71 | 1 | 0.50 | 100% (3 of 3) |',
       '| suggestion | 2 | 0.29 | 2 | 1.00 | 0% (0 of 1) |',
       '| nitpick | 0 | 0.00 | 0 | 0.00 | - |',
-      '| all | 5 | 0.71 | 3 | 1.50 | 50% (1 of 2) |',
+      '| all | 8 | 1.14 | 3 | 1.50 | 75% (3 of 4) |',
     ].join('\n'));
     expect(report).toContain('whether or not that commit fixed it.\n\n| severity | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| warning | 2 | 1 | 0 | 1 | 50% | 0% |\n\n## Finders');
     expect(report).toContain('- Blocker threads: 3, fixed 1, withdrawn 1, other 1');
@@ -193,12 +209,18 @@ describe('review stats', () => {
         }, makeFindingFingerprintEntry({ severity: 'nitpick' }), {
           // The reason a note was left out counts ahead of a pre-existing claim the diff contradicted.
           ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'reviewed', unpostedReason: 'reviewed_code', preExisting: { reason: 'Old.', check: 'touches_diff' },
-        }, { ...makeFindingFingerprintEntry({ severity: 'nitpick' }), origin: 'earlier', raisedIn: 1, unpostedReason: 'listed_earlier' }],
+        }, { ...makeFindingFingerprintEntry({ severity: 'nitpick' }), origin: 'earlier', raisedIn: 1, unpostedReason: 'listed_earlier' }, { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), unpostedReason: 'note_cap', posted: 'record' }],
       },
       judge: {
         summary: '', fixClaimedThreads: ['T1', 'T2'],
         inPrSuppressedCount: 1, ratchetSuppressedCount: 2, resolvedThreadSuppressedCount: 3, ownProposalDemotedCount: 4,
-        dropped: [{ title: 't', file: 'a', line: 1, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'r' }] }],
+        // A drop takes its severity from its last grade step. The counts cover the drops the record does not list.
+        dropped: [
+          { title: 't', file: 'a', line: 1, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'r' }] },
+          { title: 't', file: 'a', line: 2, reviewers: [], gradePath: [{ from: 'warning', to: 'ignore', by: 'in_pr_suppression' }] },
+          { title: 't', file: 'a', line: 3, reviewers: [], gradePath: [{ from: 'suggestion', to: 'warning', by: 'judge' }, { from: 'warning', to: 'ignore', by: 'ratchet' }] },
+          { title: 't', file: 'a', line: 4, reviewers: [] },
+        ],
       },
       dedup: { testNitSuppressedCount: 5, staticSignalMatches: [{ droppedTitle: 't', file: 'a', line: 1, tool: 'eslint', ruleId: 'r' }] },
       diff: { lines: 1, additions: 1, deletions: 0, filesReviewed: 1, fileTypes: {}, changedSinceLastRound: 3 },
@@ -237,13 +259,16 @@ describe('review stats', () => {
       'Static analysis sources': {
         'checks ran': 1, 'code_scanning skipped: the token cannot read it (HTTP 403)': 1, 'dependency_review skipped: Bad\n| injected | row': 1, 'secrets ran': 1,
       },
-      'Grade changes': { 'unproven: blocker to warning': 1, 'judge: warning to suggestion': 1, 'refutation: warning to ignore': 1 },
+      'Grade changes': {
+        'unproven: blocker to warning': 1, 'judge: warning to suggestion': 1, 'refutation: warning to ignore': 1, 'in_pr_suppression: warning to ignore': 1,
+        'judge: suggestion to warning': 1, 'ratchet: warning to ignore': 1,
+      },
       'Pre-existing claims (how each was checked)': { pre_existing: 1, touches_diff: 1 },
       'Memory suppressions (findings hidden per suppression)': { 'sup-1': 1 },
       'Findings recorded without posting (per reason and severity)': {
         'memory_suppression, nitpick': 1, 'pre_existing, suggestion': 1, 'no reason recorded, nitpick': 1,
-        'reviewed_code, suggestion': 1, 'listed_earlier, nitpick': 1,
-        'in_pr_suppression, severity not recorded': 1, 'ratchet, severity not recorded': 2, 'resolved_thread, severity not recorded': 3,
+        'reviewed_code, suggestion': 1, 'listed_earlier, nitpick': 1, 'note_cap, suggestion': 1,
+        'in_pr_suppression, warning': 1, 'ratchet, warning': 1, 'ratchet, severity not recorded': 1, 'resolved_thread, severity not recorded': 3,
         'own_proposal, severity not recorded': 4, 'test_file, severity not recorded': 5, 'static_signal, severity not recorded': 1,
       },
       'Verdict reader per slice': { READY: 1, ADDRESS_FIRST: 1 },

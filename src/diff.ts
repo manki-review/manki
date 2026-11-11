@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import parseDiff from 'parse-diff';
 import { minimatch } from 'minimatch';
 
-import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, ReviewResult, RoundDiffExcludedFile, UnpostedReason, isNote, isSecurityFinding } from './types';
+import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, ReviewResult, RoundDiffExcludedFile, UnpostedReason, canLeaveOut } from './types';
 
 /**
  * Parse a unified diff string into structured data.
@@ -332,7 +332,7 @@ export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: 
  */
 export function hideSeenNotes(result: ReviewResult, compared: ParsedDiff | undefined): void {
   const reasonFor = (f: Finding): UnpostedReason | undefined => {
-    if (!isNote(f.severity) || f.threadId || f.answeredIn || f.toolSource || isSecurityFinding(f.tags, f.reviewers)) return undefined;
+    if (!canLeaveOut(f) || f.threadId || f.answeredIn) return undefined;
     if (f.origin === 'earlier') return 'listed_earlier';
     return f.origin === 'reviewed' && compared?.files.some(file => file.path === f.file) ? 'reviewed_code' : undefined;
   };
