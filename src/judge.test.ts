@@ -321,10 +321,10 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toMatch(/capped at `note`|fact you cannot check/);
   });
 
-  it('never drops or caps a finding for code the judge cannot see or a path it doubts is reached, asks for the cell every finding earns if its doubts hold, and says tools check it only when they do', () => {
+  it('never drops or caps a finding above a note for code the judge cannot see or a path it doubts is reached, asks for the cell every finding earns if its doubts hold, and says tools check it only when they do', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     const section = prompt.slice(prompt.indexOf('## Code You Cannot See'), prompt.indexOf('## Grade Stability'));
-    expect(section).toContain('Code you cannot see and a path you cannot follow are no evidence against a finding, so on their own they never drop a finding and never lower its row. State the cell such a finding earns if that code is as the finding says and the path exists, and list what you could not see in `doubts`, by When You Are Unsure: a `blocker` cell whose failure you cannot follow in the code shown is graded `warning`, and a `warning` cell is posted only once it is proven.');
+    expect(section).toContain('Code you cannot see and a path you cannot follow are no evidence against a finding, so on their own they never drop a finding and never lower its row. State the cell such a finding earns if that code is as the finding says and the path exists, and list what you could not see in `doubts`, by When You Are Unsure: a `blocker` cell whose failure you cannot follow in the code shown is graded `warning`, and a `warning` cell is posted only once it is proven. A finding whose cell gives `note` is the one exception: mark it `ignore`, as When You Are Unsure says.');
     expect(section).toContain('A finding that cites a line listed under Uses Outside the Diff rests on code shown, so grade it on its merits like any finding.');
     expect(section).toContain('A doubt that the failure is reached is the same kind of gap: no caller in the code shown passes the value that triggers it, the path looks latent, or a real input may never take it.');
     expect(section).toContain("A path through a library's public API is reached, since any caller of that API can pass a value it accepts, with no caller inside the repository. Code this PR adds is reached the same way: a function, method or handler the PR adds is there to be called, so a missing caller is no doubt, and calling it as its name, signature and comments say is normal use.");
@@ -5527,6 +5527,8 @@ const GRADING_CASES = [
   'refuted-by-shown-guard',
   'proven-warning',
   'unproven-warning',
+  'unseen-note',
+  'shown-note',
 ] as const;
 
 const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix'];
@@ -5566,7 +5568,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, and a warning the code shown proves or leaves open, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, a warning the code shown proves or leaves open, and a note the code shown proves or leaves open, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 

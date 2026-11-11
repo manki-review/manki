@@ -1,0 +1,18 @@
+{
+  "name": "shown-note",
+  "case": "shown-note",
+  "allowed": [
+    "note"
+  ],
+  "finding": {
+    "title": "The summary says batches of 20, but `BatchSize` is 50",
+    "file": "src/Mail/Outbox.cs",
+    "line": 12,
+    "description": "The new doc summary of `FlushAsync` says the queued messages go out in batches of 20. The method chunks by `BatchSize`, which line 10 sets to 50, so the summary states a size the code does not use. Say 50, or name the constant.",
+    "severity": "note",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/src/Mail/Outbox.cs b/src/Mail/Outbox.cs\nindex 1111111..2222222 100644\n--- a/src/Mail/Outbox.cs\n+++ b/src/Mail/Outbox.cs\n@@ -9,4 +9,13 @@ public sealed class Outbox\n {\n     private const int BatchSize = 50;\n \n+    /// <summary>Sends the queued messages in batches of 20.</summary>\n+    public async Task FlushAsync(CancellationToken ct)\n+    {\n+        foreach (var batch in _queue.Chunk(BatchSize))\n+        {\n+            await _transport.SendAsync(batch, ct);\n+        }\n+    }\n+\n     public int Pending => _queue.Count;\n"
+}
