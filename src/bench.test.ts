@@ -12,6 +12,15 @@ import type { Finding, FindingSeverity, RoundContext, RoundOutcome } from './typ
 
 jest.mock('@actions/core');
 
+const IN_ACTIONS = process.env.GITHUB_ACTIONS;
+// CI sets `GITHUB_ACTIONS`, which stops any listing of hold-out findings, so each test sets it itself.
+beforeAll(() => {
+  delete process.env.GITHUB_ACTIONS;
+});
+afterAll(() => {
+  if (IN_ACTIONS !== undefined) process.env.GITHUB_ACTIONS = IN_ACTIONS;
+});
+
 const CASES_DIR = join(__dirname, '..', 'bench', 'cases');
 const HOLDOUT_DIR = join(__dirname, '..', 'bench', 'holdout');
 const SHA_A = 'a'.repeat(40);
@@ -308,7 +317,7 @@ describe('llmMatcher', () => {
       writeFileSync(path, JSON.stringify({ a: kept, b: { verdict: 'MATCH', finding: 0, reason: 'old shape' }, c: { verdict: 'MAYBE', findings: [], reason: '' }, d: null }));
       expect([...loadMatcherCache(path)]).toEqual([['a', kept]]);
       writeFileSync(path, '{"a": {"verdict"');
-      expect(() => loadMatcherCache(path)).toThrow(`The matcher cache ${path} is not valid JSON. Delete it to start a fresh one:`);
+      expect(() => loadMatcherCache(path)).toThrow(new Error(`The matcher cache ${path} is not valid JSON. Delete it to start a fresh one.`));
       writeFileSync(path, '[]');
       expect(() => loadMatcherCache(path)).toThrow(`The matcher cache ${path} is not a JSON object.`);
     } finally {
@@ -316,8 +325,9 @@ describe('llmMatcher', () => {
     }
   });
 
-  it('throws on a reply without a verdict', async () => {
-    await expect(llmMatcher(clientAnswering('{"answer": "yes"}'), 'model-a', new Map())(item, findings)).rejects.toThrow('no verdict for K1');
+  it('throws on a reply without a verdict or that is no JSON, without quoting the reply', async () => {
+    await expect(llmMatcher(clientAnswering('{"answer": "yes"}'), 'model-a', new Map())(item, findings)).rejects.toThrow(/^The matcher answered no verdict for K1$/);
+    await expect(llmMatcher(clientAnswering('The finding says the lock is dropped'), 'model-a', new Map())(item, findings)).rejects.toThrow(/^The matcher's answer for K1 is not a JSON object$/);
   });
 });
 
@@ -660,6 +670,70 @@ describe('runBench and buildReport', () => {
     expect(review).toHaveBeenCalledTimes(1);
   });
 
+  it('prints nothing of a hold-out case but its id and counts: no finding text, review log, source or failure reason', async () => {
+    const SECRET = 'HOLDOUT-TEXT';
+    const cases: BenchCase[] = [{ ...benchCase, id: 'shown-1', title: 'SHOWN-TEXT', source: 'source SHOWN-TEXT' }, { ...benchCase, id: 'held-1', set: 'holdout', title: SECRET, source: `source ${SECRET}` }];
+    const seen = new Map<string, number>();
+    // Each case gets one complete review with a blocker and a warning the key does not list, then one that fails. Every review logs.
+    const review = jest.fn(async ({ title: text }: LocalReviewInput) => {
+      process.stdout.write(`info: finding ${text}\n`);
+      process.stderr.write(`warning: finding ${text}\n`);
+      seen.set(text!, (seen.get(text!) ?? 0) + 1);
+      if (seen.get(text!) === 2) throw new Error(`failed on ${text}`);
+      const finding = (severity: FindingSeverity) => makeFinding({ severity, title: `title ${text}`, description: `description ${text}`, howToFix: `fix ${text}`, suggestedFix: `code ${text}`, file: `src/${text}.rs` });
+      return makeReview('ADDRESS_FIRST', [finding('blocker'), finding('warning')]);
+    });
+    const none: Matcher = async () => ({ verdict: 'NONE', findings: [], reason: 'none' });
+    const options = { runs: 2, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, review };
+    const [out, err] = [jest.spyOn(process.stdout, 'write').mockImplementation(() => true), jest.spyOn(process.stderr, 'write').mockImplementation(() => true)];
+    let logged: string;
+    let results: Awaited<ReturnType<typeof runBench>>;
+    try {
+      results = await runBench(cases, { ...options, matcher: none });
+      logged = [...out.mock.calls, ...err.mock.calls].map(call => String(call[0])).join('');
+    } finally {
+      out.mockRestore();
+      err.mockRestore();
+    }
+    expect(review).toHaveBeenCalledTimes(4);
+    expect(logged).toContain('info: finding SHOWN-TEXT\nwarning: finding SHOWN-TEXT\n');
+    expect(logged).not.toContain(SECRET);
+
+    const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, results);
+    // The report itself keeps the text, which the hold-out pass reads.
+    expect(JSON.stringify(report.variants[0].cases[1])).toContain(`description ${SECRET}`);
+    const printed = () => [
+      formatBenchSummary(report), formatUnmatched(report.variants), formatGate(gateReports([report, { ...report, startedAt: '2026-11-09T01:00:00.000Z' }], [report])),
+    ].join('\n');
+    for (const text of ['shown-1 (source SHOWN-TEXT)', 'run 2: FAILED: failed on SHOWN-TEXT', 'src/SHOWN-TEXT.rs:1: title SHOWN-TEXT', '    description SHOWN-TEXT']) expect(printed()).toContain(text);
+    expect(printed()).toContain('\nheld-1\n');
+    expect(printed()).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates');
+    expect(printed()).toContain('  run 2: FAILED: the reason is in the report\n');
+    expect(printed()).not.toContain(SECRET);
+
+    // Only an explicit request lists hold-out findings, and never in a workflow job, whose log and summary are public.
+    expect(formatUnmatched(report.variants, ['holdout'])).toContain(`src/${SECRET}.rs:1: title ${SECRET}`);
+    process.env.GITHUB_ACTIONS = 'true';
+    try {
+      expect(() => formatUnmatched(report.variants, ['holdout'])).toThrow('The findings of hold-out cases are not listed in a workflow job');
+      expect(() => formatUnmatched(report.variants, ['tuning', 'holdout'])).toThrow('The findings of hold-out cases are not listed in a workflow job');
+      expect(printed()).not.toContain(SECRET);
+    } finally {
+      delete process.env.GITHUB_ACTIONS;
+    }
+
+    // An error about a hold-out case names the case and nothing the case, its config or a model's reply holds.
+    const rekeyed = cases.map(c => ({ ...c, keyVersion: 3 }));
+    const quoting: Matcher = async (_item, findings) => {
+      throw new Error(`reply about ${findings[0].title}`);
+    };
+    await expect(rescoreReport(report, [rekeyed[0]], quoting)).rejects.toThrow(/^The matcher failed on case shown-1: reply about title SHOWN-TEXT$/);
+    await expect(rescoreReport(report, [rekeyed[1]], quoting)).rejects.toThrow(/^The matcher failed on case held-1$/);
+    await expect(runBench([cases[1]], { ...options, matcher: none, variants: [{ name: 'bad', overrides: { [SECRET]: true } }] })).rejects.toThrow(/^Variant bad does not load on case held-1$/);
+    expect(() => parseCase(`id: [${SECRET}`, 'held.yml', 'holdout')).toThrow(/^held\.yml: is not valid YAML$/);
+    expect(() => parseCase('id: [SHOWN-TEXT', 'shown.yml')).toThrow(/^shown\.yml: .*SHOWN-TEXT/s);
+  });
+
   it('checks every checkout and every variant before the first review', async () => {
     const review = jest.fn();
     const options = { runs: 1, providerInputs: inputs, matcher: jest.fn(), review };
@@ -996,6 +1070,12 @@ describe('runBenchCommand', () => {
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('The report was matched by claude-sonnet-5-5. Pass --matcher-model claude-sonnet-5-5 to score it again.'));
       expect(await runBenchCommand(['--rescore', report, '--cases', dir, '--case', 'demo-1'])).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('--case does not apply to --rescore'));
+      writeFileSync(join(dir, 'cut.json'), '{"variants": [{"title": "HOLDOUT-TEXT');
+      expect(await runBenchCommand(['--rescore', join(dir, 'cut.json'), '--cases', dir])).toBe(2);
+      expect(stderr).toHaveBeenLastCalledWith(`manki bench: The report ${join(dir, 'cut.json')} is not valid JSON\n`);
+      // The hold-out directory is never read as tuning cases, whose findings are printed.
+      expect(await runBenchCommand(['--cases', join('bench', 'holdout', '.')])).toBe(2);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('--cases takes the tuning cases. Pass --holdout for the cases in bench/holdout.'));
 
       // A stored case with no case file loaded is named, and is not counted as scored again.
       stdout.mockClear();

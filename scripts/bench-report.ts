@@ -1,7 +1,8 @@
 /**
  * The steps of the benchmark workflow around `manki bench`. It lists the cases to run as a job matrix, merges the
  * report of each case job into one, applies the release gate to merged reports, and lists the findings of a report
- * that match no key item. It calls no model.
+ * that match no key item. It calls no model. Of a hold-out case it prints the id and counts only, except for
+ * `unmatched --set holdout`, which refuses to run in a workflow job.
  *
  * Usage:
  *   npm run bench-report -- matrix --set <holdout|tuning|both> [--cases "<id> ..."]
@@ -13,7 +14,7 @@
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-import { BenchCase, BenchReport, CaseSet, formatBenchSummary, formatComparison, formatGate, formatUnmatched, gateReports, loadCases, mergeReports, parseCase } from '../src/bench';
+import { BenchCase, BenchReport, CaseSet, formatBenchSummary, formatComparison, formatGate, formatUnmatched, gateReports, loadCases, mergeReports, parseCase, readReport } from '../src/bench';
 
 const SET_DIRS: Record<CaseSet, string> = { tuning: 'bench/cases', holdout: 'bench/holdout' };
 const SET_CHOICES: Record<string, CaseSet[]> = { holdout: ['holdout'], tuning: ['tuning'], both: ['tuning', 'holdout'] };
@@ -74,10 +75,6 @@ export function formatReportSummary(report: BenchReport): string {
     '</details>',
     '',
   ].join('\n');
-}
-
-function readReport(file: string): BenchReport {
-  return JSON.parse(readFileSync(file, 'utf-8')) as BenchReport;
 }
 
 function parseArgs(args: string[]): Map<string, string[]> {

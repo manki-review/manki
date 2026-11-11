@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { parse as parseYaml } from 'yaml';
 
 import { runCliCommand } from './cli';
@@ -184,9 +184,17 @@ function checkFollowUp(
   });
 }
 
-/** Parses and checks one case file. Throws an error naming the file and the field that is wrong. */
+/**
+ * Parses and checks one case file. Throws an error naming the file and the field that is wrong. A YAML error quotes
+ * the file, so for a hold-out case it names only the file.
+ */
 export function parseCase(text: string, file: string, set: CaseSet = 'tuning'): BenchCase {
-  const raw = parseYaml(text) as unknown;
+  let raw: unknown;
+  try {
+    raw = parseYaml(text);
+  } catch (error) {
+    throw caseError(file, set === 'holdout' ? 'is not valid YAML' : (error as Error).message);
+  }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw caseError(file, 'a case must be a mapping');
   const doc = raw as Record<string, unknown>;
   const repo = requireString(doc, 'repo', file);
@@ -296,10 +304,14 @@ export function llmMatcher(client: LLMClient, model: string, cache: Map<string, 
     const cached = cache.get(key);
     if (cached) return cached;
     const response = await client.sendMessage(MATCHER_SYSTEM_PROMPT, matcherMessage(item, findings), { effort: 'high' });
-    const parsed = JSON.parse(extractJSON(response.content, 'object')) as { verdict?: unknown; findings?: unknown; reason?: unknown };
-    if (parsed.verdict !== 'MATCH' && parsed.verdict !== 'PARTIAL' && parsed.verdict !== 'NONE') {
-      throw new Error(`The matcher answered no verdict for ${item.id}: ${response.content.slice(0, 200)}`);
+    // The reply can quote a finding or the key, and an error is printed, so neither error holds any of the reply.
+    let parsed: { verdict?: unknown; findings?: unknown; reason?: unknown };
+    try {
+      parsed = JSON.parse(extractJSON(response.content, 'object')) as typeof parsed;
+    } catch {
+      throw new Error(`The matcher's answer for ${item.id} is not a JSON object`);
     }
+    if (parsed.verdict !== 'MATCH' && parsed.verdict !== 'PARTIAL' && parsed.verdict !== 'NONE') throw new Error(`The matcher answered no verdict for ${item.id}`);
     const listed = Array.isArray(parsed.findings) ? parsed.findings : [];
     const indexes = [...new Set(listed.filter((n): n is number => Number.isInteger(n) && n >= 1 && n <= findings.length).map(n => n - 1))];
     const reason = typeof parsed.reason === 'string' ? parsed.reason : '';
@@ -326,8 +338,9 @@ export function loadMatcherCache(path: string): Map<string, MatchDecision> {
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, 'utf-8'));
-  } catch (error) {
-    throw new Error(`The matcher cache ${path} is not valid JSON. Delete it to start a fresh one: ${error instanceof Error ? error.message : String(error)}`);
+  } catch {
+    // The parser's message quotes the file, which holds what the matcher said about findings.
+    throw new Error(`The matcher cache ${path} is not valid JSON. Delete it to start a fresh one.`);
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`The matcher cache ${path} is not a JSON object. Delete it to start a fresh one.`);
   return new Map(Object.entries(raw).filter((entry): entry is [string, MatchDecision] => isMatchDecision(entry[1])));
@@ -754,6 +767,11 @@ interface Rescored {
   left: Array<{ id: string; reason: string }>;
 }
 
+/** The detail of an error about a case, which is left out for a hold-out case, since it can quote the case or its findings. */
+function caseDetail(c: Pick<BenchCase, 'set'>, error: Error): string {
+  return c.set === 'holdout' ? '' : `: ${error.message}`;
+}
+
 /** Why the stored runs of a case cannot be scored against `benchCase` with certainty, if anything. */
 function unscorable(benchCase: BenchCase, runs: RunScore[]): string | undefined {
   if (runs.some(run => !!run.followUp !== !!benchCase.priorRound)) return `its runs reviewed a ${benchCase.priorRound ? 'first' : 'follow-up'} round`;
@@ -790,7 +808,10 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
       const runs: RunScore[] = [];
       for (const run of c.runs) {
         const review = { findings: run.findings as MatchedFinding[], outcome: run.outcome, complete: true, ...(run.followUp && { resolved: run.followUp.resolved }) };
-        runs.push(run.complete ? { ...run, ...await scoreKey(benchCase, review, matcher) } : run);
+        const score = () => scoreKey(benchCase, review, matcher).catch((error: Error) => {
+          throw new Error(`The matcher failed on case ${c.id}${caseDetail(benchCase, error)}`);
+        });
+        runs.push(run.complete ? { ...run, ...await score() } : run);
       }
       rescored.add(c.id);
       again.push(caseReport(benchCase, runs));
@@ -987,12 +1008,18 @@ function minutes(ms: number | null): string {
 
 const SET_LABELS: Record<CaseSet, string> = { tuning: 'tuning', holdout: 'hold-out' };
 
+/** Whether this runs in a GitHub Actions job, whose log and summary anyone can read. */
+function inWorkflowJob(): boolean {
+  return process.env.GITHUB_ACTIONS === 'true';
+}
+
 /**
  * Lists each blocker and each warning on a case of `sets` that matched no key item, by variant, case and complete run,
  * with its place and description, so each can be checked against the code. A real defect becomes a key item, and the
  * case's key version goes up. Returns an empty string when there is none.
  */
 export function formatUnmatched(variants: VariantReport[], sets: CaseSet[] = ['tuning']): string {
+  if (sets.includes('holdout') && inWorkflowJob()) throw new Error('The findings of hold-out cases are not listed in a workflow job, whose log and summary are public');
   const oneLine = (text: string) => text.replace(/\s*[\r\n]+\s*/g, ' ');
   const list = (severity: FindingSeverity) => variants.flatMap(v => v.cases.filter(c => sets.includes(c.set)).flatMap(c => c.runs.flatMap((run, i) => {
     if (!run.complete) return [];
@@ -1064,14 +1091,16 @@ export function formatBenchSummary(report: BenchReport): string {
   for (const variant of report.variants) {
     lines.push(`== ${variant.name}`);
     for (const c of variant.cases) {
-      lines.push(`${c.id} (${c.source})`);
+      // A hold-out case is printed as its id and counts only: its source and the reason of a failed run are free text.
+      const shown = c.set !== 'holdout';
+      lines.push(shown ? `${c.id} (${c.source})` : c.id);
       for (const item of c.items) {
         lines.push(`  ${item.id} ${TIER_LABELS[item.tier]} ${item.severity}: ${item.caught}/${item.runs}${item.partial ? `, ${item.partial} partial` : ''}`);
       }
       for (const [i, run] of c.runs.entries()) {
         const reads = run.finders.map(f => `${f.name} ${f.filesRead}`).join(', ') || 'none';
         lines.push(run.error
-          ? `  run ${i + 1}: ${run.outcome}: ${run.error}`
+          ? `  run ${i + 1}: ${run.outcome}: ${shown ? run.error : 'the reason is in the report'}`
           : `  run ${i + 1}: ${run.outcome}, recall ${percent(run.mustCatchRecall)}, ${run.falseBlockers} false blockers, ${unexpectedWarnings(c, run)} unexpected warnings, ${run.extraFindings} extra, ${run.duplicates} duplicates${run.followUp ? `, resolved ${run.followUp.resolvedRight} right and ${run.followUp.resolvedWrong} wrong, ${run.followUp.repeats} repeats` : ''}, files read ${reads}, $${run.costUsd.toFixed(2)}`);
       }
     }
@@ -1114,6 +1143,20 @@ function failedRun(error: unknown, review?: LocalReview, outcome = 'FAILED'): Ru
   };
 }
 
+/** Wraps `work` so that nothing reaches stdout or stderr while it runs. */
+function silenced<A extends unknown[], R>(work: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return async (...args) => {
+    const [out, err] = [process.stdout.write, process.stderr.write];
+    process.stdout.write = process.stderr.write = (() => true) as typeof process.stdout.write;
+    try {
+      return await work(...args);
+    } finally {
+      process.stdout.write = out;
+      process.stderr.write = err;
+    }
+  };
+}
+
 /**
  * Returns the time the related repos of a case are read at: the oldest author date among the change's own commits,
  * from the merge base of `base` and `head` to `head`. A commit replayed into another repository keeps its author date,
@@ -1147,7 +1190,7 @@ async function changeDate(checkout: string, c: BenchCase): Promise<string> {
  * starts. Only an abort through `signal` stops the bench.
  */
 export async function runBench(cases: BenchCase[], options: BenchOptions): Promise<VariantResults[]> {
-  const { checkouts, review = reviewLocal, variants = [{ name: 'base', overrides: {} }] } = options;
+  const { checkouts, variants = [{ name: 'base', overrides: {} }] } = options;
   for (const c of cases) {
     const checkout = checkouts.get(c.repo);
     if (!checkout) throw new Error(`No checkout for ${c.repo}, which case ${c.id} needs. Pass --checkout ${c.repo}=<dir>.`);
@@ -1174,7 +1217,7 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
     for (const { name, overrides } of variants) {
       if (Object.keys(overrides).length === 0) continue;
       await load(c, overrides).catch((reason: Error) => {
-        throw new Error(`Variant ${name} does not load on case ${c.id}: ${reason.message}`);
+        throw new Error(`Variant ${name} does not load on case ${c.id}${caseDetail(c, reason)}`);
       });
     }
   }
@@ -1184,6 +1227,8 @@ export async function runBench(cases: BenchCase[], options: BenchOptions): Promi
     for (const benchCase of cases) {
       const runs: RunScore[] = [];
       const configError = invalid.get(benchCase.id);
+      // A review logs the titles of its findings, so the review of a hold-out case logs nothing.
+      const review = benchCase.set === 'holdout' ? silenced(options.review ?? reviewLocal) : options.review ?? reviewLocal;
       for (let i = 0; i < options.runs; i++) {
         if (configError) {
           runs.push(failedRun(configError, undefined, CONFIG_INVALID));
@@ -1320,6 +1365,16 @@ export function resolveVariants(args: Pick<BenchArgs, 'variants' | 'sets'>): Var
   });
 }
 
+/** Reads a stored report. A parser's message quotes the file, which holds findings, so the error names only the file. */
+export function readReport(path: string): BenchReport {
+  const text = readFileSync(path, 'utf-8');
+  try {
+    return JSON.parse(text) as BenchReport;
+  } catch {
+    throw new Error(`The report ${path} is not valid JSON`);
+  }
+}
+
 function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -1335,12 +1390,14 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     }
     const providerInputs = readProviderInputsFromEnv();
     if (!hasAnyProviderCredentials(providerInputs)) throw new Error(`No credentials set.\n\n${USAGE}`);
+    // Cases given as tuning cases are printed with their findings, so the hold-out directory is never taken as one.
+    if (resolve(args.cases) === resolve(HOLDOUT_DIR)) throw new Error(`--cases takes the tuning cases. Pass --holdout for the cases in ${HOLDOUT_DIR}.`);
     if (args.rescore && args.only.length > 0) throw new Error('--case does not apply to --rescore, which scores every case with a changed key again');
     const cases = loadCases({ tuning: args.cases, ...(args.holdout && { holdout: HOLDOUT_DIR }) }, args.only);
     const cache = loadMatcherCache(args.cache);
     const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
     if (args.rescore) {
-      const stored = JSON.parse(readFileSync(args.rescore, 'utf-8')) as BenchReport;
+      const stored = readReport(args.rescore);
       // A report holds one matcher model, and the gate refuses to compare reports matched by different ones.
       if (stored.matcherModel !== args.matcherModel) throw new Error(`The report was matched by ${stored.matcherModel}. Pass --matcher-model ${stored.matcherModel} to score it again.`);
       const { report, rescored, left } = await rescoreReport(stored, cases, matcher).finally(() => writeJson(args.cache, Object.fromEntries(cache)));

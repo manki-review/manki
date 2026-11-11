@@ -27,7 +27,7 @@ npm run check-changelog-version
    The first baseline with two runs is v7.3.2's, runs 42729695122 and 42733124985. Both reviewed commit 178ae7729f61adcbec86311c310e53945adea75c.
 
    The hold-out pass: a false blocker or an unexpected warning of a hold-out run can be a real defect the key does not list, and nobody who works on Manki may read the hold-out cases to tell. The isolated agent that maintains the hold-out cases does it, in a session that does no other work on Manki:
-   - It downloads the run's `bench-report` artifact and lists the findings that match no key item, each with its case, location and description: `npm run bench-report -- unmatched --report report.json --set holdout`.
+   - It downloads the run's `bench-report` artifact and lists the findings that match no key item, each with its case, location and description: `npm run bench-report -- unmatched --report report.json --set holdout`. The command refuses to list hold-out findings in a workflow job, whose log is public.
    - It checks each unmatched blocker and each unexpected warning against the code at the case's head. It adds each real blocker to the case's `must_catch`, each real warning to `must_catch` or `nice_to_have`, and bumps the case's `key_version`.
    - It reports only how many items it added per case id. No title, text or location of a case or a finding leaves that session.
 
