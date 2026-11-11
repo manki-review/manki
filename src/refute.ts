@@ -12,7 +12,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { cellGrade, CheckStatus, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt } from './types';
+import { cellGrade, CheckStatus, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt, breaksRule } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -342,9 +342,12 @@ const doubtsDefect = (finding: Finding): boolean => !!finding.doubts?.some(d => 
 
 const citesNoProof = (finding: Finding): boolean => !finding.evidence?.proof.length;
 
-/** Whether the review posts `finding` only when something proves it. A tool alert and a security finding are posted either way. */
+/**
+ * Whether the review posts `finding` only when something proves it. A tool alert and a security finding are posted
+ * either way. So is a finding that `breaksRule`: the judge confirmed the quoted rule and the cited line that breaks it.
+ */
 export function needsProof(finding: Finding): boolean {
-  return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers);
+  return finding.severity === 'warning' && !finding.toolSource && !isSecurityFinding(finding.tags, finding.reviewers) && !breaksRule(finding);
 }
 
 /** Whether an earlier finding is linked to `finding`. A later step then probably keeps the warning out of the review, but only a certain result takes a warning out of the checks, so this one is checked last. */

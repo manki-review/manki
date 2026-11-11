@@ -595,10 +595,11 @@ describe('refuteBlockers', () => {
       // A warning no cited line proves is checked like a doubted one, and a note is not.
       finding('Warning without proof', { severity: 'warning', ...noProof }),
       finding('Note without proof', { severity: 'note', ...noProof }),
-      // A tool alert is posted whatever a check says, and so is a security finding. A check of one the judge doubts only
-      // settles its status, so it comes after every other warning, which here is past the limit.
+      // A tool alert is posted whatever a check says, and so are a security finding and a finding that breaks a confirmed rule.
+      // A check of one the judge doubts only settles its status, so it comes after every other warning, which here is past the limit.
       finding('Tool alert without proof', { severity: 'warning', toolSource: 'CodeQL', ...noProof }),
       finding('Security warning without proof', { severity: 'warning', tags: ['security'], ...noProof }),
+      finding('Rule warning without proof', { severity: 'warning', rule: { file: 'AGENTS.md', quote: 'Every sum must be checked.', verdict: 'confirmed' }, ...noProof }),
       { ...doubted('Security warning with a doubt', 'warning'), tags: ['security'] },
       doubted('Doubted warning 4', 'warning'),
       doubted('Doubted warning 5', 'warning'),
@@ -637,6 +638,7 @@ describe('refuteBlockers', () => {
       'Doubt in a deleted file': undefined, 'Doubt with no file': undefined, 'No proof in a deleted file': 'no_proof',
       'Left out later with a doubt': undefined, 'Left out later without proof': 'no_proof',
       'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof', 'Security warning with a doubt': 'not_checked',
+      'Rule warning without proof': 'no_proof',
     });
     // The calls of one round share the eight, so a later call checks only what an earlier one left.
     const doubtBudget = { left: 3 };
@@ -659,7 +661,7 @@ describe('refuteBlockers', () => {
     // Before any check, as on a round without tools, only the cited lines decide.
     expect(Object.entries(reasons(findings)).filter(([, reason]) => reason)).toEqual([
       ['No proof in a deleted file', 'no_proof'], ['Left out later without proof', 'no_proof'], ['Warning without proof', 'no_proof'], ['Tool alert without proof', 'no_proof'], ['Security warning without proof', 'no_proof'],
-      ['Second warning without proof', 'no_proof'],
+      ['Rule warning without proof', 'no_proof'], ['Second warning without proof', 'no_proof'],
     ]);
     // A warning either list names is never shown as proven or confirmed.
     const statuses = Object.fromEntries(result.map(f => [f.title, checkStatus(f)]));

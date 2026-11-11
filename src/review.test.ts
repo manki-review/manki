@@ -2813,7 +2813,8 @@ describe('runReview', () => {
       expect(result.outcome).toBe('ADDRESS_FIRST');
     });
 
-    it('never leaves out a finding that would be a blocker if true, a security finding or a tool alert', async () => {
+    it('never leaves out a finding that would be a blocker if true, a security finding, a tool alert or a finding that breaks a confirmed rule', async () => {
+      const rule = { file: 'AGENTS.md', quote: 'Every migration needs a rollback.' };
       const lowered = (by: 'unproven' | 'build_claim' | 'refutation' | 'judge') => ({ gradePath: [{ from: 'blocker' as const, to: 'warning' as const, by }] });
       const result = await review({
         'The judge held a blocker cell down': { ...proof, doubts, gradeIfConfirmed: 'blocker', ...checked('unsettled') },
@@ -2823,14 +2824,18 @@ describe('runReview', () => {
         'A blocker the judge lowered': { doubts, ...lowered('judge') },
         'A security finding': { tags: [SECURITY_TAG], doubts },
         'A tool alert': { toolSource: 'CodeQL' },
+        // The judge confirmed the rule and the line that breaks it, so the review shows it without the note of an unconfirmed finding.
+        'A rule blocker without a search': { rule: { ...rule, verdict: 'confirmed' }, tags: ['unproven-blocker'], ...lowered('unproven'), ...checked('unsettled') },
+        'A rule the judge did not confirm': { rule: { ...rule, verdict: 'unproven' }, doubts },
         'A warning nothing proves': { doubts },
       }, true);
 
       expect(shown(result)).toEqual([
         ['The judge held a blocker cell down', 'unconfirmed'], ['A blocker without cited lines', 'unconfirmed'], ['A build failure no CI result reports', 'unconfirmed'],
         ['A finder filed it as a blocker', 'unconfirmed'], ['A blocker the judge lowered', 'unconfirmed'], ['A security finding', 'unconfirmed'], ['A tool alert', undefined],
+        ['A rule blocker without a search', 'unconfirmed'],
       ]);
-      expect(recordedOnly(result)).toEqual([['A warning nothing proves', 'warning', 'no_proof']]);
+      expect(recordedOnly(result)).toEqual([['A rule the judge did not confirm', 'warning', 'no_proof'], ['A warning nothing proves', 'warning', 'no_proof']]);
       expect(result.outcome).toBe('READY');
     });
 
