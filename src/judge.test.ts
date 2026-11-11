@@ -3689,6 +3689,16 @@ describe('mapJudgedToFindings', () => {
     expect(fold(proven, { checks: [], proof: [], emptySearch: '' }).evidence).not.toHaveProperty('emptySearch');
     expect(fold({ ...proven, emptySearch: '' }, { checks: [], proof: [], emptySearch: 'grep x: no match' })).toMatchObject({ severity: 'blocker', evidence: { emptySearch: 'grep x: no match' } });
     expect(fold(undefined, { checks: [], proof: ['src/math.ts:2'], emptySearch: '' })).toMatchObject({ severity: 'blocker', evidence: { proof: ['src/math.ts:2'] } });
+
+    // The kept finding takes the highest grade a finder gave it or a duplicate, so a blocker one finder filed is never the judge's alone.
+    const filedAt = (kept: Finding['severity'], duplicate: Finding['severity']) => mapJudgedToFindings(
+      [makeFinding({ title: 'Overflow in sum', severity: kept, evidence: proven }), makeFinding({ title: 'Sum overflows', severity: duplicate })],
+      judged,
+    )[0];
+    expect(filedAt('suggestion', 'warning')).toMatchObject({ severity: 'blocker', reviewerSeverity: 'warning', gradePath: [{ from: 'suggestion', to: 'blocker', by: 'judge' }] });
+    expect(filedAt('suggestion', 'blocker')).toMatchObject({ severity: 'blocker', reviewerSeverity: 'blocker' });
+    expect(filedAt('warning', 'suggestion')).toMatchObject({ severity: 'blocker', reviewerSeverity: 'warning' });
+    expect(filedAt('blocker', 'warning').reviewerSeverity).toBeUndefined();
   });
 
   it('maps reordered entries by id instead of position or title', () => {
@@ -4242,6 +4252,13 @@ describe('deduplicateFindings', () => {
     expect(deduplicateFindings([findings[0], citing], stays)[0].preExisting).toBeUndefined();
     expect(deduplicateFindings([findings[0], { ...marked, line: 0 }], stays)[0].preExisting).toBeUndefined();
     expect(deduplicateFindings([findings[0], { ...marked, line: 40 }], stays)[0].preExisting).toBe('Old code.');
+
+    // The kept finding takes the highest grade a finder gave any copy, read from where a copy's grade path starts.
+    const raised: Finding = { ...findings[0], severity: 'blocker', reviewerSeverity: 'suggestion', gradePath: [{ from: 'suggestion', to: 'blocker', by: 'judge' }] };
+    const capped: Finding = { ...findings[1], severity: 'warning', gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }] };
+    expect(deduplicateFindings([raised, capped])[0]).toMatchObject({ severity: 'blocker', reviewerSeverity: 'blocker', reviewers: ['R1'] });
+    expect(deduplicateFindings([raised, { ...findings[1], severity: 'warning' }])[0].reviewerSeverity).toBe('warning');
+    expect(deduplicateFindings([raised, { ...findings[1], severity: 'nitpick' }])[0].reviewerSeverity).toBe('suggestion');
   });
 
   it('keeps findings with same title but different files', () => {

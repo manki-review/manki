@@ -25,7 +25,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, IN_PR_SUPPRESSED_TAG, isGradeCell, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
+import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, isGradeCell, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1739,9 +1739,17 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
   return result.filter((_, i) => !folded.has(i));
 }
 
-/** Merges the duplicate `copy` into `survivor`: its reviewers, its prior-round match and open thread, its fix in words and what it cites. */
+/** Returns the grade a finder gave `copy` when it is above every grade a finder gave `survivor`, since the highest counts when finders disagree. */
+function higherFinderGrade(survivor: Finding, copy: Finding): FindingSeverity | undefined {
+  const filed = finderGrade(copy);
+  return SEVERITY_ORDER.indexOf(filed) < SEVERITY_ORDER.indexOf(finderGrade(survivor)) ? filed : undefined;
+}
+
+/** Merges the duplicate `copy` into `survivor`: its reviewers, its finder's grade, its prior-round match and open thread, its fix in words and what it cites. */
 export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (copy: Finding) => boolean): void {
   survivor.reviewers = [...new Set([...survivor.reviewers, ...copy.reviewers])];
+  const filed = higherFinderGrade(survivor, copy);
+  if (filed) survivor.reviewerSeverity = filed;
   survivor.sameAs ??= copy.sameAs;
   survivor.variantOf ??= copy.variantOf;
   survivor.threadId ??= copy.threadId;
@@ -1948,8 +1956,9 @@ function hasReversalWord(finding: Finding): boolean {
 }
 
 /**
- * Keeps the first finding per title and file. The kept one stays pre-existing only when every dropped copy was marked
- * so too and `staysPreExisting` accepts it, since a dropped copy's line and proof are lost.
+ * Keeps the first finding per title and file, with the highest grade a finder gave any copy. The kept one stays
+ * pre-existing only when every dropped copy was marked so too and `staysPreExisting` accepts it, since a dropped copy's
+ * line and proof are lost.
  */
 export function deduplicateFindings(findings: Finding[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
   const kept = new Map<string, Finding>();
@@ -1958,10 +1967,12 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
     const first = kept.get(key);
     if (!first) {
       kept.set(key, f);
-    } else if (first.preExisting && (!f.preExisting || (staysPreExisting && !staysPreExisting(f)))) {
-      const { preExisting: _preExisting, ...unmarked } = first;
-      kept.set(key, unmarked);
+      continue;
     }
+    const filed = higherFinderGrade(first, f);
+    const { preExisting, ...unmarked } = first;
+    const stays = preExisting && f.preExisting && (!staysPreExisting || staysPreExisting(f));
+    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...(filed && { reviewerSeverity: filed }) });
   }
   return [...kept.values()];
 }

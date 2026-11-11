@@ -226,7 +226,10 @@ export interface Finding {
   judgeConfidence?: 'high' | 'medium' | 'low';
   tags?: string[];
   originalSeverity?: FindingSeverity;
-  /** Severity the reviewer gave, when the judge graded the finding differently. The judge never sees it. */
+  /**
+   * The highest severity a reviewer gave the finding or a duplicate merged into it. Set when the judge graded the
+   * finding differently, or when a merged duplicate was filed higher. The judge never sees it.
+   */
   reviewerSeverity?: FindingSeverity;
   /** Each change of the finding's severity after the reviewer graded it, in order, with what changed it. */
   gradePath?: GradeStep[];
@@ -493,6 +496,11 @@ export function gradeStep(finding: Finding, to: FindingSeverity, by: GradeChange
   if (finding.severity === to) return { severity: to };
   const step: GradeStep = { from: finding.severity, to, by, ...(reason && { reason: reason.slice(0, MAX_GRADE_REASON_CHARS) }) };
   return { severity: to, gradePath: [...(finding.gradePath ?? []), step] };
+}
+
+/** Returns the highest grade a finder gave `finding` or a duplicate merged into it. */
+export function finderGrade(finding: Pick<Finding, 'reviewerSeverity' | 'gradePath' | 'severity'>): FindingSeverity {
+  return finding.reviewerSeverity ?? finding.gradePath?.[0]?.from ?? finding.severity;
 }
 
 export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
@@ -2018,7 +2026,7 @@ export interface FindingFingerprintEntry {
   tags?: string[];
   /** Pre-demotion severity, when the judge demoted the finding. Mirrors `Finding.originalSeverity`. */
   originalSeverity?: FindingSeverity;
-  /** Reviewer severity, when the judge graded the finding differently. Mirrors `Finding.reviewerSeverity`. */
+  /** Mirrors `Finding.reviewerSeverity`. */
   reviewerSeverity?: FindingSeverity;
   /** Whether a tool confirmed or contradicted the finding, or was silent. Mirrors `Finding.toolEvidence.status`. */
   toolEvidence?: ToolEvidenceStatus;
