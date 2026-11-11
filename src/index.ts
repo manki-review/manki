@@ -22,7 +22,7 @@ import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, wit
 import { loadMemory, MemoryRefusedError, MemorySkip, openMemoryStore, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { findRelatedWork } from './related-work';
-import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, replyClassOf, securityOverridesIn } from './recap';
+import { currentFindingLine, fetchRecapState, FOUND_AGAIN_MARKER, isGuarded, PreviousFinding, RecapState, replyClassOf, securityOverridesIn } from './recap';
 import { disproof } from './refute';
 import { carryBodyWarnings, filesChangedByPush, RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint } from './review';
 import { buildReviewClients, warmUpClients } from './review-clients';
@@ -1063,6 +1063,7 @@ async function collectOpenThreads(
       suggestedFix: f.suggestedFix,
       howToFix: f.howToFix,
       ...(f.answer && { answer: f.answer }),
+      ...(isGuarded(f) && f.authorReplyText && { authorReplyText: f.authorReplyText }),
     }));
 
   // Fetch full file contents for changed files so reviewers have surrounding context.

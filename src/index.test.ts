@@ -174,6 +174,7 @@ jest.mock('./recap', () => ({
   classifyAuthorReply: jest.fn().mockReturnValue('none'),
   fingerprintFinding: jest.fn((title: string, file: string, line: number) => ({ file, lineStart: line, lineEnd: line, slug: title })),
   currentFindingLine: jest.requireActual('./recap').currentFindingLine,
+  isGuarded: jest.requireActual('./recap').isGuarded,
   collectResolvedThreadIds: jest.requireActual('./recap').collectResolvedThreadIds,
   sanitize: jest.requireActual('./recap').sanitize,
   securityOverridesIn: jest.requireActual('./recap').securityOverridesIn,
@@ -5151,8 +5152,9 @@ describe('runFullReview orchestration', () => {
     const outdated = { severity: 'blocker' as const, status: 'open' as const, line: 0, originalLine: 2, originalCommit: 'c0ffee' };
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
-        { ...outdated, title: 'Moved', file: 'src/app.ts', threadId: 'PRRT_moved', answer: '**Fixed.** It reopens after posting.' },
-        { ...outdated, title: 'Gone', file: 'src/gone.ts', threadId: 'PRRT_gone' },
+        { ...outdated, title: 'Moved', file: 'src/app.ts', threadId: 'PRRT_moved', answer: '**Fixed.** It reopens after posting.', authorReplyText: 'This is intended.' },
+        // Only a guarded thread carries the reply a person wrote in it.
+        { ...outdated, title: 'Gone', file: 'src/gone.ts', threadId: 'PRRT_gone', severity: 'note' as const, authorReplyText: 'Not needed.' },
         { ...outdated, title: 'Unread', file: 'src/unread.ts', threadId: 'PRRT_unread' },
         // A posted line past the end of the posted file says nothing about the code either.
         { ...outdated, title: 'Past the end', file: 'src/app.ts', threadId: 'PRRT_past', originalLine: 99 },
@@ -5174,7 +5176,8 @@ describe('runFullReview orchestration', () => {
     // Without the head's copy, nothing is said about where the code went.
     expect(unread).toMatchObject({ line: 0, currentCode: '' });
     expect([unread.postedCode, unread.postedCodeGone]).toEqual([undefined, undefined]);
-    expect(found).toMatchObject({ line: 5, postedCommit: 'c0ffee', answer: '**Fixed.** It reopens after posting.' });
+    expect(found).toMatchObject({ line: 5, postedCommit: 'c0ffee', answer: '**Fixed.** It reopens after posting.', authorReplyText: 'This is intended.' });
+    expect(gone.authorReplyText).toBeUndefined();
     expect(found.postedCode).toContain('>>> 2:   reopenThread(thread);');
     expect(found.currentCode).toContain('>>> 5:   reopenThread(thread);');
     expect(found.postedCodeGone).toBeUndefined();
