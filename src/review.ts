@@ -1353,7 +1353,9 @@ export async function runReview(
         const sweepJudge = withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'sweep');
         // The open threads were evaluated already, so this pass only links its findings to them and suppresses against them.
         const evaluatedThreads = { openThreads: openThreads ?? [], ...(judgeThreadEvaluations && { evaluations: judgeThreadEvaluations }) };
-        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads })).findings;
+        // A rank only compares the notes of one judge call, so only the first call's ranks order the notes.
+        const judged = (await runJudgeAgent(sweepJudge, config, { ...judgeInput, findings: fresh, openThreads: undefined, evaluatedThreads })).findings
+          .map(({ noteRank: _, ...f }): Finding => f);
         allJudgedFindings = [...(allJudgedFindings ?? []), ...judged];
         const kept = judged.filter(f => f.severity !== 'ignore');
         const unsettled = refutation ? kept.filter(f => f.lead && f.severity !== 'blocker' && !isSecurityFinding(f.tags, f.reviewers)) : [];

@@ -2167,11 +2167,12 @@ describe('runReview', () => {
       }));
       clients.dedup = { sendMessage: jest.fn().mockResolvedValue({ content: '[{"pair": 1, "sameDefect": true}]' }) } as unknown as import('./providers').LLMClient;
       mockedRunJudgeAgent.mockClear();
-      mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+      // The sweep's judge call grades one finding as a note and ranks it first of its own notes.
+      mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings.map((f, i) => (i === 1 ? { ...f, severity: 'suggestion' as const, noteRank: 0 } : f)), summary: 'ok' }));
       // The judge merges the finders' copies of the blocker into one, which the refuters may have disproved.
       const refutation = { outcome: 'disproved' as const, reason: 'Bounded.', files: [], codeDigest: '' };
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
-        findings: input.findings.slice(0, 3).map(f => (disproved && f.severity === 'blocker' ? { ...f, refutation } : f.severity === 'suggestion' ? { ...f, severity: 'ignore' as const } : f)),
+        findings: input.findings.slice(0, 3).map(f => (disproved && f.severity === 'blocker' ? { ...f, refutation } : f.severity === 'suggestion' ? { ...f, severity: 'ignore' as const } : { ...f, noteRank: 1 })),
         summary: 'ok', threadEvaluations: [evaluation],
       }));
       const result = await runReview(clients, { config: makeConfig({ review: { sweep } }), diff: diffChanging('src/cache.ts', 'src/search.ts', 'src/retry.ts'), rawDiff: 'raw diff', repoContext: '', isFollowUp: true, openThreads: [openThread] });
@@ -2200,6 +2201,9 @@ describe('runReview', () => {
     // It still links its findings to the open threads, and suppresses against what the first call found of them.
     expect(second[2].evaluatedThreads).toEqual({ openThreads: [openThread], evaluations: [evaluation] });
     expect(result.findings.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Search key misses the tenant', 'Shard key misses the region', 'Page key misses the region']);
+    // A rank from the sweep's judge call is on another scale, so only the first call's ranks stay.
+    expect(result.findings.map(f => [f.severity, f.noteRank])).toEqual([['blocker', 1], ['warning', 1], ['blocker', undefined], ['suggestion', undefined], ['blocker', undefined]]);
+    expect(result.allJudgedFindings?.filter(f => f.reviewers.includes(reviewer)).map(f => f.noteRank)).toEqual([undefined, undefined, undefined]);
     expect(result.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
     expect(result.llmCalls?.filter(c => c.stage === 'sweep').map(c => c.agent)).toEqual([reviewer]);
   });
