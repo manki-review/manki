@@ -865,11 +865,11 @@ async function collectLockfiles(target: RunTarget, fullDiff: ParsedDiff): Promis
   return readLockfileChanges(fullDiff, heads);
 }
 
-function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled: boolean, deeper?: boolean): DashboardData {
+function initialDashboard(diff: ParsedDiff, config: ReviewConfig, clients: ReviewClients, deeper?: boolean): DashboardData {
   // Without a planner the team is the fail-safe one. With one, `runReview` reports the team after triage.
-  const previewTeam = selectTeam(diff, config, undefined, deeper);
+  const previewTeam = selectTeam(diff, config, undefined, deeper, clients);
   const lineCount = diff.totalAdditions + diff.totalDeletions;
-  return plannerEnabled
+  return clients.planner
     ? {
         phase: 'planning',
         lineCount,
@@ -1782,7 +1782,7 @@ async function runFullReview(
     const lockfiles = await collectLockfiles(target, fullDiff);
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
-    const dashboard = initialDashboard(diff, config, !!clients.planner, options.deeper);
+    const dashboard = initialDashboard(diff, config, clients, options.deeper);
     await updateProgressDashboard(octokit, owner, repo, commentId, dashboard, runningSettings(target, progress));
     const unreviewedMetadata = (): ReviewMetadata => ({
       config: metadataConfig(config, models, 'none', []),

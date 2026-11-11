@@ -192,7 +192,7 @@ jest.mock('./review', () => ({
   RETRY_HINT: jest.requireActual('./review').RETRY_HINT,
   stringifyFindingFingerprint: jest.requireActual('./review').stringifyFindingFingerprint,
   filesChangedByPush: jest.requireActual('./review').filesChangedByPush,
-  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
+  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', sentEffort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
 jest.mock('./github', () => ({
@@ -1846,7 +1846,7 @@ describe('runFullReview orchestration', () => {
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', sentEffort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue({ id: 123, approvalHeld: false });
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
@@ -7385,7 +7385,7 @@ describe('runFullReview config and dedupe', () => {
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, model: 'claude-sonnet-5-5', effort: 'high', sentEffort: 'high', steps: 15 }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
   });
 

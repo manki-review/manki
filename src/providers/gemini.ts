@@ -102,6 +102,11 @@ export class GeminiClient implements LLMClient {
     return this.sendViaAPI(systemPrompt, userMessage, options);
   }
 
+  sentEffort(effort: NonNullable<SendMessageOptions['effort']>): NonNullable<SendMessageOptions['effort']> {
+    const collapsed = effort === 'xhigh' || effort === 'max';
+    return collapsed && this.auth.kind === 'apiKey' && geminiThinkingConfig(this.model, effort) ? 'high' : effort;
+  }
+
   private async ensureCLI(): Promise<string> {
     if (this.cachedCLIPath) {
       return this.cachedCLIPath;

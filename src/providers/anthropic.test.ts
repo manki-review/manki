@@ -109,9 +109,11 @@ describe('sendMessage effort option (CLI path)', () => {
     for (const [model, expected] of [['claude-opus-5-5', 'xhigh'], ['claude-opus-4-7', 'xhigh'], ['claude-opus-4-6', 'high'], ['claude-sonnet-4-5-20250929', 'high']]) {
       mockSpawn.mockClear();
       setupSpawnMock('response text');
-      await new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model }).sendMessage('system', 'user', { effort: 'xhigh' });
+      const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model });
+      await client.sendMessage('system', 'user', { effort: 'xhigh' });
       const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
       expect(spawnArgs[spawnArgs.indexOf('--effort') + 1]).toBe(expected);
+      expect(client.sentEffort('xhigh')).toBe(expected);
     }
   });
 
@@ -165,6 +167,7 @@ describe('sendMessage effort option (API path)', () => {
         expect(params.thinking).toEqual({ type: 'adaptive' });
         // `xhigh` arrived with Opus 4.7, so the 4.6 generation gets `high`, never more than asked.
         expect(params.output_config).toEqual({ effort: effort === 'xhigh' && model.endsWith('4-6') ? 'high' : effort });
+        expect(params.output_config).toEqual({ effort: new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model }).sentEffort(effort) });
         expect(params.max_tokens).toBe(32768);
       }
     }
@@ -180,6 +183,9 @@ describe('sendMessage effort option (API path)', () => {
       expect(params.thinking).toEqual({ type: 'enabled', budget_tokens: 16000 });
       expect(params.output_config).toBeUndefined();
       expect(params.max_tokens).toBe(32768);
+      // Each tier has a budget of its own, so none is reported as a lower one.
+      const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model });
+      expect((['low', 'medium', 'high', 'xhigh', 'max'] as const).map(effort => client.sentEffort(effort))).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     }
   });
 

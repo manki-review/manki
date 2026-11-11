@@ -201,8 +201,9 @@ const DEEPER_EFFORT: Record<EffortLevel, EffortLevel> = { low: 'medium', medium:
  * and each reader in the group becomes one finder. `planner.paired` pins the `paired` answer
  * before the PR is classified, and every floor class the PR matches is checked after routing.
  * A `deeper` review moves a group with fewer than two finders up to the built-in `pair` group.
+ * With `clients`, each finder is named and recorded by the effort its client sends.
  */
-export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE, deeper = false): TeamRoster {
+export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE, deeper = false, clients?: ReviewClients): TeamRoster {
   const pin = config.planner?.paired ?? 'auto';
   const pinned: Triage = { ...triage, paired: pin === 'auto' ? triage.paired : pin === 'always' };
   const routing = resolveRouting(config.review);
@@ -212,8 +213,10 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
     choice = { name: FLOOR_FALLBACK_GROUP, group: BUILT_IN_GROUPS[FLOOR_FALLBACK_GROUP], source: 'deeper_review', escalatedFrom: choice.name };
   }
   const reviewClass = classification.name ? routing.classes[classification.name] : undefined;
+  const finders = buildFinders(choice.group, config, classification.triage, classification.floor !== undefined, deeper, clients);
+  const sameEffort = finders.filter(f => f.deeperSameEffort).map(f => f.name);
   return {
-    finders: buildFinders(choice.group, config, classification.triage, classification.floor !== undefined, deeper),
+    finders,
     routing: {
       ...(classification.name && { class: classification.name, rank: reviewClass!.rank }),
       matched: classification.matched,
@@ -224,6 +227,7 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
       ...(choice.escalatedFrom && { escalatedFrom: choice.escalatedFrom }),
       ...(choice.weakerAllowed && { weakerAllowed: choice.weakerAllowed }),
       ...(deeper && { deeper: true }),
+      ...(sameEffort.length > 0 && { deeperSameEffort: sameEffort }),
     },
     triage: classification.triage,
     sensitivePaths: classification.matched.includes('security'),
@@ -254,23 +258,26 @@ function askedEffort(reviewer: GroupReviewer, triage: Triage, deeper: boolean): 
  * Builds one finder per reader of `group`, all on the same checklist. A group with two finders, or a PR in a floor class,
  * gets the most tool steps.
  */
-function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean): Finder[] {
+function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean, clients?: ReviewClients): Finder[] {
   const names = new Set<string>();
   const finders = group.reviewers.filter(r => r.role !== 'verifier');
   const risky = floor || finders.length >= 2;
   return group.reviewers.map(reviewer => {
     const model = resolveReviewerModel(config, reviewer.model);
+    const sent = (tier: EffortLevel): EffortLevel => (clients && pickReviewerClient(clients, model).client.sentEffort?.(tier)) ?? tier;
     const effort = askedEffort(reviewer, triage, deeper);
+    const sentEffort = sent(effort);
     const verifier = reviewer.role === 'verifier';
     const custom = reviewer.focus ? [...config.reviewers, { name: 'This review group', focus: reviewer.focus }] : config.reviewers;
     const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom);
     const label = verifier ? `Quick check · ${modelDisplayName(model)}`
-      : [modelDisplayName(model), effort, ...(reviewer.focus ? [shortFocus(reviewer.focus)] : [])].join(' · ');
+      : [modelDisplayName(model), sentEffort, ...(reviewer.focus ? [shortFocus(reviewer.focus)] : [])].join(' · ');
     let name = label;
     for (let n = 2; names.has(name); n++) name = `${label} #${n}`;
     names.add(name);
     const steps = verifier ? QUICK_CHECK_STEPS : risky ? RISKY_FINDER_STEPS : FINDER_STEPS;
-    return { name, prompt, model, effort, steps };
+    const deeperSameEffort = deeper && sentEffort === sent(askedEffort(reviewer, triage, false));
+    return { name, prompt, model, effort, sentEffort, steps, ...(deeperSameEffort && { deeperSameEffort }) };
   });
 }
 
@@ -575,7 +582,7 @@ export function buildProvenanceFields(
     ciOrDependencyPaths: team.ciOrDependencyPaths,
     ...(team.trivialOverridden && { trivialOverridden: true }),
     ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
-    agentEffortMap: new Map(team.finders.map(f => [f.name, f.effort])),
+    agentEffortMap: new Map(team.finders.map(f => [f.name, f.sentEffort])),
     agentModels: new Map(team.finders.map(f => [f.name, f.model])),
     routing: team.routing,
   };
@@ -672,7 +679,7 @@ export async function runReview(
     plannerSource = plannerResult ? 'planner' : 'heuristic_fallback';
     plannerFallbackReason = outcome.fallbackReason;
   }
-  const team = selectTeam(diffWithLockfiles, config, plannerResult ?? undefined, options.deeper);
+  const team = selectTeam(diffWithLockfiles, config, plannerResult ?? undefined, options.deeper, clients);
   const setEffort = config.judge?.effort;
   const judgeEffort = setEffort && setEffort !== 'auto' ? setEffort : plannerResult?.judgeEffort ?? 'high';
   // What the round has produced so far. A round that ends incomplete keeps it all in its record.
@@ -689,6 +696,7 @@ export async function runReview(
     core.warning(`\`review.allow_weaker\` lets this ${routing.weakerAllowed.join(', ')} change run on the ${routing.group} group, below the floor of two finders on two models`);
   }
   core.info(`Review team: ${team.finders.map(f => f.name).join(', ')}, judge: ${judgeEffort}${plannerResult ? ` (${plannerResult.prType})` : ''}`);
+  if (routing.deeperSameEffort) core.info(`The deeper review adds no effort for ${routing.deeperSameEffort.join(', ')}: the model receives the same effort as without it`);
   if (trivial) {
     core.info(`trivial decision: prType=${plannerResult?.prType}, lines=${diff.totalAdditions + diff.totalDeletions}, files=${diff.files.length}`);
   }

@@ -307,6 +307,11 @@ export class AnthropicClient implements LLMClient {
     return this.auth.kind === 'oauth';
   }
 
+  sentEffort(effort: NonNullable<SendMessageOptions['effort']>): NonNullable<SendMessageOptions['effort']> {
+    // Over the API, a budget thinking model gets a thinking budget of its own for every tier.
+    return this.auth.kind === 'apiKey' && usesBudgetThinking(this.model) ? effort : claudeEffort(this.model, effort);
+  }
+
   async warmupCLI(): Promise<void> {
     if (this.auth.kind !== 'oauth') return;
     await this.ensureCLI();

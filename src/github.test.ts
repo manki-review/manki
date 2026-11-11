@@ -2998,6 +2998,20 @@ describe('buildDashboard', () => {
     expect(markerIdx).toBeLessThan(reviewIdx);
   });
 
+  it('names the finders a deeper review gives no more effort, under the review header', () => {
+    const data: DashboardData = {
+      phase: 'started', lineCount: 200, agentCount: 2,
+      agentProgress: [{ name: 'Claude Sonnet 4.6 · high', status: 'reviewing' }, { name: 'Claude Opus 5.5 · xhigh', status: 'reviewing' }],
+      routing: { group: 'pair', deeperSameEffort: ['Claude Sonnet 4.6 · high'] },
+    };
+    const note = `${INDENT}_(the deeper review adds no effort for Claude Sonnet 4.6 · high: the model receives the same effort as without it)_`;
+    const md = buildDashboard(data);
+    expect(md.indexOf(note)).toBeGreaterThan(md.indexOf('**Review (pair):**'));
+    expect(md.indexOf(note)).toBeLessThan(md.indexOf('**Judge**'));
+    expect(buildDashboard({ ...data, phase: 'complete' })).toContain(note);
+    expect(buildDashboard({ ...data, routing: { group: 'pair' } })).not.toContain('adds no effort');
+  });
+
   it('omits heuristic-fallback marker when not set', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 200, agentCount: 5,

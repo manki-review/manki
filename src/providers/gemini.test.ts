@@ -73,6 +73,12 @@ describe('geminiThinkingConfig', () => {
     ['gemini-omni-1.1-flash', 'high', undefined],
   ] as const)('maps %s at effort %s to %j', (model, effort, expected) => {
     expect(geminiThinkingConfig(model, effort)).toEqual(expected);
+    // The tier a client reports as sent maps to the same config, and is `high` for the tiers that send what `high` sends.
+    const sent = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model }).sentEffort(effort);
+    expect(geminiThinkingConfig(model, sent)).toEqual(expected);
+    expect(sent).toBe(expected && (effort === 'xhigh' || effort === 'max') ? 'high' : effort);
+    // The CLI takes no effort, so the tier stays as asked.
+    expect(new GeminiClient({ auth: { kind: 'oauth', token: 't' }, model }).sentEffort(effort)).toBe(effort);
   });
 
   it('keeps the model default when no effort is given', () => {

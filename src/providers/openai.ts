@@ -229,6 +229,10 @@ export class OpenAIClient implements LLMClient {
     return this.auth.kind === 'oauth';
   }
 
+  sentEffort(effort: OpenAIReasoningEffort): OpenAIReasoningEffort {
+    return resolveReasoningEffort(this.model, effort) ?? effort;
+  }
+
   async sendMessage(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     if (this.auth.kind === 'oauth') {
       return this.sendViaOAuth(systemPrompt, userMessage, options);
