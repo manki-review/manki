@@ -1,142 +1,647 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="day">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Manki — Multi-stage AI Code Review for GitHub</title>
-  <meta name="description" content="Self-hosted, multi-agent AI code review that runs as a GitHub Action. A planner triages the change, the finders you choose review it (one or two by default), dedup removes repeats, and a judge filters the noise.">
-  <link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manki: AI code review for GitHub, on your own runners</title>
+<meta name="description" content="Manki reviews every pull request on your own GitHub runners, with your own model key or subscription. You decide who reviews what, and each finding arrives with the fix, the reason and the lines of code that prove it.">
+<link rel="icon" href="assets/manki.png">
+<script>
+document.documentElement.dataset.theme = new URLSearchParams(location.search).get('theme') === 'night' ? 'night' : 'day';
+</script>
+<link rel="stylesheet" href="review.css">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
+
+<header class="b-green hero">
+  <div class="wrap">
+    <div class="nav">
+      <a class="brand" href="#"><img src="assets/manki.png" alt="">Manki</a>
+      <nav aria-label="Main">
+        <a href="#review">A real review</a>
+        <a href="#round">How it runs</a>
+        <a href="#config">Config</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/manki-review/manki">Source</a>
+      </nav>
+      <div class="toggle" role="group" aria-label="Theme">
+        <button type="button" data-t="day">Day</button>
+        <button type="button" data-t="night">Night</button>
+      </div>
+    </div>
+
+    <div class="hero-grid">
+      <div>
+        <h1>Curious, thorough, always learning.</h1>
+        <p class="lede">Manki reviews every pull request on your own GitHub runners, with your own model key or subscription. You decide who reviews what, and each finding arrives with the fix, the reason and the lines of code that prove it.</p>
+        <div class="actions">
+          <a class="btn btn-solid" href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md">Install Manki</a>
+          <a class="btn btn-line" href="#review">See a real review</a>
+        </div>
+        <p class="quiet">The service starts runs only for listed accounts. The maintainers add yours on request.</p>
+      </div>
+      <img class="cat" src="assets/manki.png" alt="Manki, a calico cat">
+    </div>
+
+    <div class="hero-print">
+      <div class="hero-cap"><span>This is a real Manki finding, exactly as GitHub shows it. Open the fold.</span><a href="https://github.com/manki-review/manki/pull/1335">manki-review/manki#1335</a></div>
+      <div class="print"><div class="ghk ghk-thread">
+  <div class="ghk-file"><span class="ghk-muted"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/></svg></span><span class="ghk-path">src/symbol-uses.ts</span></div>
+  <table class="ghk-hunk"><tbody><tr class="del"><td class="num">1485</td><td class="num"></td><td class="code"><span class="sign">-</span>  return ranked.sort((a, b) =&gt; b.touchedCount - a.touchedCount || Number(!a.question.trait) - Number(!b.question.trait) || b.lines - a.lines || a.order - b.order)</td></tr><tr class="del"><td class="num">1486</td><td class="num"></td><td class="code"><span class="sign">-</span>    .slice(0, MAX_QUESTIONS).map(r =&gt; r.question);</td></tr><tr class="add"><td class="num"></td><td class="num">1471</td><td class="code"><span class="sign">+</span>    const lines = touchedMembers.reduce((sum, m) =&gt; sum + m.changed, 0);</td></tr><tr class="add"><td class="num"></td><td class="num">1472</td><td class="code"><span class="sign">+</span>    return [{ members, order, ids: members.map(m =&gt; `${m.file}:${m.decl.start}`), touchedCount: touchedMembers.length, lines }];</td></tr></tbody></table>
+  <div class="ghk-comment" data-part="finding"><img class="ghk-av" src="assets/manki.png" alt=""><div class="ghk-main"><div class="ghk-meta"><b>manki-review</b> <span class="ghk-label">bot</span> <span class="ghk-muted">reviewed</span><span class="ghk-dots">···</span></div><div class="markdown-body ghk-md"><p dir="auto">🚫 <strong>Blocker</strong> · Security · Quick fix</p>
+<p dir="auto"><strong>Methods declared on one line share a member id, so a crafted file makes the new group filter cubic in its method count</strong></p>
+<p dir="auto"><strong>What goes wrong:</strong> A member's id is <code class="notranslate">${m.file}:${m.decl.start}</code>, so every method on one line, such as a one-line <code class="notranslate">TypeScript</code> class <code class="notranslate">class A { m0() { return 1 } m1() { return 1 } ... }</code>, a Go line of <code class="notranslate">;</code>-separated methods or a one-line Rust <code class="notranslate">impl</code>, gets the same id. With a sibling file declaring each <code class="notranslate">m_i</code> on its own line, <code class="notranslate">asked.get('a.ts:1')</code> grows with every kept group.</p>
+<details>
+<summary>How to fix it, why, and 9 places read · double-checked</summary>
+<p dir="auto"><strong>How to fix it</strong><br>
+Key members by their declaration node, which is unique per method, instead of by start line. That makes the code comment's claim true: a member sits in at most one group per key it has, so at most 9 groups. Add a size case with many methods on one line.</p>
+<div class="highlight highlight-source-ts" dir="auto"><pre class="notranslate">    <span class="pl-k">return</span> <span class="pl-kos">[</span><span class="pl-kos">{</span> members<span class="pl-kos">,</span> order<span class="pl-kos">,</span> <span class="pl-c1">ids</span>: <span class="pl-s1">members</span><span class="pl-kos">.</span><span class="pl-en">map</span><span class="pl-kos">(</span><span class="pl-s1">m</span> <span class="pl-c1">=&gt;</span> <span class="pl-s">`<span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">file</span><span class="pl-kos">}</span></span>:<span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">decl</span><span class="pl-kos">.</span><span class="pl-c1">key</span><span class="pl-kos">}</span></span>`</span><span class="pl-kos">)</span><span class="pl-kos">,</span> <span class="pl-c1">touchedCount</span>: <span class="pl-s1">touchedMembers</span><span class="pl-kos">.</span><span class="pl-c1">length</span><span class="pl-kos">,</span> lines <span class="pl-kos">}</span><span class="pl-kos">]</span><span class="pl-kos">;</span></pre></div>
+<p dir="auto"><strong>Why it matters</strong><br>
+For each of those groups, <code class="notranslate">ids.every(id =&gt; asked.get(id)?.includes(group))</code> scans that same list again, so the filter runs about N³/6 steps. 10,000 methods means about 10^11 steps of synchronous work with no timeout, and this PR removes the per-file cap of 50 keys that bounded N. The same collision drops real groups: when the partner methods also share one line, each later group's ids equal the first group's, so only one of the N distinct comparisons is asked. That breaks the PR's own rule of dropping a group only when one asked group holds all its members.</p>
+<p dir="auto"><strong>Checked in the code</strong><br>
+On the commented line: Builds ids as <code class="notranslate">${m.file}:${m.decl.start}</code>, and <code class="notranslate">start</code> is a line number from <code class="notranslate">leadingStart</code>, shared by every method on that line</p>
+<ul dir="auto">
+<li>Checks <code class="notranslate">(asked.get(ids[0]) ?? []).some(group =&gt; ids.every(id =&gt; asked.get(id)?.includes(group)))</code>. With a shared <code class="notranslate">ids[0]</code>, the list and each <code class="notranslate">includes</code> scan gr…</li>
+<li><code class="notranslate">appendTo(asked, id, index)</code> appends every kept group to the shared id's list</li>
+</ul>
+<p dir="auto"></p><div class="Box Box--condensed my-2">
+  <div class="Box-header f6">
+    <p class="mb-0 text-bold">
+      <a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L1479-L1484">manki/src/symbol-uses.ts</a>
+    </p>
+    <p class="mb-0 color-fg-muted">
+        Lines 1479 to 1484
+      in
+      <a data-pjax="true" class="commit-tease-sha Link--inTextBlock" href="/manki-review/manki/commit/1e92f4fdb619f28abcf8d5f14a8fc506f911c924">1e92f4f</a>
+    </p>
+  </div>
+  <div itemprop="text" class="Box-body p-0 blob-wrapper blob-wrapper-embedded data">
+    <table class="highlight tab-size mb-0 js-file-line-container" data-tab-size="8" data-paste-markdown-skip="">
+
+        <tbody><tr class="border-0">
+          <td id="L1479" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1479"></td>
+          <td id="LC1479" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">return</span> <span class="pl-s1">candidates</span><span class="pl-kos">.</span><span class="pl-en">filter</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-kos">{</span> ids <span class="pl-kos">}</span><span class="pl-kos">,</span> <span class="pl-s1">index</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-kos">{</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1480" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1480"></td>
+          <td id="LC1480" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-s1">asked</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s1">ids</span><span class="pl-kos">[</span><span class="pl-c1">0</span><span class="pl-kos">]</span><span class="pl-kos">)</span> <span class="pl-c1">??</span> <span class="pl-kos">[</span><span class="pl-kos">]</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">some</span><span class="pl-kos">(</span><span class="pl-s1">group</span> <span class="pl-c1">=&gt;</span> <span class="pl-s1">ids</span><span class="pl-kos">.</span><span class="pl-en">every</span><span class="pl-kos">(</span><span class="pl-s1">id</span> <span class="pl-c1">=&gt;</span> <span class="pl-s1">asked</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s1">id</span><span class="pl-kos">)</span><span class="pl-kos">?.</span><span class="pl-en">includes</span><span class="pl-kos">(</span><span class="pl-s1">group</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">)</span> <span class="pl-k">return</span> <span class="pl-c1">false</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1481" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1481"></td>
+          <td id="LC1481" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-k">for</span> <span class="pl-kos">(</span><span class="pl-k">const</span> <span class="pl-s1">id</span> <span class="pl-k">of</span> <span class="pl-s1">ids</span><span class="pl-kos">)</span> <span class="pl-en">appendTo</span><span class="pl-kos">(</span><span class="pl-s1">asked</span><span class="pl-kos">,</span> <span class="pl-s1">id</span><span class="pl-kos">,</span> <span class="pl-s1">index</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1482" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1482"></td>
+          <td id="LC1482" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-k">return</span> <span class="pl-c1">true</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1483" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1483"></td>
+          <td id="LC1483" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-kos">}</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">slice</span><span class="pl-kos">(</span><span class="pl-c1">0</span><span class="pl-kos">,</span> <span class="pl-c1">MAX_QUESTIONS</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">map</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-kos">{</span> members <span class="pl-kos">}</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-kos">(</span><span class="pl-kos">{</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1484" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1484"></td>
+          <td id="LC1484" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-c1">name</span>: <span class="pl-s1">members</span><span class="pl-kos">[</span><span class="pl-c1">0</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-c1">name</span><span class="pl-kos">,</span> ...<span class="pl-kos">(</span><span class="pl-s1">members</span><span class="pl-kos">[</span><span class="pl-c1">0</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-c1">trait</span> <span class="pl-c1">&amp;&amp;</span> <span class="pl-kos">{</span> <span class="pl-c1">trait</span>: <span class="pl-s1">members</span><span class="pl-kos">[</span><span class="pl-c1">0</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-c1">trait</span> <span class="pl-kos">}</span><span class="pl-kos">)</span><span class="pl-kos">,</span> </td>
+        </tr>
+    </tbody></table>
+  </div>
+</div>
+<p></p>
+<p dir="auto">Now builds <code class="notranslate">wanted</code> from every key with no <code class="notranslate">MAX_GROUPS_PER_FILE</code> slice, so N is bounded only by the 16 MB parse budget<br>
+</p><div class="Box Box--condensed my-2">
+  <div class="Box-header f6">
+    <p class="mb-0 text-bold">
+      <a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L1453-L1457">manki/src/symbol-uses.ts</a>
+    </p>
+    <p class="mb-0 color-fg-muted">
+        Lines 1453 to 1457
+      in
+      <a data-pjax="true" class="commit-tease-sha Link--inTextBlock" href="/manki-review/manki/commit/1e92f4fdb619f28abcf8d5f14a8fc506f911c924">1e92f4f</a>
+    </p>
+  </div>
+  <div itemprop="text" class="Box-body p-0 blob-wrapper blob-wrapper-embedded data">
+    <table class="highlight tab-size mb-0 js-file-line-container" data-tab-size="8" data-paste-markdown-skip="">
+
+        <tbody><tr class="border-0">
+          <td id="L1453" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1453"></td>
+          <td id="LC1453" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-s1">changed</span><span class="pl-kos">.</span><span class="pl-c1">length</span> <span class="pl-c1">===</span> <span class="pl-c1">0</span><span class="pl-kos">)</span> <span class="pl-k">return</span> <span class="pl-kos">[</span><span class="pl-kos">]</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1454" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1454"></td>
+          <td id="LC1454" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">const</span> <span class="pl-s1">wanted</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Set</span><span class="pl-kos">(</span><span class="pl-s1">changed</span><span class="pl-kos">.</span><span class="pl-en">flatMap</span><span class="pl-kos">(</span><span class="pl-s1">c</span> <span class="pl-c1">=&gt;</span> <span class="pl-s1">c</span><span class="pl-kos">.</span><span class="pl-c1">methods</span><span class="pl-kos">.</span><span class="pl-en">flatMap</span><span class="pl-kos">(</span><span class="pl-s1">keysOf</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1455" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1455"></td>
+          <td id="LC1455" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">const</span> <span class="pl-s1">dirs</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Map</span><span class="pl-kos">(</span><span class="pl-s1">changed</span><span class="pl-kos">.</span><span class="pl-en">map</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-kos">{</span> file <span class="pl-kos">}</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-kos">[</span><span class="pl-en">dirname</span><span class="pl-kos">(</span><span class="pl-s1">file</span><span class="pl-kos">)</span><span class="pl-kos">,</span> <span class="pl-s1">file</span><span class="pl-kos">]</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1456" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1456"></td>
+          <td id="LC1456" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">const</span> <span class="pl-s1">beside</span> <span class="pl-c1">=</span> <span class="pl-kos">[</span>...<span class="pl-s1">dirs</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-en">flatMap</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-kos">[</span><span class="pl-s1">dir</span><span class="pl-kos">,</span> <span class="pl-s1">file</span><span class="pl-kos">]</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-en">filesBeside</span><span class="pl-kos">(</span><span class="pl-s1">workspace</span><span class="pl-kos">,</span> <span class="pl-s1">dir</span><span class="pl-kos">,</span> <span class="pl-s1">file</span><span class="pl-kos">,</span> <span class="pl-s1">excludePaths</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">filter</span><span class="pl-kos">(</span><span class="pl-s1">file</span> <span class="pl-c1">=&gt;</span> <span class="pl-c1">!</span><span class="pl-s1">inCode</span><span class="pl-kos">.</span><span class="pl-en">has</span><span class="pl-kos">(</span><span class="pl-s1">file</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">slice</span><span class="pl-kos">(</span><span class="pl-c1">0</span><span class="pl-kos">,</span> <span class="pl-c1">MAX_SIBLING_FILES</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1457" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1457"></td>
+          <td id="LC1457" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">const</span> <span class="pl-s1">groups</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Map</span><span class="pl-c1">&lt;</span><span class="pl-smi">string</span><span class="pl-kos">,</span> <span class="pl-smi">Array</span><span class="pl-c1">&lt;</span><span class="pl-smi">Method</span> <span class="pl-c1">&amp;</span> <span class="pl-kos">{</span> <span class="pl-c1">file</span>: <span class="pl-smi">string</span><span class="pl-kos">;</span> <span class="pl-c1">parsed</span>: <span class="pl-smi">ParsedFile</span><span class="pl-kos">;</span> <span class="pl-c1">changed</span>: <span class="pl-smi">number</span> <span class="pl-kos">}</span><span class="pl-c1">&gt;</span><span class="pl-c1">&gt;</span><span class="pl-kos">(</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+    </tbody></table>
+  </div>
+</div>
+<p></p>
+<p dir="auto"><code class="notranslate">changedLines</code> counts a one-line method as changed when its start line is added (<code class="notranslate">touched.get(file)?.has(m.decl.start) &amp;&amp; added.get(file)?.has(m.decl.start)</code>),…<br>
+</p><div class="Box Box--condensed my-2">
+  <div class="Box-header f6">
+    <p class="mb-0 text-bold">
+      <a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L1439-L1443">manki/src/symbol-uses.ts</a>
+    </p>
+    <p class="mb-0 color-fg-muted">
+        Lines 1439 to 1443
+      in
+      <a data-pjax="true" class="commit-tease-sha Link--inTextBlock" href="/manki-review/manki/commit/1e92f4fdb619f28abcf8d5f14a8fc506f911c924">1e92f4f</a>
+    </p>
+  </div>
+  <div itemprop="text" class="Box-body p-0 blob-wrapper blob-wrapper-embedded data">
+    <table class="highlight tab-size mb-0 js-file-line-container" data-tab-size="8" data-paste-markdown-skip="">
+
+        <tbody><tr class="border-0">
+          <td id="L1439" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1439"></td>
+          <td id="LC1439" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-c1">!</span><span class="pl-pds"><span class="pl-c1">/</span><span class="pl-cce">^</span><span class="pl-s">_</span><span class="pl-s">_</span><span class="pl-cce">\w</span><span class="pl-c1">+</span><span class="pl-s">_</span><span class="pl-s">_</span><span class="pl-cce">$</span><span class="pl-c1">/</span></span><span class="pl-kos">.</span><span class="pl-en">test</span><span class="pl-kos">(</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">name</span><span class="pl-kos">)</span> <span class="pl-c1">&amp;&amp;</span> <span class="pl-c1">!</span><span class="pl-c1">PROTOCOL_METHODS</span><span class="pl-kos">.</span><span class="pl-en">has</span><span class="pl-kos">(</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">name</span><span class="pl-kos">)</span><span class="pl-kos">)</span> <span class="pl-k">return</span> <span class="pl-kos">[</span><span class="pl-s">`::<span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">name</span><span class="pl-kos">}</span></span>`</span><span class="pl-kos">]</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1440" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1440"></td>
+          <td id="LC1440" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-c">// Keyed by the class itself too, so a base class's own implementation joins its subclasses' group.</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1441" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1441"></td>
+          <td id="LC1441" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-k">return</span> <span class="pl-kos">[</span>...<span class="pl-k">new</span> <span class="pl-v">Set</span><span class="pl-kos">(</span><span class="pl-kos">[</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">owner</span><span class="pl-kos">,</span> ...<span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">bases</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-en">map</span><span class="pl-kos">(</span><span class="pl-s1">base</span> <span class="pl-c1">=&gt;</span> <span class="pl-s">`<span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">base</span><span class="pl-kos">.</span><span class="pl-en">split</span><span class="pl-kos">(</span><span class="pl-pds"><span class="pl-c1">/</span><span class="pl-cce">\.</span><span class="pl-c1">|</span><span class="pl-s">:</span><span class="pl-s">:</span><span class="pl-c1">/</span></span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">at</span><span class="pl-kos">(</span><span class="pl-c1">-</span><span class="pl-c1">1</span><span class="pl-kos">)</span><span class="pl-kos">}</span></span>::<span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">name</span><span class="pl-kos">}</span></span>`</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">]</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1442" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1442"></td>
+          <td id="LC1442" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-kos">}</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1443" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1443"></td>
+          <td id="LC1443" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">const</span> <span class="pl-s1">sorted</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Map</span><span class="pl-kos">(</span><span class="pl-kos">[</span>...<span class="pl-s1">touched</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-en">map</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-kos">[</span><span class="pl-s1">file</span><span class="pl-kos">,</span> <span class="pl-s1">lines</span><span class="pl-kos">]</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-kos">[</span><span class="pl-s1">file</span><span class="pl-kos">,</span> <span class="pl-kos">[</span>...<span class="pl-s1">lines</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-en">sort</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-s1">a</span><span class="pl-kos">,</span> <span class="pl-s1">b</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-s1">a</span> <span class="pl-c1">-</span> <span class="pl-s1">b</span><span class="pl-kos">)</span><span class="pl-kos">]</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+    </tbody></table>
+  </div>
+</div>
+<p></p>
+<ul dir="auto">
+<li><a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L1468"><code class="notranslate">src/symbol-uses.ts:1468</code></a>: Sorts changed members first, so the one-line changed file supplies <code class="notranslate">ids[0]</code></li>
+<li><a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L875"><code class="notranslate">src/symbol-uses.ts:875</code></a>: <code class="notranslate">nodeKey</code> returns <code class="notranslate">${node.kind()}:${node.range().start.index}</code>, which is unique per declaration and is <code class="notranslate">decl.key</code></li>
+<li><a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L913"><code class="notranslate">src/symbol-uses.ts:913</code></a>: <code class="notranslate">node, name, kind, start: this.leadingStart(node), headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),</code></li>
+<li><a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L930"><code class="notranslate">src/symbol-uses.ts:930</code></a>: <code class="notranslate">let start = lineOf(anchor);</code></li>
+</ul>
+<p dir="auto"><strong>Double-checked</strong><br>
+Manki tried to disprove this by reading the code and could not. Each member's id is <code class="notranslate">${m.file}:${m.decl.start}</code>, and <code class="notranslate">decl.start</code> comes from <code class="notranslate">leadingStart</code>, which returns a line number. So every method on one line gets the…</p>
+</details>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Incomplete task"> Create an issue for this</li>
+</ul></div></div></div>
+  <div class="ghk-comment" data-part="reply"><span class="ghk-av ghk-av-user" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.500 2.500 0 0 0 5 0Z"/></svg></span><div class="ghk-main"><div class="ghk-meta"><b>xdustinface</b> <span class="ghk-label">Author</span><span class="ghk-dots">···</span></div><div class="markdown-body ghk-md"><p dir="auto">Fixed in <a class="commit-link" data-hovercard-type="commit" data-hovercard-url="https://github.com/manki-review/manki/commit/02e48adec7173b301ae9ff7943f6a83c865eff31/hovercard" href="https://github.com/manki-review/manki/commit/02e48adec7173b301ae9ff7943f6a83c865eff31"><tt>02e48ad</tt></a>. Members are now keyed by <code class="notranslate">${m.file}:${m.decl.key}</code>, and <code class="notranslate">decl.key</code> is unique per declaration node, so each method sits in at most one group per key it has, and the comment's bound holds. The size test adds a one-line TypeScript class with 5,000 methods, each with a sibling on its own line, within the 10-second bound. On the line-keyed ids that case took 18.3 s locally and 1.5 s with the fix. A small case checks that three methods sharing one line on both sides each get their own group, which fails on the line-keyed ids. I checked the rest of the diff for anything else that identifies a declaration by its line and found none.</p></div></div></div>
+  <div class="ghk-comment" data-part="answer"><img class="ghk-av" src="assets/manki.png" alt=""><div class="ghk-main"><div class="ghk-meta"><b>manki-review</b> <span class="ghk-label">bot</span><span class="ghk-dots">···</span></div><div class="markdown-body ghk-md"><p dir="auto">Fixed in <a class="commit-link" data-hovercard-type="commit" data-hovercard-url="https://github.com/manki-review/manki/commit/02e48adec7173b301ae9ff7943f6a83c865eff31/hovercard" href="https://github.com/manki-review/manki/commit/02e48adec7173b301ae9ff7943f6a83c865eff31"><tt>02e48ad</tt></a>.</p></div></div></div>
+  <div class="ghk-foot" data-part="resolved"><span class="ghk-resolved"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16Zm3.78-9.72a.751.751 0 0 0-.018-1.042.751.751 0 0 0-1.042-.018L6.75 9.19 5.28 7.72a.751.751 0 0 0-1.042.018.751.751 0 0 0-.018 1.042l2 2a.75.75 0 0 0 1.06 0Z"/></svg></span><span><b>manki-review</b> marked this conversation as resolved.</span></div>
+</div></div>
+    </div>
+  </div>
+</header>
+
 <main>
 
-  <!-- Hero -->
-  <section class="hero">
-    <div class="container">
-      <img src="assets/manki.png" alt="Manki" class="hero-logo" width="140">
-      <p class="hero-name">Manki</p>
-      <h1>Multi-stage, multi-agent AI code review for GitHub&nbsp;&mdash; self-hosted, provider-neutral.</h1>
-      <p class="subhead">A planner triages the change, the finders you choose review it (one or two by default), dedup removes repeats, and a judge filters the noise.</p>
-      <div class="cta-group">
-        <a href="https://github.com/manki-review/manki" class="btn-primary">Star on GitHub</a>
-        <a href="#install" class="btn-secondary">Get started</a>
+<section class="band b-paper after-hero" id="review">
+  <div class="wrap">
+    <div class="head">
+      <h2>One pull request,<br>start to finish.</h2>
+      <p class="lede">Nothing here is staged. These are the comments Manki left on one of its own pull requests. The first round asked for changes, the author fixed the blocker, and the fourth round approved.</p>
+    </div>
+    <div class="story">
+      <div>
+        <div class="tag"><i>1</i>Manki asks for changes</div>
+        <div class="print"><div class="ghk ghk-review">
+  <div class="ghk-event"><span class="ghk-badge ghk-badge-danger"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1ZM7.25 6.5a.75.75 0 0 0 0 1.5h1.5a.75.75 0 0 0 0-1.5h-1.5ZM5 3.75a.75.75 0 0 0 0 1.5h6a.75.75 0 0 0 0-1.5H5Z"/></svg></span><img class="ghk-av" src="assets/manki.png" alt=""><span><b>manki-review</b> <span class="ghk-label">bot</span> <span class="ghk-muted">requested changes</span></span></div>
+  <div class="ghk-box"><div class="ghk-body"><div class="markdown-body ghk-md"><p dir="auto">🔴 <strong>Changes requested:</strong> 1 blocker.</p>
+<p dir="auto"><strong>What blocks:</strong> A PR can add one file with thousands of changed methods written on a single line and a sibling file declaring them on separate lines. Every member on that line gets the same id, so the new group filter does cubic work and stalls the review run with no timeout. The per-file cap that used to bound this is removed.</p>
+<hr>
+<p dir="auto"><strong>Related work:</strong> open PRs and issues that may cover the same change. None of them blocks.</p>
+<ul dir="auto">
+<li>Overlaps · <a href="https://github.com/manki-review/manki/pull/1334" data-hovercard-type="pull_request" data-hovercard-url="/manki-review/manki/pull/1334/hovercard">#1334 fix: spread the uses list across files</a></li>
+<li>Overlaps · <a href="https://github.com/manki-review/manki/issues/1329" data-hovercard-type="issue" data-hovercard-url="/manki-review/manki/issues/1329/hovercard">#1329 fix: spread the uses list across files</a></li>
+</ul>
+<details>
+<summary>About this review</summary>
+<ul dir="auto">
+<li>Reviewed <a href="https://github.com/manki-review/manki/commit/1e92f4fdb619f28abcf8d5f14a8fc506f911c924"><code class="notranslate">1e92f4f</code></a>, round 1</li>
+<li>85 changed lines read in 2m 21s</li>
+<li>Found by <code class="notranslate">claude-sonnet-5-5</code> and <code class="notranslate">claude-opus-5-5</code>, judged by <code class="notranslate">claude-opus-5-5</code></li>
+<li>Tokens: 449k in (180k from cache) · 16k out · about $1.33 at API prices</li>
+<li><a href="https://github.com/manki-review/manki/blob/main/docs/how-reviews-work.md">How Manki reviews</a></li>
+</ul>
+</details></div></div></div>
+</div></div>
+        <p class="cap">The review leads with the verdict and says in plain words what blocks. The blocker itself is the thread you saw above.</p>
+      </div>
+      <div class="story-reply">
+        <div class="tag"><i>2</i>The author answers, Manki checks</div>
+        <div class="print"><div class="ghk ghk-thread">
+  <div class="ghk-file"><span class="ghk-muted"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/></svg></span><span class="ghk-path">src/symbol-uses.ts</span></div>
+  <table class="ghk-hunk"><tbody><tr class="del"><td class="num">1485</td><td class="num"></td><td class="code"><span class="sign">-</span>  return ranked.sort((a, b) =&gt; b.touchedCount - a.touchedCount || Number(!a.question.trait) - Number(!b.question.trait) || b.lines - a.lines || a.order - b.order)</td></tr><tr class="del"><td class="num">1486</td><td class="num"></td><td class="code"><span class="sign">-</span>    .slice(0, MAX_QUESTIONS).map(r =&gt; r.question);</td></tr><tr class="add"><td class="num"></td><td class="num">1471</td><td class="code"><span class="sign">+</span>    const lines = touchedMembers.reduce((sum, m) =&gt; sum + m.changed, 0);</td></tr><tr class="add"><td class="num"></td><td class="num">1472</td><td class="code"><span class="sign">+</span>    return [{ members, order, ids: members.map(m =&gt; `${m.file}:${m.decl.start}`), touchedCount: touchedMembers.length, lines }];</td></tr></tbody></table>
+  <div class="ghk-comment" data-part="finding"><img class="ghk-av" src="assets/manki.png" alt=""><div class="ghk-main"><div class="ghk-meta"><b>manki-review</b> <span class="ghk-label">bot</span> <span class="ghk-muted">reviewed</span><span class="ghk-dots">···</span></div><div class="markdown-body ghk-md"><p dir="auto">🚫 <strong>Blocker</strong> · Security · Quick fix</p>
+<p dir="auto"><strong>Methods declared on one line share a member id, so a crafted file makes the new group filter cubic in its method count</strong></p>
+<p dir="auto"><strong>What goes wrong:</strong> A member's id is <code class="notranslate">${m.file}:${m.decl.start}</code>, so every method on one line, such as a one-line <code class="notranslate">TypeScript</code> class <code class="notranslate">class A { m0() { return 1 } m1() { return 1 } ... }</code>, a Go line of <code class="notranslate">;</code>-separated methods or a one-line Rust <code class="notranslate">impl</code>, gets the same id. With a sibling file declaring each <code class="notranslate">m_i</code> on its own line, <code class="notranslate">asked.get('a.ts:1')</code> grows with every kept group.</p>
+<details>
+<summary>How to fix it, why, and 9 places read · double-checked</summary>
+<p dir="auto"><strong>How to fix it</strong><br>
+Key members by their declaration node, which is unique per method, instead of by start line. That makes the code comment's claim true: a member sits in at most one group per key it has, so at most 9 groups. Add a size case with many methods on one line.</p>
+<div class="highlight highlight-source-ts" dir="auto"><pre class="notranslate">    <span class="pl-k">return</span> <span class="pl-kos">[</span><span class="pl-kos">{</span> members<span class="pl-kos">,</span> order<span class="pl-kos">,</span> <span class="pl-c1">ids</span>: <span class="pl-s1">members</span><span class="pl-kos">.</span><span class="pl-en">map</span><span class="pl-kos">(</span><span class="pl-s1">m</span> <span class="pl-c1">=&gt;</span> <span class="pl-s">`<span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">file</span><span class="pl-kos">}</span></span>:<span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">decl</span><span class="pl-kos">.</span><span class="pl-c1">key</span><span class="pl-kos">}</span></span>`</span><span class="pl-kos">)</span><span class="pl-kos">,</span> <span class="pl-c1">touchedCount</span>: <span class="pl-s1">touchedMembers</span><span class="pl-kos">.</span><span class="pl-c1">length</span><span class="pl-kos">,</span> lines <span class="pl-kos">}</span><span class="pl-kos">]</span><span class="pl-kos">;</span></pre></div>
+<p dir="auto"><strong>Why it matters</strong><br>
+For each of those groups, <code class="notranslate">ids.every(id =&gt; asked.get(id)?.includes(group))</code> scans that same list again, so the filter runs about N³/6 steps. 10,000 methods means about 10^11 steps of synchronous work with no timeout, and this PR removes the per-file cap of 50 keys that bounded N. The same collision drops real groups: when the partner methods also share one line, each later group's ids equal the first group's, so only one of the N distinct comparisons is asked. That breaks the PR's own rule of dropping a group only when one asked group holds all its members.</p>
+<p dir="auto"><strong>Checked in the code</strong><br>
+On the commented line: Builds ids as <code class="notranslate">${m.file}:${m.decl.start}</code>, and <code class="notranslate">start</code> is a line number from <code class="notranslate">leadingStart</code>, shared by every method on that line</p>
+<ul dir="auto">
+<li>Checks <code class="notranslate">(asked.get(ids[0]) ?? []).some(group =&gt; ids.every(id =&gt; asked.get(id)?.includes(group)))</code>. With a shared <code class="notranslate">ids[0]</code>, the list and each <code class="notranslate">includes</code> scan gr…</li>
+<li><code class="notranslate">appendTo(asked, id, index)</code> appends every kept group to the shared id's list</li>
+</ul>
+<p dir="auto"></p><div class="Box Box--condensed my-2">
+  <div class="Box-header f6">
+    <p class="mb-0 text-bold">
+      <a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L1479-L1484">manki/src/symbol-uses.ts</a>
+    </p>
+    <p class="mb-0 color-fg-muted">
+        Lines 1479 to 1484
+      in
+      <a data-pjax="true" class="commit-tease-sha Link--inTextBlock" href="/manki-review/manki/commit/1e92f4fdb619f28abcf8d5f14a8fc506f911c924">1e92f4f</a>
+    </p>
+  </div>
+  <div itemprop="text" class="Box-body p-0 blob-wrapper blob-wrapper-embedded data">
+    <table class="highlight tab-size mb-0 js-file-line-container" data-tab-size="8" data-paste-markdown-skip="">
+
+        <tbody><tr class="border-0">
+          <td id="L1479" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1479"></td>
+          <td id="LC1479" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">return</span> <span class="pl-s1">candidates</span><span class="pl-kos">.</span><span class="pl-en">filter</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-kos">{</span> ids <span class="pl-kos">}</span><span class="pl-kos">,</span> <span class="pl-s1">index</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-kos">{</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1480" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1480"></td>
+          <td id="LC1480" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-s1">asked</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s1">ids</span><span class="pl-kos">[</span><span class="pl-c1">0</span><span class="pl-kos">]</span><span class="pl-kos">)</span> <span class="pl-c1">??</span> <span class="pl-kos">[</span><span class="pl-kos">]</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">some</span><span class="pl-kos">(</span><span class="pl-s1">group</span> <span class="pl-c1">=&gt;</span> <span class="pl-s1">ids</span><span class="pl-kos">.</span><span class="pl-en">every</span><span class="pl-kos">(</span><span class="pl-s1">id</span> <span class="pl-c1">=&gt;</span> <span class="pl-s1">asked</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s1">id</span><span class="pl-kos">)</span><span class="pl-kos">?.</span><span class="pl-en">includes</span><span class="pl-kos">(</span><span class="pl-s1">group</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">)</span> <span class="pl-k">return</span> <span class="pl-c1">false</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1481" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1481"></td>
+          <td id="LC1481" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-k">for</span> <span class="pl-kos">(</span><span class="pl-k">const</span> <span class="pl-s1">id</span> <span class="pl-k">of</span> <span class="pl-s1">ids</span><span class="pl-kos">)</span> <span class="pl-en">appendTo</span><span class="pl-kos">(</span><span class="pl-s1">asked</span><span class="pl-kos">,</span> <span class="pl-s1">id</span><span class="pl-kos">,</span> <span class="pl-s1">index</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1482" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1482"></td>
+          <td id="LC1482" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-k">return</span> <span class="pl-c1">true</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1483" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1483"></td>
+          <td id="LC1483" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-kos">}</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">slice</span><span class="pl-kos">(</span><span class="pl-c1">0</span><span class="pl-kos">,</span> <span class="pl-c1">MAX_QUESTIONS</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">map</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-kos">{</span> members <span class="pl-kos">}</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-kos">(</span><span class="pl-kos">{</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1484" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1484"></td>
+          <td id="LC1484" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-c1">name</span>: <span class="pl-s1">members</span><span class="pl-kos">[</span><span class="pl-c1">0</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-c1">name</span><span class="pl-kos">,</span> ...<span class="pl-kos">(</span><span class="pl-s1">members</span><span class="pl-kos">[</span><span class="pl-c1">0</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-c1">trait</span> <span class="pl-c1">&amp;&amp;</span> <span class="pl-kos">{</span> <span class="pl-c1">trait</span>: <span class="pl-s1">members</span><span class="pl-kos">[</span><span class="pl-c1">0</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-c1">trait</span> <span class="pl-kos">}</span><span class="pl-kos">)</span><span class="pl-kos">,</span> </td>
+        </tr>
+    </tbody></table>
+  </div>
+</div>
+<p></p>
+<p dir="auto">Now builds <code class="notranslate">wanted</code> from every key with no <code class="notranslate">MAX_GROUPS_PER_FILE</code> slice, so N is bounded only by the 16 MB parse budget<br>
+</p><div class="Box Box--condensed my-2">
+  <div class="Box-header f6">
+    <p class="mb-0 text-bold">
+      <a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L1453-L1457">manki/src/symbol-uses.ts</a>
+    </p>
+    <p class="mb-0 color-fg-muted">
+        Lines 1453 to 1457
+      in
+      <a data-pjax="true" class="commit-tease-sha Link--inTextBlock" href="/manki-review/manki/commit/1e92f4fdb619f28abcf8d5f14a8fc506f911c924">1e92f4f</a>
+    </p>
+  </div>
+  <div itemprop="text" class="Box-body p-0 blob-wrapper blob-wrapper-embedded data">
+    <table class="highlight tab-size mb-0 js-file-line-container" data-tab-size="8" data-paste-markdown-skip="">
+
+        <tbody><tr class="border-0">
+          <td id="L1453" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1453"></td>
+          <td id="LC1453" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-s1">changed</span><span class="pl-kos">.</span><span class="pl-c1">length</span> <span class="pl-c1">===</span> <span class="pl-c1">0</span><span class="pl-kos">)</span> <span class="pl-k">return</span> <span class="pl-kos">[</span><span class="pl-kos">]</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1454" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1454"></td>
+          <td id="LC1454" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">const</span> <span class="pl-s1">wanted</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Set</span><span class="pl-kos">(</span><span class="pl-s1">changed</span><span class="pl-kos">.</span><span class="pl-en">flatMap</span><span class="pl-kos">(</span><span class="pl-s1">c</span> <span class="pl-c1">=&gt;</span> <span class="pl-s1">c</span><span class="pl-kos">.</span><span class="pl-c1">methods</span><span class="pl-kos">.</span><span class="pl-en">flatMap</span><span class="pl-kos">(</span><span class="pl-s1">keysOf</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1455" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1455"></td>
+          <td id="LC1455" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">const</span> <span class="pl-s1">dirs</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Map</span><span class="pl-kos">(</span><span class="pl-s1">changed</span><span class="pl-kos">.</span><span class="pl-en">map</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-kos">{</span> file <span class="pl-kos">}</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-kos">[</span><span class="pl-en">dirname</span><span class="pl-kos">(</span><span class="pl-s1">file</span><span class="pl-kos">)</span><span class="pl-kos">,</span> <span class="pl-s1">file</span><span class="pl-kos">]</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1456" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1456"></td>
+          <td id="LC1456" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">const</span> <span class="pl-s1">beside</span> <span class="pl-c1">=</span> <span class="pl-kos">[</span>...<span class="pl-s1">dirs</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-en">flatMap</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-kos">[</span><span class="pl-s1">dir</span><span class="pl-kos">,</span> <span class="pl-s1">file</span><span class="pl-kos">]</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-en">filesBeside</span><span class="pl-kos">(</span><span class="pl-s1">workspace</span><span class="pl-kos">,</span> <span class="pl-s1">dir</span><span class="pl-kos">,</span> <span class="pl-s1">file</span><span class="pl-kos">,</span> <span class="pl-s1">excludePaths</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">filter</span><span class="pl-kos">(</span><span class="pl-s1">file</span> <span class="pl-c1">=&gt;</span> <span class="pl-c1">!</span><span class="pl-s1">inCode</span><span class="pl-kos">.</span><span class="pl-en">has</span><span class="pl-kos">(</span><span class="pl-s1">file</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">slice</span><span class="pl-kos">(</span><span class="pl-c1">0</span><span class="pl-kos">,</span> <span class="pl-c1">MAX_SIBLING_FILES</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1457" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1457"></td>
+          <td id="LC1457" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">const</span> <span class="pl-s1">groups</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Map</span><span class="pl-c1">&lt;</span><span class="pl-smi">string</span><span class="pl-kos">,</span> <span class="pl-smi">Array</span><span class="pl-c1">&lt;</span><span class="pl-smi">Method</span> <span class="pl-c1">&amp;</span> <span class="pl-kos">{</span> <span class="pl-c1">file</span>: <span class="pl-smi">string</span><span class="pl-kos">;</span> <span class="pl-c1">parsed</span>: <span class="pl-smi">ParsedFile</span><span class="pl-kos">;</span> <span class="pl-c1">changed</span>: <span class="pl-smi">number</span> <span class="pl-kos">}</span><span class="pl-c1">&gt;</span><span class="pl-c1">&gt;</span><span class="pl-kos">(</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+    </tbody></table>
+  </div>
+</div>
+<p></p>
+<p dir="auto"><code class="notranslate">changedLines</code> counts a one-line method as changed when its start line is added (<code class="notranslate">touched.get(file)?.has(m.decl.start) &amp;&amp; added.get(file)?.has(m.decl.start)</code>),…<br>
+</p><div class="Box Box--condensed my-2">
+  <div class="Box-header f6">
+    <p class="mb-0 text-bold">
+      <a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L1439-L1443">manki/src/symbol-uses.ts</a>
+    </p>
+    <p class="mb-0 color-fg-muted">
+        Lines 1439 to 1443
+      in
+      <a data-pjax="true" class="commit-tease-sha Link--inTextBlock" href="/manki-review/manki/commit/1e92f4fdb619f28abcf8d5f14a8fc506f911c924">1e92f4f</a>
+    </p>
+  </div>
+  <div itemprop="text" class="Box-body p-0 blob-wrapper blob-wrapper-embedded data">
+    <table class="highlight tab-size mb-0 js-file-line-container" data-tab-size="8" data-paste-markdown-skip="">
+
+        <tbody><tr class="border-0">
+          <td id="L1439" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1439"></td>
+          <td id="LC1439" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-c1">!</span><span class="pl-pds"><span class="pl-c1">/</span><span class="pl-cce">^</span><span class="pl-s">_</span><span class="pl-s">_</span><span class="pl-cce">\w</span><span class="pl-c1">+</span><span class="pl-s">_</span><span class="pl-s">_</span><span class="pl-cce">$</span><span class="pl-c1">/</span></span><span class="pl-kos">.</span><span class="pl-en">test</span><span class="pl-kos">(</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">name</span><span class="pl-kos">)</span> <span class="pl-c1">&amp;&amp;</span> <span class="pl-c1">!</span><span class="pl-c1">PROTOCOL_METHODS</span><span class="pl-kos">.</span><span class="pl-en">has</span><span class="pl-kos">(</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">name</span><span class="pl-kos">)</span><span class="pl-kos">)</span> <span class="pl-k">return</span> <span class="pl-kos">[</span><span class="pl-s">`::<span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">name</span><span class="pl-kos">}</span></span>`</span><span class="pl-kos">]</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1440" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1440"></td>
+          <td id="LC1440" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-c">// Keyed by the class itself too, so a base class's own implementation joins its subclasses' group.</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1441" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1441"></td>
+          <td id="LC1441" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line">   <span class="pl-k">return</span> <span class="pl-kos">[</span>...<span class="pl-k">new</span> <span class="pl-v">Set</span><span class="pl-kos">(</span><span class="pl-kos">[</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">owner</span><span class="pl-kos">,</span> ...<span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">bases</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-en">map</span><span class="pl-kos">(</span><span class="pl-s1">base</span> <span class="pl-c1">=&gt;</span> <span class="pl-s">`<span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">base</span><span class="pl-kos">.</span><span class="pl-en">split</span><span class="pl-kos">(</span><span class="pl-pds"><span class="pl-c1">/</span><span class="pl-cce">\.</span><span class="pl-c1">|</span><span class="pl-s">:</span><span class="pl-s">:</span><span class="pl-c1">/</span></span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">at</span><span class="pl-kos">(</span><span class="pl-c1">-</span><span class="pl-c1">1</span><span class="pl-kos">)</span><span class="pl-kos">}</span></span>::<span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">m</span><span class="pl-kos">.</span><span class="pl-c1">name</span><span class="pl-kos">}</span></span>`</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">]</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1442" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1442"></td>
+          <td id="LC1442" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-kos">}</span><span class="pl-kos">;</span> </td>
+        </tr>
+
+        <tr class="border-0">
+          <td id="L1443" class="blob-num border-0 tmp-px-3 py-0 color-bg-default" data-line-number="1443"></td>
+          <td id="LC1443" class="blob-code border-0 tmp-px-3 py-0 color-bg-default blob-code-inner js-file-line"> <span class="pl-k">const</span> <span class="pl-s1">sorted</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Map</span><span class="pl-kos">(</span><span class="pl-kos">[</span>...<span class="pl-s1">touched</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-en">map</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-kos">[</span><span class="pl-s1">file</span><span class="pl-kos">,</span> <span class="pl-s1">lines</span><span class="pl-kos">]</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-kos">[</span><span class="pl-s1">file</span><span class="pl-kos">,</span> <span class="pl-kos">[</span>...<span class="pl-s1">lines</span><span class="pl-kos">]</span><span class="pl-kos">.</span><span class="pl-en">sort</span><span class="pl-kos">(</span><span class="pl-kos">(</span><span class="pl-s1">a</span><span class="pl-kos">,</span> <span class="pl-s1">b</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-s1">a</span> <span class="pl-c1">-</span> <span class="pl-s1">b</span><span class="pl-kos">)</span><span class="pl-kos">]</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">;</span> </td>
+        </tr>
+    </tbody></table>
+  </div>
+</div>
+<p></p>
+<ul dir="auto">
+<li><a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L1468"><code class="notranslate">src/symbol-uses.ts:1468</code></a>: Sorts changed members first, so the one-line changed file supplies <code class="notranslate">ids[0]</code></li>
+<li><a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L875"><code class="notranslate">src/symbol-uses.ts:875</code></a>: <code class="notranslate">nodeKey</code> returns <code class="notranslate">${node.kind()}:${node.range().start.index}</code>, which is unique per declaration and is <code class="notranslate">decl.key</code></li>
+<li><a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L913"><code class="notranslate">src/symbol-uses.ts:913</code></a>: <code class="notranslate">node, name, kind, start: this.leadingStart(node), headerEnd: body ? lineOf(body) : end, end, key: named ? `${nodeKey(node)}:${name}` : nodeKey(node),</code></li>
+<li><a href="https://github.com/manki-review/manki/blob/1e92f4fdb619f28abcf8d5f14a8fc506f911c924/src/symbol-uses.ts#L930"><code class="notranslate">src/symbol-uses.ts:930</code></a>: <code class="notranslate">let start = lineOf(anchor);</code></li>
+</ul>
+<p dir="auto"><strong>Double-checked</strong><br>
+Manki tried to disprove this by reading the code and could not. Each member's id is <code class="notranslate">${m.file}:${m.decl.start}</code>, and <code class="notranslate">decl.start</code> comes from <code class="notranslate">leadingStart</code>, which returns a line number. So every method on one line gets the…</p>
+</details>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Incomplete task"> Create an issue for this</li>
+</ul></div></div></div>
+  <div class="ghk-comment" data-part="reply"><span class="ghk-av ghk-av-user" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.500 2.500 0 0 0 5 0Z"/></svg></span><div class="ghk-main"><div class="ghk-meta"><b>xdustinface</b> <span class="ghk-label">Author</span><span class="ghk-dots">···</span></div><div class="markdown-body ghk-md"><p dir="auto">Fixed in <a class="commit-link" data-hovercard-type="commit" data-hovercard-url="https://github.com/manki-review/manki/commit/02e48adec7173b301ae9ff7943f6a83c865eff31/hovercard" href="https://github.com/manki-review/manki/commit/02e48adec7173b301ae9ff7943f6a83c865eff31"><tt>02e48ad</tt></a>. Members are now keyed by <code class="notranslate">${m.file}:${m.decl.key}</code>, and <code class="notranslate">decl.key</code> is unique per declaration node, so each method sits in at most one group per key it has, and the comment's bound holds. The size test adds a one-line TypeScript class with 5,000 methods, each with a sibling on its own line, within the 10-second bound. On the line-keyed ids that case took 18.3 s locally and 1.5 s with the fix. A small case checks that three methods sharing one line on both sides each get their own group, which fails on the line-keyed ids. I checked the rest of the diff for anything else that identifies a declaration by its line and found none.</p></div></div></div>
+  <div class="ghk-comment" data-part="answer"><img class="ghk-av" src="assets/manki.png" alt=""><div class="ghk-main"><div class="ghk-meta"><b>manki-review</b> <span class="ghk-label">bot</span><span class="ghk-dots">···</span></div><div class="markdown-body ghk-md"><p dir="auto">Fixed in <a class="commit-link" data-hovercard-type="commit" data-hovercard-url="https://github.com/manki-review/manki/commit/02e48adec7173b301ae9ff7943f6a83c865eff31/hovercard" href="https://github.com/manki-review/manki/commit/02e48adec7173b301ae9ff7943f6a83c865eff31"><tt>02e48ad</tt></a>.</p></div></div></div>
+  <div class="ghk-foot" data-part="resolved"><span class="ghk-resolved"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16Zm3.78-9.72a.751.751 0 0 0-.018-1.042.751.751 0 0 0-1.042-.018L6.75 9.19 5.28 7.72a.751.751 0 0 0-1.042.018.751.751 0 0 0-.018 1.042l2 2a.75.75 0 0 0 1.06 0Z"/></svg></span><span><b>manki-review</b> marked this conversation as resolved.</span></div>
+</div></div>
+        <p class="cap">Manki reads the code again before it answers. Its reply starts with one word, here Fixed, and it resolves the thread.</p>
+      </div>
+      <div>
+        <div class="tag ok"><i>3</i>Manki approves</div>
+        <div class="print"><div class="ghk ghk-review">
+  <div class="ghk-event"><span class="ghk-badge ghk-badge-success"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg></span><img class="ghk-av" src="assets/manki.png" alt=""><span><b>manki-review</b> <span class="ghk-label">bot</span> <span class="ghk-muted">approved these changes</span></span></div>
+  <div class="ghk-box"><div class="ghk-body"><div class="markdown-body ghk-md"><p dir="auto">✅ <strong>Approved.</strong></p>
+<p dir="auto"><strong>What this does:</strong> Manki used to skip sibling-method comparisons after the first 50 method groups in a changed file, which could hide the one group that mattered. The cap is removed and replaced by a 2 MB budget for comparing function bodies.</p>
+<hr>
+<p dir="auto"><strong>Related work:</strong> open PRs and issues that may cover the same change. None of them blocks.</p>
+<ul dir="auto">
+<li>Overlaps · <a href="https://github.com/manki-review/manki/pull/1334" data-hovercard-type="pull_request" data-hovercard-url="/manki-review/manki/pull/1334/hovercard">#1334 fix: spread the uses list across files</a></li>
+<li>Overlaps · <a href="https://github.com/manki-review/manki/issues/1329" data-hovercard-type="issue" data-hovercard-url="/manki-review/manki/issues/1329/hovercard">#1329 fix: spread the uses list across files</a></li>
+</ul>
+<hr>
+<details>
+<summary>What to test</summary>
+<p dir="auto"><em>The review model wrote these steps. Check what a step runs before you follow it.</em></p>
+<p dir="auto"><strong>Setup:</strong> Use a repository checkout where the PR head is available, so <code class="notranslate">listUsesOutsideDiff</code> runs with ast-grep.</p>
+<ol dir="auto">
+<li>Change 60 dunder methods on a Python class <code class="notranslate">Many(Base)</code> and add <code class="notranslate">Other(Base)</code> with only the last one. Expect a sibling implementation question for the last method with <code class="notranslate">Many</code> and <code class="notranslate">Other</code>.</li>
+<li>Change many methods on a Go type that has a sibling type beside it. Expect exactly 20 implementation questions, returned within a few seconds.</li>
+<li>Give three Python classes <code class="notranslate">__eq__</code> where each pair shares one base. Expect three separate <code class="notranslate">__eq__</code> questions, with the group whose two members both changed listed first.</li>
+<li>Change two sibling groups that tie on changed members and changed lines. Expect the group with more members listed first.</li>
+<li>Put several methods of a <code class="notranslate">TypeScript</code> class on one line and change them. Expect each method to get its own question.</li>
+<li>Make three sibling methods whose bodies are each about 900 KB. Expect the group to be asked even when two bodies match, since the third falls past the 2 MB budget.</li>
+</ol>
+</details>
+<details>
+<summary>About this review</summary>
+<ul dir="auto">
+<li>Reviewed <a href="https://github.com/manki-review/manki/commit/234109d583b3207985666b82a7629aa3b5034126"><code class="notranslate">234109d</code></a>, round 4</li>
+<li>125 changed lines read in 2m 47s</li>
+<li>Found by <code class="notranslate">claude-sonnet-5-5</code> and <code class="notranslate">claude-opus-5-5</code>, judged by <code class="notranslate">claude-opus-5-5</code></li>
+<li>Tokens: 644k in (274k from cache) · 22k out · about $1.93 at API prices</li>
+<li><a href="https://github.com/manki-review/manki/blob/main/docs/how-reviews-work.md">How Manki reviews</a></li>
+</ul>
+</details></div></div></div>
+</div></div>
+        <p class="cap">An approval says what the change does and lists what to test by hand.</p>
+      </div>
+      <div>
+        <div class="tag"><i>4</i>The round, on the record</div>
+        <div class="print"><div class="ghk ghk-issue">
+  <div class="ghk-box"><div class="ghk-head"><img class="ghk-av" src="assets/manki.png" alt=""><span><b>manki-review</b> <span class="ghk-label">bot</span> <span class="ghk-muted">commented</span></span><span class="ghk-dots">···</span></div><div class="ghk-body"><div class="markdown-body ghk-md"><p dir="auto">✅ <strong>Review complete</strong> in 2m 47s</p>
+<p dir="auto"><strong>Planner</strong> (5s)<br>
+    fix · 125 lines · 2 agents<br>
+    judge effort: medium</p>
+<p dir="auto"><strong>Review (behavior · pair):</strong> 1 finding<br>
+    ✅ Claude Sonnet 5.5 · high: 0 findings (1m 33s)<br>
+    ✅ Claude Opus 5.5 · high: 1 finding (1m 23s)</p>
+<p dir="auto"><strong>Judge:</strong> 0 kept · 1 dropped (52s)<br>
+    dropped: 1 warning</p>
+<details>
+<summary>Review metadata</summary>
+<p dir="auto"><strong>Config:</strong></p>
+<ul dir="auto">
+<li>Models: reviewer=claude-sonnet-5-5, judge=claude-opus-5-5</li>
+<li>Triage: trivial=false, subtle=true, paired=true (planner)</li>
+<li>Team: Claude Sonnet 5.5 · high, Claude Opus 5.5 · high</li>
+<li>Memory: enabled (central)</li>
+</ul>
+<p dir="auto"><strong>Judge decisions:</strong></p>
+<ul dir="auto">
+<li>Dropped: "The 2 MB body budget runs out in file order, so top-ranked groups of identical functions can fill the 6 asked questions" (ignore, medium confidence): "suggestion. The mechanism is accurate. <code class="notranslate">bodyText</code> at src/symbol-uses.ts:1470-1479 spends the shared <code class="notranslate">unread</code> budget in <code class="notranslate">groups.values()</code> order, and the sort only runs after the bodies are read. A body past the budget becomes the placeholder <code class="notranslate">\0${id}</code>, so groups of identical functions can rank into the 6 implementation slots taken at src/compare.ts:133. Counting such bodies as different is a documented choice: the code comment at src/symbol-uses.ts:1466-1467, the doc line and the <code class="notranslate">longs</code> test all state it. The effect only appears after more than 2 MB of compared function text, and the result is degraded rather than wrong. Some sibling comparison questions are spent on functions that read the same, while the finders still read the whole diff. A PR author gains nothing from triggering it. Ranking the groups first and reading bodies lazily until <code class="notranslate">MAX_QUESTIONS</code> groups are kept would spend the budget on the groups that are actually asked. Whether that is worth the change is the author's call."</li>
+</ul>
+<p dir="auto"><strong>Timing:</strong></p>
+<ul dir="auto">
+<li>Parse: 6.9s</li>
+<li>Review agents: 108.4s</li>
+<li>Judge: 51.5s</li>
+<li>Total: 166.8s</li>
+</ul>
+</details>
+<hr>
+<p dir="auto">Last reviewed <code class="notranslate">234109d</code> · head <code class="notranslate">234109d</code> · up to date</p>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Incomplete task"> Pause automatic reviews</li>
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Incomplete task"> Review again</li>
+<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Incomplete task"> Deeper review</li>
+</ul></div></div></div>
+</div></div>
+        <p class="cap">One comment tracks every round: who read the change, on which model, and what the judge kept. Its checkboxes pause reviews or ask for another one.</p>
       </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <!-- Feature Pillars -->
-  <section>
-    <div class="container">
-      <h2 class="section-title">How it works</h2>
-      <div class="pillars">
-        <div class="pillar">
-          <h3>Multi-stage pipeline</h3>
-          <p>Planner, finders, dedup, judge and a verdict reader. Each stage has a specific job: dedup removes repeats before the judge classifies what survives, and the verdict reader reads the diff cold before an approval.</p>
-        </div>
-        <div class="pillar">
-          <h3>Bring your own model</h3>
-          <p>Anthropic, OpenAI and Gemini models, picked per stage. Your API key, your compute.</p>
-        </div>
-        <div class="pillar">
-          <h3>Open source, self-hosted</h3>
-          <p>Runs as a GitHub Action in your repo, on your runners. The Manki service only starts the runs. No vendor lock-in, no subscription required.</p>
+<section class="band b-black" id="round">
+  <div class="wrap">
+    <div class="head">
+      <h2>How a round runs.</h2>
+      <p class="lede">Five stages, each with one job. The defaults work out of the box, and every stage is yours to tune.</p>
+    </div>
+    <div class="rail">
+      <div class="stop">
+        <div class="node">1</div>
+        <h3>Planner</h3>
+        <p>A fast pass looks at what kind of change this is and sizes the review. It never counts lines.</p>
+      </div>
+      <div class="stop">
+        <div class="node">2</div>
+        <h3>Finders</h3>
+        <p>The readers of your change, and you decide who they are. By default one finder reads it, or two on different models when a miss would reach a user.</p>
+        <div class="pills">
+          <div class="pill hot"><b>Your models</b>each reader gets its own model and effort, from any provider</div>
+          <div class="pill hot"><b>Your checks</b>add what matters in your project to their checklist</div>
+          <div class="pill hot"><b>Your groups</b>send risky paths to a stronger set of readers</div>
         </div>
       </div>
-    </div>
-  </section>
-
-  <!-- Pipeline Visual -->
-  <section>
-    <div class="container">
-      <h2 class="section-title">The review pipeline</h2>
-      <div class="pipeline">
-        <div class="pipeline-stage">
-          <h4>Planner</h4>
-          <p>Triages the change. Its answers and the changed paths pick the review group and the effort</p>
-        </div>
-        <div class="pipeline-arrow" aria-hidden="true">&rarr;</div>
-        <div class="pipeline-stage">
-          <h4>Reviewer</h4>
-          <p>The group's finders produce findings: one or two by default, or the readers and models you set</p>
-        </div>
-        <div class="pipeline-arrow" aria-hidden="true">&rarr;</div>
-        <div class="pipeline-stage">
-          <h4>Dedup</h4>
-          <p>Drops findings that repeat resolved ones from earlier rounds</p>
-        </div>
-        <div class="pipeline-arrow" aria-hidden="true">&rarr;</div>
-        <div class="pipeline-stage">
-          <h4>Judge</h4>
-          <p>Evaluates, filters, classifies findings by severity</p>
+      <div class="stop">
+        <div class="node">3</div>
+        <h3>Dedup</h3>
+        <p>Drops findings that repeat ones already resolved in earlier rounds.</p>
+      </div>
+      <div class="stop">
+        <div class="node">4</div>
+        <h3>Judge</h3>
+        <p>Checks each finding against the code, merges duplicates and grades them. Only a blocker blocks.</p>
+        <div class="pills">
+          <div class="pill dash"><b>Refuter</b>on the Claude or Codex CLI, it tries to disprove every blocker</div>
         </div>
       </div>
-    </div>
-  </section>
-
-  <!-- Why Manki -->
-  <section>
-    <div class="container">
-      <h2 class="section-title">Why Manki?</h2>
-      <div class="why-list">
-        <div class="why-item">
-          <h4>Self-hosted</h4>
-          <p>Reviews run on your CI runner. Your code goes only to the model provider you choose.</p>
-        </div>
-        <div class="why-item">
-          <h4>Multi-stage</h4>
-          <p>Planner + parallel finders + dedup + judge. Not a single LLM call &mdash; a coordinated review team.</p>
-        </div>
-        <div class="why-item">
-          <h4>Review memory</h4>
-          <p>Learns from your feedback. Dismiss a finding and Manki won't raise it again. Add custom patterns to teach it what matters to your team.</p>
-        </div>
-        <div class="why-item">
-          <h4>Provider-neutral</h4>
-          <p>Bring your own API key, swap models freely. No lock-in to a specific vendor.</p>
-        </div>
-        <div class="why-item">
-          <h4>Open source</h4>
-          <p>Inspect, fork, customize. No black box &mdash; you can read every prompt and every line of code.</p>
-        </div>
-        <div class="why-item">
-          <h4>No subscription</h4>
-          <p>Pay only for API usage. No per-seat fees, no monthly plans, no surprise invoices.</p>
-        </div>
+      <div class="stop">
+        <div class="node">5</div>
+        <h3>Verdict reader</h3>
+        <p>Runs only when nothing blocks. It reads the whole diff cold and looks for a reason not to merge.</p>
+      </div>
+      <div class="stop end">
+        <div class="node"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 10.5l4 4 8-9" stroke="#0a0a0a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <h3>On your pull request</h3>
+        <p>One thread per real problem, and a review that approves or asks for changes.</p>
       </div>
     </div>
-  </section>
 
-  <!-- Install -->
-  <section id="install">
-    <div class="container">
-      <h2 class="section-title">Get started in 3 steps</h2>
-      <div class="quickstart-steps">
-        <div class="quickstart-step">
-          <div class="step-number">1</div>
-          <div class="step-content">
-            <h3>Install the GitHub App</h3>
-            <p>Grant manki access to post review comments on your repositories. The Manki service serves only the accounts it lists, so ask the maintainers to add yours.</p>
-            <a href="https://github.com/apps/manki-review">Install manki-review &rarr;</a>
-          </div>
-        </div>
-        <div class="quickstart-step">
-          <div class="step-number">2</div>
-          <div class="step-content">
-            <h3>Add your API key</h3>
-            <p>Set your Anthropic API key as a repository secret. OpenAI, Gemini, and OAuth alternatives are documented in the <a href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md#step-2-authentication-secrets">setup guide</a>.</p>
-            <div class="install-block">
-              <pre><code>gh secret set ANTHROPIC_API_KEY --repo &lt;owner&gt;/&lt;repo&gt;</code></pre>
-            </div>
-          </div>
-        </div>
-        <div class="quickstart-step">
-          <div class="step-number">3</div>
-          <div class="step-content">
-            <h3>Add the workflow</h3>
-            <p>Create <code>.github/workflows/manki.yml</code> in your repository:</p>
-            <div class="install-block">
-              <button class="copy-btn" data-copy="#install-code">Copy</button>
-              <pre><code id="install-code">name: Manki
+    <div class="triage">
+      <div class="q"><span class="k">trivial</span><h3>Could a defect hide here at all?</h3><p>If not, a single quick check reads it. Docs, renames and generated files.</p></div>
+      <div class="q"><span class="k">subtle</span><h3>Does judging it need reasoning about behaviour?</h3><p>If so, the finders work at high effort.</p></div>
+      <div class="q"><span class="k">paired</span><h3>Could a defect reach a user if every reader missed it?</h3><p>If so, a second finder joins on another model.</p></div>
+    </div>
+    <div class="floor">
+      <svg width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true"><path d="M22 4l15 6v11c0 9-6.2 15.600-15 19-8.800-3.400-15-10-15-19V10l15-6z" fill="currentColor"/><path d="M15 22l5 5 9-10" style="stroke:var(--band)" stroke-width="3.500" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Security-sensitive paths, CI and dependency files, and data contracts always get at least two finders, whatever the planner answers.</span>
+    </div>
+  </div>
+</section>
+
+<section class="band b-black" id="config">
+  <div class="wrap">
+    <div class="head">
+      <h2>One file, your rules.</h2>
+      <p class="lede">Pick a model for each stage and set up your own groups of readers for the changes that matter most. Manki reads <code>.manki.yml</code> from the base branch, so a pull request cannot weaken its own review.</p>
+    </div>
+    <div class="conf">
+      <div class="yml"><span class="c"># .manki.yml</span>
+<span class="k">auto_review:</span> <span class="v">true</span>
+<span class="k">auto_approve:</span> <span class="v">true</span>
+<span class="k">exclude_paths:</span> <span class="v">["Cargo.lock", "vendor/**"]</span>
+
+<span class="k">instructions:</span> <span class="v">|</span>
+  <span class="v">This is a Rust project. Focus on ownership</span>
+  <span class="v">and error handling.</span>
+
+<span class="k">models:</span>
+  <span class="k">planner:</span>       <span class="o">claude-haiku-5-5</span>
+  <span class="k">reviewer:</span>      <span class="o">claude-sonnet-5-5</span>
+  <span class="k">reviewer_pair:</span> <span class="o">claude-opus-5-5</span>
+  <span class="k">judge:</span>         <span class="o">claude-opus-5-5</span>
+  <span class="k">dedup:</span>         <span class="o">claude-haiku-5-5</span>
+
+<span class="c"># two strong readers on risky paths</span>
+<span class="k">review:</span>
+  <span class="k">groups:</span>
+    <span class="k">deep:</span>
+      <span class="k">reviewers:</span>
+        - { <span class="k">model:</span> <span class="o">claude-opus-5-5</span>, <span class="k">effort:</span> <span class="v">high</span> }
+        - { <span class="k">model:</span> <span class="o">gpt-5.5</span>, <span class="k">effort:</span> <span class="v">high</span> }
+  <span class="k">routing:</span>
+    <span class="k">security:</span> <span class="v">deep</span>
+    <span class="k">data_contract:</span> <span class="v">deep</span>
+
+<span class="k">memory:</span>
+  <span class="k">enabled:</span> <span class="v">true</span></div>
+      <ul class="cmds">
+        <li><code>/manki review</code><span>Review the head commit now.</span></li>
+        <li><code>/manki explain</code><span>Ask about the changes in the pull request.</span></li>
+        <li><code>/manki dismiss</code><span>Dismiss a finding and stop it from coming back.</span></li>
+        <li><code>/manki remember</code><span>Teach it a convention for future reviews.</span></li>
+        <li><code>/manki check</code><span>Check the open threads and approve when all are clear.</span></li>
+        <li><code>/manki forget</code><span>Remove something it learned.</span></li>
+        <li><code>/manki help</code><span>Show every command.</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="band b-green" id="install">
+  <div class="wrap">
+    <div class="head"><h2>Install in three steps.</h2></div>
+    <div class="steps">
+      <div class="step">
+        <h3>Install the GitHub App</h3>
+        <p>Choose the repositories Manki may review. It posts as manki-review.</p>
+        <a class="more" href="https://github.com/apps/manki-review">Open the Manki app</a>
+      </div>
+      <div class="step">
+        <h3>Add a provider secret</h3>
+        <p>Your Claude subscription works: create a token with <code>claude setup-token</code>. An Anthropic, OpenAI or Gemini key works too.</p>
+        <div class="term">gh secret set CLAUDE_CODE_OAUTH_TOKEN</div>
+        <a class="more" href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md#choosing-a-provider">Choose a provider</a>
+      </div>
+      <div class="step">
+        <h3>Add the workflow</h3>
+        <p>Copy the file below into <code>.github/workflows</code>. The next pull request gets a review.</p>
+        <a class="more" href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md#step-3-add-the-workflow">Read what each part does</a>
+      </div>
+    </div>
+    <div class="workflow">
+      <div class="workflow-head"><code>.github/workflows/manki.yml</code><button type="button" data-copy="#install-code">Copy</button></div>
+      <pre><code id="install-code">name: Manki
 run-name: 'Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})'
 
 on:
@@ -168,88 +673,44 @@ jobs:
       - name: Manki Review
         uses: manki-review/manki@v7
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Only with your own memory repo in `memory.repo`</code></pre>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="setup-link">
-        <a href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md">See the full setup guide &rarr;</a>
-      </div>
     </div>
-  </section>
+    <div class="install-foot">
+      <a class="btn btn-solid" href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md">Read the install guide</a>
+      <p class="quiet">The service starts runs only for listed accounts. The maintainers add yours on request.</p>
+    </div>
+  </div>
+</section>
 
-  <!-- See it in action -->
-  <section>
-    <div class="container">
-      <h2 class="section-title">See it in action</h2>
-      <p style="text-align:center;color:#b0b8c4;margin-bottom:32px;">Real reviews on real PRs &mdash; no staged demos.</p>
-      <div class="pr-cards">
-        <div class="pr-card">
-          <span class="pr-title">report noise figures in the weekly stats</span>
-          <a href="https://github.com/manki-review/manki/pull/1415" class="pr-link">View review &rarr;</a>
-        </div>
-        <div class="pr-card">
-          <span class="pr-title">point finders to a related repo's guide</span>
-          <a href="https://github.com/manki-review/manki/pull/1424" class="pr-link">View review &rarr;</a>
-        </div>
-        <div class="pr-card">
-          <span class="pr-title">translate names before the related repo pre-search</span>
-          <a href="https://github.com/manki-review/manki/pull/1432" class="pr-link">View review &rarr;</a>
-        </div>
-      </div>
+<section class="band b-paper" id="faq">
+  <div class="wrap faq">
+    <h2>Questions.</h2>
+    <div>
+      <details open><summary>What does it cost?</summary><p>You pay your own provider for the tokens a review uses, or run it on your subscription. There is no per-seat fee. Every review ends with the tokens it used.</p></details>
+      <details><summary>Where does my code go?</summary><p>Only to the model provider you configured, from your own runner. Manki has no server that stores your code.</p></details>
+      <details><summary>Can a pull request switch off its own review?</summary><p>No. Manki reads its config from the base branch. A change to the config applies after it merges.</p></details>
+      <details><summary>Is it open source?</summary><p>Yes, under AGPL-3.0. You can read every prompt and every line.</p></details>
+      <details><summary>Can the author dismiss a blocker?</summary><p>Not alone. A blocker or a security finding stays open until someone else with write access resolves it.</p></details>
     </div>
-  </section>
-
-  <!-- FAQ -->
-  <section>
-    <div class="container">
-      <h2 class="section-title">FAQ</h2>
-      <div class="faq-list">
-        <details>
-          <summary>Does manki work without Claude?</summary>
-          <div class="faq-answer">Yes. It runs on Anthropic, OpenAI or Gemini models, with an API key or the provider's CLI login, and each stage can use a different model.</div>
-        </details>
-        <details>
-          <summary>How much does it cost to run?</summary>
-          <div class="faq-answer">You pay only for model usage. A review round typically costs about $1 to $3 at public API prices, depending on the diff and the models. With a subscription login, the rounds count against your plan instead.</div>
-        </details>
-        <details>
-          <summary>Is my code sent to third parties?</summary>
-          <div class="faq-answer">Your code is sent to your configured AI provider's API (e.g., Anthropic). Manki stores none of it: its state lives in the PR's comments, and review memory, when you turn it on, in a memory repository.</div>
-        </details>
-        <details>
-          <summary>How do I switch from a hosted review tool?</summary>
-          <div class="faq-answer">Add manki to your workflow, disable the old tool. Manki uses standard GitHub PR comments, no migration needed.</div>
-        </details>
-        <details>
-          <summary>Does every comment start a workflow run?</summary>
-          <div class="faq-answer">No. The Manki App receives the events, drops the ones Manki ignores, and starts your Manki workflow only for the events it acts on, in order for each PR. See <a href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md#step-3-add-the-workflow">Step 3</a> in the setup guide.</div>
-        </details>
-        <details>
-          <summary>Can I customize the review?</summary>
-          <div class="faq-answer">Yes. Under <code>review:</code> in <code>.manki.yml</code> you set up review groups, each reader with its own model, effort and focus, and route classes of PRs to them by path or by the planner's triage. One or two finders is only the default. You can also add extra checks for every finder under <code>reviewers:</code> and pick the model of each stage.</div>
-        </details>
-      </div>
-    </div>
-  </section>
+  </div>
+</section>
 
 </main>
 
-  <!-- Footer -->
-  <footer>
-    <div class="container">
-      <div class="footer-links">
-        <a href="https://github.com/manki-review/manki">GitHub</a>
-        <a href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md">Setup guide</a>
-        <a href="https://github.com/manki-review/manki/blob/main/CHANGELOG.md">Changelog</a>
-        <a href="https://github.com/manki-review/manki/blob/main/LICENSE">AGPL-3.0 License</a>
-      </div>
-      <p>Built by <a href="https://github.com/manki-review">manki-review</a></p>
-    </div>
-  </footer>
+<footer>
+  <div class="wrap foot">
+    <a class="brand" href="#"><img src="assets/manki.png" alt="">Manki</a>
+    <span>Your tokens, your rules. Open source under AGPL-3.0.</span>
+    <nav aria-label="Footer">
+      <a href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md">Install guide</a>
+      <a href="https://github.com/manki-review/manki/blob/main/docs/how-reviews-work.md">How reviews work</a>
+      <a href="https://github.com/manki-review/manki/blob/main/docs/configuration.md">Configuration</a>
+      <a href="https://github.com/manki-review/manki">Source</a>
+    </nav>
+  </div>
+</footer>
 
-  <script src="copy.js"></script>
+<script src="site.js"></script>
 </body>
 </html>
