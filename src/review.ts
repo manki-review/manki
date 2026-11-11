@@ -1347,6 +1347,11 @@ export async function runReview(
   // A blocker's defect class can recur elsewhere in the diff, so with `review.sweep` each kept blocker starts a search for it.
   let sweeps: RoundSweep[] | undefined;
   let sweepRaw: Finding[] = [];
+  // The sweep and the checks at the round's end change what the judge's call recorded, so a round that ends incomplete after it records these as they then are.
+  const incompleteAfterJudge = (summary: string): ReviewResult & { outcome: RoundOutcome } => incomplete(summary, {
+    allJudgedFindings, rawFindings: [...allFindings, ...sweepRaw], rawFindingCount: checkedFindings.length + sweepRaw.length, staticDedupCount, llmDedupCount,
+    ...(duplicateMatches.length > 0 && { duplicateMatches }), ...(sweeps && { sweeps }), ...(openLeads.length > 0 && { openLeads }),
+  });
   // A blocker the refuters disproved stays posted, but it starts no sweep, so one false blocker never turns into several.
   const sweptBlockers = config.review?.sweep ? finalFindings.filter(f => f.severity === 'blocker' && !disproof(f)) : [];
   if (sweptBlockers.length > 0) {
@@ -1399,9 +1404,7 @@ export async function runReview(
       } catch (error) {
         // A round that lost what the sweep found is never complete, since a blocker may be among it.
         core.warning(`The judge failed on the sweep's findings: ${error}`);
-        return incomplete(error instanceof QuotaError ? quotaSummary(error) : `The judge failed on the findings of the sweep. ${RETRY_HINT}`, {
-          sweeps, ...(openLeads.length > 0 && { openLeads }),
-        });
+        return incompleteAfterJudge(error instanceof QuotaError ? quotaSummary(error) : `The judge failed on the findings of the sweep. ${RETRY_HINT}`);
       }
     }
   }
@@ -1519,7 +1522,7 @@ export async function runReview(
     } catch (error) {
       core.warning(`Verdict reader failed: ${error}`);
       logOutputTokens('Verdict reader', verdictWrap.getTotals().usage);
-      return incomplete(error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${RETRY_HINT}`);
+      return incompleteAfterJudge(error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${RETRY_HINT}`);
     }
     verdictUsage = verdictWrap.getTotals().usage;
     logOutputTokens('Verdict reader', verdictUsage);

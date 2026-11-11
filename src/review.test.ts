@@ -2365,6 +2365,35 @@ describe('runReview', () => {
     expect(result.unpostedPreExisting?.map(f => [f.title, f.severity, f.refutation?.defect])).toEqual([['Old cache may serve a stale entry', 'warning', 'unsettled']]);
   });
 
+  it('records what the checks at the round\'s end found when the verdict reader then fails', async () => {
+    const lines = (word: string) => Array.from({ length: 30 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
+    const { root, diff } = gitWorkspace({ 'src/app.ts': lines('old'), 'src/old.ts': lines('kept') }, { 'src/app.ts': lines('new') });
+    const title = 'Old loop never ends';
+    const found = [{
+      severity: 'warning', title, file: 'src/old.ts', line: 12, description: 'd', evidence: ['src/old.ts:12 loops'], proof: ['src/old.ts:12'], preExisting: true, preExistingReason: 'The loop predates this PR.',
+    }];
+    const clients = makeClients();
+    jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify(found) });
+    Object.assign(clients.judge, { repoTools: true });
+    jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string) => {
+      if (system.startsWith('You are a code review judge')) return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title, row: 'degraded', preExisting: true, reasoning: 'r' }] }) };
+      // The check at the round's end disproves the warning, and nothing is left for the reader but the diff.
+      if (system.startsWith('You check one finding')) return { content: JSON.stringify({ outcome: 'disproved', reason: 'The counter ends it.', proof: ['src/old.ts:14'] }) };
+      return { content: 'I think this is fine to merge.' };
+    });
+    mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+    let result: ReviewResult;
+    try {
+      result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    expect([result.reviewComplete, result.outcome]).toEqual([false, 'INCOMPLETE']);
+    expect(result.summary).toContain('verdict reader failed');
+    expect(result.allJudgedFindings?.map(f => [f.title, f.severity, f.refutation?.outcome])).toEqual([[title, 'ignore', 'disproved']]);
+  });
+
   it('keeps a check for an unproven warning of a later judge call, since every other check that shares the limit waits for the round\'s end', async () => {
     const lines = (word: string) => Array.from({ length: 30 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
     const { root, diff } = gitWorkspace({ 'src/app.ts': lines('old'), 'src/old.ts': lines('kept') }, { 'src/app.ts': lines('new') });
@@ -2492,6 +2521,8 @@ describe('runReview', () => {
       expect(failed.summary).toEqual(summary);
       expect(failed.allJudgedFindings?.map(f => f.title)).toEqual(['Cache key misses the locale', 'Retry loses the reason', 'Rename the helper']);
       expect(failed.sweeps).toEqual([{ reviewer, blocker: 'src/cache.ts:10', status: 'answered', class: 'a cache key leaves out a field the value depends on', findings: 6 }]);
+      // The record also keeps the places the sweep found, which the judge did not get to grade.
+      expect(failed.rawFindings?.map(f => f.title)).toEqual(expect.arrayContaining([elsewhere.title, nearCited.title, citedByDropped.title]));
     }
   });
 
