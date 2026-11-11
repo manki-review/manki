@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { areAllFindingsResolved, fetchBotReviewThreads, fixedMarker, checkAndAutoApprove, explainUncarriedBlockers, explainUnreviewedHead, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
+import { approveOrSayWhy, fetchBotReviewThreads, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { APPROVED_LINE, formatFindingComment, postReview, titleToSlug } from './github';
@@ -66,25 +66,28 @@ function threadsOctokit(graphql: jest.Mock, reviews: unknown[] = []): Octokit {
   return { graphql, paginate: jest.fn().mockResolvedValue(reviews), rest: { pulls: { listReviews: jest.fn() } } } as unknown as Octokit;
 }
 
-describe('areAllFindingsResolved', () => {
-  it('returns true for an empty array', () => {
-    expect(areAllFindingsResolved([], TEST_BOT)).toBe(true);
+describe('unclearedThreads', () => {
+  it('returns none for an empty array', () => {
+    expect(unclearedThreads([], TEST_BOT)).toEqual([]);
   });
 
-  it('returns true when all threads are resolved', () => {
+  it('returns none when all threads are resolved', () => {
     const threads = [
       makeThread({ id: '1', isBlocking: true, isResolved: true }),
       makeThread({ id: '2', isBlocking: false, isResolved: true }),
     ];
-    expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(true);
+    expect(unclearedThreads(threads, TEST_BOT)).toEqual([]);
   });
 
-  it('returns false when some blocking threads are unresolved', () => {
+  it('returns the unresolved blocking threads, and the unresolved ones a review names', () => {
     const threads = [
       makeThread({ id: '1', isBlocking: true, isResolved: true }),
       makeThread({ id: '2', isBlocking: true, isResolved: false }),
+      makeThread({ id: '3', isBlocking: false, isResolved: false }),
+      makeThread({ id: '4', isBlocking: false, isResolved: true }),
     ];
-    expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(false);
+    expect(unclearedThreads(threads, TEST_BOT)).toEqual([threads[1]]);
+    expect(unclearedThreads(threads, TEST_BOT, undefined, false, new Set(['3', '4']))).toEqual([threads[1], threads[2]]);
   });
 
   it('ignores unresolved non-blocking threads', () => {
@@ -93,24 +96,24 @@ describe('areAllFindingsResolved', () => {
       makeThread({ id: '2', isBlocking: false, isResolved: false }),
       makeThread({ id: '3', isBlocking: false, isResolved: false }),
     ];
-    expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(true);
+    expect(unclearedThreads(threads, TEST_BOT)).toEqual([]);
   });
 
   it.each([true, false])('counts a resolved blocking thread only for Manki or a human other than the PR author, security %s', isSecurity => {
     const resolvedBy = (resolvedByLogin: string) => [makeThread({ isResolved: true, isSecurity, resolvedByLogin })];
-    expect(areAllFindingsResolved(resolvedBy('author'), TEST_BOT, 'author')).toBe(false);
-    expect(areAllFindingsResolved(resolvedBy('dependabot[bot]'), TEST_BOT, 'author')).toBe(false);
-    expect(areAllFindingsResolved(resolvedBy('alice'), TEST_BOT, 'author')).toBe(true);
-    expect(areAllFindingsResolved(resolvedBy('manki-review[bot]'), TEST_BOT, 'author')).toBe(true);
+    expect(unclearedThreads(resolvedBy('author'), TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(resolvedBy('dependabot[bot]'), TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(resolvedBy('alice'), TEST_BOT, 'author')).toEqual([]);
+    expect(unclearedThreads(resolvedBy('manki-review[bot]'), TEST_BOT, 'author')).toEqual([]);
     // With the PR author unknown, any human resolver has write access.
-    expect(areAllFindingsResolved(resolvedBy('alice'), TEST_BOT)).toBe(true);
+    expect(unclearedThreads(resolvedBy('alice'), TEST_BOT)).toEqual([]);
     // A PR author who is a repo admin clears their own.
-    expect(areAllFindingsResolved(resolvedBy('author'), TEST_BOT, 'author', true)).toBe(true);
-    expect(areAllFindingsResolved(resolvedBy('dependabot[bot]'), TEST_BOT, 'author', true)).toBe(false);
+    expect(unclearedThreads(resolvedBy('author'), TEST_BOT, 'author', true)).toEqual([]);
+    expect(unclearedThreads(resolvedBy('dependabot[bot]'), TEST_BOT, 'author', true)).not.toEqual([]);
     // A recorded override counts only for an admin author, since a Manki reply can echo any text.
     const recorded = [makeThread({ isResolved: true, isSecurity, resolvedByLogin: 'author', recordedOverride: { login: 'author', via: 'dismiss' } })];
-    expect(areAllFindingsResolved(recorded, TEST_BOT, 'author')).toBe(false);
-    expect(areAllFindingsResolved(recorded, TEST_BOT, 'author', true)).toBe(true);
+    expect(unclearedThreads(recorded, TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(recorded, TEST_BOT, 'author', true)).toEqual([]);
   });
 });
 
@@ -246,8 +249,8 @@ describe('fetchBotReviewThreads', () => {
     // A blocker thread Manki found partly fixed blocks only while what remains is a blocker.
     expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', false], ['b', true], ['f', true], ['h', false], ['pw', false], ['pb', true], ['pf', true], ['ps', true], ['pr', true], ['pa', true]]);
     expect(threads.find(t => t.id === 'x')?.isSecurity).toBe(true);
-    expect(areAllFindingsResolved(threads.filter(t => !['b', 'f', 'pb', 'pf', 'ps', 'pr', 'pa'].includes(t.id)), TEST_BOT)).toBe(true);
-    expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(false);
+    expect(unclearedThreads(threads.filter(t => !['b', 'f', 'pb', 'pf', 'ps', 'pr', 'pa'].includes(t.id)), TEST_BOT)).toEqual([]);
+    expect(unclearedThreads(threads, TEST_BOT)).not.toEqual([]);
 
     // A raised thread the PR author resolved still blocks, though no thread is open any more.
     const resolved = threadsOctokit(graphqlMock.mockResolvedValueOnce(makeGraphqlFetchResponse([makeGraphqlFetchThreadNode({ id: 'f', body: formatFindingComment(finding('warning', 'Worse now'), TEST_LINKS), isResolved: true })])), reviews);
@@ -517,6 +520,8 @@ describe('checkAndAutoApprove', () => {
     const fixed = (id = 't1', severity: 'blocker' | 'warning' = 'blocker', at: Place = {}) => thread(id, severity, 'manki-review[bot]', at);
     const NO_THREAD = 'names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
     const GONE = 'names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
+    const NEXT_ROUND = 'The next review round decides. Push a commit or comment `@manki review` to start one.';
+    const FOLLOWS = 'Approval follows once it is resolved by someone allowed to. The PR author may not clear a blocking thread, unless they are a repo admin.';
     const UNREAD = 'Manki cannot read the record of its review of `head-sh`, so it cannot tell what that review blocked on.';
     const UNNAMED = 'The record of Manki\'s review of `head-sh` does not say what it blocked on.';
 
@@ -561,11 +566,17 @@ describe('checkAndAutoApprove', () => {
         existingReviews: [{ id: 6, body: roundBody(blockingRound(HEAD)), state: 'COMMENTED', commit_id: HEAD, user }, { id: 7, body, state: 'COMMENTED', commit_id: HEAD, user }],
       });
 
-      expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG)).toBe(outcome === true);
+      const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+      expect(result.approved).toBe(outcome === true);
       expect(createReviewMock.mock.calls.map(([args]) => args.event)).toEqual(outcome === true ? ['APPROVE'] : []);
       // The event path says why in the log and posts nothing on the PR.
       expect(createCommentMock).not.toHaveBeenCalled();
-      if (outcome !== true) expect(infoSpy.mock.calls.map(([line]) => line).join('\n')).toContain(outcome);
+      if (result.approved || outcome === true) return;
+      expect(infoSpy.mock.calls.map(([line]) => line).join('\n')).toContain(outcome);
+      // The `check` command gets the threads that block, or why resolving threads cannot lift the block.
+      const reply = await result.why();
+      if (outcome.includes('resolved')) expect(reply).toMatch(/^1 thread blocks the approval:\n- Lock is never released.*\n\nApproval follows once it is resolved by someone allowed to\./);
+      else expect(reply).toBe(`${outcome.startsWith('names') ? 'The record of Manki\'s review of `head-sh` ' : ''}${outcome}\n\n${NEXT_ROUND}`);
     });
 
     it('approves a blocker left to an open thread at its place once that thread is resolved', async () => {
@@ -583,15 +594,16 @@ describe('checkAndAutoApprove', () => {
       const body = posted.mock.calls[0][0].body as string;
 
       const createReviewMock = jest.fn().mockResolvedValue({});
-      const check = (threads: ReturnType<typeof thread>[]) => {
+      const check = async (threads: ReturnType<typeof thread>[]) => {
         const octokit = makeMockOctokit({ threads, prHeadSha: HEAD, mergeable: true, createReviewFn: createReviewMock, existingReviews: [{ id: 7, body, state: 'CHANGES_REQUESTED', commit_id: HEAD, user }] });
-        return Promise.all([checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG), explainUncarriedBlockers(octokit, TEST_BOT, 'owner', 'repo', 1, threads.map(t => makeThread({ id: t.id })))]);
+        const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+        return result.approved || result.why();
       };
-      // The record names the thread, so it blocks though its own marker says warning, and the check reply names no missing thread.
-      expect(await check([thread('t1', 'warning')])).toEqual([false, undefined]);
+      // The record names the thread, so it blocks though its own marker says warning, and the check reply names that thread and no missing one.
+      expect(await check([thread('t1', 'warning')])).toBe(`1 thread blocks the approval:\n- Lock is never released\n\n${FOLLOWS}`);
       expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('Not all blocking findings resolved'));
       expect(createReviewMock).not.toHaveBeenCalled();
-      expect(await check([fixed('t1', 'warning')])).toEqual([true, undefined]);
+      expect(await check([fixed('t1', 'warning')])).toBe(true);
       expect(createReviewMock.mock.calls.map(([args]) => args.event)).toEqual(['APPROVE']);
     });
 
@@ -703,16 +715,50 @@ describe('checkAndAutoApprove', () => {
       expect(createReviewMock).not.toHaveBeenCalled();
       const told = 'The record of Manki\'s review of `sha-2` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Persisters miss the lock (`src/store.ts`)';
       expect(infoSpy).toHaveBeenLastCalledWith(`${told}\nSkipping auto-approve, the next review round decides`);
-      // The `check` command gets the same reason, and nothing to say once threads carry every blocker.
-      const explain = (existingReviews: typeof reviews, live = threads.map(t => makeThread({ id: t.id }))) => explainUncarriedBlockers(
-        makeMockOctokit({ threads, prHeadSha: 'sha-2', existingReviews }), TEST_BOT, 'owner', 'repo', 1, live);
-      expect(await explain(reviews)).toBe(`${told}\n\nThe next review round decides. Push a commit or comment \`@manki review\` to start one.`);
-      const posted = { file: 'src/a.ts', line: 10, markerSlug: 'test-finding', commit: 'sha-2' };
-      expect(await explain([{ ...reviews[1], body: roundBody(blockingRound('sha-2')) }], [makeThread({ place: posted })])).toBeUndefined();
+      // The `check` command gets the same reason, and an approval once a thread of that round carries the blocker.
+      const asked = async (existingReviews: typeof reviews, live = threads) => {
+        const result = await approveOrSayWhy(makeMockOctokit({ threads: live, prHeadSha: 'sha-2', mergeable: true, createReviewFn: createReviewMock, existingReviews }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+        return result.approved || result.why();
+      };
+      expect(await asked(reviews)).toBe(`${told}\n\n${NEXT_ROUND}`);
+      const withThread = [{ ...reviews[1], body: roundBody(blockingRound('sha-2')) }];
+      const own = (commit: string) => [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'manki-review[bot]', commit })];
       // The same thread on an earlier commit is not that round's.
-      expect(await explain([{ ...reviews[1], body: roundBody(blockingRound('sha-2')) }], [makeThread({ place: { ...posted, commit: 'sha-1' } })]))
-        .toContain('names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- test finding (`src/a.ts`)');
-      expect(await explain([firstReview])).toBeUndefined();
+      expect(await asked(withThread, own('sha-1'))).toBe(`The record of Manki's review of \`sha-2\` names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- test finding (\`src/a.ts\`)\n\n${NEXT_ROUND}`);
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(await asked(withThread, own('sha-2'))).toBe(true);
+    });
+
+    it.each<[string, Parameters<typeof makeMockOctokit>[0], string | { approved: true; standing: true }]>([
+      ['a draft', { draft: true }, '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.'],
+      // The title comes from the model, so its links must not reach the comment.
+      ['an open blocking thread', { threads: [makeGraphqlFetchThreadNode({ url: 'https://github.com/o/r/pull/1#r1', body: `<!-- manki:blocker:x --> **Blocker**\n\n<!-- manki-finding: ${JSON.stringify({ title: 'Null deref in [`parse`](https://example.com)' })} -->` })] },
+        `1 thread blocks the approval:\n- [Null deref in \`parse\`](https://github.com/o/r/pull/1#r1)\n\n${FOLLOWS}`],
+      ['a blocking thread the PR author resolved', { threads: [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'author' })] },
+        `1 thread blocks the approval:\n- test finding (resolved by \`author\`, who may not clear it)\n\n${FOLLOWS}`],
+      ['an open thread the review blocks on though its marker says note',
+        { threads: [thread('t1', 'note')], existingReviews: [{ id: 7, body: blocked([], [prior('t1')]), state: 'CHANGES_REQUESTED', commit_id: HEAD, user }] },
+        `1 thread blocks the approval:\n- Lock is never released (Manki's latest review blocks on this thread)\n\n${FOLLOWS}`],
+      ['open blocking threads beside a blocker no thread carries', {
+        threads: [thread('t1', 'blocker'), thread('t2', 'blocker', 'author', { title: 'Second' })],
+        existingReviews: [{ id: 7, body: blocked([blocker({ posted: 'thread' }), blocker({ posted: 'thread', title: 'Second' }), blocker({ posted: 'body', title: 'Other', file: 'src/b.ts' })]), state: 'CHANGES_REQUESTED', commit_id: HEAD, user }],
+      }, `2 threads block the approval:\n- Lock is never released\n- Second (resolved by \`author\`, who may not clear it)\n\nThe record of Manki's review of \`head-sh\` names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Other (\`src/b.ts\`)\n\n${NEXT_ROUND}`],
+      ['an open blocking thread on a head no review covers',
+        { threads: [thread('t1', 'blocker', undefined, { commit: 'old-sha' })], existingReviews: [{ id: 7, body: roundBody(blockingRound('old-sha')), state: 'CHANGES_REQUESTED', commit_id: 'old-sha', user }] },
+        '1 thread blocks the approval:\n- Lock is never released\n\nManki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.'],
+      ['a head no review covers', { existingReviews: [{ id: 7, body: roundBody(blockingRound('old-sha')), state: 'CHANGES_REQUESTED', commit_id: 'old-sha', user }] },
+        'Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.'],
+      ['an approval that already stands', { existingReviews: [{ id: 7, body: roundBody(roundThatPosted(HEAD, [])), state: 'APPROVED', commit_id: HEAD, user }] }, { approved: true, standing: true }],
+      ['a review that holds its approval for a person', { existingReviews: [{ id: 7, body: `${roundBody(roundThatPosted(HEAD, []))}\n\n<!-- manki-held-for-person -->`, state: 'COMMENTED', commit_id: HEAD, user }] },
+        'Manki\'s review of the head holds its approval for a person and says why, such as files no model read. Resolving threads does not lift that. A person approves, or the next review round decides.'],
+      ['a conflict with the base', { mergeable: false }, '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result.'],
+    ])('tells a person who asks why there is no approval: %s', async (_label, setup, reply) => {
+      jest.spyOn(core, 'info').mockImplementation(() => {});
+      jest.spyOn(core, 'warning').mockImplementation(() => {});
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const result = await approveOrSayWhy(makeMockOctokit({ prHeadSha: HEAD, mergeable: true, createReviewFn: createReviewMock, ...setup }), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+      expect(result.approved ? result : await result.why()).toEqual(reply);
+      expect(createReviewMock).not.toHaveBeenCalled();
     });
   });
 
@@ -1293,22 +1339,25 @@ describe('checkAndAutoApprove', () => {
         diffs: { 'old-sha-bbbb': rebaseDiff, 'head-sha-aaaa': headDiff },
       });
 
-      expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG)).toBe(approves);
+      const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+      expect(result.approved).toBe(approves);
       expect(createReviewMock.mock.calls.map(([args]) => [args.event, args.commit_id])).toEqual(approves ? [['APPROVE', 'head-sha-aaaa']] : []);
       expect(createCommentMock).not.toHaveBeenCalled();
-      expect(await explainUnreviewedHead(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG)).toBe(approves
-        ? undefined
-        : 'Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.');
+      if (!result.approved) expect(await result.why()).toBe('Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.');
     });
 
     it('explains an unreviewed head by the pause, the Pause box, or by the review still to come', async () => {
-      const octokit = staleHeadOctokit(jest.fn(), [formatReviewRecord(notConverging)]);
-      expect(await explainUnreviewedHead(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
+      const asked = async (octokit: Octokit) => {
+        const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
+        return result.approved || result.why();
+      };
+      const notice = () => jest.fn().mockResolvedValue({ data: { id: 1 } });
+      expect(await asked(staleHeadOctokit(notice(), [formatReviewRecord(notConverging)])))
         .toMatch(/^Manki has not reviewed `head-sh`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
       jest.mocked(authModule.fetchPrState).mockResolvedValueOnce({ settings: { paused: true }, runModes: new Set(), queuedModes: new Set() });
-      expect(await explainUnreviewedHead(staleHeadOctokit(jest.fn(), []), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
+      expect(await asked(staleHeadOctokit(notice(), [])))
         .toBe('Manki has not reviewed `head-sh`. Automatic review is paused in the settings block. Untick **Pause automatic reviews** there, or comment `@manki review`, to review it.');
-      expect(await explainUnreviewedHead(staleHeadOctokit(jest.fn(), []), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
+      expect(await asked(staleHeadOctokit(notice(), [])))
         .toBe('Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.');
     });
   });
