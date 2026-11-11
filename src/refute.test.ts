@@ -676,13 +676,23 @@ describe('refuteBlockers', () => {
     const exists = [{ premise: 'The copy is never dropped', decides: 'defect' as const }];
     const reach = [{ premise: 'Any client reaches it', decides: 'grade' as const }];
     const noProof = { evidence: { checks: [], proof: [] } };
+    const lead = { lead: { checked: 'read src/math.ts:2', left: 'find the callers' }, notChecked: true };
     const buildClaim = { severity: 'warning' as const, buildClaim: true, toolEvidence: { status: 'none' as const, note: '' } };
     // One row per kind: the finding, then its grade and status after a check that confirms it and after one that settles nothing.
     const kinds: Array<[string, Partial<Finding>, [string, string], [string, string]]> = [
       ['Blocker', {}, ['blocker', 'confirmed'], ['blocker', 'unconfirmed']],
-      ['Open lead', { lead: { checked: 'read src/math.ts:2', left: 'find the callers' }, notChecked: true }, ['blocker', 'confirmed'], ['blocker', 'unconfirmed']],
+      ['Open lead', lead, ['blocker', 'confirmed'], ['blocker', 'unconfirmed']],
+      // With no answer the finder's word stands that it did not finish checking, whatever lines the lead cites.
+      ['Open lead and the call fails', lead, ['blocker', 'unconfirmed'], ['blocker', 'unconfirmed']],
+      // A confirmed premise about the grade ends the lead, and the defect is as far checked as the finder left it.
+      ['Open lead with a doubt about the grade', { ...lead, doubts: reach }, ['blocker', 'unconfirmed'], ['blocker', 'unconfirmed']],
+      ['Blocker the finder did not finish checking', { notChecked: true }, ['blocker', 'confirmed'], ['blocker', 'unconfirmed']],
       ['Blocker a doubt holds at a warning', { severity: 'warning', gradeIfConfirmed: 'blocker', doubts: exists }, ['blocker', 'confirmed'], ['warning', 'unconfirmed']],
       ['Blocker capped for want of proof', { severity: 'warning', tags: ['unproven-blocker'], ...noProof }, ['blocker', 'confirmed'], ['warning', 'unconfirmed']],
+      // A confirmed premise about the grade lifts the cap, and the lines it cites prove no defect.
+      ['Capped blocker with a doubt about the grade', {
+        severity: 'warning', tags: ['unproven-blocker'], gradePath: [{ from: 'blocker', to: 'warning', by: 'unproven' }], doubts: reach, ...noProof,
+      }, ['blocker', 'unconfirmed'], ['warning', 'unconfirmed']],
       // A confirmed reach is no search for what the finding says is missing, so the cap comes back and the finding is unconfirmed.
       // While the reach is open it is a warning its cited lines prove, like any other with only a doubt about the grade.
       ['Missing claim in the rare column', {
@@ -703,7 +713,7 @@ describe('refuteBlockers', () => {
     const findings = kinds.map(([title, more]) => finding(title, more));
     const ends = async (outcome: 'confirmed' | 'unsettled') => {
       const reply = (f: Finding) => ({ outcome, reason: 'r', proof: ['src/math.ts:2'], ...(f.doubts && { premises: f.doubts.map(() => ({ outcome, reason: 'r', proof: ['src/math.ts:2'] })) }) });
-      const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, reply(f)])));
+      const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, f.title.endsWith('the call fails') ? new Error('overloaded') : reply(f)])));
       const result = await refuteRound(client, findings, { workspace, diff, preExisting: f => !!f.preExisting });
       expect(client.calls.map(([title]) => title).sort()).toEqual(kinds.map(([title]) => title).sort());
       return result.map(f => [f.title, [f.severity, checkStatus(f)]]);
@@ -711,6 +721,8 @@ describe('refuteBlockers', () => {
 
     expect(await ends('confirmed')).toEqual(kinds.map(([title, , confirmed]) => [title, confirmed]));
     expect(await ends('unsettled')).toEqual(kinds.map(([title, , , unsettled]) => [title, unsettled]));
+    // The same holds where no check runs at all, as on a round without tools: what a finder did not finish checking is not proven by the lines it cites.
+    expect([finding('Lead', lead), finding('Not finished', { severity: 'warning', notChecked: true }), finding('Finished', { severity: 'warning' })].map(checkStatus)).toEqual(['unconfirmed', 'unconfirmed', 'proven']);
   });
 
   it('checks a warning on code the PR did not change after the unproven ones, those with a doubt first, inside the same limit', async () => {

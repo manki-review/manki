@@ -301,13 +301,15 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
   }
   if (outcome === 'confirmed') {
     const proof = [...new Set([...(finding.evidence?.proof ?? []), ...checks.flatMap(r => r.outcome === 'confirmed' ? r.proof ?? [] : [])])];
-    const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
+    const { lead: _lead, notChecked, ...confirmed } = graded;
+    // A confirmation of premises about the grade leaves the defect as far checked as the finder left it.
+    const untested = notChecked && !checks.some(r => confirmsDefect(finding, r));
     const rareClaim = !!finding.cell && columnDecidesBlock(finding.cell.row) && finding.cell.column === 'rare';
     // The `rare` column is all that keeps such a finding from blocking, so it rises only when `REACH_DOUBT` itself is confirmed.
     const restored = rareClaim && !reachConfirmed(checks) ? undefined : confirmedGrade(finding);
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
     const raised = {
-      ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', decided!.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
+      ...confirmed, ...(untested && { notChecked }), ...(restored && gradeStep(finding, restored, 'refutation', decided!.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
       ...(tags && { tags }), ...(rareClaim && restored && { cell: { ...finding.cell!, column: 'normal' as const, judgeColumn: 'rare' as const } }),
     };
     // A finding that leaves the `rare` column becomes a blocker no cap has seen, and a confirmed reach is no search for what it says is missing.
@@ -409,20 +411,22 @@ export function unprovenReason(finding: Finding): UnprovenReason | undefined {
 }
 
 /**
- * Returns how `finding` was checked. It is `confirmed` when a check confirms the defect and none disproves it. It is
- * `proven` when it cites proof lines and nothing is left open: no check disproved it, no check of the whole finding
- * came back unsettled, and the judge doubts no premise the defect rests on. Anything else is `unconfirmed`, so a
- * finding `unprovenReason` names is always `unconfirmed`. So is a finding no check can confirm, whatever a check said:
- * one that still carries a cap for want of proof, and a claimed build failure no CI result reports.
+ * Returns how `finding` was checked. It is `unconfirmed` unless one of two conditions holds. It is `confirmed` when a
+ * check tested the defect itself and confirmed it, by `confirmsDefect`. It is `proven` when it cites proof lines and
+ * nothing says its check is unfinished: the finder finished checking it, it was never capped for want of proof, the
+ * judge doubts no premise the defect rests on, and no check of the whole finding came back unsettled. Neither holds for
+ * a finding a check disproved, one that still carries a cap, or a claimed build failure no CI result reports. So a
+ * finding `unprovenReason` names is always `unconfirmed`.
  */
 export function checkStatus(finding: Finding): CheckStatus {
-  if (finding.tags?.some(tag => CHECKED_TAGS.includes(tag)) || isUnconfirmedBuildClaim(finding)) return 'unconfirmed';
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
-  const disproved = checks.some(check => check.outcome === 'disproved');
-  if (!disproved && checks.some(check => confirmsDefect(finding, check))) return 'confirmed';
+  const refused = !!finding.tags?.some(tag => CHECKED_TAGS.includes(tag)) || isUnconfirmedBuildClaim(finding) || checks.some(check => check.outcome === 'disproved');
+  const confirmed = !refused && checks.some(check => confirmsDefect(finding, check));
   // A check that answered only premises says nothing about the defect unless one of them decides it.
-  const open = disproved || checks.some(check => check.outcome === 'unsettled' && !check.premises) || doubtsDefect(finding) || citesNoProof(finding);
-  return open ? 'unconfirmed' : 'proven';
+  const unfinished = !!finding.lead || !!finding.notChecked || !!finding.gradePath?.some(step => step.by === 'unproven') || doubtsDefect(finding)
+    || checks.some(check => check.outcome === 'unsettled' && !check.premises);
+  const proven = !refused && !unfinished && !citesNoProof(finding);
+  return confirmed ? 'confirmed' : proven ? 'proven' : 'unconfirmed';
 }
 
 /**
