@@ -43,6 +43,8 @@ Clone each in full with `git clone https://github.com/<owner/name>.git`. A blobl
 
 The cases are split in two sets. `cases/` is the tuning set: develop and debug a change against it only. `holdout/` is the hold-out set: it is run before a release, and its score decides whether the release goes out (see `RELEASE.md`). Never read the hold-out cases while working on Manki, since a change tuned to them no longer shows how Manki does on code it has not seen.
 
+A case file is named after its id, and the id alone says which set a case is in. A tuning case has a file in `cases/` and none in `holdout/`. Any other case counts as a hold-out case, also one that neither directory holds, and also when its file is read from another directory with `--cases`.
+
 `--holdout` runs both sets and scores them apart. The summary and the comparison table give one column per variant and set, so tuning that does not carry over shows as a gap between the two.
 
 ```sh
@@ -59,9 +61,21 @@ The **Benchmark** workflow (`.github/workflows/bench.yml`) runs the bench withou
 
 Each ref scores with its own bench code. After a change to the matcher, run the baseline's ref again rather than compare with an older report. To compare downloaded reports locally, run `npm run bench-report -- gate --baseline old.json --candidate new.json`.
 
-### Unmatched blockers on tuning cases
+### Unmatched blockers and unexpected warnings on tuning cases
 
-A false blocker is either a wrong blocker or a real defect the key does not list. So the summary of a run with tuning cases, local or on GitHub, lists every blocker that matched no key item, by case and run. Check each against the code at the case's head. Add each real defect to the case's `must_catch` and bump its `key_version`, so the next run counts it as a find. Never grow a hold-out key this way: its cases are not read while working on Manki.
+A false blocker is either a wrong blocker or a real defect the key does not list, and the same holds for an unexpected warning. So the summary of a run with tuning cases, local or on GitHub, lists every blocker and every warning that matched no key item, by case and run, each with its location and description. Check each against the code at the case's head. Add each real blocker to the case's `must_catch`. Add each real warning to `must_catch`, or to `nice_to_have` when a good review may leave it out. Then bump the case's `key_version`, so the next run counts it as a find. `npm run bench-report -- unmatched --report <report.json>` prints the same list from a stored report, and names the cases of the other set, which it does not list. Never grow a hold-out key this way while working on Manki: its cases are not read. The hold-out pass in `RELEASE.md` does it instead.
+
+Of a hold-out case the bench prints the id and counts only. Its review, its matcher calls and the load of its config log nothing, and the summary leaves out its source and the reason of a failed run, which stay in the report file. Its findings are listed only on request, with `--set holdout`, and never in a workflow job, since the logs and summaries of this repository are public. On GitHub a hold-out case job shows no output of the bench at all, whatever its ref prints.
+
+The text of a tuning case is printed, and it comes from a model that read outside code. So no line of it may start a line of the output, where a job log would run a workflow command: each source, title, location and failure reason is printed on one line behind the case, and each line of a description behind a bar.
+
+A stored report is not trusted on the set of a case. `--rescore`, `bench-report unmatched` and `bench-report gate` take each case's set from its id. They refuse a report only when it contradicts the case files, which is when it calls a case a tuning case while `holdout/` holds the case's file. The report of a single case job of a ref before v7.5 is such a report. `bench-report merge` reads those reports and writes the set each id gives into the merged report. A case that was removed or renamed after a report was written has no case file any more, so it is left out of the list, the gate and the rescored report, and named in one line.
+
+### Scoring a report again after a key change
+
+A report scored with an older key does not compare with one scored with the new key, so the gate leaves such a case out and lists it. `npm run bench -- --rescore <report.json>` scores the stored runs again without reviewing anything. It matches the findings each run stored to the key of each case whose `key_version` is not the report's, and writes `<report>.rescored.json`. It needs the matcher's credentials and no checkout, so a key change costs matcher calls only. Add `--holdout` for a report with hold-out cases, and `--matcher-model` when the report was not matched by the default model. It prints the ids of the cases it scored again and nothing of their findings.
+
+Only complete runs are scored again. A case stays as scored, and is listed with the reason, when no case file was loaded for it, such as a hold-out case without `--holdout`, when its report holds no text of the findings, which is every report of a ref before v7.5, when its runs reviewed another kind of round than the case describes, or when the matcher fails on it twice. The other cases are still scored again. Scoring again is for a changed key only: a case whose commits, title, body, config or earlier round changed needs a new review.
 
 ## Comparing setups
 
@@ -150,7 +164,7 @@ config:
 
 The bench reviews the case with this block in place of the repository's file, and a variant's overrides are set on top of it. The block can drift from what the repository uses, so keep it to a translation and say in a comment above it that it overrides the repository's config. A ref that does not know `config:` ignores it and reads the repository's file. The block is the one place in a case file that may name a repository of the upstream organisation, since `related_repos` lists them. A linked `owner/repo#N` reference to another repository stays out of it too.
 
-A case whose config does not load, its own or the repository's, gets no review. Each of its runs is recorded as `CONFIG_INVALID` with the reason and counts as incomplete, and the `Config invalid` row of the summary table names the case. So a config format change never drops a case without a trace, and the release gate decides nothing while a hold-out case is in that state, naming the case.
+A case whose config does not load, its own or the repository's, gets no review. A case's own config with a key Manki does not know, such as a misspelled one, counts as not loading, while the same key in the repository's file only gives a warning. Each of its runs is recorded as `CONFIG_INVALID` with the reason and counts as incomplete, and the `Config invalid` row of the summary table names the case. So a config format change never drops a case without a trace, and the release gate decides nothing while a hold-out case is in that state, naming the case.
 
 ### Related repos
 

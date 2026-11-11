@@ -39,13 +39,18 @@ export function overlayConfig(base: ConfigOverrides, overrides: ConfigOverrides)
   return merged;
 }
 
+/** Throws when `config` sets a key the config does not know, which loading it only warns about. `subject` starts the error. */
+function rejectUnknownKeys(config: ConfigOverrides, subject: string): void {
+  const unknown = validateConfig(config).warnings.filter(warning => warning.startsWith('Unknown config key'));
+  if (unknown.length > 0) throw new Error(`${subject} keys the config does not know: ${unknown.join('; ')}`);
+}
+
 /**
  * Loads `content` with `overrides` set on top. Throws when either makes the config invalid, or when an override names a
  * key the config does not know, so a variant never runs on the defaults or on the base setup by mistake.
  */
 function loadOverlaidConfig(content: string | null, configPath: string, overrides: ConfigOverrides): { config: ReviewConfig; source: ConfigSource } {
-  const unknown = validateConfig(overrides).warnings.filter(warning => warning.startsWith('Unknown config key'));
-  if (unknown.length > 0) throw new Error(`The config overrides name keys the config does not know: ${unknown.join('; ')}`);
+  rejectUnknownKeys(overrides, 'The config overrides name');
   let parsed: unknown;
   try {
     parsed = content ? parseYaml(content) : null;
@@ -180,9 +185,11 @@ async function loadLocalConfig(
 
 /**
  * Loads the config at `base` in `repoRoot` with `overrides` set on top, as a review with them does. `own`, if given, is
- * read in place of the file the repository holds. Throws when the config does not load.
+ * read in place of the file the repository holds, and may name no key the config does not know. Throws when the config
+ * does not load.
  */
 export async function loadConfigWithOverrides(repoRoot: string, base: string, overrides: ConfigOverrides, own?: ConfigOverrides, configPath = DEFAULT_CONFIG_PATH): Promise<ReviewConfig> {
+  if (own) rejectUnknownKeys(own, 'The config given names');
   const content = own ? stringifyYaml(own) : await gitRepoFiles(repoRoot, base).read(configPath);
   return loadOverlaidConfig(content, own ? 'the config given' : configPath, overrides).config;
 }

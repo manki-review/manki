@@ -1,19 +1,23 @@
 /**
  * The steps of the benchmark workflow around `manki bench`. It lists the cases to run as a job matrix, merges the
- * report of each case job into one, and applies the release gate to merged reports. It calls no model.
+ * report of each case job into one, applies the release gate to merged reports, and lists the findings of a report
+ * that match no key item. It calls no model. Of a hold-out case it prints the id and counts only, except for
+ * `unmatched --set holdout`, which refuses to run in a workflow job. `caseSet` alone says which set a case is in:
+ * `merge` writes that set into the merged report, and `gate` and `unmatched` read a stored report through `readReport`.
  *
  * Usage:
  *   npm run bench-report -- matrix --set <holdout|tuning|both> [--cases "<id> ..."]
  *   npm run bench-report -- merge --set <set> [--cases "<id> ..."] --dir <case reports> --out <report.json> [--ref <ref>] [--commit <sha>]
  *   npm run bench-report -- gate --baseline <report.json> [--baseline ...] --candidate <report.json> [--candidate ...]
+ *   npm run bench-report -- unmatched --report <report.json> [--set <holdout|tuning|both>]
  */
 
-import { readdirSync, readFileSync, writeFileSync } from 'fs';
+import { readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-import { BenchCase, BenchReport, CaseSet, formatBenchSummary, formatComparison, formatGate, formatUnmatchedBlockers, gateReports, loadCases, mergeReports, parseCase } from '../src/bench';
+import { printableError } from '../src/cli';
+import { BenchCase, BenchReport, CASE_DIRS, CaseSet, formatBenchSummary, formatComparison, formatGate, formatRemoved, formatUnmatched, gateReports, loadCases, mergeReports, readReport, readReportFile } from '../src/bench';
 
-const SET_DIRS: Record<CaseSet, string> = { tuning: 'bench/cases', holdout: 'bench/holdout' };
 const SET_CHOICES: Record<string, CaseSet[]> = { holdout: ['holdout'], tuning: ['tuning'], both: ['tuning', 'holdout'] };
 
 /** One job of the benchmark matrix: a case and what its job needs to fetch. */
@@ -33,24 +37,17 @@ export interface MatrixEntry {
 export function selectCases(set: string, only: string[], root = '.'): BenchCase[] {
   const sets = SET_CHOICES[set];
   if (!sets) throw new Error(`--set must be one of ${Object.keys(SET_CHOICES).join(', ')}`);
-  return loadCases(Object.fromEntries(sets.map(s => [s, join(root, SET_DIRS[s])])), only);
+  return loadCases(sets.map(s => join(root, CASE_DIRS[s])), only, root);
 }
 
-/** Returns one matrix entry per case, naming the file each case is read from. */
-export function benchMatrix(cases: BenchCase[], root = '.'): MatrixEntry[] {
-  const files = new Map<string, string>();
-  for (const set of new Set(cases.map(c => c.set))) {
-    for (const name of readdirSync(join(root, SET_DIRS[set])).filter(f => f.endsWith('.yml'))) {
-      const file = join(SET_DIRS[set], name);
-      files.set(parseCase(readFileSync(join(root, file), 'utf-8'), file, set).id, file);
-    }
-  }
-  return cases.map(({ id, set, repo, base, head, priorRound }) => ({ id, set, repo, base, head, prior: priorRound?.head ?? '', file: files.get(id)! }));
+/** Returns one matrix entry per case, naming the file each case is read from, which is named after the case's id. */
+export function benchMatrix(cases: BenchCase[]): MatrixEntry[] {
+  return cases.map(({ id, set, repo, base, head, priorRound }) => ({ id, set, repo, base, head, prior: priorRound?.head ?? '', file: join(CASE_DIRS[set], `${id}.yml`) }));
 }
 
 /**
- * Returns the Markdown summary of a merged report: the comparison table, the unmatched blockers on tuning cases, then
- * every case and run in a fold.
+ * Returns the Markdown summary of a merged report: the comparison table, the unmatched blockers and unexpected warnings
+ * on tuning cases, then every case and run in a fold.
  */
 export function formatReportSummary(report: BenchReport): string {
   const cases = report.variants[0]?.cases ?? [];
@@ -62,7 +59,7 @@ export function formatReportSummary(report: BenchReport): string {
     '',
     formatComparison(report.variants),
     '',
-    ...[formatUnmatchedBlockers(report.variants)].filter(Boolean),
+    ...[formatUnmatched(report.variants)].filter(Boolean),
     '<details><summary>Every case and run</summary>',
     '',
     '```text',
@@ -72,10 +69,6 @@ export function formatReportSummary(report: BenchReport): string {
     '</details>',
     '',
   ].join('\n');
-}
-
-function readReport(file: string): BenchReport {
-  return JSON.parse(readFileSync(file, 'utf-8')) as BenchReport;
 }
 
 function parseArgs(args: string[]): Map<string, string[]> {
@@ -88,7 +81,8 @@ function parseArgs(args: string[]): Map<string, string[]> {
   return flags;
 }
 
-function main(argv: string[]): number {
+/** Runs one command on the case files and reports under `root`, and returns the exit code. */
+export function main(argv: string[], root = '.'): number {
   const [command, ...rest] = argv;
   const flags = parseArgs(rest);
   const one = (flag: string) => flags.get(flag)?.at(-1);
@@ -99,18 +93,29 @@ function main(argv: string[]): number {
   };
   const only = (one('--cases') ?? '').split(/[\s,]+/).filter(Boolean);
   if (command === 'matrix') {
-    console.log(JSON.stringify(benchMatrix(selectCases(required('--set'), only))));
+    console.log(JSON.stringify(benchMatrix(selectCases(required('--set'), only, root))));
   } else if (command === 'merge') {
     const dir = required('--dir');
-    const parts = readdirSync(dir).filter(f => f.endsWith('.json')).map(f => readReport(join(dir, f)));
-    const report = mergeReports(parts, selectCases(required('--set'), only), { ref: one('--ref'), commit: one('--commit') });
+    // The report of a case job of an older ref calls every case a tuning case. `mergeReports` gives each case the set `caseSet` names.
+    const parts = readdirSync(dir).filter(f => f.endsWith('.json')).map(f => readReportFile(join(dir, f)));
+    const report = mergeReports(parts, selectCases(required('--set'), only, root), { ref: one('--ref'), commit: one('--commit') });
     writeFileSync(required('--out'), `${JSON.stringify(report, null, 2)}\n`);
     console.log(formatReportSummary(report));
   } else if (command === 'gate') {
-    const [baseline, candidate] = ['--baseline', '--candidate'].map(flag => (flags.get(flag) ?? []).map(readReport));
-    console.log(`## Release gate\n\n${formatGate(gateReports(baseline, candidate))}`);
+    const [baseline, candidate] = ['--baseline', '--candidate'].map(flag => (flags.get(flag) ?? []).map(path => readReport(path, root)));
+    const sides = [baseline, candidate].map(side => side.map(read => read.report));
+    const removed = formatRemoved([...baseline, ...candidate].flatMap(read => read.removed));
+    console.log(`## Release gate\n\n${formatGate(gateReports(sides[0], sides[1]))}${removed && `\n${removed}\n`}`);
+  } else if (command === 'unmatched') {
+    const sets = SET_CHOICES[one('--set') ?? 'tuning'];
+    if (!sets) throw new Error(`--set must be one of ${Object.keys(SET_CHOICES).join(', ')}`);
+    const { report, removed } = readReport(required('--report'), root);
+    const skipped = [...new Set(report.variants.flatMap(v => v.cases).filter(c => !sets.includes(c.set)).map(c => c.id))];
+    console.log(formatUnmatched(report.variants, sets) || 'Every blocker and warning on the listed sets matches a key item.');
+    if (skipped.length > 0) console.log(`Not listed, in another set: ${skipped.join(', ')}`);
+    if (removed.length > 0) console.log(formatRemoved(removed));
   } else {
-    throw new Error('Usage: npm run bench-report -- <matrix|merge|gate> [options], see the top of scripts/bench-report.ts');
+    throw new Error('Usage: npm run bench-report -- <matrix|merge|gate|unmatched> [options], see the top of scripts/bench-report.ts');
   }
   return 0;
 }
@@ -119,7 +124,7 @@ if (require.main === module) {
   try {
     process.exit(main(process.argv.slice(2)));
   } catch (error) {
-    console.error(error instanceof Error ? error.message : error);
+    console.error(printableError(error));
     process.exit(1);
   }
 }

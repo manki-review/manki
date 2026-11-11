@@ -133,18 +133,26 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CASE_ID: ${{ matrix.case.id }}
+          CASE_SET: ${{ matrix.case.set }}
           CASE_REPO: ${{ matrix.case.repo }}
           CASE_FILE: ${{ matrix.case.file }}
           RUNS: ${{ inputs.runs }}
           VARIANTS: ${{ inputs.variants }}
-        # The case file alone, so a ref with an older case parser reads no other case.
+        # The case file alone, so a ref with an older case parser reads no other case. The bench of a ref before v7.5
+        # reads it as a tuning case and logs the titles of its findings, and this log is public. So only a tuning case
+        # shows its output, whatever the ref prints.
         run: |
           mkdir -p case-dir out
           cp "$CASE_FILE" case-dir/
           args=(bench --cases case-dir --case "$CASE_ID" --runs "$RUNS" --checkout "$CASE_REPO=$PWD/case-repo"
             --out "out/$CASE_ID.json" --cache "$RUNNER_TEMP/matcher-cache.json")
           for v in $VARIANTS; do args+=(--variant "$v"); done
-          node manki-ref/dist/index.js "${args[@]}"
+          if [ "$CASE_SET" = tuning ]; then
+            node manki-ref/dist/index.js "${args[@]}"
+          else
+            echo "The output of a hold-out case is not shown. Each run and the reason of a failed one are in the case report."
+            node manki-ref/dist/index.js "${args[@]}" > /dev/null 2>&1
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

@@ -1,16 +1,25 @@
 import { execFileSync } from 'child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { isMap, isScalar, parseDocument } from 'yaml';
 
-import { BenchCase, BenchReport, buildReport, candidateFindings, formatBenchSummary, formatGate, formatUnmatchedBlockers, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
 import type { Finding, FindingSeverity, RoundContext, RoundOutcome } from './types';
 
 jest.mock('@actions/core');
+
+const IN_ACTIONS = process.env.GITHUB_ACTIONS;
+// CI sets `GITHUB_ACTIONS`, which stops any listing of hold-out findings, so each test sets it itself.
+beforeAll(() => {
+  delete process.env.GITHUB_ACTIONS;
+});
+afterAll(() => {
+  if (IN_ACTIONS !== undefined) process.env.GITHUB_ACTIONS = IN_ACTIONS;
+});
 
 const CASES_DIR = join(__dirname, '..', 'bench', 'cases');
 const HOLDOUT_DIR = join(__dirname, '..', 'bench', 'holdout');
@@ -207,7 +216,7 @@ describe('parseCase', () => {
 
   it('parses every tuning and hold-out case, with unique ids, a config of its own that loads and no linked reference to a repository outside the forks', async () => {
     const files = [CASES_DIR, HOLDOUT_DIR].flatMap(dir => readdirSync(dir).filter(f => f.endsWith('.yml')).map(f => join(dir, f)));
-    const cases = loadCases({ tuning: CASES_DIR, holdout: HOLDOUT_DIR });
+    const cases = loadCases([CASES_DIR, HOLDOUT_DIR], [], join(__dirname, '..'));
     expect(cases).toHaveLength(files.length);
     expect(cases.filter(c => c.set === 'holdout' && c.repo !== 'xdustinface/rust-dashcore').length).toBeGreaterThanOrEqual(8);
     const unloadable: string[] = [];
@@ -230,26 +239,38 @@ describe('parseCase', () => {
 });
 
 describe('loadCases', () => {
-  it('keeps only the asked cases of the sets given, and refuses an unknown id, an id used in two sets or a set without cases', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'manki-cases-'));
-    const holdout = mkdtempSync(join(tmpdir(), 'manki-holdout-'));
+  it('keeps only the asked cases of the directories given, and refuses an unknown id, an id used twice, a file not named after its id or a directory without cases', () => {
+    const root = mkdtempSync(join(tmpdir(), 'manki-cases-'));
+    const [dir, holdout, copies] = [join(root, 'bench', 'cases'), join(root, 'bench', 'holdout'), join(root, 'case-dir')];
+    const demo = (id: string) => CASE_YAML.replace('id: demo-1', `id: ${id}`);
     try {
-      writeFileSync(join(dir, 'a.yml'), CASE_YAML);
-      writeFileSync(join(dir, 'b.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-2'));
+      for (const made of [dir, holdout, copies]) mkdirSync(made, { recursive: true });
+      writeFileSync(join(dir, 'demo-1.yml'), CASE_YAML);
+      writeFileSync(join(dir, 'demo-2.yml'), demo('demo-2'));
       writeFileSync(join(dir, 'notes.md'), 'not a case');
-      writeFileSync(join(holdout, 'c.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-3'));
-      expect(loadCases({ tuning: dir }).map(c => c.id)).toEqual(['demo-1', 'demo-2']);
-      expect(loadCases({ tuning: dir }, ['demo-2']).map(c => c.id)).toEqual(['demo-2']);
-      expect(() => loadCases({ tuning: dir }, ['demo-3'])).toThrow('No case with id demo-3');
-      expect(loadCases({ tuning: dir, holdout }, ['demo-1', 'demo-3']).map(c => [c.id, c.set])).toEqual([['demo-1', 'tuning'], ['demo-3', 'holdout']]);
-      writeFileSync(join(holdout, 'd.yml'), CASE_YAML);
-      expect(() => loadCases({ tuning: dir, holdout })).toThrow('Case id demo-1 is used twice');
-      rmSync(join(holdout, 'c.yml'));
-      rmSync(join(holdout, 'd.yml'));
-      expect(() => loadCases({ tuning: dir, holdout })).toThrow(`No case files in ${holdout}`);
+      writeFileSync(join(holdout, 'demo-3.yml'), demo('demo-3'));
+      expect(loadCases([dir], [], root).map(c => c.id)).toEqual(['demo-1', 'demo-2']);
+      expect(loadCases([dir], ['demo-2'], root).map(c => c.id)).toEqual(['demo-2']);
+      expect(() => loadCases([dir], ['demo-3'], root)).toThrow('No case with id demo-3');
+      expect(loadCases([dir, holdout], ['demo-1', 'demo-3'], root).map(c => [c.id, c.set])).toEqual([['demo-1', 'tuning'], ['demo-3', 'holdout']]);
+
+      // The id alone gives a case its set, wherever its file was copied to. A case that neither directory holds is a hold-out case.
+      for (const id of ['demo-1', 'demo-3', 'demo-9']) writeFileSync(join(copies, `${id}.yml`), demo(id));
+      expect(loadCases([copies], [], root).map(c => [c.id, c.set])).toEqual([['demo-1', 'tuning'], ['demo-3', 'holdout'], ['demo-9', 'holdout']]);
+      expect(['demo-1', 'demo-3', 'demo-9', '../cases/demo-1'].map(id => caseSet(id, root))).toEqual(['tuning', 'holdout', 'holdout', 'holdout']);
+      expect(loadCases([dir]).every(c => c.set === 'holdout')).toBe(true);
+      writeFileSync(join(copies, 'renamed.yml'), demo('demo-3'));
+      expect(() => loadCases([copies], [], root)).toThrow(`${join(copies, 'renamed.yml')}: \`id\` must be the name of the file`);
+
+      // An id in both directories is a hold-out case.
+      writeFileSync(join(holdout, 'demo-1.yml'), CASE_YAML);
+      expect(loadCases([dir], ['demo-1'], root)[0].set).toBe('holdout');
+      expect(() => loadCases([dir, holdout], [], root)).toThrow('Case id demo-1 is used twice');
+      rmSync(join(holdout, 'demo-1.yml'));
+      rmSync(join(holdout, 'demo-3.yml'));
+      expect(() => loadCases([dir, holdout], [], root)).toThrow(`No case files in ${holdout}`);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(holdout, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
@@ -308,7 +329,7 @@ describe('llmMatcher', () => {
       writeFileSync(path, JSON.stringify({ a: kept, b: { verdict: 'MATCH', finding: 0, reason: 'old shape' }, c: { verdict: 'MAYBE', findings: [], reason: '' }, d: null }));
       expect([...loadMatcherCache(path)]).toEqual([['a', kept]]);
       writeFileSync(path, '{"a": {"verdict"');
-      expect(() => loadMatcherCache(path)).toThrow(`The matcher cache ${path} is not valid JSON. Delete it to start a fresh one:`);
+      expect(() => loadMatcherCache(path)).toThrow(new Error(`The matcher cache ${path} is not valid JSON. Delete it to start a fresh one.`));
       writeFileSync(path, '[]');
       expect(() => loadMatcherCache(path)).toThrow(`The matcher cache ${path} is not a JSON object.`);
     } finally {
@@ -316,8 +337,9 @@ describe('llmMatcher', () => {
     }
   });
 
-  it('throws on a reply without a verdict', async () => {
-    await expect(llmMatcher(clientAnswering('{"answer": "yes"}'), 'model-a', new Map())(item, findings)).rejects.toThrow('no verdict for K1');
+  it('throws on a reply without a verdict or that is no JSON, without quoting the reply', async () => {
+    await expect(llmMatcher(clientAnswering('{"answer": "yes"}'), 'model-a', new Map())(item, findings)).rejects.toThrow(/^The matcher answered no verdict for K1$/);
+    await expect(llmMatcher(clientAnswering('The finding says the lock is dropped'), 'model-a', new Map())(item, findings)).rejects.toThrow(/^The matcher's answer for K1 is not a JSON object$/);
   });
 });
 
@@ -350,9 +372,12 @@ describe('scoreRun', () => {
       finders: [{ name: 'finder-a', model: 'claude-sonnet-5-5', toolSteps: 4, filesRead: 3 }],
       costUsd: 1.25, inputTokens: 1000, outputTokens: 100, durationMs: 90,
     });
-    expect(score.findings[2]).toEqual({ severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1 });
+    expect(score.findings.slice(1, 3)).toEqual([
+      { severity: 'blocker', title: 'Lock dropped', file: 'src/lock.rs', line: 1, description: 'Calls `unlock` early.' },
+      { severity: 'blocker', title: 'Invented', file: 'src/other.rs', line: 1, description: 'Something.' },
+    ]);
 
-    const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted' }), makeFinding({ severity: 'suggestion', title: 'A note' })];
+    const warnings = [makeFinding({ title: 'Helper copied' }), makeFinding({ title: 'Unlisted\n```', description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' }), makeFinding({ severity: 'suggestion', title: 'A note' })];
     const warned = await scoreRun(benchCase, makeReview('READY', warnings), stub({ N1: { verdict: 'MATCH', findings: [0], reason: 'same' } }));
     expect(warned).toMatchObject({ falseBlockers: 0, unexpectedWarnings: 1, extraFindings: 2 });
     const unscored = buildReport(
@@ -361,6 +386,13 @@ describe('scoreRun', () => {
     );
     expect(unscored.variants[0].summary.unexpectedWarnings).toBe(1);
     expect(formatBenchSummary(unscored)).toContain('0 false blockers, 1 unexpected warnings, 2 extra');
+    expect(warned.findings[1]).toEqual({ severity: 'warning', title: 'Unlisted\n```', file: 'src/other.rs', line: 1, description: 'Drops the lock.\r```rust\r\nunlock();\n```\n', howToFix: 'Hold it.', suggestedFix: 'lock();' });
+    expect(formatUnmatched(unscored.variants)).toBe([
+      '### Unexpected warnings on tuning cases', '',
+      "Warnings that match no key item. Add each real defect to its case's `must_catch`, or to `nice_to_have` when a good review may leave it out, and bump the case's `key_version`.", '',
+      // A line break in the title, or a bare carriage return in the description, starts no line of its own that could close the block.
+      '```text', 'base demo-1 key v2 run 1: src/other.rs:1: Unlisted ```', '    | Drops the lock.', '    | ```rust', '    | unlock();', '    | ```', '```', '',
+    ].join('\n'));
   });
 
   it('gives half credit one tier low and none two tiers low, skips the matcher without candidates, and calls an approval of a blocker case wrong', async () => {
@@ -411,16 +443,19 @@ describe('scoreRun on a follow-up case', () => {
     const reworded = await scoreRun(followUp, review(), async item => (item.id === 'P2' ? { verdict: 'PARTIAL', findings: [0], reason: 'other mechanism' } : decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' }));
     expect(reworded).toMatchObject({ falseBlockers: 1, extraFindings: 1, followUp: { repeats: 1 } });
     const incomplete = await scoreRun(followUp, review(false), matcher);
-    const listed = (benchCase: BenchCase) => formatUnmatchedBlockers(buildReport(
+    const listed = (benchCase: BenchCase, sets?: Array<BenchCase['set']>) => formatUnmatched(buildReport(
       { startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 3, matcherModel: 'model-a' },
       [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [score, reworded, incomplete] }] }],
-    ).variants);
-    expect(listed(followUp)).toBe([
-      '### Unmatched blockers on tuning cases', '',
+    ).variants, sets);
+    const blockers = (on: string) => [
+      `### Unmatched blockers on ${on} cases`, '',
       "Blockers that match no key item. Add each real defect to its case's `must_catch` and bump the case's `key_version`.", '',
-      '```text', 'base demo-1 key v2 run 2: src/conn.rs:1: Write has no timeout', '```', '',
-    ].join('\n'));
+      '```text', 'base demo-1 key v2 run 2: src/conn.rs:1: Write has no timeout', '    | Something.', '```', '',
+    ].join('\n');
+    expect(listed(followUp)).toBe(blockers('tuning'));
     expect(listed({ ...followUp, set: 'holdout' })).toBe('');
+    expect(listed({ ...followUp, set: 'holdout' }, ['holdout'])).toBe(blockers('hold-out'));
+    expect(listed(followUp, ['tuning', 'holdout'])).toBe(blockers('tuning and hold-out'));
 
     const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase: followUp, runs: [score] }] }]);
     expect(report.variants[0].cases[0].items.slice(3)).toEqual([
@@ -633,7 +668,7 @@ describe('runBench and buildReport', () => {
 
     const [{ results: [failed] }] = await runBench([benchCase], { ...options, matcher: broken });
     expect(failed.runs[0]).toMatchObject({ outcome: 'ADDRESS_FIRST', complete: false, error: 'no such model', costUsd: 1.25, mustCatchRecall: null });
-    expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1 }]);
+    expect(failed.runs[0].findings).toEqual([{ severity: 'blocker', title: 'A finding', file: 'src/read.rs', line: 1, description: 'Something.' }]);
     expect(review).toHaveBeenCalledTimes(2);
   });
 
@@ -645,6 +680,147 @@ describe('runBench and buildReport', () => {
     });
     await expect(runBench([benchCase], { runs: 2, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher: jest.fn(), review, signal: cancel.signal })).rejects.toThrow('Interrupted');
     expect(review).toHaveBeenCalledTimes(1);
+  });
+
+  it('prints nothing of a hold-out case but its id and counts: no finding text, review log, matcher reply, source or failure reason', async () => {
+    const SECRET = 'HOLDOUT-TEXT';
+    const cases: BenchCase[] = [{ ...benchCase, id: 'shown-1', title: 'SHOWN-TEXT', source: 'source SHOWN-TEXT' }, { ...benchCase, id: 'held-1', set: 'holdout', title: SECRET, source: `source ${SECRET}` }];
+    // A review logs, and fails on its second run of a case when `failSecond` is set. Its blocker and warning are not in the key.
+    const reviewing = (failSecond: boolean) => {
+      const seen = new Map<string, number>();
+      return jest.fn(async ({ title: text }: LocalReviewInput) => {
+        process.stdout.write(`info: finding ${text}\n`);
+        process.stderr.write(`warning: finding ${text}\n`);
+        seen.set(text!, (seen.get(text!) ?? 0) + 1);
+        if (failSecond && seen.get(text!) === 2) throw new Error(`failed on ${text}`);
+        const finding = (severity: FindingSeverity) => makeFinding({ severity, title: `title ${text}`, description: `description ${text}`, howToFix: `fix ${text}`, suggestedFix: `code ${text}`, file: `src/${text}.rs` });
+        return makeReview('ADDRESS_FIRST', [finding('blocker'), finding('warning')]);
+      });
+    };
+    // The matcher's client logs each reply through `@actions/core`, as the provider clients do, and the reply quotes the finding.
+    const core = jest.requireActual<typeof import('@actions/core')>('@actions/core');
+    const matching = (usable: boolean): Matcher => llmMatcher({
+      sendMessage: async (_system: string, message: string) => {
+        const text = message.includes(SECRET) ? SECRET : 'SHOWN-TEXT';
+        const content = usable ? JSON.stringify({ verdict: 'NONE', findings: [], reason: `reason ${text}` }) : `The finding ${text} is`;
+        core.debug(content);
+        if (!usable) core.warning(`reply ended with: ${content}`);
+        return { content };
+      },
+    } as unknown as LLMClient, 'model-a', new Map());
+    const options = { checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs };
+    const [out, err] = [jest.spyOn(process.stdout, 'write').mockImplementation(() => true), jest.spyOn(process.stderr, 'write').mockImplementation(() => true)];
+    const logged = () => [...out.mock.calls, ...err.mock.calls].map(call => String(call[0])).join('');
+    try {
+      const review = reviewing(true);
+      const results = await runBench(cases, { ...options, runs: 2, review, matcher: matching(true) });
+      expect(review).toHaveBeenCalledTimes(4);
+      for (const text of ['info: finding SHOWN-TEXT\nwarning: finding SHOWN-TEXT\n', '::debug::{"verdict":"NONE","findings":[],"reason":"reason SHOWN-TEXT"}']) expect(logged()).toContain(text);
+
+      const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, results);
+      // The report itself keeps the text, which the hold-out pass reads.
+      for (const text of [`description ${SECRET}`, `reason ${SECRET}`]) expect(JSON.stringify(report.variants[0].cases[1])).toContain(text);
+      const printed = () => [
+        formatBenchSummary(report), formatUnmatched(report.variants), formatGate(gateReports([report, { ...report, startedAt: '2026-11-09T01:00:00.000Z' }], [report])),
+      ].join('\n');
+      for (const text of ['shown-1 (source SHOWN-TEXT)', 'run 2: FAILED: failed on SHOWN-TEXT', 'src/SHOWN-TEXT.rs:1: title SHOWN-TEXT', '    | description SHOWN-TEXT']) expect(printed()).toContain(text);
+      expect(printed()).toContain('\nheld-1\n');
+      expect(printed()).toContain('  run 1: ADDRESS_FIRST, recall 0%, 1 false blockers, 1 unexpected warnings, 2 extra, 0 duplicates');
+      expect(printed()).toContain('  run 2: FAILED: the reason is in the report\n');
+      expect(printed()).not.toContain(SECRET);
+
+      // Only an explicit request lists hold-out findings, and never in a workflow job, whose log and summary are public.
+      expect(formatUnmatched(report.variants, ['holdout'])).toContain(`src/${SECRET}.rs:1: title ${SECRET}`);
+      process.env.GITHUB_ACTIONS = 'true';
+      try {
+        expect(() => formatUnmatched(report.variants, ['holdout'])).toThrow('The findings of hold-out cases are not listed in a workflow job');
+        expect(() => formatUnmatched(report.variants, ['tuning', 'holdout'])).toThrow('The findings of hold-out cases are not listed in a workflow job');
+        expect(printed()).not.toContain(SECRET);
+      } finally {
+        delete process.env.GITHUB_ACTIONS;
+      }
+
+      // A matcher reply that cannot be used fails the run with an error that quotes nothing, and the client's warning about it is not shown.
+      const unusable = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, await runBench(cases, { ...options, runs: 1, review: reviewing(false), matcher: matching(false) }));
+      expect(unusable.variants[0].cases.map(c => c.runs[0].error)).toEqual(["The matcher's answer for N1 is not a JSON object", "The matcher's answer for N1 is not a JSON object"]);
+      expect(logged()).toContain('::warning::reply ended with: The finding SHOWN-TEXT is');
+      expect(formatBenchSummary(unusable)).not.toContain(SECRET);
+
+      // Scoring a stored report again asks the matcher too. An error about a hold-out case names the case and nothing the case, its config or a model's reply holds.
+      const rekeyed = cases.map(c => ({ ...c, keyVersion: 3 }));
+      expect((await rescoreReport(report, rekeyed, matching(true))).rescored).toEqual(['shown-1', 'held-1']);
+      const leftBy = async (matcher: Matcher) => (await rescoreReport(report, rekeyed, matcher)).left;
+      expect(await leftBy(matching(false))).toEqual([{ id: 'shown-1', reason: "the matcher failed: The matcher's answer for N1 is not a JSON object" }, { id: 'held-1', reason: 'the matcher failed' }]);
+      const quoting: Matcher = async (_item, findings) => {
+        throw new Error(`reply about ${findings[0].title}`);
+      };
+      expect(await leftBy(quoting)).toEqual([{ id: 'shown-1', reason: 'the matcher failed: reply about title SHOWN-TEXT' }, { id: 'held-1', reason: 'the matcher failed' }]);
+      await expect(runBench([cases[1]], { ...options, runs: 1, review: reviewing(false), matcher: matching(true), variants: [{ name: 'bad', overrides: { [SECRET]: true } }] })).rejects.toThrow(/^Variant bad does not load on case held-1$/);
+      expect(() => parseCase(`id: [${SECRET}`, 'held.yml', 'holdout')).toThrow(/^held\.yml: is not valid YAML$/);
+      expect(() => parseCase('id: [SHOWN-TEXT', 'shown.yml')).toThrow(/^shown\.yml: .*SHOWN-TEXT/s);
+      // The YAML parser warns with the line it warns about.
+      const warned = jest.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+      try {
+        parseCase(`${CASE_YAML}note: !custom ${SECRET}\n`, 'held.yml', 'holdout');
+        expect(warned).not.toHaveBeenCalled();
+        parseCase(`${CASE_YAML}note: !custom SHOWN-TEXT\n`, 'shown.yml');
+        expect(String(warned.mock.calls[0][0])).toContain('SHOWN-TEXT');
+      } finally {
+        warned.mockRestore();
+      }
+
+      // Text of a tuning case is printed, and it comes from a model reading outside code. No line of it may run as a workflow command
+      // in a job log or leave its block in the step summary.
+      const hostile = 'It calls `Peer::connect` twice.\n::error::RUN\n   ::warning file=a::RUN\nok\r::stop-commands::RUN\nmid ##[add-mask]RUN\n```\n</details>';
+      const injected: BenchReport = {
+        ...report,
+        variants: report.variants.map(v => ({
+          ...v,
+          cases: v.cases.map(c => ({ ...c, source: `source\r::notice::RUN ${c.source}`, runs: c.runs.map(run => ({ ...run, ...(run.error && { error: `${run.error}\n::error::RUN\n##[error]RUN` }), findings: run.findings.map(f => ({ ...f, title: `${f.title}\n::error::RUN`, file: `${f.file}\r::error::RUN`, description: hostile })) })) })),
+        })),
+      };
+      for (const output of [formatUnmatched(injected.variants), formatBenchSummary(injected)]) {
+        const lines = output.split(/\r\n|\r|\n/);
+        expect(lines.filter(line => /^\s*::|##\[/.test(line))).toEqual([]);
+        expect(lines.filter(line => /^ {0,3}(```|<)/.test(line)).every(line => line === '```text' || line === '```')).toBe(true);
+      }
+      expect(formatUnmatched(injected.variants)).toContain('run 1: src/SHOWN-TEXT.rs ::error::RUN:1: title SHOWN-TEXT ::error::RUN\n    | It calls `Peer::connect` twice.\n    | ::error::RUN\n    |    ::warning file=a::RUN\n    | ok\n    | ::stop-commands::RUN\n    | mid [redacted-workflow-cmd]\n    | ```\n    | </details>\n');
+      expect(formatBenchSummary(injected)).toContain('shown-1 (source ::notice::RUN source SHOWN-TEXT)\n');
+      expect(formatBenchSummary(injected)).toContain('  run 2: FAILED: failed on SHOWN-TEXT ::error::RUN [redacted-workflow-cmd]\n');
+      expect(formatBenchSummary(injected)).not.toContain(SECRET);
+
+      // A stored report that calls the hold-out case a tuning case is refused by the case's id, before anything of it is printed.
+      const root = mkdtempSync(join(tmpdir(), 'manki-bench-sets-'));
+      try {
+        for (const [set, id] of [['cases', 'shown-1'], ['holdout', 'held-1']]) {
+          mkdirSync(join(root, 'bench', set), { recursive: true });
+          writeFileSync(join(root, 'bench', set, `${id}.yml`), '');
+        }
+        const stored = (held: BenchCase['set'], shown: BenchCase['set'] = 'tuning') => {
+          writeFileSync(join(root, 'report.json'), JSON.stringify({ ...report, variants: report.variants.map(v => ({ ...v, cases: v.cases.map(c => ({ ...c, set: c.id === 'held-1' ? held : shown })) })) }));
+          return join(root, 'report.json');
+        };
+        const sets = (path: string, from = root) => {
+          const { report: read, removed } = readReport(path, from);
+          return { sets: read.variants[0].cases.map(c => [c.id, c.set]), removed };
+        };
+        expect(sets(stored('holdout'))).toEqual({ sets: [['shown-1', 'tuning'], ['held-1', 'holdout']], removed: [] });
+        expect(() => readReport(stored('tuning'), root)).toThrow(new Error(`The report ${join(root, 'report.json')} calls held-1 a tuning case, and bench/holdout holds a case file for it.`));
+        // The case files give each case its set, whatever the report calls it.
+        expect(sets(stored('holdout', 'holdout'))).toEqual({ sets: [['shown-1', 'tuning'], ['held-1', 'holdout']], removed: [] });
+        // A case no case file holds is no contradiction. It is left out and named, and nothing of it is read as a tuning case.
+        rmSync(join(root, 'bench', 'holdout', 'held-1.yml'));
+        expect(sets(stored('tuning'))).toEqual({ sets: [['shown-1', 'tuning']], removed: ['held-1'] });
+        expect(sets(stored('holdout'), join(root, 'bench'))).toEqual({ sets: [], removed: ['shown-1', 'held-1'] });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+
+      expect(logged()).not.toContain(SECRET);
+    } finally {
+      out.mockRestore();
+      err.mockRestore();
+    }
   });
 
   it('checks every checkout and every variant before the first review', async () => {
@@ -671,25 +847,29 @@ describe('runBench and buildReport', () => {
     git('commit', '-q', '--allow-empty', '-m', 'head on the old config');
     held.head = git('rev-parse', 'HEAD');
     const own = { ...benchCase, id: 'own', config: { review_passes: 9 } };
+    const typo = { ...benchCase, id: 'typo', config: { review: { critcal_paths: ['wallet/**'] } } };
     const translated = { ...held, id: 'translated', config: { review: { critical_paths: ['wallet/**'] } } };
     const review = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
     const variants = [{ name: 'base', overrides: {} }, { name: 'passes', overrides: { review_passes: 2 } }];
 
-    const results = await runBench([held, own, translated, benchCase], { runs: 2, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher: async () => ({ verdict: 'NONE', findings: [], reason: 'none' }), review, variants });
+    const results = await runBench([held, own, translated, benchCase, typo], { runs: 2, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher: async () => ({ verdict: 'NONE', findings: [], reason: 'none' }), review, variants });
 
-    for (const { results: [heldRuns, ownRuns, translatedRuns, plainRuns] } of results) {
+    for (const { results: [heldRuns, ownRuns, translatedRuns, plainRuns, typoRuns] } of results) {
       expect(heldRuns.runs).toEqual([1, 2].map(() => expect.objectContaining({
         outcome: 'CONFIG_INVALID', complete: false, costUsd: 0,
         error: 'The config at the base does not load: Invalid config in .manki.yml: `review.classes.wallet.critical` is not a class setting. List the critical paths in `review.critical_paths`',
       })));
       expect(ownRuns.runs.map(run => [run.outcome, run.error])).toEqual([1, 2].map(() => ['CONFIG_INVALID', expect.stringContaining('The config of the case does not load: Invalid config in the config given:')]));
+      expect(typoRuns.runs.map(run => [run.outcome, run.error])).toEqual([1, 2].map(() => [
+        'CONFIG_INVALID', 'The config of the case does not load: The config given names keys the config does not know: Unknown config key: "review.critcal_paths"',
+      ]));
       expect([...translatedRuns.runs, ...plainRuns.runs].map(run => run.outcome)).toEqual(['READY', 'READY', 'READY', 'READY']);
     }
     expect(review).toHaveBeenCalledTimes(8);
     expect(review.mock.calls.map(([input]) => input.config?.review?.critical_paths)).toEqual([['wallet/**'], ['wallet/**'], undefined, undefined, ['wallet/**'], ['wallet/**'], undefined, undefined]);
     const summary = formatBenchSummary(buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, results));
     expect(summary).toContain('  run 1: CONFIG_INVALID: The config at the base does not load: Invalid config in .manki.yml:');
-    expect(summary).toContain('| Config invalid | held, own | held, own |\n');
+    expect(summary).toContain('| Config invalid | held, own, typo | held, own, typo |\n');
     expect(summary).toContain('| Cost per run | $1.25 | $1.25 |\n');
   });
 });
@@ -801,7 +981,9 @@ describe('mergeReports and gateReports', () => {
         + 'The candidate has incomplete reviews on demo-2. A run with incomplete reviews does not count, so run that side again.',
     });
     const rekeyed = report([[first, [await run(first, 'blocker')]], [{ ...second, keyVersion: 3 }, [await run(second)]]]);
-    expect(gateReports([baseline, again(baseline)], [rekeyed])[0]).toMatchObject({ verdict: 'PASS', shared: ['demo-1'] });
+    const otherKey = gateReports([baseline, again(baseline)], [rekeyed])[0];
+    expect(otherKey).toMatchObject({ verdict: 'PASS', shared: ['demo-1'], rekeyed: ['demo-2'] });
+    expect(formatGate([otherKey])).toContain('Left out, scored with different key versions: demo-2. Score the reports with the older key again with `manki bench --rescore` to compare them.\n');
     expect(gateReports([baseline, again(baseline)], [report([[tuning, [await run(tuning)]]])])[0]).toMatchObject({ verdict: 'NO DECISION', shared: [] });
     expect(() => gateReports([], [baseline])).toThrow('The gate needs a baseline and a candidate report');
     const at = (commit: string) => ({ ...baseline, commit });
@@ -821,6 +1003,65 @@ describe('mergeReports and gateReports', () => {
       '| False blockers | 0 | 0 |', '| Unexpected warnings | 0 | 0 |', '| Resolved wrong | 0 | 0 |', '| Repeats | 0 | 0 |', '',
     ].join('\n'));
     expect(text).toContain('Shared hold-out cases (2): demo-1, demo-2');
+    expect(text).not.toContain('Left out');
+  });
+
+  it('scores a stored report again against a changed key, so the gate compares it, and leaves a case it cannot score with certainty', async () => {
+    const confirmed: KeyItem = { id: 'K3', severity: 'warning', mechanism: 'The retry never backs off.', locations: ['src/other.rs'] };
+    const rekeyed: BenchCase = { ...second, keyVersion: 3, mustCatch: [...second.mustCatch, confirmed] };
+    const stored = report([[first, [await run(first, 'blocker')]], [second, [await run(second, 'blocker', 0, true, 1), await run(second, 'blocker', 0, false, 1)]]]);
+    const decisions: Record<string, MatchDecision> = { K1: { verdict: 'MATCH', findings: [0], reason: 'same' }, K3: { verdict: 'MATCH', findings: [0], reason: 'confirmed' } };
+    const matcher: Matcher & jest.Mock = jest.fn(async (item: KeyItem) => decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' });
+
+    const { report: scored, rescored, left } = await rescoreReport(stored, [first, rekeyed], matcher);
+
+    expect({ rescored, left }).toEqual({ rescored: ['demo-2'], left: [] });
+    const [kept, changed] = scored.variants[0].cases;
+    expect(kept).toBe(stored.variants[0].cases[0]);
+    expect(matcher.mock.calls.find(([item]) => item.id === 'K3')![1]).toEqual([{ severity: 'warning', title: 'A finding', file: 'src/other.rs', line: 1, description: 'Something.' }]);
+    expect(stored.variants[0].cases[1].runs[0]).toMatchObject({ mustCatchRecall: 0.5, unexpectedWarnings: 1, extraFindings: 1 });
+    expect(changed).toMatchObject({ id: 'demo-2', set: 'holdout', keyVersion: 3 });
+    expect(changed.items.map(item => [item.id, item.caught, item.runs])).toEqual([['K1', 1, 1], ['K2', 0, 1], ['K3', 1, 1], ['N1', 0, 1]]);
+    expect(changed.runs[0]).toMatchObject({ complete: true, outcome: 'ADDRESS_FIRST', mustCatchRecall: 2 / 3, unexpectedWarnings: 0, extraFindings: 0, verdictCorrect: true, costUsd: 1.25 });
+    expect(changed.runs[0].matches.find(m => m.item === 'K3')).toEqual({ item: 'K3', verdict: 'MATCH', findings: [1], severity: 'warning', reason: 'confirmed' });
+    expect(changed.runs[1]).toBe(stored.variants[0].cases[1].runs[1]);
+    expect(scored).toMatchObject({ startedAt: stored.startedAt, matcherModel: 'model-a', variants: [{ name: 'base', summary: { unexpectedWarnings: 1 }, sets: { holdout: { runs: 3 } } }] });
+    expect(await rescoreReport(scored, [first, rekeyed], matcher)).toMatchObject({ rescored: [], left: [] });
+    // One unusable matcher reply does not end the scoring: each run is tried twice.
+    let failures = 1;
+    const flaky: Matcher = async (...args) => {
+      if (failures-- > 0) throw new Error('unusable reply');
+      return matcher(...args);
+    };
+    expect((await rescoreReport(stored, [first, rekeyed], flaky)).report).toEqual(scored);
+    // A case whose matcher fails both times stays as scored and is named. The other cases are still scored again.
+    const failing: Matcher = async (item, ...rest) => {
+      if (item.id === 'K3') throw new Error('unusable reply');
+      return matcher(item, ...rest);
+    };
+    const rekeyedFirst: BenchCase = { ...first, keyVersion: 3 };
+    const partly = await rescoreReport(stored, [rekeyedFirst, rekeyed], failing);
+    expect(partly).toMatchObject({ rescored: ['demo-1'], left: [{ id: 'demo-2', reason: 'the matcher failed' }] });
+    expect(partly.report.variants[0].cases[1]).toBe(stored.variants[0].cases[1]);
+
+    const complete = (r: BenchReport): BenchReport => ({ ...r, variants: r.variants.map(v => ({ ...v, cases: v.cases.map(c => ({ ...c, runs: c.runs.filter(one => one.complete) })) })) });
+    const candidate = report([[first, [await run(first, 'blocker')]], [rekeyed, [await run(rekeyed, 'blocker')]]]);
+    expect(gateReports([complete(stored), again(complete(stored))], [candidate])[0]).toMatchObject({ shared: ['demo-1'], rekeyed: ['demo-2'] });
+    expect(gateReports([complete(scored), again(complete(scored))], [candidate])[0]).toMatchObject({ verdict: 'RERUN', shared: ['demo-1', 'demo-2'], baseline: { found: 3 }, candidate: { found: 2 } });
+
+    const bare: BenchReport = JSON.parse(JSON.stringify(stored, (key, value: unknown) => (key === 'description' ? undefined : value)));
+    const unread = await rescoreReport(bare, [first, rekeyed], matcher);
+    expect(unread).toMatchObject({ rescored: [], left: [{ id: 'demo-2', reason: 'its report holds no text of the findings' }] });
+    expect(unread.report.variants[0].cases[1]).toBe(bare.variants[0].cases[1]);
+    const followUp = parseCase(FOLLOW_UP_YAML.replace('id: demo-1', 'id: demo-2').replace('key_version: 2', 'key_version: 3'), 'demo-2.yml', 'holdout');
+    expect(await rescoreReport(stored, [followUp], matcher)).toMatchObject({
+      rescored: [], left: [{ id: 'demo-1', reason: 'no case file was loaded for it, which for a hold-out case takes --holdout' }, { id: 'demo-2', reason: 'its runs reviewed a first round' }],
+    });
+    // A case no case file was loaded for is never counted as scored again, with or without a changed key.
+    const mixed = report([[first, [await run(first, 'blocker')]], [tuning, [await run(tuning, 'blocker')]]]);
+    expect(await rescoreReport(mixed, [], matcher)).toMatchObject({
+      rescored: [], left: [{ id: 'demo-1', reason: 'no case file was loaded for it, which for a hold-out case takes --holdout' }, { id: 'demo-3', reason: 'no case file was loaded for it, which for a hold-out case takes --holdout' }],
+    });
   });
 });
 
@@ -901,7 +1142,7 @@ describe('runBenchCommand', () => {
   it('exits 2 before any model call without credentials, or without a checkout for a case', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'manki-bench-cmd-'));
     try {
-      writeFileSync(join(dir, 'demo.yml'), CASE_YAML);
+      writeFileSync(join(dir, 'demo-1.yml'), CASE_YAML);
       process.env = {};
       expect(await runBenchCommand(['--cases', dir])).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('manki bench: No credentials set.'));
@@ -909,6 +1150,67 @@ describe('runBenchCommand', () => {
       expect(await runBenchCommand(['--cases', dir, '--cache', join(dir, 'cache.json')])).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('manki bench: No checkout for owner/demo'));
       expect(stdout).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('scores a stored report again with --rescore, without a checkout, and refuses another matcher model', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'manki-bench-cmd-'));
+    try {
+      const benchCase = parseCase(CASE_YAML, 'demo.yml');
+      const clean = await scoreRun(benchCase, makeReview('READY', []), async () => ({ verdict: 'NONE', findings: [], reason: 'none' }));
+      const stored = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'claude-sonnet-5-5' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [clean] }] }]);
+      const [report, cache, cases, holdout] = [join(dir, 'report.json'), join(dir, 'cache.json'), join(dir, 'bench', 'cases'), join(dir, 'bench', 'holdout')];
+      for (const made of [cases, holdout]) mkdirSync(made, { recursive: true });
+      writeFileSync(report, JSON.stringify(stored));
+      writeFileSync(join(cases, 'demo-1.yml'), `${CASE_YAML.replace('key_version: 2', 'key_version: 3')}  - id: N2\n    severity: warning\n    mechanism: The retry never backs off.\n    locations: [src/retry.rs]\n`);
+      process.env = { PATH: savedEnv.PATH, ANTHROPIC_API_KEY: 'sk-test' };
+
+      expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--cache', cache], dir)).toBe(0);
+      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`Scored again with the changed key: demo-1\nReport: ${join(dir, 'report.rescored.json')}\n`);
+      const scored = JSON.parse(readFileSync(join(dir, 'report.rescored.json'), 'utf-8')) as BenchReport;
+      expect(scored.variants[0].cases[0]).toMatchObject({ keyVersion: 3, items: [{ id: 'K1' }, { id: 'K2' }, { id: 'N1' }, { id: 'N2', tier: 'nice_to_have', caught: 0, runs: 1 }] });
+
+      expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--cache', cache, '--matcher-model', 'claude-opus-5-5'], dir)).toBe(2);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('The report was matched by claude-sonnet-5-5. Pass --matcher-model claude-sonnet-5-5 to score it again.'));
+      // An error message can quote a file. No line of it runs as a workflow command in a job log.
+      writeFileSync(join(dir, 'hostile.json'), JSON.stringify({ ...stored, matcherModel: 'model\r::error::RUN\n  ::add-mask::RUN ##[error]RUN' }));
+      expect(await runBenchCommand(['--rescore', join(dir, 'hostile.json'), '--cases', cases, '--cache', cache], dir)).toBe(2);
+      const quoted = '\n| ::error::RUN\n|   ::add-mask::RUN [redacted-workflow-cmd]';
+      expect(stderr).toHaveBeenLastCalledWith(`manki bench: The report was matched by model${quoted}${quoted}\n`);
+      expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--case', 'demo-1'], dir)).toBe(2);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('--case does not apply to --rescore'));
+      writeFileSync(join(dir, 'cut.json'), '{"variants": [{"title": "HOLDOUT-TEXT');
+      expect(await runBenchCommand(['--rescore', join(dir, 'cut.json'), '--cases', cases], dir)).toBe(2);
+      expect(stderr).toHaveBeenLastCalledWith(`manki bench: The report ${join(dir, 'cut.json')} is not valid JSON\n`);
+
+      // A stored case that no case file holds was removed since: it is left out and named. A report that calls a hold-out case a tuning case,
+      // as the report of a single case job of an older ref does, is refused by the id alone.
+      const [scoredCase] = stored.variants[0].cases;
+      const finding = { severity: 'blocker' as const, title: 'title HOLDOUT-TEXT', file: 'src/HOLDOUT-TEXT.rs', line: 1, description: 'description HOLDOUT-TEXT' };
+      const held = { ...scoredCase, id: 'held-1', source: 'source HOLDOUT-TEXT', runs: [{ ...scoredCase.runs[0], findings: [finding], error: 'failed on HOLDOUT-TEXT' }] };
+      const mislabelled = join(dir, 'mislabelled.json');
+      writeFileSync(mislabelled, JSON.stringify({ ...stored, variants: [{ ...stored.variants[0], cases: [scoredCase, held] }] }));
+      stdout.mockClear();
+      expect(await runBenchCommand(['--rescore', mislabelled, '--cases', cases, '--cache', cache], dir)).toBe(0);
+      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`Scored again with the changed key: demo-1\nLeft out, no case file holds it: held-1\nReport: ${join(dir, 'mislabelled.rescored.json')}\n`);
+      expect((JSON.parse(readFileSync(join(dir, 'mislabelled.rescored.json'), 'utf-8')) as BenchReport).variants[0].cases.map(c => c.id)).toEqual(['demo-1']);
+      const refused = `manki bench: The report ${mislabelled} calls held-1 a tuning case, and bench/holdout holds a case file for it.\n`;
+      writeFileSync(join(holdout, 'held-1.yml'), CASE_YAML.replace('id: demo-1', 'id: held-1').replace('key_version: 2', 'key_version: 3'));
+      for (const flags of [[], ['--holdout']]) {
+        expect(await runBenchCommand(['--rescore', mislabelled, '--cases', cases, ...flags, '--cache', cache], dir)).toBe(2);
+        expect(stderr).toHaveBeenLastCalledWith(refused);
+      }
+      expect([...stdout.mock.calls, ...stderr.mock.calls].join('')).not.toContain('HOLDOUT-TEXT');
+
+      // A stored case with no case file loaded is named, and is not counted as scored again.
+      stdout.mockClear();
+      const other = join(dir, 'other');
+      mkdirSync(other);
+      writeFileSync(join(other, 'demo-9.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-9'));
+      expect(await runBenchCommand(['--rescore', report, '--cases', other, '--cache', cache], dir)).toBe(0);
+      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`No case was scored again.\nLeft as scored, demo-1: no case file was loaded for it, which for a hold-out case takes --holdout.\nReport: ${join(dir, 'report.rescored.json')}\n`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
