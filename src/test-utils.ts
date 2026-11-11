@@ -30,6 +30,29 @@ export function gitWorkspace(base: Record<string, string>, head: Record<string, 
   return { root, diff: parsePRDiff(git(root, 'diff', '--cached', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/')) };
 }
 
+/** How many times larger the large input of `expectLinearTime` is than the small one, unless the caller gives both. */
+const SIZE_RATIO = 16;
+/** A small input faster than this is mostly fixed cost and timer noise, so the bound is taken from this time instead. */
+const TIME_FLOOR_MS = 50;
+
+/**
+ * Checks that a step takes time linear in its input size. `time` runs the step on an input of the given size and returns
+ * the milliseconds the step took. A linear step takes `size / smaller` times as long on `size` as on `smaller`, and
+ * `margin` times that is allowed. A lower `margin` catches a quadratic part that costs less than the rest of the step.
+ */
+export async function expectLinearTime(
+  time: (size: number) => number | Promise<number>, size: number, { smaller = Math.round(size / SIZE_RATIO), margin = 4 } = {},
+): Promise<void> {
+  // Load only adds time, so the fastest of three runs is the closest to the step's own time.
+  let small = Infinity;
+  for (let i = 0; i < 3; i++) small = Math.min(small, await time(smaller));
+  const bound = margin * (size / smaller) * Math.max(small, TIME_FLOOR_MS);
+  // One stretched run fails nothing: a large run over the bound is timed again, twice at most.
+  let large = await time(size);
+  for (let i = 0; i < 2 && large >= bound; i++) large = Math.min(large, await time(size));
+  expect(large).toBeLessThan(bound);
+}
+
 /** `pageInfo` of the last page of a GraphQL connection. */
 export const LAST_PAGE = { hasNextPage: false, endCursor: null };
 
