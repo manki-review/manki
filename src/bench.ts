@@ -10,7 +10,7 @@ import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides,
 import { hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { buildLLMClient } from './review-clients';
-import { CELL_GRADES, CellRow, Doubt, Finding, FindingSeverity, GradeCell, SEVERITY_ORDER } from './types';
+import { CELL_GRADES, Doubt, Finding, FindingSeverity, GradeCell, isGradeCell, SEVERITY_ORDER } from './types';
 import { runGit } from './workspace';
 
 export const BENCH_COMMAND = 'bench';
@@ -125,8 +125,8 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
       throw caseError(where, '`state` must be open, resolved or fixed for a thread, and unset for a body finding');
     }
     if (f.security !== undefined && typeof f.security !== 'boolean') throw caseError(where, '`security` must be true or false');
-    const cell = f.cell as Record<string, unknown> | undefined;
-    if (cell !== undefined && !(cell && Object.hasOwn(CELL_GRADES, String(cell.row)) && ['normal', 'rare'].includes(cell.column as string))) {
+    const cell = f.cell as GradeCell | undefined;
+    if (cell !== undefined && !isGradeCell(cell)) {
       throw caseError(where, `\`cell\` must have a \`row\` of ${Object.keys(CELL_GRADES).join(', ')} and a \`column\` of normal or rare`);
     }
     const doubts = f.doubts as Array<Record<string, unknown>> | undefined;
@@ -140,7 +140,7 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
     return {
       id: requireString(f, 'id', where), severity: f.severity as KeySeverity, title: requireString(f, 'title', where), file: requireString(f, 'file', where), line: f.line as number,
       ...(f.grade_if_confirmed !== undefined && { gradeIfConfirmed: f.grade_if_confirmed as KeySeverity }),
-      ...(cell && { cell: { row: cell.row as CellRow, column: cell.column as GradeCell['column'] } }),
+      ...(cell && { cell: { row: cell.row, column: cell.column } }),
       ...(doubts && { doubts: doubts.map((d): Doubt => ({ premise: d.premise as string, decides: d.decides as Doubt['decides'] })) }),
       ...(description && { description }), ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), ...(f.security === true && { security: true }),
       ...(f.posted === 'thread' && { thread: f.state as EarlierFinding['thread'] }),
