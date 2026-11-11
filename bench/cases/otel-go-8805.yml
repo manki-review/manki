@@ -1,0 +1,37 @@
+id: otel-go-8805
+repo: open-telemetry/opentelemetry-go
+source: opentelemetry-go upstream PR 8805, at its first commit, before a maintainer asked for the changelog entry
+base: 3d62aa612fe48e006d1b9bd8b3fa00e4f5f6f977
+head: 233b143685c1d124d5c28fde6dd0e10d301e1fac
+title: "[otlptracegrpc] Grpc dialoption override bug"
+body: |
+  ### Overview
+  User supplied `grpc.DialOptions` when supplied with `otlptracegrpc.WithDialOption` is being dropped because NewGRPCConfig applies its own internal defaults after applying user options.
+
+  This led to internally computed entries land (and override) after user-supplied ones leading to drop of some settings like transport credentials.
+
+
+  Resolves
+  * upstream issue 2940
+
+  ### Fix
+
+  Internal defaults are separated into its own slice (`dialOptsPrefix`). The final merging happens as
+  ```go
+  cfg.DialOptions = append(dialOptsPrefix, cfg.DialOptions...)
+  ```
+
+  Which guarantees user supplied grpc options always take precedence, when used with `WithDialOption`. The change is made is shared `.tmpl`. The regenerated `NewGRPCConfig` is deadcode for `otlptracehttp`.
+
+  The fix is also consistent with the doc comment of `WithDialOption` in `exporters/otlp/otlptrace/otlptracegrpc/options.go`.
+
+  Followup
+  * Check `otlpmetricgrpc` and `otlploggrpc` for same issue.
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The PR changes what users of `otlptracegrpc` get: options passed through `WithDialOption` now win over the exporter's own defaults. It does not change `CHANGELOG.md`. The repository's `AGENTS.md` says to update `CHANGELOG.md` under the fitting section of `## [Unreleased]` for every user-visible change, so the fix would be released without a changelog line."
+    locations: ["CHANGELOG.md", "exporters/otlp/otlptrace/otlptracegrpc/internal/otlpconfig/options.go", "exporters/otlp/otlptrace/otlptracehttp/internal/otlpconfig/options.go", "internal/shared/otlp/otlptrace/otlpconfig/options.go.tmpl", "exporters/otlp/otlptrace/otlptracegrpc/client_test.go"]
+    fix: "2a2ee498a0c9ca499f614b617e79e637d5c77f4f"
+nice_to_have: []

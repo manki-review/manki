@@ -1,0 +1,35 @@
+id: jest-16342
+repo: jestjs/jest
+source: jest upstream PR 16342, at its first commit, before the commit that added the changelog entry
+base: b654d7ef1430988c9f97a33054839fa60f879a2a
+head: 7c92934bc01581100150a44fc9a2fd3c27fcc050
+title: "[jest-circus] Clear the current test after skipped and todo tests"
+body: |
+  ## Summary
+
+  `test_start` sets `currentlyRunningTest`, but skipped and todo tests return
+  without a `test_done` event. Clear the current test in `test_skip` and
+  `test_todo` so later errors are not attributed to a test that never ran.
+
+  Add a focused event-handler regression test covering both terminal states.
+
+  ## Test plan
+
+  - `corepack yarn jest packages/jest-circus/src/__tests__/eventHandler.test.ts --runInBand`
+  - `corepack yarn jest packages/jest-circus --runInBand`
+  - `corepack yarn build`
+  - `corepack yarn typecheck:tests`
+  - `corepack yarn lint`
+  - `corepack yarn check-copyright-headers`
+  - `corepack yarn check-changelog`
+  - `corepack yarn constraints`
+  - `corepack yarn dedupe --check`
+  - `corepack yarn verify-pnp`
+key_version: 1
+must_catch:
+  - id: K1
+    severity: warning
+    mechanism: "The PR fixes a bug in the `jest-circus` package and does not change `CHANGELOG.md`. The repository's `CONTRIBUTING.md` requires a changelog entry for every change that adds a feature to or fixes a bug in one of Jest's packages, with the package names, a description and the link to the pull request. The fix is released without a line in the changelog."
+    locations: ["CHANGELOG.md", "packages/jest-circus/src/eventHandler.ts", "packages/jest-circus/src/__tests__/eventHandler.test.ts"]
+    fix: "b3c45dd3ae6a1648f1f11136fbc87e6eafe2e542"
+nice_to_have: []
