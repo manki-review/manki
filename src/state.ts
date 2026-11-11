@@ -9,7 +9,7 @@ import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
 import { fetchPriorRoundContexts, isOverrideCandidate, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
-import { formatApprovalRecord } from './review-record';
+import { formatApprovalRecord, hasReviewRecord } from './review-record';
 import { ApprovalRecord, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
 import { withMarkers } from './utils';
 
@@ -404,6 +404,15 @@ async function coveredCommit(
   return standing?.commitSha;
 }
 
+/**
+ * Whether `review` is the approval Manki posts again on a new head while the PR's change equals the approved one. It has
+ * no round record and blocks on nothing, since a round or auto-approve gave the approval it restates. A push may have
+ * dismissed it since.
+ */
+function restatesApproval(review: ReviewEntry): boolean {
+  return (review.state === 'APPROVED' || review.state === 'DISMISSED') && !!review.body?.startsWith(APPROVED_LINE) && !hasReviewRecord(review.body);
+}
+
 /** How a PR with a block that resolving threads cannot lift gets its next verdict. */
 const NEXT_ROUND_LINE = 'The next review round decides. Push a commit or comment `@manki review` to start one.';
 
@@ -411,8 +420,9 @@ const NEXT_ROUND_LINE = 'The next review round decides. Push a commit or comment
  * Returns what resolving threads can do about the newest round Manki posted on `commitSha`: `held` says why it cannot
  * lift that round's block, and `named` holds the threads the round's record names for its blockers. A thread carries a
  * blocker when the record gives its `threadId` and the thread exists, or says the round posted it as a thread of its
- * own. Anything else is unknown and holds the approval: a record that cannot be read, a round that blocked without
- * naming a blocker, and a blocker the record names no thread for.
+ * own. A standing approval posted again on `commitSha` blocks on nothing. Anything else is unknown and holds the
+ * approval: a record that cannot be read, a round that blocked without naming a blocker, and a blocker the record
+ * names no thread for.
  */
 function blockOf(
   reviews: ReviewEntry[], bot: BotIdentity, commitSha: string, threads: ReviewThread[], owner: string, repo: string, prNumber: number,
@@ -420,6 +430,7 @@ function blockOf(
   const sha = `\`${commitSha.slice(0, 7)}\``;
   // An auto-approval and a round without a verdict decide nothing about blockers, so the round before them stands.
   const review = reviews.filter(r => isBotReview(bot, r) && r.commit_id === commitSha && !r.body?.includes(NO_VERDICT_MARKER) && !r.body?.includes(AUTO_APPROVE_MARKER)).at(-1);
+  if (review && restatesApproval(review)) return { named: new Set() };
   const round = review && parseContextBlocks([{ body: review.body ?? '', id: review.id }], owner, repo, prNumber).rounds.at(0);
   if (!round || round.meta.commitSha !== commitSha) {
     return { held: `Manki cannot read the record of its review of ${sha}, so it cannot tell what that review blocked on.`, named: new Set() };

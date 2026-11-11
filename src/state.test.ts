@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { areAllFindingsResolved, fetchBotReviewThreads, fixedMarker, checkAndAutoApprove, explainUncarriedBlockers, explainUnreviewedHead, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
-import { formatFindingComment, postReview, titleToSlug } from './github';
+import { APPROVED_LINE, formatFindingComment, postReview, titleToSlug } from './github';
 import { extractApprovalRecords, formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG } from './config';
 import { determineOutcome } from './review';
@@ -557,6 +557,36 @@ describe('checkAndAutoApprove', () => {
       expect(createReviewMock).not.toHaveBeenCalled();
       expect(await check([fixed('t1', 'warning')])).toEqual([true, undefined]);
       expect(createReviewMock.mock.calls.map(([args]) => args.event)).toEqual(['APPROVE']);
+    });
+
+    it('reads a standing approval posted again on a new head as blocking on nothing, and no other review without a record', async () => {
+      const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+      const change = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n';
+      const approving = roundBody(blockingRound('sha-1', { verdict: 'APPROVE', findings: { count: 0, severityCounts: {}, entries: [] } }));
+      const restated = `${APPROVED_LINE} No change to this PR since the reviewed commit \`sha-1\`. The previous verdict stands.\n\n<!-- manki-bot -->`;
+      // Round 1 approved `sha-1`, a push without a change got the approval again on `sha-2`, and another one made `sha-3` the head.
+      const check = async (second: { body: string; state: string }, threads = [fixed()]) => {
+        const createReviewMock = jest.fn().mockResolvedValue({});
+        const octokit = makeMockOctokit({
+          threads, prHeadSha: 'sha-3', mergeable: true, createReviewFn: createReviewMock, diffs: { 'sha-2': change, 'sha-3': change },
+          existingReviews: [{ id: 1, body: approving, state: 'DISMISSED', commit_id: 'sha-1', user }, { id: 2, ...second, commit_id: 'sha-2', user }],
+        });
+        Object.assign(octokit.rest.issues, { listEventsForTimeline: jest.fn().mockResolvedValue({ data: [{ dismissed_review: { review_id: 2, state: 'approved', dismissal_commit_id: 'sha-3' } }] }) });
+        return [await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG), createReviewMock.mock.calls.map(([args]) => [args.event, args.commit_id])];
+      };
+      const unread = 'Manki cannot read the record of its review of `sha-2`, so it cannot tell what that review blocked on.';
+
+      // The second push dismissed the approval, so the check approves the head again.
+      expect(await check({ body: restated, state: 'DISMISSED' })).toEqual([true, [['APPROVE', 'sha-3']]]);
+      // The approval was held at the second push and still stands, so nothing more is posted.
+      expect(await check({ body: restated, state: 'APPROVED' })).toEqual([true, []]);
+      // A thread that blocks still does.
+      expect(await check({ body: restated, state: 'DISMISSED' }, [thread('t1', 'blocker')])).toEqual([false, []]);
+      // A review without a record that is no such approval says nothing about blockers, whatever its state.
+      for (const second of [{ body: restated, state: 'CHANGES_REQUESTED' }, { body: '<!-- manki -->\n<!-- manki-bot -->', state: 'DISMISSED' }]) {
+        expect(await check(second)).toEqual([false, []]);
+        expect(infoSpy).toHaveBeenLastCalledWith(`${unread}\nSkipping auto-approve, the next review round decides`);
+      }
     });
 
     it('never approves a blocker without a thread from the review its own round submits, as on a body-only blocker carried after a fix push', async () => {
