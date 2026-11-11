@@ -747,6 +747,58 @@ export function mergeReports(parts: BenchReport[], cases: BenchCase[], meta: Pic
   };
 }
 
+/** A report scored again, the cases scored again, and each case with a changed key that was left as scored. */
+interface Rescored {
+  report: BenchReport;
+  rescored: string[];
+  left: Array<{ id: string; reason: string }>;
+}
+
+/** Why the stored runs of a case cannot be scored against `benchCase` with certainty, if anything. */
+function unscorable(benchCase: BenchCase, runs: RunScore[]): string | undefined {
+  if (runs.some(run => !!run.followUp !== !!benchCase.priorRound)) return `its runs reviewed a ${benchCase.priorRound ? 'first' : 'follow-up'} round`;
+  if (runs.some(run => run.findings.some(f => f.description === undefined))) return 'its report holds no text of the findings';
+  return undefined;
+}
+
+/**
+ * Scores the stored runs of `report` again for each case of `cases` whose key version is not the report's. The matcher
+ * reads the findings each run stored, so a changed key costs matcher calls and no review. Only complete runs are scored
+ * again. A case that `unscorable` names stays as scored and is listed in `left`, and so stays out of a gate against a
+ * report with the new key version.
+ */
+export async function rescoreReport(report: BenchReport, cases: BenchCase[], matcher: Matcher): Promise<Rescored> {
+  const rescored = new Set<string>();
+  const left = new Map<string, string>();
+  const variants: VariantReport[] = [];
+  for (const { name, overrides, cases: scored } of report.variants) {
+    const again: CaseReport[] = [];
+    for (const c of scored) {
+      const benchCase = cases.find(b => b.id === c.id);
+      if (!benchCase || benchCase.keyVersion === c.keyVersion) {
+        again.push(c);
+        continue;
+      }
+      const complete = c.runs.filter(run => run.complete);
+      const reason = unscorable(benchCase, complete);
+      if (reason) {
+        left.set(c.id, reason);
+        again.push(c);
+        continue;
+      }
+      const runs: RunScore[] = [];
+      for (const run of c.runs) {
+        const review = { findings: run.findings as MatchedFinding[], outcome: run.outcome, complete: true, ...(run.followUp && { resolved: run.followUp.resolved }) };
+        runs.push(run.complete ? { ...run, ...await scoreKey(benchCase, review, matcher) } : run);
+      }
+      rescored.add(c.id);
+      again.push(caseReport(benchCase, runs));
+    }
+    variants.push(variantReport({ name, overrides }, again));
+  }
+  return { report: { ...report, variants }, rescored: [...rescored], left: [...left].map(([id, reason]) => ({ id, reason })) };
+}
+
 /** How far a figure may get worse, per run on average, before a release fails, such as one more false blocker. */
 const GATE_MARGIN = 1;
 const GATE_EPSILON = 1e-9;
@@ -791,6 +843,8 @@ export interface GateResult {
   shared: string[];
   /** Shared cases one side scored as a follow-up round and the other as a first round, which the gate leaves out. */
   unlike?: string[];
+  /** Hold-out cases both sides scored, with different key versions, which the gate leaves out. */
+  rekeyed?: string[];
   baseline?: GateSide;
   candidate?: GateSide;
 }
@@ -849,9 +903,11 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
   return names.map((name): GateResult => {
     const pick = (reports: BenchReport[]) => reports.map(r => r.variants.find(v => v.name === name)!);
     const [base, cand, every] = [pick(baseline), pick(candidate), pick(all)];
-    const shared = every[0].cases.filter(c => c.set === 'holdout'
-      && every.every(v => v.cases.some(o => o.id === c.id && o.set === 'holdout' && o.keyVersion === c.keyVersion))).map(c => c.id);
-    if (shared.length === 0) return { variant: name, verdict: 'NO DECISION', reason: 'The baseline and the candidate share no hold-out case with the same key version.', shared };
+    const held = every[0].cases.filter(c => c.set === 'holdout' && every.every(v => v.cases.some(o => o.id === c.id && o.set === 'holdout')));
+    const shared = held.filter(c => every.every(v => v.cases.find(o => o.id === c.id)!.keyVersion === c.keyVersion)).map(c => c.id);
+    const rekeyed = held.map(c => c.id).filter(id => !shared.includes(id));
+    const keyed = rekeyed.length > 0 ? { rekeyed } : {};
+    if (shared.length === 0) return { variant: name, verdict: 'NO DECISION', reason: 'The baseline and the candidate share no hold-out case with the same key version.', shared, ...keyed };
     const runsOf = (side: VariantReport[], id: string) => side.flatMap(v => v.cases.find(c => c.id === id)!.runs);
     const unloadable = (side: VariantReport[]) => shared.filter(id => runsOf(side, id).some(run => run.outcome === CONFIG_INVALID));
     const incomplete = (side: VariantReport[]) => shared.filter(id => !unloadable(side).includes(id) && side.some((v) => {
@@ -867,12 +923,12 @@ export function gateReports(baseline: BenchReport[], candidate: BenchReport[]): 
         ...noConfig, ...(noConfig.length > 0 ? ['Another run changes nothing until each such case holds a `config:` that loads.'] : []),
         ...noReview, ...(noReview.length > 0 ? ['A run with incomplete reviews does not count, so run that side again.'] : []),
       ].join(' ');
-      return { variant: name, verdict: 'NO DECISION', reason, shared };
+      return { variant: name, verdict: 'NO DECISION', reason, shared, ...keyed };
     }
     // A ref without follow-up cases reviews one as a first round, so its figures do not compare with a follow-up round's.
     const unlike = shared.filter(id => new Set(every.flatMap(v => v.cases.find(c => c.id === id)!.runs.map(run => !!run.followUp))).size > 1);
     const alike = shared.filter(id => !unlike.includes(id));
-    const left = unlike.length > 0 ? { unlike } : {};
+    const left = { ...keyed, ...(unlike.length > 0 && { unlike }) };
     if (alike.length === 0) return { variant: name, verdict: 'NO DECISION', reason: 'The shared hold-out cases were scored as a follow-up round on one side and as a first round on the other.', shared: alike, ...left };
     const [b, c] = [gateSide(base, alike), gateSide(cand, alike)];
     const sides = { shared: alike, ...left, baseline: b, candidate: c };
@@ -909,6 +965,7 @@ export function formatGate(results: GateResult[]): string {
     }
     lines.push(`Shared hold-out cases (${r.shared.length}): ${r.shared.join(', ') || 'none'}`, '');
     if (r.unlike) lines.push(`Left out, scored as a follow-up round on one side and as a first round on the other: ${r.unlike.join(', ')}`, '');
+    if (r.rekeyed) lines.push(`Left out, scored with different key versions: ${r.rekeyed.join(', ')}. Score the reports with the older key again with \`manki bench --rescore\` to compare them.`, '');
     return lines.join('\n');
   }).join('\n');
 }
@@ -1171,13 +1228,19 @@ interface BenchArgs {
   out?: string;
   matcherModel: string;
   cache: string;
+  /** A stored report to score again against the cases, instead of reviewing them. */
+  rescore?: string;
   help: boolean;
 }
 
 const USAGE = `Usage: manki bench --checkout <owner/name>=<dir> [options]
+       manki bench --rescore <report.json> [--cases <dir>] [--holdout] [--case <id>] [--cache <file>] [--out <file>]
 
 Reviews each benchmark case from a local checkout, matches the findings to the case's answer
 key with an LLM, prints recall per item and severity, and writes a JSON report.
+
+With --rescore it reviews nothing. It matches the findings the report stored to the key of each case
+whose key_version changed since, and writes the report scored again.
 
 Options:
   --checkout <owner/name>=<dir>  Local clone of a case repo. Repeat for each repo.
@@ -1192,7 +1255,8 @@ Options:
   --set <key.path>=<value>       Set one config value, a YAML value, on top of every variant. Repeatable.
   --matcher-model <model>        Model that matches findings to key items (default ${DEFAULT_MATCHER_MODEL}).
   --cache <file>                 Matcher decisions kept between runs (default bench/.matcher-cache.json).
-  --out <file>                   Report path (default bench/results/<time>.json).
+  --out <file>                   Report path (default bench/results/<time>.json, or <report>.rescored.json).
+  --rescore <report.json>        Score this report again against the cases, with the model that matched it.
   --help                         Print this message.
 
 Exits 0 when every variant completed at least one review of each set, and 2 when one did not or the bench could
@@ -1235,6 +1299,7 @@ export function parseBenchArgs(argv: string[]): BenchArgs {
     } else if (arg === '--out') args.out = value();
     else if (arg === '--matcher-model') args.matcherModel = value();
     else if (arg === '--cache') args.cache = value();
+    else if (arg === '--rescore') args.rescore = value();
     else if (arg === '--help' || arg === '-h') args.help = true;
     else throw new Error(`Unknown argument ${arg}`);
   }
@@ -1271,6 +1336,18 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     const cases = loadCases({ tuning: args.cases, ...(args.holdout && { holdout: HOLDOUT_DIR }) }, args.only);
     const cache = loadMatcherCache(args.cache);
     const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
+    if (args.rescore) {
+      const stored = JSON.parse(readFileSync(args.rescore, 'utf-8')) as BenchReport;
+      // A report holds one matcher model, and the gate refuses to compare reports matched by different ones.
+      if (stored.matcherModel !== args.matcherModel) throw new Error(`The report was matched by ${stored.matcherModel}. Pass --matcher-model ${stored.matcherModel} to score it again.`);
+      const { report, rescored, left } = await rescoreReport(stored, cases, matcher).finally(() => writeJson(args.cache, Object.fromEntries(cache)));
+      const outPath = args.out ?? args.rescore.replace(/(\.json)?$/, '.rescored.json');
+      writeJson(outPath, report);
+      out(rescored.length > 0 ? `Scored again with the changed key: ${rescored.join(', ')}\n` : 'No case was scored again.\n');
+      for (const { id, reason } of left) out(`Left as scored, ${id} has a changed key but ${reason}.\n`);
+      out(`Report: ${outPath}\n`);
+      return 0;
+    }
     const variants = resolveVariants(args);
     const startedAt = new Date().toISOString();
     const meta = { startedAt, runsPerCase: args.runs, matcherModel: args.matcherModel };

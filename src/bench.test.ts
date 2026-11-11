@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { isMap, isScalar, parseDocument } from 'yaml';
 
-import { BenchCase, BenchReport, buildReport, candidateFindings, formatBenchSummary, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, BenchReport, buildReport, candidateFindings, formatBenchSummary, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
@@ -813,7 +813,9 @@ describe('mergeReports and gateReports', () => {
         + 'The candidate has incomplete reviews on demo-2. A run with incomplete reviews does not count, so run that side again.',
     });
     const rekeyed = report([[first, [await run(first, 'blocker')]], [{ ...second, keyVersion: 3 }, [await run(second)]]]);
-    expect(gateReports([baseline, again(baseline)], [rekeyed])[0]).toMatchObject({ verdict: 'PASS', shared: ['demo-1'] });
+    const otherKey = gateReports([baseline, again(baseline)], [rekeyed])[0];
+    expect(otherKey).toMatchObject({ verdict: 'PASS', shared: ['demo-1'], rekeyed: ['demo-2'] });
+    expect(formatGate([otherKey])).toContain('Left out, scored with different key versions: demo-2. Score the reports with the older key again with `manki bench --rescore` to compare them.\n');
     expect(gateReports([baseline, again(baseline)], [report([[tuning, [await run(tuning)]]])])[0]).toMatchObject({ verdict: 'NO DECISION', shared: [] });
     expect(() => gateReports([], [baseline])).toThrow('The gate needs a baseline and a candidate report');
     const at = (commit: string) => ({ ...baseline, commit });
@@ -833,6 +835,42 @@ describe('mergeReports and gateReports', () => {
       '| False blockers | 0 | 0 |', '| Unexpected warnings | 0 | 0 |', '| Resolved wrong | 0 | 0 |', '| Repeats | 0 | 0 |', '',
     ].join('\n'));
     expect(text).toContain('Shared hold-out cases (2): demo-1, demo-2');
+    expect(text).not.toContain('Left out');
+  });
+
+  it('scores a stored report again against a changed key, so the gate compares it, and leaves a case it cannot score with certainty', async () => {
+    const confirmed: KeyItem = { id: 'K3', severity: 'warning', mechanism: 'The retry never backs off.', locations: ['src/other.rs'] };
+    const rekeyed: BenchCase = { ...second, keyVersion: 3, mustCatch: [...second.mustCatch, confirmed] };
+    const stored = report([[first, [await run(first, 'blocker')]], [second, [await run(second, 'blocker', 0, true, 1), await run(second, 'blocker', 0, false, 1)]]]);
+    const decisions: Record<string, MatchDecision> = { K1: { verdict: 'MATCH', findings: [0], reason: 'same' }, K3: { verdict: 'MATCH', findings: [0], reason: 'confirmed' } };
+    const matcher: Matcher & jest.Mock = jest.fn(async (item: KeyItem) => decisions[item.id] ?? { verdict: 'NONE', findings: [], reason: 'none' });
+
+    const { report: scored, rescored, left } = await rescoreReport(stored, [first, rekeyed], matcher);
+
+    expect({ rescored, left }).toEqual({ rescored: ['demo-2'], left: [] });
+    const [kept, changed] = scored.variants[0].cases;
+    expect(kept).toBe(stored.variants[0].cases[0]);
+    expect(matcher.mock.calls.find(([item]) => item.id === 'K3')![1]).toEqual([{ severity: 'warning', title: 'A finding', file: 'src/other.rs', line: 1, description: 'Something.' }]);
+    expect(stored.variants[0].cases[1].runs[0]).toMatchObject({ mustCatchRecall: 0.5, unexpectedWarnings: 1, extraFindings: 1 });
+    expect(changed).toMatchObject({ id: 'demo-2', set: 'holdout', keyVersion: 3 });
+    expect(changed.items.map(item => [item.id, item.caught, item.runs])).toEqual([['K1', 1, 1], ['K2', 0, 1], ['K3', 1, 1], ['N1', 0, 1]]);
+    expect(changed.runs[0]).toMatchObject({ complete: true, outcome: 'ADDRESS_FIRST', mustCatchRecall: 2 / 3, unexpectedWarnings: 0, extraFindings: 0, verdictCorrect: true, costUsd: 1.25 });
+    expect(changed.runs[0].matches.find(m => m.item === 'K3')).toEqual({ item: 'K3', verdict: 'MATCH', findings: [1], severity: 'warning', reason: 'confirmed' });
+    expect(changed.runs[1]).toBe(stored.variants[0].cases[1].runs[1]);
+    expect(scored).toMatchObject({ startedAt: stored.startedAt, matcherModel: 'model-a', variants: [{ name: 'base', summary: { unexpectedWarnings: 1 }, sets: { holdout: { runs: 3 } } }] });
+    expect(await rescoreReport(scored, [first, rekeyed], matcher)).toMatchObject({ rescored: [], left: [] });
+
+    const complete = (r: BenchReport): BenchReport => ({ ...r, variants: r.variants.map(v => ({ ...v, cases: v.cases.map(c => ({ ...c, runs: c.runs.filter(one => one.complete) })) })) });
+    const candidate = report([[first, [await run(first, 'blocker')]], [rekeyed, [await run(rekeyed, 'blocker')]]]);
+    expect(gateReports([complete(stored), again(complete(stored))], [candidate])[0]).toMatchObject({ shared: ['demo-1'], rekeyed: ['demo-2'] });
+    expect(gateReports([complete(scored), again(complete(scored))], [candidate])[0]).toMatchObject({ verdict: 'RERUN', shared: ['demo-1', 'demo-2'], baseline: { found: 3 }, candidate: { found: 2 } });
+
+    const bare: BenchReport = JSON.parse(JSON.stringify(stored, (key, value: unknown) => (key === 'description' ? undefined : value)));
+    const unread = await rescoreReport(bare, [first, rekeyed], matcher);
+    expect(unread).toMatchObject({ rescored: [], left: [{ id: 'demo-2', reason: 'its report holds no text of the findings' }] });
+    expect(unread.report.variants[0].cases[1]).toBe(bare.variants[0].cases[1]);
+    const followUp = parseCase(FOLLOW_UP_YAML.replace('id: demo-1', 'id: demo-2').replace('key_version: 2', 'key_version: 3'), 'demo-2.yml', 'holdout');
+    expect(await rescoreReport(stored, [followUp], matcher)).toMatchObject({ rescored: [], left: [{ id: 'demo-2', reason: 'its runs reviewed a first round' }] });
   });
 });
 
@@ -921,6 +959,29 @@ describe('runBenchCommand', () => {
       expect(await runBenchCommand(['--cases', dir, '--cache', join(dir, 'cache.json')])).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('manki bench: No checkout for owner/demo'));
       expect(stdout).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('scores a stored report again with --rescore, without a checkout, and refuses another matcher model', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'manki-bench-cmd-'));
+    try {
+      const benchCase = parseCase(CASE_YAML, 'demo.yml');
+      const clean = await scoreRun(benchCase, makeReview('READY', []), async () => ({ verdict: 'NONE', findings: [], reason: 'none' }));
+      const stored = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'claude-sonnet-5-5' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [clean] }] }]);
+      const [report, cache] = [join(dir, 'report.json'), join(dir, 'cache.json')];
+      writeFileSync(report, JSON.stringify(stored));
+      writeFileSync(join(dir, 'demo.yml'), `${CASE_YAML.replace('key_version: 2', 'key_version: 3')}  - id: N2\n    severity: warning\n    mechanism: The retry never backs off.\n    locations: [src/retry.rs]\n`);
+      process.env = { PATH: savedEnv.PATH, ANTHROPIC_API_KEY: 'sk-test' };
+
+      expect(await runBenchCommand(['--rescore', report, '--cases', dir, '--cache', cache])).toBe(0);
+      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`Scored again with the changed key: demo-1\nReport: ${join(dir, 'report.rescored.json')}\n`);
+      const scored = JSON.parse(readFileSync(join(dir, 'report.rescored.json'), 'utf-8')) as BenchReport;
+      expect(scored.variants[0].cases[0]).toMatchObject({ keyVersion: 3, items: [{ id: 'K1' }, { id: 'K2' }, { id: 'N1' }, { id: 'N2', tier: 'nice_to_have', caught: 0, runs: 1 }] });
+
+      expect(await runBenchCommand(['--rescore', report, '--cases', dir, '--cache', cache, '--matcher-model', 'claude-opus-5-5'])).toBe(2);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('The report was matched by claude-sonnet-5-5. Pass --matcher-model claude-sonnet-5-5 to score it again.'));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

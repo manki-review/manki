@@ -59,9 +59,15 @@ The **Benchmark** workflow (`.github/workflows/bench.yml`) runs the bench withou
 
 Each ref scores with its own bench code. After a change to the matcher, run the baseline's ref again rather than compare with an older report. To compare downloaded reports locally, run `npm run bench-report -- gate --baseline old.json --candidate new.json`.
 
-### Unmatched blockers on tuning cases
+### Unmatched blockers and unexpected warnings on tuning cases
 
-A false blocker is either a wrong blocker or a real defect the key does not list. So the summary of a run with tuning cases, local or on GitHub, lists every blocker that matched no key item, by case and run. Check each against the code at the case's head. Add each real defect to the case's `must_catch` and bump its `key_version`, so the next run counts it as a find. Never grow a hold-out key this way: its cases are not read while working on Manki.
+A false blocker is either a wrong blocker or a real defect the key does not list, and the same holds for an unexpected warning. So the summary of a run with tuning cases, local or on GitHub, lists every blocker and every warning that matched no key item, by case and run, each with its location and description. Check each against the code at the case's head. Add each real blocker to the case's `must_catch`. Add each real warning to `must_catch`, or to `nice_to_have` when a good review may leave it out. Then bump the case's `key_version`, so the next run counts it as a find. `npm run bench-report -- unmatched --report <report.json>` prints the same list from a stored report. Never grow a hold-out key this way while working on Manki: its cases are not read. The hold-out pass in `RELEASE.md` does it instead.
+
+### Scoring a report again after a key change
+
+A report scored with an older key does not compare with one scored with the new key, so the gate leaves such a case out and lists it. `npm run bench -- --rescore <report.json>` scores the stored runs again without reviewing anything. It matches the findings each run stored to the key of each case whose `key_version` is not the report's, and writes `<report>.rescored.json`. It needs the matcher's credentials and no checkout, so a key change costs matcher calls only. Add `--holdout` for a report with hold-out cases, and `--matcher-model` when the report was not matched by the default model. It prints the ids of the cases it scored again and nothing of their findings.
+
+Only complete runs are scored again. A case stays as scored, and is listed, when its report holds no text of the findings, which is every report of a ref before v7.5, or when its runs reviewed another kind of round than the case describes. Scoring again is for a changed key only: a case whose commits, title, body, config or earlier round changed needs a new review.
 
 ## Comparing setups
 
