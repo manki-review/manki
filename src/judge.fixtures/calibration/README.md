@@ -9,7 +9,7 @@ Each `*.jsonl` file holds findings Manki posted on one repository, one JSON obje
 | `file`, `lineStart`, `lineEnd` | Where the finding points, at `commitSha` |
 | `severity` | The grade the judge gave. A replay compares against it and must not show it to the judge |
 | `title`, `comment` | The finding as posted, without its grade, hidden markers or `AI context` block |
-| `judgeNotes`, `judgeConfidence` | The judge's reasoning and confidence, when the round recorded them. They name the old grade, so a replay must not show them to the judge |
+| `judgeNotes` | The judge's reasoning, when the round recorded it. It names the old grade, so a replay must not show it to the judge |
 | `label` | `real` or `false` |
 | `labelSource` | Why: `reply-fixed` or `reply-withdrawn` (Manki's reply), `author-fixed` or `author-declined` (a person's reply), `judge-addressed` (a later judge marked the thread addressed), or `line-changed` (the flagged lines changed before merge) |
 | `threadUrl` | The review thread |
