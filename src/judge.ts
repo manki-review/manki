@@ -1637,7 +1637,7 @@ export function capUnconfirmedBuildClaim(finding: Finding): Finding {
  * Lowers a blocker to a warning when nothing cites the lines that prove it, or when it says something is missing
  * and cites no search that came back empty. A tool alert names its own location, so it keeps its grade.
  */
-function capUnprovenBlocker(finding: Finding): Finding {
+export function capUnprovenBlocker(finding: Finding): Finding {
   if (finding.severity !== 'blocker' || finding.toolSource) return finding;
   const reason = !finding.evidence?.proof.length ? 'it cites no lines that prove the failure'
     : finding.evidence.emptySearch === '' ? 'it says something is missing but cites no search that came back empty'

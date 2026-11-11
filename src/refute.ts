@@ -5,6 +5,7 @@ import * as core from '@actions/core';
 
 import { isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
+import { capUnprovenBlocker } from './judge';
 import { extractJSON } from './json';
 import { resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
@@ -239,7 +240,8 @@ function refutationNote(label: string, { outcome, reason, rule, premises = [] }:
  * Grades `finding` by the outcome its refutations agree on. A disproof drops a finding graded below blocker, such as an
  * open lead or a capped blocker, but never lowers a blocker, lead or not, however many refuters disprove it, since PR
  * content they read could steer them all. An unsettled outcome keeps the grade, and a security finding changes only
- * when confirmed. A confirmation that raises a finding out of the `rare` column moves it to the `normal` one.
+ * when confirmed. A confirmation that raises a finding out of the `rare` column moves it to the `normal` one, where
+ * `capUnprovenBlocker` applies to it.
  */
 function applyRefutation(finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined): Finding {
   const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
@@ -259,10 +261,12 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
     // The `rare` column is all that keeps such a finding from blocking, so it rises only when `REACH_DOUBT` itself is confirmed.
     const restored = rareClaim && !reachConfirmed(checks) ? undefined : confirmedGrade(finding);
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
-    return {
+    const raised = {
       ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', decided!.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
       ...(tags && { tags }), ...(rareClaim && restored && { cell: { ...finding.cell!, column: 'normal' as const, judgeColumn: 'rare' as const } }),
     };
+    // A finding that leaves the `rare` column becomes a blocker no cap has seen, and a confirmed reach is no search for what it says is missing.
+    return rareClaim && restored ? capUnprovenBlocker(raised) : raised;
   }
   return graded;
 }
