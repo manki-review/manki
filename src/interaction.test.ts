@@ -932,18 +932,36 @@ describe('handleReviewCommentReply', () => {
     expect(sentContext).not.toContain('src/other.ts');
   });
 
-  it('turns a "Kept." reply that cites no new lines into "Unverified." and leaves the thread open', async () => {
+  // The PR changes `src/file.ts`, so the answer's code is highlighted: its path, its file name and `opts.retries`.
+  it.each([
+    ['cites only the finding\'s line', 'See src/file.ts:10.', '`src/file.ts:10` still logs the token.', false],
+    ['cites a new line of the changed file', '', 'src/file.ts:12 still logs the token.', true],
+    ['cites a new line by the file name alone', '', 'file.ts:12 still logs the token.', true],
+    ['cites a new line in one code span', '', '`src/file.ts:12` still logs the token.', true],
+    ['cites a new line of another file', '', 'src/other.ts:4 still logs the token.', true],
+    ['cites the line the finding cites bare', 'See src/file.ts:10.', 'src/file.ts:10 still logs the token.', false],
+    ['cites the line the finding cites in one code span', 'See `src/file.ts:10`.', 'src/file.ts:10 still logs the token.', false],
+    ['cites the line the finding cites with the path in a code span', 'See `src/file.ts`:10.', 'src/file.ts:10 still logs the token.', false],
+    ['cites the finding\'s line by the file name alone', 'See src/file.ts:10.', 'file.ts:10 still logs the token.', false],
+    ['cites no line', '', 'The token is still logged.', false],
+    ['names a version', '', 'Release 2.4.1 still logs the token.', false],
+    ['names a field of the changed code and a number', '', 'opts.retries:3 still logs the token.', false],
+    ['cites the line the finding cites by the file name alone', 'See file.ts:10.', 'src/file.ts:10 still logs the token.', false],
+    ['cites a new line next to the finding\'s line', 'See src/file.ts:10.', 'src/file.ts:10 calls the logger, and src/file.ts:12 still logs the token.', true],
+  ])('keeps a "Kept." reply only when it cites a new line: one that %s', async (_case, cited, answer, kept) => {
     setContext({ comment: { id: 1, body: 'This cannot happen.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' }, pull_request: { number: 1 } });
     const octokit = createMockOctokit();
-    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: `${findingComment('blocker')}\nSee src/file.ts:10.`, path: 'src/file.ts', line: 10 } });
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: `${findingComment('blocker')}\n${cited}`, path: 'src/file.ts', line: 10 } });
+    (ghUtils.fetchPRDiff as jest.Mock).mockResolvedValueOnce('diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n@@ -9,2 +9,3 @@\n context\n+  log(opts.retries, sessionToken);\n context');
     const client = createMockClient();
-    jest.mocked(client.sendMessage).mockResolvedValue({ content: '**Kept.** `src/file.ts:10` still logs the token.' });
+    jest.mocked(client.sendMessage).mockResolvedValue({ content: `**Kept.** ${answer}` });
     jest.mocked(state.resolveReviewThread).mockClear();
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
 
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
-    expect(body.startsWith('**Unverified.** `src/file.ts:10` still logs the token. I could not point to lines that show the problem still happens, so a maintainer should decide and resolve this thread.\n\n')).toBe(true);
+    expect(body.startsWith(kept ? '**Kept.** ' : '**Unverified.** ')).toBe(true);
+    expect(body.includes('I could not point to lines that show the problem still happens, so a maintainer should decide and resolve this thread.\n\n')).toBe(!kept);
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
   });
 
