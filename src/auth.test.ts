@@ -5,6 +5,7 @@ import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 
 import { changeThreadThroughService, createAuthenticatedOctokit, fetchPrState, reportPrState, resolveGitHubToken, tokenServiceCalls, TokenResult, TokenServiceError } from './auth';
+import { startReviewCheck } from './check-run';
 
 jest.mock('@actions/core');
 jest.mock('@actions/github');
@@ -44,7 +45,7 @@ describe('resolveGitHubToken', () => {
     expect(call[0]).toBe(TOKEN_URL);
     expect(call[1].headers['Authorization']).toBe('Bearer fake-oidc-token');
     expect(call[1].method).toBe('POST');
-    expect(JSON.parse(call[1].body)).toEqual({ owner: OWNER, repo: REPO });
+    expect(JSON.parse(call[1].body)).toEqual({ owner: OWNER, repo: REPO, takes_over_check: true });
   });
 
   const tokenReply = () => Response.json({ token: APP_TOKEN, expires_at: '2026-03-28T12:00:00Z' });
@@ -351,6 +352,29 @@ describe('createAuthenticatedOctokit', () => {
 
     expect(result.bot).toEqual({ logins: ['manki-review[bot]'] });
     expect(mockGetOctokit).toHaveBeenCalledWith('resolved-app-token', expect.anything(), retry, throttling, expect.any(Function));
+  });
+
+  const HEAD = 'a'.repeat(40);
+
+  it.each([
+    ['takes over the queued check the token reply names', { id: 77, head_sha: HEAD }, 77],
+    ['creates a check when the reply names none, as the service before queued checks replies', undefined, 901],
+    ['creates a check when the reply names one without a numeric id', { id: '77', head_sha: HEAD }, 901],
+    ['creates a check when the reply names one without a head', { id: 77 }, 901],
+  ])('%s', async (_name, checkRun, expected) => {
+    mockGetInput.mockReturnValue('');
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('oidc-token');
+    mockFetch(async () => Response.json({ token: 'resolved-app-token', expires_at: '2026-12-31T00:00:00Z', ...(checkRun && { check_run: checkRun }) }));
+    const update = jest.fn().mockResolvedValue({ data: {} });
+    const create = jest.fn().mockResolvedValue({ data: { id: 901 } });
+    mockGetOctokit.mockReturnValue({ rest: { checks: { update, create } } } as unknown as ReturnType<typeof github.getOctokit>);
+
+    const { octokit } = await createAuthenticatedOctokit();
+    const check = await startReviewCheck(octokit, OWNER, REPO, HEAD);
+
+    expect(check?.id).toBe(expected);
+    expect(update.mock.calls.map(([params]) => params.check_run_id)).toEqual(expected === 77 ? [77] : []);
+    expect(create).toHaveBeenCalledTimes(expected === 77 ? 0 : 1);
   });
 
   it('uses custom manki_token_url when provided', async () => {

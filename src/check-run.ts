@@ -24,8 +24,21 @@ export interface ReviewCheck {
   id: number;
 }
 
+/** A queued `Manki` check run the token service created for this run's review, on commit `headSha`. */
+export interface QueuedCheck {
+  id: number;
+  headSha: string;
+}
+
 const CHECK_NAME = 'Manki';
 const CHECK_STATE_KEY = 'manki_check_run';
+
+const queuedChecks = new WeakMap<Octokit, QueuedCheck>();
+
+/** Records the queued check the token service created for the run of `octokit`, for `startReviewCheck` to take over. */
+export function offerQueuedCheck(octokit: Octokit, check: QueuedCheck): void {
+  queuedChecks.set(octokit, check);
+}
 
 const OUTCOME_REPORTS: Record<RoundOutcome, Omit<CheckReport, 'summary'>> = {
   READY: { conclusion: 'success', title: 'Approved' },
@@ -52,23 +65,41 @@ export function failedReport(summary: string): CheckReport {
   return { conclusion: 'failure', title: 'Review failed', summary };
 }
 
+/** Sets the queued check `id` in progress with a link to this run. A failure is logged and returns false. */
+async function takeOverCheck(octokit: Octokit, owner: string, repo: string, id: number, detailsUrl: string): Promise<boolean> {
+  try {
+    await octokit.rest.checks.update({
+      owner,
+      repo,
+      check_run_id: id,
+      status: 'in_progress',
+      started_at: new Date().toISOString(),
+      details_url: detailsUrl,
+      output: { title: 'Review in progress', summary: 'The review run is linked from this check.' },
+    });
+    return true;
+  } catch (error) {
+    core.warning(`Could not take over the queued ${CHECK_NAME} check, creating a new one: ${error instanceof Error ? error.message : error}`);
+    return false;
+  }
+}
+
 /**
- * Creates an in-progress `Manki` check run on `headSha` that links to this run. The run itself belongs to the
- * default branch and so shows on no PR. A failure is logged and returns `undefined`.
+ * Shows an in-progress `Manki` check run on `headSha` that links to this run. The run itself belongs to the default
+ * branch and so shows on no PR. It takes over the queued check the token service created on `headSha`, and creates
+ * one without it. A failure is logged and returns `undefined`.
  */
 export async function startReviewCheck(octokit: Octokit, owner: string, repo: string, headSha: string): Promise<ReviewCheck | undefined> {
   const { serverUrl, runId } = github.context;
+  const detailsUrl = `${serverUrl}/${owner}/${repo}/actions/runs/${runId}`;
+  const queued = queuedChecks.get(octokit);
+  queuedChecks.delete(octokit);
   try {
-    const { data } = await octokit.rest.checks.create({
-      owner,
-      repo,
-      name: CHECK_NAME,
-      head_sha: headSha,
-      status: 'in_progress',
-      details_url: `${serverUrl}/${owner}/${repo}/actions/runs/${runId}`,
-    });
-    core.saveState(CHECK_STATE_KEY, String(data.id));
-    return { octokit, owner, repo, id: data.id };
+    const id = queued?.headSha === headSha && await takeOverCheck(octokit, owner, repo, queued.id, detailsUrl)
+      ? queued.id
+      : (await octokit.rest.checks.create({ owner, repo, name: CHECK_NAME, head_sha: headSha, status: 'in_progress', details_url: detailsUrl })).data.id;
+    core.saveState(CHECK_STATE_KEY, String(id));
+    return { octokit, owner, repo, id };
   } catch (error) {
     core.warning(`Could not create the ${CHECK_NAME} check, reviewing without it. The GitHub App needs the Checks read and write permission: ${error instanceof Error ? error.message : error}`);
     return undefined;
