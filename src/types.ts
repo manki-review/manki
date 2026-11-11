@@ -348,6 +348,10 @@ export interface RoundRelatedRepo {
   reads?: number;
   /** The guide file at the repo's root that the finders were pointed to as a map of the repo. */
   guide?: string;
+  /** The commit the round checked out, when it fetched the repo. */
+  commit?: string;
+  /** The time the round read the repo as of, when it did not read the newest commit. */
+  asOf?: string;
 }
 
 /** What the "Uses Outside the Diff" section showed the finders, as locations without the quoted code. */
@@ -1077,6 +1081,11 @@ export interface RelatedRepoTools {
   stateDir: string;
   /** The guide file at the root of each repo fetched before the finders run, by `owner/name`. Only the prompt uses it. */
   guides?: Record<string, string>;
+  /**
+   * Reads each repo as it was at this ISO 8601 time: the newest commit made by then on the first-parent history of
+   * its `ref`. Unset reads the newest commit, as a pull request round does.
+   */
+  asOf?: string;
 }
 
 export interface StaticAnalysisConfig {

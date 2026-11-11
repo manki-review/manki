@@ -12,7 +12,7 @@ import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, d
 import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { translateNames } from './name-translation';
-import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
+import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
@@ -640,6 +640,8 @@ export interface ReviewOptions {
   relatedWork?: RelatedWork;
   /** The changed lockfiles Manki parsed into package lists. `exclude_paths` can leave their files out of `diff`. */
   lockfiles?: LockfileDiff[];
+  /** Reads the related repos as they were at this ISO 8601 time. A pull request round sets none and reads their newest commit. */
+  relatedReposAsOf?: string;
 }
 
 export async function runReview(
@@ -733,12 +735,29 @@ export async function runReview(
   const memoryContext = memory ? buildMemoryContext(memory, new Set(diff.files.map(f => f.path))) : '';
   const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f.model), 'reviewer', f.name)]));
   const related: RelatedRepoTools | undefined = workspace && config.related_repos?.length && [...finderClients.values()].some(c => c.repoTools)
-    ? { repos: config.related_repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related') }
+    ? { repos: config.related_repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(options.relatedReposAsOf && { asOf: options.relatedReposAsOf }) }
     : undefined;
   const changedSinceLastRound = filesChangedSinceLastRound(diffWithLockfiles, priorRounds, interRoundDiff);
   if (changedSinceLastRound) recorded.changedSinceLastRoundCount = changedSinceLastRound.length;
   const earlierBlockers = blockersToRecheck(previousFindings ?? [], changedSinceLastRound);
   const uses = await usesPromise;
+  const agentFailureReasons = new Map<string, string>();
+  const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
+  let finderContext: Pick<ReviewResult, 'relatedRepos' | 'usesOutsideDiff' | 'comparisons'> = {};
+  // Related work is left out: the posted incomplete review would render it.
+  const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
+    verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
+    agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
+    ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
+    ...(modelFallbacks.length > 0 && { modelFallbacks }), llmCalls, ...finderContext,
+    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
+  });
+  // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
+  const unread = related?.asOf ? await requireRelatedRepos(related).then(() => undefined, (error: Error) => error.message) : undefined;
+  if (related && unread) {
+    finderContext = { relatedRepos: relatedRepoOutcomes(related.repos, related.stateDir, {}, related.asOf) };
+    return incomplete(unread);
+  }
   // Asked alongside the finders on the reviewer model, at the effort of its finder. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonModel = resolveReviewerModel(config, undefined);
   const comparisonEffort = (team.finders.find(f => f.model === comparisonModel) ?? team.finders[0]).effort;
@@ -768,7 +787,6 @@ export async function runReview(
   const agentUsage = new Map<string, LLMUsage>();
   const agentDurationMs = new Map<string, number>();
   const agentRetryCount = new Map<string, number>();
-  const agentFailureReasons = new Map<string, string>();
   Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount });
   // A finder whose provider reported a used-up limit is not retried: it would fail the same way.
   const quotaErrors = new Map<string, QuotaError>();
@@ -787,7 +805,6 @@ export async function runReview(
     else retryNotes.delete(name);
   };
   const retryable = (name: string): boolean => !quotaErrors.has(name);
-  const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
 
   let completedCount = 0;
   let progressFindingCount = 0;
@@ -1115,21 +1132,12 @@ export async function runReview(
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
   // Every configured related repo is recorded: fetched, failed, unused, or skipped when no finder could read it.
   const relatedRepos: RoundRelatedRepo[] | undefined = related
-    ? relatedRepoOutcomes(related.repos, related.stateDir, guides)
+    ? relatedRepoOutcomes(related.repos, related.stateDir, guides, related.asOf)
     : config.related_repos?.map(({ repo, ref }) => ({
       repo, ...(ref && { ref }), status: 'skipped' as const,
       reason: workspace ? 'no finder has repository tools' : 'the PR head was not checked out for the tools',
     }));
-  const finderContext = { ...(relatedRepos?.length && { relatedRepos }), ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }) };
-  // Related work is left out: the posted incomplete review would render it.
-  const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
-    verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
-    agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
-    ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-    ...(modelFallbacks.length > 0 && { modelFallbacks }), llmCalls, ...finderContext,
-    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
-  });
-
+  finderContext = { ...(relatedRepos?.length && { relatedRepos }), ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }) };
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
     const summary = quotaErrors.size > 0

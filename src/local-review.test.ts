@@ -92,6 +92,7 @@ describe('reviewLocal', () => {
     expect(options.repoContext).toContain('Name things plainly.');
     expect(options.prContext).toEqual({ title: 'Change a', body: '', baseBranch: 'main' });
     expect(options.headSha).toBe(head);
+    expect(options).not.toHaveProperty('relatedReposAsOf');
     expect(workspaceSeen?.content).toBe('const a = 1;\nconst b = 3;\n');
     expect(workspaceSeen?.log).not.toContain(later);
     expect(existsSync(options.workspace!)).toBe(false);
@@ -122,10 +123,11 @@ describe('reviewLocal', () => {
       ],
     };
 
-    const review = await reviewLocal({ repoRoot: repo, base: 'main', head: fixed, earlier, providerInputs: inputs });
+    const review = await reviewLocal({ repoRoot: repo, base: 'main', head: fixed, earlier, relatedReposAsOf: '2026-10-03T11:20:50Z', providerInputs: inputs });
 
     const options = jest.mocked(runReview).mock.calls[0][1];
     expect(options.isFollowUp).toBe(true);
+    expect(options.relatedReposAsOf).toBe('2026-10-03T11:20:50Z');
     expect(options.interRoundDiff).toContain('-const v20 = 20;\n+const v20 = 0;');
     expect(options.interRoundDiff).not.toContain('src/a.ts');
     expect(options.previousFindings?.map(f => [f.threadId, f.status, f.fixed, f.isSecurity])).toEqual([['P1', 'open', undefined, true], ['P2', 'resolved', undefined, undefined], ['P4', 'resolved', true, undefined]]);

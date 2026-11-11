@@ -109,6 +109,8 @@ export interface LocalReviewInput {
   body?: string;
   /** Makes the review a follow-up round of this earlier round, read as a pull request round reads it from GitHub. Unused with `patch`. */
   earlier?: EarlierRound;
+  /** Reads the related repos as they were at this ISO 8601 time, for a change reviewed after it was made. Defaults to their newest commit. */
+  relatedReposAsOf?: string;
   providerInputs: ProviderInputs;
   onProgress?: (progress: ReviewProgress) => void;
   signal?: AbortSignal;
@@ -338,6 +340,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       excludedPaths: excludedFiles.map(f => f.path),
       lockfiles,
       signal,
+      ...(input.relatedReposAsOf && { relatedReposAsOf: input.relatedReposAsOf }),
       ...(followUp && {
         isFollowUp: followUp.previousFindings.length > 0, openThreads: followUp.openThreads, previousFindings: followUp.previousFindings,
         priorRounds: followUp.priorRounds, interRoundDiff: followUp.interRoundDiff,
