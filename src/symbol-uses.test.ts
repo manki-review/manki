@@ -651,12 +651,12 @@ ${body}	return true
     await usesInLinearTime(n => [{ 'conf/app.yml': 'name: app\n' }, { 'conf/app.yml': `name: app\n${`k${'_a'.repeat(n)} x\n`.repeat(20)}` }], 20_000);
 
     // Many sibling types across files with a method of the same name, one of them changed: each joins the same group.
-    // Copying the group per member costs only about three times the rest of the step here, so the margin is tighter.
+    // Copying the group per member costs a few times the rest of the step only on this many members, and far less on the small input.
     const areas = (count: number, from: number, first = '0') => `package gen\n\n${Array.from({ length: count }, (_, i) => `func (s S${from + i}) Area() int { return ${i === 0 ? first : i} }`).join('\n')}\n`;
     const grouped = await usesInLinearTime(count => [
-      Object.fromEntries(['a', 'b', 'c', 'd'].map((name, i) => [`gen/${name}.go`, areas(count, i * count)])),
-      { 'gen/a.go': areas(count, 0, '7') },
-    ], 20_000, { margin: 2 });
+      Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`gen/f${i}.go`, areas(count, i * count)])),
+      { 'gen/f0.go': areas(count, 0, '7') },
+    ], 20_000, { smaller: 250 });
     expect(grouped.siblings.implementations.map(q => [q.name, q.members.length])).toEqual([['Area', 4]]);
 
     // A changed file of many methods, each with a sibling beside it: every one is a group, and only the questions asked are quoted.

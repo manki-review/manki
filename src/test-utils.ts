@@ -35,18 +35,21 @@ const SIZE_RATIO = 16;
 /** A small input faster than this is mostly fixed cost and timer noise, so the bound is taken from this time instead. */
 const TIME_FLOOR_MS = 50;
 
+/** How many times the size ratio the large input may take. A linear step takes the ratio itself, and a busy runner more. */
+const MARGIN = 4;
+
 /**
  * Checks that a step takes time linear in its input size. `time` runs the step on an input of the given size and returns
  * the milliseconds the step took. A linear step takes `size / smaller` times as long on `size` as on `smaller`, and
- * `margin` times that is allowed. A lower `margin` catches a quadratic part that costs less than the rest of the step.
+ * `MARGIN` times that is allowed.
  */
 export async function expectLinearTime(
-  time: (size: number) => number | Promise<number>, size: number, { smaller = Math.round(size / SIZE_RATIO), margin = 4 } = {},
+  time: (size: number) => number | Promise<number>, size: number, { smaller = Math.round(size / SIZE_RATIO) } = {},
 ): Promise<void> {
   // Load only adds time, so the fastest of three runs is the closest to the step's own time.
   let small = Infinity;
   for (let i = 0; i < 3; i++) small = Math.min(small, await time(smaller));
-  const bound = margin * (size / smaller) * Math.max(small, TIME_FLOOR_MS);
+  const bound = MARGIN * (size / smaller) * Math.max(small, TIME_FLOOR_MS);
   // One stretched run fails nothing: a large run over the bound is timed again, twice at most.
   let large = await time(size);
   for (let i = 0; i < 2 && large >= bound; i++) large = Math.min(large, await time(size));
