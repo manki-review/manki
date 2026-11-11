@@ -1278,7 +1278,7 @@ describe('selectTeam', () => {
     ]) {
       const team = selectTeam(makeDiff({ files }), makeConfig(), trivial);
       expect(team.finders).toEqual([
-        { name: 'Quick check · Claude Sonnet 5.5', prompt: TRIVIAL_VERIFIER_AGENT, model: 'claude-sonnet-5-5', effort: 'medium', steps: 8 },
+        { name: 'Quick check · Claude Sonnet 5.5', prompt: TRIVIAL_VERIFIER_AGENT, model: 'claude-sonnet-5-5', effort: 'medium', sentEffort: 'medium', steps: 8 },
       ]);
       expect([team.routing.class, team.routing.group]).toEqual(['docs', 'trivial']);
       expect(team.trivialOverridden).toBe(false);
@@ -1358,8 +1358,59 @@ describe('selectTeam', () => {
       expect(readers(selectTeam(makeDiff({ files: code }), high, t(false, true, true), true))).toEqual([`${S} · xhigh`, `${O} · xhigh`]);
       const xhigh = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer', effort: 'xhigh' }, { model: '@reviewer_pair', effort: 'xhigh' }] } } } });
       expect(readers(selectTeam(makeDiff({ files: code }), xhigh, t(false, true, true), true))).toEqual([`${S} · max`, `${O} · max`]);
+      expect(pair.routing.deeperSameEffort).toBeUndefined();
 
       expect(run(['', code, t(false, false, false), 'auto', '', []]).routing.deeper).toBeUndefined();
+    });
+
+    it('names and records a finder by the effort its client sends, and lists the finders a deeper review gives no more effort', () => {
+      // The reviewer's model has no `xhigh`, as Claude Sonnet 4.6 does not. The pair's model takes every tier.
+      const noXhigh: LLMClient = { sendMessage: jest.fn(), sentEffort: effort => (effort === 'xhigh' ? 'high' : effort) };
+      const everyTier: LLMClient = { sendMessage: jest.fn() };
+      const clients: ReviewClients = { reviewer: noXhigh, reviewerByModel: new Map([['claude-sonnet-5-5', noXhigh], ['claude-opus-5-5', everyTier]]), judge: everyTier };
+      const team = (triage: ReturnType<typeof t>, deeper: boolean, config = makeConfig()) => selectTeam(makeDiff({ files: code }), config, triage, deeper, clients);
+
+      // A subtle change already runs at high, so the step to xhigh sends the first model the same effort.
+      const subtle = team(t(false, true, true), true);
+      expect(readers(subtle)).toEqual([`${S} · high`, `${O} · xhigh`]);
+      expect(subtle.finders.map(f => [f.effort, f.sentEffort])).toEqual([['xhigh', 'high'], ['xhigh', 'xhigh']]);
+      expect(subtle.routing.deeperSameEffort).toEqual([`${S} · high`]);
+
+      // From medium, the same step still raises what the first model receives.
+      const plain = team(t(false, false, true), true);
+      expect(readers(plain)).toEqual([`${S} · high`, `${O} · xhigh`]);
+      expect(plain.routing.deeperSameEffort).toBeUndefined();
+
+      // A set `max` has no tier above it.
+      const max = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer', effort: 'max' }, { model: '@reviewer_pair', effort: 'high' }] } } } });
+      expect(team(t(false, true, true), true, max).routing.deeperSameEffort).toEqual([`${S} · max`]);
+
+      // A deeper review that moves a one-finder group up to the pair adds the second finder, so only the finder the
+      // group already had is compared, though neither model takes `xhigh`.
+      const bothCapped: ReviewClients = { ...clients, reviewerByModel: new Map([['claude-sonnet-5-5', noXhigh], ['claude-opus-5-5', noXhigh]]) };
+      const escalated = selectTeam(makeDiff({ files: code }), makeConfig(), t(false, true, false), true, bothCapped);
+      expect(escalated.routing).toMatchObject({ group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'solo' });
+      expect(readers(escalated)).toEqual([`${S} · high`, `${O} · high`]);
+      expect(escalated.routing.deeperSameEffort).toEqual([`${S} · high`]);
+      // The built-in pair runs below a `max` the earlier group set, which is no more effort either.
+      const soloMax = makeConfig({ review: { groups: { solo: { reviewers: [{ effort: 'max' }] } } } });
+      const lowered = selectTeam(makeDiff({ files: code }), soloMax, t(false, true, false), true, clients);
+      expect(readers(lowered)).toEqual([`${S} · high`, `${O} · xhigh`]);
+      expect(lowered.routing.deeperSameEffort).toEqual([`${S} · high`]);
+      // A quick check is no finder, so a finder that replaces it is added too.
+      expect(selectTeam(makeDiff({ files: code }), makeConfig(), t(true, false, false), true, bothCapped).routing.deeperSameEffort).toBeUndefined();
+
+      // A model that takes no effort receives none either way. Its name and record keep the asked tier.
+      const noEffort: LLMClient = { sendMessage: jest.fn(), sentEffort: () => undefined };
+      const none = selectTeam(makeDiff({ files: code }), makeConfig(), t(false, true, true), true, { ...clients, reviewerByModel: new Map([['claude-sonnet-5-5', noEffort], ['claude-opus-5-5', everyTier]]) });
+      expect(none.finders.map(f => [f.name, f.sentEffort])).toEqual([[`${S} · xhigh`, 'xhigh'], [`${O} · xhigh`, 'xhigh']]);
+      expect(none.routing.deeperSameEffort).toEqual([`${S} · xhigh`]);
+
+      // Outside a deeper review the name shows the sent effort and nothing is listed.
+      const xhigh = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer', effort: 'xhigh' }, { model: '@reviewer_pair', effort: 'xhigh' }] } } } });
+      const usual = team(t(false, true, true), false, xhigh);
+      expect(readers(usual)).toEqual([`${S} · high`, `${O} · xhigh`]);
+      expect(usual.routing.deeperSameEffort).toBeUndefined();
     });
 
     it('gives a tests-only change one full finder, where the trivial verifier read it before', () => {
@@ -5688,6 +5739,10 @@ describe('recordCalls', () => {
     const counted: LLMCall[] = [];
     for (const count of ['2', '13']) await recordCalls(fallback, finder, counted).sendMessage(`${count} open threads`, 'user');
     expect(counted[0].promptDigest).toBe(counted[1].promptDigest);
+    // A client whose model takes less than the tier asked for is recorded at the tier it sends.
+    const capped: LLMCall[] = [];
+    await recordCalls({ ...fallback, sentEffort: effort => (effort === 'xhigh' ? 'high' : effort) }, finder, capped).sendMessage('sys', 'user', { effort: 'xhigh' });
+    expect(capped[0].effort).toBe('high');
     expect(calls).toEqual([
       { stage: 'judge', effort: 'high', attempt: 1, promptDigest, model: 'claude-opus-5-5', durationMs: 40, ...usage, costUsd: (500 * 4 + 200 * 0.2 + 300 * 5 + 100 * 20) / 1_000_000 },
       { stage: 'judge', attempt: 2, promptDigest, failed: true, error: 'timed out', durationMs: expect.any(Number), ...none, costUsd: null },
@@ -5921,6 +5976,22 @@ describe('runReview triage', () => {
     expect(result.agentModels).toEqual(new Map([['Claude Sonnet 5.5 · medium', 'claude-sonnet-5-5']]));
     expect(result.routing).toEqual({ class: 'internal', rank: 30, matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' });
     expect(progress).toContainEqual(expect.objectContaining({ phase: 'planning', teamAgentNames: ['Claude Sonnet 5.5 · medium'], routing: expect.objectContaining({ class: 'internal', group: 'solo' }) }));
+
+    // A model without `xhigh` is named and recorded at the `high` it receives, and a deeper review of a subtle change says it adds no effort.
+    const capped = makeClients(JSON.stringify({ trivial: false, subtle: true, paired: true, judgeEffort: 'medium', prType: 'feat', language: 'typescript' }));
+    capped.reviewer.sentEffort = effort => (effort === 'xhigh' ? 'high' : effort);
+    const deeperProgress: ReviewProgress[] = [];
+    const info = jest.spyOn(core, 'info').mockImplementation(() => {});
+    const deeper = await runReview(capped, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo', deeper: true, onProgress: p => deeperProgress.push(p) });
+    const sameEffort = ['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high'];
+    expect(deeper.agentNames).toEqual(sameEffort);
+    expect([...deeper.agentEffortMap!.values()]).toEqual(['high', 'high']);
+    expect(deeper.routing).toMatchObject({ deeper: true, deeperSameEffort: sameEffort });
+    expect(deeper.llmCalls!.filter(c => c.stage === 'reviewer').map(c => c.effort)).toEqual(['high', 'high']);
+    expect(jest.mocked(capped.reviewer.sendMessage).mock.calls.map(call => call[2]?.effort)).toEqual(['xhigh', 'xhigh']);
+    expect(deeperProgress).toContainEqual(expect.objectContaining({ phase: 'planning', routing: expect.objectContaining({ deeperSameEffort: sameEffort }) }));
+    expect(info).toHaveBeenCalledWith(`The deeper review adds no effort for ${sameEffort.join(', ')}: the model receives no more effort than without it`);
+    info.mockRestore();
   });
 
   it.each<[string, string | undefined, string, string | undefined]>([

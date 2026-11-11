@@ -91,6 +91,9 @@ describe('resolveReasoningEffort', () => {
     for (const tier of ['low', 'medium', 'high'] as const) {
       expect(resolveReasoningEffort(model, tier)).toBe(tier);
     }
+    for (const auth of [{ kind: 'apiKey', key: 'k' }, { kind: 'oauth', token: 't' }] as const) {
+      expect(new OpenAIClient({ auth, model }).sentEffort('max')).toBe(expected);
+    }
   });
 
   it.each([
@@ -111,6 +114,7 @@ describe('resolveReasoningEffort', () => {
     expect(resolveReasoningEffort(model, 'high')).toBeUndefined();
     expect(resolveReasoningEffort(model, 'xhigh')).toBeUndefined();
     expect(resolveReasoningEffort(model, 'max')).toBeUndefined();
+    expect(new OpenAIClient({ auth: { kind: 'apiKey', key: 'k' }, model }).sentEffort('max')).toBeUndefined();
   });
 });
 

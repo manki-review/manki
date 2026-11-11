@@ -111,6 +111,7 @@ export interface LLMCall extends LLMUsage {
   agent?: string;
   /** Model that answered. Unknown for a call that failed. */
   model?: string;
+  /** Effort tier the provider was sent. */
   effort?: SendMessageOptions['effort'];
   /** Set when a fallback model answered after a safety filter refused the stage's own model. */
   fallback?: boolean;
@@ -188,6 +189,11 @@ export interface LLMClient {
   warmupCLI?(): Promise<void>;
   /** Whether `sendMessage` gives the model the tools `SendMessageOptions.repoTools` asks for. */
   readonly repoTools?: boolean;
+  /**
+   * Returns the effort tier `sendMessage` sends for `effort`, which is lower when the model's scale stops below it, or
+   * `undefined` when it sends none. Unset when every tier is sent as asked.
+   */
+  sentEffort?(effort: NonNullable<SendMessageOptions['effort']>): SendMessageOptions['effort'];
 }
 
 export type AnthropicAuth =

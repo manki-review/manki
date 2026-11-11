@@ -745,6 +745,10 @@ export function buildDashboard(data: DashboardData): string {
       reviewLines.push(renderAgentLines(agents));
     }
   }
+  const sameEffort = data.routing?.deeperSameEffort;
+  if (sameEffort) {
+    reviewLines.push(`${INDENT}_(the deeper review adds no effort for ${sameEffort.map(sanitizeMarkdown).join(', ')}: the model receives no more effort than without it)_`);
+  }
   sections.push(reviewLines.join('\n'));
 
   const judgeLines: string[] = [];

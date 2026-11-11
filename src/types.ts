@@ -683,9 +683,14 @@ export interface Finder {
   name: string;
   prompt: ReviewerAgent;
   model: string;
+  /** The tier the finder's calls ask for. */
   effort: EffortLevel;
+  /** The tier the finder's model receives, which is below `effort` when the model's scale stops there. The name and the round record show it. */
+  sentEffort: EffortLevel;
   /** How many tool calls the finder may make when its client has repository tools. */
   steps: number;
+  /** Set on a Deeper review when the model receives no more effort than without one. */
+  deeperSameEffort?: true;
 }
 
 /** One reader in a review group. `auto` effort is `high` when the triage says `subtle`, else `medium`. A Deeper review runs it at `xhigh`. */
@@ -799,6 +804,8 @@ export interface TeamRouting {
   weakerAllowed?: string[];
   /** A Deeper review ran: two finders on every group, at xhigh effort or one level above a configured effort. */
   deeper?: true;
+  /** Finders of a Deeper review whose model receives no more effort than without one. */
+  deeperSameEffort?: string[];
 }
 
 export interface TeamRoster {
@@ -1183,8 +1190,8 @@ export interface DashboardData {
   totalDurationMs?: number;
   /** True when team selection fell back to the heuristic because the planner failed or timed out. Surfaces a one-line marker in the rendered summary so the broader team set is self-explanatory. */
   heuristicFallback?: boolean;
-  /** The review class and group the round's readers came from, shown in the review header. */
-  routing?: Pick<TeamRouting, 'class' | 'group'>;
+  /** The review class and group the round's readers came from, shown in the review header, and the finders a Deeper review gave no more effort. */
+  routing?: Pick<TeamRouting, 'class' | 'group' | 'deeperSameEffort'>;
   /** Open leads below blocker that the reviewers did not finish checking. They are listed, never posted. */
   unfinishedChecks?: Pick<Finding, 'title' | 'file' | 'line' | 'leadSince'>[];
   /** Blockers and open leads the judge disproved with tools, with the reason. They are dropped. */

@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { classifyRelatedWork } from './related-work';
@@ -195,25 +195,31 @@ function quotaRoundSummary(quotaErrors: ReadonlyMap<string, QuotaError>, failedA
 const FAIL_SAFE_TRIAGE: Readonly<Triage> = Object.freeze({ trivial: false, subtle: true, paired: true });
 
 const DEEPER_EFFORT: Record<EffortLevel, EffortLevel> = { low: 'medium', medium: 'high', high: 'xhigh', xhigh: 'max', max: 'max' };
+const EFFORT_ORDER = Object.keys(DEEPER_EFFORT) as EffortLevel[];
 
 /**
  * Builds the round's readers. The PR's class, from its paths and the triage, picks a review group,
  * and each reader in the group becomes one finder. `planner.paired` pins the `paired` answer
  * before the PR is classified, and every floor class the PR matches is checked after routing.
  * A `deeper` review moves a group with fewer than two finders up to the built-in `pair` group.
+ * With `clients`, each finder is named and recorded by the effort its client sends.
  */
-export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE, deeper = false): TeamRoster {
+export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE, deeper = false, clients?: ReviewClients): TeamRoster {
   const pin = config.planner?.paired ?? 'auto';
   const pinned: Triage = { ...triage, paired: pin === 'auto' ? triage.paired : pin === 'always' };
   const routing = resolveRouting(config.review);
   const classification = classifyPr(diff, pinned, routing.classes);
   let choice: GroupChoice = chooseGroup(routing, classification, ref => resolveReviewerModel(config, ref));
+  let escalatedFrom: ReviewGroup | undefined;
   if (deeper && choice.group.reviewers.filter(r => r.role !== 'verifier').length < 2) {
+    escalatedFrom = choice.group;
     choice = { name: FLOOR_FALLBACK_GROUP, group: BUILT_IN_GROUPS[FLOOR_FALLBACK_GROUP], source: 'deeper_review', escalatedFrom: choice.name };
   }
   const reviewClass = classification.name ? routing.classes[classification.name] : undefined;
+  const finders = buildFinders(choice.group, config, classification.triage, classification.floor !== undefined, deeper, clients, escalatedFrom);
+  const sameEffort = finders.filter(f => f.deeperSameEffort).map(f => f.name);
   return {
-    finders: buildFinders(choice.group, config, classification.triage, classification.floor !== undefined, deeper),
+    finders,
     routing: {
       ...(classification.name && { class: classification.name, rank: reviewClass!.rank }),
       matched: classification.matched,
@@ -224,6 +230,7 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
       ...(choice.escalatedFrom && { escalatedFrom: choice.escalatedFrom }),
       ...(choice.weakerAllowed && { weakerAllowed: choice.weakerAllowed }),
       ...(deeper && { deeper: true }),
+      ...(sameEffort.length > 0 && { deeperSameEffort: sameEffort }),
     },
     triage: classification.triage,
     sensitivePaths: classification.matched.includes('security'),
@@ -242,29 +249,45 @@ function shortFocus(focus: string): string {
 }
 
 /**
- * Builds one finder per reader of `group`, all on the same checklist. A group with two finders, or a PR in a floor class,
- * gets the most tool steps. `auto` effort is high on a subtle change and medium otherwise. A `deeper` review runs
- * an `auto` finder at xhigh and any other finder one effort level higher.
+ * Returns the effort tier a reader is asked to run at. `auto` effort is high on a subtle change and medium otherwise.
+ * A `deeper` review runs an `auto` finder at xhigh and any other finder one effort level higher.
  */
-function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean): Finder[] {
+function askedEffort(reviewer: GroupReviewer, triage: Triage, deeper: boolean): EffortLevel {
+  if (!reviewer.effort || reviewer.effort === 'auto') return deeper ? 'xhigh' : triage.subtle ? 'high' : 'medium';
+  return deeper ? DEEPER_EFFORT[reviewer.effort] : reviewer.effort;
+}
+
+/**
+ * Builds one finder per reader of `group`, all on the same checklist. A group with two finders, or a PR in a floor class,
+ * gets the most tool steps. `escalatedFrom` is the group the PR had before a `deeper` review moved it up to `group`.
+ */
+function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean, clients?: ReviewClients, escalatedFrom?: ReviewGroup): Finder[] {
   const names = new Set<string>();
   const finders = group.reviewers.filter(r => r.role !== 'verifier');
   const risky = floor || finders.length >= 2;
   return group.reviewers.map(reviewer => {
     const model = resolveReviewerModel(config, reviewer.model);
-    const effort: EffortLevel = !reviewer.effort || reviewer.effort === 'auto'
-      ? (deeper ? 'xhigh' : triage.subtle ? 'high' : 'medium')
-      : deeper ? DEEPER_EFFORT[reviewer.effort] : reviewer.effort;
+    const client = clients && pickReviewerClient(clients, model).client;
+    const sent = (tier: EffortLevel): EffortLevel | undefined => (client?.sentEffort ? client.sentEffort(tier) : tier);
+    const effort = askedEffort(reviewer, triage, deeper);
+    // A model that takes no effort keeps the asked tier in its name and record.
+    const sentEffort = sent(effort) ?? effort;
     const verifier = reviewer.role === 'verifier';
     const custom = reviewer.focus ? [...config.reviewers, { name: 'This review group', focus: reviewer.focus }] : config.reviewers;
     const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom);
     const label = verifier ? `Quick check · ${modelDisplayName(model)}`
-      : [modelDisplayName(model), effort, ...(reviewer.focus ? [shortFocus(reviewer.focus)] : [])].join(' · ');
+      : [modelDisplayName(model), sentEffort, ...(reviewer.focus ? [shortFocus(reviewer.focus)] : [])].join(' · ');
     let name = label;
     for (let n = 2; names.has(name); n++) name = `${label} #${n}`;
     names.add(name);
     const steps = verifier ? QUICK_CHECK_STEPS : risky ? RISKY_FINDER_STEPS : FINDER_STEPS;
-    return { name, prompt, model, effort, steps };
+    // A reader the deeper review added has no effort without it to compare with.
+    const ref = (r: GroupReviewer): string => r.model ?? '@reviewer';
+    const usual = escalatedFrom ? escalatedFrom.reviewers.find(r => r.role !== 'verifier' && ref(r) === ref(reviewer)) : reviewer;
+    // The built-in pair can run below a tier the earlier group set, and no effort sent ranks below every tier.
+    const rank = (tier: EffortLevel | undefined): number => (tier ? EFFORT_ORDER.indexOf(tier) : -1);
+    const deeperSameEffort = deeper && usual !== undefined && rank(sent(effort)) <= rank(sent(askedEffort(usual, triage, false)));
+    return { name, prompt, model, effort, sentEffort, steps, ...(deeperSameEffort && { deeperSameEffort }) };
   });
 }
 
@@ -569,7 +592,7 @@ export function buildProvenanceFields(
     ciOrDependencyPaths: team.ciOrDependencyPaths,
     ...(team.trivialOverridden && { trivialOverridden: true }),
     ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
-    agentEffortMap: new Map(team.finders.map(f => [f.name, f.effort])),
+    agentEffortMap: new Map(team.finders.map(f => [f.name, f.sentEffort])),
     agentModels: new Map(team.finders.map(f => [f.name, f.model])),
     routing: team.routing,
   };
@@ -666,7 +689,7 @@ export async function runReview(
     plannerSource = plannerResult ? 'planner' : 'heuristic_fallback';
     plannerFallbackReason = outcome.fallbackReason;
   }
-  const team = selectTeam(diffWithLockfiles, config, plannerResult ?? undefined, options.deeper);
+  const team = selectTeam(diffWithLockfiles, config, plannerResult ?? undefined, options.deeper, clients);
   const setEffort = config.judge?.effort;
   const judgeEffort = setEffort && setEffort !== 'auto' ? setEffort : plannerResult?.judgeEffort ?? 'high';
   // What the round has produced so far. A round that ends incomplete keeps it all in its record.
@@ -683,6 +706,7 @@ export async function runReview(
     core.warning(`\`review.allow_weaker\` lets this ${routing.weakerAllowed.join(', ')} change run on the ${routing.group} group, below the floor of two finders on two models`);
   }
   core.info(`Review team: ${team.finders.map(f => f.name).join(', ')}, judge: ${judgeEffort}${plannerResult ? ` (${plannerResult.prType})` : ''}`);
+  if (routing.deeperSameEffort) core.info(`The deeper review adds no effort for ${routing.deeperSameEffort.join(', ')}: the model receives no more effort than without it`);
   if (trivial) {
     core.info(`trivial decision: prType=${plannerResult?.prType}, lines=${diff.totalAdditions + diff.totalDeletions}, files=${diff.files.length}`);
   }
