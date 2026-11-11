@@ -251,6 +251,8 @@ export interface JudgeInput {
   preExistingCheck?: (finding: Finding) => PreExistingCheck | undefined;
   /** The lockfiles Manki read into package lists. The judge reads those lists instead of their hunks. */
   lockfiles?: LockfileDiff[];
+  /** Files the PR changes that `exclude_paths` left out of `diff`. A round with a rule finding names them to the judge. */
+  excludedPaths?: readonly string[];
   rawDiff: string;
   memory?: RepoMemory;
   repoContext: string;
@@ -389,7 +391,7 @@ const RULE_FINDINGS_SECTION = `## Rule Findings
 A finding with a **Quoted rule** says this PR breaks a rule of the repository's instruction files. Manki has checked that the named file holds the quote on the base branch, and the file is under Repository Context. Answer two questions about the quote, each in its own field, and name in a third what you could not see:
 
 - \`ruleIsRequirement\`: true only when the quoted text states a requirement for a change: something a change must do, must include or must never do. Read the quote where it stands in its file. It is false for advice or a preference ("prefer", "try to", "consider"), for an example, for a description of how the project works, and for a fragment that states no rule when read on its own.
-- \`ruleBroken\`: true only when the diff and the code shown prove that this PR breaks the rule: the rule applies to what the PR changes, and the PR lacks what the rule requires or does what it forbids. A rule from a file in a subdirectory applies only to changes under that directory. When the rule requires a companion for something whose definition this PR adds, such as a test, a documentation entry or a registration for a new function, command or module, the **Changed Files in This PR** list settles it. It names every file the PR changes, and a file the PR leaves unchanged cannot cover what did not exist before. So the rule is broken when no changed file holds the companion. An added use proves less than an added definition: a call, a read or a reference the PR adds may name something other code already uses, and an unchanged file may already hold what the rule requires for it. Then the answer rests on code you cannot see: set it to false and fill \`ruleUnseen\`. When it is true, cite in \`proof\` the changed line that makes the rule apply.
+- \`ruleBroken\`: true only when the diff and the code shown prove that this PR breaks the rule: the rule applies to what the PR changes, and the PR lacks what the rule requires or does what it forbids. A rule from a file in a subdirectory applies only to changes under that directory. When the rule requires a companion for something whose definition this PR adds, such as a test, a documentation entry or a registration for a new function, command or module, the **Changed Files in This PR** list settles it. It names every file the PR changes, also the ones it lists as changed but not shown to you, and a file the PR leaves unchanged cannot cover what did not exist before. So the rule is broken when no changed file can hold the companion. Two cases prove less. A changed file whose change you cannot see can hold the companion: one listed as not shown, or one whose diff is missing or cut. And an added use is no added definition: a call, a read or a reference the PR adds may name something other code already uses, and an unchanged file may already hold what the rule requires for it. In both cases the answer rests on code you cannot see: set it to false and fill \`ruleUnseen\`. When it is true, cite in \`proof\` the changed line that makes the rule apply.
 - \`ruleUnseen\`: fill it only when \`ruleIsRequirement\` is true and code you cannot see decides whether the rule is broken. State the one fact that would make it broken, as a fact the code can confirm or disprove: "no test under \`tests/\` calls \`parse_header\`", not "the test may be missing". Manki checks that fact with tools when it can, and counts the rule as broken only when the check confirms it. Leave it empty in every other case.
 
 Example: a Flask project's \`CONTRIBUTING.md\` says "Every new endpoint must be listed in \`docs/api.md\`", and the PR adds a route without changing that file. Both answers are true. The same file says "We try to keep handlers short": a finding that quotes it gets \`ruleIsRequirement\` false.
@@ -745,6 +747,7 @@ export function buildJudgeUserMessage(
   lockfileChanges = '',
   repoContext = '',
   linkThreads: OpenThread[] | undefined = openThreads,
+  unshownFiles: readonly string[] = [],
 ): string {
   const parts: string[] = [];
 
@@ -904,6 +907,11 @@ export function buildJudgeUserMessage(
         return `  - ${firstLine.slice(0, 80)}`;
       }).join('\n');
       parts.push(`### ${file.path} (${stats})\n${hunkContexts}\n`);
+    }
+    if (unshownFiles.length > 0) {
+      parts.push('### Changed, but not shown to you\n');
+      parts.push('The PR also changes the files below. No model reads them: the repository leaves them out of the review, or they hold no text to read, such as a binary, an empty file or a file that was only renamed.\n');
+      parts.push(`${unshownFiles.map(path => `- ${sanitize(path)}`).join('\n')}\n`);
     }
   }
 
@@ -1380,6 +1388,10 @@ export async function runJudgeAgent(
 
   // A lockfile is listed by name, without a line per hunk, since its package list says what changed.
   const changedFiles = diff.files.map(f => listed.has(f.path) ? { ...f, hunks: [] } : f);
+  // The judge settles a rule about a companion file from the list of changed files, so there it also names the files `diff.files` leaves out.
+  const unshownFiles = findings.some(f => f.rule)
+    ? [...new Set([...(input.excludedPaths ?? []), ...(diff.binarySkipped ?? []).map(file => file.path)])].filter(path => !diff.files.some(f => f.path === path))
+    : [];
 
   const openBlockerCount = openThreads ? earlierBlockerThreadIds(openThreads, priorRounds).size : 0;
   const judgePrompt = (steps: number) => buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos, openBlockerCount, !!refutation, steps, findings.some(f => f.rule));
@@ -1401,7 +1413,7 @@ export async function runJudgeAgent(
   const citedFiles = (f: Finding) => [...(f.evidence?.proof ?? []), ...parseProof(f.evidence?.checks)].map(location => location.replace(/:\d+(?:-\d+)?$/, ''));
   const judgedFiles = new Set([...findings.flatMap(f => [f.file, ...citedFiles(f)]), ...(openThreads ?? []).map(t => t.file)]);
   const judgedDiff = rebuildRawDiff({ ...diff, files: diff.files.filter(f => judgedFiles.has(f.path) && !listed.has(f.path)).map(shortenLongLines) });
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))), repoContext, openThreads ?? input.evaluatedThreads?.openThreads);
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, judgedDiff, findingNotes, usesOutsideDiff, formatLockfileChanges(lockfiles.filter(l => judgedFiles.has(l.path))), repoContext, openThreads ?? input.evaluatedThreads?.openThreads, unshownFiles);
 
   const effort = input.effort ?? 'high';
   const judgeCall = (steps: number): { systemPrompt: string; options: SendMessageOptions } => ({

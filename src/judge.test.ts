@@ -649,6 +649,12 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('### src/bar.ts (+10/-5)');
     expect(msg).toContain('### .manki.yml (+0/-0)');
     expect(msg).toContain('+line 1');
+    expect(msg).not.toContain('not shown to you');
+
+    // The changed files no model reads are named after the others, as plain text.
+    const withUnshown = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, changedFiles, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, ['docs/api.md', 'assets/`logo`.png']);
+    expect(withUnshown).toContain("### .manki.yml (+0/-0)\n\n\n### Changed, but not shown to you\n\nThe PR also changes the files below. No model reads them:");
+    expect(withUnshown).toContain("such as a binary, an empty file or a file that was only renamed.\n\n- docs/api.md\n- assets/logo.png\n");
   });
 
   it('omits changed files section when empty', () => {
@@ -2091,7 +2097,9 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'improvement', reasoning: 'r', ...answers[title] })),
     }) });
-    const input: JudgeInput = { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 2 };
+    // `exclude_paths` left out two changed files, one of them a lockfile Manki read and lists anyway, and one changed file is a binary.
+    const diff: ParsedDiff = { ...makeDiff(), binarySkipped: [{ path: 'docs/schema.png', header: '' }] };
+    const input: JudgeInput = { findings, diff, rawDiff: '', repoContext: '', agentCount: 2, excludedPaths: ['migrations/generated/0007.sql', diff.files[0].path] };
     const graded = async (rules?: 'warn' | 'block') => (await runJudgeAgent(mockClient, makeConfig({ review: { ...(rules && { rules }) } }), input)).findings
       .map(f => [f.title, f.severity, f.rule?.verdict, f.gradePath?.map(step => `${step.by}: ${step.to}`).join(', '), ...(f.rule?.unseen || f.doubts ? [f.gradeIfConfirmed, f.rule?.unseen, f.doubts?.map(d => d.premise)] : [])]);
 
@@ -2124,11 +2132,17 @@ describe('runJudgeAgent', () => {
     expect(user.split("- **Quoted rule**, from `CONTRIBUTING.md`: Every model change needs a 'migration'.")).toHaveLength(13);
     expect(system).toContain('## Rule Findings');
     expect(system).toContain('"ruleIsRequirement": false,\n      "ruleBroken": false,\n      "ruleUnseen": "",');
+    // The list of changed files settles a rule about a companion, so it names every changed file, also the ones the judge is not shown.
+    expect(system).toContain('It names every file the PR changes, also the ones it lists as changed but not shown to you');
+    expect(system).toContain('A changed file whose change you cannot see can hold the companion: one listed as not shown, or one whose diff is missing or cut.');
+    expect(user).toContain('### Changed, but not shown to you\n');
+    expect(user).toContain('\n\n- migrations/generated/0007.sql\n- docs/schema.png\n');
     // A round without a rule finding gets neither the section nor the fields.
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'No rule quoted', row: 'improvement', reasoning: 'r', ...yes }] }) });
     const plain = await runJudgeAgent(mockClient, makeConfig({ review: { rules: 'block' } }), { ...input, findings: [findings[8]] });
     expect(plain.findings.map(f => [f.severity, f.rule])).toEqual([['note', undefined]]);
     expect(mockSendMessage.mock.calls.at(-1)![0]).not.toMatch(/Rule Findings|ruleBroken|ruleUnseen|Quoted rule/);
+    expect(mockSendMessage.mock.calls.at(-1)![1]).not.toContain('not shown to you');
   });
 
   it('settles an unproven rule from the fact the judge could not see alone, whatever the refuter says about the damage, and keeps a confirmed rule finding whose damage it disproves', async () => {
@@ -5891,6 +5905,8 @@ interface RuleFixture {
   repoContext: string;
   findings: Finding[];
   prDiff: string;
+  /** Files the PR changes that `exclude_paths` leaves out of `prDiff`. */
+  excludedPaths?: string[];
   /** Per finding title, the rule verdicts and grades a correct judge may end with. */
   expected: Record<string, { verdicts: RuleVerdict[]; grades: FindingSeverity[] }>;
 }
@@ -5927,6 +5943,7 @@ describe('judge rule finding fixture corpus', () => {
       repoContext: fixture.repoContext,
       agentCount: 1,
       isFollowUp: false,
+      excludedPaths: fixture.excludedPaths,
     });
 
     // A finding the judge drops is left out of the result, so only its grade is known.

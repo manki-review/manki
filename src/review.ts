@@ -1286,6 +1286,7 @@ export async function runReview(
     diff: diffWithLockfiles,
     preExistingCheck: unchangedCheck,
     lockfiles,
+    excludedPaths: options.excludedPaths,
     rawDiff,
     memory: memory ?? undefined,
     repoContext,
