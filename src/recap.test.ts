@@ -1,5 +1,5 @@
 import { Finding, FindingFingerprintEntry, RoundContext, ThreadEvaluation, threadBlocks } from './types';
-import { classifyAuthorReply, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment } from './recap';
+import { classifyAuthorReply, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -1337,7 +1337,7 @@ describe('fetchRecapState', () => {
       const ctx = makeRoundContext(12, { findings: { count: 3, severityCounts: { blocker: 3, warning: 0, note: 0 }, entries } });
       // Each thread sits on the first changed file. Only a flagged one takes its place from its finding data.
       const posted = (id: string, title: string, data: Record<string, unknown>) => makeThread({
-        id, path: 'src/first.ts', line: null, originalLine: null,
+        id, path: 'src/first.ts', line: 1, originalLine: 1,
         comments: { nodes: [{ body: `\u{1F6AB} **Blocker**: ${title}\n\nDesc.\n\n<!-- manki:blocker:${titleToSlug(title)} -->\n<!-- manki-finding: ${JSON.stringify({ ...data, severity: 'blocker', title })} -->`, author: { login: BOT_LOGIN } }] },
       });
       const octokit = mockOctokit([
@@ -1352,6 +1352,8 @@ describe('fetchRecapState', () => {
         ['T_NONE', '', undefined],
         ['T_OLD', 'src/first.ts', undefined],
       ]);
+      // GitHub reports a file-level thread on line 1, and the finding keeps the line its data names.
+      expect(state.previousFindings.map(currentFindingLine)).toEqual([30, 1, 1]);
       // So the round record's blocker finds its thread, and the thread from before the flag stays on GitHub's path.
       expect(state.priorRounds[0].findings.entries.map(e => e.threadId)).toEqual(['T_FILE', 'T_NONE', undefined]);
     });

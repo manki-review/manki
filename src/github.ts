@@ -10,7 +10,7 @@ import { AgentProgressEntry, leftOutUnproven, BinaryFile, CHECK_STATUSES, Config
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { citedLine, findPriorThreadId } from './finding-fingerprint';
+import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, damageDisproof, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
@@ -1464,7 +1464,7 @@ const AGREED_ANSWER_RE = /^\**Agreed\./;
 function agreedFollowUps(threads: PreviousFinding[]): Finding[] {
   return threads.flatMap(t => (t.answer && AGREED_ANSWER_RE.test(t.answer) && t.severity !== 'unknown' && !t.fixed
     && (t.status === 'resolved' || t.status === 'auto-resolved')
-    ? [{ severity: t.severity, title: t.title, file: t.file, line: t.line, description: t.description ?? '', ...(t.suggestedFix && { suggestedFix: t.suggestedFix }), ...(t.howToFix && { howToFix: t.howToFix }), reviewers: [] }]
+    ? [{ severity: t.severity, title: t.title, file: t.file, line: currentFindingLine(t), description: t.description ?? '', ...(t.suggestedFix && { suggestedFix: t.suggestedFix }), ...(t.howToFix && { howToFix: t.howToFix }), reviewers: [] }]
     : []));
 }
 
