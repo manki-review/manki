@@ -278,8 +278,8 @@ export interface JudgeInput {
   relatedRepos?: RelatedRepo[];
   /**
    * A client with `repoTools` and the checked-out PR head. The judge reads the code findings cite outside the diff from
-   * the head, and the client tries to refute each blocker, open lead and finding lowered for want of proof, and up to
-   * `MAX_DOUBT_CHECKS` warnings nothing proves yet. The judge calls of one round share those checks through `doubtBudget`.
+   * the head, and the client tries to refute each blocker, open lead and finding lowered for want of proof, and the
+   * warnings on changed code that nothing proves yet. The round's calls share `MAX_DOUBT_CHECKS` of those checks through `doubtBudget`.
    */
   refutation?: { client: LLMClient; workspace: string; pair?: LLMClient; doubtBudget?: { left: number } };
   /** Read-only tool calls the judge itself may make on the `refutation` workspace while it grades. 0 or unset gives it none. */

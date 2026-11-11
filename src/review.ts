@@ -1416,6 +1416,19 @@ export async function runReview(
     suppressionCount = suppressed.length;
     memorySuppressed = suppressed;
   }
+  // Each judge call checked the warnings on changed code that nothing proves. Every other check that shares the limit waits until here, so none takes a check from a later judge call.
+  if (refutation) {
+    const earlier = earlierFindings(priorRounds ?? [], openThreads ?? [], judgeThreadEvaluations);
+    const kept = finalFindings;
+    const checked = await refuteBlockers(refutation.client, kept, {
+      workspace: refutation.workspace, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
+      outsideInput: config.review?.outside_input, restatesEarlier: finding => earlier.some(e => sameProblem(e.finding, finding)),
+      preExisting: finding => unchangedCheck(finding) === 'pre_existing', roundEnd: true,
+    });
+    const after = new Map(kept.map((f, i) => [f, checked[i]]));
+    allJudgedFindings = allJudgedFindings?.map(f => after.get(f) ?? f);
+    finalFindings = checked.filter(f => f.severity !== 'ignore');
+  }
   // After the suppressions, so a blocker the PR did not touch keeps their blocker guard.
   const { posted, unposted: unpostedPreExisting } = markPreExisting(finalFindings, unchangedCheck);
   finalFindings = posted;

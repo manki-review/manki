@@ -5,7 +5,7 @@ import { join } from 'path';
 import * as core from '@actions/core';
 
 import { LLMClient, SendMessageOptions } from './providers';
-import { checkStatus, disproof, refuteBlockers, unprovenReason } from './refute';
+import { checkStatus, disproof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
 import { Finding, OpenThread, ParsedDiff, REACH_DOUBT, RoundContext } from './types';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -33,6 +33,12 @@ function fakeClient(replies: Record<string, unknown>, model?: string): LLMClient
       return { content: typeof reply === 'string' ? reply : JSON.stringify(reply), ...(model && { model }) };
     },
   };
+}
+
+/** Checks `findings` the way a round with one judge call does: in that call, then once more at the round's end, from the same limit. */
+async function refuteRound(client: LLMClient, findings: Finding[], options: RefuteOptions): Promise<Finding[]> {
+  const shared = { doubtBudget: { left: 8 }, ...options };
+  return refuteBlockers(client, await refuteBlockers(client, findings, shared), { ...shared, roundEnd: true });
 }
 
 describe('refuteBlockers', () => {
@@ -538,7 +544,12 @@ describe('refuteBlockers', () => {
     const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, unsettled])));
 
     const restatesEarlier = (f: Finding) => f.title === 'Matches an earlier finding';
-    const result = await refuteBlockers(client, findings, { workspace, diff, unpostedLater: f => f.title.startsWith('Left out later'), restatesEarlier });
+    const options = { workspace, diff, unpostedLater: (f: Finding) => f.title.startsWith('Left out later'), restatesEarlier, doubtBudget: { left: 8 } };
+    const judged = await refuteBlockers(client, findings, options);
+    // A judge call marks none of the warnings whose check waits for the round's end, since a check may be left for them then.
+    expect(judged.filter(f => f.overCheckLimit).map(f => f.title)).toEqual(['Doubted warning 8', 'Second warning without proof']);
+    // The call at the round's end checks no finding a second time, and finds the limit used up.
+    const result = await refuteBlockers(client, judged, { ...options, roundEnd: true });
 
     expect(client.calls.map(([title]) => title).sort()).toEqual([
       'Doubted blocker', 'Doubted warning 1', 'Doubted warning 2', 'Doubted warning 3', 'Doubted warning 4', 'Doubted warning 5', 'Doubted warning 6', 'Doubted warning 7',
@@ -559,7 +570,7 @@ describe('refuteBlockers', () => {
       'Left out later with a doubt': undefined, 'Left out later without proof': 'no_proof',
       'Tool alert without proof': 'no_proof', 'Security warning without proof': 'no_proof', 'Security warning with a doubt': 'not_checked',
     });
-    // The judge calls of one round share the eight, so a later call checks only what an earlier one left.
+    // The calls of one round share the eight, so a later call checks only what an earlier one left.
     const doubtBudget = { left: 3 };
     const pairOf = (name: string) => [doubted(`${name} 1`, 'warning'), doubted(`${name} 2`, 'warning')];
     const shared = fakeClient({ 'First call 1': unsettled, 'First call 2': unsettled, 'Second call 1': unsettled, 'Second call 2': unsettled });
@@ -571,7 +582,7 @@ describe('refuteBlockers', () => {
     const mixed = findings.filter(f => ['Linked to an open thread', 'Matches an earlier finding', 'Doubted warning 1'].includes(f.title));
     const checkedWith = async (left: number) => {
       const some = fakeClient(Object.fromEntries(mixed.map(f => [f.title, unsettled])));
-      await refuteBlockers(some, mixed, { workspace, diff, restatesEarlier, doubtBudget: { left } });
+      await refuteRound(some, mixed, { workspace, diff, restatesEarlier, doubtBudget: { left } });
       return some.calls.map(([title]) => title).sort();
     };
     expect([await checkedWith(1), await checkedWith(2), await checkedWith(3)]).toEqual([
@@ -693,7 +704,7 @@ describe('refuteBlockers', () => {
     const ends = async (outcome: 'confirmed' | 'unsettled') => {
       const reply = (f: Finding) => ({ outcome, reason: 'r', proof: ['src/math.ts:2'], ...(f.doubts && { premises: f.doubts.map(() => ({ outcome, reason: 'r', proof: ['src/math.ts:2'] })) }) });
       const client = fakeClient(Object.fromEntries(findings.map(f => [f.title, reply(f)])));
-      const result = await refuteBlockers(client, findings, { workspace, diff, preExisting: f => !!f.preExisting });
+      const result = await refuteRound(client, findings, { workspace, diff, preExisting: f => !!f.preExisting });
       expect(client.calls.map(([title]) => title).sort()).toEqual(kinds.map(([title]) => title).sort());
       return result.map(f => [f.title, [f.severity, checkStatus(f)]]);
     };
@@ -723,7 +734,7 @@ describe('refuteBlockers', () => {
     const client = fakeClient({ ...Object.fromEntries(findings.map(f => [f.title, answer('unsettled')])), 'Old confirmed': answer('confirmed'), 'Old and the call fails': new Error('overloaded') });
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
 
-    const result = await refuteBlockers(client, findings, { workspace, diff, preExisting: f => f.title.startsWith('Old') });
+    const result = await refuteRound(client, findings, { workspace, diff, preExisting: f => f.title.startsWith('Old') });
 
     warnSpy.mockRestore();
     // The five unproven warnings on changed code take the first checks and the three readable ones with a doubt the last, which leaves none for the other two.
@@ -744,9 +755,9 @@ describe('refuteBlockers', () => {
     // A check of a doubted security finding only settles its status, so it runs once every check that decides a posting has its place.
     const doubted = finding('Security with a doubt', { severity: 'warning', tags: ['security'], doubts: [{ premise: 'The copy is never dropped', decides: 'defect' }] });
     const status = fakeClient({ 'Security with a doubt': answer('confirmed'), 'Unproven 1': answer('unsettled') });
-    await refuteBlockers(status, [doubted, findings.find(f => f.title === 'Unproven 1')!], { workspace, diff, doubtBudget: { left: 1 } });
+    await refuteRound(status, [doubted, findings.find(f => f.title === 'Unproven 1')!], { workspace, diff, doubtBudget: { left: 1 } });
     expect(status.calls.map(([title]) => title)).toEqual(['Unproven 1']);
-    const [settled] = await refuteBlockers(status, [doubted], { workspace, diff });
+    const [settled] = await refuteRound(status, [doubted], { workspace, diff });
     expect([status.calls.map(([title]) => title), checkStatus(settled)]).toEqual([['Unproven 1', 'Security with a doubt'], 'confirmed']);
 
     // The whole order: warnings on changed code, warnings on unchanged code, warnings linked to an earlier finding, then a doubted security finding.
@@ -759,13 +770,18 @@ describe('refuteBlockers', () => {
     ];
     for (const left of [1, 2, 3, 4, 5]) {
       const picking = fakeClient(Object.fromEntries(listed.map(f => [f.title, answer('unsettled')])));
-      await refuteBlockers(picking, listed, { workspace, diff, preExisting: f => f.title.startsWith('Old'), doubtBudget: { left } });
+      await refuteRound(picking, listed, { workspace, diff, preExisting: f => f.title.startsWith('Old'), doubtBudget: { left } });
       expect(picking.calls.map(([title]) => title).sort()).toEqual(order.slice(0, left).sort());
     }
+    // A judge call makes only the checks of the first group, whatever is left of the limit, so a later judge call of the round finds the rest of it.
+    const first = fakeClient(Object.fromEntries(listed.map(f => [f.title, answer('unsettled')])));
+    const doubtBudget = { left: 8 };
+    await refuteBlockers(first, listed, { workspace, diff, preExisting: f => f.title.startsWith('Old'), doubtBudget });
+    expect([first.calls.map(([title]) => title), doubtBudget]).toEqual([['Unproven 1'], { left: 7 }]);
 
     // Without the mark, a warning its cited lines prove takes no check.
     const unmarked = fakeClient({ 'Old plain': answer('unsettled') });
-    await refuteBlockers(unmarked, [findings[1]], { workspace, diff });
+    await refuteRound(unmarked, [findings[1]], { workspace, diff });
     expect(unmarked.calls).toEqual([]);
   });
 

@@ -1900,17 +1900,16 @@ describe('runJudgeAgent', () => {
       expect(userMessage).not.toContain('(src/lock.ts:180)');
       expect(userMessage).not.toContain('(src/bundle.js:2)');
 
-      // A warning on code the PR did not change is posted only when a check confirms it, so the refuter checks one its cited lines already prove.
+      // The check of a warning on code the PR did not change waits for the round's end, so a judge call never makes it.
       const old = (title: string, preExisting?: string) => makeFinding({ title, severity: 'warning', file: 'src/lock.ts', line: 30, evidence: { checks: [], proof: ['src/lock.ts:30'] }, preExisting });
       mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: ['Old lock order', 'Lock order'].map((title, i) => ({ id: i + 1, title, row: 'degraded', preExisting: true, reasoning: 'r' })) }) });
-      replies['Old lock order'] = { outcome: 'confirmed', reason: 'Both paths take the lock.', proof: ['src/lock.ts:30'] };
       refuterMessages.length = 0;
       const unchanged = await runJudgeAgent(mockClient, makeConfig(), {
         findings: [old('Old lock order', 'The lock order predates this PR.'), old('Lock order')], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace },
         preExistingCheck: f => preExistingCheck(f, makeDiff(), new Set()),
       });
-      expect(refuterMessages.map(m => m.split('\n')[0])).toEqual(['## Warning on code the PR did not change: Old lock order']);
-      expect(unchanged.findings.map(f => [f.title, f.severity, f.refutation?.outcome])).toEqual([['Old lock order', 'warning', 'confirmed'], ['Lock order', 'warning', undefined]]);
+      expect(refuterMessages).toEqual([]);
+      expect(unchanged.findings.map(f => [f.title, f.severity, f.preExisting, f.refutation])).toEqual([['Old lock order', 'warning', 'The lock order predates this PR.', undefined], ['Lock order', 'warning', undefined, undefined]]);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -5243,16 +5242,15 @@ describe('runJudgeAgent cross-round suppression', () => {
     // The refuter runs before the ratchet, so a `rare` claim is checked even when the author agreed with the finding
     // earlier: a confirmed one blocks, and the other is hidden after the one check it cost. A check on a doubt whether
     // the defect exists or on a lead never raises a grade, so a finding the ratchet hides gets no such check. Neither
-    // does a doubted warning a memory suppression matches. One on code the PR did not change is checked, since only a
-    // check that confirms it posts it.
+    // does a doubted warning a memory suppression matches. A doubted warning that no later step hides is checked.
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     for (const file of ['index.ts', 'old.ts']) fs.writeFileSync(path.join(workspace, 'src', file), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
-    const titles = ['Stale cache read', 'Lost update', 'Handle leak', 'Open lead', 'Leaky retry', 'Remembered pattern', 'Old loop'];
+    const titles = ['Stale cache read', 'Lost update', 'Handle leak', 'Open lead', 'Leaky retry', 'Remembered pattern', 'Slow loop'];
     const leak = [{ premise: 'Nothing closes the handle', decides: 'defect' }];
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({
-        id: i + 1, title, reasoning: 'r', preExisting: title === 'Old loop',
+        id: i + 1, title, reasoning: 'r',
         ...(i === 2 || i > 3 ? { row: 'degraded', doubts: leak } : title === 'Open lead' ? { row: 'degraded' } : { row: 'wrong', column: 'rare' }),
       })),
     }) });
@@ -5274,7 +5272,6 @@ describe('runJudgeAgent cross-round suppression', () => {
         findings: titles.map((title, i) => makeFinding({
           title, file: 'src/index.ts', line: 10 + i, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`] },
           ...(title === 'Open lead' && { lead: { checked: 'read src/index.ts:13', left: 'find the callers' } }),
-          ...(title === 'Old loop' && { file: 'src/old.ts', evidence: { checks: [], proof: [`src/old.ts:${10 + i}`] }, preExisting: 'The loop predates this PR.' }),
         })),
         memory: makeMemory({ suppressions: [makeSuppression({ pattern: 'Remembered pattern' })] }),
         priorRounds: [roundContextFromLegacy({
@@ -5290,9 +5287,9 @@ describe('runJudgeAgent cross-round suppression', () => {
         ['Open lead', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-by-ratchet']],
         ['Leaky retry', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-in-pr']],
         ['Remembered pattern', 'warning', { row: 'degraded', column: 'normal' }, undefined],
-        ['Old loop', 'warning', { row: 'degraded', column: 'normal' }, undefined],
+        ['Slow loop', 'warning', { row: 'degraded', column: 'normal' }, undefined],
       ]);
-      expect(refuterCalls.sort()).toEqual(['Lost update', 'Old loop', 'Stale cache read']);
+      expect(refuterCalls.sort()).toEqual(['Lost update', 'Slow loop', 'Stale cache read']);
       // Only the check of the doubted warning counts against the round's eight.
       expect(doubtBudget.left).toBe(7);
       expect(checked.findings[2].doubts).toEqual(leak);

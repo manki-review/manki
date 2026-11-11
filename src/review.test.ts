@@ -2316,6 +2316,59 @@ describe('runReview', () => {
     expect(result.unpostedPreExisting).toBeUndefined();
   });
 
+  it('keeps a check for an unproven warning of a later judge call, since every other check that shares the limit waits for the round\'s end', async () => {
+    const lines = (word: string) => Array.from({ length: 30 }, (_, i) => `${word} ${i + 1}`).join('\n') + '\n';
+    const { root, diff } = gitWorkspace({ 'src/app.ts': lines('old'), 'src/old.ts': lines('kept') }, { 'src/app.ts': lines('new') });
+    const at = (file: string, line: number) => ({ file, line, description: 'd', evidence: [`${file}:${line} shows it`], proof: [`${file}:${line}`] });
+    const blocker = { severity: 'blocker', title: 'Cache key misses the locale', ...at('src/app.ts', 3) };
+    // Eight warnings on code the PR did not change, enough to use up the round's eight checks on their own.
+    const old = Array.from({ length: 8 }, (_, i) => ({ severity: 'warning', title: `Old ${i + 1}`, ...at('src/old.ts', 11 + i), preExisting: true, preExistingReason: 'The loop predates this PR.' }));
+    // The sweep that the blocker starts finds a warning on changed code, which the judge keeps with a doubt whether the defect exists.
+    const swept = { severity: 'warning', title: 'Search key misses the tenant', ...at('src/app.ts', 20) };
+    const sweeping = (system: string) => system.startsWith('A code review found the blocker');
+    const refuterCalls: string[] = [];
+    const clients = makeClients();
+    // One finder reports them, so the judge merges no copies.
+    let reported = false;
+    jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => {
+      if (sweeping(system)) return { content: JSON.stringify({ class: 'a cache key leaves out a field the value depends on', general: true, findings: [swept] }) };
+      const content = reported ? '[]' : JSON.stringify([blocker, ...old]);
+      reported = true;
+      return { content };
+    });
+    Object.assign(clients.judge, { repoTools: true });
+    jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
+      if (system.startsWith('You are a code review judge')) {
+        const judged = user.includes(swept.title)
+          ? [{ id: 1, title: swept.title, row: 'degraded', doubts: [{ premise: 'No caller adds the tenant', decides: 'defect' }], reasoning: 'r' }]
+          : [{ id: 1, title: blocker.title, row: 'severe', reasoning: 'r' }, ...old.map((f, i) => ({ id: i + 2, title: f.title, row: 'degraded', preExisting: true, reasoning: 'r' }))];
+        return { content: JSON.stringify({ summary: 's', findings: judged }) };
+      }
+      if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
+      const title = [blocker, swept, ...old].map(f => f.title).find(t => user.includes(`: ${t}\n`))!;
+      refuterCalls.push(title);
+      const confirmed = { outcome: 'confirmed', reason: 'It does.', proof: [title.startsWith('Old') ? 'src/old.ts:11' : 'src/app.ts:3'] };
+      return { content: JSON.stringify({ ...confirmed, premises: [confirmed] }) };
+    });
+    mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+    let result: ReviewResult;
+    try {
+      result = await runReview(clients, { config: makeConfig({ review: { sweep: true } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(result.reviewComplete).toBe(true);
+    // The first judge call checks only its blocker, so the sweep's warning gets its check. The warnings on unchanged code share the seven left.
+    expect([refuterCalls.slice(0, 2), refuterCalls.slice(2).sort()]).toEqual([[blocker.title, swept.title], old.slice(0, 7).map(f => f.title)]);
+    expect(result.findings.map(f => [f.title, f.severity, f.checkStatus])).toEqual([
+      [blocker.title, 'blocker', 'confirmed'], ...old.slice(0, 7).map(f => [f.title, 'warning', 'confirmed']), [swept.title, 'warning', 'confirmed'],
+    ]);
+    expect(result.unpostedPreExisting?.map(f => [f.title, f.overCheckLimit])).toEqual([['Old 8', true]]);
+    // The round record holds each check the round's end made.
+    expect(result.allJudgedFindings?.filter(f => f.refutation).map(f => f.title).sort()).toEqual([blocker, swept, ...old.slice(0, 7)].map(f => f.title).sort());
+  });
+
   it('sweeps the diff for other instances of each kept blocker\'s class with `review.sweep`, and judges what it finds', async () => {
     const original = { severity: 'blocker', title: 'Cache key misses the locale', file: 'src/cache.ts', line: 10, description: 'd', evidence: ['src/cache.ts:10 builds the key'], proof: ['src/cache.ts:10'] };
     const elsewhere = { ...original, title: 'Search key misses the tenant', file: 'src/search.ts', line: 40, evidence: ['src/search.ts:40 builds the key'], proof: ['src/search.ts:40'] };
