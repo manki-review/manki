@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import parseDiff from 'parse-diff';
 import { minimatch } from 'minimatch';
 
-import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, ReviewResult, RoundDiffExcludedFile, SECURITY_TAG, UnpostedReason, isNote } from './types';
+import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, ReviewResult, RoundDiffExcludedFile, UnpostedReason, isNote, isSecurityFinding } from './types';
 
 /**
  * Parse a unified diff string into structured data.
@@ -325,14 +325,16 @@ export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: 
 }
 
 /**
- * Moves the notes the review leaves out from `result.findings` to `result.unpostedNotes`: a note on code an earlier
- * round reviewed, and a note that restates a finding an earlier round listed. A security finding, a tool alert and a
- * note that goes into an earlier thread are never left out.
+ * Moves the notes the review leaves out from `result.findings` to `result.unpostedNotes`: a note that restates a finding
+ * an earlier round listed, and a note on code an earlier round reviewed. `compared` is the PR's change when the round
+ * read both the earlier round's change and the diff since. A note on reviewed code is left out only in one of its files,
+ * since no other line was compared. A security finding, a tool alert and a note that goes into an earlier thread stay.
  */
-export function hideSeenNotes(result: ReviewResult): void {
+export function hideSeenNotes(result: ReviewResult, compared: ParsedDiff | undefined): void {
   const reasonFor = (f: Finding): UnpostedReason | undefined => {
-    if (!isNote(f.severity) || f.threadId || f.answeredIn || f.toolSource || f.tags?.includes(SECURITY_TAG)) return undefined;
-    return f.origin === 'reviewed' ? 'reviewed_code' : f.origin === 'earlier' ? 'listed_earlier' : undefined;
+    if (!isNote(f.severity) || f.threadId || f.answeredIn || f.toolSource || isSecurityFinding(f.tags, f.reviewers)) return undefined;
+    if (f.origin === 'earlier') return 'listed_earlier';
+    return f.origin === 'reviewed' && compared?.files.some(file => file.path === f.file) ? 'reviewed_code' : undefined;
   };
   const shown: Finding[] = [];
   const hidden: Finding[] = [];

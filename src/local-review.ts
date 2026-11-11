@@ -354,7 +354,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
     if (result.reviewComplete) {
       addCodeContext(result.findings, withLockfiles(diff, lockfiles));
       tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), followUp?.priorChange, followUp?.interRoundDiff ? parsePRDiff(followUp.interRoundDiff) : undefined);
-      hideSeenNotes(result);
+      hideSeenNotes(result, followUp && withLockfiles(diff, lockfiles));
     }
     const context = buildRoundContext({
       prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: loaded.source,

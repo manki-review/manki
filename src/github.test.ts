@@ -3160,6 +3160,7 @@ describe('updateProgressComment', () => {
     judgeDecisions: [
       { title: 'Null dereference', severity: 'blocker', reasoning: 'Valid bug', confidence: 'high', kept: true },
       { title: 'Style nitpick', severity: 'ignore', reasoning: 'Intentional pattern', confidence: 'medium', kept: false },
+      { title: 'Rename', severity: 'suggestion', reasoning: 'Clearer', confidence: 'high', kept: false, unpostedReason: 'reviewed_code' },
     ],
     timing: {
       parseMs: 500,
@@ -3247,6 +3248,7 @@ describe('updateProgressComment', () => {
     expect(body).toContain('(blocker, high confidence)');
     expect(body).toContain('- Dropped: "Style nitpick"');
     expect(body).toContain('(ignore, medium confidence)');
+    expect(body).toContain('- Not listed, on code an earlier round reviewed: "Rename" (suggestion, high confidence): "Clearer"');
   });
 
   it('does not render recap section in metadata', async () => {

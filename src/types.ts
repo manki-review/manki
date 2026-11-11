@@ -543,11 +543,12 @@ export interface Refutation {
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/**
- * Why a review leaves a note out: `reviewed_code` when it sits on code an earlier round reviewed, `listed_earlier` when
- * it restates a finding an earlier round listed.
- */
-export type UnpostedReason = 'reviewed_code' | 'listed_earlier';
+/** Why a review leaves a note out, with the words that say it to a reader. */
+export const UNPOSTED_REASONS = {
+  reviewed_code: 'on code an earlier round reviewed',
+  listed_earlier: 'listed by an earlier round',
+} as const;
+export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
 
 /** What was cited to back a finding. */
 export interface FindingEvidence {
@@ -1318,9 +1319,12 @@ export interface JudgeDecision {
   originalSeverity?: FindingSeverity;
   reasoning: string;
   confidence: 'high' | 'medium' | 'low';
+  /** Whether the finding is among the round's findings. One the judge kept and a later step took out is not. */
   kept: boolean;
   /** Set on an open lead the judge's tools left unsettled, which is listed as not finished instead of posted. */
   listed?: true;
+  /** Mirrors `Finding.unpostedReason`, on a note the judge kept and the review leaves out. */
+  unpostedReason?: UnpostedReason;
 }
 
 export interface ReviewMetadata {
