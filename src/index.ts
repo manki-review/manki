@@ -1642,7 +1642,6 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
       title: f.title,
       severity: f.severity,
       reasoning: f.judgeNotes || '',
-      confidence: f.judgeConfidence || 'medium',
       // A finding a later step took out counts as dropped below, so it is not listed as kept here.
       kept: judgeKept && keptKeys.has(findingKey(f)),
       ...(listed.has(f) && { listed: true as const }),

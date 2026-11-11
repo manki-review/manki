@@ -388,7 +388,7 @@ const READY_REPLIES: Record<Stage, string> = {
 const BLOCKER = { severity: 'blocker', title: 'Sum is never range checked', file: 'src/math.ts', line: 2, description: 'Large inputs overflow silently.', suggestedFix: 'Check the range before adding.', proof: ['src/math.ts:2'] };
 const BLOCKER_REPLIES: Partial<Record<Stage, string>> = {
   reviewer: JSON.stringify([BLOCKER]),
-  judge: JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, row: 'wrong', reasoning: 'Reachable from any caller.', confidence: 'high' }] }),
+  judge: JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, row: 'wrong', reasoning: 'Reachable from any caller.' }] }),
 };
 
 /**
@@ -658,7 +658,7 @@ describe('runFullReview end to end', () => {
       // The next round's judge sees the finding at its finder's grade with no cell, so it has no blocker cell to restate.
       // When it states one anyway for the same finding, both stored answers are reused and the finding stays a warning.
       mockLLM.calls = [];
-      mockLLM.replies.judge = JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, row: 'wrong', reasoning: 'Reachable from any caller.', confidence: 'high', sameAs: 'P1' }] });
+      mockLLM.replies.judge = JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, row: 'wrong', reasoning: 'Reachable from any caller.', sameAs: 'P1' }] });
       await forcedRound();
 
       expect(mockLLM.asked.judge).toMatch(/"severity": "warning",\n\s+"title": "Sum is never range checked"/);
@@ -676,14 +676,14 @@ describe('runFullReview end to end', () => {
   it('lists an open lead below blocker as not finished checking, and has the judge settle a blocker lead', async () => {
     const lead = { lead: true, file: 'src/math.ts', line: 2, description: '', checked: 'read src/math.ts:2', left: 'find every caller' };
     mockLLM.replies.reviewer = JSON.stringify([{ ...lead, severity: 'warning', title: 'Cache may go stale' }, { ...lead, severity: 'blocker', title: 'Sum may overflow' }]);
-    mockLLM.replies.judge = JSON.stringify({ summary: 'Nothing blocks merge.', findings: [{ id: 1, title: 'Sum may overflow', row: 'none', reasoning: 'Inputs are bounded.', confidence: 'high' }] });
+    mockLLM.replies.judge = JSON.stringify({ summary: 'Nothing blocks merge.', findings: [{ id: 1, title: 'Sum may overflow', row: 'none', reasoning: 'Inputs are bounded.' }] });
 
     await reviewRound();
 
     const progress = mockGitHub.comments.find(c => c.body.startsWith('✅ **Review complete**'))!.body;
     expect(progress).not.toContain('Not finished checking');
     expect(postedReviews()[0].body).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Not finished checking · 1 lead\n\n- **Cache may go stale** · [\`src/math.ts:2\`](https://github.com/${OWNER}/${REPO}/blob/${HEAD_SHA}/src/math.ts#L2)\n\n</details>`);
-    expect(progress).toContain('Dropped: "Sum may overflow" (ignore, high confidence)');
+    expect(progress).toContain('Dropped: "Sum may overflow" (ignore)');
     // The listed lead never reached the judge, so it is no duplicate the judge merged.
     const record = mockGitHub.roundContext(postedReviews()[0]);
     expect([record.judge.mergedDuplicates, record.reviewers.rawFindings?.map(f => f.lead !== undefined)]).toEqual([0, [true, true]]);
@@ -697,7 +697,7 @@ describe('runFullReview end to end', () => {
       reviewer: JSON.stringify(notes),
       judge: JSON.stringify({
         summary: 'Four small points.',
-        findings: notes.map((n, i) => ({ id: i + 1, title: n.title, row: 'improvement', reasoning: 'Works, could be better.', confidence: 'high' })),
+        findings: notes.map((n, i) => ({ id: i + 1, title: n.title, row: 'improvement', reasoning: 'Works, could be better.' })),
         noteOrder: [3, 1, 4, 2],
       }),
     });
@@ -751,7 +751,7 @@ describe('runFullReview end to end', () => {
     // The judge grades the first finding a note in both replies and never mentions the second, which its finder filed as a blocker.
     Object.assign(mockLLM.replies, {
       reviewer: JSON.stringify([BLOCKER, skipped]),
-      judge: JSON.stringify({ summary: 'One note.', findings: [{ id: 1, title: BLOCKER.title, row: 'improvement', reasoning: 'Bounded by the caller.', confidence: 'high' }] }),
+      judge: JSON.stringify({ summary: 'One note.', findings: [{ id: 1, title: BLOCKER.title, row: 'improvement', reasoning: 'Bounded by the caller.' }] }),
     });
 
     await reviewRound();
@@ -984,7 +984,7 @@ describe('runFullReview end to end', () => {
     const leaked = { ...BLOCKER, description: `The key ${secret} is in the log.` };
     Object.assign(mockLLM.replies, {
       reviewer: JSON.stringify([leaked]),
-      judge: JSON.stringify({ summary: `Leaks ${secret}.`, findings: [{ id: 1, title: leaked.title, row: 'wrong', reasoning: `Prints ${secret}.`, confidence: 'high', reachability: 'reachable' }] }),
+      judge: JSON.stringify({ summary: `Leaks ${secret}.`, findings: [{ id: 1, title: leaked.title, row: 'wrong', reasoning: `Prints ${secret}.`, reachability: 'reachable' }] }),
     });
     try {
       await reviewRound();
@@ -1008,7 +1008,7 @@ describe('runFullReview end to end', () => {
       reviewer: JSON.stringify([reworded]),
       judge: JSON.stringify({
         summary: 'The range check is still missing.',
-        findings: [{ id: 1, title: reworded.title, row: 'wrong', reasoning: 'Still reachable.', confidence: 'high', sameAs: 'P1' }],
+        findings: [{ id: 1, title: reworded.title, row: 'wrong', reasoning: 'Still reachable.', sameAs: 'P1' }],
         threadEvaluations: [{ threadId: 'PRRT_1', status: 'not_addressed', reason: 'No range check yet.' }],
       }),
     });
@@ -1098,7 +1098,7 @@ describe('runFullReview end to end', () => {
     const cell = severity === 'blocker' ? { row: 'wrong' } : { row: 'improvement', security: true };
     Object.assign(mockLLM.replies, {
       reviewer: JSON.stringify([finding]),
-      judge: JSON.stringify({ summary: 'One finding.', findings: [{ id: 1, title: finding.title, ...cell, reasoning: 'Reachable.', confidence: 'high' }] }),
+      judge: JSON.stringify({ summary: 'One finding.', findings: [{ id: 1, title: finding.title, ...cell, reasoning: 'Reachable.' }] }),
     });
     await reviewRound();
     expect(mockGitHub.threads).toHaveLength(1);

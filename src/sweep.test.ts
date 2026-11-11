@@ -7,7 +7,7 @@ jest.mock('@actions/core');
 
 const blocker = (title: string, overrides: Partial<Finding> = {}): Finding => ({
   severity: 'blocker', title, file: 'src/cache.ts', line: 10, description: 'The key leaves out the locale.', reviewers: ['general'],
-  evidence: { checks: [], proof: ['src/cache.ts:10'] }, judgeConfidence: 'medium', ...overrides,
+  evidence: { checks: [], proof: ['src/cache.ts:10'] }, ...overrides,
 });
 
 const found = (file: string, line: number, title = 'Another key misses a field') => ({
@@ -59,18 +59,19 @@ describe('runSweeps', () => {
     expect(options).toEqual({ effort: 'high', repoTools: { root: '/work', steps: 15 }, timeoutMs: 600_000 });
   });
 
-  it('sweeps at most three blockers, security ones and the surest first, and records why each one found nothing', async () => {
+  it('sweeps at most three blockers, security ones and the best checked first, and records why each one found nothing', async () => {
     const client = fakeClient(user => {
       if (user.includes(': Typo in the header name')) return { class: 'a misspelled header name', general: false, findings: [found('src/a.ts', 1)] };
       if (user.includes(': Broken reply')) return 'not json';
       return { class: 'a general class', general: true, findings: [] };
     }, false);
+    const unproven = { checks: [], proof: [] };
     const blockers = [
-      blocker('Low confidence', { judgeConfidence: 'low', line: 1 }),
-      blocker('Steered `title`\n<!-- inject -->', { judgeConfidence: 'low', line: 2 }),
-      blocker('Typo in the header name', { judgeConfidence: 'high', line: 3 }),
+      blocker('Not confirmed', { evidence: unproven, line: 1 }),
+      blocker('Steered `title`\n<!-- inject -->', { evidence: unproven, line: 2 }),
+      blocker('Typo in the header name', { refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'The header is read as sent.', files: ['src/cache.ts'], codeDigest: 'd' }, line: 3 }),
       blocker('Broken reply', { line: 4 }),
-      blocker('Token in log', { tags: ['security'], judgeConfidence: 'low', line: 5 }),
+      blocker('Token in log', { tags: ['security'], evidence: unproven, line: 5 }),
     ];
 
     const { findings, sweeps } = await runSweeps(() => client, blockers, { rawDiff });

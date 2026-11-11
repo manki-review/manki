@@ -61,19 +61,19 @@ describe('formatFindingComment', () => {
   };
 
   it.each([
-    ['blocker', 'high', '\u{1F6AB} **Blocker**', undefined],
-    ['warning', 'medium', '\u26A0\uFE0F **Warning**', undefined],
-    ['note', 'high', '\u2728 **Note, not blocking**', undefined],
-    ['warning', 'high', '\u26A0\uFE0F **Warning** (CodeQL)', 'CodeQL'],
-    ['note', 'high', '\u2728 **Note, not blocking** (eslint)', 'eslint'],
-  ] as const)('opens a %s finding with its severity icon and label, and no other emoji', (severity, judgeConfidence, label, toolSource) => {
-    const comment = render({ ...baseFinding, severity, judgeConfidence, toolSource });
+    ['blocker', '\u{1F6AB} **Blocker**', undefined],
+    ['warning', '\u26A0\uFE0F **Warning**', undefined],
+    ['note', '\u2728 **Note, not blocking**', undefined],
+    ['warning', '\u26A0\uFE0F **Warning** (CodeQL)', 'CodeQL'],
+    ['note', '\u2728 **Note, not blocking** (eslint)', 'eslint'],
+  ] as const)('opens a %s finding with its severity icon and label, and no other emoji', (severity, label, toolSource) => {
+    const comment = render({ ...baseFinding, severity, toolSource });
     // A blocking finding says what goes wrong, and any other says why it is worth changing.
     const said = severity === 'blocker' || severity === 'warning' ? '**What goes wrong:**' : '**Why:**';
     expect(comment.startsWith(`${label}\n\n**${baseFinding.title}**\n\n${said} ${baseFinding.description}`)).toBe(true);
     expect(comment.slice(label.length)).not.toMatch(EMOJI_RE);
     expect(comment).not.toMatch(DASH_SEPARATOR_RE);
-    expect(comment).not.toContain('Manki is not sure');
+    expect(comment).not.toContain('Manki could not confirm');
     expect(comment).toContain(`<!-- manki:${severity}:Null-pointer-dereference -->`);
   });
 
@@ -83,14 +83,13 @@ describe('formatFindingComment', () => {
     expect(render({ ...baseFinding, effort: 'quick' }).startsWith('\u{1F6AB} **Blocker** · Quick fix\n\n')).toBe(true);
   });
 
-  it('adds a note under the label when the judge is not confident', () => {
-    const comment = render({ ...baseFinding, severity: 'warning', judgeConfidence: 'low' });
-    expect(comment.startsWith(`\u26A0\uFE0F **Warning**\n\n**${baseFinding.title}**\n\n_Manki is not sure this applies, so please check it._\n\n**What goes wrong:** ${baseFinding.description}`)).toBe(true);
+  it('adds a note under the title only when the finding was not confirmed', () => {
+    const comment = render({ ...baseFinding, severity: 'warning', checkStatus: 'unconfirmed' });
+    expect(comment.startsWith(`\u26A0\uFE0F **Warning**\n\n**${baseFinding.title}**\n\n_Manki could not confirm this, so please check it._\n\n**What goes wrong:** ${baseFinding.description}`)).toBe(true);
     expect(comment).not.toMatch(/\u{1F534}|\u{1F7E0}|\u{1F7E1}/u);
-    // A warning nothing confirmed says that in place of the confidence note.
-    const unconfirmed = render({ ...baseFinding, severity: 'warning', judgeConfidence: 'low', unconfirmed: true });
-    expect(unconfirmed.startsWith(`\u26A0\uFE0F **Warning**\n\n**${baseFinding.title}**\n\n_Manki could not confirm this, so please check it._\n\n**What goes wrong:** ${baseFinding.description}`)).toBe(true);
-    expect(unconfirmed).not.toContain('is not sure this applies');
+    for (const checkStatus of ['proven', 'confirmed'] as const) {
+      expect(render({ ...baseFinding, checkStatus })).not.toContain('Manki could not confirm');
+    }
   });
 
   it('renders a short code fix as a suggestion block', () => {
@@ -392,16 +391,36 @@ describe('formatFindingComment', () => {
     const disproved = render(disprovedFinding);
     expect(render({ ...disprovedFinding, evidence: { checks: ['src/util.ts:3 marks it intended'], proof: [] } })).toContain('<summary>How this was checked: 1 place read, doubt found</summary>');
     expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
+    // An answer that the defect does not exist reads the same and links the same lines, whatever the premises of its check add up to.
+    for (const outcome of ['unsettled', 'confirmed'] as const) {
+      const noDefect: Finding = { ...disprovedFinding, refutation: { ...disprovedFinding.refutation!, outcome, defect: 'disproved', premises: [{ premise: 'A caller passes it', outcome, reason: 'r' }] } };
+      expect(render(noDefect)).toContain(`so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
+      expect(render(noDefect)).toContain('**Doubt found:** Manki found a reason this may not happen');
+    }
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
 
     // A second refuter on another model gets a line of its own, so a split shows both reasons.
-    const split = render({
+    const splitFinding: Finding = {
       ...baseFinding, evidence: { checks: [], proof: [] },
       refutation: { outcome: 'confirmed', reason: 'No caller checks `value` first.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc' },
       pairRefutation: { outcome: 'disproved', reason: 'The parser rejects it.', proof: ['src/util.ts:3'], files: ['src/main.ts', 'src/util.ts'], codeDigest: 'def' },
-    });
+    };
+    const split = render(splitFinding);
     expect(split).toContain('<summary>How this was checked: double-checked, second check: doubt found</summary>');
+
+    // A finding with a check status names that in the title of its fold, in place of what each refuter found.
+    expect(render({ ...splitFinding, checkStatus: 'unconfirmed' })).toContain('<summary>How this was checked: not confirmed</summary>');
+    const cited = { checks: ['src/util.ts:3 marks it intended'], proof: ['src/util.ts:3'] };
+    expect(render({ ...baseFinding, evidence: cited, refutation: splitFinding.refutation, checkStatus: 'confirmed' })).toContain('<summary>How this was checked: 1 place read, confirmed with tools</summary>');
+    expect(render({ ...baseFinding, evidence: cited, howToFix: 'Check for `null` first.', checkStatus: 'proven' })).toContain('<summary>How to fix it and 1 place read · proven from the cited lines</summary>');
+    expect(render({ ...baseFinding, howToFix: 'Check for `null` first.', checkStatus: 'unconfirmed' })).toContain('<summary>How to fix it · not confirmed</summary>');
+    // The status takes the place of "not checked against the code" in the title, so the fold says it.
+    expect(render({ ...baseFinding, checkStatus: 'unconfirmed' })).toContain('<summary>How this was checked: not confirmed</summary>\n\n**Not checked against the code**\nNothing was cited to back it.\n');
+    // A single line folds all the same, so the title can say it.
+    const oneLine = { checks: [], proof: ['src/main.ts:42'] };
+    expect(render({ ...baseFinding, evidence: oneLine })).toContain('\n<!-- manki-checks -->\n**Checked:** ');
+    expect(render({ ...baseFinding, evidence: oneLine, checkStatus: 'proven' })).toMatch(/\n<!-- manki-checks -->\n<details>\n<summary>How this was checked: 1 place read, proven from the cited lines<\/summary>\n\n- \[`src\/main\.ts:42`\]/);
     expect(split).toContain(`**Double-checked**\nManki tried to disprove this by reading the code and could not. No caller checks \`value\` first.\n\n**Second check, on another model**\nDoubt found. The parser rejects it. See [\`src/util.ts:3\`](${link('src/util.ts', 3)}).`);
 
     // A blocker of the judge's that two disproofs put back at its finders' grade says that it does not block.
@@ -490,7 +509,6 @@ describe('formatFindingComment', () => {
       ...baseFinding,
       severity: 'note',
       reviewers: ['Security', 'Testing'],
-      judgeConfidence: 'high',
       suggestedFix: 'a'.repeat(250),
       howToFix: 'b'.repeat(301),
       tags: ['own-proposal-followup'],
@@ -502,7 +520,6 @@ describe('formatFindingComment', () => {
       file: 'src/main.ts',
       line: 42,
       severity: 'note',
-      confidence: 'high',
       flaggedBy: ['Security', 'Testing'],
       title: 'Null pointer dereference',
       // A cut fix ends in an ellipsis, so a follow-up that shows it never passes a cut sentence off as the whole fix.
@@ -3265,10 +3282,10 @@ describe('updateProgressComment', () => {
       memoryRepo: 'owner/review-memory',
     },
     judgeDecisions: [
-      { title: 'Null dereference', severity: 'blocker', reasoning: 'Valid bug', confidence: 'high', kept: true },
-      { title: 'Style nitpick', severity: 'ignore', reasoning: 'Intentional pattern', confidence: 'medium', kept: false },
-      { title: 'Rename', severity: 'note', reasoning: 'Clearer', confidence: 'high', kept: false, unpostedReason: 'reviewed_code' },
-      { title: 'Slow path', severity: 'warning', reasoning: 'May be slow', confidence: 'medium', kept: false, unpostedReason: 'unsettled_check' },
+      { title: 'Null dereference', severity: 'blocker', reasoning: 'Valid bug', kept: true },
+      { title: 'Style nitpick', severity: 'ignore', reasoning: 'Intentional pattern', kept: false },
+      { title: 'Rename', severity: 'note', reasoning: 'Clearer', kept: false, unpostedReason: 'reviewed_code' },
+      { title: 'Slow path', severity: 'warning', reasoning: 'May be slow', kept: false, unpostedReason: 'unsettled_check' },
     ],
     timing: {
       parseMs: 500,
@@ -3352,12 +3369,10 @@ describe('updateProgressComment', () => {
     await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, baseMetadata);
     const body = mockUpdateComment.mock.calls[0][0].body as string;
     expect(body).toContain('**Judge decisions:**');
-    expect(body).toContain('- Kept: "Null dereference"');
-    expect(body).toContain('(blocker, high confidence)');
-    expect(body).toContain('- Dropped: "Style nitpick"');
-    expect(body).toContain('(ignore, medium confidence)');
-    expect(body).toContain('- Not listed, on code an earlier round reviewed: "Rename" (note, high confidence): "Clearer"');
-    expect(body).toContain('- Not listed, a tool check could not confirm it: "Slow path" (warning, medium confidence): "May be slow"');
+    expect(body).toContain('- Kept: "Null dereference" (blocker): "Valid bug"');
+    expect(body).toContain('- Dropped: "Style nitpick" (ignore): "Intentional pattern"');
+    expect(body).toContain('- Not listed, on code an earlier round reviewed: "Rename" (note): "Clearer"');
+    expect(body).toContain('- Not listed, a tool check could not confirm it: "Slow path" (warning): "May be slow"');
   });
 
   it('does not render recap section in metadata', async () => {
@@ -4448,11 +4463,11 @@ describe('postReview non-blocking findings', () => {
     const { octokit, createReview, createReviewComment } = makeOctokit();
 
     await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([
-      nonBlocking('note', 'Typo in name', 7, { judgeConfidence: 'high' }),
+      nonBlocking('note', 'Typo in name', 7),
       nonBlocking('note', 'Extract helper', 5, { suggestedFix: 'const x = helper();' }),
       nonBlocking('note', 'Token compared in variable time', 9, { tags: ['security'] }),
-      nonBlocking('note', 'Missing file context', 0, { file: '', suggestedFix: 'Use the shared helper.', judgeConfidence: 'low' }),
-      nonBlocking('note', 'Off the diff', 40, { howToFix: 'Run `b` only when `a` holds.', suggestedFix: 'if (a) {\n  b();\n}', evidence: { checks: ['read src/a.ts:40'], proof: [] } }),
+      nonBlocking('note', 'Missing file context', 0, { file: '', suggestedFix: 'Use the shared helper.', checkStatus: 'unconfirmed' }),
+      nonBlocking('note', 'Off the diff', 40, { howToFix: 'Run `b` only when `a` holds.', suggestedFix: 'if (a) {\n  b();\n}', evidence: { checks: ['read src/a.ts:40'], proof: [] }, checkStatus: 'proven' }),
     ]), diff);
 
     const review = createReview.mock.calls[0][0];
@@ -4475,12 +4490,15 @@ describe('postReview non-blocking findings', () => {
       '<details>',
       '<summary>\u2728 <b>Missing file context</b><br><sub><b>Note, not blocking</b></sub></summary>',
       '',
-      '_Manki is not sure this applies, so please check it._',
+      '_Manki could not confirm this, so please check it._',
       '',
       '**Why:** It goes wrong. Second sentence. Third sentence.',
       '',
       '**How to fix it**',
       'Use the shared helper.',
+      '',
+      // A finding listed in the body names its check status in a line of its own, after the fix.
+      '**How this was checked:** not confirmed',
       '',
       '</details>',
       '',
@@ -4502,6 +4520,8 @@ describe('postReview non-blocking findings', () => {
       '  b();',
       '}',
       '```',
+      '',
+      '**How this was checked:** proven from the cited lines',
       '',
       '**Checked in the code**',
       '- Read `src/a.ts`:40',
@@ -4543,12 +4563,14 @@ describe('postReview non-blocking findings', () => {
     const link = (line: number, file = 'src/a.ts'): string => `[\`${file}:${line}\`](https://github.com/owner/repo/blob/abc1234/${file}#L${line})`;
     const unproven = [nonBlocking('warning', 'Unsettled', 15, { unpostedReason: 'unsettled_check' }), nonBlocking('warning', 'Unchecked', 16, { unpostedReason: 'not_checked' }), nonBlocking('warning', 'Uncited', 17, { unpostedReason: 'no_proof' })];
     const capped = nonBlocking('note', 'Left out', 11, { unpostedReason: 'note_cap' });
+    // Of the findings on code the PR did not change, the fold lists the warnings, which no check confirmed.
+    const unpostedPreExisting = [nonBlocking('warning', 'Old loop', 18), nonBlocking('note', 'Old name', 19)];
     const leads = [nonBlocking('warning', 'Token may not read it', 3, { leadSince: 2 }), nonBlocking('note', 'Cache <b>may</b> go stale', 4)];
     const overflow = { title: 'Overflow', file: 'src/m.ts', line: 2, reason: 'Checked at <i>src/api.ts:3</i>.\nBoth inputs are bounded. A third sentence stays in the log.' };
     const log = '<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>';
 
     // Every kind has its heading and count, and the summary gives the total and the split.
-    const all = await bodyOf({ unposted: [...unproven, capped], openLeads: leads }, [overflow]);
+    const all = await bodyOf({ unposted: [...unproven, capped], unpostedPreExisting, openLeads: leads }, [overflow]);
     expect(all).toContain([
       'Summary',
       '',
@@ -4559,14 +4581,14 @@ describe('postReview non-blocking findings', () => {
       '---',
       '',
       '<details>',
-      '<summary>Checked and left out: 6 findings (1 disproved, 3 unproven, 2 not finished)</summary>',
+      '<summary>Checked and left out: 7 findings (1 disproved, 4 unproven, 2 not finished)</summary>',
       '',
       '#### Disproved by a tool check · 1 finding',
       '',
       `- **Overflow** · ${link(2, 'src/m.ts')}`,
       '  Checked at src/api.ts:3. Both inputs are bounded.',
       '',
-      '#### Not proven, so not listed · 3 warnings',
+      '#### Not proven, so not listed · 4 warnings',
       '',
       `- **Unsettled** · ${link(15)}`,
       '  A tool check could not confirm it.',
@@ -4574,6 +4596,8 @@ describe('postReview non-blocking findings', () => {
       '  Nothing proves it and no tool check ran on it.',
       `- **Uncited** · ${link(17)}`,
       '  It cites no lines that prove it.',
+      `- **Old loop** · ${link(18)}`,
+      '  On code this PR did not change, and no tool check confirmed it.',
       '',
       '#### Not finished checking · 2 leads',
       '',
@@ -4609,7 +4633,9 @@ describe('postReview non-blocking findings', () => {
 
     // An incomplete round's progress comment has no judge decisions, so its review has no fold. Neither has a round that left nothing out.
     expect(await bodyOf({ reviewComplete: false, unposted: unproven, openLeads: leads }, [overflow])).not.toContain('Checked and left out');
-    expect(await bodyOf({ unposted: [capped] })).not.toContain('Checked and left out');
+    expect(await bodyOf({ unposted: [capped], unpostedPreExisting: unpostedPreExisting.slice(1) })).not.toContain('Checked and left out');
+    // A warning on unchanged code is the judge's decision too, so a fold of those alone names the log.
+    expect(await bodyOf({ unpostedPreExisting })).toContain(`<summary>Checked and left out: 1 finding</summary>\n\n#### Not proven, so not listed · 1 warning\n\n- **Old loop** · ${link(18)}\n  On code this PR did not change, and no tool check confirmed it.\n\n${log}\n\n</details>`);
   });
 
   it('posts at most five non-blocking findings inline, most severe first, and lists the rest', async () => {

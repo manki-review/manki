@@ -6,13 +6,13 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { DEFAULT_NOTES, loadConfig } from './config';
-import { AgentProgressEntry, leftOutUnproven, BinaryFile, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
+import { cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -1017,7 +1017,7 @@ export async function updateProgressComment(
       parts.push('**Judge decisions:**');
       for (const d of metadata.judgeDecisions) {
         const outcome = d.listed ? 'Not finished' : d.kept ? 'Kept' : d.unpostedReason ? `Not listed, ${UNPOSTED_REASONS[d.unpostedReason]}` : 'Dropped';
-        parts.push(`- ${outcome}: "${sanitizeMarkdown(d.title)}" (${d.severity}, ${d.confidence} confidence): "${sanitizeMarkdown(d.reasoning)}"`);
+        parts.push(`- ${outcome}: "${sanitizeMarkdown(d.title)}" (${d.severity}): "${sanitizeMarkdown(d.reasoning)}"`);
       }
       parts.push('');
     }
@@ -1161,13 +1161,11 @@ const SEVERITY_EMOJI: Record<FindingSeverity, string> = {
   ignore: '⚪',
 };
 
-/** Shown under a finding the judge kept with low confidence. */
-const LOW_CONFIDENCE_NOTE = '_Manki is not sure this applies, so please check it._';
+/** Shown under the title of a finding whose `checkStatus` is `unconfirmed`. */
 const UNCONFIRMED_NOTE = '_Manki could not confirm this, so please check it._';
 
-/** Returns the line that tells a reader how far to trust `finding`, when one applies. A warning nothing proves says so first. */
 function trustNote(finding: Finding): string | undefined {
-  return finding.unconfirmed ? UNCONFIRMED_NOTE : finding.judgeConfidence === 'low' ? LOW_CONFIDENCE_NOTE : undefined;
+  return finding.checkStatus === 'unconfirmed' ? UNCONFIRMED_NOTE : undefined;
 }
 
 /** Non-blocking findings posted as line comments per review. The rest go in the body list. A note is never one of them. */
@@ -1255,7 +1253,7 @@ function labelDescription(finding: Finding, description: string): string {
   return `${label}${/^(?:[-*+]\s|#{1,6}\s|>|\d+[.)]\s)/.test(description) ? '\n\n' : ' '}${description}`;
 }
 
-/** Returns the low confidence note and what goes wrong, as listed under a finding in the review body. */
+/** Returns the `trustNote` and what goes wrong, as listed under a finding in the review body. */
 function formatFindingDescription(finding: Finding): string[] {
   const note = trustNote(finding);
   const lines = note ? [note] : [];
@@ -1329,7 +1327,7 @@ const PREVIEW_CONTEXT = 2;
 /**
  * Renders a finding listed in the review body as a closed fold. Its summary holds the title, the header line and
  * the location. Inside are what goes wrong, a permalink to the flagged lines, which GitHub shows as code, then the
- * parts of `formatFold` under their labels. The file's lines keep the permalink inside it, since GitHub shows a range
+ * parts of `formatFold` under their labels, with the finding's `checkStatus` in a line of its own after the fix. The file's lines keep the permalink inside it, since GitHub shows a range
  * past the end as a bare link.
  */
 function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = false): string {
@@ -1341,8 +1339,10 @@ function formatFindingFold(finding: Finding, links: CodeLinks, offerIssue = fals
   const preview = !formatFixDiff(finding, files) && finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
     ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))]
     : [];
-  const parts = [bodyFixPart(finding, files), ...checksSection(finding, links, 'flagged').parts].filter(p => p !== undefined);
-  const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding), ...preview, ...parts.map(labelledPart)].join('\n\n')}\n\n</details>`;
+  const checks = checksSection(finding, links, 'flagged');
+  const fix = bodyFixPart(finding, files);
+  const parts = [...(fix ? [labelledPart(fix)] : []), ...(checks.status ? [`**How this was checked:** ${checks.status}`] : []), ...checks.parts.map(labelledPart)];
+  const fold = `<details>\n${summary}\n\n${[...formatFindingDescription(finding), ...preview, ...parts].join('\n\n')}\n\n</details>`;
   // The box goes right under the fold, so it shows without opening it.
   return offerIssue ? `${fold}\n\n${issueBoxFor(finding)}` : fold;
 }
@@ -1520,14 +1520,16 @@ function formatLeftOutEntry({ title, file, line, reason }: LeftOutEntry, linkTo:
 
 /**
  * Returns the fold that lists what the round checked and left out: each finding of `disproved`, each warning of
- * `result.unposted` that nothing proves, and each lead of `result.openLeads`. Every kind shows its first
- * `MAX_LISTED_FINDINGS`. Returns none when there is nothing to list.
+ * `result.unposted` that nothing proves, each warning of `result.unpostedPreExisting`, which no check confirmed, and
+ * each lead of `result.openLeads`. Every kind shows its first `MAX_LISTED_FINDINGS`. Returns none when there is
+ * nothing to list.
  */
 function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], linkTo: LineLink): string | null {
-  const unproven = (result.unposted ?? []).flatMap((f): LeftOutEntry[] => {
-    const why = f.unpostedReason && leftOutUnproven(f) ? UNPOSTED_REASONS[f.unpostedReason] : undefined;
-    return why ? [{ ...f, reason: `${why[0].toUpperCase()}${why.slice(1)}.` }] : [];
-  });
+  const because = (f: Finding, why: string): LeftOutEntry => ({ ...f, reason: `${why[0].toUpperCase()}${why.slice(1)}.` });
+  const unproven = [
+    ...(result.unposted ?? []).flatMap(f => f.unpostedReason && leftOutUnproven(f) ? [because(f, UNPOSTED_REASONS[f.unpostedReason])] : []),
+    ...(result.unpostedPreExisting ?? []).filter(f => f.severity === 'warning').map(f => because(f, `${UNPOSTED_REASONS.pre_existing}, and no tool check confirmed it`)),
+  ];
   const leads = (result.openLeads ?? []).map((f): LeftOutEntry => ({ ...f, reason: f.leadSince ? `Open since round ${f.leadSince}.` : undefined }));
   const kinds = [
     { heading: 'Disproved by a tool check', noun: 'finding', short: 'disproved', entries: disproved },
@@ -2702,9 +2704,10 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
   return `[${inlineCode(rangeLabel(range))}](${linkTo(range.file, range.start, range.end)})`;
 }
 
-function refutationPart(label: string, lead: string, { outcome, reason, proof }: Refutation, linkTo: LineLink, known: readonly string[]): FoldPart {
+function refutationPart(label: string, lead: string, check: Refutation, linkTo: LineLink, known: readonly string[]): FoldPart {
+  const { reason, proof } = check;
   // The refuter keeps only proof locations that exist in the workspace, so a bare file name there is a root file.
-  const cited = outcome === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p, known, true)?.at ?? []);
+  const cited = outcomeOf(check) === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p, known, true)?.at ?? []);
   const text = [lead, reason ? oneLine(reason) : '', cited.length ? `See ${cited.map(r => linkedRange(r, linkTo)).join(', ')}.` : '']
     .filter(Boolean).join(' ');
   return { label, text, open: `**${label}:** ${text}` };
@@ -2713,18 +2716,21 @@ function refutationPart(label: string, lead: string, { outcome, reason, proof }:
 /** Returns a part for each refuter that checked `finding`. */
 function refutationParts(finding: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
-  const pairLead = pairRefutation && REFUTATION_SUMMARY[pairRefutation.outcome];
-  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : REFUTATION_PART[refutation.outcome].text);
+  const pairLead = pairRefutation && REFUTATION_SUMMARY[outcomeOf(pairRefutation)];
+  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : REFUTATION_PART[outcomeOf(refutation)].text);
   return [
-    ...(refutation && lead ? [refutationPart(REFUTATION_PART[refutation.outcome].label, lead, refutation, linkTo, known)] : []),
+    ...(refutation && lead ? [refutationPart(REFUTATION_PART[outcomeOf(refutation)].label, lead, refutation, linkTo, known)] : []),
     ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`, pairRefutation, linkTo, known)] : []),
   ];
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** The parts of a finding's fold that say how it was checked, with the counts and outcomes its summary names. */
-interface FindingChecks { parts: FoldPart[]; reads: string[]; outcomes: string[] }
+/**
+ * The parts of a finding's fold that say how it was checked, with the counts and outcomes its summary names. With a
+ * `status`, the words of the finding's `checkStatus`, the summary names that in place of the outcomes.
+ */
+interface FindingChecks { parts: FoldPart[]; reads: string[]; outcomes: string[]; status?: string }
 
 const NOT_CHECKED: FindingChecks = {
   parts: [{ label: 'Not checked against the code', text: 'Nothing was cited to back it.', open: '**Not checked against the code.** Nothing was cited to back it.' }],
@@ -2741,8 +2747,9 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
   const known = [...changed, ...files.keys(), ...(finding.file ? [finding.file] : [])];
   const checks = findingChecks(finding, known);
   const refutations = refutationParts(finding, linkTo, known);
+  const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
   if (checks.length === 0 && refutations.length === 0) {
-    return finding.toolSource || finding.reviewers.length === 0 ? { parts: [], reads: [], outcomes: [] } : NOT_CHECKED;
+    return { ...(finding.toolSource || finding.reviewers.length === 0 ? { parts: [], reads: [], outcomes: [] } : NOT_CHECKED), ...status };
   }
   const isOwn = (c: Check): boolean => !!c.at && c.at.file === finding.file && c.at.start <= finding.line && finding.line <= c.at.end;
   const ownChecks = checks.filter(isOwn);
@@ -2780,7 +2787,8 @@ function checksSection(finding: Finding, { linkTo, files, changed = [] }: CodeLi
   return {
     parts: [...checked, ...refutations],
     reads: [read && `${read} ${read === 1 ? 'place' : 'places'} read`, other && plural(other, 'other check')].filter(r => typeof r === 'string'),
-    outcomes: [finding.refutation && REFUTATION_SUMMARY[finding.refutation.outcome], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[finding.pairRefutation.outcome]}`].filter(o => typeof o === 'string'),
+    outcomes: [finding.refutation && REFUTATION_SUMMARY[outcomeOf(finding.refutation)], finding.pairRefutation && `second check: ${REFUTATION_SUMMARY[outcomeOf(finding.pairRefutation)]}`].filter(o => typeof o === 'string'),
+    ...status,
   };
 }
 
@@ -2791,22 +2799,24 @@ function labelledPart({ label, text }: FoldPart): string {
 /**
  * Returns the fold under a finding: the fix, then why it matters, then how it was checked, each under its label, with
  * the refuters' outcomes last. Its summary names what it holds. A part alone that fits on one line shows open instead,
- * since a fold never holds a single line.
+ * since a fold never holds a single line, unless the summary has a `checkStatus` to name.
  */
 function formatFold(fix: FoldPart | undefined, why: string, checks: FindingChecks): string {
   const parts = [...(fix ? [fix] : []), ...(why ? [{ label: 'Why it matters', text: why }] : []), ...checks.parts];
   if (parts.length === 0) return '';
   const [first] = parts;
-  if (parts.length === 1 && first.open && !first.open.includes('\n')) return `${CHECKS_MARKER}\n${first.open}`;
+  if (parts.length === 1 && first.open && !first.open.includes('\n') && !checks.status) return `${CHECKS_MARKER}\n${first.open}`;
   const topics = [...(fix ? [HOW_TO_FIX_LABEL] : []), ...(why ? [fix ? 'why' : 'Why it matters'] : [])];
-  let summary = `How this was checked: ${[...checks.reads, ...checks.outcomes].join(', ')}`;
+  const outcomes = checks.status ? [checks.status] : checks.outcomes;
+  let summary = `How this was checked: ${[...checks.reads, ...outcomes].join(', ')}`;
   if (topics.length > 0) {
     const items = [...topics, ...checks.reads];
     const list = items.length === 1 ? items[0] : `${items.slice(0, -1).join(', ')}${items.length > 2 ? ',' : ''} and ${items[items.length - 1]}`;
-    summary = `${list}${checks.outcomes.length ? ` · ${checks.outcomes.join(', ')}` : ''}`;
+    summary = `${list}${outcomes.length ? ` · ${outcomes.join(', ')}` : ''}`;
   }
-  // The summary names a lone part, so it needs no label of its own.
-  const body = parts.length === 1 ? first.text : parts.map(labelledPart).join('\n\n');
+  // The summary names a lone part, so it needs no label of its own, unless the status took the place of its outcome there.
+  const named = parts.length === 1 && !(checks.status && checks.outcomes.length > 0);
+  const body = named ? first.text : parts.map(labelledPart).join('\n\n');
   return `${CHECKS_MARKER}\n<details>\n<summary>${summary}</summary>\n\n${body}\n\n</details>`;
 }
 
@@ -2847,7 +2857,6 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
     file: finding.file,
     line: finding.line,
     severity: finding.severity,
-    ...(finding.judgeConfidence && { confidence: finding.judgeConfidence }),
     flaggedBy: finding.reviewers,
     title: finding.title,
     ...(finding.suggestedFix && { fix: safeTruncate(finding.suggestedFix, 200) }),
@@ -3340,5 +3349,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

@@ -23,12 +23,12 @@ describe('fix-rate report', () => {
       '| Security | 3 | 2 | 1 | 0 | 67% | 33% |',
       '| Style | 3 | 0 | 2 | 1 | 0% | 67% |',
       '',
-      '## By confidence',
+      '## By checkStatus',
       '',
-      '| confidence | posted | fixed | dismissed | untouched | fixed % | dismissed % |',
+      '| checkStatus | posted | fixed | dismissed | untouched | fixed % | dismissed % |',
       '| --- | ---: | ---: | ---: | ---: | ---: | ---: |',
-      '| low | 3 | 0 | 2 | 1 | 0% | 67% |',
-      '| high | 1 | 1 | 0 | 0 | 100% | 0% |',
+      '| unconfirmed | 3 | 0 | 2 | 1 | 0% | 67% |',
+      '| confirmed | 1 | 1 | 0 | 0 | 100% | 0% |',
       '',
       '## By toolEvidence',
       '',
@@ -73,6 +73,6 @@ describe('fix-rate report', () => {
   });
 
   it('says so when a dimension has no data', () => {
-    expect(renderReport(aggregate(['{"pr":1,"counts":[]}']))).toContain('## By confidence\n\n| confidence | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n\nNo data.');
+    expect(renderReport(aggregate(['{"pr":1,"counts":[]}']))).toContain('## By checkStatus\n\n| checkStatus | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n\nNo data.');
   });
 });

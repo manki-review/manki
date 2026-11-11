@@ -2706,10 +2706,10 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
 
     const findings = [
-      { severity: 'blocker' as const, reviewerSeverity: 'warning' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'confirmed' },
+      { severity: 'blocker' as const, reviewerSeverity: 'warning' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeNotes: 'confirmed' },
       // A merged duplicate was filed at the judge's grade, which is no regrade.
-      { severity: 'note' as const, reviewerSeverity: 'note' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
-      { severity: 'note' as const, originalSeverity: 'warning' as const, reviewerSeverity: 'note' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'], judgeConfidence: 'low' as const },
+      { severity: 'note' as const, reviewerSeverity: 'note' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] },
+      { severity: 'note' as const, originalSeverity: 'warning' as const, reviewerSeverity: 'note' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'] },
     ];
     const unsettledLead = { severity: 'warning' as const, title: 'Token may not read the repo', file: 'src/app.ts', line: 3, description: 'd', reviewers: ['general'], lead: { checked: 'read it', left: 'check the repo' } };
     // The judge kept these, and a later step took each out without posting it.
@@ -2717,7 +2717,7 @@ describe('runFullReview orchestration', () => {
     const [oldCode, hidden, toolLine, testNit] = [later('Old helper name', 4), later('Hidden by memory', 5), later('Tool reports it', 6), later('Test nit', 7)];
     const allJudged = [
       ...findings,
-      { severity: 'ignore' as const, reviewerSeverity: 'note' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'not relevant' },
+      { severity: 'ignore' as const, reviewerSeverity: 'note' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'], judgeNotes: 'not relevant' },
       unsettledLead, oldCode, hidden, toolLine, testNit,
     ];
     const rawFindings = [
@@ -2756,7 +2756,6 @@ describe('runFullReview orchestration', () => {
     ]);
 
     expect(statsArg!.judge).toEqual(expect.objectContaining({
-      confidenceDistribution: { high: 2, medium: 1, low: 1 },
       severityChanges: 2,
       regrades: { up: 2, down: 1 },
       mergedDuplicates: 2,
@@ -2803,7 +2802,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
 
     const findings = [
-      { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
+      { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
     ];
     const allJudged = [...findings];
     // rawFindings: 5 findings from agents (pre-suppression, pre-dedup)
@@ -2854,7 +2853,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
 
     const findings = [
-      { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
+      { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
     ];
     const rawFindings = [
       { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
@@ -2899,7 +2898,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
 
     const findings = [
-      { severity: 'blocker' as const, title: 'Real', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
+      { severity: 'blocker' as const, title: 'Real', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'] },
     ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2936,12 +2935,12 @@ describe('runFullReview orchestration', () => {
     // dropped 1 before returning, so result.findings has only 1.
     const survivingFinding = {
       severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5,
-      description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const,
+      description: 'desc', reviewers: ['security'],
     };
     const allJudged = [
       survivingFinding,
       { severity: 'note' as const, title: 'Test nit (suppressed)', file: 'src/app.ts', line: 8,
-        description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
+        description: 'desc', reviewers: ['general'] },
     ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -4000,7 +3999,10 @@ describe('runFullReview orchestration', () => {
         allJudgedFindings: [{
           ...hidden, severity: 'ignore', gradePath: [{ from: 'note', to: 'ignore', by: 'refutation', reason: 'r' }],
           refutation: { outcome: 'unsettled', reason: 'Could not tell.', files: ['src/app.ts'], codeDigest: 'a' },
-          pairRefutation: { outcome: 'disproved', reason: 'r', proof: ['src/app.ts:9'], files: ['src/app.ts'], codeDigest: 'a' },
+          pairRefutation: {
+            outcome: 'unsettled', defect: 'disproved', reason: 'r', proof: ['src/app.ts:9'], premises: [{ premise: 'A caller passes it', outcome: 'unsettled', reason: 'None found.' }],
+            files: ['src/app.ts'], codeDigest: 'a',
+          },
         }],
         slicing: { files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] },
         changedSinceLastRoundCount: 2,
@@ -4031,9 +4033,9 @@ describe('runFullReview orchestration', () => {
       expect(rc.tokenService).toEqual(tokenService);
       expect(rc.judge.dropped).toEqual([expect.objectContaining({
         gradePath: [{ from: 'note', to: 'ignore', by: 'refutation', reason: 'r' }],
-        refutation: expect.objectContaining({ outcome: 'unsettled' }), pairRefutation: expect.objectContaining({ outcome: 'disproved' }),
+        refutation: expect.objectContaining({ outcome: 'unsettled' }), pairRefutation: expect.objectContaining({ outcome: 'unsettled', defect: 'disproved' }),
       })]);
-      // The second refuter's disproof drops it while the first abstains, so its reason is the one listed.
+      // The second refuter answers that the defect does not exist, while its premise and the first refuter settle nothing. Its reason is the one listed.
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.disproved).toEqual([{ title: 'Rename the helper', file: 'src/app.ts', line: 9, reason: 'r' }]);
       expect(rc.slicing).toEqual({ files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] });
       // Each related repo carries the reads of every call of the round, a failed one too, and each call its own.
@@ -4315,7 +4317,7 @@ describe('runFullReview orchestration', () => {
         description: 'Race condition that needs a strict ordering.',
         reviewers: ['Concurrency'],
         judgeNotes: 'Reachable only under shutdown',
-        judgeConfidence: 'medium' as const,
+        checkStatus: 'proven' as const,
         tags: ['own-proposal-followup', 'follow-up', 'security'],
         originalSeverity: 'warning' as const,
         category: 'concurrency' as const,
@@ -4343,7 +4345,7 @@ describe('runFullReview orchestration', () => {
       }],
       allJudgedFindings: [{
         severity: 'ignore' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', reviewers: ['Concurrency'],
-        reviewerSeverity: 'note' as const, judgeConfidence: 'high' as const, judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
+        reviewerSeverity: 'note' as const, judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
         gradeIfConfirmed: 'note' as const, doubts: [{ premise: 'Callers read the old name', decides: 'defect' as const }],
         cell: { row: 'improvement' as const, column: 'normal' as const },
         rule: { file: 'AGENTS.md', quote: 'A helper is named after what it returns.' },
@@ -4362,7 +4364,7 @@ describe('runFullReview orchestration', () => {
     }]);
     expect(rc!.judge.dropped).toEqual([{
       title: 'Rename helper', file: 'src/app.ts', line: 7, reviewers: ['Concurrency'],
-      reviewerSeverity: 'note', judgeConfidence: 'high', judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
+      reviewerSeverity: 'note', judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
       gradeIfConfirmed: 'note', doubts: [{ premise: 'Callers read the old name', decides: 'defect' }],
       cell: { row: 'improvement', column: 'normal' },
       rule: { file: 'AGENTS.md', quote: 'A helper is named after what it returns.' },
@@ -4372,7 +4374,7 @@ describe('runFullReview orchestration', () => {
     expect(rc!.findings.entries.map(e => e.origin)).toEqual(['new', 'new']);
     const entry = rc!.findings.entries[0];
     expect(entry.judgeNotes).toBe('Reachable only under shutdown');
-    expect(entry.judgeConfidence).toBe('medium');
+    expect(entry.checkStatus).toBe('proven');
     expect(entry.tags).toEqual(['own-proposal-followup', 'follow-up', 'security']);
     expect(entry.originalSeverity).toBe('warning');
     expect([entry.category, entry.effort]).toEqual(['concurrency', 'moderate']);

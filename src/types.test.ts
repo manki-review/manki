@@ -137,7 +137,6 @@ function fullyPopulatedContext(): RoundContext {
     },
     judge: {
       summary: 'Three issues kept, two demoted to nits.',
-      confidenceDistribution: { high: 2, medium: 1, low: 0 },
       severityChanges: 1,
       mergedDuplicates: 2,
       durationMs: 4500,
@@ -222,12 +221,12 @@ describe('RoundContext', () => {
       fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'race-condition' },
       severity: 'note',
       judgeNotes: 'Reachable only under shutdown',
-      judgeConfidence: 'medium',
+      checkStatus: 'confirmed',
       tags: ['own-proposal-followup'],
       originalSeverity: 'warning',
     };
     expect(entry.judgeNotes).toMatch(/shutdown/);
-    expect(entry.judgeConfidence).toBe('medium');
+    expect(entry.checkStatus).toBe('confirmed');
     expect(entry.tags).toEqual(['own-proposal-followup']);
     expect(entry.originalSeverity).toBe('warning');
   });
@@ -238,7 +237,7 @@ describe('RoundContext', () => {
       severity: 'note',
     };
     expect(entry.judgeNotes).toBeUndefined();
-    expect(entry.judgeConfidence).toBeUndefined();
+    expect(entry.checkStatus).toBeUndefined();
     expect(entry.tags).toBeUndefined();
     expect(entry.originalSeverity).toBeUndefined();
   });

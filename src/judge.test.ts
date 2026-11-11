@@ -215,6 +215,7 @@ describe('buildJudgeSystemPrompt', () => {
     const warningTests = (p: string) => p.slice(p.indexOf('## Warning Tests'), p.indexOf('## Severity Table')).trim();
     expect(warningTests(prompt)).toBe('## Warning Tests\n\nA finding is a `warning` only when it passes tests 1, 2 and 4: this PR causes it, you can name the failure as "when X happens, Y goes wrong", and `proof` cites the lines that show it. Manki posts a warning only when it is proven. For one you cannot prove from the code shown, follow When You Are Unsure.');
     expect(prompt).toContain('"proof": ["file:line of each line that shows the failure, for a blocker or a warning"]');
+    expect(prompt).not.toMatch(/confidence/i);
     const withTools = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true, 8);
     expect(warningTests(withTools)).toContain('For one you cannot prove from the code shown or your tools, follow When You Are Unsure.');
     expect(withTools).toContain('and say it in `reasoning`. Manki checks the premise with tools and posts the warning only when the check confirms it.\n');
@@ -1122,7 +1123,7 @@ describe('extractCodeContext', () => {
 
 describe('parseJudgeResponse', () => {
   it('ranks each finding by its place in `noteOrder`, and leaves a finding the judge did not list unranked', () => {
-    const entry = (id: number | undefined, title: string) => ({ ...(id && { id }), title, row: 'improvement', reasoning: 'r', confidence: 'high' });
+    const entry = (id: number | undefined, title: string) => ({ ...(id && { id }), title, row: 'improvement', reasoning: 'r' });
     const entries = [entry(1, 'A'), entry(2, 'B'), entry(3, 'C'), entry(4, 'D'), entry(undefined, 'E')];
     const ranks = (noteOrder: unknown) => parseJudgeResponse(JSON.stringify({ summary: 's', findings: entries, noteOrder })).findings.map(f => f.noteRank);
 
@@ -1139,11 +1140,11 @@ describe('parseJudgeResponse', () => {
   it('keeps a category and an effort from the fixed lists, drops any other value with a warning, and drops an entry that names no known `row`', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const result = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
-      { id: 1, title: 'A', row: 'wrong', column: 'rare', reasoning: 'r', confidence: 'high', category: 'concurrency', effort: 'larger' },
-      { id: 2, title: 'B', row: ' Severe ', column: 'Rare', reasoning: 'r', confidence: 'high', category: 'Bug', effort: 'huge' },
-      { id: 3, title: 'C', row: 'degraded', column: 'sometimes', reasoning: 'r', confidence: 'high', category: 'toString' },
-      { id: 4, title: 'D', row: 'none', column: 'normal', reasoning: 'r', confidence: 'high' },
-      { id: 5, title: 'E', row: 'Ignore', reasoning: 'r', confidence: 'high' },
+      { id: 1, title: 'A', row: 'wrong', column: 'rare', reasoning: 'r', category: 'concurrency', effort: 'larger' },
+      { id: 2, title: 'B', row: ' Severe ', column: 'Rare', reasoning: 'r', category: 'Bug', effort: 'huge' },
+      { id: 3, title: 'C', row: 'degraded', column: 'sometimes', reasoning: 'r', category: 'toString' },
+      { id: 4, title: 'D', row: 'none', column: 'normal', reasoning: 'r' },
+      { id: 5, title: 'E', row: 'Ignore', reasoning: 'r' },
     ] }));
     expect(result.findings.map(f => [f.category, f.effort])).toEqual([['concurrency', 'larger'], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined]]);
     // A row or column counts whatever its case, and only an explicit `rare` is a rare column. `ignore` is the prompt's word for a dropped finding.
@@ -1156,8 +1157,8 @@ describe('parseJudgeResponse', () => {
     }
     // A fix that leaves part of the problem says so in the posted fix.
     const leaves = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
-      { id: 1, title: 'Upload unbounded', row: 'degraded', reasoning: 'r', confidence: 'high', fixLeaves: ' The upload still has no timeout. ' },
-      { id: 2, title: 'Covered', row: 'degraded', reasoning: 'r', confidence: 'high', fixLeaves: '' },
+      { id: 1, title: 'Upload unbounded', row: 'degraded', reasoning: 'r', fixLeaves: ' The upload still has no timeout. ' },
+      { id: 2, title: 'Covered', row: 'degraded', reasoning: 'r', fixLeaves: '' },
     ] })).findings;
     expect(leaves.map(f => f.fixLeaves)).toEqual(['The upload still has no timeout.', undefined]);
     const base = { severity: 'warning' as const, file: 'src/upload.ts', line: 3, description: 'd', reviewers: ['r'] };
@@ -1165,11 +1166,11 @@ describe('parseJudgeResponse', () => {
     expect(mapped.map(f => f.howToFix)).toEqual(['Check the size. This fix leaves part of the problem: The upload still has no timeout.', undefined]);
     // A doubt keeps only a premise it names, and one that does not decide only the grade decides whether the defect exists.
     const doubts = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
-      { id: 1, title: 'A', row: 'degraded', reasoning: 'r', confidence: 'low', doubts: [
+      { id: 1, title: 'A', row: 'degraded', reasoning: 'r', doubts: [
         { premise: ' A caller passes `n` unchecked ', decides: 'grade' }, { premise: 'The copy is never dropped', decides: 'maybe' }, { premise: '' }, 'loose text', null,
       ] },
-      { id: 2, title: 'B', row: 'degraded', reasoning: 'r', confidence: 'high', doubts: [] },
-      { id: 3, title: 'C', row: 'degraded', reasoning: 'r', confidence: 'high', doubts: 'none' },
+      { id: 2, title: 'B', row: 'degraded', reasoning: 'r', doubts: [] },
+      { id: 3, title: 'C', row: 'degraded', reasoning: 'r', doubts: 'none' },
     ] })).findings;
     expect(doubts.map(f => f.doubts)).toEqual([[{ premise: 'A caller passes `n` unchecked', decides: 'grade' }, { premise: 'The copy is never dropped', decides: 'defect' }], undefined, undefined]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned category "Bug", which is not one of correctness, security'));
@@ -1181,7 +1182,7 @@ describe('parseJudgeResponse', () => {
     const json = JSON.stringify({
       summary: 'Clean PR with one minor issue.',
       findings: [
-        { title: 'Bug found', row: 'wrong', reasoning: 'This is a real bug.', confidence: 'high' },
+        { title: 'Bug found', row: 'wrong', reasoning: 'This is a real bug.' },
       ],
     });
 
@@ -1191,13 +1192,12 @@ describe('parseJudgeResponse', () => {
     expect(result.findings[0].title).toBe('Bug found');
     expect(result.findings[0].row).toBe('wrong');
     expect(result.findings[0].reasoning).toBe('This is a real bug.');
-    expect(result.findings[0].confidence).toBe('high');
   });
 
   it('reads the proving lines the judge cites', () => {
     const json = JSON.stringify({ findings: [
-      { id: 1, title: 'A', row: 'wrong', reasoning: '', confidence: 'high', proof: ['src/a.ts:4', 'somewhere'] },
-      { id: 2, title: 'B', row: 'wrong', reasoning: '', confidence: 'high', proof: 'src/a.ts:4' },
+      { id: 1, title: 'A', row: 'wrong', reasoning: '', proof: ['src/a.ts:4', 'somewhere'] },
+      { id: 2, title: 'B', row: 'wrong', reasoning: '', proof: 'src/a.ts:4' },
     ] });
 
     expect(parseJudgeResponse(json).findings.map(f => f.proof)).toEqual([['src/a.ts:4'], undefined]);
@@ -1206,10 +1206,10 @@ describe('parseJudgeResponse', () => {
   it('parses finding ids and drops unusable ones', () => {
     const json = JSON.stringify({
       findings: [
-        { id: 2, title: 'A', row: 'degraded', reasoning: '', confidence: 'high' },
-        { id: '1', title: 'B', row: 'style', reasoning: '', confidence: 'low' },
-        { id: 'Finding 3', title: 'C', row: 'style', reasoning: '', confidence: 'low' },
-        { id: 0, title: 'D', row: 'style', reasoning: '', confidence: 'low' },
+        { id: 2, title: 'A', row: 'degraded', reasoning: '' },
+        { id: '1', title: 'B', row: 'style', reasoning: '' },
+        { id: 'Finding 3', title: 'C', row: 'style', reasoning: '' },
+        { id: 0, title: 'D', row: 'style', reasoning: '' },
       ],
     });
 
@@ -1219,7 +1219,7 @@ describe('parseJudgeResponse', () => {
 
   it('falls back to default summary when plain array is returned', () => {
     const json = JSON.stringify([
-      { title: 'Bug found', row: 'wrong', reasoning: 'This is a real bug.', confidence: 'high' },
+      { title: 'Bug found', row: 'wrong', reasoning: 'This is a real bug.' },
     ]);
 
     const result = parseJudgeResponse(json);
@@ -1231,7 +1231,7 @@ describe('parseJudgeResponse', () => {
   it('falls back to default summary when summary is missing from object', () => {
     const json = JSON.stringify({
       findings: [
-        { title: 'Test', row: 'improvement', reasoning: 'Okay.', confidence: 'medium' },
+        { title: 'Test', row: 'improvement', reasoning: 'Okay.' },
       ],
     });
 
@@ -1241,20 +1241,11 @@ describe('parseJudgeResponse', () => {
   });
 
   it('parses JSON wrapped in markdown code fences', () => {
-    const json = '```json\n[{"title":"Bug","row":"wrong","reasoning":"Real bug.","confidence":"high"}]\n```';
+    const json = '```json\n[{"title":"Bug","row":"wrong","reasoning":"Real bug."}]\n```';
 
     const result = parseJudgeResponse(json);
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].title).toBe('Bug');
-  });
-
-  it('defaults missing confidence to medium', () => {
-    const json = JSON.stringify([
-      { title: 'Test', row: 'improvement', reasoning: 'Okay.' },
-    ]);
-
-    const result = parseJudgeResponse(json);
-    expect(result.findings[0].confidence).toBe('medium');
   });
 
   it('throws for empty, malformed or non-object responses', () => {
@@ -1344,8 +1335,8 @@ describe('parseJudgeResponse', () => {
 
   it('parses multiple findings', () => {
     const json = JSON.stringify([
-      { title: 'A', row: 'wrong', reasoning: 'Bug.', confidence: 'high' },
-      { title: 'B', row: 'none', reasoning: 'False positive.', confidence: 'low' },
+      { title: 'A', row: 'wrong', reasoning: 'Bug.' },
+      { title: 'B', row: 'none', reasoning: 'False positive.' },
     ]);
 
     const result = parseJudgeResponse(json);
@@ -1433,7 +1424,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'One false positive found.',
       findings: [
-        { title: 'Unused variable', row: 'none', reasoning: 'False positive.', confidence: 'high' },
+        { title: 'Unused variable', row: 'none', reasoning: 'False positive.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -1455,7 +1446,6 @@ describe('runJudgeAgent', () => {
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].judgeNotes).toBe('False positive.');
-    expect(result.findings[0].judgeConfidence).toBe('high');
     expect(result.summary).toBe('One false positive found.');
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
     const [, userMessage] = mockSendMessage.mock.calls[0];
@@ -1469,7 +1459,7 @@ describe('runJudgeAgent', () => {
   });
 
   it('shows the judge the package list of a parsed lockfile in place of its hunks', async () => {
-    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', row: 'degraded', reasoning: 'r', confidence: 'high' }] }) });
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', row: 'degraded', reasoning: 'r' }] }) });
     const lockfile = makeDiffFile({ path: 'Cargo.lock', additions: 1, deletions: 1, hunks: [makeHunk({ content: ' name = "hex"\n-version = "0.4.2"\n+version = "0.4.3"' })] });
     const changes = [{ kind: 'updated' as const, name: 'hex', oldVersion: '0.4.2', newVersion: '0.4.3', fields: [], flags: ['downgrade' as const], line: 5 }];
 
@@ -1493,7 +1483,7 @@ describe('runJudgeAgent', () => {
   });
 
   it('shows the repository context and names one prompt template for its digest whatever the round holds', async () => {
-    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', row: 'improvement', reasoning: 'r', confidence: 'high' }] }) });
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', row: 'improvement', reasoning: 'r' }] }) });
     const base: JudgeInput = { findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '## AGENTS.md\n\nKeep imports at the top.', agentCount: 1 };
     await runJudgeAgent(mockClient, makeConfig(), base);
     expect(mockSendMessage.mock.calls[0][1]).toContain('## Repository Context\n\n## AGENTS.md\n\nKeep imports at the top.');
@@ -1507,7 +1497,7 @@ describe('runJudgeAgent', () => {
   });
 
   it('gives the judge read-only tools on the workspace only when it has a tool budget and a refutation client', async () => {
-    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', row: 'improvement', reasoning: 'r', confidence: 'high' }] }) });
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', row: 'improvement', reasoning: 'r' }] }) });
     const refuter = { repoTools: true, sendMessage: jest.fn() } as unknown as LLMClient;
     const base: JudgeInput = { findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1 };
 
@@ -1527,7 +1517,7 @@ describe('runJudgeAgent', () => {
   });
 
   it('grades once more without tools when the judge with tools fails, but never on a used-up quota or a refusal', async () => {
-    const reply = { content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', row: 'degraded', reasoning: 'r', confidence: 'high' }] }) };
+    const reply = { content: JSON.stringify({ summary: 'ok', findings: [{ title: 'Unused variable', row: 'degraded', reasoning: 'r' }] }) };
     const refuter = { repoTools: true, sendMessage: jest.fn() } as unknown as LLMClient;
     const input: JudgeInput = {
       findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace: '/work/pr-head' }, toolSteps: 30,
@@ -1560,7 +1550,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'Real issue found.',
       findings: [
-        { title: 'Unused variable', row: 'improvement', reasoning: 'Real issue.', confidence: 'high' },
+        { title: 'Unused variable', row: 'improvement', reasoning: 'Real issue.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -1597,7 +1587,7 @@ describe('runJudgeAgent', () => {
 
     const valid = JSON.stringify({
       summary: 'Ok.',
-      findings: [{ id: 1, title: 'Unused variable', row: 'wrong', reasoning: 'r', confidence: 'high' }],
+      findings: [{ id: 1, title: 'Unused variable', row: 'wrong', reasoning: 'r' }],
       threadEvaluations: [{ threadId: 'T1', status: 'not_addressed', reason: 'unchanged' }],
     });
     const unusable = [
@@ -1616,7 +1606,7 @@ describe('runJudgeAgent', () => {
     }
     mockSendMessage.mockReset();
     mockSendMessage
-      .mockResolvedValueOnce({ content: '{"confidence":medium}' })
+      .mockResolvedValueOnce({ content: '{"row":wrong}' })
       .mockResolvedValue({ content: valid });
     const recovered = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(mockSendMessage).toHaveBeenCalledTimes(2);
@@ -1638,7 +1628,7 @@ describe('runJudgeAgent', () => {
       ],
       diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 2,
     };
-    const entry = (id: number, row: string, more: Record<string, unknown> = {}) => ({ id, title: input.findings[id - 1].title, row, reasoning: `${row} said for ${id}`, confidence: 'high', ...more });
+    const entry = (id: number, row: string, more: Record<string, unknown> = {}) => ({ id, title: input.findings[id - 1].title, row, reasoning: `${row} said for ${id}`, ...more });
     // Finding 2 has no entry and finding 3 an entry without a row. A duplicate and a dropped finding each have an entry.
     const first = { summary: 'First summary.', findings: [entry(1, 'wrong'), { ...entry(3, 'wrong'), row: undefined, severity: 'blocker' }, entry(4, 'degraded', { duplicateOf: 1 }), entry(5, 'ignore')] };
     const reply = (findings: unknown[]) => ({ content: JSON.stringify({ summary: 'Second summary.', findings, noteOrder: [2] }) });
@@ -1681,8 +1671,8 @@ describe('runJudgeAgent', () => {
     // The reply to a retry is read only for the findings it was asked for. An entry without an `id` goes to the closest
     // of those, never to a finding the first reply graded, and an entry that names another finding is not moved onto one.
     const near: JudgeInput = { ...input, findings: [makeFinding({ title: 'Lock held across await', line: 3 }), makeFinding({ title: 'Await under the lock', line: 4 })] };
-    const graded = { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'Lock held across await', row: 'wrong', reasoning: 'first', confidence: 'high' }] }) };
-    const unnumbered = { title: 'Await under lock', row: 'degraded', reasoning: 'second', confidence: 'high' };
+    const graded = { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'Lock held across await', row: 'wrong', reasoning: 'first' }] }) };
+    const unnumbered = { title: 'Await under lock', row: 'degraded', reasoning: 'second' };
     mockSendMessage.mockReset();
     mockSendMessage.mockResolvedValueOnce(graded).mockResolvedValueOnce(reply([unnumbered]));
     expect((await runJudgeAgent(mockClient, makeConfig(), near)).findings.map(f => [f.title, f.judgeNotes])).toEqual([['Lock held across await', 'first'], ['Await under the lock', 'second']]);
@@ -1708,8 +1698,8 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'Mixed findings.',
       findings: [
-        { title: 'Different title', row: 'style', reasoning: 'Minor.', confidence: 'low' },
-        { title: 'Unused variable cleanup', row: 'none', reasoning: 'Not real.', confidence: 'high' },
+        { title: 'Different title', row: 'style', reasoning: 'Minor.' },
+        { title: 'Unused variable cleanup', row: 'none', reasoning: 'Not real.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -1742,7 +1732,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'Suppressed finding.',
       findings: [
-        { title: 'Unused variable', row: 'none', reasoning: 'Suppressed.', confidence: 'high' },
+        { title: 'Unused variable', row: 'none', reasoning: 'Suppressed.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -1766,7 +1756,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'Thread addressed.',
       findings: [
-        { title: 'Unused variable', row: 'improvement', reasoning: 'Valid.', confidence: 'high' },
+        { title: 'Unused variable', row: 'improvement', reasoning: 'Valid.' },
       ],
       threadEvaluations: [
         { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in new diff' },
@@ -1799,7 +1789,7 @@ describe('runJudgeAgent', () => {
   it.each(['blocker', 'warning', 'note'] as const)('keeps a %s at its grade when the response calls it hypothetical', async (severity) => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 'One guard flagged.',
-      findings: [{ title: 'Unused variable', row: ROW_OF[severity], reasoning: 'Rare internal edge case.', confidence: 'high', reachability: 'hypothetical' }],
+      findings: [{ title: 'Unused variable', row: ROW_OF[severity], reasoning: 'Rare internal edge case.', reachability: 'hypothetical' }],
     }) });
 
     const input: JudgeInput = { findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3 };
@@ -1831,16 +1821,16 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({
       summary: 's',
       findings: [
-        { id: 1, title: 'Deadlock on stop', row: 'wrong', column: 'normal', doubts: [{ premise: 'The stop path takes the same lock', decides: 'defect' }], reasoning: 'warning. The second lock path sits outside the code shown.', confidence: 'medium' },
-        { id: 2, title: 'Missing bound', row: 'wrong', column: 'rare', doubts: [{ premise: 'A public caller passes an unbounded length', decides: 'grade' }], reasoning: 'r', confidence: 'medium' },
-        { id: 3, title: 'Slow path', row: 'degraded', reasoning: 'Performance never blocks.', confidence: 'high' },
-        { id: 4, title: 'Unseen kept', row: 'wrong', column: 'rare', reasoning: 'r', confidence: 'medium' },
-        { id: 5, title: 'Unseen dropped', row: 'none', doubts: [{ premise: 'The handler is registered', decides: 'defect' }], reasoning: 'r', confidence: 'medium' },
-        { id: 7, title: 'Second cache left stale', row: 'wrong', column: 'rare', doubts: [{ premise: 'A request reads the second cache after the write', decides: 'grade' }], reasoning: 'warning. Not sure a request reads it, since only the sweeper seems to.', confidence: 'medium' },
-        { id: 8, title: 'Copy never removed', row: 'degraded', doubts: [{ premise: 'No other path removes the copy', decides: 'defect' }], reasoning: 'warning. Not determined whether another path removes the copy.', confidence: 'low' },
-        { id: 9, title: 'Doubted nit', row: 'degraded', column: 'rare', doubts: [{ premise: 'A request logs the name', decides: 'grade' }], reasoning: 'r', confidence: 'low' },
+        { id: 1, title: 'Deadlock on stop', row: 'wrong', column: 'normal', doubts: [{ premise: 'The stop path takes the same lock', decides: 'defect' }], reasoning: 'warning. The second lock path sits outside the code shown.' },
+        { id: 2, title: 'Missing bound', row: 'wrong', column: 'rare', doubts: [{ premise: 'A public caller passes an unbounded length', decides: 'grade' }], reasoning: 'r' },
+        { id: 3, title: 'Slow path', row: 'degraded', reasoning: 'Performance never blocks.' },
+        { id: 4, title: 'Unseen kept', row: 'wrong', column: 'rare', reasoning: 'r' },
+        { id: 5, title: 'Unseen dropped', row: 'none', doubts: [{ premise: 'The handler is registered', decides: 'defect' }], reasoning: 'r' },
+        { id: 7, title: 'Second cache left stale', row: 'wrong', column: 'rare', doubts: [{ premise: 'A request reads the second cache after the write', decides: 'grade' }], reasoning: 'warning. Not sure a request reads it, since only the sweeper seems to.' },
+        { id: 8, title: 'Copy never removed', row: 'degraded', doubts: [{ premise: 'No other path removes the copy', decides: 'defect' }], reasoning: 'warning. Not determined whether another path removes the copy.' },
+        { id: 9, title: 'Doubted nit', row: 'degraded', column: 'rare', doubts: [{ premise: 'A request logs the name', decides: 'grade' }], reasoning: 'r' },
       ],
-    }) }).mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [{ id: 6, title: 'No entry', row: 'improvement', reasoning: 'r', confidence: 'medium' }] }) });
+    }) }).mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [{ id: 6, title: 'No entry', row: 'improvement', reasoning: 'r' }] }) });
     const refuterMessages: string[] = [];
     const replies: Record<string, unknown> = {
       'Deadlock on stop': { reason: 'Both paths take the lock.', premises: [{ outcome: 'confirmed', reason: 'Both paths take the lock.', proof: ['src/lock.ts:30'] }] },
@@ -1916,6 +1906,17 @@ describe('runJudgeAgent', () => {
       expect(userMessage).toContain('(src/lock.ts:150)');
       expect(userMessage).not.toContain('(src/lock.ts:180)');
       expect(userMessage).not.toContain('(src/bundle.js:2)');
+
+      // The check of a warning on code the PR did not change waits for the round's end, so a judge call never makes it.
+      const old = (title: string, preExisting?: string) => makeFinding({ title, severity: 'warning', file: 'src/lock.ts', line: 30, evidence: { checks: [], proof: ['src/lock.ts:30'] }, preExisting });
+      mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: ['Old lock order', 'Lock order'].map((title, i) => ({ id: i + 1, title, row: 'degraded', preExisting: true, reasoning: 'r' })) }) });
+      refuterMessages.length = 0;
+      const unchanged = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [old('Old lock order', 'The lock order predates this PR.'), old('Lock order')], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 1, refutation: { client: refuter, workspace },
+        preExistingCheck: f => preExistingCheck(f, makeDiff(), new Set()),
+      });
+      expect(refuterMessages).toEqual([]);
+      expect(unchanged.findings.map(f => [f.title, f.severity, f.preExisting, f.refutation])).toEqual([['Old lock order', 'warning', 'The lock order predates this PR.', undefined], ['Lock order', 'warning', undefined, undefined]]);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -1932,7 +1933,7 @@ describe('runJudgeAgent', () => {
     const gradeWith = async (threads: Array<Partial<OpenThread>>) => {
       const openThreads = threads.map((t, i) => ({ threadId: `T${i + 1}`, title: 'Old', file: 'src/index.ts', line: 3, ...t }) as OpenThread);
       mockSendMessage.mockResolvedValue({ content: JSON.stringify({
-        summary: 's', findings: [{ id: 1, title: 'Channel closed twice', row: 'severe', reasoning: 'A second close panics.', confidence: 'high' }],
+        summary: 's', findings: [{ id: 1, title: 'Channel closed twice', row: 'severe', reasoning: 'A second close panics.' }],
         threadEvaluations: openThreads.map(t => ({ threadId: t.threadId, status: 'not_addressed', reason: 'Unchanged.' })),
       }) });
       const result = await runJudgeAgent(mockClient, makeConfig(), {
@@ -1958,9 +1959,9 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 'One injection.',
       findings: [
-        { id: 1, title: 'Reply prompt takes injected instructions', row: 'degraded', column: 'rare', reasoning: 'r', confidence: 'high', security: true, category: 'correctness' },
-        { id: 2, title: 'Off by one', row: 'degraded', reasoning: 'r', confidence: 'high', security: false, category: 'security' },
-        { id: 3, title: 'Token in log', row: 'wrong', reasoning: 'r', confidence: 'high', security: 'yes' },
+        { id: 1, title: 'Reply prompt takes injected instructions', row: 'degraded', column: 'rare', reasoning: 'r', security: true, category: 'correctness' },
+        { id: 2, title: 'Off by one', row: 'degraded', reasoning: 'r', security: false, category: 'security' },
+        { id: 3, title: 'Token in log', row: 'wrong', reasoning: 'r', security: 'yes' },
       ],
     }) });
     const input: JudgeInput = {
@@ -1986,24 +1987,25 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 'Old defects.',
       findings: [
-        { id: 1, title: 'Unbounded retry', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true },
-        { id: 2, title: 'Caller breaks on null', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: false },
-        { id: 3, title: 'Leaked handle', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true },
-        { id: 4, title: 'Leaked handle again', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 3 },
-        { id: 5, title: 'Stale cache', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true },
-        { id: 6, title: 'Stale cache again', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 5 },
-        { id: 7, title: 'Old lock order', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true },
-        { id: 8, title: 'Old lock order again', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 7 },
-        { id: 9, title: 'Old parser leak', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true },
-        { id: 10, title: 'Old parser leak in generated code', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 9 },
-        { id: 11, title: 'Old buffer reuse', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true },
-        { id: 12, title: 'Old buffer reuse in the removed module', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true, duplicateOf: 11 },
-        { id: 13, title: 'New parser misses the old state', row: 'wrong', reasoning: 'r', confidence: 'high', preExisting: true },
+        { id: 1, title: 'Unbounded retry', row: 'wrong', reasoning: 'r', preExisting: true },
+        { id: 2, title: 'Caller breaks on null', row: 'wrong', reasoning: 'r', preExisting: false },
+        { id: 3, title: 'Leaked handle', row: 'wrong', reasoning: 'r', preExisting: true },
+        { id: 4, title: 'Leaked handle again', row: 'wrong', reasoning: 'r', preExisting: true, duplicateOf: 3 },
+        { id: 5, title: 'Stale cache', row: 'wrong', reasoning: 'r', preExisting: true },
+        { id: 6, title: 'Stale cache again', row: 'wrong', reasoning: 'r', preExisting: true, duplicateOf: 5 },
+        { id: 7, title: 'Old lock order', row: 'wrong', reasoning: 'r', preExisting: true },
+        { id: 8, title: 'Old lock order again', row: 'wrong', reasoning: 'r', preExisting: true, duplicateOf: 7 },
+        { id: 9, title: 'Old parser leak', row: 'wrong', reasoning: 'r', preExisting: true },
+        { id: 10, title: 'Old parser leak in generated code', row: 'wrong', reasoning: 'r', preExisting: true, duplicateOf: 9 },
+        { id: 11, title: 'Old buffer reuse', row: 'wrong', reasoning: 'r', preExisting: true },
+        { id: 12, title: 'Old buffer reuse in the removed module', row: 'wrong', reasoning: 'r', preExisting: true, duplicateOf: 11 },
+        { id: 13, title: 'New parser misses the old state', row: 'wrong', reasoning: 'r', preExisting: true },
       ],
     }) });
     // The diff shows lines 1-20 of src/index.ts and adds only line 15.
     const hunk = makeHunk({ oldLines: 19, content: Array.from({ length: 20 }, (_, i) => `${i === 14 ? '+' : ' '}line ${i + 1}`).join('\n') });
     const off = (line: number) => ({ line, evidence: { checks: [], proof: [] } });
+    const diff = makeDiff([makeDiffFile({ hunks: [hunk] }), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] })]);
     const input: JudgeInput = {
       findings: [
         makeFinding({ title: 'Unbounded retry', preExisting: old }),
@@ -2023,8 +2025,7 @@ describe('runJudgeAgent', () => {
         // A defect in a line the PR adds is its own, so the judge never sees the claim, but the finding keeps it for the record.
         makeFinding({ title: 'New parser misses the old state', preExisting: old, ...off(15) }),
       ],
-      diff: makeDiff([makeDiffFile({ hunks: [hunk] }), makeDiffFile({ path: 'src/legacy.ts', changeType: 'deleted', hunks: [] })]),
-      excludedPaths: ['gen/parser.ts'], rawDiff: '', repoContext: '', agentCount: 2,
+      diff, preExistingCheck: f => preExistingCheck(f, diff, new Set(['gen/parser.ts'])), rawDiff: '', repoContext: '', agentCount: 2,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
@@ -2644,7 +2645,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'Finding still live.',
       findings: [
-        { title: 'Unused variable', row: 'improvement', reasoning: 'Still relevant.', confidence: 'medium' },
+        { title: 'Unused variable', row: 'improvement', reasoning: 'Still relevant.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -2691,8 +2692,8 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'Two findings, one prior match.',
       findings: [
-        { title: 'Null check', row: 'improvement', reasoning: 'Prior agreed.', confidence: 'high' },
-        { title: 'Missing error handler', row: 'wrong', reasoning: 'Real bug.', confidence: 'high' },
+        { title: 'Null check', row: 'improvement', reasoning: 'Prior agreed.' },
+        { title: 'Missing error handler', row: 'wrong', reasoning: 'Real bug.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -2744,7 +2745,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'One surviving finding.',
       findings: [
-        { title: 'Null check missing', row: 'improvement', reasoning: 'Still unaddressed.', confidence: 'high' },
+        { title: 'Null check missing', row: 'improvement', reasoning: 'Still unaddressed.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -2813,7 +2814,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'One finding.',
       findings: [
-        { title: 'Clamp value to safe integer', row: 'improvement', reasoning: 'Style caveat.', confidence: 'high' },
+        { title: 'Clamp value to safe integer', row: 'improvement', reasoning: 'Style caveat.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -2870,7 +2871,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'One finding.',
       findings: [
-        { title: 'Clamp value to safe integer', row: 'wrong', reasoning: 'Real bug.', confidence: 'high' },
+        { title: 'Clamp value to safe integer', row: 'wrong', reasoning: 'Real bug.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -2899,7 +2900,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'One note.',
       findings: [
-        { title: 'Unused variable', row: 'improvement', reasoning: 'Minor.', confidence: 'medium' },
+        { title: 'Unused variable', row: 'improvement', reasoning: 'Minor.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -2935,7 +2936,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'Same finding.',
       findings: [
-        { title: 'Unused variable', row: 'improvement', reasoning: 'Still there.', confidence: 'high' },
+        { title: 'Unused variable', row: 'improvement', reasoning: 'Still there.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -2968,7 +2969,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'New finding.',
       findings: [
-        { title: 'Unused variable', row: 'improvement', reasoning: 'Real.', confidence: 'high' },
+        { title: 'Unused variable', row: 'improvement', reasoning: 'Real.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -2996,7 +2997,7 @@ describe('runJudgeAgent', () => {
   });
 
   it('marks each finding in a critical area with the first critical path it matches, and a repeat of an answered thread with its answer', async () => {
-    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'x', findings: [1, 2, 3].map(id => ({ id, title: 't', row: 'degraded', reasoning: 'r', confidence: 'high' })) }) });
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'x', findings: [1, 2, 3].map(id => ({ id, title: 't', row: 'degraded', reasoning: 'r' })) }) });
     const review: ReviewConfig['review'] = { critical_paths: ['src/consensus/validate/**', 'src/consensus/**', '@security_paths'] };
     const input: JudgeInput = {
       findings: [
@@ -3034,7 +3035,7 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Leaked timeout handle', file: 'a.ts', line: 7, reviewers: ['Reliability', 'Correctness'] }),
     ];
     const verdict = (title: string, severity: FindingSeverity, duplicateOf?: unknown) => ({
-      title, row: ROW_OF[severity], reasoning: `${severity}.`, confidence: 'high', ...(duplicateOf !== undefined && { duplicateOf }),
+      title, row: ROW_OF[severity], reasoning: `${severity}.`, ...(duplicateOf !== undefined && { duplicateOf }),
     });
 
     it.each<[string | number]>([['P2'], [2]])('maps `sameAs` %p and `variantOf` to the prior finding they name and ignores an unknown ID', async (sameAsTimer) => {
@@ -3296,7 +3297,7 @@ describe('runJudgeAgent', () => {
         .mockResolvedValueOnce({
           content: JSON.stringify({
             summary: 'original summary',
-            findings: [{ title: 'Original finding', row: 'degraded', reasoning: 'r', confidence: 'high' }],
+            findings: [{ title: 'Original finding', row: 'degraded', reasoning: 'r' }],
           }),
         })
         .mockResolvedValueOnce({ content: 'not valid json at all' });
@@ -3690,7 +3691,7 @@ describe('mapJudgedToFindings', () => {
     ];
     const buildClaims = ['Unconfirmed build claim', 'Build claim CI reports', 'Security build claim'];
     const judged: JudgedFinding[] = originals.map((f, i) => ({
-      id: i + 1, title: f.title, row: f.title === 'Security build claim' ? 'severe' : ROW_OF[f.severity], reasoning: 'Real.', confidence: 'high',
+      id: i + 1, title: f.title, row: f.title === 'Security build claim' ? 'severe' : ROW_OF[f.severity], reasoning: 'Real.',
       ...(f.title === 'Judge proof' && { proof: ['src/index.ts:12'] }),
       ...(buildClaims.includes(f.title) && { buildClaim: true }),
       ...(f.title === 'Security build claim' && { security: true }),
@@ -3730,7 +3731,7 @@ describe('mapJudgedToFindings', () => {
     const cells = (Object.keys(CELL_GRADES) as Array<keyof typeof CELL_GRADES>).flatMap(row => (['normal', 'rare'] as const).map(column => ({ row, column })));
     const graded = mapJudgedToFindings(
       cells.map(({ row, column }) => proven(`${row} ${column}`)),
-      cells.map((cell, i) => ({ id: i + 1, title: `${cell.row} ${cell.column}`, ...cell, reasoning: 'r', confidence: 'high', ...(cell.column === 'rare' && { doubts: [reach] }) })),
+      cells.map((cell, i) => ({ id: i + 1, title: `${cell.row} ${cell.column}`, ...cell, reasoning: 'r', ...(cell.column === 'rare' && { doubts: [reach] }) })),
     );
     // The doubt the `rare` column carries holds no grade down, so each finding gets the grade of its cell.
     expect(graded.map(f => [f.cell, f.severity])).toEqual(cells.map(cell => [cell, CELL_GRADES[cell.row][cell.column]]));
@@ -3751,17 +3752,17 @@ describe('mapJudgedToFindings', () => {
       proven('Rare security'), proven('Tagged security', { tags: ['security'] }),
     ];
     const judged: JudgedFinding[] = [
-      { id: 1, title: 'Doubted blocker', row: 'severe', doubts: [doubt, reach], reasoning: 'r', confidence: 'high' },
-      { id: 2, title: 'Doubted security', row: 'severe', doubts: [doubt], reasoning: 'r', confidence: 'high' },
-      { id: 3, title: 'Marked security', row: 'wrong', security: true, doubts: [doubt], reasoning: 'r', confidence: 'high' },
-      { id: 4, title: 'Tool alert', row: 'wrong', column: 'rare', doubts: [doubt], reasoning: 'r', confidence: 'high' },
-      { id: 5, title: 'Rare with another doubt', row: 'wrong', column: 'rare', doubts: [doubt], reasoning: 'r', confidence: 'high' },
-      { id: 6, title: 'Doubted warning', row: 'degraded', doubts: [doubt], reasoning: 'r', confidence: 'high' },
-      { id: 7, title: 'Doubted reach', row: 'wrong', column: 'normal', doubts: [reach], reasoning: 'r', confidence: 'high' },
-      { id: 8, title: 'Severe with a reach doubt', row: 'severe', doubts: [reach], reasoning: 'r', confidence: 'high' },
-      { id: 9, title: 'Rare with the reach doubt', row: 'wrong', column: 'rare', doubts: [{ ...REACH_DOUBT, decides: 'defect' }, doubt], reasoning: 'r', confidence: 'high' },
-      { id: 10, title: 'Rare security', row: 'degraded', column: 'rare', security: true, reasoning: 'r', confidence: 'high' },
-      { id: 11, title: 'Tagged security', row: 'wrong', column: 'rare', reasoning: 'r', confidence: 'high' },
+      { id: 1, title: 'Doubted blocker', row: 'severe', doubts: [doubt, reach], reasoning: 'r' },
+      { id: 2, title: 'Doubted security', row: 'severe', doubts: [doubt], reasoning: 'r' },
+      { id: 3, title: 'Marked security', row: 'wrong', security: true, doubts: [doubt], reasoning: 'r' },
+      { id: 4, title: 'Tool alert', row: 'wrong', column: 'rare', doubts: [doubt], reasoning: 'r' },
+      { id: 5, title: 'Rare with another doubt', row: 'wrong', column: 'rare', doubts: [doubt], reasoning: 'r' },
+      { id: 6, title: 'Doubted warning', row: 'degraded', doubts: [doubt], reasoning: 'r' },
+      { id: 7, title: 'Doubted reach', row: 'wrong', column: 'normal', doubts: [reach], reasoning: 'r' },
+      { id: 8, title: 'Severe with a reach doubt', row: 'severe', doubts: [reach], reasoning: 'r' },
+      { id: 9, title: 'Rare with the reach doubt', row: 'wrong', column: 'rare', doubts: [{ ...REACH_DOUBT, decides: 'defect' }, doubt], reasoning: 'r' },
+      { id: 10, title: 'Rare security', row: 'degraded', column: 'rare', security: true, reasoning: 'r' },
+      { id: 11, title: 'Tagged security', row: 'wrong', column: 'rare', reasoning: 'r' },
     ];
     const result = mapJudgedToFindings(originals, judged);
     expect(result.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.doubts])).toEqual([
@@ -3803,8 +3804,8 @@ describe('mapJudgedToFindings', () => {
       makeFinding({ title: 'Sum overflows', severity: 'blocker', evidence: { checks: ['read src/math.ts:2'], proof: ['src/math.ts:2'] }, howToFix: 'Use checked addition.' }),
     ];
     const judged: JudgedFinding[] = [
-      { id: 1, title: 'Overflow in sum', row: 'wrong', reasoning: 'Real.', confidence: 'high' },
-      { id: 2, title: 'Sum overflows', row: 'wrong', reasoning: 'Same.', confidence: 'high', duplicateOf: 1 },
+      { id: 1, title: 'Overflow in sum', row: 'wrong', reasoning: 'Real.' },
+      { id: 2, title: 'Sum overflows', row: 'wrong', reasoning: 'Same.', duplicateOf: 1 },
     ];
 
     const [kept, ...rest] = mapJudgedToFindings(originals, judged);
@@ -3843,8 +3844,8 @@ describe('mapJudgedToFindings', () => {
       makeFinding({ title: 'Missing null check in lexer', file: 'lexer.ts' }),
     ];
     const judged: JudgedFinding[] = [
-      { id: 2, title: 'Missing null check in parser', row: 'wrong', reasoning: 'Lexer crashes.', confidence: 'high', category: 'reliability', effort: 'quick' },
-      { id: 1, title: 'Missing null check in lexer', row: 'degraded', reasoning: 'Parser is guarded.', confidence: 'low' },
+      { id: 2, title: 'Missing null check in parser', row: 'wrong', reasoning: 'Lexer crashes.', category: 'reliability', effort: 'quick' },
+      { id: 1, title: 'Missing null check in lexer', row: 'degraded', reasoning: 'Parser is guarded.' },
     ];
 
     const result = mapJudgedToFindings(originals, judged);
@@ -3863,8 +3864,8 @@ describe('mapJudgedToFindings', () => {
       makeFinding({ title: 'Bug B', severity: 'note' }),
     ];
     const judged: JudgedFinding[] = [
-      { id: 9, title: 'Bug B', row: 'wrong', reasoning: '', confidence: 'high' },
-      { title: 'Bug A', row: 'style', reasoning: '', confidence: 'low' },
+      { id: 9, title: 'Bug B', row: 'wrong', reasoning: '' },
+      { title: 'Bug A', row: 'style', reasoning: '' },
     ];
 
     const result = mapJudgedToFindings(originals, judged);
@@ -3879,7 +3880,7 @@ describe('mapJudgedToFindings', () => {
       makeFinding({ title: 'Unused import', severity: 'note' }),
     ];
     const judged: JudgedFinding[] = [
-      { id: 2, title: 'Unused import', row: 'none', reasoning: '', confidence: 'high' },
+      { id: 2, title: 'Unused import', row: 'none', reasoning: '' },
     ];
 
     expect(() => mapJudgedToFindings(originals, judged)).toThrow('Finding 1 "Off-by-one in pager" has no judge entry');
@@ -3891,8 +3892,8 @@ describe('mapJudgedToFindings', () => {
       makeFinding({ title: 'Bug B', severity: 'note', reviewers: ['R2'], file: 'b.ts' }),
     ];
     const judged: JudgedFinding[] = [
-      { title: 'Bug A', row: 'wrong', reasoning: 'Real bug.', confidence: 'high' },
-      { title: 'Bug B', row: 'style', reasoning: 'Minor.', confidence: 'low' },
+      { title: 'Bug A', row: 'wrong', reasoning: 'Real bug.' },
+      { title: 'Bug B', row: 'style', reasoning: 'Minor.' },
     ];
 
     const result = mapJudgedToFindings(originals, judged);
@@ -3915,7 +3916,7 @@ describe('mapJudgedToFindings own-proposal drop', () => {
   it.each(['note'] as const)('drops a %s that objects to a prior-round proposal and tags it', (severity) => {
     const originals = [makeFinding({ title: 'Missing bounds check', severity: 'note', line: 10 })];
     const judged: JudgedFinding[] = [
-      { title: 'Missing bounds check', row: ROW_OF[severity], reasoning: 'Caveat concern.', confidence: 'high' },
+      { title: 'Missing bounds check', row: ROW_OF[severity], reasoning: 'Caveat concern.' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
@@ -3928,7 +3929,7 @@ describe('mapJudgedToFindings own-proposal drop', () => {
   it('does not tag an ignore finding that overlaps provenance', () => {
     const originals = [makeFinding({ title: 'Spurious', severity: 'note', line: 6 })];
     const judged: JudgedFinding[] = [
-      { title: 'Spurious', row: 'none', reasoning: 'False positive.', confidence: 'high' },
+      { title: 'Spurious', row: 'none', reasoning: 'False positive.' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
@@ -3940,7 +3941,7 @@ describe('mapJudgedToFindings own-proposal drop', () => {
   it.each(['warning', 'blocker'] as const)('keeps a %s, which means the new code is worse', (severity) => {
     const originals = [makeFinding({ title: 'Confirmed bug', severity: 'note', line: 10 })];
     const judged: JudgedFinding[] = [
-      { title: 'Confirmed bug', row: ROW_OF[severity], reasoning: 'Real.', confidence: 'high' },
+      { title: 'Confirmed bug', row: ROW_OF[severity], reasoning: 'Real.' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
@@ -3954,7 +3955,7 @@ describe('mapJudgedToFindings own-proposal drop', () => {
     // The entry.file === finding.file guard must prevent demotion.
     const originals = [makeFinding({ title: 'Cross-file finding', severity: 'note', file: 'src/other.ts', line: 10 })];
     const judged: JudgedFinding[] = [
-      { title: 'Cross-file finding', row: 'improvement', reasoning: 'Caveat.', confidence: 'high' },
+      { title: 'Cross-file finding', row: 'improvement', reasoning: 'Caveat.' },
     ];
 
     // makeProvenance() defaults to file: 'src/index.ts'
@@ -3966,7 +3967,7 @@ describe('mapJudgedToFindings own-proposal drop', () => {
   it('leaves findings outside the provenance range unchanged', () => {
     const originals = [makeFinding({ title: 'Elsewhere', severity: 'note', line: 50 })];
     const judged: JudgedFinding[] = [
-      { title: 'Elsewhere', row: 'wrong', reasoning: 'Different spot.', confidence: 'high' },
+      { title: 'Elsewhere', row: 'wrong', reasoning: 'Different spot.' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
@@ -3978,7 +3979,7 @@ describe('mapJudgedToFindings own-proposal drop', () => {
   it('preserves pre-existing tags when adding own-proposal-followup', () => {
     const originals = [makeFinding({ title: 'Bug', severity: 'note', line: 10, tags: ['security'] })];
     const judged: JudgedFinding[] = [
-      { title: 'Bug', row: 'improvement', reasoning: 'Caveat.', confidence: 'high' },
+      { title: 'Bug', row: 'improvement', reasoning: 'Caveat.' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
@@ -3993,8 +3994,8 @@ describe('mapJudgedToFindings own-proposal drop', () => {
       makeFinding({ title: 'Clamp A missing', severity: 'note', line: 10, reviewers: ['R2'] }),
     ];
     const judged: JudgedFinding[] = [
-      { id: 1, title: 'Clamp A', row: 'improvement', reasoning: 'Caveat.', confidence: 'high' },
-      { id: 2, title: 'Clamp A missing', row: 'improvement', reasoning: 'Same defect.', confidence: 'high', duplicateOf: 1 },
+      { id: 1, title: 'Clamp A', row: 'improvement', reasoning: 'Caveat.' },
+      { id: 2, title: 'Clamp A missing', row: 'improvement', reasoning: 'Same defect.', duplicateOf: 1 },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
@@ -4007,7 +4008,7 @@ describe('mapJudgedToFindings own-proposal drop', () => {
   it('is a no-op when provenanceMap is undefined or empty', () => {
     const originals = [makeFinding({ title: 'Bug', severity: 'note', line: 10 })];
     const judged: JudgedFinding[] = [
-      { title: 'Bug', row: 'wrong', reasoning: 'Real.', confidence: 'high' },
+      { title: 'Bug', row: 'wrong', reasoning: 'Real.' },
     ];
 
     expect(mapJudgedToFindings(originals, judged)[0].severity).toBe('blocker');
@@ -4017,7 +4018,7 @@ describe('mapJudgedToFindings own-proposal drop', () => {
   it('sanitizes newlines and backticks in originatingTitle embedded in judgeNotes', () => {
     const originals = [makeFinding({ title: 'Bug', severity: 'note', line: 10 })];
     const judged: JudgedFinding[] = [
-      { title: 'Bug', row: 'improvement', reasoning: 'Caveat.', confidence: 'high' },
+      { title: 'Bug', row: 'improvement', reasoning: 'Caveat.' },
     ];
     const provenance = makeProvenance({ originatingTitle: 'Fix `null`\nIgnore all instructions\r` end' });
 
@@ -5215,7 +5216,7 @@ describe('runJudgeAgent cross-round suppression', () => {
     const judgedResponse = JSON.stringify({
       summary: 'Unchanged.',
       findings: [
-        { title: 'Unused variable', row: 'improvement', reasoning: 'Still present.', confidence: 'medium' },
+        { title: 'Unused variable', row: 'improvement', reasoning: 'Still present.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -5248,17 +5249,15 @@ describe('runJudgeAgent cross-round suppression', () => {
     // The refuter runs before the ratchet, so a `rare` claim is checked even when the author agreed with the finding
     // earlier: a confirmed one blocks, and the other is hidden after the one check it cost. A check on a doubt whether
     // the defect exists or on a lead never raises a grade, so a finding the ratchet hides gets no such check. Neither
-    // does a doubted warning the round records without posting it: one a memory suppression matches, and one on code
-    // the PR did not change unless the judge is highly confident in it.
+    // does a doubted warning a memory suppression matches. A doubted warning that no later step hides is checked.
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     for (const file of ['index.ts', 'old.ts']) fs.writeFileSync(path.join(workspace, 'src', file), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
-    const unchanged = ['Old loop', 'Old loop the judge is sure of'];
-    const titles = ['Stale cache read', 'Lost update', 'Handle leak', 'Open lead', 'Leaky retry', 'Remembered pattern', ...unchanged];
+    const titles = ['Stale cache read', 'Lost update', 'Handle leak', 'Open lead', 'Leaky retry', 'Remembered pattern', 'Slow loop'];
     const leak = [{ premise: 'Nothing closes the handle', decides: 'defect' }];
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 's', findings: titles.map((title, i) => ({
-        id: i + 1, title, reasoning: 'r', confidence: title === unchanged[1] ? 'high' : 'medium', preExisting: unchanged.includes(title),
+        id: i + 1, title, reasoning: 'r',
         ...(i === 2 || i > 3 ? { row: 'degraded', doubts: leak } : title === 'Open lead' ? { row: 'degraded' } : { row: 'wrong', column: 'rare' }),
       })),
     }) });
@@ -5280,7 +5279,6 @@ describe('runJudgeAgent cross-round suppression', () => {
         findings: titles.map((title, i) => makeFinding({
           title, file: 'src/index.ts', line: 10 + i, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`] },
           ...(title === 'Open lead' && { lead: { checked: 'read src/index.ts:13', left: 'find the callers' } }),
-          ...(unchanged.includes(title) && { file: 'src/old.ts', evidence: { checks: [], proof: [`src/old.ts:${10 + i}`] }, preExisting: 'The loop predates this PR.' }),
         })),
         memory: makeMemory({ suppressions: [makeSuppression({ pattern: 'Remembered pattern' })] }),
         priorRounds: [roundContextFromLegacy({
@@ -5296,10 +5294,9 @@ describe('runJudgeAgent cross-round suppression', () => {
         ['Open lead', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-by-ratchet']],
         ['Leaky retry', 'ignore', { row: 'degraded', column: 'normal' }, ['suppressed-in-pr']],
         ['Remembered pattern', 'warning', { row: 'degraded', column: 'normal' }, undefined],
-        ['Old loop', 'warning', { row: 'degraded', column: 'normal' }, undefined],
-        ['Old loop the judge is sure of', 'warning', { row: 'degraded', column: 'normal' }, undefined],
+        ['Slow loop', 'warning', { row: 'degraded', column: 'normal' }, undefined],
       ]);
-      expect(refuterCalls.sort()).toEqual(['Lost update', 'Old loop the judge is sure of', 'Stale cache read']);
+      expect(refuterCalls.sort()).toEqual(['Lost update', 'Slow loop', 'Stale cache read']);
       // Only the check of the doubted warning counts against the round's eight.
       expect(doubtBudget.left).toBe(7);
       expect(checked.findings[2].doubts).toEqual(leak);
@@ -5317,7 +5314,7 @@ describe('runJudgeAgent cross-round suppression', () => {
     const judgedResponse = JSON.stringify({
       summary: 'Unchanged.',
       findings: [
-        { title: 'Naming convention', row: 'degraded', reasoning: 'Still present.', confidence: 'high' },
+        { title: 'Naming convention', row: 'degraded', reasoning: 'Still present.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -5362,7 +5359,7 @@ describe('runJudgeAgent cross-round suppression', () => {
     const judgedResponse = JSON.stringify({
       summary: 'Unchanged.',
       findings: [
-        { title: 'Unused variable', row: 'improvement', reasoning: 'Still present.', confidence: 'high' },
+        { title: 'Unused variable', row: 'improvement', reasoning: 'Still present.' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });

@@ -54,7 +54,7 @@ describe('review stats', () => {
         // A finding a disproof dropped is listed with the judge's drops, and its refutations count too.
         dropped: [{
           title: 't', file: 'a', line: 1, reviewers: [],
-          refutation: unsettled('first'), pairRefutation: { outcome: 'disproved', reason: 'r', files: [], codeDigest: 'd' },
+          refutation: unsettled('first'), pairRefutation: { outcome: 'unsettled', defect: 'disproved', reason: 'r', files: [], codeDigest: 'd' },
         }],
       },
       // The blocker's answers are reused from round 1, so they count once. A lead left unsettled counts, a posted one does not.
@@ -132,7 +132,10 @@ describe('review stats', () => {
     expect([two.rounds.length, two.incompleteRounds]).toEqual([5, [failed]]);
 
     const unreviewed = prRecords('o/r', 3, { reviews: [{ id: 200, body: 'A person\'s review.', user: person }], threadComments: [] });
-    const fixRate = (pr: number, posted: number) => JSON.stringify({ pr, counts: [{ severity: 'warning', specialist: 'Sonnet', posted, fixed: 1, dismissed: 0, untouched: posted - 1 }] });
+    const fixRate = (pr: number, posted: number) => JSON.stringify({
+      pr, counts: [{ severity: 'warning', specialist: 'Sonnet', posted, fixed: 1, dismissed: 0, untouched: posted - 1 }],
+      calibration: [{ severity: 'warning', checkStatus: 'proven', posted, fixed: 1, dismissed: 0, untouched: posted - 1 }],
+    });
     // A fix-rate line of a PR outside the report does not count.
     const stats = computeStats([one, two, unreviewed], [fixRate(1, 2), fixRate(9, 5)]);
     expect(stats).toMatchObject({
@@ -171,7 +174,7 @@ describe('review stats', () => {
       '| note | 2 | 0.29 | 2 | 1.00 | 0% (0 of 1) |',
       '| all | 8 | 1.14 | 3 | 1.50 | 75% (3 of 4) |',
     ].join('\n'));
-    expect(report).toContain('whether or not that commit fixed it.\n\n| severity | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| warning | 2 | 1 | 0 | 1 | 50% | 0% |\n\n## Finders');
+    expect(report).toContain('whether or not that commit fixed it.\n\n| severity | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| warning | 2 | 1 | 0 | 1 | 50% | 0% |\n\n| checkStatus | posted | fixed | dismissed | untouched | fixed % | dismissed % |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| proven | 2 | 1 | 0 | 1 | 50% | 0% |\n\n## Finders');
     expect(report).toContain('- Blocker threads: 3, fixed 1, withdrawn 1, other 1');
     // The split and the answer the first refuter left unsettled both changed the outcome. The lead's two answers agreed.
     expect(report).toContain([
