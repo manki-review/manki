@@ -3275,7 +3275,7 @@ describe('runReview', () => {
     const openThread = makePriorOpenThread({ severity: 'blocker', threadUrl: 'https://github.com/o/r/pull/1#t1' });
     const thread = (status: PreviousFinding['status'], reopen = false): PreviousFinding => (
       { title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'blocker', status, threadId: 'T1', ...(reopen && { reopen }) });
-    const runOn = (clients: ReviewClients, headSha: string, openThreads = [openThread], previousFindings = [thread('open')], priorRounds = [prior]) => runReview(
+    const runOn = (clients: ReviewClients, headSha: string, openThreads: OpenThread[] | null = [openThread], previousFindings = [thread('open')], priorRounds = [prior]) => runReview(
       clients, {
         config: makeConfig(),
         diff,
@@ -3308,7 +3308,13 @@ describe('runReview', () => {
     }
 
     // A thread that counts as resolved, as when a maintainer other than the author resolved it, is a fix claim. Its
-    // blocker is posted again, since no open thread carries it.
+    // blocker is posted again, since no open thread carries it. So is a thread Manki resolved for a maintainer, which
+    // is how a maintainer's answer or dismissal clears a thread the PR author had resolved.
+    // With the open threads unknown, only the status says so.
+    for (const openThreads of [[], null]) {
+      const cleared = await runOn(makeClients(), 'sha2', openThreads, [thread('auto-resolved')]);
+      expect([cleared.outcome, cleared.needsHuman?.cause, cleared.fixClaimedThreadIds]).toEqual(['NOT_CONVERGING', 'repeated', ['T1']]);
+    }
     const resolved = await runOn(makeClients(), 'sha2', [], [thread('resolved')]);
     expect(resolved.outcome).toBe('NOT_CONVERGING');
     // The round records the threads where a fix was claimed.

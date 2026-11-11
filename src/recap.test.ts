@@ -1355,6 +1355,16 @@ describe('fetchRecapState', () => {
 
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.previousFindings.map(f => f.status)).toEqual(['resolved', 'auto-resolved', 'resolved', 'auto-resolved']);
+
+      // Manki reopens a thread the PR author resolved, and resolves it itself once a maintainer clears it. Its status is the same.
+      const cleared = thread('T_BOT', files.bot, BOT_LOGIN);
+      cleared.comments.nodes.push(
+        { body: `<!-- manki -->\n${REOPENED_MARKER}\nReopened.`, author: { login: BOT_LOGIN } },
+        { body: 'The caller checks this.', author: { login: 'alice' } },
+        { body: '**Withdrawn.** The caller checks it.\n\n<!-- manki -->', author: { login: BOT_LOGIN } },
+      );
+      const afterClear = await fetchRecapState(mockOctokit([cleared], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]), TEST_BOT, 'owner', 'repo', 1, 'author');
+      expect(afterClear.previousFindings.map(f => [f.status, f.reopen ?? false])).toEqual([['auto-resolved', false]]);
       expect(state.previousFindings.map(f => f.fixed ?? false)).toEqual([false, false, true, false]);
 
       const newFindings = Object.values(files).map(file => makeFinding({ title, file, line: 10 }));
