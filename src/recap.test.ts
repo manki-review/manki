@@ -2464,6 +2464,14 @@ describe('parseFindingFromComment', () => {
       expect(detached).toContain('so the thread is posted here.\n\n_Manki could not confirm this');
       expect(parseFindingFromComment(detached)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     }
+    // A late warning on such a thread has all three notes under its title, and they are skipped in any order.
+    const late = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/store.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], tags: ['follow-up'], checkStatus: 'unconfirmed', origin: 'reviewed' }, TEST_LINKS, true);
+    const notes = late.match(/(This is in [^\n]+)\n\n(_Manki could not confirm[^\n]+)\n\n(_An earlier round already reviewed[^\n]+)\n\n/);
+    expect(notes).not.toBeNull();
+    for (const order of [[1, 2, 3], [3, 1, 2], [2, 3, 1]]) {
+      const body = late.replace(notes![0], `${order.map(i => notes![i]).join('\n\n')}\n\n`);
+      expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+    }
     // The note is skipped only on a thread whose finding data says it is posted elsewhere.
     const quoted = formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'GitHub only allows comments on changed files, so the thread is posted here.', reviewers: [] }, TEST_LINKS);
     expect(parseFindingFromComment(quoted).description).toBe('GitHub only allows comments on changed files, so the thread is posted here.');

@@ -891,11 +891,12 @@ function parseFindingFromComment(body: string): FindingMetadata {
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
   const data = parseFindingData(body);
-  const [firstLine] = descSlice.split('\n');
-  if (data?.detached && firstLine.endsWith(DETACHED_NOTE_END)) descSlice = descSlice.slice(firstLine.length).trimStart();
-  for (const note of [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE]) {
-    if (descSlice.startsWith(note)) descSlice = descSlice.slice(note.length).replace(/^\s+/, '');
-  }
+  // The notes under the title are skipped in whatever order they come.
+  const leadingNote = (): string | undefined => {
+    const [firstLine] = descSlice.split('\n');
+    return data?.detached && firstLine.endsWith(DETACHED_NOTE_END) ? firstLine : [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE].find(n => descSlice.startsWith(n));
+  };
+  for (let note = leadingNote(); note; note = leadingNote()) descSlice = descSlice.slice(note.length).trimStart();
   const label = [WHAT_GOES_WRONG_LABEL, WHY_LABEL].find(l => descSlice === l || descSlice.startsWith(`${l} `));
   if (label) descSlice = descSlice.slice(label.length).trimStart();
   const remainingSubs = descSlice.match(/^(?:<sub>[^\n]*<\/sub>\s*\n?)+/);
