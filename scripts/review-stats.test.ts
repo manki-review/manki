@@ -59,11 +59,13 @@ describe('review stats', () => {
       // The blocker's answers are reused from round 1, so they count once. A lead left unsettled counts, a posted one does not.
       findings: {
         count: 3, severityCounts: {},
-        // A finding that restates an earlier one was not first raised in this round.
+        // A finding that restates an earlier one was not first raised in this round. One under an earlier thread is not posted either.
         entries: [
           { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed' },
           { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'new' },
           { ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'earlier' },
+          { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed', threadId: 'T1' },
+          { ...makeFindingFingerprintEntry({ severity: 'nitpick' }), origin: 'new', threadId: 'T2' },
         ],
         unposted: [{ ...makeFindingFingerprintEntry({ severity: 'blocker' }), refutation: disprovedBlocker, pairRefutation: confirmedBlocker }],
       },

@@ -309,7 +309,7 @@ To see whether a change to the review helps, run `npm run review-stats -- --repo
 
 - rounds per PR (mean, median and max), the share that passed after one round, and the share that needed 5 or more;
 - the approved rounds, and how many PRs ran more rounds after their first approval, with the number of such rounds;
-- findings per round and per approved round by severity, and of the findings a later round raised for the first time, the share on code an earlier round reviewed;
+- findings per round and per approved round by severity, and of the findings a later round raised for the first time, the share on code an earlier round reviewed. A finding the round put under an earlier thread is not posted again, so it counts in none of these;
 - with `--fix-rate`, which takes the repository's `metrics/fix-rate.jsonl` from its memory repo, the fix rate by severity for the same PRs. A finding counts as fixed when the judge marked its thread addressed or a later commit touched its lines, whether or not that commit fixed it;
 - how blocker threads ended: fixed, withdrawn by Manki, or other;
 - per finder model, the raw findings, the kept findings only that model raised and those it raised with another finder, and the tool steps per call;

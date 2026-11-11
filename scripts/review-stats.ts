@@ -59,7 +59,7 @@ interface FinderStats {
   wrapUps: number;
 }
 
-/** The findings the rounds posted at one severity. */
+/** The findings the rounds posted at one severity. A finding the round put under an earlier thread counts in none of the fields. */
 interface SeverityStats {
   posted: number;
   /** Findings posted by a round that ended `READY`. */
@@ -248,6 +248,8 @@ export function computeStats(prs: PrRecords[], fixRateLines: string[] = []): Rev
       const approved = round.meta.outcome === 'READY';
       if (approved) stats.approvedRounds++;
       for (const entry of round.findings?.entries ?? []) {
+        // An entry's `threadId` names the earlier thread the finding restates or adds to. The review opens no thread for it.
+        if (entry.threadId) continue;
         const severity = stats.severities[entry.severity] ??= noFindings();
         severity.posted++;
         if (approved) severity.inApprovedRounds++;
