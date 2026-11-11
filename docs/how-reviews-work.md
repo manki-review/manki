@@ -92,7 +92,7 @@ review:
 - **`outside_input`**: what counts as outside input in your repository, in a sentence or two. The judge treats a failure that this input can trigger as reachable, never as a rare internal case. The finders get this rule and the list of critical paths too, so they grade by the same table as the judge.
 - **`examples`**: worked examples from your repository, one string each, under `blocker` for findings that block and `not_blocker` for findings that do not. Set either side or both. The judge reads them next to its built-in examples on the same two sides.
 
-The last three only change how the judge grades findings. A repository with consensus code might set them like this:
+The last three only change how findings are graded: `critical_paths` and `outside_input` by the finders and the judge, `examples` by the judge alone. A repository with consensus code might set them like this:
 
 ```yaml
 review:
