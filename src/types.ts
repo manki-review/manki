@@ -708,7 +708,7 @@ export function damageDisproof(finding: Pick<Finding, 'severity' | 'rule' | 'gra
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note, and the last three on a warning nothing proves. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note, `listed_earlier` also on a finding that restates an earlier blocker the round lists again, and the last three on a warning nothing proves. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',

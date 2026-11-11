@@ -3404,6 +3404,14 @@ describe('runReview', () => {
     expect((await run(makeClients(), [listed({ authorReplyClass: 'agree' })])).findings).toEqual([]);
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ severity: 'blocker', title: 'Writers race', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: key }], summary: 'Still there.' });
     expect((await run(makeClients(), [listed()])).findings.map(f => f.title)).toEqual(['Writers race']);
+    // A finding that names it at a lower grade lifts nothing. The blocker is listed again and stands for it, so the defect shows once.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ severity: 'warning', title: 'Writers may race', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: key, raisedIn: 1 }], summary: 'Less bad.' });
+    const lowered = await run(makeClients(), [listed()]);
+    expect([lowered.findings.map(f => [f.severity, f.title, f.relisted]), lowered.unposted?.map(f => [f.severity, f.title, f.unpostedReason]), lowered.outcome])
+      .toEqual([[['blocker', 'Old issue', true]], [['warning', 'Writers may race', 'listed_earlier']], 'ADDRESS_FIRST']);
+    // A blocker with an open thread keeps blocking beside the same lower-grade finding.
+    const beside = await run(makeClients(), [listed({ threadId: 'T1', posted: 'thread' })], { openThreads: [makePriorOpenThread({ threadId: 'T1', file: 'src/outside.ts', severity: 'blocker' })] });
+    expect([beside.outcome, beside.verdictReason, beside.verdictTrace?.unresolvedPriors.map(p => p.threadId)]).toEqual(['ADDRESS_FIRST', 'prior_unaddressed', ['T1']]);
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
 
     // When the threads could not be read, a thread may carry it, so it is not listed again and keeps blocking as an earlier blocker.

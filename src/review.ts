@@ -1493,9 +1493,10 @@ export async function runReview(
   // After the fold into earlier findings, so a warning an earlier round already shows stays where it is.
   const proven = hideUnprovenWarnings(finalFindings);
   finalFindings = proven.posted;
-  const unposted = proven.unposted;
   // Listed after the judge and the refuter, so no model reads an earlier blocker a second time.
-  if (openThreads != null) finalFindings = [...finalFindings, ...relistThreadlessBlockers(finalFindings, priorFindingsFlat, priorRoundLookup)];
+  const relisting = openThreads != null ? relistThreadlessBlockers(finalFindings, priorFindingsFlat, priorRoundLookup) : { findings: finalFindings, restated: [] };
+  finalFindings = relisting.findings;
+  const unposted = [...proven.unposted, ...relisting.restated];
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
@@ -2248,13 +2249,13 @@ function isPriorLikelyUnresolved(
 }
 
 /**
- * Returns each earlier blocker that no thread carries as a finding of this round, so the review posts it as a thread
- * that a later round can evaluate and a person can resolve. A blocker of `findings` that names it again carries it
- * already, and one the author's reply settled stays settled. Call it only when the review threads could be read.
+ * Returns `findings` with each earlier blocker that no thread carries listed again as a blocker, so it gets a thread.
+ * A blocker of `findings` that names it carries it already, and one the author's reply settled stays settled. A
+ * lower-grade finding that names it lifts nothing and goes to `restated`. Call it only when the threads could be read.
  */
-function relistThreadlessBlockers(findings: Finding[], priorRounds: FindingFingerprintEntry[], priorRoundLookup: Map<string, number>): Finding[] {
+function relistThreadlessBlockers(findings: Finding[], priorRounds: FindingFingerprintEntry[], priorRoundLookup: Map<string, number>): { findings: Finding[]; restated: Finding[] } {
   const namedAgain = new Set(findings.flatMap(f => f.severity === 'blocker' && f.sameAs ? [f.sameAs] : []));
-  return dedupePriorFindings(priorRounds).flatMap((p): Finding[] => {
+  const relisted = dedupePriorFindings(priorRounds).flatMap((p): Finding[] => {
     const key = stringifyFindingFingerprint(p.fingerprint);
     if (p.severity !== 'blocker' || p.threadId || p.authorReplyClass === 'agree' || namedAgain.has(key)) return [];
     const raisedIn = p.raisedIn ?? priorRoundLookup.get(key);
@@ -2277,6 +2278,13 @@ function relistThreadlessBlockers(findings: Finding[], priorRounds: FindingFinge
       relisted: true,
     }];
   });
+  const listed = new Set(relisted.map(f => f.sameAs));
+  const restates = (f: Finding): boolean => !!f.sameAs && listed.has(f.sameAs);
+  for (const f of findings.filter(restates)) core.info(`Leaving out the ${f.severity} "${f.title}", since it restates an earlier blocker this round lists again`);
+  return {
+    findings: [...findings.filter(f => !restates(f)), ...relisted],
+    restated: findings.filter(restates).map((f): Finding => ({ ...f, unpostedReason: 'listed_earlier' })),
+  };
 }
 
 function dedupePriorFindings(priorRounds: FindingFingerprintEntry[]): FindingFingerprintEntry[] {
