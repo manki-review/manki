@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.4.0] - 2026-11-11
+
+Manki 7.4 makes follow-up rounds work with the threads earlier rounds opened. A finding that restates an open thread joins it, a partly fixed thread stays open at the grade of what remains, and an outdated thread is judged on the code it moved to. A deeper review runs at the new `xhigh` effort, a repository can set the judge's effort, and an opt-in sweep looks for more places with a blocker's mistake. Some settings change with no transition, so read Upgrading first.
+
+### Upgrading
+
+1. `exclude_paths` now replaces the default list instead of adding to it, like any other setting, and `exclude_paths: []` excludes nothing. A repository with its own list loses every default pattern it does not repeat, so add `dist/**`, `*.generated.*` or the lockfile names back if you relied on them. The default list no longer hides every `.lock` file. It names the package lockfiles, such as `Cargo.lock`, `poetry.lock`, `Gemfile.lock` and `composer.lock`, so another `.lock` file, such as `.github/workflows/actions.lock` or `flake.lock`, is now reviewed as text ([#1347](https://github.com/manki-review/manki/pull/1347)).
+2. `critical` on a review class is gone. List critical paths in the new `review.critical_paths` instead, as globs or path aliases such as `@security_paths`. A `.manki.yml` that sets `critical` on any class, built-in or not, no longer loads. Move that class's `paths_any` to `review.critical_paths`, and drop the class if it only marked critical paths. The judge's "Critical area" note names the first glob that matches the file ([#1349](https://github.com/manki-review/manki/pull/1349)).
+3. New setting `judge.effort`. The default `auto` keeps the planner's pick, and `low`, `medium`, `high`, `xhigh` or `max` fixes the level for the judge and the refuter on every round. The round record and the progress comment show the judge's effort, also when no planner ran ([#1377](https://github.com/manki-review/manki/pull/1377), [#1380](https://github.com/manki-review/manki/pull/1380)).
+4. New setting `review.sweep`, off by default. When it is on, each blocker the judge keeps starts one call that states the defect class in general terms and lists every other place in the diff with the same mistake. A round runs at most three sweeps, security blockers first, and their findings get one more judge call. A place that a judged finding already cites is dropped. The round record lists each sweep under `sweeps`, and its findings name `Sweep 1`, `Sweep 2` and so on as their reviewer ([#1374](https://github.com/manki-review/manki/pull/1374), [#1390](https://github.com/manki-review/manki/pull/1390)).
+
+### Earlier threads
+
+- A finding that restates a thread an earlier round left open is no longer posted again. Another instance of the same mistake goes to that thread as a reply. A restatement of a finding only an earlier review body listed appears under "Still open from round N" ([#1351](https://github.com/manki-review/manki/pull/1351)).
+- A restatement graded above its thread gets a reply that names the new grade, and a blocker makes the thread block. A reply lists every finding that joined the thread, not only the first ([#1365](https://github.com/manki-review/manki/pull/1365)).
+- A thread is resolved only when every failure it names is gone. A partly fixed thread stays open with a "Partly fixed" reply that says what remains, at the grade the rest earns. That grade drops below the thread's own only after a push to the thread's file, and never on a security thread. The judge also checks that each finding's fix removes everything the finding names, and a fix that leaves part says so ([#1355](https://github.com/manki-review/manki/pull/1355)).
+- Whether a thread blocks now comes only from the round records posted with each review, never from a reply in the thread. A failed reply can no longer leave a raised thread below blocker, and a thread raised to blocker keeps that grade in later rounds. The verdict line counts a thread newly raised to blocker as a new blocker ([#1361](https://github.com/manki-review/manki/pull/1361), [#1388](https://github.com/manki-review/manki/pull/1388)).
+- A security finding never joins a thread that is not a security thread. It gets a thread of its own, and a plain open thread it names still counts as open in the verdict ([#1365](https://github.com/manki-review/manki/pull/1365), [#1382](https://github.com/manki-review/manki/pull/1382), [#1388](https://github.com/manki-review/manki/pull/1388)).
+- The judge sees the code an outdated thread named when it was posted, and where that code sits now or that it is gone. An unchanged file is no longer read as proof the problem remains. Before it keeps such a thread open, the judge answers Manki's own reply in the thread ([#1391](https://github.com/manki-review/manki/pull/1391)).
+- The "Fixed in" reply names a commit only when it is the one commit since the last reviewed head that changed the thread's file. Otherwise it says "Fixed by the commits up to" the head, which is always true ([#1354](https://github.com/manki-review/manki/pull/1354), [#1379](https://github.com/manki-review/manki/pull/1379)).
+- Replies in threads stay when the review posted and the head moved right after ([#1357](https://github.com/manki-review/manki/pull/1357)). A round that could not read the review threads matches no finding to an earlier one ([#1388](https://github.com/manki-review/manki/pull/1388)).
+
+### Review loop and verdicts
+
+- The judge names each premise it doubts, and the refuter answers each one. A grade rises only when every premise is confirmed. A doubt whether the defect exists at all, or a premise that lowers the grade, such as "callers probably validate", is now checked with tools too, up to four such checks a round. A grade that only a doubt held down no longer fixes the grade in the next round ([#1350](https://github.com/manki-review/manki/pull/1350), [#1359](https://github.com/manki-review/manki/pull/1359)).
+- When an earlier review record cannot be read, Manki still does not approve while a thread stays open, and it now says why. The review and the check lead with an "Approval withheld" line that links the unread reviews, and they call nothing a blocker. Only threads still open after the round's resolves hold the PR, and the PR author cannot clear a thread whose grade is unknown by resolving it ([#1367](https://github.com/manki-review/manki/pull/1367), [#1371](https://github.com/manki-review/manki/pull/1371), [#1381](https://github.com/manki-review/manki/pull/1381)).
+
+### How finders search
+
+- In the uses list, a use the parser places on a same-named field of another type ranks after every other use of the symbol instead of being dropped. Production code ranks before lines that only call `.name()`, and those before test files. A redefined field's production readers keep their place, up to 30 of the 60 lines ([#1352](https://github.com/manki-review/manki/pull/1352), [#1362](https://github.com/manki-review/manki/pull/1362)).
+
+### Review format
+
+- The progress comment no longer counts kept findings as dropped, and the dropped total cannot go below zero. A refutation reason, a rule or a failure reason that is cut short ends in `...` ([#1346](https://github.com/manki-review/manki/pull/1346)).
+
+### Reviewer groups and models
+
+- `xhigh` is a new effort level between `high` and `max`. Claude Opus 4.7 and later receive it, and earlier Claude models get `high`. OpenAI models get their highest level up to `xhigh`, and Gemini maps it like `high` ([#1364](https://github.com/manki-review/manki/pull/1364)).
+- A deeper review runs a finder on effort `auto` at `xhigh`. A finder with a set effort runs one level higher, so `high` steps to `xhigh` and `xhigh` to `max`. Reviewer effort `auto` itself is unchanged: `high` on a change the planner marks subtle, and `medium` otherwise ([#1370](https://github.com/manki-review/manki/pull/1370), [#1400](https://github.com/manki-review/manki/pull/1400)).
+- With `models.reviewer` on a Fable model and no `models.reviewer_pair`, a paired round now runs Fable and Opus instead of two Fable finders. A Fable stage also falls back to Opus ([#1348](https://github.com/manki-review/manki/pull/1348)).
+
+### Reliability
+
+- A PR whose own `.manki.yml` does not load no longer fails the round. The round runs on the base branch's settings and warns with the reason. When the PR changed its copy and the copy does not load, Manki holds its approval and says so. A copy that cannot be read or compared counts as changed. A PR that only predates the base branch's copy can still be approved ([#1395](https://github.com/manki-review/manki/pull/1395)).
+- An incomplete round keeps in its record everything its stages produced before the failure, such as the planner result, retries, dedup counts, the judge's findings and `judge.effort` ([#1385](https://github.com/manki-review/manki/pull/1385), [#1386](https://github.com/manki-review/manki/pull/1386)).
+
+### Internal
+
+- The benchmark scores follow-up rounds. A case can hold the earlier round's findings and list which threads the push fixes, which it fixes only in part, and which findings must not be posted again ([#1353](https://github.com/manki-review/manki/pull/1353)).
+- The release gate gives every figure a margin of one item per run, decides on two runs per side, and decides nothing on a baseline with one run. A tuning run lists its blockers that match no key item ([#1356](https://github.com/manki-review/manki/pull/1356), [#1358](https://github.com/manki-review/manki/pull/1358), [#1360](https://github.com/manki-review/manki/pull/1360)).
+- The hold-out set grows from 12 to 26 cases, in more languages and with follow-up rounds ([#1366](https://github.com/manki-review/manki/pull/1366)).
+- `missed-blockers` drafts follow-up keys from the round's own thread verdicts, takes the PR description as it read when the round's review started, and never stops on a malformed record ([#1368](https://github.com/manki-review/manki/pull/1368), [#1375](https://github.com/manki-review/manki/pull/1375), [#1376](https://github.com/manki-review/manki/pull/1376), [#1378](https://github.com/manki-review/manki/pull/1378), [#1385](https://github.com/manki-review/manki/pull/1385)).
+- A slow test checks that the sibling step's time grows linearly instead of against a fixed bound ([#1369](https://github.com/manki-review/manki/pull/1369)).
+
 ## [7.3.2] - 2026-11-10
 
 Manki 7.3.2 fixes a judge regression from 7.3.1 and tightens how findings are merged and what the finders see. The judge now reads the repository's instruction files, so findings that cite a repository rule are graded again instead of dropped.
