@@ -1415,10 +1415,12 @@ export async function runJudgeAgent(
     if (missing.length > 0) {
       const reminder = buildThreadEvaluationsReminder(openThreads!, missing);
       const retryUserMessage = `${reminder}\n\nOriginal message:\n${userMessage}`;
-      let retryResult: JudgeResult | undefined;
+      let retryEvals: ThreadEvaluation[] = [];
       try {
         const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, judgeOptions);
-        retryResult = parseJudgeResponse(retryResponse.content);
+        // Only the thread evaluations of this reply are used, so its finding entries are not parsed.
+        const reply = JSON.parse(extractJSON(retryResponse.content)) as { threadEvaluations?: unknown } | null;
+        retryEvals = parseThreadEvaluations(reply?.threadEvaluations) ?? [];
       } catch (err) {
         core.warning(`Judge retry failed (${err}); synthesizing 'uncertain' for ${missing.length} missing thread(s).`);
         judgeResult = {
@@ -1426,7 +1428,6 @@ export async function runJudgeAgent(
           threadEvaluations: synthesizeMissingThreadEvaluations(judgeResult.threadEvaluations, missing),
         };
       }
-      const retryEvals = retryResult?.threadEvaluations ?? [];
       const byId = new Map(
         (judgeResult.threadEvaluations ?? []).map(e => [e.threadId, e]),
       );

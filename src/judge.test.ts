@@ -3025,7 +3025,8 @@ describe('runJudgeAgent', () => {
         .mockResolvedValueOnce({
           content: JSON.stringify({
             summary: 's',
-            findings: [],
+            // Only the thread evaluations of the second reply are read, so an entry without a known row costs none of them.
+            findings: [{ id: 1, title: 'A', severity: 'warning', reasoning: 'r' }],
             threadEvaluations: [
               { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
               { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
@@ -3046,7 +3047,7 @@ describe('runJudgeAgent', () => {
       const [, retryUserMessage] = mockSendMessage.mock.calls[1];
       expect(retryUserMessage).toContain('Missing thread IDs: PRRT_b');
       expect(retryUserMessage).not.toContain('Missing thread IDs: PRRT_a');
-      expect(result.threadEvaluations).toHaveLength(2);
+      expect(result.threadEvaluations?.map(e => [e.threadId, e.status])).toEqual([['PRRT_a', 'addressed'], ['PRRT_b', 'not_addressed']]);
     });
 
     it('merges retry evaluations per-thread-id when retry returns a partial array', async () => {
