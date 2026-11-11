@@ -533,11 +533,16 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
     // The root guide files are left out, so their text reaches a prompt only through a finder's own read.
     const search = async (words: string[], ignoreCase: boolean): Promise<Hit[]> =>
       (await grepWords(dir, words, { onDisk: true, ignoreCase })).filter(hit => !GUIDE_FILES.includes(hit.file));
+    // A translation the name's own search already finds, or one too short or too common to tell anything, is not searched.
+    const guesses = [...(translations.get(repo) ?? [])].flatMap(([name, list]) =>
+      list.filter(as => !isGeneric(as) && !referencePattern(name).test(as)).map(as => ({ repo, name, as, lines: 0, pattern: translatedPattern(as) })));
+    const recordOf = (group: typeof guesses) => group.map(({ pattern: _pattern, ...guess }) => guess);
     let hits: Hit[];
     try {
       hits = await search(names.flatMap(nameVariants), true);
     } catch (error) {
       core.warning(`Skipped the search of the ${kind} repo ${repo}: ${error instanceof Error ? error.message : String(error)}`);
+      translated.push(...recordOf(guesses).map(guess => ({ ...guess, failed: true as const })));
       continue;
     }
     // The lines each name finds itself, so a translated name does not list one of them again.
@@ -548,21 +553,17 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
         appendTo(found, name, { ...hit, repo });
       }
     }
-    // A translation the name's own search already finds, or one too short or too common to tell anything, is not searched.
-    const guesses = [...(translations.get(repo) ?? [])].flatMap(([name, list]) =>
-      list.filter(as => !isGeneric(as) && !referencePattern(name).test(as)).map(as => ({ repo, name, as, lines: 0, pattern: translatedPattern(as) })));
     // The translated names are searched after the diff's names and apart from them, so a search they make fail costs only
     // them. A plain word is searched in its exact case, since ignoring case would return every line that holds the word.
     for (const coded of [true, false]) {
       const group = guesses.filter(({ as }) => isCodeLike(as) === coded);
       if (group.length === 0) continue;
-      const record = () => group.map(({ pattern: _pattern, ...guess }) => guess);
       let guessed: Hit[];
       try {
         guessed = await search([...new Set(group.flatMap(({ as }) => (coded ? nameVariants(as) : [as])))], coded);
       } catch (error) {
         core.warning(`Skipped the search of the ${kind} repo ${repo} for ${group.length} translated ${group.length === 1 ? 'name' : 'names'}: ${error instanceof Error ? error.message : String(error)}`);
-        translated.push(...record().map(guess => ({ ...guess, failed: true as const })));
+        translated.push(...recordOf(group).map(guess => ({ ...guess, failed: true as const })));
         continue;
       }
       for (const hit of guessed) {
@@ -574,7 +575,7 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
           appendTo(found, guess.name, { ...hit, repo, as: guess.as });
         }
       }
-      translated.push(...record());
+      translated.push(...recordOf(group));
     }
   }
   const namesPerFile = new Map<string, Set<string>>();

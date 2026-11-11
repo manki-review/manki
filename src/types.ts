@@ -414,7 +414,7 @@ export interface RoundNameTranslation {
   skipped?: string;
   /**
    * Each translated name searched for: the repo, the diff's name, the name searched as, and the lines of the repo that
-   * hold it. `failed` is set when the search for it failed, so `lines` says nothing.
+   * hold it. `failed` is set when the search for it, or for the diff's names in that repo, failed, so `lines` says nothing.
    */
   names?: Array<{ repo: string; name: string; as: string; lines: number; failed?: true }>;
 }
