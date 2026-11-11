@@ -64,7 +64,7 @@ export function buildRoundRecap(recap: {
 }): RoundRecap {
   const count = recap.reclassifiedPriorCount ?? 0;
   const entries = recap.reclassifiedPriors ?? [];
-  const securityOverrides: SecurityOverride[] = securityOverridesIn(recap.previousFindings ?? []).map(({ thread, login, via }) => ({ thread, login, via }));
+  const securityOverrides: SecurityOverride[] = securityOverridesIn(recap.previousFindings ?? []).map(({ thread, login, via, role }) => ({ thread, login, via, role }));
   return {
     priorRoundCount: recap.priorRounds.length,
     reclassifiedPriorCount: count,

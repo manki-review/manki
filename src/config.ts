@@ -4,7 +4,7 @@ import { parse as parseYaml } from 'yaml';
 import { LOCKFILES } from './binary-analyzers';
 import { parseModelSpec } from './providers';
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, canonicalJson, floorShortfall, resolveRouting, routeClass } from './routing';
-import { ANALYZERS, PairedPin, ReviewConfig, StaticAnalysisConfig } from './types';
+import { ANALYZERS, AUTHOR_CLEAR_ROLES, PairedPin, ReviewConfig, StaticAnalysisConfig } from './types';
 
 const MAX_WAIT_TIMEOUT_SECONDS = 3600;
 
@@ -25,6 +25,7 @@ const PACKAGE_LOCKFILES = [...new Set([
 export const DEFAULT_CONFIG: ReviewConfig = {
   auto_review: true,
   auto_approve: true,
+  author_clear_role: 'maintain',
   exclude_paths: [...PACKAGE_LOCKFILES, 'dist/**', '*.generated.*'],
   skip_labels: [],
   skip_authors: [],
@@ -81,6 +82,7 @@ const MIN_SLICE_LINES = 200;
 export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'auto_review',
   'auto_approve',
+  'author_clear_role',
   'exclude_paths',
   'skip_labels',
   'skip_authors',
@@ -335,6 +337,10 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
 
   if ('related_repos' in config) {
     validateRelatedRepos(config.related_repos, errors, warnings);
+  }
+
+  if ('author_clear_role' in config && !AUTHOR_CLEAR_ROLES.some(role => role === config.author_clear_role)) {
+    errors.push(`\`author_clear_role\` must be one of: ${[...AUTHOR_CLEAR_ROLES].reverse().join(', ')}`);
   }
 
   if ('drafts' in config && config.drafts !== 'skip' && config.drafts !== 'review') {
@@ -800,6 +806,15 @@ export function resolveReviewerModel(config: ReviewConfig, ref: string | undefin
   if (ref === undefined || ref === '@reviewer') return resolveModel(config, 'reviewer');
   if (ref === '@reviewer_pair') return resolvePairModel(config);
   return ref;
+}
+
+/**
+ * Returns the defaults for a base branch config that could not be read or loaded. They hold no `author_clear_role`,
+ * since the repository may have set a higher role than the default, so no PR author clears a guarded finding meanwhile.
+ */
+export function fallbackConfig(): ReviewConfig {
+  const { author_clear_role: _role, ...config } = loadConfig(undefined);
+  return config;
 }
 
 export function loadConfig(yamlContent: string | undefined, source?: string): ReviewConfig {

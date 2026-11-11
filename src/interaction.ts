@@ -4,13 +4,13 @@ import * as github from '@actions/github';
 import { tokenServiceCalls } from './auth';
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { MemoryStore, patternMatchesTitle, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, hasWriteAccess, inline, MANKI_VERSION, isRepoAdmin, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
+import { BotIdentity, dynamicFence, hasWriteAccess, inline, MANKI_VERSION, authorClearRole, reactToIssueComment, reactToReviewComment, fetchPRDiff, sanitizeMarkdown } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER } from './recap';
-import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, unclearedThreads } from './state';
-import { ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
+import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, authorWithRole, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, unclearedThreads } from './state';
+import { AuthorClearRole, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage } from './round-context';
 import { safeTruncate, withMarkers } from './utils';
@@ -108,12 +108,15 @@ const REPLY_TOOLS_TIMEOUT_MS = 300_000;
 
 const REPLY_RESOLUTION_REASONS: Record<string, ResolutionReason> = { Fixed: 'ADDRESSED', Agreed: 'WONT_FIX', Withdrawn: 'INVALID' };
 
-/** Says why a blocking or security thread is not cleared, and who clears it. With `resolved`, the thread is resolved and keeps blocking. */
-function staysOpenNote(isSecurity: boolean, fixed: boolean, resolved = false): string {
+/**
+ * Says why a blocking or security thread is not cleared, and who clears it. With `resolved`, the thread is resolved and
+ * keeps blocking. `clearRole` is the repo's `author_clear_role`, and without it the note names no PR author.
+ */
+function staysOpenNote(isSecurity: boolean, fixed: boolean, clearRole: AuthorClearRole | undefined, resolved = false): string {
   const verb = resolved ? 'clears' : 'closes';
   const until = fixed
     ? `the next review confirms the fix, or a maintainer other than the PR author ${verb} it`
-    : `a maintainer other than the PR author, or a repo admin, ${verb} it`;
+    : `a maintainer other than the PR author${clearRole ? `, or ${authorWithRole(clearRole)},` : ''} ${verb} it`;
   const kind = isSecurity ? 'security' : 'blocking';
   return resolved
     ? `This is a ${kind} finding, so resolving the thread does not clear it. It keeps blocking until ${until}.`
@@ -185,28 +188,32 @@ function roundPointer(commit: string, { status, reason }: ThreadEvaluation): str
   return `${round}${finding}${why ? `: ${why}` : '.'}`;
 }
 
-/** Whether the guarded `thread` is resolved in a way the approval check does not count, such as by a PR author who is no repo admin. */
-async function resolveIsHeld(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, thread: ReviewThread, prAuthorLogin: string | undefined): Promise<boolean> {
+/** Whether the guarded `thread` is resolved in a way the approval check does not count, such as by a PR author whose role is below `clearRole`. */
+async function resolveIsHeld(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, thread: ReviewThread, prAuthorLogin: string | undefined, clearRole: AuthorClearRole | undefined,
+): Promise<boolean> {
   if (!thread.isResolved || !isGuarded(thread)) return false;
-  const prAuthorIsAdmin = !!prAuthorLogin && isOverrideCandidate(thread, prAuthorLogin) && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
-  return unclearedThreads([thread], bot, prAuthorLogin, prAuthorIsAdmin, new Set([thread.id])).length > 0;
+  const prAuthorRole = prAuthorLogin && isOverrideCandidate(thread, prAuthorLogin) ? await authorClearRole(octokit, owner, repo, prAuthorLogin, clearRole) : undefined;
+  return unclearedThreads([thread], bot, prAuthorLogin, prAuthorRole, new Set([thread.id])).length > 0;
 }
 
 /**
  * Resolves `thread` with `reason`. A blocking or security thread is left as it is unless `mayClear`.
  * With `held`, the thread is resolved in a way that does not clear it, so it is reopened first and Manki's own resolve clears it.
- * With `adminOverride`, the PR author clears such a thread as a repo admin, and Manki records that in the thread first.
+ * With `authorOverride`, the PR author clears such a thread with a role that allows it, and Manki records that in the thread first.
  * Returns whether the thread is resolved.
  */
-async function resolveThreadOf(octokit: Octokit, thread: ReviewThread, reason: ResolutionReason, mayClear: boolean, adminOverride?: string, held = false): Promise<boolean> {
+async function resolveThreadOf(
+  octokit: Octokit, thread: ReviewThread, reason: ResolutionReason, mayClear: boolean, authorOverride?: { login: string; role: AuthorClearRole }, held = false,
+): Promise<boolean> {
   if (thread.isResolved && !held) return true;
   if ((held || isGuarded(thread)) && !mayClear) {
-    if (!adminOverride) {
-      core.info(`Left thread ${thread.id} as it is, since only a maintainer other than the PR author, or a repo admin, can dismiss a blocking or security finding`);
+    if (!authorOverride) {
+      core.info(`Left thread ${thread.id} as it is, since the sender may not dismiss a blocking or security finding`);
       return false;
     }
     // The recorded override is what lets later rounds count the resolved thread, so without it the thread stays open.
-    if (thread.recordedOverride?.login !== adminOverride && (await announceSecurityOverrides(octokit, [{ thread: thread.id, login: adminOverride, via: 'dismiss' }])).length === 0) return false;
+    if (thread.recordedOverride?.login !== authorOverride.login && (await announceSecurityOverrides(octokit, [{ thread: thread.id, ...authorOverride, via: 'dismiss' }])).length === 0) return false;
   }
   if (thread.isResolved && !await reopenThread(octokit, thread.id)) return false;
   await resolveReviewThread(octokit, thread.id, reason);
@@ -398,7 +405,7 @@ export async function handleReviewCommentReply(
     const reopenNote = config && live?.isResolved ? await authorResolvedNote(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live.id) : undefined;
     const posts = !(outcome === 'Fixed' && head && thread?.fixedOn?.includes(head));
     // A guarded thread the PR author resolved keeps blocking, also once Manki has reopened it and has no reopen note left to give.
-    const held = !!live && (!!reopenNote || await resolveIsHeld(octokit, bot, owner, repo, live, prAuthorLogin));
+    const held = !!live && (!!reopenNote || await resolveIsHeld(octokit, bot, owner, repo, live, prAuthorLogin, config?.author_clear_role));
     // An answer that settles such a thread for someone who may clear it clears it, as on an open thread.
     const clears = !!outcome && mayClear && held;
     // Every other answer reopens it with the note. The note's marker stops every later reopen, so the thread opens before the answer is posted.
@@ -421,7 +428,7 @@ export async function handleReviewCommentReply(
     if (!posts) {
       core.info(`Thread ${thread?.id} already confirms the fix on ${head?.slice(0, 7)}, so the reply posts no second one`);
     } else {
-      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, outcome === 'Fixed', thread?.isResolved)] : []), ...(noted && reopenNote ? [reopenNote] : []), ...(saved ? [saved] : [])];
+      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, outcome === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...(noted && reopenNote ? [reopenNote] : []), ...(saved ? [saved] : [])];
       const decision = replyDecision(outcome, lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
       await octokit.rest.pulls.createReplyForReviewComment({
         owner,
@@ -651,11 +658,11 @@ async function handleDismiss(
 
 /**
  * Resolves the Manki thread a `dismiss` reply was posted in, for someone who could resolve it by hand.
- * On a blocking or security thread the PR author may do so too when they are a repo admin.
+ * On a blocking or security thread the PR author may do so too when their role is at least `clearRole`, the repo's `author_clear_role`.
  * Returns whether the thread is resolved, with a note when it is not, or `undefined` outside a Manki finding's thread.
  */
 async function resolveDismissedThread(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, clearRole: AuthorClearRole | undefined,
 ): Promise<{ resolved: boolean; note?: string } | undefined> {
   const payload = github.context.payload;
   const inReplyTo = payload.comment?.in_reply_to_id;
@@ -670,12 +677,12 @@ async function resolveDismissedThread(
     if (!mayResolve) return { resolved: false, note: 'Only the PR author or someone with write access can dismiss this finding, so the thread stays open.' };
     const thread = await findBotThread(octokit, bot, owner, repo, prNumber, root.id);
     if (!thread) throw new Error(`no Manki thread starts at comment ${root.id}`);
-    const adminOverride = isGuarded(thread) && !mayClear && isPrAuthor && !!senderLogin
-      && await isRepoAdmin(octokit, owner, repo, senderLogin);
-    const held = await resolveIsHeld(octokit, bot, owner, repo, thread, prAuthorLogin);
-    if (await resolveThreadOf(octokit, thread, 'WONT_FIX', mayClear, adminOverride ? senderLogin : undefined, held)) return { resolved: true };
+    const role = isGuarded(thread) && !mayClear && isPrAuthor && senderLogin ? await authorClearRole(octokit, owner, repo, senderLogin, clearRole) : undefined;
+    const authorOverride = role && senderLogin ? { login: senderLogin, role } : undefined;
+    const held = await resolveIsHeld(octokit, bot, owner, repo, thread, prAuthorLogin, clearRole);
+    if (await resolveThreadOf(octokit, thread, 'WONT_FIX', mayClear, authorOverride, held)) return { resolved: true };
     // Without an override the PR author may not clear the thread. Anyone else's dismissal failed: an override was not recorded, or the thread was not reopened.
-    return { resolved: false, note: adminOverride || mayClear ? DISMISS_FAILED : staysOpenNote(!!thread.isSecurity, false, thread.isResolved) };
+    return { resolved: false, note: authorOverride || mayClear ? DISMISS_FAILED : staysOpenNote(!!thread.isSecurity, false, clearRole, thread.isResolved) };
   } catch (error) {
     core.warning(`Failed to resolve the dismissed thread: ${error}`);
     return { resolved: false, note: DISMISS_FAILED };
@@ -1010,6 +1017,7 @@ export async function handleReviewCommentCommand(
   commentId: number,
   command: ParsedCommand,
   memory?: MemoryStore,
+  clearRole?: AuthorClearRole,
 ): Promise<void> {
   const prOnlyCommands = new Set(['check', 'explain']);
   if (prOnlyCommands.has(command.type)) {
@@ -1024,7 +1032,7 @@ export async function handleReviewCommentCommand(
   switch (command.type) {
     case 'dismiss': {
       const dismissal = await handleDismiss(octokit, bot, owner, repo, prNumber, command.args, memory);
-      const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber);
+      const thread = await resolveDismissedThread(octokit, bot, owner, repo, prNumber, clearRole);
       // A resolved thread needs no note, and outside a Manki finding's thread only a named finding can be dismissed.
       // Once the thread is resolved, text that named no posted finding was a remark, not a failed dismiss.
       const threadNote = thread ? thread.note : dismissal ? undefined : DISMISS_NO_FINDING;

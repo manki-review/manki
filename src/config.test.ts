@@ -1,4 +1,4 @@
-import { changedKeys, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadStaticAnalysisConfig, resolveFallbackModel, resolveModel, resolvePairModel, reviewFloorErrors } from './config';
+import { changedKeys, DEFAULT_CONFIG, fallbackConfig, loadConfig, loadConfigFromContent, loadStaticAnalysisConfig, resolveFallbackModel, resolveModel, resolvePairModel, reviewFloorErrors } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -570,6 +570,19 @@ models:
 `;
       expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
       expect(core.error).toHaveBeenCalledWith('`models.dedup` must be a string');
+    });
+
+    it('defaults `author_clear_role` to maintain, accepts the three roles, and rejects anything else', () => {
+      expect(loadConfigFromContent('').author_clear_role).toBe('maintain');
+      expect(loadConfig(undefined).author_clear_role).toBe('maintain');
+      for (const role of ['admin', 'maintain', 'write'] as const) expect(loadConfigFromContent(`author_clear_role: ${role}`).author_clear_role).toBe(role);
+      // A role that cannot push, a custom role, another case and an empty value are errors, never a lower role or the default.
+      for (const value of ['triage', 'read', 'none', 'release-manager', 'Admin', 'true', '[admin]', '', '~']) {
+        expect(() => loadConfigFromContent(`author_clear_role: ${value}`)).toThrow('`author_clear_role` must be one of: admin, maintain, write');
+      }
+      // A base branch config that could not be read or loaded names no role, so no PR author clears a guarded finding.
+      expect(fallbackConfig()).toEqual({ ...loadConfig(undefined), author_clear_role: undefined });
+      expect('author_clear_role' in fallbackConfig()).toBe(false);
     });
 
     it('defaults `drafts` to skip, accepts skip and review, and rejects anything else', () => {

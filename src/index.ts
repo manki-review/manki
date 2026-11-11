@@ -6,7 +6,7 @@ import * as path from 'path';
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AuthResult, createAuthenticatedOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
-import { changedKeys, loadConfig, resolveModel } from './config';
+import { changedKeys, fallbackConfig, loadConfig, resolveModel } from './config';
 import { BENCH_COMMAND, runBenchCommand } from './bench';
 import { REVIEW_COMMAND, runReviewCommand } from './cli';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
@@ -36,7 +36,6 @@ import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from '.
 import { ConfigSource, DashboardData, DisprovedFinding, Finding, FindingSeverity, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
 import {
   fetchPRDiff,
-  fetchConfigFile,
   brokenConfig,
   ConfigHold,
   configFailed,
@@ -443,10 +442,20 @@ async function showAlreadyReviewed(
   });
 }
 
-/** Loads the config file at `ref` for an event that runs no review round. */
+/**
+ * Loads the config file at `ref` for an event that runs no review round. A file that cannot be read gives
+ * `fallbackConfig`, and one that does not load throws.
+ */
 async function loadEventConfig(octokit: Octokit, owner: string, repo: string, ref: string): Promise<ReviewConfig> {
   const configPath = core.getInput('config_path') || '.manki.yml';
-  return loadConfig(await fetchConfigFile(octokit, owner, repo, ref, configPath) ?? undefined, configPath);
+  let content: string | null;
+  try {
+    content = await readConfigFile(octokit, owner, repo, ref, configPath);
+  } catch (error) {
+    core.warning(`Could not read ${configPath} on ${ref}, using the defaults: ${failureReason(error)}`);
+    return fallbackConfig();
+  }
+  return loadConfig(content ?? undefined, configPath);
 }
 
 async function handlePullRequest(): Promise<void> {
@@ -516,6 +525,7 @@ async function handleMergedPullRequest(): Promise<void> {
     headSha: pr.head.sha,
     mergedSha: pr.merge_commit_sha ?? '',
     authorLogin: pr.user?.login,
+    clearRole: config.author_clear_role,
   }, memory);
 }
 
@@ -756,7 +766,8 @@ async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ c
   }
   const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, repoConfigPath), repoConfigPath, failureReason);
   if (!headConfig) return { config, reviewSource: source, brokenHead: { changed: await changesConfig(target, repoConfigPath, headContent) } };
-  const changed = changedKeys(headConfig, config);
+  // The defaults that stand in for a failed base config are not what the PR changes.
+  const changed = configFailed(source) ? [] : changedKeys(headConfig, config);
   if (changed.length > 0) {
     core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${repoConfigPath}. The change applies after merge: this round uses the base branch's settings.`);
   }
@@ -836,14 +847,14 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
 }
 
 /**
- * Reads the prior rounds and threads, reopens security threads the author resolved, and records the ones a repo admin author cleared.
+ * Reads the prior rounds and threads, reopens guarded threads the author resolved, and records the ones the author cleared with a role `author_clear_role` allows.
  * Returns `undefined` when `auto_review` is off for a push.
  */
 async function loadRecap(
   target: RunTarget, config: ReviewConfig, progress: RunProgress, { prAuthorLogin, settings }: FullReviewOptions,
 ): Promise<RecapState | undefined> {
   const { octokit, bot, owner, repo, prNumber } = target;
-  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin);
+  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
 
   if (github.context.eventName === 'pull_request' && !config.auto_review) {
     core.info('auto_review is disabled — skipping');
@@ -2020,7 +2031,7 @@ async function handleReviewStateCheck(): Promise<void> {
   const config = await loadEventConfig(octokit, owner, repo, pr.base.ref);
 
   // A guarded thread the PR author resolved blocks with `auto_approve` off too, so it is reopened first.
-  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, pr.user?.login);
+  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, pr.user?.login, config.author_clear_role);
   await reopenAuthorResolvedThreads(octokit, bot, owner, repo, prNumber, config, recap);
 
   if (!config.auto_approve) {
@@ -2133,7 +2144,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const command = parseCommand(body);
   if (command.type !== 'generic') {
     if (prNumber) {
-      await handleReviewCommentCommand(octokit, bot, owner, repo, prNumber, comment.id, command, memory);
+      await handleReviewCommentCommand(octokit, bot, owner, repo, prNumber, comment.id, command, memory, config.author_clear_role);
     } else {
       core.warning('Cannot handle command — pull request number not available');
     }

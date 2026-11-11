@@ -1071,9 +1071,18 @@ export interface TeamRoster {
   trivialOverridden: boolean;
 }
 
+/** The repository roles a PR author can clear a guarded finding with on their own PR, lowest first. */
+export const AUTHOR_CLEAR_ROLES = ['write', 'maintain', 'admin'] as const;
+export type AuthorClearRole = typeof AUTHOR_CLEAR_ROLES[number];
+
 export interface ReviewConfig {
   auto_review: boolean;
   auto_approve: boolean;
+  /**
+   * The lowest repository role with which a PR author may clear a blocker or a security finding on their own PR.
+   * Read from the base branch only. Unset only when that config could not be read or loaded, and then no author may.
+   */
+  author_clear_role?: AuthorClearRole;
   exclude_paths: string[];
   /** Labels that skip review, compared case-insensitively. Read from the base branch only. */
   skip_labels?: string[];
@@ -2106,15 +2115,17 @@ export interface RoundRecap {
   reclassifiedPriorCount: number;
   /** The flips. Omitted when none flipped. */
   reclassifiedPriors?: ReclassifiedPrior[];
-  /** Security threads the PR author cleared as a repo admin. Omitted when none. */
+  /** Guarded threads the PR author cleared with a role that `author_clear_role` allows. Omitted when none. */
   securityOverrides?: SecurityOverride[];
 }
 
-/** A security finding the PR author cleared on their own PR as a repo admin. */
+/** A blocker or security finding the PR author cleared on their own PR, with a role that `author_clear_role` allows. */
 export interface SecurityOverride {
   /** Review thread ID. */
   thread: string;
   login: string;
+  /** The author's repository role that allowed it. A record from before the role was stored has none. */
+  role?: AuthorClearRole;
   /** `resolve`: resolved in the GitHub UI. `dismiss`: through `@manki dismiss` in the thread. */
   via: 'resolve' | 'dismiss';
 }

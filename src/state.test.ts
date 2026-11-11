@@ -4,9 +4,9 @@ import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './reca
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { APPROVED_LINE, formatFindingComment, postReview, titleToSlug } from './github';
 import { extractApprovalRecords, formatReviewRecord } from './review-record';
-import { DEFAULT_CONFIG } from './config';
+import { DEFAULT_CONFIG, fallbackConfig } from './config';
 import { determineOutcome } from './review';
-import { ApprovalRecord, Finding, FindingFingerprintEntry, RoundContext, ThreadEvaluation, VerdictTraceEntry } from './types';
+import { ApprovalRecord, AuthorClearRole, Finding, FindingFingerprintEntry, RoundContext, ThreadEvaluation, VerdictTraceEntry } from './types';
 import * as authModule from './auth';
 
 jest.mock('./auth', () => ({
@@ -87,7 +87,7 @@ describe('unclearedThreads', () => {
       makeThread({ id: '4', isBlocking: false, isResolved: true }),
     ];
     expect(unclearedThreads(threads, TEST_BOT)).toEqual([threads[1]]);
-    expect(unclearedThreads(threads, TEST_BOT, undefined, false, new Set(['3', '4']))).toEqual([threads[1], threads[2]]);
+    expect(unclearedThreads(threads, TEST_BOT, undefined, undefined, new Set(['3', '4']))).toEqual([threads[1], threads[2]]);
   });
 
   it('ignores unresolved non-blocking threads', () => {
@@ -107,13 +107,13 @@ describe('unclearedThreads', () => {
     expect(unclearedThreads(resolvedBy('manki-review[bot]'), TEST_BOT, 'author')).toEqual([]);
     // With the PR author unknown, any human resolver has write access.
     expect(unclearedThreads(resolvedBy('alice'), TEST_BOT)).toEqual([]);
-    // A PR author who is a repo admin clears their own.
-    expect(unclearedThreads(resolvedBy('author'), TEST_BOT, 'author', true)).toEqual([]);
-    expect(unclearedThreads(resolvedBy('dependabot[bot]'), TEST_BOT, 'author', true)).not.toEqual([]);
-    // A recorded override counts only for an admin author, since a Manki reply can echo any text.
+    // A PR author with a confirmed role clears their own.
+    expect(unclearedThreads(resolvedBy('author'), TEST_BOT, 'author', 'maintain')).toEqual([]);
+    expect(unclearedThreads(resolvedBy('dependabot[bot]'), TEST_BOT, 'author', 'maintain')).not.toEqual([]);
+    // A recorded override counts only for an author with a confirmed role, since a Manki reply can echo any text.
     const recorded = [makeThread({ isResolved: true, isSecurity, resolvedByLogin: 'author', recordedOverride: { login: 'author', via: 'dismiss' } })];
     expect(unclearedThreads(recorded, TEST_BOT, 'author')).not.toEqual([]);
-    expect(unclearedThreads(recorded, TEST_BOT, 'author', true)).toEqual([]);
+    expect(unclearedThreads(recorded, TEST_BOT, 'author', 'maintain')).toEqual([]);
   });
 });
 
@@ -460,7 +460,8 @@ describe('checkAndAutoApprove', () => {
     checks?: { create: jest.Mock; update: jest.Mock };
     existingReviews?: Array<{ id?: number; body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
     existingComments?: Array<{ body?: string; user?: { login?: string } }>;
-    permission?: string;
+    /** The PR author's `role_name`. */
+    role?: string;
     /** The PR diff at each commit, keyed by its SHA, as `compareCommits` against the base returns it. */
     diffs?: Record<string, string>;
     mergeable?: boolean | null;
@@ -490,7 +491,7 @@ describe('checkAndAutoApprove', () => {
           createComment: createCommentFn,
         },
         repos: {
-          getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.permission ?? 'write' } }),
+          getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.role === 'admin' ? 'admin' : 'write', role_name: overrides.role ?? 'write' } }),
           compareCommits: jest.fn(async ({ head }: { head: string }) => ({ data: overrides.diffs?.[head] ?? '' })),
         },
         checks: overrides.checks ?? { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) },
@@ -545,7 +546,7 @@ describe('checkAndAutoApprove', () => {
     const NO_THREAD = 'names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
     const GONE = 'names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
     const NEXT_ROUND = 'The next review round decides. Push a commit or comment `@manki review` to start one.';
-    const FOLLOWS = 'Approval follows once it is resolved by someone allowed to. The PR author may not clear a blocking thread, unless they are a repo admin.';
+    const FOLLOWS = 'Approval follows once it is resolved by someone allowed to. The PR author may not clear a blocking thread. Only a PR author with the `maintain` role or a higher one may.';
     const UNREAD = 'Manki cannot read the record of its review of `head-sh`, so it cannot tell what that review blocked on.';
     const UNNAMED = 'The record of Manki\'s review of `head-sh` does not say what it blocked on.';
 
@@ -842,13 +843,20 @@ describe('checkAndAutoApprove', () => {
     ]);
   });
 
-  it.each([
-    ['the PR author', 'author', 'write', false, false],
-    ['a collaborator', 'alice', 'write', false, true],
-    ['the PR author as a repo admin', 'author', 'admin', false, true],
-    ['the PR author as a repo admin, already recorded', 'author', 'admin', true, true],
-    ['the PR author without admin, with a recorded override', 'author', 'write', true, false],
-  ])('approves a security and a plain blocking thread resolved by %s', async (who, resolver, permission, recorded, approves) => {
+  it.each<[string, string, string, AuthorClearRole | undefined, boolean, boolean]>([
+    ['a collaborator', 'alice', 'write', 'maintain', false, true],
+    ['the PR author with `write` under the default', 'author', 'write', 'maintain', false, false],
+    ['the PR author with `write` under the default, with a recorded override', 'author', 'write', 'maintain', true, false],
+    ['the PR author with `maintain` under the default', 'author', 'maintain', 'maintain', false, true],
+    ['the PR author with `maintain` under the default, already recorded', 'author', 'maintain', 'maintain', true, true],
+    ['the PR author with `admin` under the default', 'author', 'admin', 'maintain', false, true],
+    ['the PR author with `maintain` under `admin`', 'author', 'maintain', 'admin', false, false],
+    ['the PR author with `maintain` under `admin`, with a recorded override', 'author', 'maintain', 'admin', true, false],
+    ['the PR author with `write` under `write`', 'author', 'write', 'write', false, true],
+    ['the PR author with `triage` under `write`', 'author', 'triage', 'write', false, false],
+    ['the PR author with a custom role under `write`', 'author', 'release-manager', 'write', false, false],
+    ['the PR author with `admin` when the level is unknown', 'author', 'admin', undefined, false, false],
+  ])('approves a security and a plain blocking thread resolved by %s', async (_who, resolver, role, level, recorded, approves) => {
     const finding = (title: string, tags?: string[]): Finding => ({
       severity: 'blocker', title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
     });
@@ -863,21 +871,21 @@ describe('checkAndAutoApprove', () => {
         makeGraphqlFetchThreadNode({ id: 't2', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r2', line: 3, body: formatFindingComment(finding('Off by one'), TEST_LINKS) }),
       ],
       createReviewFn: createReviewMock,
-      permission,
+      role,
     });
 
-    expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(approves);
+    expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, { ...fallbackConfig(), ...(level && { author_clear_role: level }) })).toBe(approves);
     expect(createReviewMock).toHaveBeenCalledTimes(approves ? 1 : 0);
 
-    const isAdmin = who.includes('repo admin');
+    const byAuthor = approves && resolver === 'author';
     const replies = jest.mocked(octokit.graphql).mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply'));
-    const reply = (threadId: string) => ({ threadId, body: 'Finding dismissed by @author (repo admin).\n\n<!-- manki -->\n<!-- manki-security-override:resolve:author -->' });
-    expect(replies.map(([, vars]) => vars)).toEqual(isAdmin ? [...(recorded ? [] : [reply('t1')]), reply('t2')] : []);
-    // Only a thread the author resolved or overrode needs the admin lookup.
-    expect(octokit.rest.repos.getCollaboratorPermissionLevel).toHaveBeenCalledTimes(resolver === 'author' ? 1 : 0);
+    const reply = (threadId: string) => ({ threadId, body: `Finding dismissed by @author, the PR author, who has the \`${role}\` role on this repository.\n\n<!-- manki -->\n<!-- manki-security-override:resolve:author -->` });
+    expect(replies.map(([, vars]) => vars)).toEqual(byAuthor ? [...(recorded ? [] : [reply('t1')]), reply('t2')] : []);
+    // Only a thread the author resolved or overrode needs the role lookup, and only when the level is known.
+    expect(octokit.rest.repos.getCollaboratorPermissionLevel).toHaveBeenCalledTimes(resolver === 'author' && level ? 1 : 0);
     if (approves) {
-      const line = '**Findings dismissed by a repo admin:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @author, [Off by one](https://github.com/o/r/pull/1#r2) by @author.';
-      expect(createReviewMock.mock.calls[0][0].body.includes(line)).toBe(isAdmin);
+      const line = `**Findings dismissed by the PR author:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @author (\`${role}\` role), [Off by one](https://github.com/o/r/pull/1#r2) by @author (\`${role}\` role).`;
+      expect(createReviewMock.mock.calls[0][0].body.includes(line)).toBe(byAuthor);
     }
   });
 

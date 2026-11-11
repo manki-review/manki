@@ -5,7 +5,7 @@ import { parsePRDiff } from './diff';
 import { BotIdentity, fetchInterRoundDiff } from './github';
 import { appendMemoryLine, MemoryStore } from './memory';
 import { classifyAuthorReply, fetchRecapState, judgeAddressedThreadIds, PreviousFinding } from './recap';
-import { citesEvidence, FindingFingerprint, FindingFingerprintEntry, ParsedDiff, RoundContext } from './types';
+import { AuthorClearRole, citesEvidence, FindingFingerprint, FindingFingerprintEntry, ParsedDiff, RoundContext } from './types';
 import { sanitizeTokens } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -17,6 +17,8 @@ export interface MergedPullRequest {
   headSha: string;
   mergedSha: string;
   authorLogin?: string;
+  /** The base branch's `author_clear_role`. */
+  clearRole?: AuthorClearRole;
 }
 
 type Outcome = 'fixed' | 'dismissed' | 'untouched';
@@ -64,7 +66,7 @@ export async function recordFixRate(
   pr: MergedPullRequest,
   memory?: MemoryStore,
 ): Promise<void> {
-  const { previousFindings, priorRounds } = await fetchRecapState(octokit, bot, owner, repo, pr.number, pr.authorLogin);
+  const { previousFindings, priorRounds } = await fetchRecapState(octokit, bot, owner, repo, pr.number, pr.authorLogin, pr.clearRole);
   if (priorRounds.length === 0) {
     core.info('No Manki review rounds on this pull request, no fix rate to record');
     return;
