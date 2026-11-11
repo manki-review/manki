@@ -12,7 +12,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { findingKey, isDisprovedRaise, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
+import { cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -2040,8 +2040,9 @@ function formatBlockerCounts({ fresh, earlier, followUp }: BlockerCounts): strin
 /**
  * Returns the sentence a round says about itself: the judge's summary, or else the first two sentences of the top
  * blocker's description. The judge writes its summary before later steps take findings out of the round, so the summary
- * is left out when the judge kept a finding and `result.findings` holds none of the findings it kept. An incomplete
- * round's summary says why the round did not finish, so it is returned as it is.
+ * is left out when the judge kept a finding and `result.findings` holds none of the findings it kept. Later steps also
+ * make blockers the summary never saw, so it is left out when a finding blocks that the judge did not grade a blocker
+ * in that call. An incomplete round's summary says why the round did not finish, so it is returned as it is.
  */
 export function roundSentence(result: ReviewResult): string {
   if (!result.reviewComplete) return result.summary;
@@ -2049,8 +2050,13 @@ export function roundSentence(result: ReviewResult): string {
   const droppedLater = (f: Finding) => f.gradePath?.length ? f.gradePath.at(-1)!.by !== 'judge' : false;
   const kept = (result.allJudgedFindings ?? []).filter(f => f.severity !== 'ignore' || droppedLater(f));
   const listed = new Set(result.findings.map(findingKey));
+  // The judge graded a blocker itself when the cell it stated gives `blocker` with no doubt behind it. A doubt leaves `gradeIfConfirmed`.
+  // A sweep's finding is graded in a later judge call, and the verdict reader's has no cell.
+  const sweepers = new Set(result.sweeps?.map(sweep => sweep.reviewer));
+  const judgeGraded = (f: Finding) => isGradeCell(f.cell) && cellGrade(f.cell.row, f.cell.judgeColumn ?? f.cell.column) === 'blocker' && !f.gradeIfConfirmed && !f.reviewers.some(r => sweepers.has(r));
+  const blockers = result.findings.filter(f => f.severity === 'blocker');
   // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
-  const stands = result.verdictReason !== 'verdict_reader' && (kept.length === 0 || kept.some(f => listed.has(findingKey(f))));
+  const stands = result.verdictReason !== 'verdict_reader' && (kept.length === 0 || kept.some(f => listed.has(findingKey(f)))) && blockers.every(judgeGraded);
   if (stands && result.summary.trim()) return result.summary;
   const blocking = result.findings.filter(isBlockingFinding);
   const top = blocking.find(f => f.severity === 'blocker') ?? blocking[0];

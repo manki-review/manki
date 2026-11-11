@@ -7,7 +7,7 @@ import type { Finding, RoundContext, RoundOutcome } from './types';
 
 const finding: Finding = {
   severity: 'blocker', title: 'Off by one', file: 'src/a.ts', line: 2, description: 'Reads past the end.', suggestedFix: 'Stop at `len - 1`.',
-  reviewers: ['reviewer'], evidence: { checks: ['src/a.ts:2 reads `items[len]`'], proof: ['src/a.ts:2'] },
+  reviewers: ['reviewer'], evidence: { checks: ['src/a.ts:2 reads `items[len]`'], proof: ['src/a.ts:2'] }, cell: { row: 'severe', column: 'normal' },
 };
 
 function review(outcome: RoundOutcome, findings: Finding[] = [], approvalHeld: ApprovalHeld = false): LocalReview {
