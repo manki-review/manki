@@ -5,8 +5,8 @@ import { join } from 'path';
 import * as core from '@actions/core';
 
 import { LLMClient, SendMessageOptions } from './providers';
-import { checkStatus, disproof, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
-import { Finding, OpenThread, ParsedDiff, REACH_DOUBT, RoundContext } from './types';
+import { checkStatus, RefuteOptions, refuteBlockers, unprovenReason } from './refute';
+import { disproof, Finding, OpenThread, ParsedDiff, REACH_DOUBT, RoundContext } from './types';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
 jest.mock('@actions/core');

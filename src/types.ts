@@ -671,6 +671,17 @@ export function outcomeOf(check: Refutation): RefutationOutcome {
   return check.defect === 'disproved' ? 'disproved' : check.outcome;
 }
 
+/**
+ * Returns the refutation that disproves `finding`, by `outcomeOf`: in a premise the defect rests on, or in its answer
+ * whether the defect exists. Returns none when another check backs the finding, since a confirmation against a
+ * disproof settles nothing. A check backs it when it does not disprove it and confirmed the defect or one of the premises.
+ */
+export function disproof(finding: Pick<Finding, 'refutation' | 'pairRefutation'>): Refutation | undefined {
+  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
+  const backs = (check: Refutation): boolean => outcomeOf(check) !== 'disproved' && (check.defect === 'confirmed' || !!check.premises?.some(p => p.outcome === 'confirmed'));
+  return checks.some(backs) ? undefined : checks.find(check => outcomeOf(check) === 'disproved');
+}
+
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 

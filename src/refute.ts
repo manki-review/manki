@@ -12,7 +12,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { cellGrade, CheckStatus, columnDecidesBlock, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt, breaksRule } from './types';
+import { cellGrade, CheckStatus, columnDecidesBlock, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt, breaksRule } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -226,9 +226,6 @@ function reachConfirmed(checks: readonly Refutation[]): boolean {
 
 const disproves = (check: Refutation): boolean => outcomeOf(check) === 'disproved';
 
-/** Whether `check` backs its finding: it does not disprove it, and it confirmed the defect or one of the premises. */
-const supports = (check: Refutation): boolean => !disproves(check) && (confirmsDefect(check) || !!check.premises?.some(p => p.outcome === 'confirmed'));
-
 /**
  * Returns the `outcome` that `checks` agree on, which decides whether a grade is restored and whether a blocker is
  * lowered. An unsettled check abstains, and a confirmation against a disproof settles nothing. So no check confirms
@@ -239,16 +236,6 @@ function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
   if (votes.size !== 1) return 'unsettled';
   const [outcome] = votes;
   return outcome === 'confirmed' && checks.some(r => disproves(r) || r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
-}
-
-/**
- * Returns the refutation that disproves `finding`, by `outcomeOf`: in a premise the defect rests on, or in its answer
- * whether the defect exists. Returns none when another check `supports` the finding, since a confirmation against a
- * disproof settles nothing.
- */
-export function disproof(finding: Pick<Finding, RefutationField>): Refutation | undefined {
-  const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
-  return checks.some(supports) ? undefined : checks.find(disproves);
 }
 
 function refutationNote(label: string, check: Refutation): string {
