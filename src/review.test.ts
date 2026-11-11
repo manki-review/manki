@@ -2249,7 +2249,7 @@ describe('runReview', () => {
     jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
       if (system.startsWith('You are a code review judge')) {
         // Both finders report every finding, so the judge answers for each copy.
-        return { content: JSON.stringify({ summary: 's', threadEvaluations: [{ threadId: 'T2', status: 'not_addressed', reason: 'r' }], findings: [...titles, ...titles].map((title, i) => ({ id: i + 1, title, row: 'degraded', doubts: doubt, reasoning: 'r', confidence: 'medium', ...hidden.find(row => row.title === title)?.verdict })) }) };
+        return { content: JSON.stringify({ summary: 's', threadEvaluations: [{ threadId: 'T2', status: 'not_addressed', reason: 'r' }], findings: [...titles, ...titles].map((title, i) => ({ id: i + 1, title, row: 'degraded', doubts: doubt, reasoning: 'r', ...hidden.find(row => row.title === title)?.verdict })) }) };
       }
       if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
       refuterCalls.push(titles.find(title => user.includes(`: ${title}\n`))!);
