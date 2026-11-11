@@ -1404,75 +1404,61 @@ export async function runJudgeAgent(
       ? { effort, timeoutMs: FINDER_TOOLS_TIMEOUT_MS, promptTemplate: judgeTemplate(steps), repoTools: { root: refutation!.workspace, steps } }
       : { effort, timeoutMs: JUDGE_TIMEOUT_MS, promptTemplate: judgeTemplate(0) },
   });
-  const judge = ({ systemPrompt, options }: ReturnType<typeof judgeCall>) => sendWithParseRetry(
-    userMessage,
-    message => client.sendMessage(systemPrompt, message, options),
-    (reply) => {
-      if (reply.truncated) {
-        throw new Error(`judge reply truncated at the output token limit (length ${reply.content.length})`);
-      }
-      const parsed = parseJudgeResponse(reply.content);
-      if (parsed.findings.length === 0 && findings.length > 0) {
-        throw new Error(`Judge returned no results for ${findings.length} findings`);
-      }
-      return parsed;
-    },
-    (error) => core.warning(`Judge reply could not be used (${error}), asking once more`),
-  );
-  let call = judgeCall(toolSteps);
-  let judgeResult: JudgeResult;
-  try {
-    judgeResult = await judge(call);
-  } catch (error) {
-    // A judge with tools can run out of turns or time, so it grades once more the way it does without them. A used-up
-    // quota or a refusal, which already moved to the fallback, would fail again.
-    if (toolSteps === 0 || error instanceof QuotaError || error instanceof RefusalError) throw error;
-    core.warning(`The judge with tools failed (${error}), grading once more without tools`);
-    call = judgeCall(0);
-    judgeResult = await judge(call);
-  }
-  const { systemPrompt, options: judgeOptions } = call;
-
   // Defense-in-depth: when the inter-round diff is empty, force every open
   // thread to `not_addressed` regardless of what the LLM returned. The
   // post-parse thread-coverage retry is skipped in that case since the
   // synthetic override discards the LLM evaluations anyway.
   const overrideApplied = interRoundDiffEmpty && hasOpenThreads;
+  const threadsToEvaluate = hasOpenThreads && !overrideApplied ? openThreads! : [];
 
-  if (hasOpenThreads && !overrideApplied) {
-    const missing = missingThreadIds(openThreads!, judgeResult.threadEvaluations);
-    if (missing.length > 0) {
-      const reminder = buildThreadEvaluationsReminder(openThreads!, missing);
-      const retryUserMessage = `${reminder}\n\nOriginal message:\n${userMessage}`;
-      let retryEvals: ThreadEvaluation[] = [];
-      try {
-        const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, judgeOptions);
-        // Only the thread evaluations of this reply are used, so its finding entries are not parsed.
-        const reply = JSON.parse(extractJSON(retryResponse.content)) as { threadEvaluations?: unknown } | null;
-        retryEvals = parseThreadEvaluations(reply?.threadEvaluations) ?? [];
-      } catch (err) {
-        core.warning(`Judge retry failed (${err}); synthesizing 'uncertain' for ${missing.length} missing thread(s).`);
-        judgeResult = {
-          ...judgeResult,
-          threadEvaluations: synthesizeMissingThreadEvaluations(judgeResult.threadEvaluations, missing),
-        };
-      }
-      const byId = new Map(
-        (judgeResult.threadEvaluations ?? []).map(e => [e.threadId, e]),
-      );
-      for (const e of retryEvals) byId.set(e.threadId, e);
-      judgeResult = { ...judgeResult, threadEvaluations: [...byId.values()] };
-      const stillMissing = missingThreadIds(openThreads!, judgeResult.threadEvaluations);
-      if (stillMissing.length > 0) {
-        core.warning(
-          `Judge omitted threadEvaluations for ${stillMissing.length} of ${openThreads!.length} open threads after retry: ${stillMissing.join(', ')}. Synthesizing 'uncertain' entries.`,
-        );
-        judgeResult = {
-          ...judgeResult,
-          threadEvaluations: synthesizeMissingThreadEvaluations(judgeResult.threadEvaluations, stillMissing),
-        };
-      }
+  const judge = async ({ systemPrompt, options }: ReturnType<typeof judgeCall>): Promise<JudgeResult> => {
+    const send = (message: string) => client.sendMessage(systemPrompt, message, options);
+    const first = await sendWithParseRetry(
+      userMessage,
+      send,
+      (reply) => {
+        if (reply.truncated) {
+          throw new Error(`judge reply truncated at the output token limit (length ${reply.content.length})`);
+        }
+        const parsed = parseJudgeResponse(reply.content);
+        if (parsed.findings.length === 0 && findings.length > 0) {
+          throw new Error(`Judge returned no results for ${findings.length} findings`);
+        }
+        return parsed;
+      },
+      (error) => core.warning(`Judge reply could not be used (${error}), asking once more`),
+    );
+    const missing = missingThreadIds(threadsToEvaluate, first.threadEvaluations);
+    if (missing.length === 0) return first;
+    const reminder = buildThreadEvaluationsReminder(threadsToEvaluate, missing);
+    let retryEvals: ThreadEvaluation[] = [];
+    try {
+      const retryResponse = await send(`${reminder}\n\nOriginal message:\n${userMessage}`);
+      // Only the thread evaluations of this reply are used, so its finding entries are not parsed.
+      const reply = JSON.parse(extractJSON(retryResponse.content)) as { threadEvaluations?: unknown } | null;
+      retryEvals = parseThreadEvaluations(reply?.threadEvaluations) ?? [];
+    } catch (err) {
+      core.warning(`Judge retry failed (${err}); synthesizing 'uncertain' for ${missing.length} missing thread(s).`);
     }
+    const byId = new Map((first.threadEvaluations ?? []).map(e => [e.threadId, e]));
+    for (const e of retryEvals) byId.set(e.threadId, e);
+    const merged = { ...first, threadEvaluations: [...byId.values()] };
+    const stillMissing = missingThreadIds(threadsToEvaluate, merged.threadEvaluations);
+    if (stillMissing.length === 0) return merged;
+    core.warning(
+      `Judge omitted threadEvaluations for ${stillMissing.length} of ${threadsToEvaluate.length} open threads after retry: ${stillMissing.join(', ')}. Synthesizing 'uncertain' entries.`,
+    );
+    return { ...merged, threadEvaluations: synthesizeMissingThreadEvaluations(merged.threadEvaluations, stillMissing) };
+  };
+  let judgeResult: JudgeResult;
+  try {
+    judgeResult = await judge(judgeCall(toolSteps));
+  } catch (error) {
+    // A judge with tools can run out of turns or time, so it grades once more the way it does without them. A used-up
+    // quota or a refusal, which already moved to the fallback, would fail again.
+    if (toolSteps === 0 || error instanceof QuotaError || error instanceof RefusalError) throw error;
+    core.warning(`The judge with tools failed (${error}), grading once more without tools`);
+    judgeResult = await judge(judgeCall(0));
   }
 
   const threadEvaluations = overrideApplied
