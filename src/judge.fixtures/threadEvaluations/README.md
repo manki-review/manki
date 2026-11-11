@@ -8,7 +8,7 @@ The corpus is consumed by `judge.test.ts` to assert two things:
 
 1. Every fixture is structurally valid (shape matches `ThreadFixture`).
 2. Every fixture has a non-empty `expectedStatus` of `addressed`,
-   `not_addressed`, or `uncertain`.
+   `partly_addressed`, `not_addressed`, or `uncertain`.
 
 A live-replay harness (gated on `RUN_JUDGE_LIVE_FIXTURES=1`) feeds each fixture
 through `runJudgeAgent` against a real LLM and asserts the returned status
@@ -27,3 +27,4 @@ exercise it.
 | `06_empty_inter_round_diff.json` | `not_addressed` | Inter-round diff is the empty string. The judge converges to `not_addressed` on its own (no changes can address an open thread), and `runJudgeAgent` enforces the same answer as a defense-in-depth override. |
 | `07_addressed_via_rewrite.json` | `addressed` | Author fixed the issue differently than the original suggestion. Diff shows a working alternative. |
 | `08_partial_fix_other_callsite.json` | `not_addressed` | Diff fixes a similar pattern elsewhere but not at the flagged line. |
+| `09_one_of_two_failures_fixed.json` | `partly_addressed` | The concern names two failures. The diff fixes one, and the current code still shows the other. |
