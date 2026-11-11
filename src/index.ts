@@ -1842,7 +1842,7 @@ async function runFullReview(
     // Placed after the diff-size and empty-files guards so cold installs are skipped on paths that never invoke an LLM.
     await warmUpClients(clients);
 
-    const { text: repoContext, files: instructionFiles } = await fetchRepoContext(target.octokit, target.owner, target.repo, target.baseRef, diff.files.map(f => f.path));
+    const repoContext = await fetchRepoContext(target.octokit, target.owner, target.repo, target.baseRef, diff.files.map(f => f.path));
     const { memory, memoryLoadStatus, memoryLoadError, memorySkip } = await loadRunMemory(octokit, config, owner, repo, prNumber);
 
     const priorRoundCount = recap.priorRounds.length;
@@ -1865,7 +1865,7 @@ async function runFullReview(
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, configHold: brokenConfig(reviewSource, brokenHead?.changed ?? false), models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
-      diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
+      diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis, instructions: repoContext,
       commentId, dashboard, progress, startTime, parseEndTime,
     };
 
@@ -1878,8 +1878,8 @@ async function runFullReview(
       config,
       diff,
       rawDiff,
-      repoContext,
-      instructionFiles,
+      repoContext: repoContext.text,
+      instructionFiles: repoContext.files,
       memory,
       fileContents,
       prContext: prContext && staticSignals.length > 0 ? { ...prContext, staticSignals } : prContext,

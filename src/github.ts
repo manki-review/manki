@@ -521,6 +521,8 @@ export interface InstructionFile {
 export interface RepoContext {
   text: string;
   files: InstructionFile[];
+  /** The file cut at `MAX_INSTRUCTIONS_CHARS`. Files after it were left out. */
+  cut?: string;
 }
 
 /** Returns the repo description and the instruction files `buildRepoContext` reads at `ref`. */
@@ -558,6 +560,7 @@ export async function buildRepoContext(files: RepoFiles, changedPaths: string[])
   const loaded: InstructionFile[] = [];
   const seen = new Set<string>();
   let total = 0;
+  let cut: string | undefined;
   for (const { path, depth } of queue) {
     const file = await readInstructionFile(files, path);
     if (file === null || !file.content.trim() || seen.has(file.content.trim())) continue;
@@ -574,11 +577,12 @@ export async function buildRepoContext(files: RepoFiles, changedPaths: string[])
     loaded.push({ path, text: part.slice(heading.length) });
     total += heading.length + file.content.length;
     if (total > MAX_INSTRUCTIONS_CHARS) {
-      core.info(`Repo instructions reached ${MAX_INSTRUCTIONS_CHARS} characters: cut ${path} and skipped any farther files`);
+      core.warning(`Repo instructions reached ${MAX_INSTRUCTIONS_CHARS} characters: cut ${path} and skipped any farther files, so the review does not see their rules`);
+      cut = path;
       break;
     }
   }
-  return { text: parts.join('\n\n---\n\n'), files: loaded };
+  return { text: parts.join('\n\n---\n\n'), files: loaded, ...(cut && { cut }) };
 }
 
 /** Returns each name's nearest subdirectory file above any changed file, deepest first. */

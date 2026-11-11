@@ -1,7 +1,7 @@
 import type { LLMCall } from './providers';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapState, securityOverridesIn } from './recap';
-import { MANKI_VERSION } from './github';
+import { MANKI_VERSION, RepoContext } from './github';
 import type { MemorySkip } from './memory';
 import { latestLimits, parseModelSpec, summarizeCalls } from './providers';
 import { routingDigest } from './routing';
@@ -44,6 +44,8 @@ export interface RoundRecordInput {
   staticAnalysis?: RoundStaticAnalysis;
   /** The token service calls the run made before the round posts. */
   tokenServiceCalls?: TokenServiceCall[];
+  /** The instruction files the round read, and the one that was cut. */
+  instructions?: Pick<RepoContext, 'files' | 'cut'>;
 }
 
 /** Durations `buildRoundContext` records that only the review stage measures. */
@@ -424,6 +426,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(tokenServiceCalls && tokenServiceCalls.length > 0 && { tokenService: tokenServiceCalls }),
     ...(result.slicing && { slicing: result.slicing }),
     ...(result.leads && result.leads.length > 0 && { leads: result.leads }),
+    ...(input.instructions && { instructions: { files: input.instructions.files.map(f => f.path), ...(input.instructions.cut && { cut: input.instructions.cut }) } }),
     ...(result.relatedRepos && { relatedRepos: result.relatedRepos.map(r => withReads(r, llmCalls)) }),
     ...(result.usesOutsideDiff && { usesOutsideDiff: result.usesOutsideDiff }),
     ...(result.relatedWork && {

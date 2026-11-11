@@ -2605,12 +2605,16 @@ describe('fetchRepoContext instruction files', () => {
     expect(result).not.toContain(big('root agents'));
     expect(result).not.toContain('root claude');
 
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const oversized = mockOctokit(agentsTree, { 'src/AGENTS.md': big('src', 40_000) });
-    const { text: cut, files: cutFiles } = await fetchRepoContext(oversized, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    const { text: cut, files: cutFiles, cut: cutPath } = await fetchRepoContext(oversized, 'owner', 'repo', 'abc123', ['src/index.ts']);
     expect(cut.startsWith('## src/AGENTS.md\n\nsrc x')).toBe(true);
     expect(cut.length).toBeLessThanOrEqual(30_003);
-    // The cut file is listed with the text that was printed.
+    // The cut file is listed with the text that was printed, and named as the one that was cut.
     expect(cutFiles).toEqual([{ path: 'src/AGENTS.md', text: cut.slice('## src/AGENTS.md\n\n'.length) }]);
+    expect(cutPath).toBe('src/AGENTS.md');
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('cut src/AGENTS.md and skipped any farther files'));
+    warningSpy.mockRestore();
   });
 });
 

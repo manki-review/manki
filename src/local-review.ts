@@ -317,7 +317,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
   const { clients, models } = buildReviewClients(config, providerInputs);
   await warmUpClients(clients);
   signal?.throwIfAborted();
-  const { text: repoContext, files: instructionFiles } = await buildRepoContext(gitRepoFiles(repoRoot, base), diff.files.map(f => f.path));
+  const repoContext = await buildRepoContext(gitRepoFiles(repoRoot, base), diff.files.map(f => f.path));
   const title = input.title ?? (await runGit(repoRoot, ['log', '-1', '--format=%s', head])).trim();
   const hasTools = [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])].some(c => c.repoTools);
   const followUp = input.earlier && patch === undefined
@@ -340,8 +340,8 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       config,
       diff,
       rawDiff,
-      repoContext,
-      instructionFiles,
+      repoContext: repoContext.text,
+      instructionFiles: repoContext.files,
       prContext: { title, body: input.body ?? '', baseBranch: input.base },
       workspace,
       headSha: head,
@@ -369,7 +369,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: loaded.source,
       models, plannerEnabled: !!clients.planner, recap: { previousFindings: followUp?.previousFindings ?? [], priorRounds: followUp?.priorRounds ?? [] },
       priorRoundCount: followUp?.priorRounds.length ?? 0, maxAutoRounds: 0, diff, changeDigest: changeDigest(fullDiff), excludedFiles,
-      openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled',
+      openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled', instructions: repoContext,
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
     return { result, context, base, head, approvalHeld: brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config' : false };
   } finally {

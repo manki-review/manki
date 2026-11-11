@@ -3313,7 +3313,7 @@ describe('runFullReview orchestration', () => {
       agentNames: ['general'],
     });
     const instructionFiles = [{ path: 'AGENTS.md', text: 'Every bug fix needs a test.' }];
-    jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue({ text: '## AGENTS.md\n\nEvery bug fix needs a test.', files: instructionFiles });
+    jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue({ text: '## AGENTS.md\n\nEvery bug fix needs a test.', files: instructionFiles, cut: 'AGENTS.md' });
 
     await callRunFullReview();
 
@@ -3324,6 +3324,8 @@ describe('runFullReview orchestration', () => {
     // The base branch's instruction files go along with the context text, for the check of a quoted rule.
     expect([runReviewCall.repoContext, runReviewCall.instructionFiles]).toEqual(['## AGENTS.md\n\nEvery bug fix needs a test.', instructionFiles]);
     expect(jest.mocked(ghUtils.fetchRepoContext).mock.calls[0][3]).toBe(baseArgs.baseRef);
+    // The record names the files read and the one cut at the size limit, never their text.
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.instructions).toEqual({ files: ['AGENTS.md'], cut: 'AGENTS.md' });
   });
 
   it('forwards prior rounds from recap state to runReview when memory is enabled', async () => {

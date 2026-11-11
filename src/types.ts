@@ -365,6 +365,12 @@ export interface RoundRelatedWork {
   skipped?: string[];
 }
 
+export interface RoundInstructions {
+  files: string[];
+  /** The file cut at the size limit. Files after it were left out, so the round saw no rule of theirs. */
+  cut?: string;
+}
+
 /** How one configured related repo fared in a round, and how often the round's finders read it. */
 export interface RoundRelatedRepo {
   repo: string;
@@ -1433,6 +1439,8 @@ export interface RoundContext {
   tokenService?: TokenServiceCall[];
   /** How the diff was split, when it was read in several slices. */
   slicing?: RoundSlicing;
+  /** The instruction files the round read from the base branch, in the order the prompts print them. */
+  instructions?: RoundInstructions;
   /** The configured related repos, with the outcome of each fetch. */
   relatedRepos?: RoundRelatedRepo[];
   /** What the finders were shown as uses outside the diff. */

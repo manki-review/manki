@@ -92,6 +92,7 @@ describe('reviewLocal', () => {
     expect(options.repoContext).toContain('Use tabs.');
     expect(options.repoContext).toContain('Name things plainly.');
     expect(options.instructionFiles?.map(f => f.path)).toEqual(['AGENTS.md', 'CONTRIBUTING.md', 'guides/conventions.md']);
+    expect(review.context.instructions).toEqual({ files: ['AGENTS.md', 'CONTRIBUTING.md', 'guides/conventions.md'] });
     expect(options.prContext).toEqual({ title: 'Change a', body: '', baseBranch: 'main' });
     expect(options.headSha).toBe(head);
     expect(options).not.toHaveProperty('relatedReposAsOf');
