@@ -267,7 +267,7 @@ function codeLocations(text: string, file: string | undefined, anySpan = false):
 
 /**
  * Turns a "Kept." reply that cites no code location the finding did not already cite into "Unverified.", since only
- * new lines can show the finding still stands. `file` is the file the finding's thread sits on.
+ * new lines can show the finding still stands. `file` is the finding's file.
  */
 function requireNewProof(reply: string, finding: string, file?: string): string {
   if (!KEPT_REPLY_RE.test(reply)) return reply;
@@ -376,7 +376,7 @@ export async function handleReviewCommentReply(
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools);
     const findingBody = root.comment.body ?? '';
     // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
-    const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody, root.comment.path);
+    const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody, filePath);
     const isSecurity = isSecurityThread(findingBody);
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     const outcome = replyOutcome(reply);

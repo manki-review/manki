@@ -375,11 +375,11 @@ describe('isBotMentionNonReview', () => {
 /** `reraised` is a warning thread that a found-again reply made block, which only the live thread shows. */
 type FindingKind = 'security' | 'blocker' | 'warning' | 'reraised';
 
-function findingComment(kind: FindingKind): string {
+function findingComment(kind: FindingKind, detached = false): string {
   return jest.requireActual('./github').formatFindingComment({
     severity: kind === 'warning' || kind === 'reraised' ? 'warning' : 'blocker', title: 'Token leaks into logs', file: 'src/file.ts', line: 10, description: 'd', reviewers: [],
     ...(kind === 'security' && { tags: ['security'] }),
-  }, TEST_LINKS);
+  }, TEST_LINKS, detached);
 }
 
 function createMockOctokit() {
@@ -961,10 +961,13 @@ describe('handleReviewCommentReply', () => {
     ['names a field of the changed code and a number', '', 'opts.retries:3 still logs the token.', false],
     ['cites the line the finding cites by the file name alone', 'See file.ts:10.', 'src/file.ts:10 still logs the token.', false],
     ['cites a new line next to the finding\'s line', 'See src/file.ts:10.', 'src/file.ts:10 calls the logger, and src/file.ts:12 still logs the token.', true],
-  ])('keeps a "Kept." reply only when it cites a new line: one that %s', async (_case, cited, answer, kept) => {
+    // A thread posted on another file reads a file name against the finding's file, not the file it sits on.
+    ['cites the finding\'s line by the file name alone, on a thread posted on another file', 'See src/file.ts:10.', 'file.ts:10 still logs the token.', false, 'src/first.ts'],
+    ['cites a new line by the file name alone, on a thread posted on another file', '', 'file.ts:12 still logs the token.', true, 'src/first.ts'],
+  ])('keeps a "Kept." reply only when it cites a new line: one that %s', async (...[, cited, answer, kept, postedOn]: [string, string, string, boolean, string?]) => {
     setContext({ comment: { id: 1, body: 'This cannot happen.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' }, pull_request: { number: 1 } });
     const octokit = createMockOctokit();
-    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: `${findingComment('blocker')}\n${cited}`, path: 'src/file.ts', line: 10 } });
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: `${findingComment('blocker', !!postedOn)}\n${cited}`, path: postedOn ?? 'src/file.ts', line: postedOn ? 1 : 10 } });
     (ghUtils.fetchPRDiff as jest.Mock).mockResolvedValueOnce('diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n@@ -9,2 +9,3 @@\n context\n+  log(opts.retries, sessionToken);\n context');
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: `**Kept.** ${answer}` });
