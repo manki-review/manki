@@ -13,7 +13,8 @@ import type { Finding, ReviewResult, RoundOutcome } from './types';
 jest.mock('@actions/core');
 jest.mock('./providers', () => ({
   ...jest.requireActual('./providers'),
-  createLLMClient: jest.fn(() => ({ repoTools: true, sendMessage: jest.fn() })),
+  // As with the real clients, only an OAuth token gives repository tools.
+  createLLMClient: jest.fn((_provider: string, _model: string, auth: { kind: string }) => ({ repoTools: auth.kind === 'oauth', sendMessage: jest.fn() })),
 }));
 jest.mock('./review', () => ({
   ...jest.requireActual('./review'),
@@ -249,7 +250,7 @@ describe('reviewLocal', () => {
 
   it('holds a patch review whose patch leaves a config that does not load, read with the patch applied', async () => {
     jest.mocked(runReview).mockResolvedValue({ verdict: 'APPROVE', outcome: 'READY', summary: 'Fine', findings: [], highlights: [], reviewComplete: true, agentNames: ['reviewer'] });
-    // An API key gives no repository tools, so no workspace applies the patch either.
+    // An API key gives no repository tools, so no workspace applies the patch and only the config read can refuse it.
     const noTools = { ...inputs, anthropicOauthToken: '', anthropicApiKey: 'key' };
     const patched = (config: string) => reviewLocal({
       repoRoot: repo, base: 'main', head: 'main', providerInputs: noTools,
