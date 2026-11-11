@@ -296,7 +296,7 @@ export interface JudgedFinding {
   /** Number of the "Finding N" this entry judges. */
   id?: number;
   title: string;
-  /** The severity table row the judge states, or `none` for a finding it drops. Missing when it names no known row. */
+  /** The severity table row the judge states, or `none` for a finding it marks `ignore`. Missing when it names no known row. */
   row?: CellRow | 'none';
   /** The column the judge states, `normal` when it names none. */
   column?: CellColumn;
@@ -423,7 +423,7 @@ Bad examples (do NOT write like this):
 - **nitpick**: cosmetic: wording, formatting, naming. Purely optional.
 - **ignore**: false positives, matters of preference, reviewer misunderstandings, and the cases the rules below drop.
 
-You do not return a grade. For each finding you state its cell of the Severity Table below, as \`row\` and \`column\`, and Manki works out the grade from that cell. To mark a finding \`ignore\`, set \`row\` to \`none\`. State what actually goes wrong in the code, never how confidently the finding is worded.
+You do not return a grade. For each finding you state its cell of the Severity Table below, as \`row\` and \`column\`, and Manki works out the grade from that cell. To mark a finding \`ignore\`, set \`row\` to \`ignore\`. State what actually goes wrong in the code, never how confidently the finding is worded.
 
 ${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself. A reviewer's finding is a claim too, but one the code shown cannot settle is graded by Code You Cannot See and When You Are Unsure, never dropped because a model made it.
 
@@ -463,7 +463,7 @@ A rare internal edge case needs a state that only the code's own logic produces,
 
 **The \`rare\` column is a claim, and Manki checks it.** On the \`wrong\` row it is all that keeps a finding from blocking, so Manki adds the doubt "${REACH_DOUBT.premise}" to every such finding. Do not list that doubt yourself. Name in \`reasoning\` the state and what in the code's own logic produces it.${toolsCheckFindings ? ' Manki then searches the code with tools for a caller, stored data or concurrent use of a public API that produces the state. When it finds one, the finding moves to the `normal` column.' : ''}
 
-**"Not worse than before" is no cell.** A defect in lines this PR adds is graded by its cell, even when the old code failed the same way or the bad state existed before. Never state a lower row, the \`rare\` column or \`none\` because the change is "not a regression".
+**"Not worse than before" is no cell.** A defect in lines this PR adds is graded by its cell, even when the old code failed the same way or the bad state existed before. Never state a lower row, the \`rare\` column or \`ignore\` because the change is "not a regression".
 
 A rule below that gives a finding a grade names the row to state: \`degraded\` in the \`normal\` column for \`warning\`, \`improvement\` for \`suggestion\` and \`style\` for \`nitpick\`. A grade held down by something you could not settle is different: state the cell the damage earns and list what you could not settle in \`doubts\`. Manki grades a \`blocker\` cell with an open doubt as a \`warning\`.
 
@@ -632,7 +632,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
     {
       "id": 1,
       "title": "Short title matching or close to the original finding title",
-      "row": "severe" | "wrong" | "degraded" | "improvement" | "style" | "none",
+      "row": "severe" | "wrong" | "degraded" | "improvement" | "style" | "ignore",
       "column": "normal" | "rare",
       "duplicateOf": 0,
       "sameAs": "",
@@ -1173,8 +1173,8 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       const category = oneOf(FINDING_CATEGORIES, f.category, 'category');
       const effort = oneOf(FINDING_EFFORTS, f.effort, 'effort');
       const proof = parseProof(f.proof);
-      // The prompt calls dropping a finding marking it `ignore`, so a judge can name that in place of `none`.
-      const row = f.row === 'none' || f.row === 'ignore' ? 'none' as const
+      // `ignore` is the prompt's word for a dropped finding, and `none` says the same.
+      const row = f.row === 'ignore' || f.row === 'none' ? 'none' as const
         : typeof f.row === 'string' && Object.hasOwn(CELL_GRADES, f.row) ? f.row as CellRow : undefined;
       const doubts = parseDoubts(f.doubts);
       const fixLeaves = typeof f.fixLeaves === 'string' ? f.fixLeaves.trim().slice(0, MAX_REMAINING_CHARS) : '';

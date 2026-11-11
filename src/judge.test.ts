@@ -202,7 +202,7 @@ describe('buildJudgeSystemPrompt', () => {
 
   it('grades against the fixed rubric instead of trusting reviewer severity', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
-    expect(prompt).toContain('You do not return a grade. For each finding you state its cell of the Severity Table below, as `row` and `column`, and Manki works out the grade from that cell. To mark a finding `ignore`, set `row` to `none`.');
+    expect(prompt).toContain('You do not return a grade. For each finding you state its cell of the Severity Table below, as `row` and `column`, and Manki works out the grade from that cell. To mark a finding `ignore`, set `row` to `ignore`.');
     expect(prompt).not.toContain('Your grade is final');
     expect(prompt).toContain('Any other code the PR did not touch and does not affect is never a finding');
     expect(prompt).toContain('- `blocker`: when you cannot settle one of the five tests, state the cell all the same, list what you could not settle in `doubts`, and say in `reasoning` which test it is. Manki grades it `warning` at most.');
@@ -234,7 +234,7 @@ describe('buildJudgeSystemPrompt', () => {
   it('puts the verdict fields before the reasoning in the output schema', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     const schema = prompt.slice(prompt.indexOf('"findings": ['));
-    expect(schema).toContain('"row": "severe" | "wrong" | "degraded" | "improvement" | "style" | "none",\n      "column": "normal" | "rare",');
+    expect(schema).toContain('"row": "severe" | "wrong" | "degraded" | "improvement" | "style" | "ignore",\n      "column": "normal" | "rare",');
     expect(schema.slice(0, schema.indexOf('"threadEvaluations"'))).not.toMatch(/"severity"|"gradeIfConfirmed"/);
     expect(schema.indexOf('"row"')).toBeLessThan(schema.indexOf('"reasoning"'));
     expect(schema.indexOf('"duplicateOf"')).toBeLessThan(schema.indexOf('"reasoning"'));
@@ -278,7 +278,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(table).toContain('A state that callers, stored data or concurrent use of a public API can produce is not internal, however narrow the timing looks');
     expect(table).toContain('When you cannot name what in the code\'s own logic produces the state, the column is `normal`.');
     expect(table).toContain('**The `rare` column is a claim, and Manki checks it.** On the `wrong` row it is all that keeps a finding from blocking, so Manki adds the doubt "Normal use or outside input can produce the state this failure needs" to every such finding. Do not list that doubt yourself. Name in `reasoning` the state and what in the code\'s own logic produces it.\n');
-    expect(table).toContain('**"Not worse than before" is no cell.** A defect in lines this PR adds is graded by its cell, even when the old code failed the same way or the bad state existed before. Never state a lower row, the `rare` column or `none` because the change is "not a regression".');
+    expect(table).toContain('**"Not worse than before" is no cell.** A defect in lines this PR adds is graded by its cell, even when the old code failed the same way or the bad state existed before. Never state a lower row, the `rare` column or `ignore` because the change is "not a regression".');
     expect(table).toContain('A rule below that gives a finding a grade names the row to state: `degraded` in the `normal` column for `warning`, `improvement` for `suggestion` and `style` for `nitpick`.');
     expect(table).toContain('Manki grades a `blocker` cell with an open doubt as a `warning`.');
     expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, undefined, 0, true)).toContain('produces it. Manki then searches the code with tools for a caller, stored data or concurrent use of a public API that produces the state. When it finds one, the finding moves to the `normal` column.');
@@ -1100,7 +1100,7 @@ describe('parseJudgeResponse', () => {
       { id: 5, title: 'E', row: 'ignore', reasoning: 'r', confidence: 'high' },
     ] }));
     expect(result.findings.map(f => [f.category, f.effort])).toEqual([['concurrency', 'larger'], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined]]);
-    // Only a row of the table or `none` is kept, and only an explicit `rare` is a rare column. `ignore`, the prompt's word for a dropped finding, reads as `none`.
+    // Only a row of the table, `ignore` or `none` is kept, and only an explicit `rare` is a rare column. `ignore` is the prompt's word for a dropped finding.
     expect(result.findings.map(f => [f.row, f.column])).toEqual([['wrong', 'rare'], [undefined, undefined], [undefined, undefined], ['none', undefined], ['none', undefined]]);
     // A fix that leaves part of the problem says so in the posted fix.
     const leaves = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
