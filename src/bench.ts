@@ -838,7 +838,9 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
   for (const { name, overrides, cases: scored } of report.variants) {
     const again: CaseReport[] = [];
     for (const c of scored) {
-      const benchCase = cases.find(b => b.id === c.id);
+      const loaded = cases.find(b => b.id === c.id);
+      // A case the report calls a hold-out case was reviewed as one, so it stays one when its file is loaded as a tuning case.
+      const benchCase = loaded && { ...loaded, set: c.set === 'holdout' ? c.set : loaded.set };
       if (!benchCase) left.set(c.id, 'no case file was loaded for it, which for a hold-out case takes --holdout');
       if (!benchCase || benchCase.keyVersion === c.keyVersion) {
         again.push(c);
@@ -1435,11 +1437,12 @@ interface StoredReport {
 }
 
 /**
- * Reads a stored report to print or compare it. Each case takes its set from `caseSet`, never from the report. A case
- * that no case file holds was removed or renamed since, so no current case compares with it: the report is returned
- * without it, and its id in `removed`. Throws only when the report contradicts the case files: it calls a case a tuning
- * case while `bench/holdout` holds the case's file, as the report of a single case job of an older ref does. That error
- * names only the case.
+ * Reads a stored report to print or compare it. A case is a tuning case only when the report and `caseSet` both say so,
+ * since a case moved to `bench/cases` after the report was written was reviewed as a hold-out case. A case that no case
+ * file holds was removed or renamed since, so no current case compares with it: the report is returned without it, and
+ * its id in `removed`. Throws only when the report contradicts the case files: it calls a case a tuning case while
+ * `bench/holdout` holds the case's file, as the report of a single case job of an older ref does. That error names only
+ * the case.
  */
 export function readReport(path: string, root = '.'): StoredReport {
   const stored = readReportFile(path);
@@ -1447,7 +1450,7 @@ export function readReport(path: string, root = '.'): StoredReport {
   const wrong = ids.filter(id => caseFiles(id, root).includes('holdout') && stored.variants.some(v => v.cases.some(c => c.id === id && c.set !== 'holdout')));
   if (wrong.length > 0) throw new Error(`The report ${path} calls ${wrong.join(', ')} a tuning case, and ${CASE_DIRS.holdout} holds a case file for it.`);
   const removed = ids.filter(id => caseFiles(id, root).length === 0);
-  const variants = stored.variants.map(v => variantReport(v, v.cases.filter(c => !removed.includes(c.id)).map(c => ({ ...c, set: caseSet(c.id, root) }))));
+  const variants = stored.variants.map(v => variantReport(v, v.cases.filter(c => !removed.includes(c.id)).map(c => ({ ...c, set: c.set === 'holdout' ? c.set : caseSet(c.id, root) }))));
   return { report: { ...stored, variants }, removed };
 }
 

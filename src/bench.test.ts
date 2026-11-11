@@ -755,6 +755,10 @@ describe('runBench and buildReport', () => {
         throw new Error(`reply about ${findings[0].title}`);
       };
       expect(await leftBy(quoting)).toEqual([{ id: 'shown-1', reason: 'the matcher failed: reply about title SHOWN-TEXT' }, { id: 'held-1', reason: 'the matcher failed' }]);
+      // A case the report calls a hold-out case stays one when its file is loaded as a tuning case.
+      const moved = rekeyed.map(c => ({ ...c, set: 'tuning' as const }));
+      expect((await rescoreReport(report, moved, quoting)).left).toEqual(await leftBy(quoting));
+      expect((await rescoreReport(report, moved, matching(true))).report.variants[0].cases.map(c => c.set)).toEqual(['tuning', 'holdout']);
       await expect(runBench([cases[1]], { ...options, runs: 1, review: reviewing(false), matcher: matching(true), variants: [{ name: 'bad', overrides: { [SECRET]: true } }] })).rejects.toThrow(/^Variant bad does not load on case held-1$/);
       expect(() => parseCase(`id: [${SECRET}`, 'held.yml', 'holdout')).toThrow(/^held\.yml: is not valid YAML$/);
       expect(() => parseCase('id: [SHOWN-TEXT', 'shown.yml')).toThrow(/^shown\.yml: .*SHOWN-TEXT/s);
@@ -806,8 +810,8 @@ describe('runBench and buildReport', () => {
         };
         expect(sets(stored('holdout'))).toEqual({ sets: [['shown-1', 'tuning'], ['held-1', 'holdout']], removed: [] });
         expect(() => readReport(stored('tuning'), root)).toThrow(new Error(`The report ${join(root, 'report.json')} calls held-1 a tuning case, and bench/holdout holds a case file for it.`));
-        // The case files give each case its set, whatever the report calls it.
-        expect(sets(stored('holdout', 'holdout'))).toEqual({ sets: [['shown-1', 'tuning'], ['held-1', 'holdout']], removed: [] });
+        // A case the report calls a hold-out case stays one, although only `bench/cases` holds its file.
+        expect(sets(stored('holdout', 'holdout'))).toEqual({ sets: [['shown-1', 'holdout'], ['held-1', 'holdout']], removed: [] });
         // A case no case file holds is no contradiction. It is left out and named, and nothing of it is read as a tuning case.
         rmSync(join(root, 'bench', 'holdout', 'held-1.yml'));
         expect(sets(stored('tuning'))).toEqual({ sets: [['shown-1', 'tuning']], removed: ['held-1'] });
