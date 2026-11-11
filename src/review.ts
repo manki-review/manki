@@ -269,6 +269,12 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
     const model = resolveReviewerModel(config, reviewer.model);
     const client = clients && pickReviewerClient(clients, model).client;
     const sent = (tier: EffortLevel): EffortLevel | undefined => (client?.sentEffort ? client.sentEffort(tier) : tier);
+    // A reader the deeper review added has no effort without it to compare with.
+    const ref = (r: GroupReviewer): string => r.model ?? '@reviewer';
+    const usual = escalatedFrom ? escalatedFrom.reviewers.find(r => r.role !== 'verifier' && ref(r) === ref(reviewer)) : reviewer;
+    const usualEffort = usual && askedEffort(usual, triage, false);
+    // The built-in pair can run below a tier the earlier group set, and no effort sent ranks below every tier.
+    const rank = (tier: EffortLevel | undefined): number => (tier ? EFFORT_ORDER.indexOf(tier) : -1);
     const effort = askedEffort(reviewer, triage, deeper);
     // A model that takes no effort keeps the asked tier in its name and record.
     const sentEffort = sent(effort) ?? effort;
@@ -281,12 +287,7 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
     for (let n = 2; names.has(name); n++) name = `${label} #${n}`;
     names.add(name);
     const steps = verifier ? QUICK_CHECK_STEPS : risky ? RISKY_FINDER_STEPS : FINDER_STEPS;
-    // A reader the deeper review added has no effort without it to compare with.
-    const ref = (r: GroupReviewer): string => r.model ?? '@reviewer';
-    const usual = escalatedFrom ? escalatedFrom.reviewers.find(r => r.role !== 'verifier' && ref(r) === ref(reviewer)) : reviewer;
-    // The built-in pair can run below a tier the earlier group set, and no effort sent ranks below every tier.
-    const rank = (tier: EffortLevel | undefined): number => (tier ? EFFORT_ORDER.indexOf(tier) : -1);
-    const deeperSameEffort = deeper && usual !== undefined && rank(sent(effort)) <= rank(sent(askedEffort(usual, triage, false)));
+    const deeperSameEffort = deeper && usualEffort !== undefined && rank(sent(effort)) <= rank(sent(usualEffort));
     return { name, prompt, model, effort, sentEffort, steps, ...(deeperSameEffort && { deeperSameEffort }) };
   });
 }
