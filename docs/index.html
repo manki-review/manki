@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Manki — Multi-stage AI Code Review for GitHub</title>
-  <meta name="description" content="Self-hosted, multi-agent AI code review that runs as a GitHub Action. A planner triages the change, one or two finders on different models review it, dedup removes repeats, and a judge filters the noise.">
+  <meta name="description" content="Self-hosted, multi-agent AI code review that runs as a GitHub Action. A planner triages the change, the finders you choose review it (one or two by default), dedup removes repeats, and a judge filters the noise.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -16,7 +16,7 @@
       <img src="assets/manki.png" alt="Manki" class="hero-logo" width="140">
       <p class="hero-name">Manki</p>
       <h1>Multi-stage, multi-agent AI code review for GitHub&nbsp;&mdash; self-hosted, provider-neutral.</h1>
-      <p class="subhead">A planner triages the change, one or two finders on different models review it, dedup removes repeats, and a judge filters the noise.</p>
+      <p class="subhead">A planner triages the change, the finders you choose review it (one or two by default), dedup removes repeats, and a judge filters the noise.</p>
       <div class="cta-group">
         <a href="https://github.com/manki-review/manki" class="btn-primary">Star on GitHub</a>
         <a href="#install" class="btn-secondary">Get started</a>
@@ -52,12 +52,12 @@
       <div class="pipeline">
         <div class="pipeline-stage">
           <h4>Planner</h4>
-          <p>Triages the change: how many finders, at what effort</p>
+          <p>Triages the change. Its answers and the changed paths pick the review group and the effort</p>
         </div>
         <div class="pipeline-arrow" aria-hidden="true">&rarr;</div>
         <div class="pipeline-stage">
           <h4>Reviewer</h4>
-          <p>One or two finders on different models produce findings</p>
+          <p>The group's finders produce findings: one or two by default, or the readers and models you set</p>
         </div>
         <div class="pipeline-arrow" aria-hidden="true">&rarr;</div>
         <div class="pipeline-stage">
@@ -229,7 +229,7 @@ jobs:
         </details>
         <details>
           <summary>Can I customize the review?</summary>
-          <div class="faq-answer">Yes. Add extra checks for the finders under <code>reviewers:</code> in <code>.manki.yml</code>, pick the models for each stage including the second finder, and route classes of PRs to review groups under <code>review:</code>.</div>
+          <div class="faq-answer">Yes. Under <code>review:</code> in <code>.manki.yml</code> you set up review groups, each reader with its own model, effort and focus, and route classes of PRs to them by path or by the planner's triage. One or two finders is only the default. You can also add extra checks for every finder under <code>reviewers:</code> and pick the model of each stage.</div>
         </details>
       </div>
     </div>

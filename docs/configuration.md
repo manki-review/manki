@@ -150,8 +150,8 @@ memory:
 | `slice_lines` | integer, at least 200 | `1500` | Changed lines a finder or the verdict reader reads in one call. A larger diff is read in slices of about this size, and of at most 200,000 characters, four at a time. Read from the base branch. |
 | `models` | map | see below | The model of each stage. A model id picks its provider: `claude-*` is Anthropic, `gpt-*` and the o-series are OpenAI, `gemini-*` is Gemini. `provider/model` names one explicitly. |
 | `models.planner` | model id | `claude-haiku-5-5` | The planner, a fast pass that triages the change before the review. |
-| `models.reviewer` | model id | `claude-sonnet-5-5` | The finder on every round, and `@reviewer` in a review group. |
-| `models.reviewer_pair` | model id | the other Claude tier of `models.reviewer` | The second finder on paired rounds, and `@reviewer_pair` in a review group. |
+| `models.reviewer` | model id | `claude-sonnet-5-5` | The finder of the built-in review groups, and `@reviewer` in a group of your own. |
+| `models.reviewer_pair` | model id | the other Claude tier of `models.reviewer` | The second finder of the built-in `pair` group, and `@reviewer_pair` in a group of your own. |
 | `models.judge` | model id | `claude-opus-5-5` | The judge, which filters the findings and sets their severity, the verdict reader and the refuter. |
 | `models.refuter_pair` | model id | off | A second refuter on another model that checks every finding the first refuter checks, at the same time. The first runs on `models.judge`. A split keeps the judge's grade and shows both reasons. Two disproofs lower a blocker only when the judge alone raised it above every finder's grade. It needs repository tools, so the Claude or Codex CLI. See [Severity tiers](how-reviews-work.md#severity-tiers). |
 | `models.dedup` | model id | `claude-haiku-5-5` | The dedup pass against resolved findings from earlier rounds, and the small side calls: same-defect checks, related work and name translation. |
@@ -162,7 +162,7 @@ memory:
 | `judge.effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | The judge's effort, which the refuter follows. `auto` takes the level the planner picks for the change, low, medium or high, and high without a planner. A fixed level replaces that pick on every round. Read from the base branch. |
 | `judge.tool_steps` | integer from 0 to 100 | `0` | Read-only repository tool calls the judge may make while it grades, on a judge that runs on the Claude or Codex CLI. With them the judge reads the code a finding rests on itself, at the cost of a longer judge call. A round whose judge fallback model has no tools runs the judge without them. `0` gives it none. |
 | `review` | map | the built-in groups | Review groups and how PR classes route to them. Read from the base branch, so a PR cannot weaken its own review. See [Review groups](how-reviews-work.md#review-groups). |
-| `review.groups` | map of groups | `trivial`, `solo` and `pair` | Each group lists its `reviewers`. A group with a built-in name replaces it. |
+| `review.groups` | map of groups | `trivial`, `solo` and `pair` | Each group lists its `reviewers`, one or more. A group with a built-in name replaces it. |
 | `review.groups.<name>.reviewers[].model` | model id | `@reviewer` | A model id, `provider/model`, or `@reviewer` or `@reviewer_pair`, which resolve through `models`. |
 | `review.groups.<name>.reviewers[].effort` | `low`, `medium`, `high`, `xhigh`, `max` or `auto` | `auto` | `auto` is high when the planner answers `subtle: true`, otherwise medium. A Deeper review runs an `auto` finder at xhigh, and never below the effort the finder has without it. |
 | `review.groups.<name>.reviewers[].focus` | string | none | A line added to this finder's prompt. |
