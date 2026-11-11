@@ -2016,6 +2016,10 @@ async function handleReviewStateCheck(): Promise<void> {
   const configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath);
   const config = loadConfig(configContent ?? undefined, configPath);
 
+  // A guarded thread the PR author resolved blocks with `auto_approve` off too, so it is reopened first.
+  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, pr.user?.login);
+  await reopenAuthorResolvedThreads(octokit, recap.previousFindings, pauseState(recap, config).paused);
+
   if (!config.auto_approve) {
     core.info('auto_approve is disabled — skipping state check');
     return;
@@ -2153,7 +2157,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
     }
     const headSha: string | undefined = payload.pull_request?.head?.sha;
     const loadWorkspace = async () => headSha ? fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha }, [client]) : undefined;
-    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memory, loadWorkspace);
+    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memory, loadWorkspace, config);
   }
 
   // Check if all review threads are now resolved (e.g. the reply resolved the last conversation)

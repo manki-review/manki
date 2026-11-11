@@ -8,8 +8,8 @@ import { BotIdentity, dynamicFence, hasWriteAccess, inline, MANKI_VERSION, isRep
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { fetchPriorRoundContexts, isGuarded, isSecurityThread, mayClearSecurityThread, parseFindingData } from './recap';
-import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, fixedMarker, fetchBotReviewThreads, resolveReviewThread } from './state';
+import { fetchPriorRoundContexts, isGuarded, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER } from './recap';
+import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread } from './state';
 import { ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage } from './round-context';
@@ -82,7 +82,7 @@ function replyDecision(
 ): ReplyDecision | undefined {
   if (!outcome) return undefined;
   if (thread === 'lookup_failed') return { outcome, thread };
-  const fate: ReplyDecision['thread'] = !thread ? 'not_found' : thread.isResolved ? 'already_resolved' : staysOpen ? 'stays_open' : !mayResolve ? 'no_permission' : 'resolves';
+  const fate: ReplyDecision['thread'] = !thread ? 'not_found' : staysOpen ? 'stays_open' : thread.isResolved ? 'already_resolved' : !mayResolve ? 'no_permission' : 'resolves';
   return { outcome, thread: fate };
 }
 
@@ -260,7 +260,8 @@ async function saveWithdrawnLearning(memory: MemoryStore, owner: string, repo: s
 
 /**
  * Handle a reply to one of our review comments. `loadWorkspace` checks out the PR head once the thread turns out to be
- * Manki's, and with it a client with `repoTools` checks the developer's point with read-only tools.
+ * Manki's, and with it a client with `repoTools` checks the developer's point with read-only tools. With `config`, a reply
+ * in a guarded thread the PR author resolved reopens the thread, and the answer says why.
  */
 export async function handleReviewCommentReply(
   octokit: Octokit,
@@ -271,6 +272,7 @@ export async function handleReviewCommentReply(
   prNumber: number,
   memory?: MemoryStore,
   loadWorkspace?: () => Promise<string | undefined>,
+  config?: ReviewConfig,
 ): Promise<void> {
   const payload = github.context.payload;
   const comment = payload.comment;
@@ -346,13 +348,12 @@ export async function handleReviewCommentReply(
     const outcome = replyOutcome(reply);
     // The live thread also counts a found-again reply that made it block, which the first comment does not show.
     let lookupFailed = false;
-    const thread = outcome
-      ? await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch((error: unknown) => {
-        core.warning(`Failed to read the thread of the reply: ${error}`);
-        lookupFailed = true;
-        return undefined;
-      })
-      : undefined;
+    const live = await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch((error: unknown) => {
+      core.warning(`Failed to read the thread of the reply: ${error}`);
+      lookupFailed = true;
+      return undefined;
+    });
+    const thread = outcome ? live : undefined;
     const head: string | undefined = github.context.payload.pull_request?.head?.sha;
     // A round that finished after the reply, on the same head, has the newer judgment of a blocking or security thread.
     const contradicted = outcome === 'Fixed' && thread && isGuarded(thread)
@@ -367,6 +368,7 @@ export async function handleReviewCommentReply(
       return;
     }
     const staysOpen = !!thread && !thread.isResolved && isGuarded(thread) && !mayClear;
+    const reopenNote = config && live?.isResolved ? await authorResolvedNote(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live.id) : undefined;
 
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;
@@ -384,15 +386,18 @@ export async function handleReviewCommentReply(
     if (outcome === 'Fixed' && head && thread?.fixedOn?.includes(head)) {
       core.info(`Thread ${thread.id} already confirms the fix on ${head.slice(0, 7)}, so the reply posts no second one`);
     } else {
-      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, outcome === 'Fixed')] : []), ...(saved ? [saved] : [])];
+      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, outcome === 'Fixed')] : []), ...(reopenNote ? [reopenNote] : []), ...(saved ? [saved] : [])];
+      const decision = replyDecision(outcome, lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || !!reopenNote);
       await octokit.rest.pulls.createReplyForReviewComment({
         owner,
         repo,
         pull_number: prNumber,
         comment_id: comment.id,
-        body: withMarkers([reply, ...notes].join('\n\n'), BOT_MARKER, response.record(replyDecision(outcome, lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen)), ...(outcome === 'Fixed' && head ? [fixedMarker(head)] : [])),
+        body: withMarkers([reply, ...notes].join('\n\n'), BOT_MARKER, response.record(decision), ...(outcome === 'Fixed' && head ? [fixedMarker(head)] : []), ...(reopenNote ? [REOPENED_MARKER] : [])),
       });
       core.info('Posted reply to review comment');
+      // The answer carries the marker that stops a second reopen, so the thread opens only once it is posted.
+      if (reopenNote && live) await reopenThread(octokit, live.id);
     }
 
     if (outcome && thread && mayResolve) {

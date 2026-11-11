@@ -895,7 +895,9 @@ describe('run', () => {
 
       // The handler fetches the head only once it knows the thread is Manki's.
       expect(fetchWorkspace).not.toHaveBeenCalled();
-      const loadWorkspace = jest.mocked(interaction.handleReviewCommentReply).mock.calls.at(-1)?.at(-1) as () => Promise<string | undefined>;
+      const call = jest.mocked(interaction.handleReviewCommentReply).mock.calls.at(-1);
+      expect(call?.[8]).toBe(jest.mocked(configModule.loadConfig).mock.results.at(-1)?.value);
+      const loadWorkspace = call?.[7] as () => Promise<string | undefined>;
       expect(await loadWorkspace()).toBe('/work/head');
       expect(fetchWorkspace).toHaveBeenCalledWith(expect.stringMatching(/\/.+\.git$/), 'abc123', 'ghs_app');
     });
@@ -7348,12 +7350,12 @@ describe('handleReviewStateCheck', () => {
     _resetOctokitCache();
   });
 
-  it('skips when auto_approve is disabled', async () => {
+  it('reopens the threads the PR author resolved, then skips the approval when auto_approve is disabled', async () => {
     setContext({
-      eventName: 'pull_request_review',
+      eventName: 'pull_request_review_thread',
       payload: {
-        action: 'submitted',
-        pull_request: { number: 1, base: { ref: 'main' } },
+        action: 'resolved',
+        pull_request: { number: 1, base: { ref: 'main' }, user: { login: 'author' } },
       },
     });
     jest.mocked(configModule.loadConfig).mockReturnValue({
@@ -7363,9 +7365,16 @@ describe('handleReviewStateCheck', () => {
       instructions: '',
       memory: { enabled: false, repo: '' },
     });
+    // A last round that did not converge pauses automatic review, which the reopen note has to say.
+    const round = roundContextFromLegacy({ round: 1, commitSha: 'sha1', timestamp: '2025-01-01T00:00:00Z', findings: [] });
+    round.meta.outcome = 'NOT_CONVERGING';
+    const previousFindings = [{ title: 'Token leaks into logs', file: 'src/a.ts', line: 3, severity: 'blocker' as const, status: 'open' as const, threadId: 'T_1', reopen: true }];
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValueOnce({ previousFindings, priorRounds: [round] });
 
     await handleReviewStateCheck();
 
+    expect(jest.mocked(recapModule.fetchRecapState)).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, 'author');
+    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), previousFindings, true);
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'auto_approve is disabled — skipping state check',
     );
@@ -7391,6 +7400,7 @@ describe('handleReviewStateCheck', () => {
 
     await handleReviewStateCheck();
 
+    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), [], false);
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
       expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 5, expect.objectContaining({ auto_approve: true }),
     );

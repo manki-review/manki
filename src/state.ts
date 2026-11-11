@@ -8,7 +8,7 @@ import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, Bot
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, isOverrideCandidate, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadMarkerSlug, threadSeverity } from './recap';
+import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadMarkerSlug, threadSeverity } from './recap';
 import { formatApprovalRecord, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
@@ -232,6 +232,18 @@ function reopenReply(isSecurity: boolean, paused: boolean): string {
     ? 'A reviewer with write access can resolve it. Automatic review is paused, so after pushing a fix comment `@manki review` and Manki will check it.'
     : 'A reviewer with write access can resolve it, or push a fix and Manki will check it.';
   return `Reopened. A ${isSecurity ? 'security' : 'blocking'} finding needs a maintainer or a fix: the PR author cannot resolve it. ${next}`;
+}
+
+/**
+ * Returns the reply that says why the thread `threadId` is reopened. Returns `undefined` unless the PR author resolved that
+ * guarded thread and Manki has not reopened it yet.
+ */
+async function authorResolvedNote(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined, config: ReviewConfig, threadId: string,
+): Promise<string | undefined> {
+  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin);
+  const finding = recap.previousFindings.find(f => f.reopen && f.threadId === threadId);
+  return finding && reopenReply(!!finding.isSecurity, pauseState(recap, config).paused);
 }
 
 /** Reopens each guarded thread the PR author resolved and replies once to say why. While `paused`, the reply says a push alone is not reviewed. */
@@ -790,4 +802,4 @@ async function approveOrSayWhy(
   return { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
