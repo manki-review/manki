@@ -54,20 +54,19 @@ function percent(part: number, whole: number): string {
   return whole > 0 ? `${Math.round((part / whole) * 100)}%` : '-';
 }
 
+/** Renders the table of one dimension, with `No data.` under its header when it has no rows. */
+export function renderTable(name: string, table: Map<string, Totals>): string[] {
+  const rows = [...table.entries()].sort((a, b) => b[1].posted - a[1].posted || a[0].localeCompare(b[0]));
+  return [
+    `| ${name} | posted | fixed | dismissed | untouched | fixed % | dismissed % |`,
+    '| --- | ---: | ---: | ---: | ---: | ---: | ---: |',
+    ...rows.map(([value, t]) => `| ${value} | ${t.posted} | ${t.fixed} | ${t.dismissed} | ${t.untouched} | ${percent(t.fixed, t.posted)} | ${percent(t.dismissed, t.posted)} |`),
+    ...(rows.length === 0 ? ['', 'No data.'] : []),
+  ];
+}
+
 export function renderReport(tables: Map<string, Map<string, Totals>>): string {
-  const sections: string[] = [];
-  for (const [name, table] of tables) {
-    const rows = [...table.entries()].sort((a, b) => b[1].posted - a[1].posted || a[0].localeCompare(b[0]));
-    const lines = [
-      `## By ${name}`,
-      '',
-      `| ${name} | posted | fixed | dismissed | untouched | fixed % | dismissed % |`,
-      '| --- | ---: | ---: | ---: | ---: | ---: | ---: |',
-      ...rows.map(([value, t]) => `| ${value} | ${t.posted} | ${t.fixed} | ${t.dismissed} | ${t.untouched} | ${percent(t.fixed, t.posted)} | ${percent(t.dismissed, t.posted)} |`),
-    ];
-    if (rows.length === 0) lines.push('', 'No data.');
-    sections.push(lines.join('\n'));
-  }
+  const sections = [...tables].map(([name, table]) => [`## By ${name}`, '', ...renderTable(name, table)].join('\n'));
   return `${sections.join('\n\n')}\n`;
 }
 
