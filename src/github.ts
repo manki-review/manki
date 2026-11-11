@@ -2040,8 +2040,9 @@ function formatBlockerCounts({ fresh, earlier, followUp }: BlockerCounts): strin
 /**
  * Returns the sentence a round says about itself: the judge's summary, or else the first two sentences of the top
  * blocker's description. The judge writes its summary before later steps take findings out of the round, so the summary
- * is left out when the judge kept a finding and `result.findings` holds none of the findings it kept. An incomplete
- * round's summary says why the round did not finish, so it is returned as it is.
+ * is left out when the judge kept a finding and `result.findings` holds none of the findings it kept. Later steps also
+ * make blockers the summary never saw, so it is left out when a finding blocks that the judge did not grade a blocker
+ * in that call. An incomplete round's summary says why the round did not finish, so it is returned as it is.
  */
 export function roundSentence(result: ReviewResult): string {
   if (!result.reviewComplete) return result.summary;
@@ -2049,8 +2050,13 @@ export function roundSentence(result: ReviewResult): string {
   const droppedLater = (f: Finding) => f.gradePath?.length ? f.gradePath.at(-1)!.by !== 'judge' : false;
   const kept = (result.allJudgedFindings ?? []).filter(f => f.severity !== 'ignore' || droppedLater(f));
   const listed = new Set(result.findings.map(findingKey));
+  // The judge graded a blocker itself when it stated the cell that gives the grade and no later step set the grade.
+  // A sweep's finding is graded in a later judge call, and the verdict reader's has no cell.
+  const sweepers = new Set(result.sweeps?.map(sweep => sweep.reviewer));
+  const judgeGraded = (f: Finding) => !!f.cell && !f.cell.judgeColumn && (f.gradePath?.at(-1)?.by ?? 'judge') === 'judge' && !f.reviewers.some(r => sweepers.has(r));
+  const blockers = result.findings.filter(f => f.severity === 'blocker');
   // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
-  const stands = result.verdictReason !== 'verdict_reader' && (kept.length === 0 || kept.some(f => listed.has(findingKey(f))));
+  const stands = result.verdictReason !== 'verdict_reader' && (kept.length === 0 || kept.some(f => listed.has(findingKey(f)))) && blockers.every(judgeGraded);
   if (stands && result.summary.trim()) return result.summary;
   const blocking = result.findings.filter(isBlockingFinding);
   const top = blocking.find(f => f.severity === 'blocker') ?? blocking[0];

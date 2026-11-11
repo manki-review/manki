@@ -1416,6 +1416,7 @@ describe('postReview body lead', () => {
     line: 5,
     description: '`total / pageSize` rounds down.',
     reviewers: ['Correctness'],
+    cell: { row: 'severe', column: 'normal' },
   };
 
   const ready: ReviewResult = {
@@ -1771,7 +1772,7 @@ describe('postReview body lead', () => {
     expect(body).not.toContain('Nothing to flag');
   });
 
-  it('leaves out the judge\'s summary when the round lists none of the findings the judge kept', async () => {
+  it('leaves out the judge\'s summary when the round lists none of the findings the judge kept, or blocks on a finding the judge did not grade a blocker', async () => {
     const summary = 'A retry that fails is never reported.';
     const kept: Finding = { ...blocker, severity: 'warning', title: 'Retry drops the error', line: 9, tags: ['follow-up'] };
     const droppedBy = (by: GradeChange): Finding => ({ ...kept, title: 'Timeout is never reset', line: 12, severity: 'ignore', gradePath: [{ from: 'warning', to: 'ignore', by }] });
@@ -1809,6 +1810,31 @@ describe('postReview body lead', () => {
     const priors = { ...blocking, verdictReason: 'prior_unaddressed' as const, verdictTrace: { survivingBlockers: [], unresolvedPriors: [open] } };
     expect([roundSentence(priors), roundSummary(priors)]).toEqual(['', '**Still open from earlier reviews:**\n- `src/a.ts:3`: Stale cache']);
     expect(roundSummary(round({ allJudgedFindings: [droppedBy('refutation')] }))).toBe('');
+
+    // The judge wrote that nothing blocks, and a later step made the blocker, so the sentence is the blocker's.
+    const blocked = (findings: Finding[], more: Partial<ReviewResult> = {}): ReviewResult =>
+      round({ verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReason: 'required_present', summary: 'Nothing blocks merge.', allJudgedFindings: findings, findings, ...more });
+    const byJudge = { ...blocker, gradePath: [{ from: 'warning' as const, to: 'blocker' as const, by: 'judge' as const }] };
+    const confirmed = { ...blocker, gradePath: [{ from: 'blocker' as const, to: 'warning' as const, by: 'judge' as const }, { from: 'warning' as const, to: 'blocker' as const, by: 'refutation' as const }] };
+    const lowered = { ...blocker, title: 'Empty list is read', line: 20, description: 'The first item is read unchecked.' };
+    const fromBlocker = '`total / pageSize` rounds down.';
+    // The judge graded the blocker itself, by raising it or by keeping the grade a finder filed.
+    expect([byJudge, blocker].map(f => roundSentence(blocked([f])))).toEqual(['Nothing blocks merge.', 'Nothing blocks merge.']);
+    // The refuter confirmed a doubt, Manki graded in another column than the judge stated, or the judge stated no cell.
+    expect(roundSentence(blocked([confirmed]))).toBe(fromBlocker);
+    expect(roundSentence(blocked([{ ...byJudge, cell: { row: 'wrong', column: 'normal', judgeColumn: 'rare' } }]))).toBe(fromBlocker);
+    expect(roundSentence(blocked([{ ...blocker, cell: undefined }]))).toBe(fromBlocker);
+    // A sweep's finding is graded in a later call than the one that wrote the summary.
+    const sweeps = [{ reviewer: 'Sweep 1', blocker: 'src/a.ts:20', status: 'answered' as const }];
+    expect(roundSentence(blocked([lowered, { ...byJudge, reviewers: ['Sweep 1'] }], { sweeps }))).toBe('The first item is read unchecked.');
+    expect(roundSentence(blocked([lowered, byJudge], { sweeps }))).toBe('Nothing blocks merge.');
+    // One such blocker is enough, next to one the judge graded.
+    expect(roundSentence(blocked([lowered, confirmed]))).toBe('The first item is read unchecked.');
+    // A finding that does not block changes nothing, whoever graded it.
+    expect(roundSentence(blocked([lowered, { ...confirmed, severity: 'warning', tags: ['follow-up'] }]))).toBe('Nothing blocks merge.');
+    const raised = await postedBody(blocked([confirmed]));
+    expect(lead(raised.body).split('\n\n').slice(0, 2)).toEqual(['\u{1F534} **Changes requested:** 1 blocker.', `**What blocks:** ${fromBlocker}`]);
+    expect([roundSummary(blocked([confirmed])), raised.body.includes('Nothing blocks')]).toEqual([fromBlocker, false]);
   });
 
   it('counts new blockers apart from those still open from an earlier review', async () => {
@@ -4215,7 +4241,7 @@ describe('postReview fallback paths', () => {
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
       const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
       const { octokit, updateReview } = makeOctokit(createReviewComment);
-      const result = { ...buildResult([offLineBlocker]), summary: 'word '.repeat(11990) };
+      const result = { ...buildResult([{ ...offLineBlocker, cell: { row: 'severe', column: 'normal' } }]), summary: 'word '.repeat(11990) };
       const context = makeContext();
 
       await postReview(octokit, 'owner', 'repo', 1, 'sha', result, diff, context);
@@ -4279,8 +4305,8 @@ describe('postReview non-blocking findings', () => {
   });
 
   it('counts the findings posted as threads in the verdict line without listing them, and leaves the posted body as it is', async () => {
-    const blocking = nonBlocking('blocker', 'Cache never expires', 5);
-    const fileLevel = nonBlocking('blocker', 'Lock order flips', 40);
+    const blocking = nonBlocking('blocker', 'Cache never expires', 5, { cell: { row: 'severe', column: 'normal' } });
+    const fileLevel = nonBlocking('blocker', 'Lock order flips', 40, { cell: { row: 'severe', column: 'normal' } });
     const inline = nonBlocking('warning', 'Retry drops the error', 2, { tags: ['follow-up'] });
     const createReview = jest.fn().mockResolvedValue({ data: { id: 7 } });
     const updateReview = jest.fn().mockResolvedValue({});
