@@ -2,8 +2,9 @@
  * The steps of the benchmark workflow around `manki bench`. It lists the cases to run as a job matrix, merges the
  * report of each case job into one, applies the release gate to merged reports, and lists the findings of a report
  * that match no key item. It calls no model. Of a hold-out case it prints the id and counts only, except for
- * `unmatched --set holdout`, which refuses to run in a workflow job. `caseSet` alone says which set a case is in:
- * `merge` writes that set into the merged report, and `gate` and `unmatched` read a stored report through `readReport`.
+ * `unmatched --set holdout`, which refuses to run in a workflow job. `caseSet` says which set a case is in: `merge`
+ * writes that set into the merged report, and `gate` and `unmatched` read a stored report through `readReport`, which
+ * also keeps a case the report calls a hold-out case as one.
  *
  * Usage:
  *   npm run bench-report -- matrix --set <holdout|tuning|both> [--cases "<id> ..."]

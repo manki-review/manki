@@ -794,6 +794,8 @@ interface Rescored {
   report: BenchReport;
   rescored: string[];
   left: Array<{ id: string; reason: string }>;
+  /** The cases of `left` whose matcher failed, which another try can still score. */
+  failed: string[];
 }
 
 /**
@@ -829,16 +831,19 @@ function unscorable(benchCase: BenchCase, runs: RunScore[]): string | undefined 
  * reads the findings each run stored, so a changed key costs matcher calls and no review. Only complete runs are scored
  * again, and the matcher is tried twice on each, as in a bench run. A case that `unscorable` names, that is not among
  * `cases`, or whose matcher fails both times stays as scored and is listed in `left`, and so stays out of a gate against
- * a report with the new key version.
+ * a report with the new key version. `failed` names the cases the matcher failed on.
  */
 export async function rescoreReport(report: BenchReport, cases: BenchCase[], matcher: Matcher): Promise<Rescored> {
   const rescored = new Set<string>();
   const left = new Map<string, string>();
+  const failed = new Set<string>();
   const variants: VariantReport[] = [];
   for (const { name, overrides, cases: scored } of report.variants) {
     const again: CaseReport[] = [];
     for (const c of scored) {
-      const benchCase = cases.find(b => b.id === c.id);
+      const loaded = cases.find(b => b.id === c.id);
+      // A case the report calls a hold-out case was reviewed as one, so it stays one when its file is loaded as a tuning case.
+      const benchCase = loaded && { ...loaded, set: c.set === 'holdout' ? c.set : loaded.set };
       if (!benchCase) left.set(c.id, 'no case file was loaded for it, which for a hold-out case takes --holdout');
       if (!benchCase || benchCase.keyVersion === c.keyVersion) {
         again.push(c);
@@ -861,6 +866,7 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
       };
       const runs = await scoreAgain().catch((error: Error) => {
         left.set(c.id, `the matcher failed${oneLine(caseDetail(benchCase, error))}`);
+        failed.add(c.id);
         return undefined;
       });
       if (!runs) {
@@ -872,7 +878,7 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
     }
     variants.push(variantReport({ name, overrides }, again));
   }
-  return { report: { ...report, variants }, rescored: [...rescored], left: [...left].map(([id, reason]) => ({ id, reason })) };
+  return { report: { ...report, variants }, rescored: [...rescored], left: [...left].map(([id, reason]) => ({ id, reason })), failed: [...failed] };
 }
 
 /** How far a figure may get worse, per run on average, before a release fails, such as one more false blocker. */
@@ -1338,7 +1344,8 @@ Reviews each benchmark case from a local checkout, matches the findings to the c
 key with an LLM, prints recall per item and severity, and writes a JSON report.
 
 With --rescore it reviews nothing. It matches the findings the report stored to the key of each case
-whose key_version changed since, and writes the report scored again.
+whose key_version changed since, and writes the report scored again. It exits 2 when the matcher
+failed on a case, which then stays as scored.
 
 Options:
   --checkout <owner/name>=<dir>  Local clone of a case repo. Repeat for each repo.
@@ -1435,11 +1442,12 @@ interface StoredReport {
 }
 
 /**
- * Reads a stored report to print or compare it. Each case takes its set from `caseSet`, never from the report. A case
- * that no case file holds was removed or renamed since, so no current case compares with it: the report is returned
- * without it, and its id in `removed`. Throws only when the report contradicts the case files: it calls a case a tuning
- * case while `bench/holdout` holds the case's file, as the report of a single case job of an older ref does. That error
- * names only the case.
+ * Reads a stored report to print or compare it. A case is a tuning case only when the report and `caseSet` both say so,
+ * since a case moved to `bench/cases` after the report was written was reviewed as a hold-out case. A case that no case
+ * file holds was removed or renamed since, so no current case compares with it: the report is returned without it, and
+ * its id in `removed`. Throws only when the report contradicts the case files: it calls a case a tuning case while
+ * `bench/holdout` holds the case's file, as the report of a single case job of an older ref does. That error names only
+ * the case.
  */
 export function readReport(path: string, root = '.'): StoredReport {
   const stored = readReportFile(path);
@@ -1447,7 +1455,7 @@ export function readReport(path: string, root = '.'): StoredReport {
   const wrong = ids.filter(id => caseFiles(id, root).includes('holdout') && stored.variants.some(v => v.cases.some(c => c.id === id && c.set !== 'holdout')));
   if (wrong.length > 0) throw new Error(`The report ${path} calls ${wrong.join(', ')} a tuning case, and ${CASE_DIRS.holdout} holds a case file for it.`);
   const removed = ids.filter(id => caseFiles(id, root).length === 0);
-  const variants = stored.variants.map(v => variantReport(v, v.cases.filter(c => !removed.includes(c.id)).map(c => ({ ...c, set: caseSet(c.id, root) }))));
+  const variants = stored.variants.map(v => variantReport(v, v.cases.filter(c => !removed.includes(c.id)).map(c => ({ ...c, set: c.set === 'holdout' ? c.set : caseSet(c.id, root) }))));
   return { report: { ...stored, variants }, removed };
 }
 
@@ -1479,14 +1487,15 @@ export function runBenchCommand(argv: string[], root = '.'): Promise<number> {
       const { report: stored, removed } = readReport(args.rescore, root);
       // A report holds one matcher model, and the gate refuses to compare reports matched by different ones.
       if (stored.matcherModel !== args.matcherModel) throw new Error(`The report was matched by ${stored.matcherModel}. Pass --matcher-model ${stored.matcherModel} to score it again.`);
-      const { report, rescored, left } = await rescoreReport(stored, cases, matcher).finally(() => writeJson(args.cache, Object.fromEntries(cache)));
+      const { report, rescored, left, failed } = await rescoreReport(stored, cases, matcher).finally(() => writeJson(args.cache, Object.fromEntries(cache)));
       const outPath = args.out ?? args.rescore.replace(/(\.json)?$/, '.rescored.json');
       writeJson(outPath, report);
       out(rescored.length > 0 ? `Scored again with the changed key: ${rescored.join(', ')}\n` : 'No case was scored again.\n');
       for (const { id, reason } of left) out(`Left as scored, ${id}: ${reason}.\n`);
       if (removed.length > 0) out(`${formatRemoved(removed)}\n`);
       out(`Report: ${outPath}\n`);
-      return 0;
+      // The report is written, and a case the matcher failed on is still scored with the older key.
+      return failed.length > 0 ? 2 : 0;
     }
     const variants = resolveVariants(args);
     const startedAt = new Date().toISOString();

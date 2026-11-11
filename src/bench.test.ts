@@ -7,10 +7,17 @@ import { isMap, isScalar, parseDocument } from 'yaml';
 import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
+import { printableError } from './cli';
+import { cutLegacyCommands, sanitizeLogOutput } from './providers';
 import type { LLMClient } from './providers';
+import { buildLLMClient } from './review-clients';
 import type { Finding, FindingSeverity, RoundContext, RoundOutcome } from './types';
 
 jest.mock('@actions/core');
+jest.mock('./review-clients', () => {
+  const actual = jest.requireActual<typeof import('./review-clients')>('./review-clients');
+  return { ...actual, buildLLMClient: jest.fn(actual.buildLLMClient) };
+});
 
 const IN_ACTIONS = process.env.GITHUB_ACTIONS;
 // CI sets `GITHUB_ACTIONS`, which stops any listing of hold-out findings, so each test sets it itself.
@@ -755,6 +762,10 @@ describe('runBench and buildReport', () => {
         throw new Error(`reply about ${findings[0].title}`);
       };
       expect(await leftBy(quoting)).toEqual([{ id: 'shown-1', reason: 'the matcher failed: reply about title SHOWN-TEXT' }, { id: 'held-1', reason: 'the matcher failed' }]);
+      // A case the report calls a hold-out case stays one when its file is loaded as a tuning case.
+      const moved = rekeyed.map(c => ({ ...c, set: 'tuning' as const }));
+      expect((await rescoreReport(report, moved, quoting)).left).toEqual(await leftBy(quoting));
+      expect((await rescoreReport(report, moved, matching(true))).report.variants[0].cases.map(c => c.set)).toEqual(['tuning', 'holdout']);
       await expect(runBench([cases[1]], { ...options, runs: 1, review: reviewing(false), matcher: matching(true), variants: [{ name: 'bad', overrides: { [SECRET]: true } }] })).rejects.toThrow(/^Variant bad does not load on case held-1$/);
       expect(() => parseCase(`id: [${SECRET}`, 'held.yml', 'holdout')).toThrow(/^held\.yml: is not valid YAML$/);
       expect(() => parseCase('id: [SHOWN-TEXT', 'shown.yml')).toThrow(/^shown\.yml: .*SHOWN-TEXT/s);
@@ -806,8 +817,8 @@ describe('runBench and buildReport', () => {
         };
         expect(sets(stored('holdout'))).toEqual({ sets: [['shown-1', 'tuning'], ['held-1', 'holdout']], removed: [] });
         expect(() => readReport(stored('tuning'), root)).toThrow(new Error(`The report ${join(root, 'report.json')} calls held-1 a tuning case, and bench/holdout holds a case file for it.`));
-        // The case files give each case its set, whatever the report calls it.
-        expect(sets(stored('holdout', 'holdout'))).toEqual({ sets: [['shown-1', 'tuning'], ['held-1', 'holdout']], removed: [] });
+        // A case the report calls a hold-out case stays one, although only `bench/cases` holds its file.
+        expect(sets(stored('holdout', 'holdout'))).toEqual({ sets: [['shown-1', 'holdout'], ['held-1', 'holdout']], removed: [] });
         // A case no case file holds is no contradiction. It is left out and named, and nothing of it is read as a tuning case.
         rmSync(join(root, 'bench', 'holdout', 'held-1.yml'));
         expect(sets(stored('tuning'))).toEqual({ sets: [['shown-1', 'tuning']], removed: ['held-1'] });
@@ -820,6 +831,24 @@ describe('runBench and buildReport', () => {
     } finally {
       out.mockRestore();
       err.mockRestore();
+    }
+  });
+
+  it('prints long runs of blank lines, spaces, tabs and carriage returns in outside text without slowing down', async () => {
+    const took = (work: () => unknown) => {
+      const start = performance.now();
+      work();
+      return performance.now() - start;
+    };
+    for (const unit of ['\n', ' ', '\t', '\r', ' \t\r\n\n \r']) {
+      const long = `x${unit.repeat(Math.ceil(200_000 / unit.length))}y`;
+      const run = await scoreRun(benchCase, makeReview('ADDRESS_FIRST', [makeFinding({ severity: 'blocker', title: long, file: long, description: long })]), async () => ({ verdict: 'NONE', findings: [], reason: 'none' }));
+      const report = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'model-a' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase: { ...benchCase, source: long }, runs: [{ ...run, error: long }] }] }]);
+      // Each takes a few milliseconds. A pattern whose whitespace class crosses line breaks takes many seconds on a run of this length.
+      for (const print of [() => sanitizeLogOutput(long), () => cutLegacyCommands(long), () => printableError(new Error(long)), () => formatUnmatched(report.variants), () => formatBenchSummary(report)]) {
+        expect(took(print)).toBeLessThan(2000);
+      }
+      expect(formatUnmatched(report.variants)).toContain('Unmatched blockers on tuning cases');
     }
   });
 
@@ -1041,7 +1070,7 @@ describe('mergeReports and gateReports', () => {
     };
     const rekeyedFirst: BenchCase = { ...first, keyVersion: 3 };
     const partly = await rescoreReport(stored, [rekeyedFirst, rekeyed], failing);
-    expect(partly).toMatchObject({ rescored: ['demo-1'], left: [{ id: 'demo-2', reason: 'the matcher failed' }] });
+    expect(partly).toMatchObject({ rescored: ['demo-1'], left: [{ id: 'demo-2', reason: 'the matcher failed' }], failed: ['demo-2'] });
     expect(partly.report.variants[0].cases[1]).toBe(stored.variants[0].cases[1]);
 
     const complete = (r: BenchReport): BenchReport => ({ ...r, variants: r.variants.map(v => ({ ...v, cases: v.cases.map(c => ({ ...c, runs: c.runs.filter(one => one.complete) })) })) });
@@ -1211,6 +1240,20 @@ describe('runBenchCommand', () => {
       writeFileSync(join(other, 'demo-9.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-9'));
       expect(await runBenchCommand(['--rescore', report, '--cases', other, '--cache', cache], dir)).toBe(0);
       expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`No case was scored again.\nLeft as scored, demo-1: no case file was loaded for it, which for a hold-out case takes --holdout.\nReport: ${join(dir, 'report.rescored.json')}\n`);
+
+      // A case the matcher fails on stays as scored in the report written, and the exit code says that not every case was scored again.
+      const found = await scoreRun(benchCase, makeReview('ADDRESS_FIRST', [makeFinding({ file: 'src/read.rs' })]), async () => ({ verdict: 'NONE', findings: [], reason: 'none' }));
+      const matched = join(dir, 'matched.json');
+      writeFileSync(matched, JSON.stringify({ ...stored, variants: [{ ...stored.variants[0], cases: [{ ...scoredCase, runs: [found] }] }] }));
+      const replying = (content: string) => jest.mocked(buildLLMClient).mockReturnValueOnce({ sendMessage: async () => ({ content }) } as unknown as LLMClient);
+      stdout.mockClear();
+      replying('no JSON');
+      expect(await runBenchCommand(['--rescore', matched, '--cases', cases, '--cache', cache], dir)).toBe(2);
+      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`No case was scored again.\nLeft as scored, demo-1: the matcher failed: The matcher's answer for K1 is not a JSON object.\nReport: ${join(dir, 'matched.rescored.json')}\n`);
+      expect((JSON.parse(readFileSync(join(dir, 'matched.rescored.json'), 'utf-8')) as BenchReport).variants[0].cases[0].keyVersion).toBe(2);
+      replying('{"verdict": "MATCH", "findings": [1], "reason": "same"}');
+      expect(await runBenchCommand(['--rescore', matched, '--cases', cases, '--cache', cache], dir)).toBe(0);
+      expect((JSON.parse(readFileSync(join(dir, 'matched.rescored.json'), 'utf-8')) as BenchReport).variants[0].cases[0]).toMatchObject({ keyVersion: 3, items: [{ id: 'K1', caught: 1 }, { id: 'K2' }, { id: 'N1' }, { id: 'N2' }] });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
