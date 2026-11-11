@@ -18,11 +18,16 @@ const KILL_GRACE_MS = 5000;
 const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
 const REPLY_TAIL_CHARS = 2000;
 
+/** Cuts the older `##[name]` form of a workflow command, which a GitHub Actions runner reads anywhere in a line. */
+export function cutLegacyCommands(text: string): string {
+  return text.replace(/##\[[a-z].*$/gim, '[redacted-workflow-cmd]');
+}
+
 /** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
 export function sanitizeLogOutput(text: string): string {
   // Matches any line segment starting with :: followed by a letter — covers all workflow commands
   // regardless of parameter format (e.g. ::error file=foo.ts,line=5::message)
-  return text.replace(/::[a-z].*$/gim, '[redacted-workflow-cmd]');
+  return cutLegacyCommands(text).replace(/::[a-z].*$/gim, '[redacted-workflow-cmd]');
 }
 
 /**

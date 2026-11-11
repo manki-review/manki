@@ -4,7 +4,7 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cutLegacyCommands, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
 
 function encode(json: unknown): string {
@@ -42,6 +42,12 @@ describe('sanitizeLogOutput', () => {
   it('redacts workflow commands case-insensitively on the command letter', () => {
     // The regex uses /i so ::Error:: and ::ERROR:: are both matched
     expect(sanitizeLogOutput('::Error::msg')).toBe('[redacted-workflow-cmd]');
+  });
+
+  it('redacts the older ##[command] form, which a runner reads anywhere in a line', () => {
+    expect(sanitizeLogOutput('safe ##[error]message\nnext ##[Add-Mask]x')).toBe('safe [redacted-workflow-cmd]\nnext [redacted-workflow-cmd]');
+    expect(sanitizeLogOutput('## [1.2.0] notes and #[derive(Debug)]')).toBe('## [1.2.0] notes and #[derive(Debug)]');
+    expect(cutLegacyCommands('use std::fmt::Display\n::error::kept ##[error]cut')).toBe('use std::fmt::Display\n::error::kept [redacted-workflow-cmd]');
   });
 });
 
