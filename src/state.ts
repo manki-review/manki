@@ -12,13 +12,12 @@ import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, latestPe
 import { formatApprovalRecord, hasOwnMarker, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
-import { ownMarker, withMarkers } from './utils';
+import { COMMENT_MARKER as BOT_MARKER, ownMarker, withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 type PullHead = { head: { sha: string }; base: { ref: string } };
 type ReviewEntry = { id: number; body?: string | null; state?: string; commit_id?: string | null; user?: { login?: string; type?: string } | null };
 
-const BOT_MARKER = '<!-- manki -->';
 const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
 const APPROVAL_HELD_MARKER_PREFIX = '<!-- manki-approval-held:';
 /** Marks the token service's note that a PR conflicting with its base waits for a rebase before Manki reviews it. */

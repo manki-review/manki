@@ -37,6 +37,9 @@ export function hiddenCharacters(text: string): string[] {
   return [...new Set([...text.matchAll(HIDDEN_CHARACTER)].map(([c]) => `U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`))];
 }
 
+/** The first of the hidden markers that Manki appends to a thread comment, a reply or a PR comment. */
+export const COMMENT_MARKER = '<!-- manki -->';
+
 /**
  * Appends hidden HTML comment markers after `body`. Notifications preview the start of
  * a comment as plain text, so markers at the top would show up there as blank lines.

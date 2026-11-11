@@ -13,7 +13,7 @@ import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSay
 import { AuthorClearRole, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage } from './round-context';
-import { safeTruncate, withMarkers } from './utils';
+import { COMMENT_MARKER as BOT_MARKER, safeTruncate, withMarkers } from './utils';
 import { WRITING_RULES } from './writing-rules';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -37,8 +37,6 @@ async function commenterCanWrite(octokit: Octokit, owner: string, repo: string):
   const login: string | undefined = github.context.payload.sender?.login;
   return !!login && await hasWriteAccess(octokit, owner, repo, login);
 }
-
-const BOT_MARKER = '<!-- manki -->';
 
 const REPLY_SYSTEM_PROMPT = `You posted a review finding on a pull request, and a developer replied to it. Write one reply to them.
 
