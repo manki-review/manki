@@ -794,6 +794,8 @@ interface Rescored {
   report: BenchReport;
   rescored: string[];
   left: Array<{ id: string; reason: string }>;
+  /** The cases of `left` whose matcher failed, which another try can still score. */
+  failed: string[];
 }
 
 /**
@@ -829,11 +831,12 @@ function unscorable(benchCase: BenchCase, runs: RunScore[]): string | undefined 
  * reads the findings each run stored, so a changed key costs matcher calls and no review. Only complete runs are scored
  * again, and the matcher is tried twice on each, as in a bench run. A case that `unscorable` names, that is not among
  * `cases`, or whose matcher fails both times stays as scored and is listed in `left`, and so stays out of a gate against
- * a report with the new key version.
+ * a report with the new key version. `failed` names the cases the matcher failed on.
  */
 export async function rescoreReport(report: BenchReport, cases: BenchCase[], matcher: Matcher): Promise<Rescored> {
   const rescored = new Set<string>();
   const left = new Map<string, string>();
+  const failed = new Set<string>();
   const variants: VariantReport[] = [];
   for (const { name, overrides, cases: scored } of report.variants) {
     const again: CaseReport[] = [];
@@ -863,6 +866,7 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
       };
       const runs = await scoreAgain().catch((error: Error) => {
         left.set(c.id, `the matcher failed${oneLine(caseDetail(benchCase, error))}`);
+        failed.add(c.id);
         return undefined;
       });
       if (!runs) {
@@ -874,7 +878,7 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
     }
     variants.push(variantReport({ name, overrides }, again));
   }
-  return { report: { ...report, variants }, rescored: [...rescored], left: [...left].map(([id, reason]) => ({ id, reason })) };
+  return { report: { ...report, variants }, rescored: [...rescored], left: [...left].map(([id, reason]) => ({ id, reason })), failed: [...failed] };
 }
 
 /** How far a figure may get worse, per run on average, before a release fails, such as one more false blocker. */
@@ -1340,7 +1344,8 @@ Reviews each benchmark case from a local checkout, matches the findings to the c
 key with an LLM, prints recall per item and severity, and writes a JSON report.
 
 With --rescore it reviews nothing. It matches the findings the report stored to the key of each case
-whose key_version changed since, and writes the report scored again.
+whose key_version changed since, and writes the report scored again. It exits 2 when the matcher
+failed on a case, which then stays as scored.
 
 Options:
   --checkout <owner/name>=<dir>  Local clone of a case repo. Repeat for each repo.
@@ -1482,14 +1487,15 @@ export function runBenchCommand(argv: string[], root = '.'): Promise<number> {
       const { report: stored, removed } = readReport(args.rescore, root);
       // A report holds one matcher model, and the gate refuses to compare reports matched by different ones.
       if (stored.matcherModel !== args.matcherModel) throw new Error(`The report was matched by ${stored.matcherModel}. Pass --matcher-model ${stored.matcherModel} to score it again.`);
-      const { report, rescored, left } = await rescoreReport(stored, cases, matcher).finally(() => writeJson(args.cache, Object.fromEntries(cache)));
+      const { report, rescored, left, failed } = await rescoreReport(stored, cases, matcher).finally(() => writeJson(args.cache, Object.fromEntries(cache)));
       const outPath = args.out ?? args.rescore.replace(/(\.json)?$/, '.rescored.json');
       writeJson(outPath, report);
       out(rescored.length > 0 ? `Scored again with the changed key: ${rescored.join(', ')}\n` : 'No case was scored again.\n');
       for (const { id, reason } of left) out(`Left as scored, ${id}: ${reason}.\n`);
       if (removed.length > 0) out(`${formatRemoved(removed)}\n`);
       out(`Report: ${outPath}\n`);
-      return 0;
+      // The report is written, and a case the matcher failed on is still scored with the older key.
+      return failed.length > 0 ? 2 : 0;
     }
     const variants = resolveVariants(args);
     const startedAt = new Date().toISOString();

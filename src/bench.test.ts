@@ -8,9 +8,14 @@ import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, format
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
+import { buildLLMClient } from './review-clients';
 import type { Finding, FindingSeverity, RoundContext, RoundOutcome } from './types';
 
 jest.mock('@actions/core');
+jest.mock('./review-clients', () => {
+  const actual = jest.requireActual<typeof import('./review-clients')>('./review-clients');
+  return { ...actual, buildLLMClient: jest.fn(actual.buildLLMClient) };
+});
 
 const IN_ACTIONS = process.env.GITHUB_ACTIONS;
 // CI sets `GITHUB_ACTIONS`, which stops any listing of hold-out findings, so each test sets it itself.
@@ -1045,7 +1050,7 @@ describe('mergeReports and gateReports', () => {
     };
     const rekeyedFirst: BenchCase = { ...first, keyVersion: 3 };
     const partly = await rescoreReport(stored, [rekeyedFirst, rekeyed], failing);
-    expect(partly).toMatchObject({ rescored: ['demo-1'], left: [{ id: 'demo-2', reason: 'the matcher failed' }] });
+    expect(partly).toMatchObject({ rescored: ['demo-1'], left: [{ id: 'demo-2', reason: 'the matcher failed' }], failed: ['demo-2'] });
     expect(partly.report.variants[0].cases[1]).toBe(stored.variants[0].cases[1]);
 
     const complete = (r: BenchReport): BenchReport => ({ ...r, variants: r.variants.map(v => ({ ...v, cases: v.cases.map(c => ({ ...c, runs: c.runs.filter(one => one.complete) })) })) });
@@ -1215,6 +1220,20 @@ describe('runBenchCommand', () => {
       writeFileSync(join(other, 'demo-9.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-9'));
       expect(await runBenchCommand(['--rescore', report, '--cases', other, '--cache', cache], dir)).toBe(0);
       expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`No case was scored again.\nLeft as scored, demo-1: no case file was loaded for it, which for a hold-out case takes --holdout.\nReport: ${join(dir, 'report.rescored.json')}\n`);
+
+      // A case the matcher fails on stays as scored in the report written, and the exit code says that not every case was scored again.
+      const found = await scoreRun(benchCase, makeReview('ADDRESS_FIRST', [makeFinding({ file: 'src/read.rs' })]), async () => ({ verdict: 'NONE', findings: [], reason: 'none' }));
+      const matched = join(dir, 'matched.json');
+      writeFileSync(matched, JSON.stringify({ ...stored, variants: [{ ...stored.variants[0], cases: [{ ...scoredCase, runs: [found] }] }] }));
+      const replying = (content: string) => jest.mocked(buildLLMClient).mockReturnValueOnce({ sendMessage: async () => ({ content }) } as unknown as LLMClient);
+      stdout.mockClear();
+      replying('no JSON');
+      expect(await runBenchCommand(['--rescore', matched, '--cases', cases, '--cache', cache], dir)).toBe(2);
+      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`No case was scored again.\nLeft as scored, demo-1: the matcher failed: The matcher's answer for K1 is not a JSON object.\nReport: ${join(dir, 'matched.rescored.json')}\n`);
+      expect((JSON.parse(readFileSync(join(dir, 'matched.rescored.json'), 'utf-8')) as BenchReport).variants[0].cases[0].keyVersion).toBe(2);
+      replying('{"verdict": "MATCH", "findings": [1], "reason": "same"}');
+      expect(await runBenchCommand(['--rescore', matched, '--cases', cases, '--cache', cache], dir)).toBe(0);
+      expect((JSON.parse(readFileSync(join(dir, 'matched.rescored.json'), 'utf-8')) as BenchReport).variants[0].cases[0]).toMatchObject({ keyVersion: 3, items: [{ id: 'K1', caught: 1 }, { id: 'K2' }, { id: 'N1' }, { id: 'N2' }] });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
