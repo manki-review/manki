@@ -1195,6 +1195,9 @@ function trustNote(finding: Finding): string | undefined {
 /** Non-blocking findings posted as line comments per review. The rest go in the body list. A note is never one of them. */
 const MAX_NON_BLOCKING_INLINE = 5;
 
+/** The most of a blocker's description the round record keeps when the blocker got no thread. */
+const MAX_RECORDED_DESCRIPTION = 1000;
+
 /** Whether a warning was deferred as a follow-up. */
 function isFollowUp(finding: Finding): boolean {
   return !!finding.tags?.includes(FOLLOW_UP_TAG);
@@ -1594,7 +1597,8 @@ function formatNotesSection(notes: Finding[], unposted: Finding[], links: CodeLi
  * first. The rest go in the body. A note never gets a thread: the body lists the notes in one collapsed section.
  *
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
- * gets a file-level comment. A finding that one of the open `existingThreads` already carries
+ * gets a file-level comment. One outside the diff files, or tied to no file, gets a file-level comment on the first
+ * diff file, which says where the finding is. A finding that one of the open `existingThreads` already carries
  * is not posted again. A blocker whose `threadId` names one of them is listed in the body under
  * a link to that thread. Three kinds of finding that do not block stay in the body: a pre-existing one,
  * one that restates a finding an earlier round listed in its body, and a security note on code an
@@ -1639,9 +1643,12 @@ export async function postReview(
   const invalidComments: string[] = [];
   const generalFindings: string[] = [];
   const stillOpen: string[] = [];
-  /** The findings posted as threads this round, counted in the verdict line, and those among them posted as line comments. */
+  /** The findings posted as threads this round, counted in the verdict line. */
   const threadFindings: Finding[] = [];
-  const lineThreads = new Set<Finding>();
+  /** The blockers posted as line comments, which get a file-level thread when GitHub refuses the lines. */
+  const lineBlockers: Array<{ path: string; body: string; finding: Finding }> = [];
+  /** The blockers in no changed file, whose threads are on `anchor`. */
+  const detached: Finding[] = [];
   /** The findings listed as folds in the review body, under one section per origin. */
   const bodyFindings: Finding[] = [];
   const notes: Finding[] = [];
@@ -1657,6 +1664,8 @@ export async function postReview(
   const carried = result.carried ?? [];
   const listedFiles = [...result.findings.filter(f => !isBlockingFinding(f)), ...followUps].filter(f => f.file && f.line > 0).map(f => f.file);
   const changed = diff?.files.map(f => f.path) ?? [];
+  // GitHub only takes comments on changed files, so the first one carries the thread of a blocker that sits elsewhere.
+  const anchor = changed.at(0);
   const cited = [...new Set(result.findings.flatMap(f => citedFiles(f, changed)))].slice(0, MAX_CITED_FILES);
   const files = await fetchFileLines(octokit, owner, repo, commitSha, [...new Set([...listedFiles, ...cited])]);
   const links: CodeLinks = { linkTo, files, changed };
@@ -1697,27 +1706,26 @@ export async function postReview(
     }
 
     const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
-    if (!f.file || (f.line <= 0 && !diffFile)) {
-      generalFindings.push(formatFindingBlock(f, links, true));
+    const elsewhere = diff ? !diffFile : !f.file || f.line <= 0;
+    if (elsewhere && !anchor) {
+      (f.file && f.line > 0 ? invalidComments : generalFindings).push(formatFindingBlock(f, links, true));
       unthreaded.push(f);
       continue;
     }
 
-    const commentBody = formatFindingComment(f, links);
+    const commentBody = formatFindingComment(f, links, elsewhere);
 
-    if (!diff || (diffFile && f.line > 0 && isLineInDiff(diffFile, f.line))) {
+    if (!elsewhere && (!diff || (f.line > 0 && isLineInDiff(diffFile!, f.line)))) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
+      lineBlockers.push({ path: f.file, body: commentBody, finding: f });
       threadFindings.push(f);
-      lineThreads.add(f);
-    } else if (!diffFile) {
-      invalidComments.push(formatFindingBlock(f, links, true));
-      unthreaded.push(f);
     } else if (matched) {
       core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
       leftTo.set(f, matched);
     } else {
-      fileComments.push({ path: f.file, body: commentBody, finding: f });
+      fileComments.push({ path: elsewhere ? anchor! : f.file, body: commentBody, finding: f });
       threadFindings.push(f);
+      if (elsewhere) detached.push(f);
     }
   }
 
@@ -1729,7 +1737,6 @@ export async function postReview(
     if (inline.has(f)) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
       threadFindings.push(f);
-      lineThreads.add(f);
     } else {
       bodyFindings.push(f);
     }
@@ -1740,8 +1747,9 @@ export async function postReview(
   const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl, round, reviewTimeMs);
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
-  const earlier = carriedThreadIds.size + (result.verdictTrace?.unresolvedPriors.length ?? 0);
-  const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (round?.meta.round ?? 1) > 1 };
+  const relisted = blockingFindings.filter(f => f.relisted).length;
+  const earlier = carriedThreadIds.size + relisted + (result.verdictTrace?.unresolvedPriors.length ?? 0);
+  const blockerCounts: BlockerCounts = { fresh: blockingFindings.length - carriedBlockers - relisted, earlier, followUp: (round?.meta.round ?? 1) > 1 };
   const standingHold: ApprovalHold | undefined = configHold ? { reason: 'config', file: configHold }
     : skipped && skipped.excluded.length + skipped.binary.length > 0 ? { reason: 'unread', skipped } : undefined;
   const hold = event === 'APPROVE' ? standingHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
@@ -1755,10 +1763,10 @@ export async function postReview(
 
   /**
    * Renders the body. A finding posted as a thread is only counted in it, since its thread sits right below.
-   * `withoutLineThreads` leaves out the line comments, for a review GitHub only takes without them.
+   * `withoutLineThreads` leaves out the non-blocking line comments, for a review GitHub only takes without them.
    */
   const renderBody = (withoutLineThreads = false): string => {
-    const threads = threadFindings.filter(f => !(withoutLineThreads && lineThreads.has(f)));
+    const threads = threadFindings.filter(f => !(withoutLineThreads && inline.has(f)));
     const lead = formatLead(result, blockerCounts, { threads, listed: [...bodyFindings, ...notes], carried, hold }, limitWarning, unreadRecords);
     let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
     if (memorySkip) {
@@ -1774,6 +1782,7 @@ export async function postReview(
     const sections = [
       formatNeedsHuman(result, restart),
       (blockingThreads || stillOpen.length > 0) && [blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n'),
+      detached.length > 0 && `**Blockers not on a changed file:**\n\n${detached.map(formatTraceEntry).join('\n')}\n\nGitHub only allows comments on changed files, so the thread of each is on \`${sanitizeFilePath(anchor ?? '')}\`.`,
       generalFindings.length > 0 && `**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`,
       invalidComments.length > 0 && `**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`,
       ...formatOriginSections(bodyFindings, links, blockerCounts.followUp),
@@ -1804,7 +1813,8 @@ export async function postReview(
       const posted = placeOf(f);
       const cited = posted === 'body' && f.severity === 'warning' ? citedLine(files.get(f.file), f.line) : undefined;
       const threadId = entry.threadId ?? (posted === 'earlier_thread' ? leftTo.get(f) : undefined);
-      return { ...entry, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }) };
+      const description = posted === 'body' && f.severity === 'blocker' && f.description ? safeTruncate(f.description, MAX_RECORDED_DESCRIPTION) : undefined;
+      return { ...entry, ...(threadId && { threadId }), posted, ...(cited && { citedLine: cited }), ...(description && { description }) };
     };
     return (context
       ? formatRecordTrailer({
@@ -1833,13 +1843,15 @@ export async function postReview(
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
   const withoutLineThreads = (): string => highlightCode(renderBody(true), codeTokens);
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(lineThreads));
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(inline));
   onPosted?.();
-  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
+  // A blocker whose line comment GitHub refused gets a file-level thread on its file.
+  const retried = review.lineComments ? [] : lineBlockers;
+  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, [...fileComments, ...retried].map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
     const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, links, true)).join('\n\n')}`, codeTokens);
-    const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : lineThreads)]));
+    const refusedRecord = recordFor(new Set([...refused, ...(review.lineComments ? [] : inline)]));
     // Truncate the existing body, never the blocking findings appended to it or the round record.
     const room = REVIEW_BODY_BUDGET - section.length - refusedRecord.length;
     if (room <= 0) {
@@ -2879,8 +2891,19 @@ function issueBoxFor(finding: Finding): string {
   return issueBox(`${file}:${finding.line}:${hash}`);
 }
 
-function formatFindingComment(finding: Finding, links: CodeLinks): string {
+/** Returns the lines that open a thread posted on another file than its finding's, saying where the problem is. */
+function detachedNote(finding: Finding, linkTo: LineLink): string {
+  const file = sanitizeFilePath(finding.file);
+  const where = file
+    ? `This is in [\`${file}${finding.line > 0 ? `:${finding.line}` : ''}\`](${linkTo(finding.file, finding.line)}), not in the file this thread is on.`
+    : 'This is not tied to a file or line.';
+  return `${where} GitHub only allows comments on changed files, so the thread is posted here.`;
+}
+
+/** Formats a finding's thread comment. `detached` is set for a thread posted on another file than the finding's. */
+function formatFindingComment(finding: Finding, links: CodeLinks, detached = false): string {
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
+  if (detached) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
   const note = trustNote(finding);
   if (note) comment += `${note}\n\n`;
   if (finding.origin === 'reviewed' && !isBlockingFinding(finding)) comment += `${MISSED_EARLIER_NOTE}\n\n`;
@@ -2912,6 +2935,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
     ...(finding.howToFix && { howToFix: safeTruncate(finding.howToFix, 300) }),
     ...(finding.tags && finding.tags.length > 0 && { tags: finding.tags }),
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
+    ...(detached && { detached: true }),
   };
   comment += `\n\n<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;
   comment += `\n<!-- manki-finding: ${sanitizeHtmlCommentJson(JSON.stringify(data))} -->`;

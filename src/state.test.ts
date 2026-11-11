@@ -751,7 +751,7 @@ describe('checkAndAutoApprove', () => {
       }
     });
 
-    it('never approves a blocker without a thread from the review its own round submits, as on a body-only blocker carried after a fix push', async () => {
+    it('approves a blocker in a file outside the diff only once the thread a later round gives it is resolved or evaluated as fixed', async () => {
       const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
       const createReviewMock = jest.fn().mockResolvedValue({});
       const outside = blocker({ posted: 'body', file: 'src/store.ts', title: 'Persisters miss the lock' });
@@ -763,8 +763,8 @@ describe('checkAndAutoApprove', () => {
       // Round 1 lists the blocker in its body, and its own review starts the check.
       expect(await check('sha-1', [firstReview], [thread('t2', 'note')])).toBe(false);
 
-      // The fix push touches the blocker's file, and round 2 carries the blocker without a finding that restates it.
-      const decided = determineOutcome([], first.findings.entries, [], new Set(), [], new Map(), new Set(['src/store.ts']));
+      // Round 2 cannot read the threads, so it carries the blocker without a finding that restates it.
+      const decided = determineOutcome([], first.findings.entries, null);
       expect(decided).toMatchObject({ outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed' });
       expect(decided.verdictTrace.unresolvedPriors).toEqual([expect.not.objectContaining({ threadId: expect.anything() })]);
       const second = blockingRound('sha-2', { findings: { count: 0, severityCounts: {}, entries: [] }, judge: { summary: '', ...decided } }, 2);
@@ -787,6 +787,30 @@ describe('checkAndAutoApprove', () => {
       expect(await asked(withThread, own('sha-1'))).toBe(`The record of Manki's review of \`sha-2\` names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- test finding (\`src/a.ts\`)\n\n${NEXT_ROUND}`);
       expect(createReviewMock).not.toHaveBeenCalled();
       expect(await asked(withThread, own('sha-2'))).toBe(true);
+
+      // Round 3 lists the blocker again, and the review posts it as a thread on the first changed file.
+      createReviewMock.mockClear();
+      const relisted: Finding = { severity: 'blocker', title: 'Persisters miss the lock', file: 'src/store.ts', line: 10, description: 'Two writers interleave.', reviewers: [], sameAs: 'src/store.ts:10:10:Persisters-miss-the-lock', raisedIn: 1, relisted: true };
+      const third = blockingRound('sha-3', { findings: { count: 1, severityCounts: {}, entries: [blocker({ file: 'src/store.ts', title: relisted.title })] } }, 3);
+      const postedReview = jest.fn().mockResolvedValue({ data: { id: 3 } });
+      const postedComment = jest.fn().mockResolvedValue({ data: { id: 30 } });
+      await postReview({ rest: { pulls: { createReview: postedReview, createReviewComment: postedComment } } } as unknown as Octokit, 'owner', 'repo', 1, 'sha-3',
+        { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: '', findings: [relisted], highlights: [], reviewComplete: true, agentNames: [] },
+        { files: [{ path: 'src/api.ts', changeType: 'modified', hunks: [] }], totalAdditions: 1, totalDeletions: 0 }, third);
+      expect(postedComment.mock.calls.map(([c]) => c.path)).toEqual(['src/api.ts']);
+      expect(postedReview.mock.calls[0][0].body).toMatch(/\*\*Changes requested:\*\* 1 blocker still open from an earlier review\./);
+      const withThird = [...reviews.map(r => ({ ...r, state: 'DISMISSED' })), { id: 3, body: postedReview.mock.calls[0][0].body as string, state: 'CHANGES_REQUESTED', commit_id: 'sha-3', user }];
+      const carrying = (resolvedBy?: string) => makeGraphqlFetchThreadNode({ id: 't4', path: 'src/api.ts', line: null, body: postedComment.mock.calls[0][0].body as string, isResolved: !!resolvedBy, ...(resolvedBy && { resolvedBy }) });
+
+      expect(await check('sha-3', withThird, [...threads, carrying()])).toBe(false);
+      expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('Not all blocking findings resolved'));
+      expect(createReviewMock).not.toHaveBeenCalled();
+      // A person resolves the thread, or a later round evaluates it as fixed and Manki resolves it.
+      for (const resolvedBy of ['maintainer', 'manki-review[bot]']) {
+        createReviewMock.mockClear();
+        expect(await check('sha-3', withThird, [...threads, carrying(resolvedBy)])).toBe(true);
+        expect(createReviewMock).toHaveBeenCalledTimes(1);
+      }
     });
 
     it.each<[string, Parameters<typeof makeMockOctokit>[0], string | { approved: true; standing: true }]>([

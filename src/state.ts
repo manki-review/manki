@@ -8,7 +8,7 @@ import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, Bot
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity } from './recap';
+import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingFile } from './recap';
 import { formatApprovalRecord, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
@@ -173,10 +173,11 @@ async function fetchBotReviewThreads(
       const data = parseFindingData(body);
       const findingTitle = data?.title?.trim() || (titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown');
       const markerSlug = threadMarkerSlug(body);
-      const findingLine = data && data.file === thread.path ? data.line : undefined;
+      const file = findingFile(body, thread.path);
+      const findingLine = data && data.file === file ? data.line : undefined;
       const commit = thread.comments.nodes[0]?.originalCommit?.oid;
       const place = thread.path && markerSlug ? {
-        file: thread.path, line: thread.line ?? 0, markerSlug,
+        file, line: thread.line ?? 0, markerSlug,
         ...(thread.originalLine && { originalLine: thread.originalLine }), ...(findingLine && { findingLine }), ...(commit && { commit }),
       } : undefined;
 

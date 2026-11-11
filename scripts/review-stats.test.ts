@@ -103,11 +103,12 @@ describe('review stats', () => {
     });
     // A record that says where each finding went is read as it says: a finding under an earlier thread is left out, and
     // one posted again beside a matching earlier thread counts. A round that tagged origins without the earlier change
-    // counts its findings, but not as first raised later.
+    // counts its findings, but not as first raised later. An earlier blocker listed again to get a thread counts nowhere.
     const placed: Record<number, RoundContext['findings']> = {
       3: {
-        count: 3, severityCounts: {},
+        count: 4, severityCounts: {},
         entries: [
+          { ...makeFindingFingerprintEntry({ severity: 'blocker', title: 'Listed again' }), origin: 'earlier', raisedIn: 1, posted: 'thread', relisted: true },
           { ...makeFindingFingerprintEntry({ severity: 'warning' }), origin: 'reviewed', posted: 'body' },
           { ...makeFindingFingerprintEntry({ severity: 'note' }), origin: 'new', posted: 'earlier_thread' },
           { ...makeFindingFingerprintEntry({ severity: 'warning', title: 'Minor', lineStart: 10 }), origin: 'reviewed', posted: 'thread' },

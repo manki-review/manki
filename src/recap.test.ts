@@ -1273,16 +1273,14 @@ describe('fetchRecapState', () => {
       const attached = state.priorRounds[0].findings.entries;
       expect(attached.map(e => e.threadId)).toEqual(['T_RESOLVED', undefined, undefined, 'T_FILE']);
 
-      // The resolved threads, line or file-level, retire their blockers. The warning too far from its
-      // thread and the body-only blocker on a file the PR no longer changes
-      // block nothing either, though thread `T_OTHER` is still open.
+      // The resolved threads, line or file-level, retire their blockers, and the warning too far from its thread blocks
+      // nothing, though thread `T_OTHER` is still open. Only the body-only blocker keeps blocking, whatever the PR changes.
       const openThreads = state.previousFindings
         .filter(f => f.status === 'open')
         .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));
-      const { outcome } = determineOutcome([], attached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts', 'src/bar.ts']));
-      expect(outcome).toBe('READY');
-      const unattached = attached.map(({ threadId: _threadId, ...rest }) => rest);
-      expect(determineOutcome([], unattached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts', 'src/bar.ts'])).outcome).toBe('ADDRESS_FIRST');
+      const unresolved = (priors: typeof attached) => determineOutcome([], priors, openThreads, collectResolvedThreadIds(state.previousFindings)).verdictTrace.unresolvedPriors.map(p => p.file);
+      expect(unresolved(attached)).toEqual(['src/body.ts']);
+      expect(unresolved(attached.map(({ threadId: _threadId, ...rest }) => rest))).toEqual(['src/foo.ts', 'src/body.ts', 'src/bar.ts']);
     });
 
     it('matches a blocker posted on a fallback line to its thread by the line its finding data names', async () => {
@@ -1308,7 +1306,7 @@ describe('fetchRecapState', () => {
       expect(priors.map(e => e.threadId)).toEqual(['T_FALLBACK']);
       expect(state.previousFindings[0]).toMatchObject({ line: 1, findingLine: 512 });
       // The resolved thread backs its blocker, so the next round ends without `prior_unaddressed`.
-      const { outcome, verdictReason } = determineOutcome([], priors, [], collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/state.ts']));
+      const { outcome, verdictReason } = determineOutcome([], priors, [], collectResolvedThreadIds(state.previousFindings));
       expect({ outcome, verdictReason }).toEqual({ outcome: 'READY', verdictReason: 'only_notes' });
       // A finding raised again on line 512 matches the thread as well, in dedup and in the in-PR suppressions.
       const again = makeFinding({ title, file: 'src/state.ts', line: 512, severity: 'warning' });
@@ -1331,6 +1329,31 @@ describe('fetchRecapState', () => {
       ], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
       const bareState = await fetchRecapState(bare, TEST_BOT, 'owner', 'repo', 1);
       expect(bareState.priorRounds[0].findings.entries.map(e => e.threadId)).toEqual([undefined]);
+    });
+
+    it('reads a thread posted on another file than its finding\'s by the place its finding data names', async () => {
+      const entry = (title: string, file: string, line: number) => ({ fingerprint: { file, lineStart: line, lineEnd: line, slug: titleToSlug(title) }, severity: 'blocker' as const, title, posted: 'thread' as const });
+      const entries = [entry('Persisters miss the lock', 'src/store.ts', 30), entry('The design drops retries', '', 0), entry('Named without the flag', 'src/old.ts', 7)];
+      const ctx = makeRoundContext(12, { findings: { count: 3, severityCounts: { blocker: 3, warning: 0, note: 0 }, entries } });
+      // Each thread sits on the first changed file. Only a flagged one takes its place from its finding data.
+      const posted = (id: string, title: string, data: Record<string, unknown>) => makeThread({
+        id, path: 'src/first.ts', line: null, originalLine: null,
+        comments: { nodes: [{ body: `\u{1F6AB} **Blocker**: ${title}\n\nDesc.\n\n<!-- manki:blocker:${titleToSlug(title)} -->\n<!-- manki-finding: ${JSON.stringify({ ...data, severity: 'blocker', title })} -->`, author: { login: BOT_LOGIN } }] },
+      });
+      const octokit = mockOctokit([
+        posted('T_FILE', 'Persisters miss the lock', { file: 'src/store.ts', line: 30, detached: true }),
+        posted('T_NONE', 'The design drops retries', { file: '', line: 0, detached: true }),
+        posted('T_OLD', 'Named without the flag', { file: 'src/old.ts', line: 7 }),
+      ], [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
+
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
+      expect(state.previousFindings.map(f => [f.threadId, f.file, f.findingLine])).toEqual([
+        ['T_FILE', 'src/store.ts', 30],
+        ['T_NONE', '', undefined],
+        ['T_OLD', 'src/first.ts', undefined],
+      ]);
+      // So the round record's blocker finds its thread, and the thread from before the flag stays on GitHub's path.
+      expect(state.priorRounds[0].findings.entries.map(e => e.threadId)).toEqual(['T_FILE', 'T_NONE', undefined]);
     });
 
     it('counts a thread Manki resolved as dismissed only when the judge marked it addressed', async () => {

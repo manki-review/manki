@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { BotIdentity, sanitizeMarkdown } from './github';
 import { filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
-import { isGuarded, parseFindingData } from './recap';
+import { findingFile, isGuarded, parseFindingData } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
 import { withMarkers } from './utils';
 
@@ -96,7 +96,7 @@ export async function handleIssueBoxTick(
   const source: IssueSource = {
     title: finding?.title ?? 'Manki finding',
     text: comment.body,
-    file: comment.path,
+    file: findingFile(comment.body, comment.path),
     // A finding outside the diff is posted on another line, so the finding data names its own line.
     line: finding?.line ?? comment.original_line ?? 0,
     commit: comment.original_commit_id,

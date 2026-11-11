@@ -433,7 +433,7 @@ Manki's newest progress comment ends with a settings block. It holds a status li
 | "above the limit ... for automatic review" | Split the PR, tick Review again to review it in full, or raise `auto_review_max_lines` |
 | "above the limit ... that Manki reviews" | Split the PR, or raise `max_diff_lines` |
 | Auto-approve not working | `auto_approve` is on by default. Check that `.manki.yml` on the base branch does not set it to `false` |
-| A finding has no line comment | Only a changed line can take one. A blocking finding on any other line is posted as a comment on its file, and the others are listed in the review body |
+| A finding has no line comment | Only a changed line can take one. A blocking finding on any other line is posted as a comment on its file, or on the first changed file when its own file is not part of the PR. The others are listed in the review body |
 
 ## Known Limitations
 

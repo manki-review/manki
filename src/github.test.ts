@@ -8,7 +8,7 @@ import { codeTokensFromDiff, highlightCode } from './highlight';
 import { makeFindingFingerprintEntry, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { withMarkers } from './utils';
 import { extractReviewRecords } from './review-record';
-import { parseFindingFromComment, PreviousFinding } from './recap';
+import { parseFindingData, parseFindingFromComment, PreviousFinding } from './recap';
 
 const CUSTOM_APP_BOT: BotIdentity = { logins: ['acme-reviewer[bot]'] };
 const PAT_BOT: BotIdentity = { logins: [...TEST_BOT.logins, 'review-user'] };
@@ -913,7 +913,7 @@ describe('postReview reviewed-commit footer', () => {
       .mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff'))
       .mockResolvedValueOnce({ data: { id: 9 } });
     const octokit = {
-      rest: { pulls: { createReview: createReviewMock } },
+      rest: { pulls: { createReview: createReviewMock, createReviewComment: jest.fn().mockResolvedValue({ data: { id: 10 } }) } },
     } as unknown as Parameters<typeof postReview>[0];
 
     const result: ReviewResult = {
@@ -1453,6 +1453,7 @@ describe('postReview body lead', () => {
     rest: {
       pulls: {
         createReview: mockCreateReview,
+        createReviewComment: jest.fn().mockResolvedValue({ data: { id: 2 } }),
         get: mockGet,
       },
     },
@@ -1557,11 +1558,12 @@ describe('postReview body lead', () => {
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings }, diff, ctx, 1000);
     const { body, comments } = mockCreateReview.mock.calls[0][0] as { body: string; comments: Array<{ body: string }> };
     const record = JSON.parse(extractReviewRecords(body).records[0]);
-    expect(record.output.commentLengths).toEqual(comments.map(c => c.body.length));
-    expect(record.output.commentLengths).toHaveLength(2);
+    // The two line comments come first, then the file-level comment of the blocker without a line.
+    expect(record.output.commentLengths.slice(0, 2)).toEqual(comments.map(c => c.body.length));
+    expect(record.output.commentLengths).toHaveLength(3);
     expect(body.slice(record.output.bodyLength)).toMatch(/^\n\n<!-- manki-stats: /);
-    // Each entry says where its finding went: a thread, the body for a note and for a blocker without a line, or an earlier thread.
-    expect(record.findings.entries.map((e: FindingFingerprintEntry) => e.posted)).toEqual(['thread', 'thread', 'body', 'earlier_thread', 'body']);
+    // Each entry says where its finding went: a thread, also for a blocker without a line, the body for a note, or an earlier thread.
+    expect(record.findings.entries.map((e: FindingFingerprintEntry) => e.posted)).toEqual(['thread', 'thread', 'body', 'earlier_thread', 'thread']);
     // A record built from other findings keeps its entries as they are.
     mockCreateReview.mockClear();
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [blocker] }, diff, ctx, 1000);
@@ -1831,7 +1833,7 @@ describe('postReview body lead', () => {
       summary: 'Nothing to flag.',
       findings: [{ ...blocker, file: '', line: 0, description: 'A synced client cannot start. Storage starts above 0. Handle `None`.' }],
     });
-    expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*What blocks:\*\* A synced client cannot start\. Storage starts above 0\.\n\n---\n\n\*\*Blockers not tied to a line:\*\*/u);
+    expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*What blocks:\*\* A synced client cannot start\. Storage starts above 0\.\n\n---\n\n\*\*Blockers not on a changed file:\*\*\n\n- The last partial page of results is never returned\n\nGitHub only allows comments on changed files, so the thread of each is on `src\/a\.ts`\./u);
     expect(body).not.toContain('Nothing to flag');
   });
 
@@ -3998,9 +4000,10 @@ describe('postReview fallback paths', () => {
     const createReviewMock = jest.fn()
       .mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff'))
       .mockResolvedValueOnce({ data: { id: 2 } });
+    const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 3 } });
 
     const mockOctokit = {
-      rest: { pulls: { createReview: createReviewMock } },
+      rest: { pulls: { createReview: createReviewMock, createReviewComment } },
     } as unknown as Parameters<typeof postReview>[0];
 
     const result: ReviewResult = {
@@ -4024,6 +4027,8 @@ describe('postReview fallback paths', () => {
     expect(createReviewMock).toHaveBeenCalledTimes(2);
     // Second call should have empty comments
     expect(createReviewMock.mock.calls[1][0].comments).toEqual([]);
+    // The blocking finding gets a file-level thread on its file instead.
+    expect(createReviewComment.mock.calls.map(([c]) => [c.path, c.subject_type])).toEqual([['src/a.ts', 'file']]);
   });
 
   const approveWithSuggestion: ReviewResult = {
@@ -4077,7 +4082,7 @@ describe('postReview fallback paths', () => {
       .mockResolvedValueOnce({ data: { id: 4 } });
 
     const mockOctokit = {
-      rest: { pulls: { createReview: createReviewMock } },
+      rest: { pulls: { createReview: createReviewMock, createReviewComment: jest.fn().mockResolvedValue({ data: { id: 5 } }) } },
     } as unknown as Parameters<typeof postReview>[0];
 
     const result: ReviewResult = {
@@ -4140,39 +4145,65 @@ describe('postReview fallback paths', () => {
     await expect(postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result)).rejects.toThrow('API error');
   });
 
-  it('moves findings to body when diff file is not found', async () => {
+  it('posts a blocker in no changed file as a thread on the first changed file, which says where the blocker is', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({ data: { id: 5 } });
+    const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 6 } });
     const mockOctokit = {
-      rest: { pulls: { createReview: createReviewMock } },
+      rest: { pulls: { createReview: createReviewMock, createReviewComment } },
     } as unknown as Parameters<typeof postReview>[0];
 
     const diff: ParsedDiff = {
-      files: [{ path: 'src/other.ts', changeType: 'modified', hunks: [] }],
+      files: [{ path: 'src/other.ts', changeType: 'modified', hunks: [] }, { path: 'src/second.ts', changeType: 'modified', hunks: [] }],
       totalAdditions: 5,
       totalDeletions: 0,
     };
+    const blocker = (title: string, file: string, line: number): Finding => ({ severity: 'blocker', title, file, line, description: 'Desc.', reviewers: [] });
+    const findings = [blocker('Issue in missing file', 'src/missing.ts', 10), blocker('Whole file issue', 'src/missing.ts', 0), blocker('Design issue', '', 0)];
+    const result: ReviewResult = { verdict: 'REQUEST_CHANGES', summary: 'Summary', findings, highlights: [], reviewComplete: true, agentNames: [] };
+    const context = makeContext({
+      findings: { count: 3, severityCounts: { blocker: 3 }, entries: findings.map(f => ({ fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) }, severity: 'blocker' as const })) },
+    });
 
-    const result: ReviewResult = {
-      verdict: 'APPROVE',
-      summary: 'Summary',
-      findings: [{
-        severity: 'warning',
-        title: 'Issue in missing file',
-        file: 'src/missing.ts',
-        line: 10,
-        description: 'Desc.',
-        reviewers: [],
-        evidence: { checks: [], proof: ['src/missing.ts:10'] },
-      }],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: [],
-    };
-
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff);
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff, context);
     const body = createReviewMock.mock.calls[0][0].body as string;
-    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Warning**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\n**What goes wrong:** Desc.\n<!-- manki-checks -->\n**Checked:** [`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)');
     expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
+    // The body names each blocker with its own place and the file its thread is on.
+    expect(body).toContain([
+      '**Blockers not on a changed file:**',
+      '',
+      '- `src/missing.ts:10`: Issue in missing file',
+      '- `src/missing.ts`: Whole file issue',
+      '- Design issue',
+      '',
+      'GitHub only allows comments on changed files, so the thread of each is on `src/other.ts`.',
+    ].join('\n'));
+    expect(body).not.toContain('Blockers in files outside this diff');
+    expect((JSON.parse(extractReviewRecords(body).records[0]) as RoundContext).findings.entries.map(e => [e.posted, e.description])).toEqual(Array(3).fill(['thread', undefined]));
+
+    const comments = createReviewComment.mock.calls.map(([c]) => c as { path: string; subject_type: string; body: string });
+    expect(comments.map(c => [c.path, c.subject_type])).toEqual(Array(3).fill(['src/other.ts', 'file']));
+    const where = 'GitHub only allows comments on changed files, so the thread is posted here.';
+    expect(comments.map(c => c.body.split('\n\n')[2])).toEqual([
+      `This is in [\`src/missing.ts:10\`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10), not in the file this thread is on. ${where}`,
+      `This is in [\`src/missing.ts\`](https://github.com/owner/repo/blob/sha/src/missing.ts), not in the file this thread is on. ${where}`,
+      `This is not tied to a file or line. ${where}`,
+    ]);
+    // The hidden finding data keeps the blocker's own file and line, and says the thread sits elsewhere.
+    expect(comments.map(c => parseFindingData(c.body))).toEqual([
+      expect.objectContaining({ file: 'src/missing.ts', line: 10, detached: true }),
+      { title: 'Whole file issue', file: 'src/missing.ts', flaggedBy: [], detached: true },
+      { title: 'Design issue', flaggedBy: [], detached: true },
+    ]);
+
+    // Without a changed file no thread can hold the blocker, so the body lists it and the record keeps its description.
+    createReviewMock.mockClear();
+    createReviewComment.mockClear();
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, { ...diff, files: [] }, context);
+    const listed = createReviewMock.mock.calls[0][0].body as string;
+    expect(createReviewComment).not.toHaveBeenCalled();
+    expect(listed).toContain('**Blockers in files outside this diff:**\n\n**Blocker**\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\n**What goes wrong:** Desc.');
+    expect(listed).toContain('**Blockers not tied to a line:**\n\n**Blocker**\n**Whole file issue**');
+    expect((JSON.parse(extractReviewRecords(listed).records[0]) as RoundContext).findings.entries.map(e => [e.posted, e.description])).toEqual(Array(3).fill(['body', 'Desc.']));
   });
 
   describe('blocking findings off changed lines', () => {
@@ -4342,17 +4373,29 @@ describe('postReview fallback paths', () => {
       const lineError = new Error('pull_request_review_thread.line must be part of the diff');
       const eventError = Object.assign(new Error('Unprocessable'), { status: 422 });
 
-      // Nothing refused: the two findings GitHub can anchor have a thread, the one in a file outside the diff does not.
-      expect(await post(taken(), taken())).toEqual([['thread', 'thread', 'body']]);
-      // The file-level comment is refused after the review posted, so the review is updated with a corrected record.
-      expect(await post(taken(), jest.fn().mockRejectedValue(new Error('refused')))).toEqual([['thread', 'thread', 'body'], ['thread', 'body', 'body']]);
-      // The line comments are refused: the first attempt never posts, and the review that does has no line thread.
-      expect(await post(refusedOnce(lineError), taken())).toEqual([['thread', 'thread', 'body'], ['body', 'thread', 'body']]);
+      const all = ['thread', 'thread', 'thread'];
+      // Nothing refused: each blocker has a thread, the one in a file outside the diff on the first changed file.
+      const fileComments = taken();
+      expect(await post(taken(), fileComments)).toEqual([all]);
+      expect(fileComments.mock.calls.map(([c]) => c.path)).toEqual(['src/a.ts', 'src/a.ts']);
+      // The file-level comments are refused after the review posted, so the review is updated with a corrected record.
+      expect(await post(taken(), jest.fn().mockRejectedValue(new Error('refused')))).toEqual([all, ['thread', 'body', 'body']]);
+      // The line comments are refused: the first attempt never posts, and the blocker gets a file-level thread on its file.
+      const retried = taken();
+      expect(await post(refusedOnce(lineError), retried)).toEqual([all, all]);
+      expect(retried.mock.calls.map(([c]) => [c.path, c.subject_type, parseFindingData(c.body)?.detached])).toEqual([
+        ['src/a.ts', 'file', undefined], ['src/a.ts', 'file', true], ['src/a.ts', 'file', undefined],
+      ]);
       // Both are refused.
-      expect(await post(refusedOnce(lineError), jest.fn().mockRejectedValue(new Error('refused'))))
-        .toEqual([['thread', 'thread', 'body'], ['body', 'thread', 'body'], ['body', 'body', 'body']]);
-      // GitHub refuses the review event, and the comment posted instead carries no line comment either.
-      expect((await post(refusedOnce(eventError), taken())).at(-1)).toEqual(['body', 'thread', 'body']);
+      expect(await post(refusedOnce(lineError), jest.fn().mockRejectedValue(new Error('refused')))).toEqual([all, all, ['body', 'body', 'body']]);
+      // Only the thread on another file is refused, so only that blocker falls back to the body.
+      const onlyOwnFile = jest.fn().mockImplementation(async ({ body }: { body: string }) => {
+        if (parseFindingData(body)?.detached) throw new Error('refused');
+        return { data: { id: 1 } };
+      });
+      expect(await post(taken(), onlyOwnFile)).toEqual([all, ['thread', 'thread', 'body']]);
+      // GitHub refuses the review event, and the comment posted instead carries no line comment, so the blocker gets a file-level thread too.
+      expect((await post(refusedOnce(eventError), taken())).at(-1)).toEqual(all);
     });
 
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {

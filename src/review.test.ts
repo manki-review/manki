@@ -408,16 +408,6 @@ describe('determineOutcome', () => {
       expect(result.verdictReason).toBe('only_notes');
     });
 
-    it('blocks on a prior blocker posted without a thread only while the PR still changes its file', () => {
-      const priors = fingerprintEntriesFromLegacy([makePriorBlocker({ severity: 'blocker', threadId: undefined })]);
-      const stillChanged = determineOutcome([note], priors, [], undefined, undefined, undefined, new Set(['src/x.ts']));
-      expect(stillChanged.outcome).toBe('ADDRESS_FIRST');
-      expect(stillChanged.verdictReason).toBe('prior_unaddressed');
-
-      const noLongerChanged = determineOutcome([note], priors, [], undefined, undefined, undefined, new Set(['src/other.ts']));
-      expect(noLongerChanged.outcome).toBe('READY');
-      expect(noLongerChanged.verdictTrace.unresolvedPriors).toEqual([]);
-    });
 
     it('ignores prior findings that are not warning or blocker (e.g. note)', () => {
       const priorNote = makePriorBlocker({ severity: 'note' });
@@ -3378,6 +3368,60 @@ describe('runReview', () => {
     expect(readerRepeat.needsHuman?.blockers.map(b => b.title)).toEqual(['Old issue']);
   });
 
+  it('lists an earlier blocker that no thread carries again as a finding, without asking a model about it', async () => {
+    const key = 'src/outside.ts:10:10:Old-issue';
+    const listed = (overrides: Partial<FindingFingerprintEntry> = {}, round = 1): RoundContext => {
+      const prior = buildPriorRound(round, [makePriorWarningFinding({ severity: 'blocker', threadId: undefined, fingerprint: { file: 'src/outside.ts', lineStart: 10, lineEnd: 10, slug: 'Old-issue' } })]);
+      prior.findings.entries = [{ ...prior.findings.entries[0], posted: 'body', ...overrides }];
+      return prior;
+    };
+    const run = (clients: ReviewClients, priorRounds: RoundContext[], extra: Partial<Parameters<typeof runReview>[1]> = {}) => runReview(clients, {
+      config: makeConfig(), diff: diffChanging('src/x.ts'), rawDiff: 'raw diff', repoContext: 'repo context', isFollowUp: true, openThreads: [], previousFindings: [], priorRounds, headSha: 'sha2', ...extra,
+    });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
+
+    // The record's description and security tag come back, and the blocker counts as raised in the round that listed it.
+    // A security finding is posted on its own, as any other one is.
+    const clients = makeClients();
+    const again = await run(clients, [listed({ description: 'Two writers interleave.', tags: ['security', 'follow-up'], suggestedFix: 'lock()' })]);
+    expect(again.findings).toEqual([{
+      severity: 'blocker', title: 'Old issue', file: 'src/outside.ts', line: 10, description: 'Two writers interleave.', reviewers: [], tags: ['security'], sameAs: key, raisedIn: 1, relisted: true, ownThread: true,
+    }]);
+    expect([again.outcome, again.verdictReason, again.verdictTrace?.unresolvedPriors]).toEqual(['ADDRESS_FIRST', 'required_present', []]);
+    // The judge graded nothing, and the round blocks, so the verdict reader does not run either.
+    expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].findings)).toEqual([[]]);
+    expect(clients.judge.sendMessage).not.toHaveBeenCalled();
+
+    // A record from before descriptions were kept gives the short form, and a title the record cut short is rebuilt from the slug.
+    const short = await run(makeClients(), [listed({ title: 'Old' })]);
+    expect(short.findings).toEqual([expect.objectContaining({
+      title: 'Old issue', description: 'An earlier review listed this blocker without a thread and did not record its description. That review\'s body has it.', sameAs: key, relisted: true,
+    })]);
+
+    // A thread that carries the blocker, the author's agreement, and a blocker of this round naming it again each leave it as it is.
+    const carried = await run(makeClients(), [listed({ threadId: 'T1' })], { previousFindings: [{ title: 'Old issue', file: 'src/outside.ts', line: 10, severity: 'blocker', status: 'resolved', threadId: 'T1' }] });
+    expect([carried.findings, carried.outcome]).toEqual([[], 'READY']);
+    expect((await run(makeClients(), [listed({ authorReplyClass: 'agree' })])).findings).toEqual([]);
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ severity: 'blocker', title: 'Writers race', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: key }], summary: 'Still there.' });
+    expect((await run(makeClients(), [listed()])).findings.map(f => f.title)).toEqual(['Writers race']);
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
+
+    // When the threads could not be read, a thread may carry it, so it is not listed again and keeps blocking as an earlier blocker.
+    const unread = await run(makeClients(), [listed()], { openThreads: null });
+    expect([unread.findings, unread.verdictReason, unread.verdictTrace?.unresolvedPriors.map(p => p.fingerprint)]).toEqual([[], 'prior_unaddressed', [key]]);
+
+    // The round after reads the thread the blocker got: it is not listed a third time, and the judge's evaluation decides.
+    const threaded = [listed(), listed({ posted: 'thread', threadId: 'T2', sameAs: key, raisedIn: 1, relisted: true }, 2)];
+    const thread = makePriorOpenThread({ threadId: 'T2', file: 'src/outside.ts', severity: 'blocker' });
+    const push = (file: string) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -10 +10 @@\n-old\n+new\n`;
+    const open = await run(makeClients(), threaded, { openThreads: [thread], headSha: 'sha3' });
+    expect([open.findings, open.verdictReason, open.verdictTrace?.unresolvedPriors.map(p => p.threadId)]).toEqual([[], 'prior_unaddressed', ['T2']]);
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Fixed.', threadEvaluations: [{ threadId: 'T2', status: 'addressed', reason: 'The lock is taken.' }] });
+    const outcomeAfter = async (file: string) => (await run(makeClients(), threaded, { openThreads: [thread], headSha: 'sha3', interRoundDiff: push(file) })).outcome;
+    expect(await outcomeAfter('src/outside.ts')).toBe('READY');
+    expect(await outcomeAfter('src/x.ts')).toBe('ADDRESS_FIRST');
+  });
+
   it('clears an open blocker thread only when the round confirms the fix on a file the push changed', async () => {
     const prior = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })]);
     const openThread = makePriorOpenThread({ severity: 'blocker' });
@@ -3414,6 +3458,12 @@ describe('runReview', () => {
       expect(unconfirmed.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'T1', status: 'uncertain' })]);
     }
     openThread.severity = 'blocker';
+
+    // A blocker thread that is not tied to a file has no file a push can change, so no push clears it.
+    const untied = await runWith(touching, { ...openThread, file: '', line: 0 });
+    expect([untied.outcome, untied.threadEvaluations?.[0]]).toEqual(['ADDRESS_FIRST', {
+      threadId: 'T1', status: 'uncertain', reason: 'This thread is not tied to a file, which only a person can clear, so the fix is not confirmed.',
+    }]);
 
     // An outdated thread keeps the guard too, whether its code is gone, was rewritten in an earlier push, or sits in a file the push did change.
     for (const outdated of [{ postedCodeGone: true }, { currentCode: '>>> 10: rewritten' }, { movedTo: 'src/y.ts' }]) {

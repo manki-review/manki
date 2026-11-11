@@ -19,13 +19,14 @@ const FINDING_TITLE_RE = /\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(
 /** The hidden finding data in a thread comment. Comments without it use the older `**Severity**: title` layout. */
 const FINDING_DATA_RE = /<!-- manki-finding: (.+?) -->/;
 
-export function parseFindingData(body: string): { title?: string; fix?: string; howToFix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number } | undefined {
+/** `detached` marks a thread posted on another file than its finding's, where `file` and `line` name the finding's own place. */
+export function parseFindingData(body: string): { title?: string; fix?: string; howToFix?: string; tags?: string[]; flaggedBy?: string[]; file?: string; line?: number; detached?: boolean } | undefined {
   const match = body.match(FINDING_DATA_RE);
   if (!match) return undefined;
   try {
     const parsed: unknown = JSON.parse(match[1]);
     if (!parsed || typeof parsed !== 'object') return undefined;
-    const { title, fix, howToFix, tags, flaggedBy, file, line } = parsed as { title?: unknown; fix?: unknown; howToFix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown };
+    const { title, fix, howToFix, tags, flaggedBy, file, line, detached } = parsed as { title?: unknown; fix?: unknown; howToFix?: unknown; tags?: unknown; flaggedBy?: unknown; file?: unknown; line?: unknown; detached?: unknown };
     return {
       ...(typeof title === 'string' && { title }),
       ...(typeof file === 'string' && file && { file }),
@@ -34,10 +35,20 @@ export function parseFindingData(body: string): { title?: string; fix?: string; 
       ...(typeof howToFix === 'string' && howToFix.length > 0 && { howToFix }),
       ...(isStringArray(tags) && { tags }),
       ...(isStringArray(flaggedBy) && { flaggedBy }),
+      ...(detached === true && { detached }),
     };
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Returns the file of the finding in a Manki thread's first comment `body`, posted on `path`. A `detached` thread names
+ * it in its finding data, and names none for a finding that is not tied to a file.
+ */
+export function findingFile(body: string, path: string | null | undefined): string {
+  const data = parseFindingData(body);
+  return data?.detached ? data.file ?? '' : path ?? '';
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -1011,7 +1022,8 @@ async function fetchReviewThreads(
       const body = firstComment?.body ?? '';
       const data = isBotThread ? parseFindingData(body) : undefined;
       const findingTitle = data?.title?.trim() || matchTitleLine(body)?.[1]?.trim() || '';
-      const findingLine = data?.file === thread.path ? data.line : undefined;
+      const file = data?.detached ? data.file ?? '' : thread.path ?? '';
+      const findingLine = data?.file === file ? data.line : undefined;
 
       const { description, suggestedFix, howToFix } = isBotThread && firstComment?.body
         ? parseFindingFromComment(firstComment.body)
@@ -1037,7 +1049,7 @@ async function fetchReviewThreads(
         description,
         suggestedFix,
         howToFix,
-        file: thread.path ?? '',
+        file,
         line,
         lineStart,
         ...(thread.originalLine && { originalLine: thread.originalLine }),

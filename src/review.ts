@@ -1494,7 +1494,9 @@ export async function runReview(
   const proven = hideUnprovenWarnings(finalFindings);
   finalFindings = proven.posted;
   const unposted = proven.unposted;
-  const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles);
+  // Listed after the judge and the refuter, so no model reads an earlier blocker a second time.
+  if (openThreads != null) finalFindings = [...finalFindings, ...relistThreadlessBlockers(finalFindings, priorFindingsFlat, priorRoundLookup)];
+  const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
 
@@ -2222,7 +2224,6 @@ function isPriorLikelyUnresolved(
   openThreadsUnknown: boolean,
   resolvedThreadIds: Set<string> | undefined,
   threadEvaluationsByThreadId: Map<string, ThreadEvaluation>,
-  changedFiles: ReadonlySet<string> | undefined,
 ): boolean {
   if (p.severity !== 'blocker') return false;
   if (p.authorReplyClass === 'agree') return false;
@@ -2242,11 +2243,40 @@ function isPriorLikelyUnresolved(
   }
   if (openThreadsUnknown) return true;
   if (p.threadId && resolvedThreadIds?.has(p.threadId)) return false;
-  // A prior still without a `threadId` matched no Manki thread, so it was
-  // posted in the review body and nobody can resolve it. Only a blocker on a
-  // file the PR still changes keeps blocking.
-  if (!p.threadId) return p.severity === 'blocker' && (!changedFiles || changedFiles.has(p.fingerprint.file));
-  return false;
+  // A prior still without a `threadId` matched no Manki thread, so nothing can say it is fixed and it keeps blocking.
+  return !p.threadId;
+}
+
+/**
+ * Returns each earlier blocker that no thread carries as a finding of this round, so the review posts it as a thread
+ * that a later round can evaluate and a person can resolve. A blocker of `findings` that names it again carries it
+ * already, and one the author's reply settled stays settled. Call it only when the review threads could be read.
+ */
+function relistThreadlessBlockers(findings: Finding[], priorRounds: FindingFingerprintEntry[], priorRoundLookup: Map<string, number>): Finding[] {
+  const namedAgain = new Set(findings.flatMap(f => f.severity === 'blocker' && f.sameAs ? [f.sameAs] : []));
+  return dedupePriorFindings(priorRounds).flatMap((p): Finding[] => {
+    const key = stringifyFindingFingerprint(p.fingerprint);
+    if (p.severity !== 'blocker' || p.threadId || p.authorReplyClass === 'agree' || namedAgain.has(key)) return [];
+    const raisedIn = p.raisedIn ?? priorRoundLookup.get(key);
+    // The thread is matched to the earlier blocker by its title's slug, so a title the record cut short is rebuilt from the slug.
+    const title = p.title && titleToSlug(p.title) === p.fingerprint.slug ? p.title : p.fingerprint.slug.replace(/-/g, ' ');
+    core.info(`Listing the earlier blocker "${title}" again, since no thread carries it`);
+    return [{
+      severity: 'blocker',
+      title,
+      file: p.fingerprint.file,
+      line: p.fingerprint.lineStart,
+      description: p.description ?? 'An earlier review listed this blocker without a thread and did not record its description. That review\'s body has it.',
+      reviewers: p.reviewers ?? [],
+      ...(p.tags?.includes(SECURITY_TAG) && { tags: [SECURITY_TAG] }),
+      ...(p.category && { category: p.category }),
+      ...(p.effort && { effort: p.effort }),
+      ...(p.evidence && { evidence: p.evidence }),
+      sameAs: key,
+      ...(raisedIn && { raisedIn }),
+      relisted: true,
+    }];
+  });
 }
 
 function dedupePriorFindings(priorRounds: FindingFingerprintEntry[]): FindingFingerprintEntry[] {
@@ -2285,9 +2315,9 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  *
  * A prior `blocker` is "unresolved" when the author has not agreed to
  * dismiss it (`authorReply !== 'agree'`) and the underlying GitHub thread is
- * still in `openThreads`. A prior without a `threadId` was posted in the review
- * body. It blocks only when it is a `blocker` on a file in `changedFiles`, or
- * on any file when `changedFiles` is omitted.
+ * still in `openThreads`. A prior without a `threadId` has no thread that can
+ * say it is fixed, so it blocks whatever the PR changes. `runReview` lists it
+ * again as a finding first, so it gets a thread.
  *
  * The judge's `threadEvaluations.status === 'addressed'` resolves a prior
  * thread. `uncertain` and missing entries collapse to "not addressed" so the
@@ -2341,7 +2371,6 @@ export function determineOutcome(
   resolvedThreadIds?: Set<string>,
   threadEvaluations?: ThreadEvaluation[],
   priorRoundLookup?: Map<string, number>,
-  changedFiles?: ReadonlySet<string>,
 ): { outcome: Extract<RoundOutcome, 'READY' | 'ADDRESS_FIRST'>; verdictReason: VerdictReason; verdictTrace: VerdictTrace } {
   const blockers = findings.filter(f => f.severity === 'blocker');
   const namedAgain = new Set(blockers.flatMap(f => f.sameAs ? [f.sameAs] : []));
@@ -2359,7 +2388,7 @@ export function determineOutcome(
   const seenThreadIds = new Set<string>();
   const unresolvedPriors = prior.filter(p =>
     !namedAgain.has(stringifyFindingFingerprint(p.fingerprint)) && !(p.threadId && carriedThreadIds.has(p.threadId))
-    && isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId, changedFiles)
+    && isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId)
     && remainderBlocks(p, openThreadIndex, threadEvaluationsByThreadId),
   ).filter(p => {
     if (!p.threadId) return true;
@@ -2492,7 +2521,8 @@ function confirmFixes(
     if (e.status !== 'addressed') return e;
     if (namedThreadIds.has(e.threadId)) return { ...e, status: 'not_addressed', reason: 'This round names the same blocker again.' };
     if (thread && guardedThreadStaysOpen(thread, pushChangedFiles)) {
-      return { ...e, status: 'uncertain', reason: `The push did not change \`${thread.file}\`, so the fix is not confirmed.` };
+      const why = thread.file ? `The push did not change \`${thread.file}\`` : 'This thread is not tied to a file, which only a person can clear';
+      return { ...e, status: 'uncertain', reason: `${why}, so the fix is not confirmed.` };
     }
     return e;
   };

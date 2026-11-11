@@ -300,6 +300,8 @@ export interface Finding {
   threadId?: string;
   /** Round that listed this finding in its review body first, when the finding restates it. */
   raisedIn?: number;
+  /** Whether the round lists an earlier blocker again that no thread carries, so it gets a thread. No model raised it this round. */
+  relisted?: boolean;
   /**
    * Whether the finding is posted on its own even beside an open thread with its title: a security finding next to a
    * thread without a security guard, or one whose reply in its thread failed.
@@ -2244,6 +2246,8 @@ export interface FindingFingerprintEntry {
   raisedIn?: number;
   /** Mirrors `Finding.sameAs`. */
   sameAs?: string;
+  /** Mirrors `Finding.relisted`. */
+  relisted?: boolean;
   /** Mirrors `Finding.category`. */
   category?: FindingCategory;
   /** Mirrors `Finding.effort`. */
@@ -2277,6 +2281,8 @@ export interface FindingFingerprintEntry {
    * thread falls back to the body and is recorded as `body`.
    */
   posted?: PostedPlace;
+  /** The description of a blocker recorded as `body`, which a later round posts as a thread. */
+  description?: string;
   /**
    * Set on a warning the round listed only in its review body, so a later round can tell whether the place still reads
    * the same. A warning without a line, or on a line the round could not read, has none.

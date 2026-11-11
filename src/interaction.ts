@@ -8,7 +8,7 @@ import { BotIdentity, dynamicFence, hasWriteAccess, inline, MANKI_VERSION, autho
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER } from './recap';
+import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, findingFile } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
 import { AuthorClearRole, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
 import { formatReplyRecord } from './review-record';
@@ -348,12 +348,12 @@ export async function handleReviewCommentReply(
     await reactToReviewComment(octokit, owner, repo, comment.id, 'eyes');
 
 
+    const filePath = findingFile(root.comment.body ?? '', root.comment.path);
     // Fetch the PR diff scoped to the file under discussion
     let diffContext = '';
     let codeTokens = new Set<string>();
     try {
       const fullDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
-      const filePath = root.comment.path;
       const scopedDiff = filePath ? scopeDiffToFile(fullDiff, filePath) : fullDiff;
       codeTokens = codeTokensFromDiff(parsePRDiff(scopedDiff));
       const truncated = truncateDiff(scopedDiff, 15000);
@@ -368,7 +368,7 @@ export async function handleReviewCommentReply(
     const context = buildReplyContext(
       root.comment.body,
       comment.body,
-      root.comment.path,
+      filePath,
       root.comment.line,
       root.id !== inReplyTo && isBotComment(parentComment.body ?? '') ? parentComment.body : undefined,
     );
@@ -415,7 +415,7 @@ export async function handleReviewCommentReply(
 
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;
-    const path = root.comment.path;
+    const path = filePath;
     if (WITHDRAWN_REPLY_RE.test(reply) && !isSecurity && path && memory && await commenterCanWrite(octokit, owner, repo)) {
       const title = parseFindingData(findingBody)?.title ?? path;
       saved = await saveWithdrawnLearning(memory, owner, repo, prNumber, path, title, comment.body ?? '')
