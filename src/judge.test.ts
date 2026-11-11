@@ -1090,18 +1090,23 @@ describe('extractCodeContext', () => {
 });
 
 describe('parseJudgeResponse', () => {
-  it('keeps a category and an effort from the fixed lists, drops any other value with a warning, and warns when a finding names no known `row`', () => {
+  it('keeps a category and an effort from the fixed lists, drops any other value with a warning, and refuses a finding that names no known `row`', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const result = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
       { id: 1, title: 'A', row: 'wrong', column: 'rare', reasoning: 'r', confidence: 'high', category: 'concurrency', effort: 'larger' },
-      { id: 2, title: 'B', row: 'serious', column: 'sometimes', reasoning: 'r', confidence: 'high', category: 'Bug', effort: 'huge' },
-      { id: 3, title: 'C', severity: 'warning', reasoning: 'r', confidence: 'high', category: 'toString' },
+      { id: 2, title: 'B', row: ' Severe ', column: 'Rare', reasoning: 'r', confidence: 'high', category: 'Bug', effort: 'huge' },
+      { id: 3, title: 'C', row: 'degraded', column: 'sometimes', reasoning: 'r', confidence: 'high', category: 'toString' },
       { id: 4, title: 'D', row: 'none', column: 'normal', reasoning: 'r', confidence: 'high' },
-      { id: 5, title: 'E', row: 'ignore', reasoning: 'r', confidence: 'high' },
+      { id: 5, title: 'E', row: 'Ignore', reasoning: 'r', confidence: 'high' },
     ] }));
     expect(result.findings.map(f => [f.category, f.effort])).toEqual([['concurrency', 'larger'], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined]]);
-    // Only a row of the table, `ignore` or `none` is kept, and only an explicit `rare` is a rare column. `ignore` is the prompt's word for a dropped finding.
-    expect(result.findings.map(f => [f.row, f.column])).toEqual([['wrong', 'rare'], [undefined, undefined], [undefined, undefined], ['none', undefined], ['none', undefined]]);
+    // A row or column counts whatever its case, and only an explicit `rare` is a rare column. `ignore` is the prompt's word for a dropped finding.
+    expect(result.findings.map(f => [f.row, f.column])).toEqual([['wrong', 'rare'], ['severe', 'rare'], ['degraded', undefined], ['none', undefined], ['none', undefined]]);
+    // An entry with any other row has no grade from the judge, so the whole reply is refused and asked for again.
+    for (const entry of [{ row: 'serious' }, { severity: 'warning' }, { row: 3 }]) {
+      const reply = JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'A', row: 'wrong', reasoning: 'r' }, { id: 2, title: 'B', reasoning: 'r', ...entry }] });
+      expect(() => parseJudgeResponse(reply)).toThrow('Judge named no known `row` for "B". A `row` is one of severe, wrong, degraded, improvement, style or ignore');
+    }
     // A fix that leaves part of the problem says so in the posted fix.
     const leaves = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
       { id: 1, title: 'Upload unbounded', row: 'degraded', reasoning: 'r', confidence: 'high', fixLeaves: ' The upload still has no timeout. ' },
@@ -1122,7 +1127,6 @@ describe('parseJudgeResponse', () => {
     expect(doubts.map(f => f.doubts)).toEqual([[{ premise: 'A caller passes `n` unchecked', decides: 'grade' }, { premise: 'The copy is never dropped', decides: 'defect' }], undefined, undefined]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned category "Bug", which is not one of correctness, security'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned effort "huge"'));
-    expect(warnSpy).toHaveBeenCalledWith('The judge named no known `row` for 2 of 5 findings, which keep the grade their reviewer gave');
     warnSpy.mockRestore();
   });
 
@@ -1277,7 +1281,7 @@ describe('parseJudgeResponse', () => {
   });
 
   it('handles missing title and reasoning gracefully', () => {
-    const json = JSON.stringify([{ severity: 'nitpick' }]);
+    const json = JSON.stringify([{ row: 'style' }]);
 
     const result = parseJudgeResponse(json);
     expect(result.findings).toHaveLength(1);
@@ -1534,7 +1538,7 @@ describe('runJudgeAgent', () => {
       { content: 'not json {broken' },
       { content: JSON.stringify({ summary: 'Nothing.', findings: [] }) },
       { content: valid, truncated: true },
-      // A reply that names no known `row` grades nothing, such as one that still returns a `severity`.
+      // An entry that names no known `row` has no grade, such as one that still returns a `severity`.
       { content: valid.replace('"row":"wrong"', '"severity":"blocker"') },
     ];
     for (const reply of unusable) {
@@ -1674,7 +1678,7 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Slow path', severity: 'blocker', line: 6, evidence: { checks: [], proof: ['src/index.ts:6'] } }),
       makeFinding({ title: 'Unseen kept', severity: 'warning', line: 7 }),
       makeFinding({ title: 'Unseen dropped', severity: 'warning', line: 8 }),
-      makeFinding({ title: 'Unknown grade', severity: 'warning', line: 9 }),
+      makeFinding({ title: 'No entry', severity: 'warning', line: 9 }),
       makeFinding({ title: 'Second cache left stale', severity: 'warning', line: 11 }),
       makeFinding({ title: 'Copy never removed', severity: 'warning', line: 12 }),
       makeFinding({ title: 'Doubted nit', severity: 'warning', line: 13 }),
@@ -1687,7 +1691,6 @@ describe('runJudgeAgent', () => {
         { id: 3, title: 'Slow path', row: 'degraded', reasoning: 'Performance never blocks.', confidence: 'high' },
         { id: 4, title: 'Unseen kept', row: 'wrong', column: 'rare', reasoning: 'r', confidence: 'medium' },
         { id: 5, title: 'Unseen dropped', row: 'none', doubts: [{ premise: 'The handler is registered', decides: 'defect' }], reasoning: 'r', confidence: 'medium' },
-        { id: 6, title: 'Unknown grade', row: 'serious', column: 'rare', reasoning: 'r', confidence: 'medium' },
         { id: 7, title: 'Second cache left stale', row: 'wrong', column: 'rare', doubts: [{ premise: 'A request reads the second cache after the write', decides: 'grade' }], reasoning: 'warning. Not sure a request reads it, since only the sweeper seems to.', confidence: 'medium' },
         { id: 8, title: 'Copy never removed', row: 'degraded', doubts: [{ premise: 'No other path removes the copy', decides: 'defect' }], reasoning: 'warning. Not determined whether another path removes the copy.', confidence: 'low' },
         { id: 9, title: 'Doubted nit', row: 'degraded', column: 'rare', doubts: [{ premise: 'A request logs the name', decides: 'grade' }], reasoning: 'r', confidence: 'low' },
@@ -1727,8 +1730,8 @@ describe('runJudgeAgent', () => {
         // A disproved or unsettled claim of the `rare` column leaves a finding there, whatever else the refuter confirms.
         ['Unseen kept', 'warning'],
         ['Unseen dropped', 'ignore'],
-        // An entry that names no known row keeps the grade its reviewer gave, and is never checked.
-        ['Unknown grade', 'warning'],
+        // A finding the judge returns no entry for keeps the grade its reviewer gave, and is never checked.
+        ['No entry', 'warning'],
         ['Second cache left stale', 'warning'],
         // A doubt whether the defect exists goes to the refuter at the same grade, and its disproof drops the finding.
         ['Copy never removed', 'ignore'],
@@ -3598,7 +3601,7 @@ describe('mapJudgedToFindings', () => {
 
     const originals = [
       proven('Doubted blocker'), proven('Doubted security', { tags: ['security'] }), proven('Marked security'), proven('Tool alert', { toolSource: 'clippy' }),
-      proven('Rare with another doubt'), proven('Doubted warning'), proven('No row', { severity: 'warning' }), proven('Doubted reach'),
+      proven('Rare with another doubt'), proven('Doubted warning'), proven('Doubted reach'),
       proven('Severe with a reach doubt'), proven('Rare with the reach doubt'),
       proven('Rare security'), proven('Tagged security', { tags: ['security'] }),
     ];
@@ -3609,12 +3612,11 @@ describe('mapJudgedToFindings', () => {
       { id: 4, title: 'Tool alert', row: 'wrong', column: 'rare', doubts: [doubt], reasoning: 'r', confidence: 'high' },
       { id: 5, title: 'Rare with another doubt', row: 'wrong', column: 'rare', doubts: [doubt], reasoning: 'r', confidence: 'high' },
       { id: 6, title: 'Doubted warning', row: 'degraded', doubts: [doubt], reasoning: 'r', confidence: 'high' },
-      { id: 7, title: 'No row', column: 'rare', doubts: [doubt], reasoning: 'r', confidence: 'high' },
-      { id: 8, title: 'Doubted reach', row: 'wrong', column: 'normal', doubts: [reach], reasoning: 'r', confidence: 'high' },
-      { id: 9, title: 'Severe with a reach doubt', row: 'severe', doubts: [reach], reasoning: 'r', confidence: 'high' },
-      { id: 10, title: 'Rare with the reach doubt', row: 'wrong', column: 'rare', doubts: [{ ...REACH_DOUBT, decides: 'defect' }, doubt], reasoning: 'r', confidence: 'high' },
-      { id: 11, title: 'Rare security', row: 'degraded', column: 'rare', security: true, reasoning: 'r', confidence: 'high' },
-      { id: 12, title: 'Tagged security', row: 'wrong', column: 'rare', reasoning: 'r', confidence: 'high' },
+      { id: 7, title: 'Doubted reach', row: 'wrong', column: 'normal', doubts: [reach], reasoning: 'r', confidence: 'high' },
+      { id: 8, title: 'Severe with a reach doubt', row: 'severe', doubts: [reach], reasoning: 'r', confidence: 'high' },
+      { id: 9, title: 'Rare with the reach doubt', row: 'wrong', column: 'rare', doubts: [{ ...REACH_DOUBT, decides: 'defect' }, doubt], reasoning: 'r', confidence: 'high' },
+      { id: 10, title: 'Rare security', row: 'degraded', column: 'rare', security: true, reasoning: 'r', confidence: 'high' },
+      { id: 11, title: 'Tagged security', row: 'wrong', column: 'rare', reasoning: 'r', confidence: 'high' },
     ];
     const result = mapJudgedToFindings(originals, judged);
     expect(result.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.doubts])).toEqual([
@@ -3627,7 +3629,6 @@ describe('mapJudgedToFindings', () => {
       // A doubt whether the defect exists is not the claim the `rare` column makes, so Manki adds that one.
       ['Rare with another doubt', 'warning', 'blocker', [doubt, { premise: 'Normal use or outside input can produce the state this failure needs', decides: 'grade' }]],
       ['Doubted warning', 'warning', 'warning', [doubt]],
-      ['No row', 'warning', undefined, undefined],
       // On the `wrong` row the other column gives a lower grade, so a doubt about the reach holds the blocker down.
       ['Doubted reach', 'warning', 'blocker', [reach]],
       // Both columns of the `severe` row block, so a doubt about the reach decides nothing there and is dropped.
@@ -3640,7 +3641,7 @@ describe('mapJudgedToFindings', () => {
     ]);
     expect(result.map(f => f.cell)).toEqual([
       { row: 'severe', column: 'normal' }, { row: 'severe', column: 'normal' }, { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'rare' },
-      { row: 'wrong', column: 'rare' }, { row: 'degraded', column: 'normal' }, undefined, { row: 'wrong', column: 'normal' },
+      { row: 'wrong', column: 'rare' }, { row: 'degraded', column: 'normal' }, { row: 'wrong', column: 'normal' },
       { row: 'severe', column: 'normal' }, { row: 'wrong', column: 'rare' },
       { row: 'degraded', column: 'normal', judgeColumn: 'rare' }, { row: 'wrong', column: 'normal', judgeColumn: 'rare' },
     ]);

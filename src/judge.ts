@@ -296,8 +296,8 @@ export interface JudgedFinding {
   /** Number of the "Finding N" this entry judges. */
   id?: number;
   title: string;
-  /** The severity table row the judge states, or `none` for a finding it marks `ignore`. Missing when it names no known row. */
-  row?: CellRow | 'none';
+  /** The severity table row the judge states, or `none` for a finding it marks `ignore`. */
+  row: CellRow | 'none';
   /** The column the judge states, `normal` when it names none. */
   column?: CellColumn;
   reasoning: string;
@@ -1149,6 +1149,11 @@ function premiseCheck(refutations: Array<Refutation | undefined>, i: number): st
   return settled.size > 1 ? 'split' : [...settled][0] ?? answers[0] ?? 'not checked';
 }
 
+/** Returns a row or column word of the severity table as the judge wrote it, without its case or outer spaces. */
+function tableWord(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
 /** Returns the doubts in `value` that name a premise. One whose `decides` is not `grade` decides whether the defect exists. */
 function parseDoubts(value: unknown): Doubt[] {
   if (!Array.isArray(value)) return [];
@@ -1163,7 +1168,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
   const parsed = JSON.parse(extractJSON(responseText));
 
   const parseFindings = (arr: unknown[]): JudgedFinding[] => {
-    const judged = arr.map((item: unknown) => item as Record<string, unknown>).map((f) => {
+    return arr.map((item: unknown) => item as Record<string, unknown>).map((f) => {
       const duplicateOf = Number.isInteger(f.duplicateOf) && (f.duplicateOf as number) > 0
         ? f.duplicateOf as number
         : undefined;
@@ -1173,16 +1178,19 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       const category = oneOf(FINDING_CATEGORIES, f.category, 'category');
       const effort = oneOf(FINDING_EFFORTS, f.effort, 'effort');
       const proof = parseProof(f.proof);
+      const title = String(f.title || 'Untitled');
+      const stated = tableWord(f.row);
       // `ignore` is the prompt's word for a dropped finding, and `none` says the same.
-      const row = f.row === 'ignore' || f.row === 'none' ? 'none' as const
-        : typeof f.row === 'string' && Object.hasOwn(CELL_GRADES, f.row) ? f.row as CellRow : undefined;
+      const row = stated === 'ignore' || stated === 'none' ? 'none' as const : Object.hasOwn(CELL_GRADES, stated) ? stated as CellRow : undefined;
+      // An entry without a row has no grade from the judge, so the reply is asked for again instead of posting a guess.
+      if (!row) throw new Error(`Judge named no known \`row\` for "${safeTruncate(title, 80)}". A \`row\` is one of ${Object.keys(CELL_GRADES).join(', ')} or ignore`);
       const doubts = parseDoubts(f.doubts);
       const fixLeaves = typeof f.fixLeaves === 'string' ? f.fixLeaves.trim().slice(0, MAX_REMAINING_CHARS) : '';
       return {
         ...(id !== undefined && { id }),
-        title: String(f.title || 'Untitled'),
-        ...(row && { row }),
-        ...(f.column === 'rare' && { column: 'rare' as const }),
+        title,
+        row,
+        ...(tableWord(f.column) === 'rare' && { column: 'rare' as const }),
         reasoning: String(f.reasoning || ''),
         confidence: validateConfidence(f.confidence),
         ...(duplicateOf && { duplicateOf }),
@@ -1198,9 +1206,6 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         ...(proof.length > 0 && { proof }),
       };
     });
-    const ungraded = judged.filter(f => !f.row).length;
-    if (ungraded > 0 && ungraded < judged.length) core.warning(`The judge named no known \`row\` for ${ungraded} of ${judged.length} findings, which keep the grade their reviewer gave`);
-    return judged;
   };
 
   // New object format with summary + findings + threadEvaluations
@@ -1377,10 +1382,6 @@ export async function runJudgeAgent(
       const parsed = parseJudgeResponse(reply.content);
       if (parsed.findings.length === 0 && findings.length > 0) {
         throw new Error(`Judge returned no results for ${findings.length} findings`);
-      }
-      // A reply that grades nothing would post every finding at its reviewer's grade.
-      if (parsed.findings.length > 0 && parsed.findings.every(f => !f.row)) {
-        throw new Error(`Judge named no known \`row\` for any of its ${parsed.findings.length} findings`);
       }
       return parsed;
     },
@@ -1580,7 +1581,6 @@ export function mapJudgedToFindings(
  * `columnDecidesBlock`. A tool alert takes its cell as stated, with no doubts.
  */
 function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security }: JudgedFinding): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'doubts'>> {
-  if (!row) return {};
   // A dropped finding keeps its doubts for the round record. The refuter never checks a finding marked `ignore`.
   if (row === 'none') return { ...gradeStep(o, 'ignore', 'judge'), ...(named.length > 0 && !o.toolSource && { doubts: named }) };
   const isSecurity = !!security || !!o.tags?.includes(SECURITY_TAG);
