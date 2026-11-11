@@ -129,7 +129,9 @@ class FakeGitHub {
   searches: string[] = [];
   /** Refuses `resolveReviewThread`, and the token service's `/resolve`, the way GitHub does for a token without the permission. */
   refuseResolve = false;
-  /** What alice, who wrote the PR, may do on the repository. */
+  /** Refuses the token service's `/resolve` when it is asked to reopen a thread. */
+  refuseReopen = false;
+  /** What alice, who wrote the PR, may do on the repository. Bob may always write. */
   permission = 'write';
   /** The config file at each ref, such as the base branch or the PR's head commit. */
   configs: Record<string, string> = {};
@@ -153,7 +155,7 @@ class FakeGitHub {
     if (`${origin}${pathname}` === new URL('resolve', TOKEN_URL).href) {
       this.writes.push('POST /resolve');
       await this.onWrite?.('POST /resolve');
-      if (this.refuseResolve && body.resolved) return json({ error: 'Resolving the thread failed', request_id: 'r-1' }, 500);
+      if (body.resolved ? this.refuseResolve : this.refuseReopen) return json({ error: 'Changing the thread failed', request_id: 'r-1' }, 500);
       const thread = this.threads.find(t => t.id === body.thread_id);
       if (!thread) return json({ error: 'No Manki review thread with that id on the run\'s pull request' }, 404);
       thread.isResolved = body.resolved === true;
@@ -279,6 +281,7 @@ class FakeGitHub {
     }
     if (method === 'GET' && route === '') return json({ full_name: `${OWNER}/${REPO}`, description: null });
     if (method === 'GET' && route === '/collaborators/alice/permission') return json({ permission: this.permission });
+    if (method === 'GET' && route === '/collaborators/bob/permission') return json({ permission: 'write' });
     return json({ message: 'Not Found' }, 404);
   };
 
@@ -489,9 +492,9 @@ async function resolveThread(thread: FakeThread, login: string): Promise<void> {
   await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: String(PR_NUMBER) });
 }
 
-/** Adds `body` as alice's reply in `thread` and runs Manki on it, with `answer` as the model's reply. */
-async function replyInThread(thread: FakeThread, body: string, answer: string): Promise<void> {
-  const reply = { databaseId: 9000 + thread.comments.length, body, url: `${thread.comments[0].url}-${thread.comments.length}`, authorAssociation: 'OWNER', author: { login: 'alice' } };
+/** Adds `body` as the reply of `login` in `thread` and runs Manki on it, with `answer` as the model's reply. */
+async function replyInThread(thread: FakeThread, body: string, answer: string, login = 'alice'): Promise<void> {
+  const reply = { databaseId: 9000 + thread.comments.length, body, url: `${thread.comments[0].url}-${thread.comments.length}`, authorAssociation: 'OWNER', author: { login } };
   thread.comments.push(reply);
   mockLLM.replies.reviewer = answer;
   await dispatch({ event: 'pull_request_review_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(reply.databaseId) });
@@ -1182,8 +1185,15 @@ describe('runFullReview end to end', () => {
       const [thread] = mockGitHub.threads;
       mockLLM.calls = [];
 
-      // Alice wrote the PR, so her resolve does not hold. She pushed nothing, so no round follows that could reopen the thread.
+      // A thread that could not be opened gets no note, since the note's marker would stop the next check from opening it.
+      mockGitHub.refuseReopen = true;
       await resolveThread(thread, 'alice');
+      expect(thread.isResolved).toBe(true);
+      expect(thread.comments).toHaveLength(1);
+      mockGitHub.refuseReopen = false;
+
+      // Alice wrote the PR, so her resolve does not hold. She pushed nothing, so no round follows that could reopen the thread.
+      await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: String(PR_NUMBER) });
       expect(thread.isResolved).toBe(false);
       expect(thread.comments.slice(1).map(c => c.body)).toEqual([`${REOPENED} ${PUSH_A_FIX}\n\n<!-- manki -->\n${REOPENED_MARKER}`]);
 
@@ -1296,27 +1306,62 @@ describe('runFullReview end to end', () => {
       // Alice wrote the PR, so her word alone does not clear a blocker.
       expect(thread.isResolved).toBe(false);
 
-      // She replies and resolves the thread, and Manki reads the reply first. An answer that cannot be posted reopens nothing.
+      // She replies and resolves the thread, and Manki reads the reply first. A thread that cannot be opened gets the answer without the note.
       const kept = 'Kept. Nothing bounds `b` before `src/math.ts:3` returns the sum.';
       const answers = () => thread.comments.filter(c => c.author.login !== 'alice').slice(2).map(c => c.body.replace(/\n<!-- manki-reply-record: .+ -->/, ''));
-      Object.assign(thread, { isResolved: true, resolvedBy: { login: 'alice' } });
-      mockGitHub.failures.push({ method: 'POST', path: /\/comments\/\d+\/replies$/, status: 500 });
+      const resolvedByAlice = { isResolved: true, resolvedBy: { login: 'alice' } };
+      Object.assign(thread, resolvedByAlice);
+      mockGitHub.refuseReopen = true;
       await replyInThread(thread, 'Both callers clamp their inputs.', kept);
-      expect(answers()).toEqual([]);
+      expect(answers()).toEqual([`${kept}\n\n<!-- manki -->`]);
       expect(thread.isResolved).toBe(true);
 
+      // The thread opens before the answer, so an answer that cannot be posted leaves it open and unmarked.
+      mockGitHub.refuseReopen = false;
+      mockGitHub.failures.push({ method: 'POST', path: /\/comments\/\d+\/replies$/, status: 500 });
+      await replyInThread(thread, 'Both callers clamp their inputs, as I said.', kept);
+      expect(answers()).toHaveLength(1);
+      expect(thread.isResolved).toBe(false);
+
+      // No marker was posted, so her next resolve is reopened, this time with the note.
       mockGitHub.failures = [];
+      Object.assign(thread, resolvedByAlice);
       await replyInThread(thread, 'Both callers clamp their inputs, see above.', kept);
       const paused = 'A reviewer with write access can resolve it. Automatic review is paused, so after pushing a fix comment `@manki review` and Manki will check it.';
-      expect(answers()).toEqual([`${kept}\n\n${REOPENED} ${paused}\n\n<!-- manki -->\n${REOPENED_MARKER}`]);
+      expect(answers().slice(1)).toEqual([`${kept}\n\n${REOPENED} ${paused}\n\n<!-- manki -->\n${REOPENED_MARKER}`]);
       expect(thread.isResolved).toBe(false);
 
       // The resolve itself reaches Manki after the reply, and adds no second note. A thread is reopened once.
       await resolveThread(thread, 'alice');
       await replyInThread(thread, 'It still cannot overflow.', kept);
-      expect(answers().slice(1)).toEqual([`${kept}\n\n<!-- manki -->`]);
+      expect(answers().slice(2)).toEqual([`${kept}\n\n<!-- manki -->`]);
       expect(thread.isResolved).toBe(true);
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+    });
+
+    it.each<[string, string, boolean, boolean]>([
+      ['clears the thread and approves when a maintainer', 'bob', false, true],
+      ['clears the thread and approves when, after Manki reopened it once, a maintainer', 'bob', true, true],
+      ['reopens the thread when the PR author', 'alice', false, false],
+    ])('%s agrees in a blocker thread the author resolved', async (_label, login, reopenedBefore, clears) => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+      const agreed = 'Agreed. The caller bounds the inputs, so the sum cannot overflow.';
+      if (reopenedBefore) await resolveThread(thread, 'alice');
+      const before = thread.comments.length;
+
+      // Alice resolves the thread, and the reply reaches Manki before the resolve does.
+      Object.assign(thread, { isResolved: true, resolvedBy: { login: 'alice' } });
+      await replyInThread(thread, 'Every caller bounds both inputs.', agreed, login);
+      await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: String(PR_NUMBER) });
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      const note = clears ? '' : `\n\n${REOPENED} ${PUSH_A_FIX}`;
+      expect(thread.comments.slice(before + 1).map(c => c.body.replace(/\n<!-- manki-reply-record: .+ -->/, ''))).toEqual([`${agreed}${note}\n\n<!-- manki -->${clears ? '' : `\n${REOPENED_MARKER}`}`]);
+      // Manki resolves the thread itself, since alice's own resolve never counts for the approval.
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual(clears ? [true, 'manki-review'] : [false, undefined]);
+      expect(postedReviews().map(r => r.state)).toEqual(clears ? ['DISMISSED', 'APPROVED'] : ['CHANGES_REQUESTED']);
     });
 
     it.each(['round', 'reply'])('confirms a fix once per head when the %s comes first', async first => {

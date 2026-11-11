@@ -369,6 +369,17 @@ export async function handleReviewCommentReply(
     }
     const staysOpen = !!thread && !thread.isResolved && isGuarded(thread) && !mayClear;
     const reopenNote = config && live?.isResolved ? await authorResolvedNote(octokit, bot, owner, repo, prNumber, prAuthorLogin, config, live.id) : undefined;
+    const posts = !(outcome === 'Fixed' && head && thread?.fixedOn?.includes(head));
+    // A guarded thread the PR author resolved still blocks, also when Manki reopened it before and has no note left to give.
+    const authorResolved = !!reopenNote
+      || (!!live?.isResolved && isGuarded(live) && !!prAuthorLogin && live.resolvedByLogin?.toLowerCase() === prAuthorLogin.toLowerCase());
+    // An answer that settles such a thread for someone who may clear it clears it, as on an open thread. Every other answer reopens it with the note.
+    const clears = !!outcome && mayClear && authorResolved;
+    // The thread opens before the answer. The answer's marker stops every later reopen, so it must never sit on a thread that stayed resolved.
+    const reopened = !!live && (clears || (!!reopenNote && posts)) && await reopenThread(octokit, live.id);
+    const noted = reopened && !clears;
+    // The approval check counts a resolved thread as cleared only by its resolver, so Manki resolves the reopened thread itself.
+    const current = reopened && thread ? { ...thread, isResolved: false } : thread;
 
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;
@@ -383,26 +394,24 @@ export async function handleReviewCommentReply(
     }
 
     // A thread gets one Manki fix confirmation per head, but a writer's "Fixed." can still resolve it.
-    if (outcome === 'Fixed' && head && thread?.fixedOn?.includes(head)) {
-      core.info(`Thread ${thread.id} already confirms the fix on ${head.slice(0, 7)}, so the reply posts no second one`);
+    if (!posts) {
+      core.info(`Thread ${thread?.id} already confirms the fix on ${head?.slice(0, 7)}, so the reply posts no second one`);
     } else {
-      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, outcome === 'Fixed')] : []), ...(reopenNote ? [reopenNote] : []), ...(saved ? [saved] : [])];
-      const decision = replyDecision(outcome, lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || !!reopenNote);
+      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, outcome === 'Fixed')] : []), ...(noted && reopenNote ? [reopenNote] : []), ...(saved ? [saved] : [])];
+      const decision = replyDecision(outcome, lookupFailed ? 'lookup_failed' : current, mayResolve, staysOpen || noted);
       await octokit.rest.pulls.createReplyForReviewComment({
         owner,
         repo,
         pull_number: prNumber,
         comment_id: comment.id,
-        body: withMarkers([reply, ...notes].join('\n\n'), BOT_MARKER, response.record(decision), ...(outcome === 'Fixed' && head ? [fixedMarker(head)] : []), ...(reopenNote ? [REOPENED_MARKER] : [])),
+        body: withMarkers([reply, ...notes].join('\n\n'), BOT_MARKER, response.record(decision), ...(outcome === 'Fixed' && head ? [fixedMarker(head)] : []), ...(noted ? [REOPENED_MARKER] : [])),
       });
       core.info('Posted reply to review comment');
-      // The answer carries the marker that stops a second reopen, so the thread opens only once it is posted.
-      if (reopenNote && live) await reopenThread(octokit, live.id);
     }
 
-    if (outcome && thread && mayResolve) {
+    if (outcome && current && mayResolve && !noted) {
       try {
-        await resolveThreadOf(octokit, thread, REPLY_RESOLUTION_REASONS[outcome], mayClear);
+        await resolveThreadOf(octokit, current, REPLY_RESOLUTION_REASONS[outcome], mayClear);
       } catch (error) {
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }
