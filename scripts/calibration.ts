@@ -91,7 +91,7 @@ const AUTHOR_DECLINED = /^\**(Pushing back|Declin|Skipping|Not applied|Not fixin
 const FINDING_MARKER = /<!-- manki:[a-z]+:(\S+) -->/;
 // The posted grade would anchor a replayed judge, so the export drops the severity header, a cap note under it and the
 // `AI context` block.
-const SEVERITY_HEADER = /^[^\n]*\*\*(Blocker|Warning|Suggestion|Nitpick)\b[^\n]*\n*(<sub>\[[^\]\n]*\]<\/sub>\n*)?/;
+const SEVERITY_HEADER = /^[^\n]*\*\*(Blocker|Warning|Note|Suggestion|Nitpick)\b[^\n]*\n*(<sub>\[[^\]\n]*\]<\/sub>\n*)?/;
 const AI_CONTEXT_BLOCK = /<details>\s*<summary>AI context<\/summary>[\s\S]*?<\/details>/g;
 const THREAD_FIELDS = 'id path comments(first: 100) { nodes { body url author { __typename } } }';
 

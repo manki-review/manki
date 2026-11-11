@@ -145,5 +145,9 @@ describe('selectSet', () => {
       title: 'Title f', comment: 'The text.', label: 'false', labelSource: 'reply-withdrawn', threadUrl: 'https://github.com/o/r/pull/1#f',
     });
     expect(selectSet(findings, 1)).toHaveLength(1);
+    // The header line of a note's thread is dropped like any other grade's.
+    const note = labelled('n', 'note', 'real');
+    note.thread!.comments[0].body = '\u2728 **Note, not blocking** · Security\n\n**Token compared in variable time**\n\n**Why:** It leaks timing.\n\n<!-- manki:note:n -->';
+    expect(selectSet([note])[0].comment).toBe('**Token compared in variable time**\n\n**Why:** It leaks timing.');
   });
 });
