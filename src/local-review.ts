@@ -317,7 +317,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
   const { clients, models } = buildReviewClients(config, providerInputs);
   await warmUpClients(clients);
   signal?.throwIfAborted();
-  const repoContext = await buildRepoContext(gitRepoFiles(repoRoot, base), diff.files.map(f => f.path));
+  const { text: repoContext, files: instructionFiles } = await buildRepoContext(gitRepoFiles(repoRoot, base), diff.files.map(f => f.path));
   const title = input.title ?? (await runGit(repoRoot, ['log', '-1', '--format=%s', head])).trim();
   const hasTools = [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])].some(c => c.repoTools);
   const followUp = input.earlier && patch === undefined
@@ -341,6 +341,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       diff,
       rawDiff,
       repoContext,
+      instructionFiles,
       prContext: { title, body: input.body ?? '', baseBranch: input.base },
       workspace,
       headSha: head,

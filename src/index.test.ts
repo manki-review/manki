@@ -205,7 +205,7 @@ jest.mock('./github', () => ({
   brokenConfig: jest.requireActual('./github').brokenConfig,
   configFailed: jest.requireActual('./github').configFailed,
   capNotes: jest.requireActual('./github').capNotes,
-  fetchRepoContext: jest.fn().mockResolvedValue(''),
+  fetchRepoContext: jest.fn().mockResolvedValue({ text: '', files: [] }),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),
   fetchCommitsSince: jest.fn().mockResolvedValue([]),
@@ -1853,7 +1853,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue({ id: 123, approvalHeld: false });
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
-    jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue('');
+    jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue({ text: '', files: [] });
     jest.mocked(ghUtils.fetchFileContents).mockResolvedValue(new Map());
     jest.mocked(ghUtils.fetchLinkedIssues).mockResolvedValue([]);
     jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValue(undefined);
@@ -3312,6 +3312,8 @@ describe('runFullReview orchestration', () => {
       findings: [finding2], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
+    const instructionFiles = [{ path: 'AGENTS.md', text: 'Every bug fix needs a test.' }];
+    jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue({ text: '## AGENTS.md\n\nEvery bug fix needs a test.', files: instructionFiles });
 
     await callRunFullReview();
 
@@ -3319,6 +3321,9 @@ describe('runFullReview orchestration', () => {
     // dedup runs before the judge stage.
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     expect(runReviewCall.previousFindings).toEqual(previousFindings);
+    // The base branch's instruction files go along with the context text, for the check of a quoted rule.
+    expect([runReviewCall.repoContext, runReviewCall.instructionFiles]).toEqual(['## AGENTS.md\n\nEvery bug fix needs a test.', instructionFiles]);
+    expect(jest.mocked(ghUtils.fetchRepoContext).mock.calls[0][3]).toBe(baseArgs.baseRef);
   });
 
   it('forwards prior rounds from recap state to runReview when memory is enabled', async () => {

@@ -7,7 +7,7 @@ import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, r
 import { mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
-import { dynamicFence, fenceText, instructionFileText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
+import { dynamicFence, fenceText, InstructionFile, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
 import { canLeaveOut, cellGrade, FOLLOW_UP_TAG, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
@@ -606,6 +606,8 @@ export interface ReviewOptions {
   diff: ParsedDiff;
   rawDiff: string;
   repoContext: string;
+  /** The instruction files in `repoContext`. A rule a finder quotes is looked up in them. */
+  instructionFiles?: readonly InstructionFile[];
   memory?: RepoMemory | null;
   fileContents?: Map<string, string>;
   prContext?: PrContext;
@@ -770,6 +772,7 @@ export async function runReview(
   // Only a retry passes `retryNote`, the note of the reply it corrects, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
     effort: finder.effort, language: plannerResult?.language, workspace, related: related && { ...related, ...(guides && { guides }) }, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges,
+    instructionFiles: options.instructionFiles,
     ...(retryNote && { retryNote }),
   });
 
@@ -1624,6 +1627,7 @@ interface RunReviewerAgentOptions {
   earlierBlockers?: BuildReviewerUserMessageOptions['earlierBlockers'];
   usesOutsideDiff?: string;
   lockfileChanges?: string;
+  instructionFiles?: readonly InstructionFile[];
   /** The `parseRetryNote` of the reply a retry corrects, added after the user message. */
   retryNote?: string;
 }
@@ -1723,7 +1727,7 @@ async function runReviewerOnSlice(
   options: RunReviewerAgentOptions = {},
   sliceNote?: string,
 ): Promise<AgentResult> {
-  const { effort, language, workspace, related, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges, retryNote } = options;
+  const { effort, language, workspace, related, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges, instructionFiles, retryNote } = options;
   const tools = !!workspace && !!client.repoTools;
   const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, tools);
   const message = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, earlierBlockers, sliceNote, usesOutsideDiff, lockfileChanges });
@@ -1739,7 +1743,7 @@ async function runReviewerOnSlice(
   }
   let findings: Finding[];
   try {
-    findings = parseFindings(response.content, finder.name, repoContext);
+    findings = parseFindings(response.content, finder.name, instructionFiles);
   } catch (error) {
     throw new FinderReplyError(error instanceof Error ? error.message : String(error));
   }
@@ -1974,7 +1978,7 @@ export function buildReviewerUserMessage(
   return message;
 }
 
-export function parseFindings(responseText: string, reviewerName: string, repoContext = ''): Finding[] {
+export function parseFindings(responseText: string, reviewerName: string, instructionFiles: readonly InstructionFile[] = []): Finding[] {
   core.debug(`${reviewerName} response length: ${responseText.length}`);
 
   if (responseText.trim().length === 0) {
@@ -2010,7 +2014,7 @@ export function parseFindings(responseText: string, reviewerName: string, repoCo
       ...((lead || f.notChecked === true) && { notChecked: true }),
       ...(lead && { lead }),
       ...preExistingOf(f),
-      ...ruleOf(f, repoContext),
+      ...ruleOf(f, instructionFiles),
     };
   });
 }
@@ -2036,13 +2040,13 @@ function plainText(text: string): string {
 }
 
 /**
- * Reads `rule` with its `ruleFile`. The mark is kept only when `repoContext` holds that file and the file holds the
+ * Reads `rule` with its `ruleFile`. The mark is kept only when `instructionFiles` holds that file and the file holds the
  * quote, so a rule the reviewer made up or read in a file the PR edits is no rule finding.
  */
-function ruleOf(f: Record<string, unknown>, repoContext: string): Pick<Finding, 'rule'> {
+function ruleOf(f: Record<string, unknown>, instructionFiles: readonly InstructionFile[]): Pick<Finding, 'rule'> {
   const file = textOf(f.ruleFile);
   const quote = textOf(f.rule);
-  const source = instructionFileText(repoContext, file);
+  const source = instructionFiles.find(loaded => loaded.path === file)?.text;
   const plain = plainText(quote);
   return source !== undefined && plain.length >= MIN_RULE_QUOTE_CHARS && plainText(source).includes(plain) ? { rule: { file, quote } } : {};
 }

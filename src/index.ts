@@ -1842,7 +1842,7 @@ async function runFullReview(
     // Placed after the diff-size and empty-files guards so cold installs are skipped on paths that never invoke an LLM.
     await warmUpClients(clients);
 
-    const repoContext = await fetchRepoContext(target.octokit, target.owner, target.repo, target.baseRef, diff.files.map(f => f.path));
+    const { text: repoContext, files: instructionFiles } = await fetchRepoContext(target.octokit, target.owner, target.repo, target.baseRef, diff.files.map(f => f.path));
     const { memory, memoryLoadStatus, memoryLoadError, memorySkip } = await loadRunMemory(octokit, config, owner, repo, prNumber);
 
     const priorRoundCount = recap.priorRounds.length;
@@ -1879,6 +1879,7 @@ async function runFullReview(
       diff,
       rawDiff,
       repoContext,
+      instructionFiles,
       memory,
       fileContents,
       prContext: prContext && staticSignals.length > 0 ? { ...prContext, staticSignals } : prContext,

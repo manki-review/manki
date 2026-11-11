@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, capNotes, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, instructionFileText, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
+import { ApprovalHeld, buildDashboard, capNotes, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { highlightCode } from './highlight';
@@ -2412,7 +2412,7 @@ describe('fetchRepoContext instruction files', () => {
       'src/CLAUDE.md': 'Source rules',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
     expect(result).toContain('## src/CLAUDE.md');
     expect(result).toContain('Source rules');
   });
@@ -2422,7 +2422,7 @@ describe('fetchRepoContext instruction files', () => {
       'src/auth/CLAUDE.md': 'Auth rules',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/auth/handlers.ts']);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/auth/handlers.ts']);
     expect(result).toContain('## src/auth/CLAUDE.md');
     expect(result).toContain('Auth rules');
   });
@@ -2432,7 +2432,7 @@ describe('fetchRepoContext instruction files', () => {
       'src/CLAUDE.md': 'Source rules',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', [
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', [
       'src/foo.ts',
       'src/bar.ts',
     ]);
@@ -2443,7 +2443,7 @@ describe('fetchRepoContext instruction files', () => {
   it('lists .claude/CLAUDE.md once when a file under .claude changes', async () => {
     const octokit = mockOctokit(baseTree, { '.claude/CLAUDE.md': 'Claude dir rules' });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['.claude/settings.json']);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['.claude/settings.json']);
     expect(result).toBe('## .claude/CLAUDE.md\n\nClaude dir rules');
   });
 
@@ -2453,14 +2453,14 @@ describe('fetchRepoContext instruction files', () => {
       {},
     );
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
     expect(result).toBe('');
   });
 
   it('returns empty string for empty changedPaths', async () => {
     const octokit = mockOctokit(baseTree, {});
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', []);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', []);
     expect(result).toBe('');
   });
 
@@ -2470,7 +2470,7 @@ describe('fetchRepoContext instruction files', () => {
       'lib/CLAUDE.md': 'Lib rules',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', [
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', [
       'src/index.ts',
       'lib/utils.ts',
     ]);
@@ -2486,7 +2486,7 @@ describe('fetchRepoContext instruction files', () => {
       'src/rules/style.md': 'Style guidelines',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
     expect(result).toContain('Style guidelines');
   });
 
@@ -2497,7 +2497,7 @@ describe('fetchRepoContext instruction files', () => {
       'test/CLAUDE.md': 'FAIL',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', [
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', [
       'src/index.ts',
       'lib/utils.ts',
       'test/a.test.ts',
@@ -2510,7 +2510,7 @@ describe('fetchRepoContext instruction files', () => {
   it('ignores root-level changed files with no subdirectory CLAUDE.md', async () => {
     const octokit = mockOctokit(baseTree, {});
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['package.json']);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['package.json']);
     expect(result).toBe('');
   });
   const agentsTree = [...baseTree, { path: 'AGENTS.md', type: 'blob' }, { path: 'src/AGENTS.md', type: 'blob' }];
@@ -2521,9 +2521,9 @@ describe('fetchRepoContext instruction files', () => {
       'src/auth/AGENTS.md': 'Auth agent rules',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/auth/login.ts']);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/auth/login.ts']);
     expect(result).toBe('## src/auth/AGENTS.md\n\nAuth agent rules');
-    expect(await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['lib/utils.ts'])).toBe('');
+    expect(await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['lib/utils.ts'])).toEqual({ text: '', files: [] });
   });
 
   it('reads the nearest CLAUDE.md and AGENTS.md separately', async () => {
@@ -2532,7 +2532,7 @@ describe('fetchRepoContext instruction files', () => {
       'src/AGENTS.md': 'Source agent rules',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/auth/login.ts']);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/auth/login.ts']);
     expect(result).toContain('## src/auth/CLAUDE.md');
     expect(result).toContain('## src/AGENTS.md');
   });
@@ -2545,7 +2545,7 @@ describe('fetchRepoContext instruction files', () => {
       'src/AGENTS.md': 'Source agent rules\n',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
     expect(result.match(/Root agent rules/g)).toHaveLength(1);
     expect(result.match(/Source agent rules/g)).toHaveLength(1);
     expect(result).not.toContain('## CLAUDE.md');
@@ -2567,15 +2567,14 @@ describe('fetchRepoContext instruction files', () => {
       'docs/too-deep.md': 'Never read',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    const { text: result, files } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
     expect(result.match(/^## .+$/gm)).toEqual([
       '## src/AGENTS.md', '## AGENTS.md', '## CONTRIBUTING.md',
       '## src/notes.md', '## docs/style.md', '## docs/abs.md', '## docs/conventions.md', '## docs/deeper.md', '## docs/deepest.md',
     ]);
-    // Each loaded file can be read back from the context by its path, and no other can.
-    expect(['src/AGENTS.md', 'docs/style.md', 'docs/deepest.md', 'docs/too-deep.md', 'docs/style', ''].map(path => instructionFileText(result, path))).toEqual([
-      'Source rules, see [notes](notes.md).', 'Style, see [deeper](deeper.md).', 'Deepest, see [too deep](too-deep.md).', undefined, undefined, undefined,
-    ]);
+    // Each printed file is also returned on its own, with its text.
+    expect(files.map(f => f.path)).toEqual(result.match(/^## .+$/gm)!.map(heading => heading.slice(3)));
+    expect(files.filter(f => ['src/AGENTS.md', 'docs/style.md'].includes(f.path)).map(f => f.text)).toEqual(['Source rules, see [notes](notes.md).', 'Style, see [deeper](deeper.md).']);
     const read = (octokit.rest.repos.getContent as unknown as jest.Mock).mock.calls.map(([{ path }]) => path);
     expect(read).not.toEqual(expect.arrayContaining(['docs/too-deep.md']));
     expect(read.filter((path: string) => path.includes('secret') || path.includes('example.com'))).toEqual([]);
@@ -2588,7 +2587,7 @@ describe('fetchRepoContext instruction files', () => {
       'src/AGENTS.md': 'Shared rules',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
     expect(result).toBe('## src/AGENTS.md\n\nShared rules');
   });
 
@@ -2601,15 +2600,17 @@ describe('fetchRepoContext instruction files', () => {
       'CLAUDE.md': 'root claude',
     });
 
-    const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/auth/login.ts']);
+    const { text: result } = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/auth/login.ts']);
     expect(result.match(/^## .+$/gm)).toEqual(['## src/auth/CLAUDE.md', '## src/AGENTS.md', '## AGENTS.md']);
     expect(result).not.toContain(big('root agents'));
     expect(result).not.toContain('root claude');
 
     const oversized = mockOctokit(agentsTree, { 'src/AGENTS.md': big('src', 40_000) });
-    const cut = await fetchRepoContext(oversized, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    const { text: cut, files: cutFiles } = await fetchRepoContext(oversized, 'owner', 'repo', 'abc123', ['src/index.ts']);
     expect(cut.startsWith('## src/AGENTS.md\n\nsrc x')).toBe(true);
     expect(cut.length).toBeLessThanOrEqual(30_003);
+    // The cut file is listed with the text that was printed.
+    expect(cutFiles).toEqual([{ path: 'src/AGENTS.md', text: cut.slice('## src/AGENTS.md\n\n'.length) }]);
   });
 });
 
@@ -3497,7 +3498,7 @@ describe('fetchRepoContext', () => {
       },
     } as unknown as Parameters<typeof fetchRepoContext>[0];
 
-    const result = await fetchRepoContext(mockOctokit, 'owner', 'repo', 'main', []);
+    const { text: result } = await fetchRepoContext(mockOctokit, 'owner', 'repo', 'main', []);
     expect(result).toContain('Repository: owner/repo');
     expect(result).toContain('A test repo');
     expect(result).toContain('Root instructions');
@@ -3514,7 +3515,7 @@ describe('fetchRepoContext', () => {
       },
     } as unknown as Parameters<typeof fetchRepoContext>[0];
 
-    const result = await fetchRepoContext(mockOctokit, 'owner', 'repo', 'main', []);
+    const { text: result } = await fetchRepoContext(mockOctokit, 'owner', 'repo', 'main', []);
     expect(result).toBe('');
   });
 });

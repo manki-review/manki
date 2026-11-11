@@ -510,7 +510,18 @@ async function resolveReferences(
 const INSTRUCTION_FILE_NAMES = ['AGENTS.md', 'CLAUDE.md'];
 const ROOT_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md', '.claude/CLAUDE.md', 'CONTRIBUTING.md'];
 const MAX_INSTRUCTIONS_CHARS = 30_000;
-const CONTEXT_BREAK = '\n\n---\n\n';
+
+/** An instruction file as the prompts print it: its path in the repo and its text, with `@file` references inlined. */
+export interface InstructionFile {
+  path: string;
+  text: string;
+}
+
+/** The repository context the prompts print, and the instruction files in it. */
+export interface RepoContext {
+  text: string;
+  files: InstructionFile[];
+}
 
 /** Returns the repo description and the instruction files `buildRepoContext` reads at `ref`. */
 export async function fetchRepoContext(
@@ -519,8 +530,9 @@ export async function fetchRepoContext(
   repo: string,
   ref: string,
   changedPaths: string[],
-): Promise<string> {
-  const parts = [await buildRepoContext(githubRepoFiles(octokit, owner, repo, ref), changedPaths)].filter(Boolean);
+): Promise<RepoContext> {
+  const context = await buildRepoContext(githubRepoFiles(octokit, owner, repo, ref), changedPaths);
+  const parts = [context.text].filter(Boolean);
   try {
     const { data: repoData } = await octokit.rest.repos.get({ owner, repo });
     if (repoData.description) {
@@ -529,7 +541,7 @@ export async function fetchRepoContext(
   } catch {
     // Skip
   }
-  return parts.join(CONTEXT_BREAK);
+  return { ...context, text: parts.join('\n\n---\n\n') };
 }
 
 /**
@@ -538,11 +550,12 @@ export async function fetchRepoContext(
  * with the same content after `@file` resolution. The file that crosses `MAX_INSTRUCTIONS_CHARS` is cut, and farther
  * files are left out.
  */
-export async function buildRepoContext(files: RepoFiles, changedPaths: string[]): Promise<string> {
+export async function buildRepoContext(files: RepoFiles, changedPaths: string[]): Promise<RepoContext> {
   const queue = [...await findNearestInstructionFiles(files, changedPaths), ...ROOT_INSTRUCTION_FILES].map(path => ({ path, depth: 0 }));
   const queued = new Set(queue.map(({ path }) => path));
 
   const parts: string[] = [];
+  const loaded: InstructionFile[] = [];
   const seen = new Set<string>();
   let total = 0;
   for (const { path, depth } of queue) {
@@ -555,28 +568,17 @@ export async function buildRepoContext(files: RepoFiles, changedPaths: string[])
         queue.push({ path: link, depth: depth + 1 });
       }
     }
-    const part = `## ${path}\n\n${file.content}`;
-    if (total + part.length > MAX_INSTRUCTIONS_CHARS) {
-      parts.push(safeTruncate(part, MAX_INSTRUCTIONS_CHARS - total));
+    const heading = `## ${path}\n\n`;
+    const part = safeTruncate(heading + file.content, MAX_INSTRUCTIONS_CHARS - total);
+    parts.push(part);
+    loaded.push({ path, text: part.slice(heading.length) });
+    total += heading.length + file.content.length;
+    if (total > MAX_INSTRUCTIONS_CHARS) {
       core.info(`Repo instructions reached ${MAX_INSTRUCTIONS_CHARS} characters: cut ${path} and skipped any farther files`);
       break;
     }
-    parts.push(part);
-    total += part.length;
   }
-  return parts.join(CONTEXT_BREAK);
-}
-
-/** Returns the text `buildRepoContext` printed for the instruction file `path`, or undefined when `repoContext` lacks the file. */
-export function instructionFileText(repoContext: string, path: string): string | undefined {
-  if (!path.endsWith('.md') || path.includes('\n')) return undefined;
-  const heading = `${CONTEXT_BREAK}## ${path}\n\n`;
-  const context = CONTEXT_BREAK + repoContext;
-  const at = context.indexOf(heading);
-  if (at < 0) return undefined;
-  const text = context.slice(at + heading.length);
-  const next = text.search(/\n\n---\n\n## .+\.md\n\n/);
-  return next < 0 ? text : text.slice(0, next);
+  return { text: parts.join('\n\n---\n\n'), files: loaded };
 }
 
 /** Returns each name's nearest subdirectory file above any changed file, deepest first. */

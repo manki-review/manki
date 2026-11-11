@@ -158,17 +158,16 @@ describe('parseFindings', () => {
     expect([lead.lead, lead.notChecked, lead.evidence]).toEqual([{ checked: 'read src/c.ts:3', left: 'find the writers' }, true, undefined]);
     expect(lead.description).toBe('A reviewer raised this as a suspicion it had not finished checking. It had checked: read src/c.ts:3. Still to check: find the writers.');
 
-    const repoContext = [
-      'Repository: acme/shop\nDescription: A shop',
-      '## services/api/AGENTS.md\n\nA change to a handler **must** come with an\n  integration test.\n\n---\n\n## Style\n\nPrefer short names.',
-      '## CONTRIBUTING.md\n\nEvery model change needs a `migration`.',
-    ].join('\n\n---\n\n');
+    const instructionFiles = [
+      { path: 'services/api/AGENTS.md', text: 'A change to a handler **must** come with an\n  integration test.\n\n---\n\n## notes.md\n\nPrefer short names.' },
+      { path: 'CONTRIBUTING.md', text: 'Every model change needs a `migration`.' },
+    ];
     const rules = [
       ['Every model change needs a migration.', 'CONTRIBUTING.md'],
       // Line wraps, emphasis and case do not count, and a heading inside a file starts no new file.
       ['a change to a handler must come with an integration test.', 'services/api/AGENTS.md'],
       ['Prefer short names.', 'services/api/AGENTS.md'],
-      ['Prefer short names.', 'Style'],
+      ['Prefer short names.', 'notes.md'],
       // The quote is in another loaded file, in no loaded file, in a file that is not loaded, or too short to be a rule.
       ['Every model change needs a migration.', 'services/api/AGENTS.md'],
       ['Every model change needs a rollback.', 'CONTRIBUTING.md'],
@@ -177,10 +176,10 @@ describe('parseFindings', () => {
       ['Every model change needs a migration.', undefined],
     ];
     const replies = JSON.stringify(rules.map(([rule, ruleFile]) => ({ severity: 'warning', title: 'Rule', file: 'shop/models.py', line: 4, description: 'd', rule, ruleFile })));
-    const marked = parseFindings(replies, 'R', repoContext);
+    const marked = parseFindings(replies, 'R', instructionFiles);
     expect(marked[0].rule).toEqual({ file: 'CONTRIBUTING.md', quote: 'Every model change needs a migration.' });
     expect(marked.map(f => f.rule?.file)).toEqual(['CONTRIBUTING.md', 'services/api/AGENTS.md', 'services/api/AGENTS.md', ...Array(6).fill(undefined)]);
-    // Without the repository context no rule can be checked.
+    // Without the instruction files no rule can be checked.
     expect(parseFindings(replies, 'R').map(f => f.rule)).toEqual(Array(9).fill(undefined));
   });
 
@@ -2328,8 +2327,8 @@ describe('runReview', () => {
       summary: 'One required finding.',
     });
 
-    const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: `## ${rule.file}\n\n${rule.quote}` });
-    // The finder's rule is checked against the round's repository context.
+    const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', instructionFiles: [{ path: rule.file, text: rule.quote }] });
+    // The finder's rule is checked against the round's instruction files.
     expect(result.rawFindings?.[0].rule).toEqual(rule);
     expect(result.verdict).toBe('REQUEST_CHANGES');
     expect(result.outcome).toBe('ADDRESS_FIRST');
