@@ -1,0 +1,30 @@
+{
+  "name": "rare-claim-reachable",
+  "case": "rare-claim-reachable",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "`refresh()` can store a new socket on a closed session and leak it",
+    "file": "sdk/session.py",
+    "line": 32,
+    "description": "`refresh()` checks `self._closed` and then opens a new socket without taking `self._lock`. When `close()` runs between the check and the assignment, the new socket is stored on a closed session and nothing closes it. The docstring this PR adds tells users to call `refresh()` from a background thread while the main thread keeps using the session, so `refresh()` and `close()` run at the same time in normal use.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "evidence": {
+      "checks": [
+        "sdk/session.py:29 reads `self._closed` outside `self._lock`",
+        "sdk/session.py:32 assigns `self._sock` after the check",
+        "sdk/session.py:36 `close()` takes `self._lock`, which `refresh()` never does"
+      ],
+      "proof": [
+        "sdk/session.py:29",
+        "sdk/session.py:32"
+      ]
+    },
+    "suggestedFix": "Hold `self._lock` across the check and the assignment in `refresh()`."
+  },
+  "prDiff": "diff --git a/sdk/session.py b/sdk/session.py\nindex 1111111..2222222 100644\n--- a/sdk/session.py\n+++ b/sdk/session.py\n@@ -20,7 +20,19 @@ class Session:\n         self._sock = _connect(self._host)\n         self._closed = False\n \n+    def refresh(self):\n+        \"\"\"Reconnect with a fresh token.\n+\n+        Tokens expire after an hour. Call this from a background thread\n+        every few minutes while the main thread keeps using the session.\n+        \"\"\"\n+        if self._closed:\n+            return\n+        old = self._sock\n+        self._sock = _connect(self._host)\n+        old.close()\n+\n     def close(self):\n         with self._lock:\n             self._closed = True\n             self._sock.close()\n"
+}
