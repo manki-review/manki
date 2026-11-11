@@ -567,6 +567,7 @@ async function fetchRecapState(
 
   const previousFindings = botThreads.map(t => {
     const securityOverride = addressedThreadIds.has(t.threadId) ? undefined : securityOverrideOf(t, prAuthorLogin, prAuthorRole);
+    const replierMayClear = authorCannotClear(t) && !!t.authorReplyLogin && !!mayAgree.get(t.authorReplyLogin);
     return {
       title: t.findingTitle,
       file: t.file,
@@ -576,7 +577,7 @@ async function fetchRecapState(
       ...(t.recordedGrade && { recordedGrade: t.recordedGrade }),
       ...(t.peakGrade && { peakGrade: t.peakGrade }),
       ...(t.gradeUnknown && { gradeUnknown: true }),
-      status: threadStatus(t, addressedThreadIds, bot, prAuthorLogin, !!securityOverride),
+      status: threadStatus(t, addressedThreadIds, bot, prAuthorLogin, !!securityOverride, replierMayClear),
       ...(t.isResolved && addressedThreadIds.has(t.threadId) && { fixed: true }),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
@@ -588,7 +589,7 @@ async function fetchRecapState(
       authorReplyLogin: t.authorReplyLogin,
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
       ...(t.isSecurity && { isSecurity: true }),
-      ...(authorCannotClear(t) && t.authorReplyLogin && mayAgree.get(t.authorReplyLogin) && { authorReplyMayClear: true }),
+      ...(replierMayClear && { authorReplyMayClear: true }),
       ...(!securityOverride && shouldReopen(t, addressedThreadIds, prAuthorLogin) && { reopen: true }),
       ...(securityOverride && { securityOverride }),
       ...(t.answer && { answer: t.answer }),
@@ -637,18 +638,27 @@ function shouldReopen(t: ReviewThread, addressedThreadIds: Set<string>, prAuthor
 }
 
 /**
+ * Whether Manki's own resolve settles a thread the PR author cannot clear. GitHub has to name Manki as the resolver, and
+ * the latest reply by a person has to come from someone who may clear the thread (`replierMayClear`).
+ */
+function settledByManki(resolvedByLogin: string | undefined, replierMayClear: boolean, bot: BotIdentity): boolean {
+  return replierMayClear && isBotLogin(bot, resolvedByLogin);
+}
+
+/**
  * Returns the thread's status for the next round. A resolved guarded thread stays `open` or `replied`
  * unless the judge marked it `addressed`, `mayClearSecurityThread` accepts the resolver, or the PR author overrode it with a role that allows it.
- * A blocker Manki resolved counts as `auto-resolved`, since Manki resolves one only after such a clear.
+ * A blocker Manki resolved counts as `auto-resolved`, since Manki resolves one only after such a clear. A security
+ * thread Manki resolved does too, but only when `settledByManki` holds.
  */
 function threadStatus(
-  t: ReviewThread, addressedThreadIds: Set<string>, bot: BotIdentity, prAuthorLogin: string | undefined, securityOverride: boolean,
+  t: ReviewThread, addressedThreadIds: Set<string>, bot: BotIdentity, prAuthorLogin: string | undefined, securityOverride: boolean, replierMayClear: boolean,
 ): PreviousFinding['status'] {
   const unresolved = t.hasHumanReply ? 'replied' : 'open';
   if (!t.isResolved) return unresolved;
   if (addressedThreadIds.has(t.threadId)) return 'resolved';
   const cleared = securityOverride || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin);
-  if (t.isSecurity) return cleared ? 'resolved' : unresolved;
+  if (t.isSecurity) return cleared ? 'resolved' : settledByManki(t.resolvedByLogin, replierMayClear, bot) ? 'auto-resolved' : unresolved;
   if (!t.resolvedByHuman) return 'auto-resolved';
   return cleared || !authorCannotClear(t) ? 'resolved' : unresolved;
 }

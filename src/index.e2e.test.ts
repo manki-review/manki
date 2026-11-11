@@ -1463,7 +1463,10 @@ describe('runFullReview end to end', () => {
       expect(thread.isResolved).toBe(true);
     });
 
-    it('pauses automatic review when a security blocker comes back after a maintainer dismissed it', async () => {
+    it.each<[string, string, string]>([
+      ['dismissed it', '@manki dismiss', ''],
+      ['replied and Manki withdrew it', 'Every caller bounds both inputs.', 'Withdrawn. Every caller bounds both inputs, so the sum cannot overflow.'],
+    ])('counts a security blocker as settled once a maintainer %s, and pauses automatic review when it comes back', async (_label, reply, answer) => {
       const security = (sameAs?: string) => JSON.stringify({
         summary: 'One blocker.',
         findings: [{ id: 1, title: BLOCKER.title, row: 'severe', security: true, reasoning: 'Outside input reaches it.', ...(sameAs && { sameAs }) }],
@@ -1472,15 +1475,28 @@ describe('runFullReview end to end', () => {
       await reviewRound();
       const [thread] = mockGitHub.threads;
 
-      await replyInThread(thread, '@manki dismiss', '', 'bob');
+      await replyInThread(thread, reply, answer, 'bob');
       expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, 'manki-review']);
       expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
 
-      // The next push leaves the code as it was, and the round raises the blocker again. No agreement drops a blocker.
+      // A push that raises nothing is approved, and the judge is not shown the settled thread as open.
       const readme = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+Sums are not checked.\n';
       mockGitHub.headSha = 'e5'.repeat(20);
       mockGitHub.prDiffs[mockGitHub.headSha] = `${PR_DIFF}${readme}`;
       mockGitHub.commitDiffs[mockGitHub.headSha] = readme;
+      Object.assign(mockLLM.replies, READY_REPLIES);
+      await reviewRound();
+      const clean = postedReviews().at(-1)!;
+      expect([clean.state, mockGitHub.roundContext(clean).meta.outcome]).toEqual(['APPROVED', 'READY']);
+      expect(mockLLM.asked.judge).not.toContain('PRRT_1');
+
+      // The next push renames the variable and leaves the sum unchecked, and the round raises the blocker again. Neither
+      // an agreement nor Manki's own answer drops a blocker on code the push changed.
+      const renamed = ['+  const sum = a + b;\n+  return sum;', '+  const total = a + b;\n+  return total;'] as const;
+      mockGitHub.headSha = 'f6'.repeat(20);
+      mockGitHub.mathAt[mockGitHub.headSha] = MATH_TS.replace('const sum = a + b;\n  return sum;', 'const total = a + b;\n  return total;');
+      mockGitHub.prDiffs[mockGitHub.headSha] = `${PR_DIFF.replace(...renamed)}${readme}`;
+      mockGitHub.commitDiffs[mockGitHub.headSha] = `diff --git a/src/math.ts b/src/math.ts\n--- a/src/math.ts\n+++ b/src/math.ts\n@@ -2,2 +2,2 @@\n${renamed[0].replace(/^\+/gm, '-')}\n${renamed[1]}\n`;
       Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: security('P1') });
       await reviewRound();
 

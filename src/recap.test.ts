@@ -1386,6 +1386,7 @@ describe('fetchRecapState', () => {
       const title = 'Token leaks into logs';
       const slug = titleToSlug(title);
       type Case = { resolver?: string; reply?: { login: string; association: string; text?: string }; reopened?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
+      const bounded = 'Every caller bounds both inputs.';
       const cases: Record<string, Case> = {
         'src/author-resolved.ts': { resolver: 'author', security: true, blocks: true },
         // A recorded override counts only once GitHub confirms the PR author's role, since a Manki reply can echo any text.
@@ -1397,6 +1398,12 @@ describe('fetchRecapState', () => {
         'src/collaborator-resolved.ts': { resolver: 'alice', security: true, blocks: false },
         'src/collaborator-agreed.ts': { reply: { login: 'bob', association: 'MEMBER' }, security: true, blocks: false },
         'src/collaborator-dismissed.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: '@manki dismiss' }, security: true, blocks: false },
+        // Manki's own resolve settles a security thread only after a reply from someone who may clear it, whatever the reply says.
+        'src/collaborator-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: bounded }, security: true, blocks: false },
+        'src/author-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'author', association: 'OWNER', text: bounded }, security: true, blocks: true },
+        'src/reader-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'dave', association: 'MEMBER', text: bounded }, security: true, blocks: true },
+        // Such a reply does not make the PR author's own resolve count.
+        'src/author-resolved-after-reply.ts': { resolver: 'author', reopened: true, reply: { login: 'bob', association: 'MEMBER', text: bounded }, security: true, blocks: true },
         // `MEMBER` covers an org member with read access, so write access comes from the API.
         'src/reader-agreed.ts': { reply: { login: 'dave', association: 'MEMBER' }, security: true, blocks: true },
         // A private org member shows as `NONE`.
@@ -1452,9 +1459,13 @@ describe('fetchRecapState', () => {
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain');
       expect(state.previousFindings.filter(f => f.reopen).map(f => f.file)).toEqual(['src/author-resolved.ts', 'src/blocker-author-resolved.ts']);
       expect(state.previousFindings.filter(f => f.securityOverride)).toEqual([]);
-      // A thread someone with write access agreed away or dismissed stays `replied`, also once Manki resolved it.
-      expect(state.previousFindings.filter(f => f.authorReplyMayClear).map(f => [f.file, f.status, replyClassOf(f)])).toEqual(
-        ['src/collaborator-agreed.ts', 'src/collaborator-dismissed.ts', 'src/private-member-agreed.ts'].map(file => [file, 'replied', 'agree']));
+      // A security thread someone with write access agreed away stays `replied`. Once Manki resolved it for such a
+      // person it is `auto-resolved`, like a blocker thread Manki resolved: neither open nor dismissed.
+      expect(state.previousFindings.filter(f => f.authorReplyMayClear).map(f => [f.file, f.status, replyClassOf(f)])).toEqual([
+        ['src/collaborator-agreed.ts', 'replied', 'agree'], ['src/collaborator-dismissed.ts', 'auto-resolved', 'agree'],
+        ['src/collaborator-settled.ts', 'auto-resolved', 'none'], ['src/author-resolved-after-reply.ts', 'replied', 'none'],
+        ['src/private-member-agreed.ts', 'replied', 'agree'],
+      ]);
       const openThreads = state.previousFindings
         .filter(f => f.status === 'open' || f.status === 'replied')
         .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));
@@ -1465,8 +1476,9 @@ describe('fetchRecapState', () => {
       expect(blocking).toEqual(files.filter(file => cases[file].blocks));
 
       const reRaised = files.map(file => makeFinding({ severity: 'blocker', title, file, line: 10 }));
+      // A settled thread suppresses nothing, since nobody agreed its finding away: a finding raised again is posted.
       expect(collectInPrSuppressions(state.previousFindings, 'author').map(s => s.fingerprint.file))
-        .toEqual(files.filter(file => !cases[file].blocks && file !== 'src/judge-addressed.ts'));
+        .toEqual(files.filter(file => !cases[file].blocks && file !== 'src/judge-addressed.ts' && file !== 'src/collaborator-settled.ts'));
       // Dedup drops a blocker only on a resolved blocking or security thread not confirmed fixed. An agreed thread is dropped by the in-PR suppressions above.
       expect(deduplicateFindings(reRaised, state.previousFindings).unique.map(f => f.file))
         .toEqual(files.filter(file => cases[file].blocks || cases[file].reply || severity(file) === 'warning' || file === 'src/judge-addressed.ts'));
@@ -1474,7 +1486,7 @@ describe('fetchRecapState', () => {
       // With the PR author unknown, any human resolver has write access, so a human resolution clears the thread.
       const unknownAuthor = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(unknownAuthor.previousFindings.filter(f => f.isSecurity && f.status === 'resolved').map(f => f.file))
-        .toEqual(['src/author-resolved.ts', 'src/author-resolved-again.ts', 'src/collaborator-resolved.ts', 'src/judge-addressed.ts']);
+        .toEqual(['src/author-resolved.ts', 'src/author-resolved-again.ts', 'src/collaborator-resolved.ts', 'src/author-resolved-after-reply.ts', 'src/judge-addressed.ts']);
 
       // A reply from someone with write access agrees a security thread away under the same fallback.
       expect(collectInPrSuppressions(unknownAuthor.previousFindings).filter(s => s.reason === 'agree-reply').map(s => s.fingerprint.file))
@@ -1490,6 +1502,7 @@ describe('fetchRecapState', () => {
         ['src/author-resolved.ts', { login: 'author', via: 'resolve', role: 'maintain', announced: false }],
         ['src/author-dismissed.ts', { login: 'author', via: 'dismiss', role: 'maintain', announced: true }],
         ['src/author-resolved-again.ts', { login: 'author', via: 'resolve', role: 'maintain', announced: false }],
+        ['src/author-resolved-after-reply.ts', { login: 'author', via: 'resolve', role: 'maintain', announced: false }],
         ['src/blocker-author-resolved.ts', { login: 'author', via: 'resolve', role: 'maintain', announced: false }],
       ]);
       // The same author clears nothing where the repository asks for `admin`, or where no level is known. The threads are reopened as for any author.
@@ -1503,7 +1516,7 @@ describe('fetchRecapState', () => {
       expect(adminState.priorRounds[0].findings.entries
         .filter(e => determineOutcome([], [e], adminOpen, collectResolvedThreadIds(adminState.previousFindings)).outcome === 'ADDRESS_FIRST')
         .map(e => e.fingerprint.file))
-        .toEqual(files.filter(file => cases[file].blocks && !['src/author-resolved.ts', 'src/author-dismissed.ts', 'src/author-resolved-again.ts', 'src/blocker-author-resolved.ts'].includes(file)));
+        .toEqual(files.filter(file => cases[file].blocks && !['src/author-resolved.ts', 'src/author-dismissed.ts', 'src/author-resolved-again.ts', 'src/author-resolved-after-reply.ts', 'src/blocker-author-resolved.ts'].includes(file)));
       // A second read on the same client does not ask GitHub again.
       const lookups = permission.mock.calls.length;
       await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain');
