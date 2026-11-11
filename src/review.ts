@@ -1861,7 +1861,7 @@ Example of one finding:
 ## Evidence
 
 - In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each. Start each line with its \`file:line\` and quote the key code it refers to in backticks, such as "api/list.go:42 computes \`pages := total / pageSize\`". When the quoted code holds a backtick itself, wrap it in double backticks with a space inside, as in \`\` a \`b\` \`\`.
-- A \`blocker\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most.
+- A \`blocker\` or a \`warning\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most, and a warning without proof is posted only when a tool check confirms it.
 - ${CLAIMS_MISSING_RULE}
 - ${PRE_EXISTING_RULE}${tools ? `
 - When Manki tells you to wrap up, report what you have. Set \`"notChecked": true\` on a finding you could not finish checking.

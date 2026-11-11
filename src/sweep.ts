@@ -38,7 +38,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 {"class": "The defect class in one general sentence", "general": true | false, "findings": [{"severity": "blocker" | "warning" | "note", "title": "The defect in one plain line", "file": "path/to/file.ext", "line": <line number in the NEW file>, "description": "At most three sentences: what goes wrong in practice and the decisive evidence.", "howToFix": "The change that fixes it, in one or two sentences", "evidence": ["file:line, then what you read there and what it showed, quoting the key code in backticks"], "proof": ["file:line of each line that shows the failure"]}]}
 
 - **blocker**: wrong results, lost data, a crash or a security hole. List in \`proof\` the \`file:line\` of each line that shows the failure.
-- **warning**: a real case that fails, but not catastrophically.
+- **warning**: a real case that fails, but not catastrophically. List its proving lines in \`proof\` too.
 - **note**: an inconsistency that works today.
 - When no other place makes the mistake, return an empty \`findings\` list.
 - ${CLAIMS_MISSING_RULE}

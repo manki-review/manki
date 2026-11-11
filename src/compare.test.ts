@@ -66,6 +66,7 @@ describe('runComparisons', () => {
     const [field, implementation] = client.calls;
     expect(field.options).toEqual({ effort: 'high', repoTools: { root: '/repo', steps: 12 }, timeoutMs: 600_000 });
     expect(field.system).toContain('You can read the repository with read-only tools.');
+    expect(field.system).toContain('- **warning**: a real case that fails, but not catastrophically. List its proving lines in `proof` too.');
     expect(field.system).toContain(`- ${CLAIMS_MISSING_RULE}\n- ${PRE_EXISTING_RULE}`);
     // A gap in sibling code is what these calls look for, so the defect a PR fixes in one path is never pre-existing in the other.
     expect(PRE_EXISTING_RULE).toContain('Never set it either on the defect this PR fixes in one path and leaves in a sibling path, such as an auth check added to `POST /items` while `PUT /items/:id` stays open: the fix is incomplete, so report it as part of the change and cite the line of the fix in `proof`.');

@@ -951,7 +951,7 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('in unchanged code whose behavior the change breaks');
     expect(prompt).toContain('Look for all of them, not only the first or the worst.');
     // The proof requirement stays.
-    expect(prompt).toContain('A `blocker` must list in `proof` the `file:line` of each line that shows the failure.');
+    expect(prompt).toContain('- A `blocker` or a `warning` must list in `proof` the `file:line` of each line that shows the failure. A blocker without proof is posted as a warning at most, and a warning without proof is posted only when a tool check confirms it.');
     expect(prompt).toContain('Start each line with its `file:line` and quote the key code it refers to in backticks');
     expect(prompt).not.toMatch(/not to explore|Don't comment on unchanged code|only flag issues in the changed code|not pedantic/);
     expect(buildReviewerSystemPrompt(reviewer, makeConfig())).toContain('Frame every potential note through this lens');
@@ -1005,7 +1005,7 @@ describe('buildReviewerSystemPrompt', () => {
     it('asks for evidence from every reviewer, and for open leads only from one with tools', () => {
       const without = buildReviewerSystemPrompt(reviewer, makeConfig());
       const withTools = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, true);
-      expect(without).toContain('A `blocker` must list in `proof`');
+      expect(without).toContain('A `blocker` or a `warning` must list in `proof`');
       expect(without).not.toContain('"lead": true');
       expect(withTools).toContain('Report each suspicion you were still checking as an open lead');
       expect(withTools).toContain('Set `"notChecked": true`');
