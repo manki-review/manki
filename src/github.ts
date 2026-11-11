@@ -2908,13 +2908,15 @@ function issueBoxFor(finding: Finding): string {
   return issueBox(`${file}:${finding.line}:${hash}`);
 }
 
-/** Returns the lines that open a thread posted on another file than its finding's, saying where the problem is. */
+const DETACHED_NOTE_END = 'GitHub only allows comments on changed files, so the thread is posted here.';
+
+/** Returns the line that opens a thread posted on another file than its finding's, saying where the problem is. */
 function detachedNote(finding: Finding, linkTo: LineLink): string {
   const file = sanitizeFilePath(encodeCommentBreakers(finding.file));
   const where = file
     ? `This is in [\`${file}${finding.line > 0 ? `:${finding.line}` : ''}\`](${linkTo(finding.file, finding.line)}), not in the file this thread is on.`
     : 'This is not tied to a file or line.';
-  return `${where} GitHub only allows comments on changed files, so the thread is posted here.`;
+  return `${where} ${DETACHED_NOTE_END}`;
 }
 
 /** Formats a finding's thread comment. `detached` is set for a thread posted on another file than the finding's. */
@@ -3439,5 +3441,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, DETACHED_NOTE_END, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

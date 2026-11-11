@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, titleToSlug } from './github';
+import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, DETACHED_NOTE_END, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, titleToSlug } from './github';
 import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
@@ -890,6 +890,9 @@ function parseFindingFromComment(body: string): FindingMetadata {
     }
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
+  const data = parseFindingData(body);
+  const [firstLine] = descSlice.split('\n');
+  if (data?.detached && firstLine.endsWith(DETACHED_NOTE_END)) descSlice = descSlice.slice(firstLine.length).trimStart();
   for (const note of [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE]) {
     if (descSlice.startsWith(note)) descSlice = descSlice.slice(note.length).replace(/^\s+/, '');
   }
@@ -901,7 +904,6 @@ function parseFindingFromComment(body: string): FindingMetadata {
   else if (truncatingStop && descSlice.length > 0) descSlice += '…(truncated)';
   const description: string | undefined = descSlice.length > 0 ? descSlice : undefined;
 
-  const data = parseFindingData(body);
   let suggestedFix = data?.fix;
   const aiContextMatch = body.match(/<summary>AI context<\/summary>[\s\S]*?```json\s*([\s\S]*?)```/);
   if (aiContextMatch) {

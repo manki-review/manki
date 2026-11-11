@@ -2456,6 +2456,15 @@ describe('parseFindingFromComment', () => {
     expect(parseFindingFromComment(filed)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     const toolBody = formatFindingComment({ severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2)', category: 'security', effort: 'quick' }, TEST_LINKS);
     expect(parseFindingFromComment(toolBody)).toEqual({ description: 'The query uses `name`.', suggestedFix: undefined });
+    // A thread posted on another file opens with a note on where the finding is, which is no part of the description.
+    for (const file of ['src/store.ts', '']) {
+      const detached = formatFindingComment({ severity: 'blocker', title: 'Extract helper', file, line: 2, description: 'The logic is duplicated.', reviewers: [], checkStatus: 'unconfirmed' }, TEST_LINKS, true);
+      expect(detached).toContain('so the thread is posted here.\n\n_Manki could not confirm this');
+      expect(parseFindingFromComment(detached)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+    }
+    // The note is skipped only on a thread whose finding data says it is posted elsewhere.
+    const quoted = formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'GitHub only allows comments on changed files, so the thread is posted here.', reviewers: [] }, TEST_LINKS);
+    expect(parseFindingFromComment(quoted).description).toBe('GitHub only allows comments on changed files, so the thread is posted here.');
   });
 
   it('extracts description up to the <details> stop marker', () => {
