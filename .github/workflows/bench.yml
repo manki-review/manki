@@ -138,9 +138,9 @@ jobs:
           CASE_FILE: ${{ matrix.case.file }}
           RUNS: ${{ inputs.runs }}
           VARIANTS: ${{ inputs.variants }}
-        # The case file alone, so a ref with an older case parser reads no other case. The bench reads it as a tuning
-        # case and a review logs the titles of its findings, and this log is public. So only a tuning case shows its
-        # output, whatever the ref prints.
+        # The case file alone, so a ref with an older case parser reads no other case. The bench of a ref before v7.5
+        # reads it as a tuning case and logs the titles of its findings, and this log is public. So only a tuning case
+        # shows its output, whatever the ref prints.
         run: |
           mkdir -p case-dir out
           cp "$CASE_FILE" case-dir/

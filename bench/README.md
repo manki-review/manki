@@ -43,6 +43,8 @@ Clone each in full with `git clone https://github.com/<owner/name>.git`. A blobl
 
 The cases are split in two sets. `cases/` is the tuning set: develop and debug a change against it only. `holdout/` is the hold-out set: it is run before a release, and its score decides whether the release goes out (see `RELEASE.md`). Never read the hold-out cases while working on Manki, since a change tuned to them no longer shows how Manki does on code it has not seen.
 
+A case file is named after its id, and the id alone says which set a case is in. A tuning case has a file in `cases/` and none in `holdout/`. Any other case counts as a hold-out case, also one that neither directory holds, and also when its file is read from another directory with `--cases`.
+
 `--holdout` runs both sets and scores them apart. The summary and the comparison table give one column per variant and set, so tuning that does not carry over shows as a gap between the two.
 
 ```sh
@@ -61,9 +63,11 @@ Each ref scores with its own bench code. After a change to the matcher, run the 
 
 ### Unmatched blockers and unexpected warnings on tuning cases
 
-A false blocker is either a wrong blocker or a real defect the key does not list, and the same holds for an unexpected warning. So the summary of a run with tuning cases, local or on GitHub, lists every blocker and every warning that matched no key item, by case and run, each with its location and description. Check each against the code at the case's head. Add each real blocker to the case's `must_catch`. Add each real warning to `must_catch`, or to `nice_to_have` when a good review may leave it out. Then bump the case's `key_version`, so the next run counts it as a find. `npm run bench-report -- unmatched --report <report.json>` prints the same list from a stored report. Never grow a hold-out key this way while working on Manki: its cases are not read. The hold-out pass in `RELEASE.md` does it instead.
+A false blocker is either a wrong blocker or a real defect the key does not list, and the same holds for an unexpected warning. So the summary of a run with tuning cases, local or on GitHub, lists every blocker and every warning that matched no key item, by case and run, each with its location and description. Check each against the code at the case's head. Add each real blocker to the case's `must_catch`. Add each real warning to `must_catch`, or to `nice_to_have` when a good review may leave it out. Then bump the case's `key_version`, so the next run counts it as a find. `npm run bench-report -- unmatched --report <report.json>` prints the same list from a stored report, and names the cases of the other set, which it does not list. Never grow a hold-out key this way while working on Manki: its cases are not read. The hold-out pass in `RELEASE.md` does it instead.
 
 Of a hold-out case the bench prints the id and counts only. Its review, its matcher calls and the load of its config log nothing, and the summary leaves out its source and the reason of a failed run, which stay in the report file. Its findings are listed only on request, with `--set holdout`, and never in a workflow job, since the logs and summaries of this repository are public. On GitHub a hold-out case job shows no output of the bench at all, whatever its ref prints.
+
+A stored report is not trusted on the set of a case. `--rescore`, `bench-report unmatched` and `bench-report gate` refuse a report that calls a case a tuning case when its id does not make it one, with an error that names the case. The report of a single case job of a ref before v7.5 is such a report, since it calls its hold-out case a tuning case. `bench-report merge` reads those reports and writes the set each id gives into the merged report.
 
 ### Scoring a report again after a key change
 

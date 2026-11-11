@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { basename, dirname, join } from 'path';
 import { parse as parseYaml } from 'yaml';
 
 import { runCliCommand } from './cli';
@@ -19,10 +19,11 @@ const KEY_SEVERITIES = ['blocker', 'warning', 'suggestion', 'nitpick'] as const;
 type KeySeverity = typeof KEY_SEVERITIES[number];
 const SEVERITY_WEIGHT: Record<KeySeverity, number> = { blocker: 3, warning: 2, suggestion: 1, nitpick: 1 };
 const DEFAULT_RUNS = 3;
-const HOLDOUT_DIR = 'bench/holdout';
 const CASE_SETS = ['tuning', 'holdout'] as const;
 /** Tuning cases are what changes are developed against. Hold-out cases are run only before a release. */
 export type CaseSet = typeof CASE_SETS[number];
+/** The directory of each set's case files, relative to where the bench runs. */
+export const CASE_DIRS: Record<CaseSet, string> = { tuning: 'bench/cases', holdout: 'bench/holdout' };
 const DEFAULT_MATCHER_MODEL = 'claude-sonnet-5-5';
 /** The outcome of a run that got no review because the config of its case does not load. */
 const CONFIG_INVALID = 'CONFIG_INVALID';
@@ -185,6 +186,20 @@ function checkFollowUp(
 }
 
 /**
+ * Returns the set of the case `id`. Nothing else decides whether text of a case may be printed. A case is a tuning case
+ * only when `bench/cases` under `root` holds a file named after its id and `bench/holdout` holds none. Any other case
+ * is a hold-out case, also one that neither directory holds. The directory a case file was read from and the set a
+ * stored report gives a case decide nothing.
+ */
+export function caseSet(id: string, root = '.'): CaseSet {
+  const holds = (set: CaseSet) => {
+    const dir = join(root, CASE_DIRS[set]);
+    return existsSync(dir) && readdirSync(dir).includes(`${id}.yml`);
+  };
+  return holds('tuning') && !holds('holdout') ? 'tuning' : 'holdout';
+}
+
+/**
  * Parses and checks one case file. Throws an error naming the file and the field that is wrong. A YAML error or
  * warning quotes the file, so for a hold-out case the error names only the file and no warning is printed.
  */
@@ -226,21 +241,25 @@ export function parseCase(text: string, file: string, set: CaseSet = 'tuning'): 
 }
 
 /**
- * Loads every `.yml` case in the directory of each set given, or only those whose id is in `only`. Throws when a
- * directory holds no case, so a set never drops out of the scores unnoticed.
+ * Loads every `.yml` case in `dirs`, or only those whose id is in `only`. A case file is named after its id, and
+ * `caseSet` gives the case its set by that id, wherever the file lies. Throws when a directory holds no case, so a set
+ * never drops out of the scores unnoticed.
  */
-export function loadCases(dirs: Partial<Record<CaseSet, string>>, only: string[] = []): BenchCase[] {
-  const cases = CASE_SETS.flatMap((set) => {
-    const dir = dirs[set];
-    if (!dir) return [];
+export function loadCases(dirs: string[], only: string[] = [], root = '.'): BenchCase[] {
+  const cases = dirs.flatMap((dir) => {
     const files = readdirSync(dir).filter(f => f.endsWith('.yml')).sort();
     if (files.length === 0) throw new Error(`No case files in ${dir}`);
-    return files.map(f => parseCase(readFileSync(join(dir, f), 'utf-8'), join(dir, f), set));
+    return files.map((f) => {
+      const [id, file] = [basename(f, '.yml'), join(dir, f)];
+      const parsed = parseCase(readFileSync(file, 'utf-8'), file, caseSet(id, root));
+      if (parsed.id !== id) throw caseError(file, '`id` must be the name of the file');
+      return parsed;
+    });
   });
   const repeated = cases.find((c, i) => cases.findIndex(other => other.id === c.id) !== i);
   if (repeated) throw new Error(`Case id ${repeated.id} is used twice`);
   const unknown = only.filter(id => !cases.some(c => c.id === id));
-  if (unknown.length > 0) throw new Error(`No case with id ${unknown.join(', ')} in ${Object.values(dirs).join(' or ')}`);
+  if (unknown.length > 0) throw new Error(`No case with id ${unknown.join(', ')} in ${dirs.join(' or ')}`);
   return only.length > 0 ? cases.filter(c => only.includes(c.id)) : cases;
 }
 
@@ -814,7 +833,7 @@ export async function rescoreReport(report: BenchReport, cases: BenchCase[], mat
     const again: CaseReport[] = [];
     for (const c of scored) {
       const benchCase = cases.find(b => b.id === c.id);
-      if (!benchCase) left.set(c.id, c.set === 'holdout' ? 'its case file was not loaded, which for a hold-out case takes --holdout' : 'no case file was loaded for it');
+      if (!benchCase) left.set(c.id, 'no case file was loaded for it, which for a hold-out case takes --holdout');
       if (!benchCase || benchCase.keyVersion === c.keyVersion) {
         again.push(c);
         continue;
@@ -1296,8 +1315,10 @@ whose key_version changed since, and writes the report scored again.
 
 Options:
   --checkout <owner/name>=<dir>  Local clone of a case repo. Repeat for each repo.
-  --cases <dir>                  Tuning case files (default bench/cases).
-  --holdout                      Also run the hold-out cases in ${HOLDOUT_DIR}, scored apart from the
+  --cases <dir>                  Case files to run (default ${CASE_DIRS.tuning}). A case is a tuning case only when
+                                 ${CASE_DIRS.tuning} holds a file named after its id. Any other case is a
+                                 hold-out case, of which only the id and counts are printed.
+  --holdout                      Also run the hold-out cases in ${CASE_DIRS.holdout}, scored apart from the
                                  tuning cases. Only before a release.
   --case <id>                    Run only this case. Repeatable.
   --runs <n>                     Reviews per case (default ${DEFAULT_RUNS}).
@@ -1316,7 +1337,7 @@ not start.`;
 
 export function parseBenchArgs(argv: string[]): BenchArgs {
   const args: BenchArgs = {
-    cases: 'bench/cases', holdout: false, only: [], runs: DEFAULT_RUNS, checkouts: new Map(), variants: [], sets: [], matcherModel: DEFAULT_MATCHER_MODEL,
+    cases: CASE_DIRS.tuning, holdout: false, only: [], runs: DEFAULT_RUNS, checkouts: new Map(), variants: [], sets: [], matcherModel: DEFAULT_MATCHER_MODEL,
     cache: 'bench/.matcher-cache.json', help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -1370,14 +1391,26 @@ export function resolveVariants(args: Pick<BenchArgs, 'variants' | 'sets'>): Var
   });
 }
 
-/** Reads a stored report. A parser's message quotes the file, which holds findings, so the error names only the file. */
-export function readReport(path: string): BenchReport {
+/**
+ * Reads a stored report. Throws when it calls a case a tuning case that `caseSet` does not, naming only the case, so
+ * that no text of a hold-out case is printed by a wrong set: the report of a single case job of an older ref calls its
+ * hold-out case a tuning case. `unchecked` is for the one reader that gives each case its set itself. A parser's
+ * message quotes the file, which holds findings, so that error names only the file.
+ */
+export function readReport(path: string, sets: 'checked' | 'unchecked' = 'checked', root = '.'): BenchReport {
   const text = readFileSync(path, 'utf-8');
+  let report: BenchReport;
   try {
-    return JSON.parse(text) as BenchReport;
+    report = JSON.parse(text) as BenchReport;
   } catch {
     throw new Error(`The report ${path} is not valid JSON`);
   }
+  if (sets === 'unchecked') return report;
+  const wrong = [...new Set(report.variants.flatMap(v => v.cases).filter(c => c.set !== 'holdout' && caseSet(c.id, root) === 'holdout').map(c => c.id))];
+  if (wrong.length > 0) {
+    throw new Error(`The report ${path} calls ${wrong.join(', ')} a tuning case, which its id does not make it. A tuning case has a file named after its id in ${CASE_DIRS.tuning} and none in ${CASE_DIRS.holdout}.`);
+  }
+  return report;
 }
 
 function writeJson(path: string, value: unknown): void {
@@ -1386,7 +1419,7 @@ function writeJson(path: string, value: unknown): void {
 }
 
 /** Runs `manki bench` and returns its exit code. */
-export function runBenchCommand(argv: string[]): Promise<number> {
+export function runBenchCommand(argv: string[], root = '.'): Promise<number> {
   return runCliCommand(BENCH_COMMAND, async (out, signal) => {
     const args = parseBenchArgs(argv);
     if (args.help) {
@@ -1395,14 +1428,12 @@ export function runBenchCommand(argv: string[]): Promise<number> {
     }
     const providerInputs = readProviderInputsFromEnv();
     if (!hasAnyProviderCredentials(providerInputs)) throw new Error(`No credentials set.\n\n${USAGE}`);
-    // Cases given as tuning cases are printed with their findings, so the hold-out directory is never taken as one.
-    if (resolve(args.cases) === resolve(HOLDOUT_DIR)) throw new Error(`--cases takes the tuning cases. Pass --holdout for the cases in ${HOLDOUT_DIR}.`);
     if (args.rescore && args.only.length > 0) throw new Error('--case does not apply to --rescore, which scores every case with a changed key again');
-    const cases = loadCases({ tuning: args.cases, ...(args.holdout && { holdout: HOLDOUT_DIR }) }, args.only);
+    const cases = loadCases([args.cases, ...(args.holdout ? [join(root, CASE_DIRS.holdout)] : [])], args.only, root);
     const cache = loadMatcherCache(args.cache);
     const matcher = llmMatcher(buildLLMClient(args.matcherModel, providerInputs), args.matcherModel, cache);
     if (args.rescore) {
-      const stored = readReport(args.rescore);
+      const stored = readReport(args.rescore, 'checked', root);
       // A report holds one matcher model, and the gate refuses to compare reports matched by different ones.
       if (stored.matcherModel !== args.matcherModel) throw new Error(`The report was matched by ${stored.matcherModel}. Pass --matcher-model ${stored.matcherModel} to score it again.`);
       const { report, rescored, left } = await rescoreReport(stored, cases, matcher).finally(() => writeJson(args.cache, Object.fromEntries(cache)));

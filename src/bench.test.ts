@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { isMap, isScalar, parseDocument } from 'yaml';
 
-import { BenchCase, BenchReport, buildReport, candidateFindings, formatBenchSummary, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
+import { BenchCase, BenchReport, buildReport, candidateFindings, caseSet, formatBenchSummary, formatGate, formatUnmatched, gateReports, KeyItem, llmMatcher, loadCases, loadMatcherCache, MatchDecision, Matcher, mergeReports, parseBenchArgs, parseCase, readReport, rescoreReport, resolveVariants, runBench, runBenchCommand, scoreRun } from './bench';
 import { loadConfigWithOverrides } from './local-review';
 import type { LocalReview, LocalReviewInput } from './local-review';
 import type { LLMClient } from './providers';
@@ -216,7 +216,7 @@ describe('parseCase', () => {
 
   it('parses every tuning and hold-out case, with unique ids, a config of its own that loads and no linked reference to a repository outside the forks', async () => {
     const files = [CASES_DIR, HOLDOUT_DIR].flatMap(dir => readdirSync(dir).filter(f => f.endsWith('.yml')).map(f => join(dir, f)));
-    const cases = loadCases({ tuning: CASES_DIR, holdout: HOLDOUT_DIR });
+    const cases = loadCases([CASES_DIR, HOLDOUT_DIR], [], join(__dirname, '..'));
     expect(cases).toHaveLength(files.length);
     expect(cases.filter(c => c.set === 'holdout' && c.repo !== 'xdustinface/rust-dashcore').length).toBeGreaterThanOrEqual(8);
     const unloadable: string[] = [];
@@ -239,26 +239,38 @@ describe('parseCase', () => {
 });
 
 describe('loadCases', () => {
-  it('keeps only the asked cases of the sets given, and refuses an unknown id, an id used in two sets or a set without cases', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'manki-cases-'));
-    const holdout = mkdtempSync(join(tmpdir(), 'manki-holdout-'));
+  it('keeps only the asked cases of the directories given, and refuses an unknown id, an id used twice, a file not named after its id or a directory without cases', () => {
+    const root = mkdtempSync(join(tmpdir(), 'manki-cases-'));
+    const [dir, holdout, copies] = [join(root, 'bench', 'cases'), join(root, 'bench', 'holdout'), join(root, 'case-dir')];
+    const demo = (id: string) => CASE_YAML.replace('id: demo-1', `id: ${id}`);
     try {
-      writeFileSync(join(dir, 'a.yml'), CASE_YAML);
-      writeFileSync(join(dir, 'b.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-2'));
+      for (const made of [dir, holdout, copies]) mkdirSync(made, { recursive: true });
+      writeFileSync(join(dir, 'demo-1.yml'), CASE_YAML);
+      writeFileSync(join(dir, 'demo-2.yml'), demo('demo-2'));
       writeFileSync(join(dir, 'notes.md'), 'not a case');
-      writeFileSync(join(holdout, 'c.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-3'));
-      expect(loadCases({ tuning: dir }).map(c => c.id)).toEqual(['demo-1', 'demo-2']);
-      expect(loadCases({ tuning: dir }, ['demo-2']).map(c => c.id)).toEqual(['demo-2']);
-      expect(() => loadCases({ tuning: dir }, ['demo-3'])).toThrow('No case with id demo-3');
-      expect(loadCases({ tuning: dir, holdout }, ['demo-1', 'demo-3']).map(c => [c.id, c.set])).toEqual([['demo-1', 'tuning'], ['demo-3', 'holdout']]);
-      writeFileSync(join(holdout, 'd.yml'), CASE_YAML);
-      expect(() => loadCases({ tuning: dir, holdout })).toThrow('Case id demo-1 is used twice');
-      rmSync(join(holdout, 'c.yml'));
-      rmSync(join(holdout, 'd.yml'));
-      expect(() => loadCases({ tuning: dir, holdout })).toThrow(`No case files in ${holdout}`);
+      writeFileSync(join(holdout, 'demo-3.yml'), demo('demo-3'));
+      expect(loadCases([dir], [], root).map(c => c.id)).toEqual(['demo-1', 'demo-2']);
+      expect(loadCases([dir], ['demo-2'], root).map(c => c.id)).toEqual(['demo-2']);
+      expect(() => loadCases([dir], ['demo-3'], root)).toThrow('No case with id demo-3');
+      expect(loadCases([dir, holdout], ['demo-1', 'demo-3'], root).map(c => [c.id, c.set])).toEqual([['demo-1', 'tuning'], ['demo-3', 'holdout']]);
+
+      // The id alone gives a case its set, wherever its file was copied to. A case that neither directory holds is a hold-out case.
+      for (const id of ['demo-1', 'demo-3', 'demo-9']) writeFileSync(join(copies, `${id}.yml`), demo(id));
+      expect(loadCases([copies], [], root).map(c => [c.id, c.set])).toEqual([['demo-1', 'tuning'], ['demo-3', 'holdout'], ['demo-9', 'holdout']]);
+      expect(['demo-1', 'demo-3', 'demo-9', '../cases/demo-1'].map(id => caseSet(id, root))).toEqual(['tuning', 'holdout', 'holdout', 'holdout']);
+      expect(loadCases([dir]).every(c => c.set === 'holdout')).toBe(true);
+      writeFileSync(join(copies, 'renamed.yml'), demo('demo-3'));
+      expect(() => loadCases([copies], [], root)).toThrow(`${join(copies, 'renamed.yml')}: \`id\` must be the name of the file`);
+
+      // An id in both directories is a hold-out case.
+      writeFileSync(join(holdout, 'demo-1.yml'), CASE_YAML);
+      expect(loadCases([dir], ['demo-1'], root)[0].set).toBe('holdout');
+      expect(() => loadCases([dir, holdout], [], root)).toThrow('Case id demo-1 is used twice');
+      rmSync(join(holdout, 'demo-1.yml'));
+      rmSync(join(holdout, 'demo-3.yml'));
+      expect(() => loadCases([dir, holdout], [], root)).toThrow(`No case files in ${holdout}`);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(holdout, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
@@ -758,6 +770,28 @@ describe('runBench and buildReport', () => {
         warned.mockRestore();
       }
 
+      // A stored report that calls the hold-out case a tuning case is refused by the case's id, before anything of it is printed.
+      const root = mkdtempSync(join(tmpdir(), 'manki-bench-sets-'));
+      try {
+        for (const [set, id] of [['cases', 'shown-1'], ['holdout', 'held-1']]) {
+          mkdirSync(join(root, 'bench', set), { recursive: true });
+          writeFileSync(join(root, 'bench', set, `${id}.yml`), '');
+        }
+        const stored = (held: BenchCase['set'], shown: BenchCase['set'] = 'tuning') => {
+          writeFileSync(join(root, 'report.json'), JSON.stringify({ ...report, variants: report.variants.map(v => ({ ...v, cases: v.cases.map(c => ({ ...c, set: c.id === 'held-1' ? held : shown })) })) }));
+          return join(root, 'report.json');
+        };
+        expect(readReport(stored('holdout'), 'checked', root).variants[0].cases.map(c => c.set)).toEqual(['tuning', 'holdout']);
+        const refused = (id: string) => new Error(`The report ${join(root, 'report.json')} calls ${id} a tuning case, which its id does not make it. A tuning case has a file named after its id in bench/cases and none in bench/holdout.`);
+        expect(() => readReport(stored('tuning'), 'checked', root)).toThrow(refused('held-1'));
+        // A report that calls a tuning case a hold-out case prints less of it, so it is read.
+        expect(readReport(stored('holdout', 'holdout'), 'checked', root).variants[0].cases.map(c => c.set)).toEqual(['holdout', 'holdout']);
+        // Without the repository's case files nothing says a case is a tuning case.
+        expect(() => readReport(stored('holdout'), 'checked', join(root, 'bench'))).toThrow(refused('shown-1'));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+
       expect(logged()).not.toContain(SECRET);
     } finally {
       out.mockRestore();
@@ -990,12 +1024,12 @@ describe('mergeReports and gateReports', () => {
     expect(unread.report.variants[0].cases[1]).toBe(bare.variants[0].cases[1]);
     const followUp = parseCase(FOLLOW_UP_YAML.replace('id: demo-1', 'id: demo-2').replace('key_version: 2', 'key_version: 3'), 'demo-2.yml', 'holdout');
     expect(await rescoreReport(stored, [followUp], matcher)).toMatchObject({
-      rescored: [], left: [{ id: 'demo-1', reason: 'its case file was not loaded, which for a hold-out case takes --holdout' }, { id: 'demo-2', reason: 'its runs reviewed a first round' }],
+      rescored: [], left: [{ id: 'demo-1', reason: 'no case file was loaded for it, which for a hold-out case takes --holdout' }, { id: 'demo-2', reason: 'its runs reviewed a first round' }],
     });
     // A case no case file was loaded for is never counted as scored again, with or without a changed key.
     const mixed = report([[first, [await run(first, 'blocker')]], [tuning, [await run(tuning, 'blocker')]]]);
     expect(await rescoreReport(mixed, [], matcher)).toMatchObject({
-      rescored: [], left: [{ id: 'demo-1', reason: 'its case file was not loaded, which for a hold-out case takes --holdout' }, { id: 'demo-3', reason: 'no case file was loaded for it' }],
+      rescored: [], left: [{ id: 'demo-1', reason: 'no case file was loaded for it, which for a hold-out case takes --holdout' }, { id: 'demo-3', reason: 'no case file was loaded for it, which for a hold-out case takes --holdout' }],
     });
   });
 });
@@ -1077,7 +1111,7 @@ describe('runBenchCommand', () => {
   it('exits 2 before any model call without credentials, or without a checkout for a case', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'manki-bench-cmd-'));
     try {
-      writeFileSync(join(dir, 'demo.yml'), CASE_YAML);
+      writeFileSync(join(dir, 'demo-1.yml'), CASE_YAML);
       process.env = {};
       expect(await runBenchCommand(['--cases', dir])).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('manki bench: No credentials set.'));
@@ -1096,34 +1130,46 @@ describe('runBenchCommand', () => {
       const benchCase = parseCase(CASE_YAML, 'demo.yml');
       const clean = await scoreRun(benchCase, makeReview('READY', []), async () => ({ verdict: 'NONE', findings: [], reason: 'none' }));
       const stored = buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 1, matcherModel: 'claude-sonnet-5-5' }, [{ variant: { name: 'base', overrides: {} }, results: [{ benchCase, runs: [clean] }] }]);
-      const [report, cache] = [join(dir, 'report.json'), join(dir, 'cache.json')];
+      const [report, cache, cases, holdout] = [join(dir, 'report.json'), join(dir, 'cache.json'), join(dir, 'bench', 'cases'), join(dir, 'bench', 'holdout')];
+      for (const made of [cases, holdout]) mkdirSync(made, { recursive: true });
       writeFileSync(report, JSON.stringify(stored));
-      writeFileSync(join(dir, 'demo.yml'), `${CASE_YAML.replace('key_version: 2', 'key_version: 3')}  - id: N2\n    severity: warning\n    mechanism: The retry never backs off.\n    locations: [src/retry.rs]\n`);
+      writeFileSync(join(cases, 'demo-1.yml'), `${CASE_YAML.replace('key_version: 2', 'key_version: 3')}  - id: N2\n    severity: warning\n    mechanism: The retry never backs off.\n    locations: [src/retry.rs]\n`);
       process.env = { PATH: savedEnv.PATH, ANTHROPIC_API_KEY: 'sk-test' };
 
-      expect(await runBenchCommand(['--rescore', report, '--cases', dir, '--cache', cache])).toBe(0);
+      expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--cache', cache], dir)).toBe(0);
       expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`Scored again with the changed key: demo-1\nReport: ${join(dir, 'report.rescored.json')}\n`);
       const scored = JSON.parse(readFileSync(join(dir, 'report.rescored.json'), 'utf-8')) as BenchReport;
       expect(scored.variants[0].cases[0]).toMatchObject({ keyVersion: 3, items: [{ id: 'K1' }, { id: 'K2' }, { id: 'N1' }, { id: 'N2', tier: 'nice_to_have', caught: 0, runs: 1 }] });
 
-      expect(await runBenchCommand(['--rescore', report, '--cases', dir, '--cache', cache, '--matcher-model', 'claude-opus-5-5'])).toBe(2);
+      expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--cache', cache, '--matcher-model', 'claude-opus-5-5'], dir)).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('The report was matched by claude-sonnet-5-5. Pass --matcher-model claude-sonnet-5-5 to score it again.'));
-      expect(await runBenchCommand(['--rescore', report, '--cases', dir, '--case', 'demo-1'])).toBe(2);
+      expect(await runBenchCommand(['--rescore', report, '--cases', cases, '--case', 'demo-1'], dir)).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('--case does not apply to --rescore'));
       writeFileSync(join(dir, 'cut.json'), '{"variants": [{"title": "HOLDOUT-TEXT');
-      expect(await runBenchCommand(['--rescore', join(dir, 'cut.json'), '--cases', dir])).toBe(2);
+      expect(await runBenchCommand(['--rescore', join(dir, 'cut.json'), '--cases', cases], dir)).toBe(2);
       expect(stderr).toHaveBeenLastCalledWith(`manki bench: The report ${join(dir, 'cut.json')} is not valid JSON\n`);
-      // The hold-out directory is never read as tuning cases, whose findings are printed.
-      expect(await runBenchCommand(['--cases', join('bench', 'holdout', '.')])).toBe(2);
-      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('--cases takes the tuning cases. Pass --holdout for the cases in bench/holdout.'));
+
+      // A report that calls a hold-out case a tuning case, as the report of a single case job of an older ref does, is refused by the id alone.
+      const [scoredCase] = stored.variants[0].cases;
+      const finding = { severity: 'blocker' as const, title: 'title HOLDOUT-TEXT', file: 'src/HOLDOUT-TEXT.rs', line: 1, description: 'description HOLDOUT-TEXT' };
+      const held = { ...scoredCase, id: 'held-1', source: 'source HOLDOUT-TEXT', runs: [{ ...scoredCase.runs[0], findings: [finding], error: 'failed on HOLDOUT-TEXT' }] };
+      const mislabelled = join(dir, 'mislabelled.json');
+      writeFileSync(mislabelled, JSON.stringify({ ...stored, variants: [{ ...stored.variants[0], cases: [scoredCase, held] }] }));
+      const refused = `manki bench: The report ${mislabelled} calls held-1 a tuning case, which its id does not make it. A tuning case has a file named after its id in bench/cases and none in bench/holdout.\n`;
+      expect(await runBenchCommand(['--rescore', mislabelled, '--cases', cases, '--cache', cache], dir)).toBe(2);
+      expect(stderr).toHaveBeenLastCalledWith(refused);
+      writeFileSync(join(holdout, 'held-1.yml'), CASE_YAML.replace('id: demo-1', 'id: held-1').replace('key_version: 2', 'key_version: 3'));
+      expect(await runBenchCommand(['--rescore', mislabelled, '--cases', cases, '--holdout', '--cache', cache], dir)).toBe(2);
+      expect(stderr).toHaveBeenLastCalledWith(refused);
+      expect([...stdout.mock.calls, ...stderr.mock.calls].join('')).not.toContain('HOLDOUT-TEXT');
 
       // A stored case with no case file loaded is named, and is not counted as scored again.
       stdout.mockClear();
       const other = join(dir, 'other');
       mkdirSync(other);
-      writeFileSync(join(other, 'other.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-9'));
-      expect(await runBenchCommand(['--rescore', report, '--cases', other, '--cache', cache])).toBe(0);
-      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`No case was scored again.\nLeft as scored, demo-1: no case file was loaded for it.\nReport: ${join(dir, 'report.rescored.json')}\n`);
+      writeFileSync(join(other, 'demo-9.yml'), CASE_YAML.replace('id: demo-1', 'id: demo-9'));
+      expect(await runBenchCommand(['--rescore', report, '--cases', other, '--cache', cache], dir)).toBe(0);
+      expect(stdout.mock.calls.map(call => call[0]).join('')).toBe(`No case was scored again.\nLeft as scored, demo-1: no case file was loaded for it, which for a hold-out case takes --holdout.\nReport: ${join(dir, 'report.rescored.json')}\n`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
