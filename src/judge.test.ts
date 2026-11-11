@@ -7,7 +7,7 @@ import {
   applyInPrSuppression,
   buildJudgeSystemPrompt,
   buildJudgeUserMessage,
-  buildThreadEvaluationsReminder,
+  buildMissingEntriesReminder,
   computeProvenanceMap,
   extractCodeContext,
   missingThreadIds,
@@ -1125,7 +1125,7 @@ describe('parseJudgeResponse', () => {
     expect(mapped.map(f => [f.title, f.noteRank])).toEqual([['A', 1], ['B', undefined], ['C', 0]]);
   });
 
-  it('keeps a category and an effort from the fixed lists, drops any other value with a warning, and refuses a finding that names no known `row`', () => {
+  it('keeps a category and an effort from the fixed lists, drops any other value with a warning, and drops an entry that names no known `row`', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const result = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
       { id: 1, title: 'A', row: 'wrong', column: 'rare', reasoning: 'r', confidence: 'high', category: 'concurrency', effort: 'larger' },
@@ -1137,10 +1137,11 @@ describe('parseJudgeResponse', () => {
     expect(result.findings.map(f => [f.category, f.effort])).toEqual([['concurrency', 'larger'], [undefined, undefined], [undefined, undefined], [undefined, undefined], [undefined, undefined]]);
     // A row or column counts whatever its case, and only an explicit `rare` is a rare column. `ignore` is the prompt's word for a dropped finding.
     expect(result.findings.map(f => [f.row, f.column])).toEqual([['wrong', 'rare'], ['severe', 'rare'], ['degraded', undefined], ['none', undefined], ['none', undefined]]);
-    // An entry with any other row has no grade from the judge, so the whole reply is refused and asked for again.
+    // An entry with any other row has no grade from the judge, so it counts as no entry and the rest of the reply is kept.
     for (const entry of [{ row: 'serious' }, { severity: 'warning' }, { row: 3 }]) {
       const reply = JSON.stringify({ summary: 's', findings: [{ id: 1, title: 'A', row: 'wrong', reasoning: 'r' }, { id: 2, title: 'B', reasoning: 'r', ...entry }] });
-      expect(() => parseJudgeResponse(reply)).toThrow('Judge named no known `row` for "B". A `row` is one of severe, wrong, degraded, improvement, style or ignore');
+      expect(parseJudgeResponse(reply).findings.map(f => f.id)).toEqual([1]);
+      expect(warnSpy).toHaveBeenCalledWith('Judge named no known `row` for "B", so the entry is not used');
     }
     // A fix that leaves part of the problem says so in the posted fix.
     const leaves = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
@@ -1521,6 +1522,13 @@ describe('runJudgeAgent', () => {
     expect(again[0]).not.toContain('## Your Tools');
     expect(again[2]).toEqual({ effort: 'high', timeoutMs: 300_000, promptTemplate: expect.not.stringContaining('## Your Tools') });
 
+    // A finding the judge with tools leaves out twice fails that attempt like any other failure.
+    const empty = { content: JSON.stringify({ summary: 'ok', findings: [] }) };
+    mockSendMessage.mockReset();
+    mockSendMessage.mockResolvedValueOnce(empty).mockResolvedValueOnce(empty).mockResolvedValueOnce(reply);
+    expect((await runJudgeAgent(mockClient, makeConfig(), input)).findings[0].severity).toBe('warning');
+    expect(mockSendMessage.mock.calls[2][0]).not.toContain('## Your Tools');
+
     // A used-up quota fails again, and a refusal already moved to the fallback model.
     for (const error of [new QuotaError('rate limited', 'requests'), new RefusalError('refused twice', 'cyber')]) {
       mockSendMessage.mockReset();
@@ -1598,6 +1606,72 @@ describe('runJudgeAgent', () => {
     // The second call tells the model what was wrong with its first reply.
     const [first, second] = mockSendMessage.mock.calls.map(call => call[1] as string);
     expect(second.startsWith(`${first}\n\nYour previous reply could not be used: `)).toBe(true);
+  });
+
+  it('asks once more only for the findings a reply left out, and fails when one is still left out', async () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const input: JudgeInput = {
+      findings: [
+        makeFinding({ title: 'Lock held across await', severity: 'suggestion', line: 3 }),
+        makeFinding({ title: 'Retry count never reset', severity: 'blocker', line: 5 }),
+        makeFinding({ title: 'Stale cache entry served', severity: 'blocker', line: 7 }),
+        makeFinding({ title: 'Await under the lock', severity: 'warning', line: 3, reviewers: ['Second'] }),
+        makeFinding({ title: 'Typo in log text', severity: 'warning', line: 9 }),
+      ],
+      diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 2,
+    };
+    const entry = (id: number, row: string, more: Record<string, unknown> = {}) => ({ id, title: input.findings[id - 1].title, row, reasoning: `${row} said for ${id}`, confidence: 'high', ...more });
+    // Finding 2 has no entry and finding 3 an entry without a row. A duplicate and a dropped finding each have an entry.
+    const first = { summary: 'First summary.', findings: [entry(1, 'wrong'), { ...entry(3, 'wrong'), row: undefined, severity: 'blocker' }, entry(4, 'degraded', { duplicateOf: 1 }), entry(5, 'ignore')] };
+    const reply = (findings: unknown[]) => ({ content: JSON.stringify({ summary: 'Second summary.', findings, noteOrder: [2] }) });
+
+    // The second reply also answers for finding 1, which it was not asked about, so the first reply stands for it.
+    mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify(first) }).mockResolvedValueOnce(reply([entry(1, 'ignore'), entry(2, 'style'), entry(3, 'degraded')]));
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    const [message, retry] = mockSendMessage.mock.calls.map(call => call[1] as string);
+    expect(retry).toBe(`${buildMissingEntriesReminder([2, 3], [])}\n\nOriginal message:\n${message}`);
+    expect(retry).toContain('It has no usable `findings` entry for: Finding 2, Finding 3.');
+    expect(result.summary).toBe('First summary.');
+    expect(result.findings.map(f => [f.title, f.severity, f.judgeNotes])).toEqual([
+      ['Lock held across await', 'blocker', 'wrong said for 1'],
+      ['Retry count never reset', 'nitpick', 'style said for 2'],
+      ['Stale cache entry served', 'warning', 'degraded said for 3'],
+      ['Typo in log text', 'ignore', 'ignore said for 5'],
+    ]);
+    expect(result.findings[0].reviewers).toEqual(['TestReviewer', 'Second']);
+    // The second reply ranks only its own notes, so its rank is not compared with the first reply's.
+    expect(result.findings.map(f => f.noteRank)).toEqual([undefined, undefined, undefined, undefined]);
+
+    // A second reply that still leaves a finding out, fails or cannot be parsed fails the judge, whatever its finder graded it.
+    const failing: Array<[unknown, string]> = [
+      [reply([entry(2, 'style')]), 'Judge left out 1 of 5 findings twice: 3 "Stale cache entry served"'],
+      [reply([entry(2, 'style'), { ...entry(3, 'wrong'), row: 'bad' }]), 'Judge left out 1 of 5 findings twice: 3 "Stale cache entry served"'],
+      [reply([]), 'Judge left out 2 of 5 findings twice: 2 "Retry count never reset", 3 "Stale cache entry served"'],
+      [{ content: 'not json {broken' }, 'JSON'],
+    ];
+    for (const [second, message] of failing) {
+      mockSendMessage.mockReset();
+      mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify(first) }).mockResolvedValueOnce(second);
+      await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toThrow(message);
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    }
+    mockSendMessage.mockReset();
+    mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify(first) }).mockRejectedValueOnce(new QuotaError('rate limited', 'requests'));
+    await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toBeInstanceOf(QuotaError);
+
+    // A missing finding and a missing open thread are asked for in the same retry.
+    const openThreads: OpenThread[] = ['PRRT_a', 'PRRT_b'].map(threadId => ({ threadId, title: `Thread ${threadId}`, file: 'src/other.ts', line: 1, severity: 'warning' }));
+    mockSendMessage.mockReset();
+    mockSendMessage
+      .mockResolvedValueOnce({ content: JSON.stringify({ ...first, threadEvaluations: [{ threadId: 'PRRT_a', status: 'not_addressed', reason: 'Unchanged' }] }) })
+      .mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [entry(2, 'style'), entry(3, 'degraded')], threadEvaluations: [{ threadId: 'PRRT_b', status: 'uncertain', reason: 'Not shown' }] }) });
+    const both = await runJudgeAgent(mockClient, makeConfig(), { ...input, openThreads });
+    expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    expect(mockSendMessage.mock.calls[1][1]).toContain(buildMissingEntriesReminder([2, 3], ['PRRT_b']));
+    expect(both.findings.map(f => f.severity)).toEqual(['blocker', 'nitpick', 'warning', 'ignore']);
+    expect(both.threadEvaluations?.map(e => [e.threadId, e.status])).toEqual([['PRRT_a', 'not_addressed'], ['PRRT_b', 'uncertain']]);
+    warnSpy.mockRestore();
   });
 
   it('matches judge findings by fuzzy title when order differs', async () => {
@@ -1724,7 +1798,7 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Copy never removed', severity: 'warning', line: 12 }),
       makeFinding({ title: 'Doubted nit', severity: 'warning', line: 13 }),
     ];
-    mockSendMessage.mockResolvedValue({ content: JSON.stringify({
+    mockSendMessage.mockResolvedValueOnce({ content: JSON.stringify({
       summary: 's',
       findings: [
         { id: 1, title: 'Deadlock on stop', row: 'wrong', column: 'normal', doubts: [{ premise: 'The stop path takes the same lock', decides: 'defect' }], reasoning: 'warning. The second lock path sits outside the code shown.', confidence: 'medium' },
@@ -1736,7 +1810,7 @@ describe('runJudgeAgent', () => {
         { id: 8, title: 'Copy never removed', row: 'degraded', doubts: [{ premise: 'No other path removes the copy', decides: 'defect' }], reasoning: 'warning. Not determined whether another path removes the copy.', confidence: 'low' },
         { id: 9, title: 'Doubted nit', row: 'degraded', column: 'rare', doubts: [{ premise: 'A request logs the name', decides: 'grade' }], reasoning: 'r', confidence: 'low' },
       ],
-    }) });
+    }) }).mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [{ id: 6, title: 'No entry', row: 'improvement', reasoning: 'r', confidence: 'medium' }] }) });
     const refuterMessages: string[] = [];
     const replies: Record<string, unknown> = {
       'Deadlock on stop': { reason: 'Both paths take the lock.', premises: [{ outcome: 'confirmed', reason: 'Both paths take the lock.', proof: ['src/lock.ts:30'] }] },
@@ -1771,8 +1845,8 @@ describe('runJudgeAgent', () => {
         // A disproved or unsettled claim of the `rare` column leaves a finding there, whatever else the refuter confirms.
         ['Unseen kept', 'warning'],
         ['Unseen dropped', 'ignore'],
-        // A finding the judge returns no entry for keeps the grade its reviewer gave, and is never checked.
-        ['No entry', 'warning'],
+        // A finding the judge returns no entry for is asked for once more, and never keeps the grade its reviewer gave.
+        ['No entry', 'suggestion'],
         ['Second cache left stale', 'warning'],
         // A doubt whether the defect exists goes to the refuter at the same grade, and its disproof drops the finding.
         ['Copy never removed', 'ignore'],
@@ -1782,7 +1856,7 @@ describe('runJudgeAgent', () => {
       expect(refuterMessages).toHaveLength(5);
       expect(result.findings.map(f => f.cell)).toEqual([
         { row: 'wrong', column: 'normal' }, { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, { row: 'degraded', column: 'normal' }, { row: 'wrong', column: 'rare' },
-        undefined, undefined, { row: 'wrong', column: 'rare' }, { row: 'degraded', column: 'normal' }, { row: 'degraded', column: 'rare' },
+        undefined, { row: 'improvement', column: 'normal' }, { row: 'wrong', column: 'rare' }, { row: 'degraded', column: 'normal' }, { row: 'degraded', column: 'rare' },
       ]);
       expect(result.findings.map(f => f.gradeIfConfirmed)).toEqual(['blocker', 'blocker', undefined, 'blocker', undefined, undefined, 'blocker', 'warning', undefined]);
       // Manki adds the claim the `rare` column makes as a premise of its own, next to any doubt the judge names.
@@ -3015,9 +3089,10 @@ describe('runJudgeAgent', () => {
       ]);
     });
 
-    it('folds by id when the judge reorders or omits entries', async () => {
+    it('folds by id when the judge reorders entries', async () => {
       const result = await runWith(three(), [
         { id: 3, ...verdict('Leaked timeout handle', 'blocker', 1) },
+        { id: 2, ...verdict('Unrelated naming', 'suggestion') },
         { id: 1, ...verdict('Timer never cleared', 'warning') },
       ]);
       expect(result.map(f => [f.title, f.severity, f.reviewers])).toEqual([
@@ -3058,9 +3133,8 @@ describe('runJudgeAgent', () => {
 
       expect(mockSendMessage).toHaveBeenCalledTimes(2);
       const [, retryUserMessage] = mockSendMessage.mock.calls[1];
-      expect(retryUserMessage).toContain('Retry: missing `threadEvaluations` entries');
-      expect(retryUserMessage).toContain('PRRT_a');
-      expect(retryUserMessage).toContain('PRRT_b');
+      expect(retryUserMessage).toContain('Retry: missing entries');
+      expect(retryUserMessage).toContain('for these open review threads: PRRT_a, PRRT_b.');
       expect(result.threadEvaluations).toEqual([
         { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
         { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
@@ -3081,7 +3155,7 @@ describe('runJudgeAgent', () => {
         .mockResolvedValueOnce({
           content: JSON.stringify({
             summary: 's',
-            // Only the thread evaluations of the second reply are read, so an entry without a known row costs none of them.
+            // An entry without a known row is dropped, so it costs none of the thread evaluations.
             findings: [{ id: 1, title: 'A', severity: 'warning', reasoning: 'r' }],
             threadEvaluations: [
               { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
@@ -3101,12 +3175,11 @@ describe('runJudgeAgent', () => {
 
       expect(mockSendMessage).toHaveBeenCalledTimes(2);
       const [, retryUserMessage] = mockSendMessage.mock.calls[1];
-      expect(retryUserMessage).toContain('Missing thread IDs: PRRT_b');
-      expect(retryUserMessage).not.toContain('Missing thread IDs: PRRT_a');
+      expect(retryUserMessage).toContain('for these open review threads: PRRT_b.');
       expect(result.threadEvaluations?.map(e => [e.threadId, e.status])).toEqual([['PRRT_a', 'addressed'], ['PRRT_b', 'not_addressed']]);
     });
 
-    it('merges retry evaluations per-thread-id when retry returns a partial array', async () => {
+    it('takes only the missing threads from the retry and keeps what the first reply said about the others', async () => {
       const fourThreads: OpenThread[] = [
         { threadId: 'PRRT_a', title: 'Thread A', file: 'src/a.ts', line: 1, severity: 'warning' },
         { threadId: 'PRRT_b', title: 'Thread B', file: 'src/b.ts', line: 2, severity: 'warning' },
@@ -3149,7 +3222,8 @@ describe('runJudgeAgent', () => {
       expect(result.threadEvaluations).toHaveLength(4);
       const byId = new Map(result.threadEvaluations!.map(e => [e.threadId, e]));
       expect(byId.get('PRRT_a')?.status).toBe('addressed');
-      expect(byId.get('PRRT_b')?.status).toBe('not_addressed');
+      // The retry was not asked about thread B, so the first reply stands for it.
+      expect(byId.get('PRRT_b')?.reason).toBe('Fixed B');
       expect(byId.get('PRRT_c')?.status).toBe('addressed');
       expect(byId.get('PRRT_d')?.status).toBe('not_addressed');
     });
@@ -3319,7 +3393,7 @@ describe('runJudgeAgent', () => {
 
       expect(mockSendMessage).toHaveBeenCalledTimes(2);
       const [, retryUserMessage] = mockSendMessage.mock.calls[1];
-      const reminderIdx = retryUserMessage.indexOf('Retry: missing `threadEvaluations` entries');
+      const reminderIdx = retryUserMessage.indexOf('Retry: missing entries');
       const originalMsgIdx = retryUserMessage.indexOf('Original message:');
       expect(reminderIdx).toBeGreaterThanOrEqual(0);
       expect(originalMsgIdx).toBeGreaterThan(reminderIdx);
@@ -3361,32 +3435,16 @@ describe('missingThreadIds', () => {
   });
 });
 
-describe('buildThreadEvaluationsReminder', () => {
-  const threads: OpenThread[] = [
-    { threadId: 'PRRT_a', title: 'A', file: 'src/a.ts', line: 1, severity: 'warning' },
-    { threadId: 'PRRT_b', title: 'B', file: 'src/b.ts', line: 2, severity: 'nitpick' },
-  ];
+describe('buildMissingEntriesReminder', () => {
+  it('names only the missing findings and threads, and asks for nothing else', () => {
+    const both = buildMissingEntriesReminder([2, 5], ['PRRT_b']);
+    expect(both).toContain('## Retry: missing entries');
+    expect(both).toContain('It has no usable `findings` entry for: Finding 2, Finding 5. An entry is usable when its `id` is the N of the "Finding N" heading and its `row` is one of severe, wrong, degraded, improvement, style or ignore.');
+    expect(both).toContain('It has no `threadEvaluations` entry for these open review threads: PRRT_b.');
+    expect(both).toContain('In it, `findings` holds one entry for each finding named above and `threadEvaluations` one for each thread named above. A list with nothing named above stays empty.');
 
-  it('includes the count of required entries', () => {
-    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_b']);
-    expect(reminder).toContain('exactly 2 entries');
-  });
-
-  it('lists all missing thread IDs', () => {
-    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_a', 'PRRT_b']);
-    expect(reminder).toContain('PRRT_a');
-    expect(reminder).toContain('PRRT_b');
-  });
-
-  it('mentions only the missing thread IDs, not already-covered ones', () => {
-    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_b']);
-    expect(reminder).not.toContain('Missing thread IDs: PRRT_a');
-    expect(reminder).toContain('PRRT_b');
-  });
-
-  it('includes the retry header', () => {
-    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_a']);
-    expect(reminder).toContain('Retry: missing `threadEvaluations` entries');
+    expect(buildMissingEntriesReminder([1], [])).not.toContain('open review threads');
+    expect(buildMissingEntriesReminder([], ['PRRT_a', 'PRRT_b'])).not.toContain('usable `findings` entry');
   });
 });
 
@@ -3785,8 +3843,7 @@ describe('mapJudgedToFindings', () => {
     warnSpy.mockRestore();
   });
 
-  it('keeps a finding the judge left out at its reviewer severity and logs it', () => {
-    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+  it('throws on a finding the judge left out, so its reviewer severity is never posted', () => {
     const originals = [
       makeFinding({ title: 'Off-by-one in pager', severity: 'warning' }),
       makeFinding({ title: 'Unused import', severity: 'nitpick' }),
@@ -3795,12 +3852,7 @@ describe('mapJudgedToFindings', () => {
       { id: 2, title: 'Unused import', row: 'none', reasoning: '', confidence: 'high' },
     ];
 
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result.map(f => [f.title, f.severity])).toEqual([['Off-by-one in pager', 'warning'], ['Unused import', 'ignore']]);
-    expect(result.map(f => f.reviewerSeverity)).toEqual([undefined, 'nitpick']);
-    expect(result[0].judgeNotes).toBeUndefined();
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('has no judge entry'));
-    warnSpy.mockRestore();
+    expect(() => mapJudgedToFindings(originals, judged)).toThrow('Finding 1 "Off-by-one in pager" has no judge entry');
   });
 
   it('handles 1:1 mapping when judge returns same count', () => {

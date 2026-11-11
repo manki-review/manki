@@ -3,7 +3,7 @@ import { readFileSync, statSync } from 'fs';
 
 import { extractCurrentCodeWindow } from './code-window';
 import { resolveInRoot } from './mcp-server';
-import { LLMClient, QuotaError, RefusalError, SendMessageOptions } from './providers';
+import { LLMClient, LLMResponse, QuotaError, RefusalError, SendMessageOptions } from './providers';
 import { extractJSON } from './json';
 import {
   filterLearningsForFinding,
@@ -17,7 +17,7 @@ import {
 import { addedLines, isLineInDiff, newLineNumbers, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff } from './lockfile';
 import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
-import { safeTruncate, sendWithParseRetry } from './utils';
+import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
 import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, fencePrText, filesChangedByPush, parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff } from './review';
 import { VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
@@ -1208,7 +1208,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
   const parsed = JSON.parse(extractJSON(responseText));
 
   const parseFindings = (arr: unknown[]): JudgedFinding[] => {
-    return arr.map((item: unknown) => item as Record<string, unknown>).map((f) => {
+    return arr.map((item: unknown) => item as Record<string, unknown>).flatMap((f): JudgedFinding[] => {
       const duplicateOf = Number.isInteger(f.duplicateOf) && (f.duplicateOf as number) > 0
         ? f.duplicateOf as number
         : undefined;
@@ -1222,11 +1222,14 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       const stated = tableWord(f.row);
       // `ignore` is the prompt's word for a dropped finding, and `none` says the same.
       const row = stated === 'ignore' || stated === 'none' ? 'none' as const : Object.hasOwn(CELL_GRADES, stated) ? stated as CellRow : undefined;
-      // An entry without a row has no grade from the judge, so the reply is asked for again instead of posting a guess.
-      if (!row) throw new Error(`Judge named no known \`row\` for "${safeTruncate(title, 80)}". A \`row\` is one of ${Object.keys(CELL_GRADES).join(', ')} or ignore`);
+      // An entry without a row has no grade from the judge, so it counts as no entry and its finding is asked for again.
+      if (!row) {
+        core.warning(`Judge named no known \`row\` for "${safeTruncate(title, 80)}", so the entry is not used`);
+        return [];
+      }
       const doubts = parseDoubts(f.doubts);
       const fixLeaves = typeof f.fixLeaves === 'string' ? f.fixLeaves.trim().slice(0, MAX_REMAINING_CHARS) : '';
-      return {
+      return [{
         ...(id !== undefined && { id }),
         title,
         row,
@@ -1244,7 +1247,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         ...(category && { category }),
         ...(effort && { effort }),
         ...(proof.length > 0 && { proof }),
-      };
+      }];
     });
   };
 
@@ -1307,13 +1310,16 @@ export function missingThreadIds(
   return openThreads.filter(t => !covered.has(t.threadId)).map(t => t.threadId);
 }
 
-export function buildThreadEvaluationsReminder(openThreads: OpenThread[], missing: string[]): string {
+/** Returns the note that asks the judge only for the entries its reply left out: the findings with these numbers and the open threads with these IDs. */
+export function buildMissingEntriesReminder(findingNumbers: number[], threadIds: string[]): string {
   return [
-    '## Retry: missing `threadEvaluations` entries',
+    '## Retry: missing entries',
     '',
-    `Your previous response did not include a \`threadEvaluations\` entry for every open review thread. The contract requires exactly ${openThreads.length} entries, one per open thread. Missing thread IDs: ${missing.join(', ')}.`,
+    'Your previous response was incomplete. Everything it did contain is kept, so return only what is missing.',
+    ...(findingNumbers.length > 0 ? [`It has no usable \`findings\` entry for: ${findingNumbers.map(n => `Finding ${n}`).join(', ')}. An entry is usable when its \`id\` is the N of the "Finding N" heading and its \`row\` is one of ${Object.keys(CELL_GRADES).join(', ')} or ignore.`] : []),
+    ...(threadIds.length > 0 ? [`It has no \`threadEvaluations\` entry for these open review threads: ${threadIds.join(', ')}. Use \`uncertain\` only when there is genuinely insufficient evidence to decide.`] : []),
     '',
-    'Return the same JSON response again, this time including one entry per missing thread. Use `uncertain` only when there is genuinely insufficient evidence to decide.',
+    `${jsonOnlyReply()} In it, \`findings\` holds one entry for each finding named above and \`threadEvaluations\` one for each thread named above. A list with nothing named above stays empty. Judge each of them by the same rules as in a full response.`,
   ].join('\n');
 }
 
@@ -1411,44 +1417,57 @@ export async function runJudgeAgent(
   const overrideApplied = interRoundDiffEmpty && hasOpenThreads;
   const threadsToEvaluate = hasOpenThreads && !overrideApplied ? openThreads! : [];
 
+  // Each kept entry carries the number of the finding it grades, so a second reply merges with the first by `id`.
+  const parseReply = (reply: LLMResponse): JudgeResult => {
+    if (reply.truncated) {
+      throw new Error(`judge reply truncated at the output token limit (length ${reply.content.length})`);
+    }
+    const parsed = parseJudgeResponse(reply.content);
+    return { ...parsed, findings: alignJudgedToFindings(findings, parsed.findings).flatMap((j, i) => (j ? [{ ...j, id: i + 1 }] : [])) };
+  };
+  const leftOut = (result: JudgeResult): { findings: number[]; threads: string[] } => {
+    const graded = new Set(result.findings.map(j => j.id));
+    return {
+      findings: findings.flatMap((_, i) => (graded.has(i + 1) ? [] : [i + 1])),
+      threads: missingThreadIds(threadsToEvaluate, result.threadEvaluations),
+    };
+  };
   const judge = async ({ systemPrompt, options }: ReturnType<typeof judgeCall>): Promise<JudgeResult> => {
     const send = (message: string) => client.sendMessage(systemPrompt, message, options);
     const first = await sendWithParseRetry(
       userMessage,
       send,
-      (reply) => {
-        if (reply.truncated) {
-          throw new Error(`judge reply truncated at the output token limit (length ${reply.content.length})`);
-        }
-        const parsed = parseJudgeResponse(reply.content);
-        if (parsed.findings.length === 0 && findings.length > 0) {
-          throw new Error(`Judge returned no results for ${findings.length} findings`);
-        }
-        return parsed;
-      },
+      parseReply,
       (error) => core.warning(`Judge reply could not be used (${error}), asking once more`),
     );
-    const missing = missingThreadIds(threadsToEvaluate, first.threadEvaluations);
-    if (missing.length === 0) return first;
-    const reminder = buildThreadEvaluationsReminder(threadsToEvaluate, missing);
-    let retryEvals: ThreadEvaluation[] = [];
-    try {
-      const retryResponse = await send(`${reminder}\n\nOriginal message:\n${userMessage}`);
-      // Only the thread evaluations of this reply are used, so its finding entries are not parsed.
-      const reply = JSON.parse(extractJSON(retryResponse.content)) as { threadEvaluations?: unknown } | null;
-      retryEvals = parseThreadEvaluations(reply?.threadEvaluations) ?? [];
-    } catch (err) {
-      core.warning(`Judge retry failed (${err}); synthesizing 'uncertain' for ${missing.length} missing thread(s).`);
+    const missing = leftOut(first);
+    if (missing.findings.length + missing.threads.length === 0) return first;
+    core.warning(`Judge reply leaves out ${missing.findings.length} of ${findings.length} findings and ${missing.threads.length} of ${threadsToEvaluate.length} open threads, asking once more for them`);
+    const reminder = buildMissingEntriesReminder(missing.findings, missing.threads);
+    const retry = await send(`${reminder}\n\nOriginal message:\n${userMessage}`).then(parseReply).catch((error) => {
+      // A finding without a grade fails the judge. A thread without an evaluation only stays open.
+      if (missing.findings.length > 0) throw error;
+      core.warning(`Judge retry failed (${error})`);
+      return undefined;
+    });
+    // The first reply stands for every entry it has, so the retry only fills what was asked for. A rank only compares
+    // the notes of one reply, so an entry from the retry has none.
+    const merged: JudgeResult = {
+      ...first,
+      findings: [...first.findings, ...(retry?.findings ?? []).filter(j => missing.findings.includes(j.id!)).map(({ noteRank: _, ...j }) => j)],
+      ...(missing.threads.length > 0 && {
+        threadEvaluations: [...(first.threadEvaluations ?? []), ...(retry?.threadEvaluations ?? []).filter(e => missing.threads.includes(e.threadId))],
+      }),
+    };
+    const still = leftOut(merged);
+    if (still.findings.length > 0) {
+      throw new Error(`Judge left out ${still.findings.length} of ${findings.length} findings twice: ${still.findings.map(n => `${n} "${safeTruncate(findings[n - 1].title, 80)}"`).join(', ')}`);
     }
-    const byId = new Map((first.threadEvaluations ?? []).map(e => [e.threadId, e]));
-    for (const e of retryEvals) byId.set(e.threadId, e);
-    const merged = { ...first, threadEvaluations: [...byId.values()] };
-    const stillMissing = missingThreadIds(threadsToEvaluate, merged.threadEvaluations);
-    if (stillMissing.length === 0) return merged;
+    if (still.threads.length === 0) return merged;
     core.warning(
-      `Judge omitted threadEvaluations for ${stillMissing.length} of ${threadsToEvaluate.length} open threads after retry: ${stillMissing.join(', ')}. Synthesizing 'uncertain' entries.`,
+      `Judge omitted threadEvaluations for ${still.threads.length} of ${threadsToEvaluate.length} open threads after retry: ${still.threads.join(', ')}. Synthesizing 'uncertain' entries.`,
     );
-    return { ...merged, threadEvaluations: synthesizeMissingThreadEvaluations(merged.threadEvaluations, stillMissing) };
+    return { ...merged, threadEvaluations: synthesizeMissingThreadEvaluations(merged.threadEvaluations, still.threads) };
   };
   let judgeResult: JudgeResult;
   try {
@@ -1558,7 +1577,7 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
 /**
  * Applies the judge's entries to the findings they name by `id`, then folds the
  * findings the judge marked as duplicates. A `sameAs` or `variantOf` that names no entry of
- * `priorFindings` is ignored.
+ * `priorFindings` is ignored. Throws when a finding has no entry, so no grade is posted that the judge did not state.
  */
 export function mapJudgedToFindings(
   original: Finding[],
@@ -1571,34 +1590,33 @@ export function mapJudgedToFindings(
   const graded = original.map((o, i) => {
     const finding = { ...o };
     const match = aligned[i];
-    if (!match?.preExisting) delete finding.preExisting;
-    if (match) {
-      Object.assign(finding, gradeByCell(o, match));
-      if (finding.severity !== o.severity) finding.reviewerSeverity = o.severity;
-      finding.judgeNotes = match.reasoning;
-      finding.judgeConfidence = match.confidence;
-      if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
-      if (match.buildClaim) finding.buildClaim = true;
-      // The header calls a finding security only when it carries the security tag.
-      if (finding.tags?.includes(SECURITY_TAG)) finding.category = 'security';
-      else if (match.category && match.category !== 'security') finding.category = match.category;
-      if (match.effort) finding.effort = match.effort;
-      if (match.noteRank !== undefined) finding.noteRank = match.noteRank;
-      if (match.fixLeaves) finding.howToFix = [finding.howToFix?.trim(), `This fix leaves part of the problem: ${match.fixLeaves}`].filter(Boolean).join(' ');
-      if (match.proof) finding.evidence = mergeEvidence(finding.evidence, { checks: [], proof: match.proof });
-      applyOwnProposal(finding, provenanceMap);
-      const sameAs = priorKey(priorFindings, match.sameAs);
-      const variantOf = sameAs ? undefined : priorKey(priorFindings, match.variantOf);
-      if (sameAs) finding.sameAs = sameAs;
-      if (variantOf) finding.variantOf = variantOf;
-    }
+    if (!match) throw new Error(`Finding ${i + 1} "${safeTruncate(o.title, 80)}" has no judge entry`);
+    if (!match.preExisting) delete finding.preExisting;
+    Object.assign(finding, gradeByCell(o, match));
+    if (finding.severity !== o.severity) finding.reviewerSeverity = o.severity;
+    finding.judgeNotes = match.reasoning;
+    finding.judgeConfidence = match.confidence;
+    if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
+    if (match.buildClaim) finding.buildClaim = true;
+    // The header calls a finding security only when it carries the security tag.
+    if (finding.tags?.includes(SECURITY_TAG)) finding.category = 'security';
+    else if (match.category && match.category !== 'security') finding.category = match.category;
+    if (match.effort) finding.effort = match.effort;
+    if (match.noteRank !== undefined) finding.noteRank = match.noteRank;
+    if (match.fixLeaves) finding.howToFix = [finding.howToFix?.trim(), `This fix leaves part of the problem: ${match.fixLeaves}`].filter(Boolean).join(' ');
+    if (match.proof) finding.evidence = mergeEvidence(finding.evidence, { checks: [], proof: match.proof });
+    applyOwnProposal(finding, provenanceMap);
+    const sameAs = priorKey(priorFindings, match.sameAs);
+    const variantOf = sameAs ? undefined : priorKey(priorFindings, match.variantOf);
+    if (sameAs) finding.sameAs = sameAs;
+    if (variantOf) finding.variantOf = variantOf;
     return finding;
   });
   return foldDuplicates(graded, aligned, staysPreExisting).map(capUnconfirmedBuildClaim).map(capUnprovenBlocker);
 }
 
 /**
- * Returns the grade fields the judge's cell gives `o`, or none when the judge named no row. A security finding is
+ * Returns the grade fields the judge's cell gives `o`. A security finding is
  * graded in the `normal` column of its row, and no doubt holds it down. Any other blocker cell with a doubt is a
  * warning until the refuter confirms every doubt. A doubt that only decides the cell counts only on a row where
  * `columnDecidesBlock`. A tool alert takes its cell as stated, with no doubts.
@@ -1673,8 +1691,7 @@ export function capUnprovenBlocker(finding: Finding): Finding {
 /**
  * Returns the judge's entry for each finding, matched by the `id` the entry
  * echoes. An entry without a usable `id` goes to the free finding with the
- * closest title. A finding left without an entry keeps its reviewer severity.
- * Both fallbacks log a warning.
+ * closest title, with a warning. A finding no entry grades has none.
  */
 function alignJudgedToFindings(original: Finding[], judged: JudgedFinding[]): Array<JudgedFinding | undefined> {
   const aligned: Array<JudgedFinding | undefined> = original.map(() => undefined);
@@ -1696,9 +1713,6 @@ function alignJudgedToFindings(original: Finding[], judged: JudgedFinding[]): Ar
     core.warning(`Judge entry "${j.title}" (id ${j.id ?? 'missing'}) mapped by title to finding ${index + 1}.`);
     aligned[index] = j;
   }
-  aligned.forEach((j, i) => {
-    if (!j) core.warning(`Finding ${i + 1} "${original[i].title}" has no judge entry. Keeping the reviewer severity.`);
-  });
   return aligned;
 }
 

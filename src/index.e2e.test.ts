@@ -736,8 +736,11 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.comments.filter(c => c.body.startsWith('✅ **Review complete**'))).toHaveLength(1);
   });
 
-  it('ends INCOMPLETE and never approves when the judge reply does not parse', async () => {
-    Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: 'The findings look fine to me.' });
+  it.each([
+    ['does not parse', 'The findings look fine to me.'],
+    ['leaves the finding out twice', JSON.stringify({ summary: 'Nothing to grade.', findings: [] })],
+  ])('ends INCOMPLETE and never approves when the judge reply %s', async (_case, judge) => {
+    Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge });
 
     await reviewRound();
 
