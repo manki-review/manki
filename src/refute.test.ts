@@ -502,7 +502,7 @@ describe('refuteBlockers', () => {
     const rare = { row: 'wrong' as const, column: 'rare' as const };
     const open = { outcome: 'unsettled', reason: 'No caller found.' };
     const holds = { outcome: 'confirmed', reason: 'A handler passes it.', proof: ['src/api.ts:4'] };
-    const noDefect = (premise: object) => ({ outcome: 'disproved', reason: 'Both inputs are checked.', proof: ['src/api.ts:9'], premises: [premise] });
+    const noDefect = (...premises: object[]) => ({ outcome: 'disproved', reason: 'Both inputs are checked.', proof: ['src/api.ts:9'], premises });
     const columns = (f: Finding) => [f.title, f.severity, f.refutation?.outcome, f.refutation?.defect, f.pairRefutation?.defect, !!disproof(f), checkStatus(f)];
 
     const client = fakeClient({
@@ -521,34 +521,46 @@ describe('refuteBlockers', () => {
       ['Reach open', 'ignore', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
       // A confirmed premise about the grade does not outweigh it.
       ['Grade premise holds', 'ignore', 'confirmed', 'disproved', undefined, true, 'unconfirmed'],
-      // A confirmed reach makes the finding a blocker, and a disproof alone never clears a blocker.
-      ['Reach holds', 'blocker', 'confirmed', 'disproved', undefined, true, 'unconfirmed'],
+      // Nor does a confirmed reach: a check that says the defect does not exist never raises a finding.
+      ['Reach holds', 'ignore', 'confirmed', 'disproved', undefined, true, 'unconfirmed'],
       ['Security finding', 'warning', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
       ['Blocker', 'blocker', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
     ]);
     expect(alone[0].gradePath).toEqual([{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'Both inputs are checked.' }]);
     expect(alone[0].judgeNotes).toBe(`Refutation disproved: Both inputs are checked.\n- Premise "${REACH_DOUBT.premise}" unsettled. No caller found.`);
-    // The disproof keeps the lines that disprove the defect, and a check that confirmed its premises keeps theirs.
-    expect(alone.map(f => f.refutation?.proof)).toEqual([['src/api.ts:9'], ['src/api.ts:4'], ['src/api.ts:4'], ['src/api.ts:9'], ['src/api.ts:9']]);
-    expect([alone[2].cell, alone[2].evidence?.proof]).toEqual([{ row: 'wrong', column: 'normal', judgeColumn: 'rare' }, ['src/math.ts:2', 'src/api.ts:4']]);
+    // Each disproof keeps the lines that disprove the defect, never the lines that confirmed a premise, and covers their file.
+    expect(alone.map(f => [f.refutation?.proof, f.refutation?.files])).toEqual(alone.map(() => [['src/api.ts:9'], ['src/api.ts', 'src/math.ts']]));
+    expect([alone[2].cell, alone[2].evidence?.proof]).toEqual([rare, ['src/math.ts:2']]);
 
     const doubted = (title: string) => finding(title, { severity: 'warning', gradeIfConfirmed: 'warning', doubts: [exists] });
-    const first = fakeClient({ 'Both say no defect': noDefect(open), 'Split on the defect': noDefect(open), 'Premise confirmed beside': noDefect(open) });
+    const first = fakeClient({
+      'Both say no defect': noDefect(open), 'Split on the defect': noDefect(open), 'Premise confirmed beside': noDefect(open, open), 'Split with the reach confirmed': noDefect(holds),
+    });
     const pair = fakeClient({
       'Both say no defect': noDefect(open),
       'Split on the defect': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [open] },
-      'Premise confirmed beside': { reason: 'No caller bounds it.', premises: [{ outcome: 'confirmed', reason: 'No caller bounds it.', proof: ['src/api.ts:4'] }] },
+      // The second refuter confirms the premise the defect rests on and cannot tell about the reach, so its own outcome is unsettled.
+      'Premise confirmed beside': { reason: 'No caller bounds it.', premises: [{ outcome: 'confirmed', reason: 'No caller bounds it.', proof: ['src/api.ts:4'] }, open] },
+      'Split with the reach confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'], premises: [holds] },
     });
-    const paired = await refuteBlockers(first, [doubted('Both say no defect'), doubted('Split on the defect'), doubted('Premise confirmed beside')], { workspace, diff, pair });
+    const paired = await refuteBlockers(first, [
+      doubted('Both say no defect'), doubted('Split on the defect'),
+      finding('Premise confirmed beside', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'normal' }, doubts: [exists, reached] }),
+      finding('Split with the reach confirmed', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT] }),
+    ], { workspace, diff, pair });
 
     expect(paired.map(columns)).toEqual([
       ['Both say no defect', 'ignore', 'unsettled', 'disproved', 'disproved', true, 'unconfirmed'],
       // A confirmation against a disproof settles nothing, so the warning keeps its grade and is not confirmed.
       ['Split on the defect', 'warning', 'unsettled', 'disproved', 'confirmed', false, 'unconfirmed'],
+      // One confirmed premise in a check that does not disprove is such a confirmation, whatever that check adds up to.
       ['Premise confirmed beside', 'warning', 'unsettled', 'disproved', 'unsettled', false, 'unconfirmed'],
+      // Both refuters confirm the reach, and the finding still does not rise while one of them says the defect does not exist.
+      ['Split with the reach confirmed', 'warning', 'confirmed', 'disproved', 'confirmed', false, 'unconfirmed'],
     ]);
-    // The check that confirmed the defect keeps the split warning posted.
-    expect(paired.slice(1).map(unprovenReason)).toEqual([undefined, 'unsettled_check']);
+    expect(paired.map(f => [f.pairRefutation?.outcome, f.cell?.column])).toEqual([['unsettled', undefined], ['unsettled', undefined], ['unsettled', 'normal'], ['confirmed', 'rare']]);
+    // The check that confirmed the defect keeps a split warning posted.
+    expect(paired.slice(1).map(unprovenReason)).toEqual([undefined, 'unsettled_check', undefined]);
   });
 
   it('checks every finding a doubt holds below its conditional grade, and at most eight warnings nothing proves yet', async () => {

@@ -2683,9 +2683,10 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
   return `[${inlineCode(rangeLabel(range))}](${linkTo(range.file, range.start, range.end)})`;
 }
 
-function refutationPart(label: string, lead: string, { outcome, reason, proof }: Refutation, linkTo: LineLink, known: readonly string[]): FoldPart {
+function refutationPart(label: string, lead: string, check: Refutation, linkTo: LineLink, known: readonly string[]): FoldPart {
+  const { reason, proof } = check;
   // The refuter keeps only proof locations that exist in the workspace, so a bare file name there is a root file.
-  const cited = outcome === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p, known, true)?.at ?? []);
+  const cited = outcomeOf(check) === 'confirmed' ? [] : (proof ?? []).flatMap(p => parseCheck(p, known, true)?.at ?? []);
   const text = [lead, reason ? oneLine(reason) : '', cited.length ? `See ${cited.map(r => linkedRange(r, linkTo)).join(', ')}.` : '']
     .filter(Boolean).join(' ');
   return { label, text, open: `**${label}:** ${text}` };

@@ -391,9 +391,12 @@ describe('formatFindingComment', () => {
     const disproved = render(disprovedFinding);
     expect(render({ ...disprovedFinding, evidence: { checks: ['src/util.ts:3 marks it intended'], proof: [] } })).toContain('<summary>How this was checked: 1 place read, doubt found</summary>');
     expect(disproved).toContain(`**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
-    // An answer that the defect does not exist reads the same, also when the premises of its check settle nothing.
-    const noDefect: Finding = { ...disprovedFinding, refutation: { ...disprovedFinding.refutation!, outcome: 'unsettled', defect: 'disproved', premises: [{ premise: 'A caller passes it', outcome: 'unsettled', reason: 'None found.' }] } };
-    expect(render(noDefect)).toContain('**Doubt found:** Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself. A comment says it is intended.');
+    // An answer that the defect does not exist reads the same and links the same lines, whatever the premises of its check add up to.
+    for (const outcome of ['unsettled', 'confirmed'] as const) {
+      const noDefect: Finding = { ...disprovedFinding, refutation: { ...disprovedFinding.refutation!, outcome, defect: 'disproved', premises: [{ premise: 'A caller passes it', outcome, reason: 'r' }] } };
+      expect(render(noDefect)).toContain(`so please check it yourself. A comment says it is intended. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), [\`Makefile:7\`](${link('Makefile', 7)}).`);
+      expect(render(noDefect)).toContain('**Doubt found:** Manki found a reason this may not happen');
+    }
     expect(render({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The caller is generated.', files: ['src/main.ts'], codeDigest: 'abc' } }))
       .toContain('\n<!-- manki-checks -->\n**Not settled:** Manki tried to disprove this by reading the code and could not decide. The caller is generated.\n');
 

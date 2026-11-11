@@ -197,9 +197,9 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
       return { premise: doubt.premise, outcome: settle(OUTCOMES.find(o => o === answer.outcome) ?? 'unsettled', cited), reason: replyText(answer.reason), ...(cited.length > 0 && { proof: cited }) };
     });
     outcome = premisesOutcome(finding.doubts, premises);
-    // A disproof cites only what disproves the defect, never lines that confirmed a premise or the defect. Confirmed premises keep their lines.
+    // A disproof cites only what disproves the defect, never lines that confirmed a premise or the defect.
     const doubts = finding.doubts;
-    const disproved = outcome === 'disproved' || (outcome === 'unsettled' && defect === 'disproved');
+    const disproved = outcome === 'disproved' || defect === 'disproved';
     const cites = (p: PremiseCheck, i: number): boolean => disproved ? p.outcome === 'disproved' && doubts[i].decides === 'defect' : p.outcome !== 'unsettled';
     proof = [...new Set([...premises.flatMap((p, i) => cites(p, i) ? p.proof ?? [] : []), ...(defect === (disproved ? 'disproved' : 'confirmed') ? shown : [])])];
   }
@@ -221,30 +221,34 @@ function confirmedGrade(finding: Finding): FindingSeverity | undefined {
 
 /** Whether a check that confirms its finding confirmed `REACH_DOUBT`, the claim that keeps a finding in the `rare` column. */
 function reachConfirmed(checks: readonly Refutation[]): boolean {
-  return checks.some(r => r.outcome === 'confirmed' && r.premises?.some(p => p.premise === REACH_DOUBT.premise && p.outcome === 'confirmed'));
+  return checks.some(r => outcomeOf(r) === 'confirmed' && r.premises?.some(p => p.premise === REACH_DOUBT.premise && p.outcome === 'confirmed'));
 }
+
+const disproves = (check: Refutation): boolean => outcomeOf(check) === 'disproved';
+
+/** Whether `check` backs its finding: it does not disprove it, and it confirmed the defect or one of the premises. */
+const supports = (check: Refutation): boolean => !disproves(check) && (confirmsDefect(check) || !!check.premises?.some(p => p.outcome === 'confirmed'));
 
 /**
  * Returns the `outcome` that `checks` agree on, which decides whether a grade is restored and whether a blocker is
- * lowered. An unsettled check abstains, and a confirmation against a disproof settles nothing. That holds for a
- * disproved premise too, which leaves its own check unsettled when it only decides the grade.
+ * lowered. An unsettled check abstains, and a confirmation against a disproof settles nothing. So no check confirms
+ * beside one that disproves, be it the finding, the defect or a premise that only decides the grade.
  */
 function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
   const votes = new Set(checks.map(r => r.outcome).filter(o => o !== 'unsettled'));
   if (votes.size !== 1) return 'unsettled';
   const [outcome] = votes;
-  return outcome === 'confirmed' && checks.some(r => r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
+  return outcome === 'confirmed' && checks.some(r => disproves(r) || r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
 }
 
 /**
  * Returns the refutation that disproves `finding`, by `outcomeOf`: in a premise the defect rests on, or in its answer
- * whether the defect exists. Returns none when another check confirmed a premise or the defect, since a confirmation
- * against a disproof settles nothing.
+ * whether the defect exists. Returns none when another check `supports` the finding, since a confirmation against a
+ * disproof settles nothing.
  */
 export function disproof(finding: Pick<Finding, RefutationField>): Refutation | undefined {
   const checks = [finding.refutation, finding.pairRefutation].filter((r): r is Refutation => !!r);
-  const disproves = (r: Refutation): boolean => outcomeOf(r) === 'disproved';
-  return checks.some(r => !disproves(r) && (r.outcome === 'confirmed' || confirmsDefect(r))) ? undefined : checks.find(disproves);
+  return checks.some(supports) ? undefined : checks.find(disproves);
 }
 
 function refutationNote(label: string, check: Refutation): string {
@@ -284,27 +288,22 @@ function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefi
 
 /**
  * Grades `finding` by the outcome its refutations agree on. A `disproof` drops a finding graded below blocker, such as an
- * open lead or a capped blocker, unless its confirmed premises make it a blocker. It lowers a blocker only to the grade `gradeBeforeJudgeRaise` gives, never one that
- * `restates` an earlier blocker, and such a finding loses its `cell`, so a later round does not restate the blocker
- * from it. An unsettled outcome keeps the grade, and a security finding changes only when confirmed. A confirmation
- * that raises a finding out of the `rare` column moves it to the `normal` one, where `capUnprovenBlocker` applies to it.
+ * open lead or a capped blocker, and no check raises a finding beside one that disproves it. A disproof lowers a
+ * blocker only to the grade `gradeBeforeJudgeRaise` gives, never one that `restates` an earlier blocker, and such a
+ * finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
+ * grade, and a security finding changes only when confirmed. A confirmation that raises a finding out of the `rare`
+ * column moves it to the `normal` one, where `capUnprovenBlocker` applies to it.
  */
 function applyRefutation(finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined, restates: boolean): Finding {
   const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
   const outcome = agreedOutcome(checks);
-  const decided = checks.find(r => r.outcome === outcome);
   const notes = [refutation && refutationNote('Refutation', refutation), pairRefutation && refutationNote('Pair refutation', pairRefutation)].filter(Boolean).join('\n');
   const graded: Finding = {
     ...finding, ...(refutation && { refutation }), ...(pairRefutation && { pairRefutation }),
     judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${notes}` : notes,
   };
-  const security = !!finding.tags?.includes(SECURITY_TAG);
-  if (outcome !== 'confirmed' && security) return graded;
-  const rareClaim = !!finding.cell && columnDecidesBlock(finding.cell.row) && finding.cell.column === 'rare';
-  // The `rare` column is all that keeps such a finding from blocking, so it rises only when `REACH_DOUBT` itself is confirmed.
-  const restored = outcome !== 'confirmed' || (rareClaim && !reachConfirmed(checks)) ? undefined : confirmedGrade(finding);
-  // A disproof alone never clears a blocker or a security finding, nor a finding its confirmed premises make a blocker.
-  const dropped = finding.severity === 'blocker' || security || restored === 'blocker' ? undefined : disproof(graded);
+  if (outcome !== 'confirmed' && finding.tags?.includes(SECURITY_TAG)) return graded;
+  const dropped = finding.severity === 'blocker' ? undefined : disproof(graded);
   if (dropped) return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', dropped.reason) };
   if (outcome === 'disproved') {
     const filed = restates ? undefined : gradeBeforeJudgeRaise(finding, refutation, pairRefutation);
@@ -316,11 +315,14 @@ function applyRefutation(finding: Finding, refutation: Refutation | undefined, p
   }
   if (outcome === 'confirmed') {
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
+    const rareClaim = !!finding.cell && columnDecidesBlock(finding.cell.row) && finding.cell.column === 'rare';
+    // The `rare` column is all that keeps such a finding from blocking, so it rises only when `REACH_DOUBT` itself is confirmed.
+    const restored = rareClaim && !reachConfirmed(checks) ? undefined : confirmedGrade(finding);
     // Lines that confirm only premises show no defect. They are added where they restore a grade, and never make a warning proven.
-    const proof = [...new Set([...(finding.evidence?.proof ?? []), ...checks.flatMap(r => r.outcome === 'confirmed' && (restored || confirmsDefect(r)) ? r.proof ?? [] : [])])];
+    const proof = [...new Set([...(finding.evidence?.proof ?? []), ...checks.flatMap(r => outcomeOf(r) === 'confirmed' && (restored || confirmsDefect(r)) ? r.proof ?? [] : [])])];
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
     const raised = {
-      ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', decided!.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
+      ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', checks.find(r => outcomeOf(r) === 'confirmed')!.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
       ...(tags && { tags }), ...(rareClaim && restored && { cell: { ...finding.cell!, column: 'normal' as const, judgeColumn: 'rare' as const } }),
     };
     // A finding that leaves the `rare` column becomes a blocker no cap has seen, and a confirmed reach is no search for what it says is missing.
