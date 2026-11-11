@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { classifyRelatedWork } from './related-work';
@@ -242,9 +242,17 @@ function shortFocus(focus: string): string {
 }
 
 /**
+ * Returns the effort tier a reader is asked to run at. `auto` effort is high on a subtle change and medium otherwise.
+ * A `deeper` review runs an `auto` finder at xhigh and any other finder one effort level higher.
+ */
+function askedEffort(reviewer: GroupReviewer, triage: Triage, deeper: boolean): EffortLevel {
+  if (!reviewer.effort || reviewer.effort === 'auto') return deeper ? 'xhigh' : triage.subtle ? 'high' : 'medium';
+  return deeper ? DEEPER_EFFORT[reviewer.effort] : reviewer.effort;
+}
+
+/**
  * Builds one finder per reader of `group`, all on the same checklist. A group with two finders, or a PR in a floor class,
- * gets the most tool steps. `auto` effort is high on a subtle change and medium otherwise. A `deeper` review runs
- * an `auto` finder at xhigh and any other finder one effort level higher.
+ * gets the most tool steps.
  */
 function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean): Finder[] {
   const names = new Set<string>();
@@ -252,9 +260,7 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, 
   const risky = floor || finders.length >= 2;
   return group.reviewers.map(reviewer => {
     const model = resolveReviewerModel(config, reviewer.model);
-    const effort: EffortLevel = !reviewer.effort || reviewer.effort === 'auto'
-      ? (deeper ? 'xhigh' : triage.subtle ? 'high' : 'medium')
-      : deeper ? DEEPER_EFFORT[reviewer.effort] : reviewer.effort;
+    const effort = askedEffort(reviewer, triage, deeper);
     const verifier = reviewer.role === 'verifier';
     const custom = reviewer.focus ? [...config.reviewers, { name: 'This review group', focus: reviewer.focus }] : config.reviewers;
     const prompt = verifier ? TRIVIAL_VERIFIER_AGENT : buildFinderAgent(custom);
