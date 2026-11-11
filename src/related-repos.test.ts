@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { devNull, tmpdir } from 'os';
 import { join } from 'path';
 
-import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
+import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { RelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -261,6 +261,17 @@ describe('relatedRepoLoader', () => {
     const before = calls.length;
     expect(await fetchReferenceRepos({ repos: [DASH, DIPS, PLATFORM], cacheDir, stateDir }, { run, log })).toEqual([{ repo: 'dashpay/dash', dir: join(cacheDir, 'dashpay', 'dash') }]);
     expect(calls).toHaveLength(before);
+
+    // A repo's guide is its root `AGENTS.md`, else its root `CLAUDE.md`, and only a regular file. The round record names it.
+    const [both, linked, none] = [DASH, DIPS, PLATFORM].map(({ repo }) => ({ repo, dir: mkdtempSync(join(tempDir, 'checkout-')) }));
+    for (const name of ['AGENTS.md', 'CLAUDE.md']) writeFileSync(join(both.dir, name), '');
+    symlinkSync(join(tempDir, 'outside.md'), join(linked.dir, 'AGENTS.md'));
+    writeFileSync(join(linked.dir, 'CLAUDE.md'), '');
+    mkdirSync(join(none.dir, 'AGENTS.md'));
+    const guides = relatedRepoGuides([both, linked, none]);
+    expect(guides).toEqual({ [DASH.repo]: 'AGENTS.md', [DIPS.repo]: 'CLAUDE.md' });
+    expect(relatedRepoGuides([none])).toBeUndefined();
+    expect(relatedRepoOutcomes([DASH], stateDir, guides)).toEqual([{ repo: DASH.repo, ref: DASH.ref, guide: 'AGENTS.md', status: 'fetched', durationMs: expect.any(Number) }]);
   });
 
   it('gives each repo one time limit across its git commands', async () => {

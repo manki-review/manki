@@ -2011,6 +2011,7 @@ describe('runReview', () => {
     );
     const reference = mkdtempSync(join(tmpdir(), 'manki-reference-'));
     writeFileSync(join(reference, 'fee.cpp'), 'CAmount ComputeFee(int n) { return n; }\n');
+    writeFileSync(join(reference, 'AGENTS.md'), '# Repository map\n');
     const fetchSpy = jest.spyOn(relatedRepos, 'fetchReferenceRepos').mockResolvedValue([{ repo: 'o/ref', dir: reference }]);
     const clients = makeClients();
     Object.assign(clients.reviewer, { repoTools: true });
@@ -2034,6 +2035,10 @@ describe('runReview', () => {
       symbols: [{ name: 'ComputeFee', declared: 'cmd/fee.go:5', uses: ['cmd/use.go:3'] }],
       reference: [{ name: 'ComputeFee', lines: ['o/ref:fee.cpp:1'] }],
     });
+    // The finders are pointed to the guide of a reference fetched before they run, and the round record names it.
+    const finderRelated = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools?.related?.guides);
+    expect(finderRelated).toEqual(finderMessages.map(() => ({ 'o/ref': 'AGENTS.md' })));
+    expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }]);
   });
 
   it('asks the sibling comparisons alongside the finders and hands the judge their findings under their own reviewer name', async () => {

@@ -11,7 +11,7 @@ import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } f
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
 import { FOLLOW_UP_TAG, gradeStep, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
-import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
+import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { classifyRelatedWork } from './related-work';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
@@ -714,12 +714,14 @@ export async function runReview(
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
     effort: comparisonEffort, workspace, signal: comparisonDeadline.signal,
   });
-  const references = await listReferenceUses(related && uses.referenceNames ? await fetchReferenceRepos(related) : [], uses.referenceNames ?? []);
+  const checkouts = related && uses.referenceNames ? await fetchReferenceRepos(related) : [];
+  const references = await listReferenceUses(checkouts, uses.referenceNames ?? []);
+  const guides = relatedRepoGuides(checkouts);
   const usesOutsideDiff = uses.section + references.section;
   const usesRecord = uses.record || references.record ? { ...uses.record, ...references.record } : undefined;
   // Only a retry passes `retryNote`, the note of the reply it corrects, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
-    effort: finder.effort, language: plannerResult?.language, workspace, related, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges,
+    effort: finder.effort, language: plannerResult?.language, workspace, related: related && { ...related, ...(guides && { guides }) }, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges,
     ...(retryNote && { retryNote }),
   });
 
@@ -1079,7 +1081,7 @@ export async function runReview(
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
   // Every configured related repo is recorded: fetched, failed, unused, or skipped when no finder could read it.
   const relatedRepos: RoundRelatedRepo[] | undefined = related
-    ? relatedRepoOutcomes(related.repos, related.stateDir)
+    ? relatedRepoOutcomes(related.repos, related.stateDir, guides)
     : config.related_repos?.map(({ repo, ref }) => ({
       repo, ...(ref && { ref }), status: 'skipped' as const,
       reason: workspace ? 'no finder has repository tools' : 'the PR head was not checked out for the tools',
