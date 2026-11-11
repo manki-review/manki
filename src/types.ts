@@ -671,7 +671,7 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export interface Triage {
   /** No defect could hide in the change, so the trivial verifier reads it alone. */
   trivial: boolean;
-  /** Judging the change needs reasoning about behavior, so finders run at xhigh effort. */
+  /** Judging the change needs reasoning about behavior, so finders run at high effort. */
   subtle: boolean;
   /** A defect could reach a user if every reader missed it, so a second finder on another model reads it. */
   paired: boolean;
@@ -688,7 +688,7 @@ export interface Finder {
   steps: number;
 }
 
-/** One reader in a review group. `auto` effort is `xhigh` when the triage says `subtle`, else `medium`. */
+/** One reader in a review group. `auto` effort is `high` when the triage says `subtle`, else `medium`. A Deeper review runs it at `xhigh`. */
 export interface GroupReviewer {
   /** A model id, `provider/model`, `@reviewer` or `@reviewer_pair`. Unset means `@reviewer`. */
   model?: string;
@@ -797,7 +797,7 @@ export interface TeamRouting {
   escalatedFrom?: string;
   /** Floor classes `review.allow_weaker` let run below the floor. */
   weakerAllowed?: string[];
-  /** A Deeper review ran: two finders on every group, each one effort level higher. */
+  /** A Deeper review ran: two finders on every group, at xhigh effort or one level above a configured effort. */
   deeper?: true;
 }
 
@@ -1402,7 +1402,7 @@ export interface FullReviewOptions {
   settings?: PrState;
   /** Reviews the whole PR as new, so every finding counts as new code. */
   fullReview?: boolean;
-  /** A Deeper review: two finders on every group, each one effort level higher. */
+  /** A Deeper review: two finders on every group, at xhigh effort or one level above a configured effort. */
   deeper?: boolean;
 }
 
