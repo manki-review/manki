@@ -1687,7 +1687,7 @@ export const ruleGrade = (rules: RulesMode = 'warn'): FindingSeverity => (rules 
  * A finding graded higher keeps its grade, and a dropped one stays dropped. A blocker made here passes the caps of any
  * blocker, so in doubt it is a warning.
  */
-export function gradeConfirmedRule(finding: Finding, rules?: RulesMode): Finding {
+function gradeConfirmedRule(finding: Finding, rules?: RulesMode): Finding {
   const grade = ruleGrade(rules);
   if (!breaksRule(finding) || finding.severity === 'ignore' || SEVERITY_ORDER.indexOf(finding.severity) <= SEVERITY_ORDER.indexOf(grade)) return finding;
   const raised = { ...finding, ...gradeStep(finding, grade, 'rule', 'the judge confirmed it breaks a required rule of the instruction files') };
