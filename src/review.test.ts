@@ -2819,14 +2819,14 @@ describe('runReview', () => {
     const prior = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })]);
     const openThread = makePriorOpenThread({ severity: 'blocker' });
     const addressed: ThreadEvaluation = { threadId: 'T1', status: 'addressed', reason: 'The check is in place.' };
-    const runWith = (interRoundDiff: string | undefined) => runReview(
+    const runWith = (interRoundDiff: string | undefined, thread = openThread) => runReview(
       makeClients(), {
         config: makeConfig(),
         diff: diffChanging('src/x.ts'),
         rawDiff: 'raw diff',
         repoContext: 'repo context',
         isFollowUp: true,
-        openThreads: [openThread],
+        openThreads: [thread],
         previousFindings: [],
         priorRounds: [prior],
         interRoundDiff,
@@ -2852,14 +2852,9 @@ describe('runReview', () => {
     }
     openThread.severity = 'blocker';
 
-    // An outdated thread whose code changed since it was posted can be cleared though the last push left its file alone.
-    openThread.changedSincePosted = true;
-    const changedEarlier = await runWith(elsewhere);
-    expect([changedEarlier.outcome, changedEarlier.threadEvaluations]).toEqual(['READY', [addressed]]);
-    // Or partly fixed, at the lower grade what remains earns.
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 's', threadEvaluations: [{ threadId: 'T1', status: 'partly_addressed', reason: 'r', remaining: 'r', grade: 'warning' }] });
-    expect((await runWith(elsewhere)).threadEvaluations?.[0].grade).toBe('warning');
-    delete openThread.changedSincePosted;
+    // An outdated thread whose code is gone keeps the guard too: only a push to its file counts as a change.
+    const outdated = await runWith(elsewhere, { ...openThread, postedCode: '>>> 10: old', postedCommit: 'sha0', postedCodeGone: true });
+    expect([outdated.outcome, outdated.threadEvaluations?.[0].status]).toEqual(['ADDRESS_FIRST', 'uncertain']);
 
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.', threadEvaluations: [addressed] });
