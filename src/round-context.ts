@@ -265,8 +265,9 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.cell && { cell: f.cell }),
     ...(f.gradePath && { gradePath: f.gradePath }),
     ...(f.preExisting && f.preExistingCheck && { preExisting: { reason: f.preExisting.slice(0, 200), check: f.preExistingCheck } }),
+    ...(f.unpostedReason && { unpostedReason: f.unpostedReason }),
   });
-  const unposted = (result.unpostedPreExisting ?? []).map(toEntry);
+  const unposted = [...(result.unpostedPreExisting ?? []), ...(result.unpostedNotes ?? [])].map(toEntry);
   return {
     meta: {
       prNumber,

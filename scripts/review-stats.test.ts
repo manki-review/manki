@@ -190,7 +190,10 @@ describe('review stats', () => {
         unposted: [{
           ...makeFindingFingerprintEntry({ severity: 'suggestion' }), preExisting: { reason: 'Old.', check: 'pre_existing' },
           gradePath: [{ from: 'warning', to: 'suggestion', by: 'judge' }],
-        }, makeFindingFingerprintEntry({ severity: 'nitpick' })],
+        }, makeFindingFingerprintEntry({ severity: 'nitpick' }), {
+          // The reason a note was left out counts ahead of a pre-existing claim the diff contradicted.
+          ...makeFindingFingerprintEntry({ severity: 'suggestion' }), origin: 'reviewed', unpostedReason: 'reviewed_code', preExisting: { reason: 'Old.', check: 'touches_diff' },
+        }, { ...makeFindingFingerprintEntry({ severity: 'nitpick' }), origin: 'earlier', raisedIn: 1, unpostedReason: 'listed_earlier' }],
       },
       judge: {
         summary: '', fixClaimedThreads: ['T1', 'T2'],
@@ -235,10 +238,11 @@ describe('review stats', () => {
         'checks ran': 1, 'code_scanning skipped: the token cannot read it (HTTP 403)': 1, 'dependency_review skipped: Bad\n| injected | row': 1, 'secrets ran': 1,
       },
       'Grade changes': { 'unproven: blocker to warning': 1, 'judge: warning to suggestion': 1, 'refutation: warning to ignore': 1 },
-      'Pre-existing claims (how each was checked)': { pre_existing: 1 },
+      'Pre-existing claims (how each was checked)': { pre_existing: 1, touches_diff: 1 },
       'Memory suppressions (findings hidden per suppression)': { 'sup-1': 1 },
       'Findings recorded without posting (per reason and severity)': {
         'memory_suppression, nitpick': 1, 'pre_existing, suggestion': 1, 'no reason recorded, nitpick': 1,
+        'reviewed_code, suggestion': 1, 'listed_earlier, nitpick': 1,
         'in_pr_suppression, severity not recorded': 1, 'ratchet, severity not recorded': 2, 'resolved_thread, severity not recorded': 3,
         'own_proposal, severity not recorded': 4, 'test_file, severity not recorded': 5, 'static_signal, severity not recorded': 1,
       },

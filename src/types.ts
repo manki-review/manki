@@ -83,6 +83,11 @@ export function isBlockingSeverity(severity: FindingSeverity): boolean {
   return severity === 'blocker' || severity === 'warning';
 }
 
+/** Whether a finding of this severity is a note: the review lists it, and it never blocks. */
+export function isNote(severity: FindingSeverity): boolean {
+  return severity === 'suggestion' || severity === 'nitpick';
+}
+
 
 /** Regex source matching all current and legacy severity tokens. */
 export const SEVERITY_TOKEN_PATTERN = 'blocker|warning|suggestion|nitpick|ignore|required|nit';
@@ -99,6 +104,17 @@ export const FOLLOW_UP_TAG = 'follow-up' as const;
 export const VERDICT_READER_NAME = 'Verdict reader';
 /** Marks a security defect, which blocks at every round and never becomes a follow-up. */
 export const SECURITY_TAG = 'security' as const;
+
+// Priors saved before the generalist finders carry this reviewer instead of the judge's `security` tag.
+const LEGACY_SECURITY_AGENT_NAME = 'Security & Safety';
+
+/**
+ * Whether a finding or prior is a security defect, which the judge tags `SECURITY_TAG`.
+ * A prior also counts when the retired Security & Safety reviewer raised it.
+ */
+export function isSecurityFinding(tags: string[] | undefined, priorReviewers: ReadonlyArray<string | undefined> = []): boolean {
+  return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
+}
 /** Marks a finding on lines outside every hunk of the PR's diff. Unless it is a security finding, it never blocks. */
 export const PRE_EXISTING_TAG = 'pre-existing' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
@@ -269,6 +285,8 @@ export interface Finding {
   pairRefutation?: Refutation;
   /** The id of the memory suppression that hid the finding. */
   suppressedBy?: string;
+  /** Why the review leaves the note out. Only the round record keeps such a note. */
+  unpostedReason?: UnpostedReason;
   /** Why the defect exists without this PR's change, when the reviewer says so. The judge must keep it, or it is cleared. */
   preExisting?: string;
   /** How a claim in `preExisting` was checked against the diff: held, or the condition that failed. */
@@ -525,6 +543,13 @@ export interface Refutation {
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
+/** Why a review leaves a note out, with the words that say it to a reader. */
+export const UNPOSTED_REASONS = {
+  reviewed_code: 'on code an earlier round reviewed',
+  listed_earlier: 'listed by an earlier round',
+} as const;
+export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
+
 /** What was cited to back a finding. */
 export interface FindingEvidence {
   /** What the reviewer read or searched and what it showed, one short line each. */
@@ -682,6 +707,8 @@ export interface ReviewResult {
   memoryLoaded?: { learnings: number; suppressions: number };
   /** Pre-existing findings not worth posting, such as suggestions. Only the round record keeps them. */
   unpostedPreExisting?: Finding[];
+  /** The notes the review leaves out, each with `unpostedReason`. Only the round record keeps them. */
+  unpostedNotes?: Finding[];
   /** How the diff was split, when it was read in several slices. */
   slicing?: RoundSlicing;
   /** The configured related repos, with the outcome of each fetch. */
@@ -1292,9 +1319,12 @@ export interface JudgeDecision {
   originalSeverity?: FindingSeverity;
   reasoning: string;
   confidence: 'high' | 'medium' | 'low';
+  /** Whether the finding is among the round's findings. One the judge kept and a later step took out is not. */
   kept: boolean;
   /** Set on an open lead the judge's tools left unsettled, which is listed as not finished instead of posted. */
   listed?: true;
+  /** Mirrors `Finding.unpostedReason`, on a note the judge kept and the review leaves out. */
+  unpostedReason?: UnpostedReason;
 }
 
 export interface ReviewMetadata {
@@ -1953,7 +1983,10 @@ export interface RoundFindings {
   count: number;
   severityCounts: Record<string, number>;
   entries: FindingFingerprintEntry[];
-  /** Pre-existing findings Manki recorded without posting them. Nothing that reads posted findings sees them. */
+  /**
+   * The findings Manki recorded without posting them: pre-existing ones, and notes with an `unpostedReason`. Nothing that
+   * reads posted findings sees them.
+   */
   unposted?: FindingFingerprintEntry[];
 }
 
@@ -2010,6 +2043,8 @@ export interface FindingFingerprintEntry {
   gradePath?: GradeStep[];
   /** The reviewer's pre-existing claim kept by the judge, and how it was checked against the diff. */
   preExisting?: { reason: string; check: PreExistingCheck };
+  /** Mirrors `Finding.unpostedReason`. */
+  unpostedReason?: UnpostedReason;
 }
 
 /**

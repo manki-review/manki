@@ -1,9 +1,10 @@
 import { createHash } from 'crypto';
 
+import * as core from '@actions/core';
 import parseDiff from 'parse-diff';
 import { minimatch } from 'minimatch';
 
-import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, RoundDiffExcludedFile } from './types';
+import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, ReviewResult, RoundDiffExcludedFile, UnpostedReason, isNote, isSecurityFinding } from './types';
 
 /**
  * Parse a unified diff string into structured data.
@@ -321,6 +322,34 @@ export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: 
       || (finding.line > 0 ? lines.some(line => Math.abs(line - finding.line) <= NEW_CODE_WINDOW) : lines.length > 0);
     finding.origin = finding.raisedIn ? 'earlier' : isNew ? 'new' : 'reviewed';
   }
+}
+
+/**
+ * Moves the notes the review leaves out from `result.findings` to `result.unpostedNotes`: a note that restates a finding
+ * an earlier round listed, and a note on code an earlier round reviewed. `compared` is the PR's change when the round
+ * read both the earlier round's change and the diff since. A note on reviewed code is left out only in one of its files,
+ * since no other line was compared. A security finding, a tool alert and a note that goes into an earlier thread stay.
+ */
+export function hideSeenNotes(result: ReviewResult, compared: ParsedDiff | undefined): void {
+  const reasonFor = (f: Finding): UnpostedReason | undefined => {
+    if (!isNote(f.severity) || f.threadId || f.answeredIn || f.toolSource || isSecurityFinding(f.tags, f.reviewers)) return undefined;
+    if (f.origin === 'earlier') return 'listed_earlier';
+    return f.origin === 'reviewed' && compared?.files.some(file => file.path === f.file) ? 'reviewed_code' : undefined;
+  };
+  const shown: Finding[] = [];
+  const hidden: Finding[] = [];
+  for (const f of result.findings) {
+    const unpostedReason = reasonFor(f);
+    if (!unpostedReason) {
+      shown.push(f);
+      continue;
+    }
+    core.info(`Recording ${f.severity} "${f.title}" on ${f.file}:${f.line} without posting it: ${unpostedReason}`);
+    hidden.push({ ...f, unpostedReason });
+  }
+  if (hidden.length === 0) return;
+  result.findings = shown;
+  result.unpostedNotes = hidden;
 }
 
 /** Sets each finding's `codeContext` to the hunk lines around its line, when that line is in the diff. */

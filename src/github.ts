@@ -6,7 +6,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { loadConfig } from './config';
-import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -1012,7 +1012,8 @@ export async function updateProgressComment(
     if (metadata.judgeDecisions.length > 0) {
       parts.push('**Judge decisions:**');
       for (const d of metadata.judgeDecisions) {
-        parts.push(`- ${d.listed ? 'Not finished' : d.kept ? 'Kept' : 'Dropped'}: "${sanitizeMarkdown(d.title)}" (${d.severity}, ${d.confidence} confidence): "${sanitizeMarkdown(d.reasoning)}"`);
+        const outcome = d.listed ? 'Not finished' : d.kept ? 'Kept' : d.unpostedReason ? `Not listed, ${UNPOSTED_REASONS[d.unpostedReason]}` : 'Dropped';
+        parts.push(`- ${outcome}: "${sanitizeMarkdown(d.title)}" (${d.severity}, ${d.confidence} confidence): "${sanitizeMarkdown(d.reasoning)}"`);
       }
       parts.push('');
     }

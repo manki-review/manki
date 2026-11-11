@@ -373,7 +373,7 @@ function tallyRound(stats: ReviewStats, round: RoundContext): void {
     tally(stats, 'Findings recorded without posting (per reason and severity)', `memory_suppression, ${hidden.severity}`);
   }
   for (const entry of round.findings?.unposted ?? []) {
-    tally(stats, 'Findings recorded without posting (per reason and severity)', `${entry.preExisting?.check ?? 'no reason recorded'}, ${entry.severity}`);
+    tally(stats, 'Findings recorded without posting (per reason and severity)', `${entry.unpostedReason ?? entry.preExisting?.check ?? 'no reason recorded'}, ${entry.severity}`);
   }
   // The record keeps these drops of judged findings as counts, without their severities.
   const dropCounts = {
@@ -491,7 +491,7 @@ export function renderStats(stats: ReviewStats, repo?: string): string {
     ...[...SEVERITIES, ...Object.keys(stats.severities).filter(s => !SEVERITIES.includes(s))].map(s => findingsRow(s, stats.severities[s])),
     findingsRow('all', all),
     '',
-    'The table leaves out a finding the round put under an earlier Manki thread, or that matches one by file, title and line. The script cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved, and another instance of a finding that went into its thread as a reply. A round that ran without the earlier round\'s change, which is a "Review again" run or a failed fetch of the change at the last reviewed commit, tags every finding `new`, so its findings on reviewed code are missing from the reviewed-code share and the share reads too low.',
+    'The table leaves out a finding the round put under an earlier Manki thread, or that matches one by file, title and line. The script cannot tell whether that thread was still open, so it also leaves out a blocker posted again after its old thread was resolved, and another instance of a finding that went into its thread as a reply. A round that ran without the earlier round\'s change, which is a "Review again" run or a failed fetch of the change at the last reviewed commit, tags every finding `new`, so its findings on reviewed code are missing from the reviewed-code share and the share reads too low. A suggestion or nitpick on reviewed code is not posted, so it counts in none of these either, and shows under `reviewed_code` in the table of findings recorded without posting.',
     '',
     `- Blocker threads: ${blockerThreads}, fixed ${stats.blockerOutcomes.fixed}, withdrawn ${stats.blockerOutcomes.withdrawn}, other ${stats.blockerOutcomes.other}`,
     `- Verdict reader blockers: ${stats.readerBlockers} in ${stats.readerRounds} rounds`,

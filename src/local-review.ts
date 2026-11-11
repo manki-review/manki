@@ -6,7 +6,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 import { extractCurrentCodeWindow } from './code-window';
 import { changedKeys, loadConfig, validateConfig } from './config';
-import { addCodeContext, changeDigest, filterDiff, filterRawDiff, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
+import { addCodeContext, changeDigest, filterDiff, filterRawDiff, hideSeenNotes, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
 import { ApprovalHeld, brokenConfig, buildRepoContext, loadBaseConfig, RepoFiles, titleToSlug } from './github';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { MAX_LOCKFILE_BYTES } from './static-signals';
@@ -354,6 +354,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
     if (result.reviewComplete) {
       addCodeContext(result.findings, withLockfiles(diff, lockfiles));
       tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), followUp?.priorChange, followUp?.interRoundDiff ? parsePRDiff(followUp.interRoundDiff) : undefined);
+      hideSeenNotes(result, followUp && withLockfiles(diff, lockfiles));
     }
     const context = buildRoundContext({
       prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: loaded.source,

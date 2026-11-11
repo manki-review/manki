@@ -15,7 +15,7 @@ import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, 
 import { extractCurrentCodeWindow, locatePostedFile, locatePostedLine } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
-import { addCodeContext, changeDigest, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
+import { addCodeContext, changeDigest, hideSeenNotes, onlyCommitChanging, parsePRDiff, filterDiff, filterRawDiff, ownChangeSince, rebuildRawDiff, reviewableDiff, shortenLongLines, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { findingKey, isEmptyInterRoundDiff } from './judge';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
@@ -1615,18 +1615,24 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   const rawForLookup = result.rawFindings ?? allJudgedForDashboard;
   // A lead the tools left unsettled is listed as not finished, neither kept nor dropped.
   const listed = new Set(result.openLeads);
+  // Kept findings are copies of the judged ones, so a judged finding counts as kept by its file, line and title.
+  const keptKeys = new Set(result.findings.map(findingKey));
+  const unpostedReasons = new Map((result.unpostedNotes ?? []).map(f => [findingKey(f), f.unpostedReason]));
   const judgeDecisions = allJudgedForDashboard.map(f => {
-    const kept = f.severity !== 'ignore' && !listed.has(f);
-    const originalSeverity = kept
+    const judgeKept = f.severity !== 'ignore' && !listed.has(f);
+    const originalSeverity = judgeKept
       ? f.severity
       : rawForLookup.find(r => r.title === f.title && r.file === f.file && r.line === f.line)?.severity ?? f.severity;
+    const unpostedReason = unpostedReasons.get(findingKey(f));
     return {
       title: f.title,
       severity: f.severity,
       reasoning: f.judgeNotes || '',
       confidence: f.judgeConfidence || 'medium',
-      kept,
+      // A finding a later step took out counts as dropped below, so it is not listed as kept here.
+      kept: judgeKept && keptKeys.has(findingKey(f)),
       ...(listed.has(f) && { listed: true as const }),
+      ...(unpostedReason && { unpostedReason }),
       originalSeverity,
     };
   });
@@ -1636,8 +1642,6 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult,
   for (const f of result.findings) {
     keptSeverities[f.severity] = (keptSeverities[f.severity] ?? 0) + 1;
   }
-  // Kept findings are copies of the judged ones, so a judged finding counts as kept by its file, line and title.
-  const keptKeys = new Set(result.findings.map(findingKey));
   // judgeDecisions is built in lock-step with allJudgedForDashboard, so the
   // index aligns and d.originalSeverity carries the pre-judge severity even
   // when the judge merged or renamed the finding before dropping it.
@@ -1904,8 +1908,11 @@ async function runFullReview(
       return;
     }
 
-    addCodeContext(result.findings, withLockfiles(diff, lockfiles));
-    tagFindingOrigins(result.findings, withLockfiles(diff, lockfiles), options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
+    const reviewed = withLockfiles(diff, lockfiles);
+    addCodeContext(result.findings, reviewed);
+    tagFindingOrigins(result.findings, reviewed, options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
+    // Only the diff since the last round shows a line the push moved or restored, so without it no line counts as reviewed for certain.
+    if (!options.fullReview) hideSeenNotes(result, interRoundDiff === undefined ? undefined : reviewed);
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
