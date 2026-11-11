@@ -6,7 +6,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { DEFAULT_NOTES, loadConfig } from './config';
-import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, UNPOSTED_REASONS, UnpostedReason } from './types';
+import { AgentProgressEntry, BinaryFile, ConfigSource, DashboardData, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -1488,16 +1488,13 @@ function isListedNote(finding: Finding): boolean {
 
 /**
  * Returns the notes of a review as one collapsed section, a fold per note, in the order given. A line under it says
- * how many notes of `unposted` the review left out, and why.
+ * how many notes of `unposted` are over the `review.notes` limit.
  */
 function formatNotesSection(notes: Finding[], unposted: Finding[], links: CodeLinks): string | null {
   const listed = notes.length > 0
     && `<details>\n<summary><b>${countOf(notes.length, 'note')}</b> · not blocking</summary>\n\n${notes.map(f => formatFindingFold(f, links, true)).join('\n\n')}\n\n</details>`;
-  const reasons = (Object.keys(UNPOSTED_REASONS) as UnpostedReason[]).flatMap(reason => {
-    const count = unposted.filter(f => f.unpostedReason === reason).length;
-    return count > 0 ? [`${countOf(count, 'note')} ${UNPOSTED_REASONS[reason]}`] : [];
-  });
-  const unlisted = reasons.length > 0 && `<sub>Not listed: ${reasons.join(', ')}.</sub>`;
+  const capped = unposted.filter(f => f.unpostedReason === 'note_cap').length;
+  const unlisted = capped > 0 && `<sub>${capped} ${listed ? 'more ' : ''}${capped === 1 ? 'note is' : 'notes are'} not listed.</sub>`;
   return [listed, unlisted].filter(Boolean).join('\n\n') || null;
 }
 

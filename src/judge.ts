@@ -608,7 +608,7 @@ Set \`effort\` to how big the fix is: \`quick\` for a few lines in one place, \`
 
 ## Note Order
 
-A review lists only the first few findings graded \`suggestion\` or \`nitpick\`, so order them. In \`noteOrder\`, list the number N of each "Finding N" whose cell gives \`suggestion\` or \`nitpick\`, starting with the one the author gains most from acting on. A finding that prevents a likely future defect, closes a gap in the tests or stops a reader being misled comes before one that only tidies the code. Of two with the same gain, the smaller fix comes first. Leave out a finding you mark \`ignore\` or fold with \`duplicateOf\`.
+A review lists only the first few findings whose cell gives \`suggestion\` or \`nitpick\`. In \`noteOrder\`, list the number N of each such "Finding N", starting with the one whose fix helps the author most.
 
 ## Duplicate Detection
 
@@ -1995,7 +1995,7 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
   return [...kept.values()];
 }
 
-export function findingKey(f: Finding): string {
+export function findingKey(f: Pick<Finding, 'file' | 'line' | 'title'>): string {
   return `${f.file}:${f.line}:${f.title}`;
 }
 

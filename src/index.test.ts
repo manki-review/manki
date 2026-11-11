@@ -2613,10 +2613,13 @@ describe('runFullReview orchestration', () => {
       { severity: 'nitpick' as const, originalSeverity: 'warning' as const, reviewerSeverity: 'suggestion' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'], judgeConfidence: 'low' as const },
     ];
     const unsettledLead = { severity: 'warning' as const, title: 'Token may not read the repo', file: 'src/app.ts', line: 3, description: 'd', reviewers: ['general'], lead: { checked: 'read it', left: 'check the repo' } };
+    // The judge kept these, and a later step took each out without posting it.
+    const later = (title: string, line: number) => ({ severity: 'suggestion' as const, title, file: 'src/old.ts', line, description: 'd', reviewers: ['general'] });
+    const [oldCode, hidden, toolLine, testNit] = [later('Old helper name', 4), later('Hidden by memory', 5), later('Tool reports it', 6), later('Test nit', 7)];
     const allJudged = [
       ...findings,
       { severity: 'ignore' as const, reviewerSeverity: 'nitpick' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'not relevant' },
-      unsettledLead,
+      unsettledLead, oldCode, hidden, toolLine, testNit,
     ];
     const rawFindings = [
       ...findings,
@@ -2629,13 +2632,16 @@ describe('runFullReview orchestration', () => {
       findings: findings.map(f => ({ ...f })),
       highlights: [],
       reviewComplete: true,
-      rawFindingCount: 7,
+      rawFindingCount: 11,
       agentNames: ['security', 'general'],
       allJudgedFindings: allJudged,
       openLeads: [unsettledLead],
       rawFindings,
       verdictReason: 'required_present',
-      unpostedPreExisting: [{ severity: 'suggestion', title: 'Old helper name', file: 'src/old.ts', line: 4, description: 'd', reviewers: ['general'], tags: ['pre-existing'] }],
+      unpostedPreExisting: [{ ...oldCode, tags: ['pre-existing'] }],
+      memorySuppressed: [hidden],
+      staticSignalMatches: [{ droppedTitle: toolLine.title, file: toolLine.file, line: toolLine.line, tool: 'eslint', ruleId: 'no-shadow' }],
+      testNitSuppressedCount: 1,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
@@ -2677,9 +2683,13 @@ describe('runFullReview orchestration', () => {
     // unsettled is listed, not dropped.
     const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4];
     expect(dashboardArg?.keptSeverities).toEqual({ blocker: 1, suggestion: 1, nitpick: 1 });
-    expect(dashboardArg?.droppedSeverities).toEqual({ nitpick: 1 });
-    expect(dashboardArg?.droppedCount).toBe(1);
+    expect(dashboardArg?.droppedSeverities).toEqual({ nitpick: 1, suggestion: 4 });
+    expect(dashboardArg?.droppedCount).toBe(5);
     const decisions = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[5]?.judgeDecisions;
+    // A finding a later step took out says which step, and one the judge dropped says none. A test file nit is only counted, so it has no reason.
+    expect(decisions?.filter(d => !d.kept && !d.listed).map(d => [d.title, d.unpostedReason])).toEqual([
+      ['Dropped', undefined], ['Old helper name', 'pre_existing'], ['Hidden by memory', 'memory_suppression'], ['Tool reports it', 'static_signal_match'], ['Test nit', undefined],
+    ]);
     expect(decisions?.find(d => d.title === 'Token may not read the repo')).toEqual(expect.objectContaining({ kept: false, listed: true }));
     expect(dashboardArg?.keptCount).toBe(3);
   });

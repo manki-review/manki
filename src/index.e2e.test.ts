@@ -710,7 +710,7 @@ describe('runFullReview end to end', () => {
     const listed = [...review.body.matchAll(/<summary>\u2728 <b>([^<]+)<\/b>/gu)].map(m => m[1]);
     expect(listed).toEqual(['Cover the empty input', 'Reuse the range helper', 'Say why the sum is kept']);
     expect(review.body).toContain('<summary><b>3 notes</b> · not blocking</summary>');
-    expect(review.body).toContain('<sub>Not listed: 1 note over the `review.notes` limit.</sub>');
+    expect(review.body).toContain('<sub>1 more note is not listed.</sub>');
     const { findings } = mockGitHub.roundContext(review);
     expect(findings.entries.map(e => [e.title, e.posted])).toEqual(listed.map(title => [title, 'body']));
     expect(findings.unposted).toMatchObject([{ title: 'Name the limit', unpostedReason: 'note_cap', posted: 'record' }]);

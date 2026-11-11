@@ -4383,16 +4383,23 @@ describe('postReview non-blocking findings', () => {
       '',
       '</details>',
     ].join('\n'));
-    expect(review.body).not.toContain('Not listed');
+    expect(review.body).not.toContain('not listed');
 
-    // A line says how many notes the review left out and why, under the listed notes or alone when it lists none.
+    // A line says how many notes are over the limit, under the listed notes or alone when the review lists none.
     const leftOut = [nonBlocking('suggestion', 'Left out', 11, { unpostedReason: 'note_cap' }), nonBlocking('nitpick', 'Also left out', 12, { unpostedReason: 'note_cap' })];
     await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([nonBlocking('nitpick', 'Typo in name', 7)]), unpostedNotes: leftOut }, diff);
+    // A note left out for another reason is not counted.
     const seen = [nonBlocking('suggestion', 'Reviewed', 13, { unpostedReason: 'reviewed_code' }), nonBlocking('nitpick', 'Listed', 14, { unpostedReason: 'listed_earlier' })];
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([nonBlocking('nitpick', 'Typo in name', 7)]), unpostedNotes: [leftOut[0], ...seen] }, diff);
     await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unpostedNotes: [leftOut[0], ...seen] }, diff);
-    const [, under, alone] = createReview.mock.calls.map(call => call[0].body as string);
-    expect(under).toMatch(/ -->\n\n<\/details>\n\n<sub>Not listed: 2 notes over the `review\.notes` limit\.<\/sub>/);
-    expect(alone).toMatch(/^Summary\n\n---\n\n<sub>Not listed: 1 note on code an earlier round reviewed, 1 note listed by an earlier round, 1 note over the `review\.notes` limit\.<\/sub>/);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unpostedNotes: leftOut }, diff);
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', { ...buildResult([]), unpostedNotes: seen }, diff);
+    const [, under, underOne, alone, aloneMany, uncapped] = createReview.mock.calls.map(call => call[0].body as string);
+    expect(under).toMatch(/ -->\n\n<\/details>\n\n<sub>2 more notes are not listed\.<\/sub>/);
+    expect(underOne).toContain('</details>\n\n<sub>1 more note is not listed.</sub>');
+    expect(alone).toMatch(/^Summary\n\n---\n\n<sub>1 note is not listed\.<\/sub>/);
+    expect(aloneMany).toMatch(/^Summary\n\n---\n\n<sub>2 notes are not listed\.<\/sub>/);
+    expect(uncapped).not.toContain('not listed');
     expect(`${under}${alone}`).not.toContain('Left out');
     expect(review.body).not.toContain('not listed');
   });
@@ -4463,7 +4470,7 @@ describe('postReview non-blocking findings', () => {
     expect(unranked.unpostedNotes).toEqual([hidden, { ...findings[7], unpostedReason: 'note_cap' }, { ...findings[8], unpostedReason: 'note_cap' }]);
 
     // The judge's order decides which notes are listed. A note it did not rank comes after the ranked ones.
-    const ranks: Record<string, number> = { 'Note five': 0, 'Note three': 1, 'Note one': 4 };
+    const ranks: Record<string, number> = { 'Note five': 0, 'Note three': 1, 'Deferred warning': 2, 'Note one': 4 };
     const ranked = buildResult(findings.map(f => (f.title in ranks ? { ...f, noteRank: ranks[f.title] } : f)));
     capNotes(ranked, existingThreads);
     expect(titles(ranked.findings)).toEqual([...others, 'Note five', 'Note three', 'Note one']);

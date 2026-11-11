@@ -565,11 +565,14 @@ export interface Refutation {
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
 export type FindingOrigin = 'new' | 'reviewed' | 'earlier';
 
-/** Why a review leaves a note out, with the words that say it to a reader. */
+/** Why a review leaves out a finding the judge kept, with the words that say it to a reader. The first three are set on a note. */
 export const UNPOSTED_REASONS = {
   reviewed_code: 'on code an earlier round reviewed',
   listed_earlier: 'listed by an earlier round',
   note_cap: 'over the `review.notes` limit',
+  pre_existing: 'on code this PR did not change',
+  memory_suppression: 'hidden by a memory suppression',
+  static_signal_match: 'a CI tool reports the same line',
 } as const;
 export type UnpostedReason = keyof typeof UNPOSTED_REASONS;
 
@@ -1354,7 +1357,7 @@ export interface JudgeDecision {
   kept: boolean;
   /** Set on an open lead the judge's tools left unsettled, which is listed as not finished instead of posted. */
   listed?: true;
-  /** Mirrors `Finding.unpostedReason`, on a note the judge kept and the review leaves out. */
+  /** Why the review leaves out a finding the judge kept. */
   unpostedReason?: UnpostedReason;
 }
 
@@ -2080,7 +2083,10 @@ export interface FindingFingerprintEntry {
   preExisting?: { reason: string; check: PreExistingCheck };
   /** Mirrors `Finding.unpostedReason`. */
   unpostedReason?: UnpostedReason;
-  /** Where the round put the finding. Records written before this field carry none. */
+  /**
+   * Where the round put the finding. Records written before this field carry none. The record is written before the
+   * review posts, so `thread` stays when GitHub refuses the comment and the finding falls back to the body.
+   */
   posted?: PostedPlace;
 }
 
