@@ -741,8 +741,23 @@ export async function runReview(
   if (changedSinceLastRound) recorded.changedSinceLastRoundCount = changedSinceLastRound.length;
   const earlierBlockers = blockersToRecheck(previousFindings ?? [], changedSinceLastRound);
   const uses = await usesPromise;
-  // A round that reads its related repos as of a time fails here, before any finder runs, when one of them cannot be read as of then.
-  if (related?.asOf) await requireRelatedRepos(related);
+  const agentFailureReasons = new Map<string, string>();
+  const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
+  let finderContext: Pick<ReviewResult, 'relatedRepos' | 'usesOutsideDiff' | 'comparisons'> = {};
+  // Related work is left out: the posted incomplete review would render it.
+  const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
+    verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
+    agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
+    ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
+    ...(modelFallbacks.length > 0 && { modelFallbacks }), llmCalls, ...finderContext,
+    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
+  });
+  // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
+  const unread = related?.asOf ? await requireRelatedRepos(related).then(() => undefined, (error: Error) => error.message) : undefined;
+  if (related && unread) {
+    finderContext = { relatedRepos: relatedRepoOutcomes(related.repos, related.stateDir, {}, related.asOf) };
+    return incomplete(unread);
+  }
   // Asked alongside the finders on the reviewer model, at the effort of its finder. An unanswered question leaves the round complete, since the finders read the whole change.
   const comparisonModel = resolveReviewerModel(config, undefined);
   const comparisonEffort = (team.finders.find(f => f.model === comparisonModel) ?? team.finders[0]).effort;
@@ -772,7 +787,6 @@ export async function runReview(
   const agentUsage = new Map<string, LLMUsage>();
   const agentDurationMs = new Map<string, number>();
   const agentRetryCount = new Map<string, number>();
-  const agentFailureReasons = new Map<string, string>();
   Object.assign(recorded, { rawFindings: allFindings, agentResponseLengths, agentDurationMs, agentRetryCount });
   // A finder whose provider reported a used-up limit is not retried: it would fail the same way.
   const quotaErrors = new Map<string, QuotaError>();
@@ -791,7 +805,6 @@ export async function runReview(
     else retryNotes.delete(name);
   };
   const retryable = (name: string): boolean => !quotaErrors.has(name);
-  const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
 
   let completedCount = 0;
   let progressFindingCount = 0;
@@ -1124,16 +1137,7 @@ export async function runReview(
       repo, ...(ref && { ref }), status: 'skipped' as const,
       reason: workspace ? 'no finder has repository tools' : 'the PR head was not checked out for the tools',
     }));
-  const finderContext = { ...(relatedRepos?.length && { relatedRepos }), ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }) };
-  // Related work is left out: the posted incomplete review would render it.
-  const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
-    verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
-    agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
-    ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-    ...(modelFallbacks.length > 0 && { modelFallbacks }), llmCalls, ...finderContext,
-    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
-  });
-
+  finderContext = { ...(relatedRepos?.length && { relatedRepos }), ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }) };
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
     const summary = quotaErrors.size > 0

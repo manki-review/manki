@@ -2071,10 +2071,14 @@ describe('runReview', () => {
       expect(requireSpy).toHaveBeenCalledWith(datedTools);
       expect(jest.mocked(clients.reviewer.sendMessage).mock.calls.at(-1)![2]?.repoTools?.related).toEqual(datedTools);
       expect(dated.relatedRepos).toEqual(related_repos.map(({ repo }) => expect.objectContaining({ repo, asOf })));
-      // A repo that cannot be read as of that time fails the round before any finder is asked.
+      // A repo that cannot be read as of that time ends the round as incomplete before any finder is asked, with what the round spent so far.
       const asked = jest.mocked(clients.reviewer.sendMessage).mock.calls.length;
       requireSpy.mockRejectedValueOnce(new Error('Could not read every related repo as of then. o/r: it has no commit as old as then'));
-      await expect(runReview(clients, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head', relatedReposAsOf: asOf })).rejects.toThrow('o/r: it has no commit as old as then');
+      const unread = await runReview(clients, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head', relatedReposAsOf: asOf });
+      expect(unread).toMatchObject({
+        outcome: 'INCOMPLETE', reviewComplete: false, findings: [], summary: 'Could not read every related repo as of then. o/r: it has no commit as old as then',
+        llmCalls: expect.any(Array), plannerSource: dated.plannerSource, relatedRepos: related_repos.map(({ repo }) => ({ repo, asOf, status: 'unused' })),
+      });
       expect(clients.reviewer.sendMessage).toHaveBeenCalledTimes(asked);
       requireSpy.mockRestore();
       expect(jest.mocked(withoutTools.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools)).toEqual([undefined, undefined]);
