@@ -11,18 +11,18 @@
 
 <p align="center"><strong>Your tokens, your rules.</strong> Self-hosted AI code review that runs on your own GitHub runners and learns from your team.</p>
 
-Manki sizes each review to the nature of the change: one reader for a change where no defect could hide, two readers on different models for one that could reach your users. Dedup drops repeats from prior reviews, a judge filters noise and classifies what remains, and manki learns your team's conventions over time.
+Manki sizes each review to the nature of the change, and you decide who reviews what. By default a change where no defect could hide gets one quick check, and one that could reach your users gets two finders on different models. In `.manki.yml` you can set up your own review groups, each reader with its own model, effort and focus, and route kinds of changes to them. Dedup drops repeats from prior reviews, a judge filters noise and classifies what remains, and manki learns your team's conventions over time.
 
 <p align="center">
-  <img src="assets/review-example.png" alt="Manki's progress comment after a review: the planner's triage, the two finders of the review group with their models, and the judge's result" width="800" />
+  <img src="assets/review-example.png" alt="Manki's progress comment after a review: the planner's triage, the review group picked for the change (here the default pair of finders, each with its model), and the judge's result" width="800" />
 </p>
 
 ## Why Manki
 
 - **Multi-stage pipeline**: a planner triages the change, finders review in parallel, dedup catches repeats from prior reviews, a judge filters noise and classifies findings by severity
-- **Two models where it matters**: changes that could reach a user get a second finder on another model with the same checklist, so the two models miss different things
+- **You decide who reviews what**: a review group lists the readers for a kind of change, each with its own model, effort and focus, and you route changes to groups by path or by the planner's triage. By default a change that could reach a user gets a second finder on another model with the same checklist, so the two models miss different things
 - **Smart verdicts**: blocks PRs on real issues, approves over style nitpicks, and auto-approves when all blocking threads resolve
-- **Multi-provider**: Anthropic, OpenAI, and Gemini, mix-and-match per stage via `.manki.yml`
+- **Multi-provider**: Anthropic, OpenAI, and Gemini, mix-and-match per stage and per reader via `.manki.yml`
 - **Self-learning memory**: `/manki remember` teaches conventions, `/manki dismiss` suppresses false positives, patterns stick across PRs
 - **Conversational**: reply to any review comment to discuss, or use `@manki explain`/`forget` inline
 - **Self-hosted GitHub Action**: your API key, your compute. The Manki service only puts the events in order and starts the runs
@@ -37,13 +37,29 @@ Full setup guide with troubleshooting: **[Getting started](docs/getting-started.
 
 ## How it works
 
-Manki wakes up when a PR is opened. A fast planner (Haiku) triages the change and sets the effort, one or two finders review it in parallel, dedup drops findings that match repeats from prior reviews, and the judge evaluates and classifies what remains. When nothing blocks, a verdict reader reads the whole diff cold before Manki approves. Results land as inline comments plus a summary and verdict. A finding shows what goes wrong, with everything else in one collapsed section: how to fix it, why it matters, and how it was checked. Its summary names those parts, counts the places read and, for a finding the refuter checked, names the outcome of that check. Inside, up to three places show as GitHub code previews, each under the sentence its check gives, and the rest are linked. A finding that cites nothing says so. When all blocking threads resolve, manki approves.
+Manki wakes up when a PR is opened. A fast planner (Haiku) triages the change and sets the effort, the finders of its review group review it in parallel (one or two by default), dedup drops findings that match repeats from prior reviews, and the judge evaluates and classifies what remains. When nothing blocks, a verdict reader reads the whole diff cold before Manki approves. Results land as inline comments plus a summary and verdict. A finding shows what goes wrong, with everything else in one collapsed section: how to fix it, why it matters, and how it was checked. Its summary names those parts, counts the places read and, for a finding the refuter checked, names the outcome of that check. Inside, up to three places show as GitHub code previews, each under the sentence its check gives, and the rest are linked. A finding that cites nothing says so. When all blocking threads resolve, manki approves.
 
 <p align="center">
   <img src="assets/pipeline.svg" alt="Manki review pipeline: Planner → Finders → Dedup → Judge → Verdict reader → Review posted" />
 </p>
 
 See [How reviews work](docs/how-reviews-work.md#review-pipeline) for the full walkthrough.
+
+One or two finders is only the default. The `review` block in `.manki.yml` sets who reviews what. This example sends changes to security-sensitive and data contract paths to two strong readers on two providers, and keeps the defaults for everything else:
+
+```yaml
+review:
+  groups:
+    deep:
+      reviewers:
+        - { model: claude-opus-5-5, effort: high, focus: "authz, injection, secret handling" }
+        - { model: gpt-5.5, effort: high }
+  routing:
+    security: deep
+    data_contract: deep
+```
+
+Changes to security-sensitive paths, CI or dependency files and data contracts always get at least two finders on two distinct models, unless you allow less with `allow_weaker`. See [Review groups](docs/how-reviews-work.md#review-groups) for groups, classes and routing.
 
 ## Talk to Manki
 
@@ -89,7 +105,7 @@ instructions: |
 models:
   planner: claude-haiku-5-5
   reviewer: claude-sonnet-5-5
-  reviewer_pair: claude-opus-5-5   # second finder on paired rounds
+  reviewer_pair: claude-opus-5-5   # second finder of the default pair
   judge: claude-opus-5-5
   dedup: claude-haiku-5-5
 ```

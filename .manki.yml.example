@@ -59,8 +59,8 @@
 # Per-stage model selection
 # models:
 #   planner: claude-haiku-5-5      # fast pre-review planning pass
-#   reviewer: claude-sonnet-5-5    # the finder on every round
-#   reviewer_pair: gpt-6.1-terra   # the second finder on paired rounds (default: the other Claude tier, Sonnet with Opus)
+#   reviewer: claude-sonnet-5-5    # the finder of the built-in groups, and `@reviewer` in a group of your own
+#   reviewer_pair: gpt-6.1-terra   # the second finder of the built-in `pair` group, and `@reviewer_pair` in a group of your own (default: the other Claude tier, Sonnet with Opus)
 #   judge: claude-opus-5-5         # precise, single judge
 #   refuter_pair: gpt-6.1-sol      # a second refuter on another model, beside the first on the judge's model (default: off, needs the Claude or Codex CLI)
 #   dedup: claude-haiku-5-5        # fast LLM dedup against prior findings
@@ -87,8 +87,9 @@
 # A fast pre-review pass answers three questions about the nature of the change:
 # trivial (a single quick check reads it), subtle (finders run at high effort
 # instead of medium) and paired (a second finder on another model reads it
-# too). An unclear answer takes the side that adds review. Disabled, every
-# round gets two finders at high effort. A diff that touches a
+# too). These are the defaults, and the `review` block below changes who reads
+# what. An unclear answer takes the side that adds review. Disabled, every
+# round gets two finders at high effort by default. A diff that touches a
 # security-sensitive path, CI, a dependency manifest or a data contract
 # (migrations, SQL, protobuf, schemas, OpenAPI) always gets two finders.
 # planner:
@@ -102,8 +103,12 @@
 #   effort: auto
 #   tool_steps: 0
 
-# Review groups per class of PR. Read from the base branch only, so a PR cannot
-# weaken its own review. Each PR falls in the highest ranked matching class:
+# Who reviews what. A group lists one or more readers, each with its own model
+# (any supported provider), effort and `focus`. A class matches PRs by path or
+# by the planner's answers, and `routing` names the group for each class.
+# Without this block the built-ins below apply: a quick check, one finder or
+# two. Read from the base branch only, so a PR cannot weaken its own review.
+# Each PR falls in the highest ranked matching class:
 # security (100), supply_chain (90), data_contract (80), behavior (50, planner
 # said paired), internal (30) or docs (20, planner said trivial). The first
 # three are floors: at least two finders on two distinct models, none at `low`
