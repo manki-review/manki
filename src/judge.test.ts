@@ -5621,9 +5621,12 @@ interface NoteOrderFixture {
 describe('judge note order fixture corpus', () => {
   const fixtures = loadFixtures<NoteOrderFixture>('noteOrder');
 
-  it.each(fixtures)('fixture $name points each finding at a diff line, and names its formatting point', (fixture) => {
+  it.each(fixtures)('fixture $name points each finding at a diff line, shows the judge every diff file, and names its formatting point', (fixture) => {
     const diff = parsePRDiff(fixture.prDiff);
     for (const finding of fixture.findings) expect(extractCodeContext(finding, diff)).toContain(`>>> ${finding.line}:`);
+    // The judge is shown only the files a finding sits on or cites as proof, so it cannot check a claim about any other file.
+    const shown = new Set(fixture.findings.flatMap(f => [f.file, ...(f.evidence?.proof ?? []).map(location => location.replace(/:[\d-]+$/, ''))]));
+    expect(diff.files.map(f => f.path).filter(path => !shown.has(path))).toEqual([]);
     expect(fixture.findings.map(f => f.title)).toContain(fixture.formatting);
   });
 
