@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
+import { judgeAddressedThreadIds } from '../src/recap';
 import { FindingFingerprintEntry } from '../src/types';
 import { Evidence, findThread, HistoryLine, labelFinding, LabelledFinding, renderReport, roundsByPullRequest, selectSet, Thread } from './calibration';
 
@@ -55,11 +56,20 @@ describe('labelFinding', () => {
 });
 
 describe('roundsByPullRequest and findThread', () => {
-  it('groups rounds per pull request oldest first, fills missing blocks and skips reply records and records without a commit', () => {
+  it('groups rounds per pull request oldest first, fills missing blocks and skips reply records, incomplete rounds and records without a commit', () => {
     const lines: HistoryLine[] = [
       { repo: 'o/r', pr: 1, record: { meta: { prNumber: 1, commitSha: 'b', round: 2, timestamp: '' }, findings: { count: 1, severityCounts: {}, entries: [entry('x')] } } as HistoryLine['record'] },
       { repo: 'o/r', pr: 1, record: { meta: { prNumber: 1, commitSha: 'a', round: 1, timestamp: '' } } as HistoryLine['record'] },
       { repo: 'o/r', pr: 2, record: {} },
+      // An incomplete round whose judge finished resolved no thread, whatever its evaluations say.
+      {
+        repo: 'o/r', pr: 1,
+        record: {
+          meta: { prNumber: 1, commitSha: 'c', round: 2, timestamp: '', incomplete: true },
+          findings: { count: 1, severityCounts: {}, entries: [entry('y')] },
+          judge: { threadEvaluations: [{ threadId: 'T_x', status: 'addressed', reason: 'The check is in place.' }] },
+        } as HistoryLine['record'],
+      },
       { kind: 'reply', repo: 'o/r', pr: 3, record: { meta: { prNumber: 3, commitSha: 'c', round: 1, timestamp: '' } } as HistoryLine['record'] },
     ];
 
@@ -67,6 +77,7 @@ describe('roundsByPullRequest and findThread', () => {
 
     expect([...rounds.keys()]).toEqual(['o/r#1']);
     expect(rounds.get('o/r#1')!.map(r => [r.meta.commitSha, r.findings.entries.length, r.judge])).toEqual([['a', 0, {}], ['b', 1, {}]]);
+    expect(judgeAddressedThreadIds(rounds.get('o/r#1')!)).toEqual(new Set());
   });
 
   it('matches a finding to the thread its record names, or else to a Manki thread by file and marker slug', () => {

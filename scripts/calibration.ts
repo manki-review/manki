@@ -125,11 +125,14 @@ export function labelFinding({ thread, lineChanged, judgeAddressed }: Evidence):
   return outcome ? REPLY_LABELS[outcome] : ['unclear', 'untouched'];
 }
 
-/** Returns the rounds of each pull request in the history, oldest first, keyed by `owner/repo#number`. */
+/**
+ * Returns the completed rounds of each pull request in the history, oldest first, keyed by `owner/repo#number`.
+ * An incomplete round posted no finding and resolved no thread, so it is left out.
+ */
 export function roundsByPullRequest(lines: HistoryLine[]): Map<string, RoundContext[]> {
   const rounds = new Map<string, RoundContext[]>();
   for (const { kind, repo, pr, record } of lines) {
-    if (kind === 'reply' || !record.meta?.commitSha) continue;
+    if (kind === 'reply' || !record.meta?.commitSha || record.meta.incomplete) continue;
     const round = { ...record, judge: record.judge ?? {}, findings: { ...record.findings, entries: record.findings?.entries ?? [] } } as RoundContext;
     const key = `${repo}#${pr}`;
     rounds.set(key, [...(rounds.get(key) ?? []), round]);
