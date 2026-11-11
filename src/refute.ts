@@ -337,18 +337,23 @@ const linkedToEarlier = (finding: Finding): boolean => !!(finding.sameAs || find
  * be one that `needsProof`, with a doubt of the judge whether the defect exists or no cited line that proves it, and
  * none that `noCheck` accepts: a check could not run on that one, or a later step decides about it whatever the check
  * says. The order is the one given, with the warnings that are `linkedToEarlier` or that `restatesEarlier` accepts
- * after the others. A finding the judge would grade higher if its doubts hold is always checked, since that check is
- * how a warning becomes a blocker.
+ * after the others. The `limit` counts refuter calls, so a warning `needsNoCall` accepts takes none of it and is
+ * returned as `reused`. A finding the judge would grade higher if its doubts hold is always checked, since that check
+ * is how a warning becomes a blocker.
  */
-function doubtsToCheck(findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean, restatesEarlier: (finding: Finding) => boolean): { checked: Finding[]; over: Finding[] } {
+function doubtsToCheck(
+  findings: readonly Finding[], limit: number, noCheck: (finding: Finding) => boolean, restatesEarlier: (finding: Finding) => boolean, needsNoCall: (finding: Finding) => boolean,
+): { checked: Finding[]; reused: Finding[]; over: Finding[] } {
   const last = (finding: Finding): boolean => linkedToEarlier(finding) || restatesEarlier(finding);
   const open = findings.filter(f => needsProof(f) && !alwaysChecked(f) && (doubtsDefect(f) || citesNoProof(f)) && !noCheck(f));
-  const unproven = [...open.filter(f => !last(f)), ...open.filter(last)];
+  const reused = open.filter(needsNoCall);
+  const calling = open.filter(f => !reused.includes(f));
+  const unproven = [...calling.filter(f => !last(f)), ...calling.filter(last)];
   const over = unproven.slice(limit);
   for (const skipped of over) {
     core.info(`Not checking "${skipped.title}", since the round's ${MAX_DOUBT_CHECKS} checks of unproven warnings are used up`);
   }
-  return { checked: unproven.slice(0, limit), over };
+  return { checked: unproven.slice(0, limit), reused, over };
 }
 
 /** Whether `check` confirms that the defect of `finding` exists: the whole finding, or every premise the defect rests on. */
@@ -430,10 +435,12 @@ export interface RefuteOptions {
  * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge.
  */
 export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget }: RefuteOptions): Promise<Finding[]> {
+  // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
+  const stored = (field: RefutationField, finding: Finding): Refutation | undefined =>
+    finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
   const check = async (refuter: LLMClient, field: RefutationField, finding: Finding): Promise<Refutation | undefined> => {
     const label = field === 'pairRefutation' ? 'second refutation' : 'refutation';
-    // Unseen code or a caller can change in a file the stored outcome does not cover, so such a finding is checked afresh.
-    const prior = finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
+    const prior = stored(field, finding);
     if (prior) {
       core.info(`Reusing the ${prior.outcome} ${label} of "${finding.title}" from an earlier round, since the files it rests on are unchanged`);
       return prior;
@@ -456,9 +463,12 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
   };
   const reopened = findings.map(f => reopenCappedGrade(f, priorRounds));
   const checkable = (finding: Finding): boolean => !!codeDigest(workspace, [finding.file]);
-  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, finding => !!unpostedLater?.(finding) || !checkable(finding), finding => !!restatesEarlier?.(finding));
+  const noCheck = (finding: Finding): boolean => !!unpostedLater?.(finding) || !!hiddenLater?.(finding) || !checkable(finding);
+  // `MAX_DOUBT_CHECKS` counts refuter calls, so a warning takes none when each refuter asked about it reuses a stored outcome.
+  const needsNoCall = (finding: Finding): boolean => !!stored('refutation', finding) && (!pair || !!stored('pairRefutation', finding));
+  const picked = doubtsToCheck(reopened, doubtBudget?.left ?? MAX_DOUBT_CHECKS, noCheck, finding => !!restatesEarlier?.(finding), needsNoCall);
   if (doubtBudget) doubtBudget.left -= picked.checked.length;
-  const doubtChecks = new Set(picked.checked);
+  const doubtChecks = new Set([...picked.checked, ...picked.reused]);
   const overLimit = new Set(picked.over);
   return mapWithConcurrency(reopened, MAX_PARALLEL_REFUTATIONS, async finding => {
     if (overLimit.has(finding)) return { ...finding, overCheckLimit: true as const };

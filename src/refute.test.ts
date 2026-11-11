@@ -692,6 +692,30 @@ describe('refuteBlockers', () => {
     await refuteBlockers(client, [finding('Sum overflows')], { workspace, priorRounds: pairedRounds, diff, pair });
     expect([client.calls.length, pair.calls.length, paired.pairRefutation?.outcome]).toEqual([1, 1, 'confirmed']);
 
+    // The eight checks count refuter calls. A warning whose stored outcome is reused makes none, so it takes none of them.
+    const noProof = { severity: 'warning' as const, evidence: { checks: [], proof: [] } };
+    const eight = Array.from({ length: 8 }, (_, i) => `Unproven ${i + 1}`);
+    const warnings = ['Stored warning', ...eight].map(title => finding(title, noProof));
+    const unsettled = Object.fromEntries(warnings.map(f => [f.title, { outcome: 'unsettled', reason: 'Could not tell.', premises: [] }]));
+    const refuter = fakeClient(unsettled);
+    const [stored] = await refuteBlockers(refuter, warnings.slice(0, 1), { workspace, diff });
+    const storedRounds = [{ findings: { entries: [{ title: 'Stored warning', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation: stored.refutation }] }, judge: {} }] as unknown as RoundContext[];
+    const overLimit = (list: Finding[]) => list.filter(f => f.overCheckLimit).map(f => f.title);
+    const doubtBudget = { left: 8 };
+    const reusing = await refuteBlockers(refuter, warnings, { workspace, diff, priorRounds: storedRounds, doubtBudget });
+    expect(refuter.calls.map(([title]) => title).sort()).toEqual(['Stored warning', ...eight]);
+    expect([reusing[0].refutation, overLimit(reusing), doubtBudget]).toEqual([stored.refutation, [], { left: 0 }]);
+    // A second refuter with no stored outcome has to be asked, so the warning takes one of the eight like any other.
+    const second = fakeClient(unsettled);
+    const pairBudget = { left: 8 };
+    const asked = await refuteBlockers(fakeClient(unsettled), warnings, { workspace, diff, priorRounds: storedRounds, pair: second, doubtBudget: pairBudget });
+    expect(second.calls.map(([title]) => title).sort()).toEqual(['Stored warning', ...eight.slice(0, 7)]);
+    expect([asked[0].refutation, overLimit(asked), pairBudget]).toEqual([stored.refutation, ['Unproven 8'], { left: 0 }]);
+    // A warning a later step drops at its grade takes none either, since no check runs on it.
+    const dropped = fakeClient(unsettled);
+    const hiding = await refuteBlockers(dropped, warnings, { workspace, diff, hiddenLater: f => f.title === 'Stored warning' });
+    expect([dropped.calls.map(([title]) => title).sort(), overLimit(hiding)]).toEqual([eight, []]);
+
     // A change to the file that holds the check the outcome cites forces a new check, like a change to the finding's file.
     writeFileSync(join(workspace, 'src', 'api.ts'), '// the check is gone\n');
     expect(await calls()).toBe(2);
