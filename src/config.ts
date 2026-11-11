@@ -100,7 +100,6 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'review',
   'static_analysis',
   'related_repos',
-  'nit_handling',
   'drafts',
   'review_passes',
   'convergence',
@@ -336,14 +335,6 @@ export function validateConfig(config: Record<string, unknown>): ConfigValidatio
 
   if ('related_repos' in config) {
     validateRelatedRepos(config.related_repos, errors, warnings);
-  }
-
-  if ('nit_handling' in config) {
-    if (config.nit_handling === 'issues' || config.nit_handling === 'comments') {
-      warnings.push("`nit_handling: '" + config.nit_handling + "'` is deprecated and ignored. See https://github.com/manki-review/manki/issues/738 for context.");
-    } else {
-      warnings.push(`\`nit_handling: '${String(config.nit_handling)}'\` is not a recognized value. Remove it from your config.`);
-    }
   }
 
   if ('drafts' in config && config.drafts !== 'skip' && config.drafts !== 'review') {

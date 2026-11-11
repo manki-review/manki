@@ -8,6 +8,8 @@
 
 import { readFileSync } from 'fs';
 
+import { migrateStoredSeverities } from '../src/types';
+
 const OUTCOMES = ['posted', 'fixed', 'dismissed', 'untouched'] as const;
 
 type Totals = Record<(typeof OUTCOMES)[number], number>;
@@ -33,7 +35,7 @@ export function aggregate(lines: string[], prs?: ReadonlySet<number>): Map<strin
     if (!line.trim()) continue;
     let parsed: Partial<Record<'counts' | 'calibration', Row[]>> & { pr?: number };
     try {
-      parsed = JSON.parse(line);
+      parsed = migrateStoredSeverities(JSON.parse(line));
     } catch {
       console.error(`Skipping a line that is not JSON: ${line.slice(0, 80)}`);
       continue;

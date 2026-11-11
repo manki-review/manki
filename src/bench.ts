@@ -10,14 +10,19 @@ import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides,
 import { cutLegacyCommands, hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { buildLLMClient } from './review-clients';
-import { CELL_GRADES, Doubt, Finding, FindingSeverity, GradeCell, isGradeCell, RoundRelatedRepo, SEVERITY_ORDER } from './types';
+import { CELL_GRADES, Doubt, Finding, FindingSeverity, GradeCell, isGradeCell, migrateLegacySeverity, migrateStoredSeverities, RoundRelatedRepo, SEVERITY_ORDER } from './types';
 import { runGit } from './workspace';
 
 export const BENCH_COMMAND = 'bench';
 
-const KEY_SEVERITIES = ['blocker', 'warning', 'suggestion', 'nitpick'] as const;
+const KEY_SEVERITIES = ['blocker', 'warning', 'note'] as const;
 type KeySeverity = typeof KEY_SEVERITIES[number];
-const SEVERITY_WEIGHT: Record<KeySeverity, number> = { blocker: 3, warning: 2, suggestion: 1, nitpick: 1 };
+const SEVERITY_WEIGHT: Record<KeySeverity, number> = { blocker: 3, warning: 2, note: 1 };
+
+/** Returns the severity a key states, with a level an older key names read as the level it became. */
+function keySeverity(stated: unknown): unknown {
+  return typeof stated === 'string' ? migrateLegacySeverity(stated) : stated;
+}
 const DEFAULT_RUNS = 3;
 const CASE_SETS = ['tuning', 'holdout'] as const;
 /** Tuning cases are what changes are developed against. Hold-out cases are run only before a release. */
@@ -88,7 +93,7 @@ function parseItems(raw: unknown, field: string, file: string): KeyItem[] {
     const where = `${field}[${i}]`;
     if (!entry || typeof entry !== 'object') throw caseError(file, `${where} must be a mapping`);
     const item = entry as Record<string, unknown>;
-    const severity = item.severity;
+    const severity = keySeverity(item.severity);
     if (!KEY_SEVERITIES.includes(severity as KeySeverity)) throw caseError(file, `${where}.severity must be one of ${KEY_SEVERITIES.join(', ')}`);
     const locations = item.locations ?? [];
     if (!Array.isArray(locations) || locations.some(l => typeof l !== 'string' || !l.trim())) throw caseError(file, `${where}.locations must be a list of strings`);
@@ -116,8 +121,9 @@ function parsePriorRound(raw: unknown, file: string): EarlierRound {
   const findings = doc.findings.map((entry, i): EarlierFinding => {
     const where = `${file} prior_round.findings[${i}]`;
     if (!entry || typeof entry !== 'object') throw caseError(file, `prior_round.findings[${i}] must be a mapping`);
-    const f = entry as Record<string, unknown>;
+    const f = { ...entry } as Record<string, unknown>;
     for (const field of ['severity', 'grade_if_confirmed'] as const) {
+      f[field] = keySeverity(f[field]);
       if ((field === 'severity' || f[field] !== undefined) && !KEY_SEVERITIES.includes(f[field] as KeySeverity)) throw caseError(where, `\`${field}\` must be one of ${KEY_SEVERITIES.join(', ')}`);
     }
     if (!Number.isInteger(f.line) || (f.line as number) < 1) throw caseError(where, '`line` must be a positive integer');
@@ -194,10 +200,10 @@ function caseFiles(id: string, root: string): CaseSet[] {
 }
 
 /**
- * Returns the set of the case `id`. Nothing else decides whether text of a case may be printed. A case is a tuning case
+ * Returns the set of the case `id`, which decides whether text of the case may be printed. A case is a tuning case
  * only when `bench/cases` under `root` holds a file named after its id and `bench/holdout` holds none. Any other case
- * is a hold-out case, also one that neither directory holds. The directory a case file was read from and the set a
- * stored report gives a case decide nothing.
+ * is a hold-out case, also one that neither directory holds. The directory a case file was read from decides nothing.
+ * A stored report can only make a case a hold-out case: `readReport` keeps the hold-out set a report gives a case.
  */
 export function caseSet(id: string, root = '.'): CaseSet {
   const held = caseFiles(id, root);
@@ -1425,17 +1431,17 @@ export function resolveVariants(args: Pick<BenchArgs, 'variants' | 'sets'>): Var
   });
 }
 
-/** Reads a stored report as it is. No set in it is to be believed. A parser's message quotes the file, which holds findings, so the error names only the file. */
+/** Reads a stored report, with the severities an older version wrote read as the levels they became. No set in it is to be believed. A parser's message quotes the file, which holds findings, so the error names only the file. */
 export function readReportFile(path: string): BenchReport {
   const text = readFileSync(path, 'utf-8');
   try {
-    return JSON.parse(text) as BenchReport;
+    return migrateStoredSeverities(JSON.parse(text) as BenchReport);
   } catch {
     throw new Error(`The report ${path} is not valid JSON`);
   }
 }
 
-/** A stored report with each case's set taken from the case files, and the ids of the cases it held that no case file holds. */
+/** A stored report in which a case is a tuning case only when the report and the case files both say so, and the ids of the cases it held that no case file holds. */
 interface StoredReport {
   report: BenchReport;
   removed: string[];

@@ -64,14 +64,14 @@ describe('collectFollowUps', () => {
       entry('Lock order', { file: 'src/a.go', fingerprint: { file: 'src/a.go', lineStart: 0, lineEnd: 0, slug: '-Lock-order' } }),
       entry('Missing timeout', { file: 'src/b.go', severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'A request can reach it', decides: 'grade' }] }),
       // A cell the table does not know, as another Manki version could record, is left out of the follow-up.
-      entry('Name the helper', { file: 'src/c.go', severity: 'suggestion', suggestedFix: 'func name() {}', cell: { row: 'serious', column: 'normal' } as never }),
-      entry('Old style', { file: 'src/d.go', severity: 'nitpick' }), entry('Overflow', { file: 'src/e.go' }), entry('Dropped', { severity: 'ignore' }),
+      entry('Name the helper', { file: 'src/c.go', severity: 'note', suggestedFix: 'func name() {}', cell: { row: 'serious', column: 'normal' } as never }),
+      entry('Old style', { file: 'src/d.go', severity: 'note' }), entry('Overflow', { file: 'src/e.go' }), entry('Dropped', { severity: 'ignore' }),
       entry('Stale cache', { file: 'src/g.go', severity: 'warning' }), entry('Unbounded retry', { file: 'src/h.go' }), entry('Old lock', { file: 'src/i.go', severity: 'warning' }),
       entry('Leaked handle', { file: 'src/j.go', severity: 'warning' }), entry('Missing index', { file: 'src/k.go', severity: 'warning' }),
       entry('Wrong unit', { file: 'src/l.go', severity: 'warning' }),
     ]),
     {
-      ...round(2, [entry('Name the helper', { file: 'src/c.go', severity: 'suggestion' })]),
+      ...round(2, [entry('Name the helper', { file: 'src/c.go', severity: 'note' })]),
       judge: {
         summary: '',
         threadEvaluations: [
@@ -101,8 +101,8 @@ describe('collectFollowUps', () => {
       findings: [
         { id: 'P1', severity: 'blocker', title: 'Lock order', file: 'src/a.go', line: 1, description: 'Lock order breaks.', howToFix: 'Fix it.', security: true, thread: 'open' },
         { id: 'P2', severity: 'warning', title: 'Missing timeout', file: 'src/b.go', line: 10, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, doubts: [{ premise: 'A request can reach it', decides: 'grade' }], description: 'Missing timeout breaks.', howToFix: 'Fix it.', thread: 'open' },
-        { id: 'P3', severity: 'suggestion', title: 'Name the helper', file: 'src/c.go', line: 10, suggestedFix: 'func name() {}' },
-        { id: 'P4', severity: 'nitpick', title: 'Old style', file: 'src/d.go', line: 10, description: 'Old style breaks.', howToFix: 'Fix it.', thread: 'resolved' },
+        { id: 'P3', severity: 'note', title: 'Name the helper', file: 'src/c.go', line: 10, suggestedFix: 'func name() {}' },
+        { id: 'P4', severity: 'note', title: 'Old style', file: 'src/d.go', line: 10, description: 'Old style breaks.', howToFix: 'Fix it.', thread: 'resolved' },
         { id: 'P5', severity: 'blocker', title: 'Overflow', file: 'src/e.go', line: 10, description: 'Overflow breaks.', howToFix: 'Fix it.', thread: 'open' },
         { id: 'P6', severity: 'warning', title: 'Stale cache', file: 'src/g.go', line: 10, description: 'Stale cache breaks.', howToFix: 'Fix it.', thread: 'open' },
         { id: 'P7', severity: 'blocker', title: 'Unbounded retry', file: 'src/h.go', line: 10, description: 'Unbounded retry breaks.', howToFix: 'Fix it.', thread: 'open' },

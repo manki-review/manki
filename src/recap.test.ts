@@ -15,7 +15,7 @@ jest.mock('@actions/core', () => ({
 import * as core from '@actions/core';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
-  severity: 'suggestion',
+  severity: 'note',
   title: 'Test finding',
   file: 'src/index.ts',
   line: 10,
@@ -28,7 +28,7 @@ const makePrevious = (overrides: Partial<PreviousFinding> = {}): PreviousFinding
   title: 'Test finding',
   file: 'src/index.ts',
   line: 10,
-  severity: 'suggestion',
+  severity: 'note',
   status: 'open',
   ...overrides,
 });
@@ -626,7 +626,7 @@ describe('fetchRecapState', () => {
     ]);
 
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
-    expect(state.previousFindings[0].severity).toBe('nitpick');
+    expect(state.previousFindings[0].severity).toBe('note');
   });
 
   it('returns unknown severity when marker is missing', async () => {
@@ -646,7 +646,7 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings[0].severity).toBe('unknown');
   });
 
-  it('migrates legacy severity markers (`required`, `nit`) on read', async () => {
+  it('reads the levels of older versions in thread markers and round records as the levels they became', async () => {
     const octokit = mockOctokit([
       makeThread({
         id: 't1',
@@ -666,11 +666,30 @@ describe('fetchRecapState', () => {
           }],
         },
       }),
-    ]);
+      ...['suggestion', 'nitpick'].map((old, i) => makeThread({
+        id: `t${i + 3}`,
+        comments: { nodes: [{ body: `<!-- manki:${old}:Old-${old} --> **Old**: an older level`, author: { login: 'manki-review[bot]' } }] },
+      })),
+    ], [{
+      id: 1, user: { login: 'manki-review[bot]' }, body: `<!-- manki-context: ${JSON.stringify(makeRoundContext(1, {
+        findings: {
+          count: 2, severityCounts: { blocker: 0, warning: 0, suggestion: 1, nitpick: 1 },
+          entries: [
+            { ...makeFindingFingerprintEntry({ title: 'Rename helper' }), severity: 'suggestion', reviewerSeverity: 'nitpick', gradePath: [{ from: 'nitpick', to: 'suggestion', by: 'judge' }] },
+            { ...makeFindingFingerprintEntry({ title: 'Typo' }), severity: 'nitpick', originalSeverity: 'required' },
+          ] as unknown as FindingFingerprintEntry[],
+        },
+      }))} -->`,
+    }]);
 
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
-    expect(state.previousFindings[0].severity).toBe('blocker');
-    expect(state.previousFindings[1].severity).toBe('nitpick');
+    expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'note', 'note', 'note']);
+    expect(state.priorRounds[0].findings.severityCounts).toEqual({ blocker: 0, warning: 0, note: 2 });
+    expect(state.priorRounds[0].findings.entries.map(e => [e.severity, e.reviewerSeverity, e.originalSeverity, e.gradePath])).toEqual([
+      // The step between the two old levels is no grade change any more, so the entry keeps no path.
+      ['note', 'note', undefined, undefined],
+      ['note', undefined, 'blocker', undefined],
+    ]);
   });
 
   it('extracts title when confidence sub tag is present', async () => {
@@ -825,13 +844,13 @@ describe('fetchRecapState', () => {
       // The round records keep the grade each partial fix left, and the latest one counts. Only Manki's records count.
       record(1, [{ threadId: 't4', status: 'partly_addressed', reason: 'r', remaining: 'No timeout.', grade: 'warning' }]),
       record(2, [
-        { threadId: 't4', status: 'partly_addressed', reason: 'r', remaining: 'A slow log.', grade: 'suggestion' },
-        { threadId: 't5', status: 'partly_addressed', reason: 'r', remaining: 'A slow log.', grade: 'suggestion' },
+        { threadId: 't4', status: 'partly_addressed', reason: 'r', remaining: 'A slow log.', grade: 'note' },
+        { threadId: 't5', status: 'partly_addressed', reason: 'r', remaining: 'A slow log.', grade: 'note' },
         { threadId: 't6', status: 'partly_addressed', reason: 'r', remaining: 'One log line.', grade: 'warning' },
       ]),
       // A blocker a round carried on a thread raises it, after any partial fix in that round or before.
-      record(3, [{ threadId: 't4', status: 'not_addressed', reason: 'r' }, { threadId: 't3', status: 'partly_addressed', reason: 'r', remaining: 'r', grade: 'suggestion' }], ['t3', 't5']),
-      { ...record(4, [{ threadId: 't1', status: 'partly_addressed', reason: 'r', remaining: 'r', grade: 'nitpick' }]), user: { login: 'developer' } },
+      record(3, [{ threadId: 't4', status: 'not_addressed', reason: 'r' }, { threadId: 't3', status: 'partly_addressed', reason: 'r', remaining: 'r', grade: 'note' }], ['t3', 't5']),
+      { ...record(4, [{ threadId: 't1', status: 'partly_addressed', reason: 'r', remaining: 'r', grade: 'note' }]), user: { login: 'developer' } },
     ]);
 
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
@@ -842,7 +861,7 @@ describe('fetchRecapState', () => {
     // A severity comes from the first comment only, and no reply marker raises it, not even a pasted one.
     expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'warning', 'blocker', 'blocker', 'blocker']);
     // A security thread keeps a recorded lower grade too, which `threadBlocks` never lets lower it.
-    expect(state.previousFindings.map(f => f.recordedGrade)).toEqual([undefined, undefined, 'blocker', 'suggestion', 'warning', 'blocker']);
+    expect(state.previousFindings.map(f => f.recordedGrade)).toEqual([undefined, undefined, 'blocker', 'note', 'warning', 'blocker']);
     // The peak keeps the highest grade the records ever gave, so a lowered thread can get it back.
     expect(state.previousFindings.map(f => f.peakGrade)).toEqual([undefined, undefined, 'blocker', 'warning', 'warning', 'blocker']);
     expect(state.previousFindings.map(f => threadBlocks(f))).toEqual([true, true, true, false, true, true]);
@@ -1144,7 +1163,7 @@ describe('fetchRecapState', () => {
         judge: { summary: 'ok' },
         dedup: {},
         memory: {},
-        findings: { count: 0, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries: [] },
+        findings: { count: 0, severityCounts: { blocker: 0, warning: 0, note: 0 }, entries: [] },
         usage: {},
         verdict: 'COMMENT',
       };
@@ -1192,7 +1211,7 @@ describe('fetchRecapState', () => {
         title: 'Misleading variable name',
       };
       const ctx = makeRoundContext(1, {
-        findings: { count: 1, severityCounts: { blocker: 0, warning: 1, suggestion: 0, nitpick: 0 }, entries: [entry] },
+        findings: { count: 1, severityCounts: { blocker: 0, warning: 1, note: 0 }, entries: [entry] },
       });
       const octokit = mockOctokit([], [
         { id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
@@ -1215,7 +1234,7 @@ describe('fetchRecapState', () => {
         prior('src/bar.ts', 77, 'File-issue', 'blocker'),
       ];
       const ctx = makeRoundContext(1, {
-        findings: { count: 4, severityCounts: { blocker: 3, warning: 1, suggestion: 0, nitpick: 0 }, entries },
+        findings: { count: 4, severityCounts: { blocker: 3, warning: 1, note: 0 }, entries },
       });
       const thread = (id: string, isResolved: boolean, slug: string, originalLine: number) => makeThread({
         id,
@@ -1260,7 +1279,7 @@ describe('fetchRecapState', () => {
       const title = 'Auto-approve still approves unread files';
       const slug = titleToSlug(title);
       const entry = { fingerprint: { file: 'src/state.ts', lineStart: 512, lineEnd: 512, slug }, severity: 'blocker' as const, title };
-      const ctx = makeRoundContext(12, { findings: { count: 1, severityCounts: { blocker: 1, warning: 0, suggestion: 0, nitpick: 0 }, entries: [entry] } });
+      const ctx = makeRoundContext(12, { findings: { count: 1, severityCounts: { blocker: 1, warning: 0, note: 0 }, entries: [entry] } });
       // Line 512 was not in that round's diff, so the thread went on line 1 and only its finding data names 512.
       const data = JSON.stringify({ file: 'src/state.ts', line: 512, severity: 'blocker', title });
       const octokit = mockOctokit([
@@ -1280,7 +1299,7 @@ describe('fetchRecapState', () => {
       expect(state.previousFindings[0]).toMatchObject({ line: 1, findingLine: 512 });
       // The resolved thread backs its blocker, so the next round ends without `prior_unaddressed`.
       const { outcome, verdictReason } = determineOutcome([], priors, [], collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/state.ts']));
-      expect({ outcome, verdictReason }).toEqual({ outcome: 'READY', verdictReason: 'only_nit_or_suggestion' });
+      expect({ outcome, verdictReason }).toEqual({ outcome: 'READY', verdictReason: 'only_notes' });
       // A finding raised again on line 512 matches the thread as well, in dedup and in the in-PR suppressions.
       const again = makeFinding({ title, file: 'src/state.ts', line: 512, severity: 'warning' });
       expect(deduplicateFindings([again], state.previousFindings).duplicates).toHaveLength(1);
@@ -1314,7 +1333,7 @@ describe('fetchRecapState', () => {
         title,
       }));
       const ctx = makeRoundContext(1, {
-        findings: { count: 4, severityCounts: { blocker: 4, warning: 0, suggestion: 0, nitpick: 0 }, entries },
+        findings: { count: 4, severityCounts: { blocker: 4, warning: 0, note: 0 }, entries },
         judge: { summary: 'ok', threadEvaluations: [{ threadId: 'T_JUDGE', status: 'addressed', reason: 'fixed' }] },
       });
       const thread = (id: string, path: string, resolver: string | null) => makeThread({
@@ -1384,7 +1403,7 @@ describe('fetchRecapState', () => {
       const ctx = makeRoundContext(1, {
         findings: {
           count: files.length,
-          severityCounts: { blocker: 11, warning: 2, suggestion: 0, nitpick: 0 },
+          severityCounts: { blocker: 11, warning: 2, note: 0 },
           entries: files.map(file => ({
             fingerprint: { file, lineStart: 10, lineEnd: 10, slug },
             severity: severity(file),
@@ -1482,7 +1501,7 @@ describe('fetchRecapState', () => {
         title: 'Parser unescapes \\u0060 incorrectly',
       };
       const ctx = makeRoundContext(1, {
-        findings: { count: 1, severityCounts: { blocker: 0, warning: 1, suggestion: 0, nitpick: 0 }, entries: [entry] },
+        findings: { count: 1, severityCounts: { blocker: 0, warning: 1, note: 0 }, entries: [entry] },
       });
       const octokit = mockOctokit([], [
         { id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
@@ -1495,13 +1514,13 @@ describe('fetchRecapState', () => {
     it('round-trips findings.entries through the HTML-comment wrapper', async () => {
       const entry = {
         fingerprint: { file: 'src/bar.ts', lineStart: 5, lineEnd: 5, slug: 'unused-import' },
-        severity: 'nitpick' as const,
+        severity: 'note' as const,
         specialist: 'Style',
         suggestedFix: 'Remove the unused `path` import.',
         title: 'Unused import',
       };
       const ctx = makeRoundContext(2, {
-        findings: { count: 1, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 1 }, entries: [entry] },
+        findings: { count: 1, severityCounts: { blocker: 0, warning: 0, note: 1 }, entries: [entry] },
       });
       const octokit = mockOctokit([], [
         { id: 200, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
@@ -2218,7 +2237,7 @@ describe('llmDeduplicateFindings', () => {
     // Three wordings of one finding, each posted a round after the one before.
     const memory = { file: 'src/memory.ts', severity: 'warning' as const };
     const waived = makePrevious({
-      ...memory, severity: 'suggestion', status: 'resolved', threadId: 'T1', line: 0, originalLine: 80, findingLine: 84, answer: 'Agreed. The move is the follow-up.',
+      ...memory, severity: 'note', status: 'resolved', threadId: 'T1', line: 0, originalLine: 80, findingLine: 84, answer: 'Agreed. The move is the follow-up.',
       title: 'Repos with `memory.enabled` and no `memory.repo` lose their existing memory silently',
       description: "Before this change, an empty `memory.repo` meant `<owner>/review-memory` (the removed `resolveMemoryRepo`, called with the App's memory token). Now the same config goes to the central store, which starts empty for that repo.",
     });
@@ -2313,7 +2332,7 @@ const makeCommentBody = (description: string, aiContextJson?: string): string =>
 
 describe('parseFindingFromComment', () => {
   it('extracts the description of a not-blocking, low-confidence comment from `formatFindingComment`', () => {
-    const body = formatFindingComment({ severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], judgeConfidence: 'low' }, TEST_LINKS);
+    const body = formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], judgeConfidence: 'low' }, TEST_LINKS);
     expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     // The issue box, and the link that replaces it once ticked, are not part of the description.
     expect(body).toContain('Create an issue for this');
@@ -2342,7 +2361,7 @@ describe('parseFindingFromComment', () => {
   });
 
   it('extracts suggestedFix from AI context JSON', () => {
-    const body = makeCommentBody('Desc.', '{"fix":"Add null check before access","severity":"suggestion","confidence":"high","flaggedBy":["Correctness"]}');
+    const body = makeCommentBody('Desc.', '{"fix":"Add null check before access","severity":"note","confidence":"high","flaggedBy":["Correctness"]}');
     const result = parseFindingFromComment(body);
     expect(result.suggestedFix).toBe('Add null check before access');
   });
@@ -2355,7 +2374,7 @@ describe('parseFindingFromComment', () => {
   });
 
   it('returns undefined suggestedFix when fix key is absent from valid JSON', () => {
-    const body = makeCommentBody('Desc.', '{"severity":"suggestion","confidence":"high","flaggedBy":["Correctness"]}');
+    const body = makeCommentBody('Desc.', '{"severity":"note","confidence":"high","flaggedBy":["Correctness"]}');
     const result = parseFindingFromComment(body);
     expect(result.description).toBe('Desc.');
     expect(result.suggestedFix).toBeUndefined();
@@ -2388,7 +2407,7 @@ describe('parseFindingFromComment', () => {
 
   it('caps suggestedFix at 300 chars and appends ellipsis', () => {
     const longFix = 'y'.repeat(400);
-    const body = makeCommentBody('Desc.', `{"fix":"${longFix}","severity":"suggestion"}`);
+    const body = makeCommentBody('Desc.', `{"fix":"${longFix}","severity":"note"}`);
     const result = parseFindingFromComment(body);
     expect(result.suggestedFix).toHaveLength(303);
     expect(result.suggestedFix).toMatch(/\.\.\.$/);
@@ -2468,7 +2487,7 @@ describe('refreshAuthorReplyClass', () => {
       judge: { summary: '' },
       dedup: {},
       memory: {},
-      findings: { count: entries.length, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries },
+      findings: { count: entries.length, severityCounts: { blocker: 0, warning: 0, note: 0 }, entries },
       usage: {},
       verdict: 'COMMENT',
     };
@@ -2477,7 +2496,7 @@ describe('refreshAuthorReplyClass', () => {
   function makeEntry(overrides: Partial<FindingFingerprintEntry> = {}): FindingFingerprintEntry {
     return {
       fingerprint: { file: 'src/foo.ts', slug: 'test-finding', lineStart: 10, lineEnd: 10 },
-      severity: 'suggestion',
+      severity: 'note',
       authorReplyClass: 'none',
       ...overrides,
     };
@@ -2494,7 +2513,7 @@ describe('refreshAuthorReplyClass', () => {
     const entry = makeEntry({ threadId: 'T1', authorReplyClass: 'none' });
     const rounds = [makeRound([entry])];
     const previousFindings: PreviousFinding[] = [
-      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'suggestion', status: 'resolved', threadId: 'T1', authorReplyText: 'LGTM fixed' },
+      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'note', status: 'resolved', threadId: 'T1', authorReplyText: 'LGTM fixed' },
     ];
 
     const result = refreshAuthorReplyClass(rounds, previousFindings);
@@ -2507,7 +2526,7 @@ describe('refreshAuthorReplyClass', () => {
     const entry = makeEntry({ threadId: undefined, fingerprint: { file: 'src/foo.ts', slug: 'Test-finding', lineStart: 10, lineEnd: 10 }, authorReplyClass: 'none' });
     const rounds = [makeRound([entry])];
     const previousFindings: PreviousFinding[] = [
-      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'suggestion', status: 'resolved', authorReplyText: 'fixed' },
+      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'note', status: 'resolved', authorReplyText: 'fixed' },
     ];
 
     const result = refreshAuthorReplyClass(rounds, previousFindings);
@@ -2518,7 +2537,7 @@ describe('refreshAuthorReplyClass', () => {
   it('records every flip', () => {
     const entries = Array.from({ length: 55 }, (_, i) => makeEntry({ threadId: `T${i}`, authorReplyClass: 'none' }));
     const previousFindings: PreviousFinding[] = entries.map((e, i) => ({
-      title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'suggestion' as const, status: 'resolved' as const, threadId: `T${i}`, authorReplyText: 'fixed',
+      title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'note' as const, status: 'resolved' as const, threadId: `T${i}`, authorReplyText: 'fixed',
     }));
 
     const result = refreshAuthorReplyClass([makeRound(entries)], previousFindings);

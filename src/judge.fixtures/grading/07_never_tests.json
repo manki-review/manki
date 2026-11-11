@@ -2,8 +2,7 @@
   "name": "never-tests",
   "case": "never-tests",
   "allowed": [
-    "suggestion",
-    "nitpick",
+    "note",
     "ignore"
   ],
   "finding": {

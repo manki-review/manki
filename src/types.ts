@@ -2,10 +2,10 @@ import type { LimitUsage, LLMCall, UsageSummary } from './providers/types';
 
 export const MAX_AGENT_RETRIES = 1;
 
-export type FindingSeverity = 'blocker' | 'warning' | 'suggestion' | 'nitpick' | 'ignore';
+export type FindingSeverity = 'blocker' | 'warning' | 'note' | 'ignore';
 
 /** Severities from most to least severe. */
-export const SEVERITY_ORDER: readonly FindingSeverity[] = ['blocker', 'warning', 'suggestion', 'nitpick', 'ignore'];
+export const SEVERITY_ORDER: readonly FindingSeverity[] = ['blocker', 'warning', 'note', 'ignore'];
 
 export type CellRow = 'severe' | 'wrong' | 'degraded' | 'improvement' | 'style';
 export type CellColumn = 'normal' | 'rare';
@@ -22,9 +22,9 @@ export interface GradeCell {
 export const CELL_GRADES: Readonly<Record<CellRow, Readonly<Record<CellColumn, FindingSeverity>>>> = {
   severe: { normal: 'blocker', rare: 'blocker' },
   wrong: { normal: 'blocker', rare: 'warning' },
-  degraded: { normal: 'warning', rare: 'suggestion' },
-  improvement: { normal: 'suggestion', rare: 'suggestion' },
-  style: { normal: 'nitpick', rare: 'nitpick' },
+  degraded: { normal: 'warning', rare: 'note' },
+  improvement: { normal: 'note', rare: 'note' },
+  style: { normal: 'note', rare: 'note' },
 };
 
 export function cellGrade(row: CellRow, column: CellColumn): FindingSeverity {
@@ -66,16 +66,63 @@ export const FINDING_EFFORTS = {
 export type FindingEffort = keyof typeof FINDING_EFFORTS;
 
 /**
- * Maps legacy severity values written by older versions of manki to the
- * current `FindingSeverity` set. `'required'` was renamed to `'blocker'` and
- * `'nit'` to `'nitpick'`; `'suggestion'` and `'ignore'` are unchanged. Used
- * when reading persisted data (handover JSON, posted review comment markers)
- * so old artifacts continue to round-trip correctly.
+ * Maps a severity an older version of Manki wrote to the current `FindingSeverity` set. `required` is `blocker`, and
+ * `suggestion`, `nitpick` and `nit` are `note`. Any other value is returned as it is.
  */
 export function migrateLegacySeverity(severity: string): FindingSeverity | string {
   if (severity === 'required') return 'blocker';
-  if (severity === 'nit') return 'nitpick';
+  if (severity === 'suggestion' || severity === 'nitpick' || severity === 'nit') return 'note';
   return severity;
+}
+
+/** The fields that hold a severity wherever they sit in a stored record. */
+const SEVERITY_FIELDS: ReadonlySet<string> = new Set(['severity', 'originalSeverity', 'reviewerSeverity', 'gradeIfConfirmed', 'recordedGrade', 'peakGrade']);
+
+/** The severity fields of the entries of a list. `from`, `to` and `grade` are common names, so they count only in the list named here. */
+const SEVERITY_FIELDS_OF = new Map<string, ReadonlySet<string>>([
+  ['gradePath', new Set([...SEVERITY_FIELDS, 'from', 'to'])],
+  ['threadEvaluations', new Set([...SEVERITY_FIELDS, 'grade'])],
+]);
+
+/** The fields that hold a stored config, whose values are a user's own and never a stored severity. */
+const CONFIG_FIELDS: ReadonlySet<string> = new Set(['config', 'overrides']);
+
+/**
+ * Rewrites, in place, every severity in a parsed record that an older version of Manki wrote, at any depth, and
+ * returns the record. A count keyed by severity is added to the count of the severity it migrates to. A `gradePath`
+ * step between two levels that are now one is dropped. A stored config is left as it is.
+ */
+export function migrateStoredSeverities<T>(record: T): T {
+  migrateFields(record, SEVERITY_FIELDS);
+  return record;
+}
+
+function migrateFields(record: unknown, severityFields: ReadonlySet<string>): void {
+  if (Array.isArray(record)) {
+    for (const entry of record) migrateFields(entry, severityFields);
+  } else if (record && typeof record === 'object') {
+    const fields = record as Record<string, unknown>;
+    for (const [key, value] of Object.entries(fields)) {
+      if (typeof value === 'string' && severityFields.has(key)) fields[key] = migrateLegacySeverity(value);
+      else if (key === 'severityCounts' && value && typeof value === 'object') fields[key] = migrateSeverityCounts(value as Record<string, unknown>);
+      else if (!CONFIG_FIELDS.has(key)) migrateFields(value, SEVERITY_FIELDS_OF.get(key) ?? SEVERITY_FIELDS);
+    }
+    // `gradeStep` writes no step between equal grades, so a step whose grades the migration made equal is dropped.
+    if (Array.isArray(fields.gradePath)) {
+      const steps = fields.gradePath.filter((step: Partial<GradeStep> | null) => !step || step.from !== step.to);
+      if (steps.length > 0) fields.gradePath = steps;
+      else delete fields.gradePath;
+    }
+  }
+}
+
+function migrateSeverityCounts(counts: Record<string, unknown>): Record<string, unknown> {
+  const migrated: Record<string, unknown> = {};
+  for (const [severity, count] of Object.entries(counts)) {
+    const key = migrateLegacySeverity(severity);
+    migrated[key] = typeof count === 'number' && typeof migrated[key] === 'number' ? count + (migrated[key] as number) : count;
+  }
+  return migrated;
 }
 
 /** Whether a finding of this severity is posted as a review thread, unless it is a follow-up. */
@@ -85,12 +132,12 @@ export function isBlockingSeverity(severity: FindingSeverity): boolean {
 
 /** Whether a finding of this severity is a note: the review lists it, and it never blocks. */
 export function isNote(severity: FindingSeverity): boolean {
-  return severity === 'suggestion' || severity === 'nitpick';
+  return severity === 'note';
 }
 
 
 /** Regex source matching all current and legacy severity tokens. */
-export const SEVERITY_TOKEN_PATTERN = 'blocker|warning|suggestion|nitpick|ignore|required|nit';
+export const SEVERITY_TOKEN_PATTERN = 'blocker|warning|note|ignore|suggestion|nitpick|required|nit';
 
 export const RATCHET_SUPPRESSED_TAG = 'suppressed-by-ratchet' as const;
 export const CONTRADICTION_TAG = 'contradicts-prior-round' as const;
@@ -691,7 +738,7 @@ export interface NeedsHuman {
   blockers: VerdictTraceEntry[];
 }
 
-export type VerdictReason = 'required_present' | 'prior_unaddressed' | 'warnings_present' | 'only_nit_or_suggestion' | 'verdict_reader';
+export type VerdictReason = 'required_present' | 'prior_unaddressed' | 'warnings_present' | 'only_notes' | 'verdict_reader';
 
 /** The verdict reader's answer on a round where no finding blocked. */
 export interface VerdictReport {
@@ -748,7 +795,7 @@ export interface ReviewResult {
   memorySuppressed?: Finding[];
   /** The learnings and suppressions loaded from memory for the round. */
   memoryLoaded?: { learnings: number; suppressions: number };
-  /** Pre-existing findings not worth posting, such as suggestions. Only the round record keeps them. */
+  /** Pre-existing findings not worth posting, such as notes. Only the round record keeps them. */
   unpostedPreExisting?: Finding[];
   /** The notes the review leaves out, each with `unpostedReason`. Only the round record keeps them. */
   unpostedNotes?: Finding[];
@@ -1038,11 +1085,6 @@ export interface ReviewConfig {
   static_analysis?: StaticAnalysisConfig;
   /** Public repos the review may read as context. Always read from the base branch, so a PR cannot make Manki fetch another repo. */
   related_repos?: RelatedRepo[];
-  /**
-   * @deprecated Removed in v5.1.0. The field is still parsed so old configs don't fail,
-   * but the value is ignored and a one-line warning is emitted at run start.
-   */
-  nit_handling?: 'issues' | 'comments';
   /** `skip` reviews a draft PR only on request, `review` reviews it automatically. A draft review never approves. */
   drafts?: 'skip' | 'review';
   review_passes?: number;
@@ -1057,7 +1099,7 @@ export interface ReviewConfig {
      * `0` grants none, so after a round-cap pause a review started by hand reviews only its own round.
      */
     rounds_after_restart?: number;
-    /** Glob patterns for test files. Suggestion/nitpick findings on these paths are dropped on round 2+. */
+    /** Glob patterns for test files. Notes on these paths are dropped on round 2+. */
     test_path_patterns?: string[];
     /** When true, a prior-round finding whose thread a human resolved, or Manki resolved as judge-addressed, suppresses matching current findings. */
     suppress_resolved_threads?: boolean;
@@ -1886,7 +1928,7 @@ export interface RoundJudge {
    * round-context block so the resolution signal is observable post-hoc when
    * debugging stuck reviews. Producers omit this field on rounds with no open
    * threads. `status: 'addressed'` retires warning priors via `determineOutcome`
-   * and ratchets suggestion/nitpick priors via `applyCrossRoundSuppression`;
+   * and ratchets note priors via `applyCrossRoundSuppression`;
    * blockers require GitHub thread resolution or explicit `authorReply: 'agree'`.
    */
   threadEvaluations?: ThreadEvaluation[];
@@ -1951,12 +1993,12 @@ export interface RoundDedup {
    */
   duplicateMatches?: RoundDedupDuplicateMatch[];
   /**
-   * Count of suggestion/nitpick findings dropped by the round-2+
+   * Count of notes dropped by the round-2+
    * test-file suppressor. Returned from `runReview` but previously
    * never written into `RoundContext`.
    */
   testNitSuppressedCount?: number;
-  /** Suggestions and nitpicks dropped because a CI tool already reports a result on the same file and line. */
+  /** Notes dropped because a CI tool already reports a result on the same file and line. */
   staticSignalMatches?: RoundStaticSignalMatch[];
   durationMs?: number;
 }

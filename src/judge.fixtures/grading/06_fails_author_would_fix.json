@@ -3,8 +3,7 @@
   "case": "fails-author-would-fix",
   "allowed": [
     "ignore",
-    "nitpick",
-    "suggestion"
+    "note"
   ],
   "finding": {
     "title": "Webhook delivery is never retried",

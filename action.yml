@@ -53,7 +53,7 @@ outputs:
   findings_json:
     description: 'JSON array of all findings (for downstream processing)'
   severity_counts:
-    description: 'JSON object with severity counts: {blocker, warning, suggestion, nitpick}'
+    description: 'JSON object with severity counts: {blocker, warning, note}'
   judge_model:
     description: 'Model used for the judge agent'
 

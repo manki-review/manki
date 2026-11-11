@@ -95,7 +95,7 @@ describe('renderReport', () => {
   it('reports blocker precision per repo, the fix-rate blockers, labels and the fixed findings graded below blocker', () => {
     const findings = [
       labelled('b1', 'blocker', 'real'), labelled('b2', 'blocker', 'real'), labelled('b3', 'blocker', 'false'), labelled('b4', 'blocker', 'unclear'),
-      labelled('s1', 'suggestion', 'real'), labelled('w1', 'warning', 'real', 2, false), labelled('n1', 'nitpick', 'false'),
+      labelled('s1', 'note', 'real'), labelled('w1', 'warning', 'real', 2, false), labelled('n1', 'note', 'false'),
       { ...labelled('o1', 'blocker', 'real'), repo: 'o/other' },
     ];
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -112,7 +112,7 @@ describe('renderReport', () => {
       '| o/r | 4 | 2 | 1 | 1 | 50% | 67% |',
     ].join('\n'));
     expect(report).toContain('| posted | fixed | dismissed | untouched | precision |\n| ---: | ---: | ---: | ---: | ---: |\n| 1 | 1 | 0 | 0 | 100% |');
-    expect(report).toContain('| blocker | 5 | 3 | 1 | 1 |\n| warning | 1 | 1 | 0 | 0 |\n| suggestion | 1 | 1 | 0 | 0 |\n| nitpick | 1 | 0 | 1 | 0 |');
+    expect(report).toContain('| blocker | 5 | 3 | 1 | 1 |\n| warning | 1 | 1 | 0 | 0 |\n| note | 2 | 1 | 1 | 0 |');
     expect(report).toContain('| line-changed | 5 |\n| reply-withdrawn | 2 |\n| untouched | 1 |');
     expect(report.split('## Missed blockers')[1]).toBe([
       '',
@@ -120,7 +120,7 @@ describe('renderReport', () => {
       'Findings graded below blocker that were fixed. Check whether each one should have blocked.',
       '',
       '- o/r#2 `src/lib.rs:10` warning: Title w1 (line-changed)',
-      '- [o/r#1](https://github.com/o/r/pull/1#s1) `src/lib.rs:10` suggestion: Title s1 (line-changed)',
+      '- [o/r#1](https://github.com/o/r/pull/1#s1) `src/lib.rs:10` note: Title s1 (line-changed)',
       '',
     ].join('\n'));
     expect(renderReport([])).not.toContain('fix-rate.jsonl');
@@ -131,7 +131,7 @@ describe('renderReport', () => {
 describe('selectSet', () => {
   it('exports labelled findings with a posted comment, false ones first, then real blockers, newest first, up to the limit', () => {
     const findings = [
-      labelled('s-old', 'suggestion', 'real', 1), labelled('b-old', 'blocker', 'real', 1), labelled('u', 'blocker', 'unclear', 3),
+      labelled('s-old', 'note', 'real', 1), labelled('b-old', 'blocker', 'real', 1), labelled('u', 'blocker', 'unclear', 3),
       labelled('b-new', 'blocker', 'real', 2), labelled('f', 'warning', 'false', 1), labelled('no-thread', 'blocker', 'real', 4, false),
     ];
 
@@ -145,5 +145,9 @@ describe('selectSet', () => {
       title: 'Title f', comment: 'The text.', label: 'false', labelSource: 'reply-withdrawn', threadUrl: 'https://github.com/o/r/pull/1#f',
     });
     expect(selectSet(findings, 1)).toHaveLength(1);
+    // The header line of a note's thread is dropped like any other grade's.
+    const note = labelled('n', 'note', 'real');
+    note.thread!.comments[0].body = '\u2728 **Note, not blocking** · Security\n\n**Token compared in variable time**\n\n**Why:** It leaks timing.\n\n<!-- manki:note:n -->';
+    expect(selectSet([note])[0].comment).toBe('**Token compared in variable time**\n\n**Why:** It leaks timing.');
   });
 });

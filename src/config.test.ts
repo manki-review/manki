@@ -346,11 +346,13 @@ memory:
 auto_review: true
 unknown_key: some_value
 another_unknown: 123
+nit_handling: comments
 `;
       const config = loadConfigFromContent(yaml);
       expect(config.auto_review).toBe(true);
       expect(core.warning).toHaveBeenCalledWith('Unknown config key: "unknown_key"');
       expect(core.warning).toHaveBeenCalledWith('Unknown config key: "another_unknown"');
+      expect(core.warning).toHaveBeenCalledWith('Unknown config key: "nit_handling"');
     });
 
     it('warns on unknown keys inside each block that takes an object, and not on the keys it knows', () => {
@@ -568,19 +570,6 @@ models:
 `;
       expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
       expect(core.error).toHaveBeenCalledWith('`models.dedup` must be a string');
-    });
-
-    it('warns and ignores deprecated nit_handling values', () => {
-      expect(() => loadConfigFromContent('nit_handling: issues')).not.toThrow();
-      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("`nit_handling: 'issues'` is deprecated"));
-
-      jest.mocked(core.warning).mockClear();
-      expect(() => loadConfigFromContent('nit_handling: comments')).not.toThrow();
-      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("`nit_handling: 'comments'` is deprecated"));
-
-      jest.mocked(core.warning).mockClear();
-      expect(() => loadConfigFromContent('nit_handling: email')).not.toThrow();
-      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("`nit_handling: 'email'` is not a recognized value"));
     });
 
     it('defaults `drafts` to skip, accepts skip and review, and rejects anything else', () => {

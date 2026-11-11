@@ -3,8 +3,7 @@
   "case": "refuted-by-shown-guard",
   "allowed": [
     "warning",
-    "suggestion",
-    "nitpick",
+    "note",
     "ignore"
   ],
   "finding": {

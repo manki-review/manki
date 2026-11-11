@@ -251,7 +251,7 @@ export async function loadMemory(store: MemoryStore): Promise<RepoMemory> {
 }
 
 /** Severities that are allowed to be suppressed by stored suppressions. */
-const SUPPRESSIBLE_SEVERITIES: ReadonlySet<FindingSeverity> = new Set<FindingSeverity>(['warning', 'suggestion', 'nitpick']);
+const SUPPRESSIBLE_SEVERITIES: ReadonlySet<FindingSeverity> = new Set<FindingSeverity>(['warning', 'note']);
 
 /**
  * Splits the judge's findings into the ones stored suppressions hide and the rest.
@@ -359,7 +359,7 @@ export function buildMemoryContext(memory: RepoMemory, paths?: ReadonlySet<strin
 
   if (memory.suppressions.length > 0) {
     parts.push('\n## Review Memory — Suppressions\n');
-    parts.push('The repository marked these patterns as intended. Leave out a warning, suggestion or nitpick that matches one, but report a blocker or a security issue even when it matches:\n');
+    parts.push('The repository marked these patterns as intended. Leave out a warning or a note that matches one, but report a blocker or a security issue even when it matches:\n');
     for (const s of memory.suppressions) {
       const scope = s.file_glob ? ` (files matching ${s.file_glob})` : '';
       parts.push(`- "${sanitizeMemoryField(s.pattern)}"${scope}: ${sanitizeMemoryField(s.reason)}`);

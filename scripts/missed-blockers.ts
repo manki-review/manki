@@ -75,7 +75,7 @@ export function collectMisses(rounds: RoundContext[]): Miss[] {
 
 type ThreadComment = PrRecords['threadComments'][number];
 
-const DRAFT_SEVERITIES = new Set(['blocker', 'warning', 'suggestion', 'nitpick']);
+const DRAFT_SEVERITIES = new Set(['blocker', 'warning', 'note']);
 
 /** What a follow-up round had before it, and how it treated the earlier findings, for a follow-up draft. */
 export interface FollowUp {

@@ -3,8 +3,7 @@
   "case": "fails-pr-causes-it",
   "allowed": [
     "ignore",
-    "nitpick",
-    "suggestion"
+    "note"
   ],
   "finding": {
     "title": "Average divides by zero on an empty list",

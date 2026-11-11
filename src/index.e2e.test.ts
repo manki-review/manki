@@ -692,7 +692,7 @@ describe('runFullReview end to end', () => {
 
   it('lists the notes in the judge\'s order without a thread, and records the note past `review.notes`', async () => {
     const titles = ['Reuse the range helper', 'Name the limit', 'Cover the empty input', 'Say why the sum is kept'];
-    const notes = titles.map((title, i) => ({ ...BLOCKER, severity: 'suggestion', title, line: i + 1, description: `Note ${i + 1}.` }));
+    const notes = titles.map((title, i) => ({ ...BLOCKER, severity: 'note', title, line: i + 1, description: `Note ${i + 1}.` }));
     Object.assign(mockLLM.replies, {
       reviewer: JSON.stringify(notes),
       judge: JSON.stringify({
@@ -1092,7 +1092,7 @@ describe('runFullReview end to end', () => {
   // A finding below `warning` gets a thread only when it is a security finding.
   it.each([
     ['blocker', 'blocker', 'CHANGES_REQUESTED'],
-    ['security suggestion', 'suggestion', 'APPROVED'],
+    ['security suggestion', 'note', 'APPROVED'],
   ])('posts one review when a %s thread the round counts as fixed cannot be resolved', async (_label, severity, state) => {
     const finding = { ...BLOCKER, severity };
     const cell = severity === 'blocker' ? { row: 'wrong' } : { row: 'improvement', security: true };

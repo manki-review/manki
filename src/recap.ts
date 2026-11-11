@@ -7,7 +7,7 @@ import { findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
-import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, isSecurityFinding } from './types';
+import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, isSecurityFinding } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -496,7 +496,7 @@ function parseContextBlocks(
         continue;
       }
 
-      const ctx = parsed as RoundContext;
+      const ctx = migrateStoredSeverities(parsed as RoundContext);
       if (ctx.meta.incomplete) continue;
       const existing = byRound.get(round);
       if (existing) {

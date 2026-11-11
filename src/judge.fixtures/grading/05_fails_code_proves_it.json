@@ -3,8 +3,7 @@
   "case": "fails-code-proves-it",
   "allowed": [
     "warning",
-    "suggestion",
-    "nitpick",
+    "note",
     "ignore"
   ],
   "finding": {

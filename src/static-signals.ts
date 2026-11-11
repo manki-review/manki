@@ -48,7 +48,7 @@ const CI_WORKFLOWS_DIR = '.github/workflows';
 /** Analyzers that run unless `.manki.yml` turns them off, because they only run when a file they check changes. */
 const DEFAULT_ANALYZERS: readonly AnalyzerName[] = ['actionlint', 'zizmor', 'shellcheck'];
 
-const TOOL_SEVERITY: Record<StaticSignal['severity'], FindingSeverity> = { error: 'blocker', warning: 'warning', note: 'suggestion' };
+const TOOL_SEVERITY: Record<StaticSignal['severity'], FindingSeverity> = { error: 'blocker', warning: 'warning', note: 'note' };
 
 const SEVERITY_RANK: Record<StaticSignal['severity'], number> = { error: 0, warning: 1, note: 2 };
 

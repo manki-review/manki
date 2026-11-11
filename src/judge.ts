@@ -20,12 +20,12 @@ import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
 import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, fencePrText, filesChangedByPush, parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff } from './review';
-import { VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, isGradeCell, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
+import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -162,7 +162,7 @@ function extractAddedLineBlocks(rawDiff: string): AddedLineBlock[] {
 /**
  * Find regions of `rawDiff` that implement `suggestedFix` text from prior
  * rounds. Used to detect own-proposal follow-ups that should be demoted to
- * nits rather than re-flagged as new required/suggestion findings.
+ * notes rather than flagged again as new findings.
  */
 export function computeProvenanceMap(
   priorRounds: RoundContext[] | undefined,
@@ -404,7 +404,7 @@ export function buildJudgeSystemPrompt(
 - "The earlier problems are fixed and nothing new blocks merge."
 Bad examples (do NOT write like this):
 - "The author addressed the positional slice ordering issue..."
-- "Solid follow-up with a few remaining suggestions."
+- "Solid follow-up with a few remaining notes."
 - "No findings submitted for evaluation this round."${openBlockerInstruction}`
     : `Write one or two sentences on the most important problem: what goes wrong in practice when this code runs, and who notices. The review already shows each finding's title, so do not repeat a title word for word. When nothing blocks, say so in one short sentence. Do not praise the change or describe what the PR does. Never start with "The author", "This PR" or "The refactor". If you can swap the project name and the summary still works, it is too generic. Good examples:
 - "A list request whose total is not a multiple of the page size drops its last page, so a user with 120 items sees only 100."
@@ -419,11 +419,7 @@ Bad examples (do NOT write like this):
 
 ## Grades
 
-- **blocker**: a defect that passes all five blocker tests below. Must be fixed.
-- **warning**: a real problem the author should fix that is not a blocker.
-- **suggestion**: an improvement open to discussion. The code works today but could be better.
-- **nitpick**: cosmetic: wording, formatting, naming. Purely optional.
-- **ignore**: false positives, matters of preference, reviewer misunderstandings, and the cases the rules below drop.
+${GRADE_DEFINITIONS}
 
 You do not return a grade. For each finding you state its cell of the Severity Table below, as \`row\` and \`column\`, and Manki works out the grade from that cell. To mark a finding \`ignore\`, set \`row\` to \`ignore\`. State what actually goes wrong in the code, never how confidently the finding is worded.
 
@@ -447,27 +443,19 @@ Serious damage is one of:
 - a memory safety violation or undefined behaviour
 - a broken public contract, such as an API, a wire or file format, a config key or a CLI flag, with no migration path
 
-**Outside input** is anything the code does not produce itself: requests and messages from users or network peers, files and data read from disk or other services, and, for code that handles pull requests, anything a PR author or commenter can write. Values the code's own logic produces and checks are internal. A failure that outside input can trigger is never hypothetical, however unlikely it looks. For a library, outside input is also anything a caller of its public API can pass, such as arguments, readers and byte streams. No caller inside the repository is needed.
+${OUTSIDE_INPUT_RULE}
 
 ## Severity Table
 
 State each finding's cell: \`row\` is what goes wrong, and \`column\` is when it happens. Manki works out the grade from the cell. A \`blocker\` from the table still needs all five tests.
 
-| What goes wrong (\`row\`) | In normal use or from outside input (\`normal\`) | In a rare internal edge case (\`rare\`) |
-| --- | --- | --- |
-| \`severe\`: lost or corrupted data, security, memory safety or undefined behaviour, a broken public contract | \`blocker\` | \`blocker\` |
-| \`wrong\`: a wrong result, a crash, a hang or resource exhaustion | \`blocker\` | \`warning\` |
-| \`degraded\`: slower, noisier or harder to debug, with the right result | \`warning\` | \`suggestion\` |
-| \`improvement\`: the code works but could be better, such as a missing test, a comment that misstates the code, or structure and reuse | \`suggestion\` | \`suggestion\` |
-| \`style\`: wording, formatting, naming, docs | \`nitpick\` | \`nitpick\` |
-
-A rare internal edge case needs a state that only the code's own logic produces, and that normal use does not reach. A state that callers, stored data or concurrent use of a public API can produce is not internal, however narrow the timing looks: an SDK's \`Session.refresh()\` that races \`close()\` and leaks a socket is \`normal\` when the docs tell users to call \`refresh\` from a background thread. When you cannot name what in the code's own logic produces the state, the column is \`normal\`.
+${SEVERITY_TABLE}
 
 **The \`rare\` column is a claim, and Manki checks it.** On the \`wrong\` row it is all that keeps a finding from blocking, so Manki adds the doubt "${REACH_DOUBT.premise}" to every such finding. Do not list that doubt yourself. Name in \`reasoning\` the state and what in the code's own logic produces it.${toolsCheckFindings ? ' Manki then searches the code with tools for a caller, stored data or concurrent use of a public API that produces the state. When it finds one, the finding moves to the `normal` column.' : ''}
 
 **"Not worse than before" is no cell.** A defect in lines this PR adds is graded by its cell, even when the old code failed the same way or the bad state existed before. Never state a lower row, the \`rare\` column or \`ignore\` because the change is "not a regression".
 
-A rule below that gives a finding a grade names the row to state: \`degraded\` in the \`normal\` column for \`warning\`, \`improvement\` for \`suggestion\` and \`style\` for \`nitpick\`. A grade held down by something you could not settle is different: state the cell the damage earns and list what you could not settle in \`doubts\`. Manki grades a \`blocker\` cell with an open doubt as a \`warning\`.
+A rule below that gives a finding a grade names the row to state: \`degraded\` in the \`normal\` column for \`warning\`, and for \`note\` the \`improvement\` row, or the \`style\` row when the point is only wording, formatting, naming or docs. A grade held down by something you could not settle is different: state the cell the damage earns and list what you could not settle in \`doubts\`. Manki grades a \`blocker\` cell with an open doubt as a \`warning\`.
 
 ## Never a Blocker
 
@@ -522,7 +510,7 @@ When you cannot tell whether a finding is real, resolve it by the grade its cell
 
 - \`blocker\`: when you cannot settle one of the five tests, state the cell all the same, list what you could not settle in \`doubts\`, and say in \`reasoning\` which test it is. Manki grades it \`warning\` at most.
 - \`warning\`: keep it, list what you could not determine in \`doubts\`, and say it in \`reasoning\`. A wrongly dropped defect ships. A wrongly kept one costs a single fix.
-- \`suggestion\` or \`nitpick\`: drop it (\`ignore\`). A missed suggestion is cheap. Chasing a false one is not.
+- \`note\`: drop it (\`ignore\`). A missed note is cheap. Chasing a false one is not.
 
 Being certain overrides this. It governs doubt, never judgment.
 
@@ -546,8 +534,8 @@ Not blockers:
 - **Rust**: \`retry_delay\` overflows when \`attempt\` exceeds 63, but \`attempt\` comes from the code's own loop, which stops at 5. A check on a trusted internal value: \`ignore\`.
 - **Go**: the retry loop logs "3 attempts failed" without the last error. Every result is still correct, but operators lose the cause in normal use. Degraded but correct: \`degraded\` and \`normal\`, a \`warning\`.
 - **Python**: \`merge_ranges\` returns a wrong range when two inputs share an end point, a case only the internal compaction job produces, and only after a crash recovery. Wrong behaviour in a rare internal edge case: \`wrong\` and \`rare\`, a \`warning\`, with \`reasoning\` that names the compaction job as the only code that passes \`merge_ranges\` such ranges.
-- **TypeScript**: search results are sorted case-sensitively, and the PR description says this matches the existing API. Intended but surprising: \`improvement\`, a \`suggestion\` asking whether users expect it.
-- **Java**: the new \`parseHeader\` error branch has no test. Missing test coverage: \`improvement\`, a \`suggestion\`.
+- **TypeScript**: search results are sorted case-sensitively, and the PR description says this matches the existing API. Intended but surprising: \`improvement\`, a \`note\` asking whether users expect it.
+- **Java**: the new \`parseHeader\` error branch has no test. Missing test coverage: \`improvement\`, a \`note\`.
 
 ## Evaluation Criteria
 
@@ -608,7 +596,7 @@ Set \`effort\` to how big the fix is: \`quick\` for a few lines in one place, \`
 
 ## Note Order
 
-A review lists only the first few findings whose cell gives \`suggestion\` or \`nitpick\`. In \`noteOrder\`, list the number N of each such "Finding N", starting with the one whose fix helps the author most. A finding that prevents a likely future defect, closes a gap in the tests or stops a reader being misled comes before one that only tidies the code.
+A review lists only the first few findings whose cell gives \`note\`. In \`noteOrder\`, list the number N of each such "Finding N", starting with the one whose fix helps the author most. A finding that prevents a likely future defect, closes a gap in the tests or stops a reader being misled comes before one that only tidies the code.
 
 ## Duplicate Detection
 
@@ -655,7 +643,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "proof": ["file:line of each line that shows the failure, for a blocker"]
     }
   ],
-  "noteOrder": ["N of each finding graded suggestion or nitpick, the most useful first"]${hasOpenThreads ? `,
+  "noteOrder": ["N of each finding graded note, the most useful first"]${hasOpenThreads ? `,
   "threadEvaluations": [
     {
       "threadId": "PRRT_xxx",
@@ -684,7 +672,7 @@ The flagged thread \`line\` is GitHub-anchored from when the thread was created 
 ` : ''}
 Return one entry per finding, in the same order as the input. Set \`id\` to the N of the finding's "Finding N" heading. State the cell before the reasoning.`;
 
-  const repositoryRules = buildRepositoryRules(config);
+  const repositoryRules = buildRepositoryRules(config, 'judge');
   if (repositoryRules) {
     prompt += `\n\n${repositoryRules}`;
   }
@@ -711,25 +699,6 @@ A finding cites their code as \`owner/name:path:line\`. Its tool evidence says w
 
 - **A divergence from a reference** is graded by the blocker tests and the severity table, like any other finding.
 - **A change that breaks a consumer** is the \`degraded\` row in the \`normal\` column, a \`warning\` that lists the consumer's call sites and says it breaks once the consumer upgrades. It is the \`severe\` row, a \`blocker\`, only when the PR description says the change does not break anything. This replaces the broken public contract part of the \`severe\` row for a consumer.`;
-}
-
-/** Returns the judge rules the base branch's `review` block adds, or an empty string when it adds none. */
-function buildRepositoryRules(config: ReviewConfig): string {
-  const { outside_input: outsideInput, examples, critical_paths: criticalPaths } = config.review ?? {};
-  const hasCriticalAreas = !!criticalPaths?.length;
-  if (!hasCriticalAreas && !outsideInput && !examples) return '';
-  const exampleList = (label: string, list: string[] | undefined) => (list ? ['', label, ...list.map(e => `- ${e.trim()}`)] : []);
-  const parts = ['## Repository Rules', '', 'The repository\'s maintainers set these rules. They add to the rules above and never lower a security defect.'];
-  if (hasCriticalAreas) {
-    parts.push('', '**Critical areas:** a finding marked **Critical area** sits in a path where any wrong result is severe damage. State the `severe` row for a wrong result there, even in a rare internal edge case. The other tests still apply.');
-  }
-  if (outsideInput) {
-    parts.push('', `**Outside input in this repository:** ${outsideInput.trim()}`);
-  }
-  if (examples) {
-    parts.push('', '**Repository examples:**', ...exampleList('Blockers:', examples.blocker), ...exampleList('Not blockers:', examples.not_blocker));
-  }
-  return parts.join('\n');
 }
 
 export function buildJudgeUserMessage(
@@ -1802,7 +1771,7 @@ function ownProposalOf(finding: Finding, provenanceMap?: ProvenanceEntry[]): Pro
 function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): void {
   const match = ownProposalOf(finding, provenanceMap);
   if (!match) return;
-  if (finding.severity !== 'suggestion' && finding.severity !== 'nitpick') return;
+  if (!isNote(finding.severity)) return;
 
   finding.originalSeverity ??= finding.severity;
   Object.assign(finding, gradeStep(finding, 'ignore', 'own_proposal'));
@@ -1836,7 +1805,7 @@ export interface CrossRoundSuppressionOptions {
   suppressResolvedThreads?: boolean;
   /**
    * Latest judge `threadEvaluations` keyed by prior `threadId`. When a prior
-   * `suggestion`/`nitpick` thread has `status: 'addressed'` here, it joins the
+   * `note` thread has `status: 'addressed'` here, it joins the
    * accepted-priors set for ratchet (but never for contradiction). `blocker`
    * and `warning` priors are intentionally excluded: an `addressed` signal
    * alone is LLM-derived and must not silently retire higher-severity priors
@@ -1854,7 +1823,7 @@ export interface CrossRoundSuppressionOptions {
  *
  * Contradiction: if a prior finding with the same slug + file + line proximity
  * exists, the author agreed, and the current finding uses a reversal word,
- * demote `suggestion`/`warning` to `nitpick` and annotate `judgeNotes`. `blocker`
+ * demote a `warning` to `note` and annotate `judgeNotes`. `blocker`
  * findings are intentionally excluded from contradiction demotion to prevent
  * prompt injection attacks where adversarial PR content could silently hide real bugs.
  *
@@ -1891,7 +1860,7 @@ export function applyCrossRoundSuppression(
         acceptedPriors.push({ round: round.meta.round, finding: f, source: 'agree' });
       } else if (useResolved && f.threadId && resolvedThreadIds!.has(f.threadId)) {
         acceptedPriors.push({ round: round.meta.round, finding: f, source: 'resolved' });
-      } else if ((f.severity === 'suggestion' || f.severity === 'nitpick') && isPriorAddressedByJudge(f, judgeIndex)) {
+      } else if (f.severity === 'note' && isPriorAddressedByJudge(f, judgeIndex)) {
         acceptedPriors.push({ round: round.meta.round, finding: f, source: 'judge-addressed' });
       }
     }
@@ -1916,9 +1885,9 @@ export function applyCrossRoundSuppression(
 
     const slug = titleToSlug(current.title);
 
-    // Contradiction is checked before ratchet for `warning`/`suggestion` findings only.
-    // `blocker` and `nitpick` skip this branch: blocker is protected from any
-    // silent demotion (prompt-injection guard); nitpick falls through to ratchet.
+    // Contradiction is checked before ratchet for `warning` findings only.
+    // `blocker` and `note` skip this branch: blocker is protected from any
+    // silent demotion (prompt-injection guard); a note falls through to ratchet.
     // Only `agree` priors trigger contradiction; resolved-thread priors do not
     // imply the author articulated a position to contradict.
     const contradictionMatch = acceptedPriors.find(({ finding: prior, source }) =>
@@ -1930,10 +1899,10 @@ export function applyCrossRoundSuppression(
         && current.line <= prior.fingerprint.lineEnd + LINE_WINDOW
       ),
     );
-    if (contradictionMatch && hasReversalWord(current) && (current.severity === 'warning' || current.severity === 'suggestion')) {
+    if (contradictionMatch && hasReversalWord(current) && current.severity === 'warning') {
       const note = `Contradicts round ${contradictionMatch.round} guidance accepted by author`;
       current.originalSeverity ??= current.severity;
-      Object.assign(current, gradeStep(current, 'nitpick', 'contradiction', note));
+      Object.assign(current, gradeStep(current, 'note', 'contradiction', note));
       current.tags = addTag(current.tags, CONTRADICTION_TAG);
       current.judgeNotes = current.judgeNotes ? `${current.judgeNotes} ${note}` : note;
       demotedCount++;
@@ -1953,7 +1922,7 @@ export function applyCrossRoundSuppression(
       // numbers and the same underlying concern may surface with a reworded
       // title. 'resolved' priors can suppress up to and including blocker
       // (GitHub resolution is a strong trust signal), but 'judge-addressed'
-      // is restricted to suggestion/nitpick because that signal is LLM-derived
+      // is restricted to notes because that signal is LLM-derived
       // and must not retire higher-severity findings without explicit GitHub
       // resolution.
       if (source !== 'resolved' && source !== 'judge-addressed') return false;

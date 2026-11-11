@@ -27,7 +27,7 @@ import { Finding, UNBUILT_TAG, UNPROVEN_TAG } from './types';
 import { registerSecret } from './utils';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
-  severity: 'suggestion',
+  severity: 'note',
   title: 'Unused variable',
   file: 'src/index.ts',
   line: 10,
@@ -129,11 +129,11 @@ describe('applySuppressions', () => {
     expect(kept[0].severity).toBe('ignore');
   });
 
-  it('suppresses suggestion and nit but keeps required with same pattern', () => {
+  it('suppresses a note but keeps a blocker with the same pattern', () => {
     const findings = [
       makeFinding({ severity: 'blocker', title: 'Unused variable causes crash' }),
-      makeFinding({ severity: 'suggestion', title: 'Unused variable cleanup' }),
-      makeFinding({ severity: 'nitpick', title: 'Unused variable — rename?' }),
+      makeFinding({ severity: 'note', title: 'Unused variable cleanup' }),
+      makeFinding({ severity: 'note', title: 'Unused variable — rename?' }),
     ];
     const suppressions = [makeSuppression({ pattern: 'unused variable' })];
 
@@ -284,7 +284,7 @@ describe('buildMemoryContext', () => {
     expect(context).toContain('Always use strict mode');
     expect(context).toContain('Review Memory — Suppressions');
     // `applySuppressions` never hides a blocker or a security finding, so a finder still reports those.
-    expect(context).toContain('Leave out a warning, suggestion or nitpick that matches one, but report a blocker or a security issue even when it matches');
+    expect(context).toContain('Leave out a warning or a note that matches one, but report a blocker or a security issue even when it matches');
     expect(context).not.toContain('should NOT be flagged');
     expect(context).toContain('"todo comment"');
     expect(context).toContain('TODOs are tracked in issues');
@@ -930,7 +930,7 @@ describe('buildMemoryContext — suppressions only', () => {
     expect(context).not.toContain('Review Memory — Learnings');
     expect(context).toContain('Review Memory — Suppressions');
     // `applySuppressions` never hides a blocker or a security finding, so a finder still reports those.
-    expect(context).toContain('Leave out a warning, suggestion or nitpick that matches one, but report a blocker or a security issue even when it matches');
+    expect(context).toContain('Leave out a warning or a note that matches one, but report a blocker or a security issue even when it matches');
     expect(context).not.toContain('should NOT be flagged');
     expect(context).toContain('"todo comment"');
   });

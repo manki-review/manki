@@ -795,7 +795,7 @@ export function buildDashboard(data: DashboardData): string {
     if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
     if (data.suppressionCount) judgeLines.push(`${INDENT}suppressed by memory: ${data.suppressionCount}`);
     if (data.testNitSuppressedCount != null && data.testNitSuppressedCount > 0) {
-      judgeLines.push(`${INDENT}suppressed: ${data.testNitSuppressedCount} test-only nit${data.testNitSuppressedCount === 1 ? '' : 's'} (round ≥2 throttle)`);
+      judgeLines.push(`${INDENT}suppressed: ${data.testNitSuppressedCount} test-only note${data.testNitSuppressedCount === 1 ? '' : 's'} (round ≥2 throttle)`);
     }
   }
   sections.push(judgeLines.join('\n'));
@@ -1174,8 +1174,7 @@ function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: 
 const SEVERITY_EMOJI: Record<FindingSeverity, string> = {
   blocker: '🚫',
   warning: '⚠️',
-  suggestion: '✨',
-  nitpick: '📝',
+  note: '✨',
   ignore: '⚪',
 };
 
@@ -1653,7 +1652,7 @@ export async function postReview(
   }
 
   const inline = new Set(nonBlocking
-    .filter(f => f.severity !== 'nitpick' && diff && f.line > 0 && isOnChangedLine(f, diff))
+    .filter(f => diff && f.line > 0 && isOnChangedLine(f, diff))
     .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity))
     .slice(0, MAX_NON_BLOCKING_INLINE));
   for (const f of nonBlocking) {
@@ -2000,7 +1999,7 @@ interface PostedFindings {
   hold?: ApprovalHold;
 }
 
-/** Returns how many findings of each severity there are, most severe first, as "1 warning and 2 suggestions". */
+/** Returns how many findings of each severity there are, most severe first, as "1 warning and 2 notes". */
 function formatSeverityCounts(findings: Array<Pick<FindingFingerprintEntry, 'severity'>>): string {
   const parts = SEVERITY_ORDER.flatMap(s => {
     const n = findings.filter(f => f.severity === s).length;

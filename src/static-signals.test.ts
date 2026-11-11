@@ -327,7 +327,7 @@ describe('collectStaticSignals with analyzers and waits', () => {
     expect(record).toEqual({ analyzers: [{ analyzer: 'ast_grep', status: 'ran', results: 1 }] });
     expect(cargo.rest.repos.getContent).not.toHaveBeenCalledWith(expect.objectContaining({ path: 'src/app.ts' }));
     expect(cargo.rest.git.getTree).toHaveBeenCalledWith(expect.objectContaining({ tree_sha: 'main', recursive: 'true' }));
-    expect(toolAlertFindings(signals)).toEqual([expect.objectContaining({ toolSource: 'ast-grep', severity: 'suggestion' })]);
+    expect(toolAlertFindings(signals)).toEqual([expect.objectContaining({ toolSource: 'ast-grep', severity: 'note' })]);
 
     // A workspace in a subdirectory counts for the files under it, and a sibling crate's manifest does not.
     const workspace = makeOctokit({ main: ONLY_ANALYZERS }, { ...files, 'main:crates/Cargo.toml': '[workspace]\n', 'main:tools/Cargo.toml': '[package]\n' });
@@ -733,7 +733,7 @@ describe('toolAlertFindings', () => {
       description: 'Query built from user input', reviewers: ['CodeQL'], toolSource: 'CodeQL',
       toolEvidence: { status: 'confirmed', note: 'CodeQL reports this result.' },
     });
-    expect(findings.map(f => f.severity)).toEqual(['warning', 'suggestion', 'blocker', 'suggestion', 'suggestion', 'blocker', 'warning', 'suggestion', 'warning', 'blocker', 'suggestion']);
+    expect(findings.map(f => f.severity)).toEqual(['warning', 'note', 'blocker', 'note', 'note', 'blocker', 'warning', 'note', 'warning', 'blocker', 'note']);
   });
 });
 

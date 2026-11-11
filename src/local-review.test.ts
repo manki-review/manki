@@ -78,7 +78,7 @@ describe('reviewLocal', () => {
         content: readFileSync(join(options.workspace!, 'src/a.ts'), 'utf-8'),
         log: git(options.workspace!, 'log', '--format=%H'),
       };
-      const notes = ['Note one', 'Note two', 'Note three', 'Note four'].map(title => ({ ...finding, severity: 'suggestion' as const, title }));
+      const notes = ['Note one', 'Note two', 'Note three', 'Note four'].map(title => ({ ...finding, severity: 'note' as const, title }));
       return { verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as RoundOutcome, summary: 'One blocker', findings: [{ ...finding }, ...notes], highlights: [], reviewComplete: true, agentNames: ['reviewer'] } as ReviewResult & { outcome: RoundOutcome };
     });
 
@@ -117,7 +117,7 @@ describe('reviewLocal', () => {
     // The push also edits a file outside the diff, and in `src/c.ts` moves every line down and edits one line.
     const fixed = commit(repo, 'Fix b', { 'src/b.ts': `${lines.join('\n')}\n`, 'src/c.ts': '// Checked.\nstart();\nreturn [];\nmiddle();\ncheck();\nend();\nlast();\n', 'guides/conventions.md': 'Name things clearly.\n' });
     git(repo, 'checkout', '-q', 'main');
-    const note = { ...finding, severity: 'suggestion' as const, file: 'src/b.ts' };
+    const note = { ...finding, severity: 'note' as const, file: 'src/b.ts' };
     const findings = [
       { ...finding }, { ...finding, file: 'src/b.ts', line: 2 }, { ...finding, file: 'src/b.ts', line: 20 },
       { ...note, title: 'Rename', line: 3 }, { ...note, title: 'Name the constant', file: 'src/a.ts', line: 1, raisedIn: 1 }, { ...note, title: 'New name', line: 19 },
@@ -130,7 +130,7 @@ describe('reviewLocal', () => {
         { id: 'P1', severity: 'blocker' as const, title: 'Wrong value', file: 'src/b.ts', line: 20, description: 'Should be 0.', suggestedFix: 'const v20 = 0;', security: true, thread: 'open' as const },
         { id: 'P2', severity: 'warning' as const, title: 'Unused constant', file: 'src/a.ts', line: 1, thread: 'resolved' as const },
         { id: 'P4', severity: 'blocker' as const, title: 'Missing check', file: 'src/a.ts', line: 2, thread: 'fixed' as const },
-        { id: 'P3', severity: 'suggestion' as const, title: 'Name the constant', file: 'src/a.ts', line: 1, gradeIfConfirmed: 'warning' as const },
+        { id: 'P3', severity: 'note' as const, title: 'Name the constant', file: 'src/a.ts', line: 1, gradeIfConfirmed: 'warning' as const },
         { id: 'P5', severity: 'warning' as const, title: 'Stale read', file: 'src/a.ts', line: 3, gradeIfConfirmed: 'blocker' as const, cell: { row: 'wrong' as const, column: 'rare' as const }, doubts: [REACH_DOUBT] },
         { id: 'P6', severity: 'warning' as const, title: 'Tenth value is wrong', file: 'src/b.ts', line: 10 },
         { id: 'P7', severity: 'warning' as const, title: 'Guide is vague', file: 'guides/conventions.md', line: 1 },
@@ -156,7 +156,7 @@ describe('reviewLocal', () => {
     expect(record.judge.threadEvaluations).toEqual([{ threadId: 'P4', status: 'addressed', reason: 'Fixed by an earlier push.' }]);
     expect(record.findings.entries.map(e => [e.title, e.threadId, e.severity, e.tags, e.gradeIfConfirmed])).toEqual([
       ['Wrong value', 'P1', 'blocker', ['security'], undefined], ['Unused constant', 'P2', 'warning', undefined, undefined], ['Missing check', 'P4', 'blocker', undefined, undefined],
-      ['Name the constant', undefined, 'suggestion', undefined, 'warning'], ['Stale read', undefined, 'warning', undefined, 'blocker'],
+      ['Name the constant', undefined, 'note', undefined, 'warning'], ['Stale read', undefined, 'warning', undefined, 'blocker'],
       ['Tenth value is wrong', undefined, 'warning', undefined, undefined], ['Guide is vague', undefined, 'warning', undefined, undefined],
       ['Null is returned', undefined, 'warning', undefined, undefined], ['End runs late', undefined, 'warning', undefined, undefined],
       ['Fifth value is wrong', undefined, 'warning', undefined, undefined], ['No file', undefined, 'warning', undefined, undefined],

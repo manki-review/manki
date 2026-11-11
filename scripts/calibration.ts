@@ -17,7 +17,7 @@ import { parsePRDiff } from '../src/diff';
 import { postedFindings, touchesFinding } from '../src/fix-rate';
 import { fetchInterRoundDiff, fetchReviewThreadNodes } from '../src/github';
 import { classifyAuthorReply, judgeAddressedThreadIds } from '../src/recap';
-import { FindingFingerprintEntry, ParsedDiff, RoundContext } from '../src/types';
+import { FindingFingerprintEntry, migrateStoredSeverities, ParsedDiff, RoundContext } from '../src/types';
 import { aggregate } from './fix-rate-report';
 import { githubToken, HistoryLine as RecordLine } from './review-history';
 
@@ -83,7 +83,7 @@ export interface SetEntry {
 const PRECISION_TARGET = 0.8;
 const DEFAULT_SET_LIMIT = 60;
 const MIN_SET_SIZE = 40;
-const SEVERITIES = ['blocker', 'warning', 'suggestion', 'nitpick', 'unknown'];
+const SEVERITIES = ['blocker', 'warning', 'note', 'unknown'];
 const REPLY_OUTCOME = /^\**(Fixed|Agreed|Withdrawn|Unverified|Still open|Kept)\b/;
 // A person's reply that opens with one of these says the finding was acted on, or turned down.
 const AUTHOR_FIXED = /^\**(Fixed|Applied|Added|Adopted|Addressed|Done|Switched|Restructured)\b/i;
@@ -91,7 +91,7 @@ const AUTHOR_DECLINED = /^\**(Pushing back|Declin|Skipping|Not applied|Not fixin
 const FINDING_MARKER = /<!-- manki:[a-z]+:(\S+) -->/;
 // The posted grade would anchor a replayed judge, so the export drops the severity header, a cap note under it and the
 // `AI context` block.
-const SEVERITY_HEADER = /^[^\n]*\*\*(Blocker|Warning|Suggestion|Nitpick)\b[^\n]*\n*(<sub>\[[^\]\n]*\]<\/sub>\n*)?/;
+const SEVERITY_HEADER = /^[^\n]*\*\*(Blocker|Warning|Note|Suggestion|Nitpick)\b[^\n]*\n*(<sub>\[[^\]\n]*\]<\/sub>\n*)?/;
 const AI_CONTEXT_BLOCK = /<details>\s*<summary>AI context<\/summary>[\s\S]*?<\/details>/g;
 const THREAD_FIELDS = 'id path comments(first: 100) { nodes { body url author { __typename } } }';
 
@@ -315,7 +315,7 @@ async function main(args: string[]): Promise<number> {
     console.error('Usage: npm run calibration -- <history.jsonl> [--fix-rate <fix-rate.jsonl>] [--export <set.jsonl>] [--limit <n>]');
     return 1;
   }
-  const lines = readFileSync(historyPath, 'utf-8').split('\n').filter(l => l.trim()).map(l => JSON.parse(l) as HistoryLine);
+  const lines = readFileSync(historyPath, 'utf-8').split('\n').filter(l => l.trim()).map(l => migrateStoredSeverities(JSON.parse(l) as HistoryLine));
   const octokit = github.getOctokit(githubToken());
   const findings: LabelledFinding[] = [];
   const skipped: string[] = [];
