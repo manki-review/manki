@@ -26,6 +26,7 @@ import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { preExistingCheck, truncateDiff } from './review';
+import { unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
@@ -5511,6 +5512,8 @@ const GRADING_CASES = [
   'rare-claim-reachable',
   'sibling-path-incomplete-fix',
   'refuted-by-shown-guard',
+  'proven-warning',
+  'unproven-warning',
 ] as const;
 
 const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo', 'library-resource-exhaustion', 'public-api-reachable', 'declared-gap', 'added-code-not-pre-existing', 'rare-claim-reachable', 'sibling-path-incomplete-fix'];
@@ -5525,6 +5528,8 @@ interface GradingFixture {
   interRoundDiff?: string;
   /** The PR's title and description, shown to the judge as the PR context. */
   pr?: { title: string; body: string };
+  /** For a finding the judge grades `warning`: whether the code shown proves it, so that no tool check is needed before it is posted. */
+  proven?: boolean;
 }
 
 const PRIOR_ROUND_CASES: readonly string[] = ['grade-stable', 'own-proposal-objection', 'own-proposal-worse'];
@@ -5548,7 +5553,7 @@ function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundConte
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks and claims a guard in the diff refutes, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases, objections to an applied Manki fix, build claims, public API reachability, declared gaps, pre-existing claims on added lines, rare claims normal use reaches, fixes a sibling path lacks, claims a guard in the diff refutes, and a warning the code shown proves or leaves open, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 
@@ -5557,6 +5562,7 @@ describe('judge grading fixture corpus', () => {
     expect(fixture.allowed.includes('blocker')).toBe(BLOCKER_CASES.includes(fixture.case) || fixture.case === 'own-proposal-worse');
     expect(fixture.priorRound !== undefined).toBe(PRIOR_ROUND_CASES.includes(fixture.case));
     expect(fixture.pr !== undefined).toBe(fixture.case === 'declared-gap');
+    expect(fixture.proven).toBe({ 'proven-warning': true, 'unproven-warning': false }[fixture.case as string]);
     const appliesFix = computeProvenanceMap(gradingPriorRounds(fixture), fixture.prDiff)
       .some(e => e.file === fixture.finding.file && fixture.finding.line >= e.lineStart && fixture.finding.line <= e.lineEnd);
     expect(appliesFix).toBe(fixture.case.startsWith('own-proposal-'));
@@ -5584,6 +5590,9 @@ describe('judge grading fixture corpus', () => {
     const graded = result.findings[0];
     console.log(`[live-judge] ${fixture.name}: allowed=${fixture.allowed.join('|')} actual=${graded?.severity} cell=${JSON.stringify(graded?.cell)} gradeIfConfirmed=${graded?.gradeIfConfirmed} doubts=${JSON.stringify(graded?.doubts ?? [])} reasoning=${JSON.stringify(graded?.judgeNotes ?? '')}`);
     expect(fixture.allowed).toContain(graded?.severity);
+    // A proven warning needs no check with or without tools. An unproven one names a doubt or cites no lines, so tools would check it.
+    if (fixture.proven) expect([unprovenReason(graded, true), unprovenReason(graded, false)]).toEqual([undefined, undefined]);
+    if (fixture.proven === false) expect(unprovenReason(graded, true)).toBeDefined();
   }, 600_000);
 });
 

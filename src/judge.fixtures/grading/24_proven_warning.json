@@ -1,0 +1,20 @@
+{
+  "name": "proven-warning",
+  "case": "proven-warning",
+  "allowed": [
+    "warning"
+  ],
+  "proven": true,
+  "finding": {
+    "title": "`rows` runs one `Order` query per user",
+    "file": "app/reports/order_summary.rb",
+    "line": 9,
+    "description": "The PR replaces the grouped query with `Order.where(user_id: user.id).sum(:amount_cents)` inside `users.map`. A summary of N users now runs N queries where it ran one. The rows are the same, but the report gets slower with every user.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Keep the grouped query and read each total from its result."
+  },
+  "prDiff": "diff --git a/app/reports/order_summary.rb b/app/reports/order_summary.rb\nindex 1111111..2222222 100644\n--- a/app/reports/order_summary.rb\n+++ b/app/reports/order_summary.rb\n@@ -6,6 +6,8 @@\n class OrderSummary\n   def rows(users)\n-    totals = Order.where(user_id: users.map(&:id)).group(:user_id).sum(:amount_cents)\n-    users.map { |user| [user.email, totals.fetch(user.id, 0)] }\n+    users.map do |user|\n+      total = Order.where(user_id: user.id).sum(:amount_cents)\n+      [user.email, total]\n+    end\n   end\n end\n"
+}

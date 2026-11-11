@@ -1,0 +1,19 @@
+{
+  "name": "unproven-warning",
+  "case": "unproven-warning",
+  "allowed": [
+    "warning"
+  ],
+  "proven": false,
+  "finding": {
+    "title": "`renderInvoice` looks up the tax rate once per line item",
+    "file": "billing/src/main/kotlin/billing/InvoiceRenderer.kt",
+    "line": 20,
+    "description": "The PR moves `taxRates.rateFor` into the `map` over `order.items`. `rateFor` asks the rates service on each call, so an invoice of 200 lines makes 200 requests where it made one, and rendering gets slower with every line.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/billing/src/main/kotlin/billing/InvoiceRenderer.kt b/billing/src/main/kotlin/billing/InvoiceRenderer.kt\nindex 1111111..2222222 100644\n--- a/billing/src/main/kotlin/billing/InvoiceRenderer.kt\n+++ b/billing/src/main/kotlin/billing/InvoiceRenderer.kt\n@@ -18,7 +18,7 @@\n fun renderInvoice(order: Order): Invoice {\n-    val rate = taxRates.rateFor(order.country)\n     val lines = order.items.map { item ->\n+        val rate = taxRates.rateFor(order.country, item.category)\n         Line(item.name, item.net, (item.net * rate).roundToLong())\n     }\n     return Invoice(order.id, lines)\n }\n"
+}
