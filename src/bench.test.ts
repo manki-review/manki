@@ -683,25 +683,29 @@ describe('runBench and buildReport', () => {
     git('commit', '-q', '--allow-empty', '-m', 'head on the old config');
     held.head = git('rev-parse', 'HEAD');
     const own = { ...benchCase, id: 'own', config: { review_passes: 9 } };
+    const typo = { ...benchCase, id: 'typo', config: { review: { critcal_paths: ['wallet/**'] } } };
     const translated = { ...held, id: 'translated', config: { review: { critical_paths: ['wallet/**'] } } };
     const review = jest.fn(async (_input: LocalReviewInput) => makeReview('READY', []));
     const variants = [{ name: 'base', overrides: {} }, { name: 'passes', overrides: { review_passes: 2 } }];
 
-    const results = await runBench([held, own, translated, benchCase], { runs: 2, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher: async () => ({ verdict: 'NONE', findings: [], reason: 'none' }), review, variants });
+    const results = await runBench([held, own, translated, benchCase, typo], { runs: 2, checkouts: new Map([['owner/demo', checkout]]), providerInputs: inputs, matcher: async () => ({ verdict: 'NONE', findings: [], reason: 'none' }), review, variants });
 
-    for (const { results: [heldRuns, ownRuns, translatedRuns, plainRuns] } of results) {
+    for (const { results: [heldRuns, ownRuns, translatedRuns, plainRuns, typoRuns] } of results) {
       expect(heldRuns.runs).toEqual([1, 2].map(() => expect.objectContaining({
         outcome: 'CONFIG_INVALID', complete: false, costUsd: 0,
         error: 'The config at the base does not load: Invalid config in .manki.yml: `review.classes.wallet.critical` is not a class setting. List the critical paths in `review.critical_paths`',
       })));
       expect(ownRuns.runs.map(run => [run.outcome, run.error])).toEqual([1, 2].map(() => ['CONFIG_INVALID', expect.stringContaining('The config of the case does not load: Invalid config in the config given:')]));
+      expect(typoRuns.runs.map(run => [run.outcome, run.error])).toEqual([1, 2].map(() => [
+        'CONFIG_INVALID', 'The config of the case does not load: The config given names keys the config does not know: Unknown config key: "review.critcal_paths"',
+      ]));
       expect([...translatedRuns.runs, ...plainRuns.runs].map(run => run.outcome)).toEqual(['READY', 'READY', 'READY', 'READY']);
     }
     expect(review).toHaveBeenCalledTimes(8);
     expect(review.mock.calls.map(([input]) => input.config?.review?.critical_paths)).toEqual([['wallet/**'], ['wallet/**'], undefined, undefined, ['wallet/**'], ['wallet/**'], undefined, undefined]);
     const summary = formatBenchSummary(buildReport({ startedAt: '2026-11-09T00:00:00.000Z', runsPerCase: 2, matcherModel: 'model-a' }, results));
     expect(summary).toContain('  run 1: CONFIG_INVALID: The config at the base does not load: Invalid config in .manki.yml:');
-    expect(summary).toContain('| Config invalid | held, own | held, own |\n');
+    expect(summary).toContain('| Config invalid | held, own, typo | held, own, typo |\n');
     expect(summary).toContain('| Cost per run | $1.25 | $1.25 |\n');
   });
 });
