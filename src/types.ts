@@ -115,6 +115,12 @@ const LEGACY_SECURITY_AGENT_NAME = 'Security & Safety';
 export function isSecurityFinding(tags: string[] | undefined, priorReviewers: ReadonlyArray<string | undefined> = []): boolean {
   return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
 }
+
+/** Whether a step may leave the finding out of the review. Only a note can be left out, and never a security finding or a tool alert. */
+export function canLeaveOut(f: Finding): boolean {
+  return isNote(f.severity) && !f.toolSource && !isSecurityFinding(f.tags, f.reviewers);
+}
+
 /** Marks a finding on lines outside every hunk of the PR's diff. Unless it is a security finding, it never blocks. */
 export const PRE_EXISTING_TAG = 'pre-existing' as const;
 /** Marks a blocker posted as a warning because nothing cited the lines that prove it. */

@@ -2266,6 +2266,7 @@ describe('runFullReview orchestration', () => {
         { ...finding, title: 'Answered', answeredIn: { threadId: 'PRRT_answered', answer: 'kept' } },
         { ...finding, title: 'Outside the diff', file: 'src/other.ts' },
         { ...finding, title: 'Old reviewer', reviewers: ['Security & Safety'] },
+        { ...finding, title: 'Also outside', file: 'src/other.ts', line: 3 },
       ];
       jest.mocked(reviewModule.runReview).mockImplementation(async () => ({
         verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', summary: 's', findings: findings.map(f => ({ ...f })), highlights: [], reviewComplete: true, agentNames: ['general'],
@@ -2276,9 +2277,9 @@ describe('runFullReview orchestration', () => {
       // The progress comment lists a note left out as not kept, with the reason, and counts it as dropped.
       const [, , , , dashboard, metadata] = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)!;
       expect(metadata?.judgeDecisions.filter(d => !d.kept).map(d => [d.title, d.unpostedReason])).toEqual([['Rename', 'reviewed_code'], ['Listed before', 'listed_earlier']]);
-      expect([dashboard.keptCount, dashboard.droppedCount, dashboard.droppedSeverities]).toEqual([9, 2, { suggestion: 1, nitpick: 1 }]);
+      expect([dashboard.keptCount, dashboard.droppedCount, dashboard.droppedSeverities]).toEqual([10, 2, { suggestion: 1, nitpick: 1 }]);
       await runWith({ fullReview: true });
-      expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![5]?.judgeDecisions.filter(d => !d.kept).map(d => [d.title, d.unpostedReason])).toEqual([['Outside the diff', 'note_cap']]);
+      expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![5]?.judgeDecisions.filter(d => !d.kept).map(d => [d.title, d.unpostedReason])).toEqual([['Also outside', 'note_cap']]);
       // Without the PR's change at the last reviewed commit no code counts as reviewed, so only the restated note is left out.
       jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValueOnce(new Error('compare failed')).mockRejectedValueOnce(new Error('compare failed'));
       seedPriorRounds([{ round: 1, commitSha: 'older1', timestamp: '2025-01-01T00:00:00Z', findings: [] }]);
@@ -2296,18 +2297,18 @@ describe('runFullReview orchestration', () => {
       // The notes the review lists follow the other findings.
       expect(later.posted).toEqual([
         ['Warning', 'reviewed'], ['Warning listed before', 'earlier'], ['Blocker', 'reviewed'], ['Security note', 'reviewed'],
-        ['In a thread', 'reviewed'], ['Answered', 'reviewed'], ['Old reviewer', 'reviewed'], ['Tool alert', 'reviewed'], ['Outside the diff', 'reviewed'],
+        ['In a thread', 'reviewed'], ['Answered', 'reviewed'], ['Old reviewer', 'reviewed'], ['Tool alert', 'reviewed'], ['Outside the diff', 'reviewed'], ['Also outside', 'reviewed'],
       ]);
       expect(later.unposted).toEqual([['Rename', 'suggestion', 'reviewed', 'reviewed_code'], ['Listed before', 'nitpick', 'earlier', 'listed_earlier']]);
-      expect(later.count).toBe(9);
-      // A full review hides no note for its origin, so four notes meet the default `review.notes` of three.
+      expect(later.count).toBe(10);
+      // A full review hides no note for its origin, so four notes meet the default `review.notes` of three. The tool alert takes no place.
       expect(again.posted).toEqual([
         ['Warning', 'new'], ['Warning listed before', 'earlier'], ['Blocker', 'new'], ['Security note', 'new'],
-        ['In a thread', 'new'], ['Answered', 'new'], ['Old reviewer', 'new'], ['Rename', 'new'], ['Listed before', 'earlier'], ['Tool alert', 'new'],
+        ['In a thread', 'new'], ['Answered', 'new'], ['Old reviewer', 'new'], ['Rename', 'new'], ['Listed before', 'earlier'], ['Tool alert', 'new'], ['Outside the diff', 'new'],
       ]);
-      expect(again.unposted).toEqual([['Outside the diff', 'suggestion', 'new', 'note_cap']]);
+      expect(again.unposted).toEqual([['Also outside', 'suggestion', 'new', 'note_cap']]);
       expect(unknown.posted.map(([title]) => title)).toEqual([
-        'Warning', 'Warning listed before', 'Blocker', 'Security note', 'In a thread', 'Answered', 'Old reviewer', 'Rename', 'Tool alert', 'Outside the diff',
+        'Warning', 'Warning listed before', 'Blocker', 'Security note', 'In a thread', 'Answered', 'Old reviewer', 'Rename', 'Tool alert', 'Outside the diff', 'Also outside',
       ]);
       expect(unknown.posted.every(([title, origin]) => origin === (title === 'Warning listed before' ? 'earlier' : 'new'))).toBe(true);
       expect(unknown.unposted).toEqual([['Listed before', 'nitpick', 'earlier', 'listed_earlier']]);

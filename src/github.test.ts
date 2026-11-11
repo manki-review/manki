@@ -4446,7 +4446,7 @@ describe('postReview non-blocking findings', () => {
     expect(body).toContain('<b>Past the end</b>');
   });
 
-  it('keeps the first notes in the judge\'s order and moves the others to the record as `note_cap`, never a warning, a security finding or a note a thread carries', () => {
+  it('keeps the first notes in the judge\'s order and moves the others to the record as `note_cap`, never a warning, a security finding, a tool alert or a note a thread carries', () => {
     const existingThreads = [{ title: 'In a thread', file: 'src/a.ts', line: 5, severity: 'suggestion' as const, status: 'open' as const, threadId: 'T1', markerSlug: 'In-a-thread' }];
     const findings = [
       nonBlocking('nitpick', 'Note one', 1),
@@ -4485,6 +4485,16 @@ describe('postReview non-blocking findings', () => {
     capNotes(all, existingThreads, 5);
     expect(titles(all.findings)).toEqual([...others, 'Note one', 'Note two', 'Note three', 'Note four', 'Note five']);
     expect(all.unpostedNotes).toBeUndefined();
+
+    // A tool alert is listed in the judge's order with the notes, takes no place and is never left out.
+    const alerts = [nonBlocking('nitpick', 'Unused import', 12, { toolSource: 'eslint', noteRank: 2 }), nonBlocking('suggestion', 'Shadowed name', 13, { toolSource: 'eslint' })];
+    const withAlerts = buildResult([alerts[0], ...findings.map(f => (f.title in ranks ? { ...f, noteRank: ranks[f.title] } : f)), alerts[1]]);
+    capNotes(withAlerts, existingThreads, 2);
+    expect(titles(withAlerts.findings)).toEqual([...others, 'Note five', 'Note three', 'Unused import', 'Shadowed name']);
+    expect(titles(withAlerts.unpostedNotes)).toEqual(['Note one', 'Note two', 'Note four']);
+    const onlyAlerts = buildResult([...alerts, ...findings]);
+    capNotes(onlyAlerts, existingThreads, 0);
+    expect(titles(onlyAlerts.findings)).toEqual([...others, 'Unused import', 'Shadowed name']);
   });
 
   it('does not post a non-blocking finding again while its open thread carries it, or when it repeats an answered thread', async () => {
