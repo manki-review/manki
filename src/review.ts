@@ -99,6 +99,10 @@ export const CLAIMS_MISSING_RULE = 'When a finding says something is missing or 
 
 export const PRE_EXISTING_RULE = 'When the defect sits on code this PR did not change and exists without this PR\'s change, set `"preExisting": true` and say in `preExistingReason`, in one line, why the code before this PR already had it. Never set it when this PR causes or exposes the defect, such as an unchanged caller that breaks because the PR changed what a function returns or takes. Never set it either on the defect this PR fixes in one path and leaves in a sibling path, such as an auth check added to `POST /items` while `PUT /items/:id` stays open: the fix is incomplete, so report it as part of the change and cite the line of the fix in `proof`. A pre-existing finding never blocks unless it is a security defect.';
 
+const UNRELATED_RULE = 'never report a change only for being unrelated to the PR\'s purpose';
+const NO_SPLIT_RULE = `Never propose splitting the PR, and ${UNRELATED_RULE}.`;
+const SPLIT_RULE = `Propose splitting the PR only when an instruction file under "Repository Context" requires focused changes, such as one concern per PR, and only with proof that a part is independent: search the repository and show that the rest of the PR does not use the part and that the part does not use the rest. Quote the rule, name the parts and list what you searched in \`evidence\`. Without such a rule or such proof, never propose a split, and ${UNRELATED_RULE}.`;
+
 const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   READY: 'APPROVE',
   ADDRESS_FIRST: 'REQUEST_CHANGES',
@@ -1858,7 +1862,7 @@ These rules hold in every round. A later round searches the whole PR as fully as
 - If you find NO issues, respond with an empty array: []
 - When full file contents are provided, use them to follow the paths the change affects: variable definitions, imports, callers and surrounding logic.
 - When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one. Memory is the maintainers' recorded decision, not a claim to check.
-- If you notice changes in the diff that appear unrelated to the PR's stated purpose (title and description), flag them as a "suggestion" severity finding titled "Unrelated change: [brief description]". Recommend splitting into a separate PR. Only flag changes that are clearly out of scope. Don't flag shared config, imports, or test files that naturally accompany the main changes.
+- ${tools ? SPLIT_RULE : NO_SPLIT_RULE}
 
 ${WRITING_RULES}`;
 

@@ -957,10 +957,14 @@ describe('buildReviewerSystemPrompt', () => {
     expect(buildReviewerSystemPrompt(reviewer, makeConfig())).toContain('This lens never drops a blocker, a warning or a security issue.');
   });
 
-  it('includes scope validation instruction', () => {
-    const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
-    expect(prompt).toContain('Unrelated change');
-    expect(prompt).toContain('splitting into a separate PR');
+  it('lets only a finder with repository tools propose a split, on a rule that requires focused changes and with proof', () => {
+    const withTools = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, true);
+    expect(withTools).toContain('- Propose splitting the PR only when an instruction file under "Repository Context" requires focused changes');
+    expect(withTools).toContain('show that the rest of the PR does not use the part and that the part does not use the rest');
+    expect(withTools).toContain('Without such a rule or such proof, never propose a split');
+    const withoutTools = buildReviewerSystemPrompt(reviewer, makeConfig());
+    expect(withoutTools).toContain("- Never propose splitting the PR, and never report a change only for being unrelated to the PR's purpose.");
+    expect(withoutTools).not.toContain('Propose splitting');
   });
 
   it('limits `suggestedFix` to code that applies as is and keeps the fix in words and its caveats in `howToFix`', () => {
@@ -1503,10 +1507,16 @@ describe('selectTeam', () => {
       'Compare limits, field order, field types and versions.',
       'Reuse: for each constant, helper, type or loop the change adds, search for an existing one that does the same, and cite its `file:line`.',
       'Repository rules: check each added line against the rules in the repository context, such as `AGENTS.md`, `CLAUDE.md` or `CONTRIBUTING.md`, and quote the rule it breaks.',
+      'Change rules: go through the instruction files under "Repository Context" for rules about the change as a whole: what a change must include, such as a test, a migration or a documentation update, and how it must be scoped.',
+      'Only a rule stated as a requirement counts ("must", "needs", "never", "always"), never advice ("prefer", "try to", "consider").',
+      'It comes from the base branch, so the PR\'s own edits to these files are not in force.',
+      'covers only changes under that directory',
+      'Set `"rule"` to the rule quoted word for word and `"ruleFile"` to the file it comes from, as its heading names it.',
+      'Report a rule that asks for focused changes only as the split rule under "Rules" allows.',
       'Report a reuse finding only with the existing code\'s `file:line`, and a rule finding only with the rule quoted.',
     ]) expect(focus).toContain(check);
-    // Reuse and repository rules come right after tests.
-    expect(focus).toMatch(/\n7\. Tests: [^\n]*\n8\. Reuse: [^\n]*\n9\. Repository rules: [^\n]*\n10\. Contract breaks: [^\n]*\n11\. Narrowed input: /);
+    // Reuse, repository rules and change rules come right after tests.
+    expect(focus).toMatch(/\n7\. Tests: [^\n]*\n8\. Reuse: [^\n]*\n9\. Repository rules: [^\n]*\n10\. Change rules: [^\n]*\n11\. Contract breaks: [^\n]*\n12\. Narrowed input: /);
     expect({ focus }).toMatchSnapshot();
 
     // A related repo adds the check for its kind at its place in the order, for a finder that can read it: one with
@@ -1531,9 +1541,9 @@ describe('selectTeam', () => {
     expect(withReference).toMatch(/\n4\. Reference behaviour: [^\n]*\n5\. Specifications: when the change touches a wire format, a protocol message or a rule a specification defines, such as a validation or consensus rule, and a \*\*reference\*\* related repo holds that specification, search it for the name of the message, field or rule and compare the change with what it says\. [^\n]*\n6\. Error paths: /);
     expect(withReference).not.toContain('Consumers:');
     const withConsumer = focusWith('consumer');
-    expect(withConsumer).toMatch(/\n12\. Readers: [^\n]*\n13\. Consumers: for each public type, function or serialized format the change alters, find its uses in each \*\*consumer\*\* related repo and check that they still work with the change\. Start from the lines under "In the Consumer Repos" when that section is given\. [^\n]*\n14\. Sibling state: /);
+    expect(withConsumer).toMatch(/\n13\. Readers: [^\n]*\n14\. Consumers: for each public type, function or serialized format the change alters, find its uses in each \*\*consumer\*\* related repo and check that they still work with the change\. Start from the lines under "In the Consumer Repos" when that section is given\. [^\n]*\n15\. Sibling state: /);
     expect(withConsumer).not.toContain('Specifications:');
-    expect(focusWith('consumer', 'reference')).toMatch(/\n5\. Specifications: [^\n]*\n6\. Error paths: [\s\S]*\n13\. Readers: [^\n]*\n14\. Consumers: [^\n]*\n15\. Sibling state: /);
+    expect(focusWith('consumer', 'reference')).toMatch(/\n5\. Specifications: [^\n]*\n6\. Error paths: [\s\S]*\n14\. Readers: [^\n]*\n15\. Consumers: [^\n]*\n16\. Sibling state: /);
   });
 
   describe('configured routing', () => {
