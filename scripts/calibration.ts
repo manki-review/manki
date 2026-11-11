@@ -16,7 +16,7 @@ import * as github from '@actions/github';
 import { parsePRDiff } from '../src/diff';
 import { postedFindings, touchesFinding } from '../src/fix-rate';
 import { fetchInterRoundDiff, fetchReviewThreadNodes } from '../src/github';
-import { classifyAuthorReply, judgeAddressedThreadIds } from '../src/recap';
+import { classifyAuthorReply, findingFile, judgeAddressedThreadIds } from '../src/recap';
 import { FindingFingerprintEntry, migrateStoredSeverities, ParsedDiff, RoundContext } from '../src/types';
 import { aggregate } from './fix-rate-report';
 import { githubToken, HistoryLine as RecordLine } from './review-history';
@@ -141,12 +141,12 @@ export function roundsByPullRequest(lines: HistoryLine[]): Map<string, RoundCont
 }
 
 /**
- * Returns the thread a finding was posted in: the one its record names, or else a thread Manki started on the same file
- * whose `<!-- manki:<severity>:<slug> -->` marker holds the finding's slug.
+ * Returns the thread a finding was posted in: the one its record names, or else a thread Manki started for a finding
+ * in the same file (`findingFile`) whose `<!-- manki:<severity>:<slug> -->` marker holds the finding's slug.
  */
 export function findThread(threads: Thread[], entry: FindingFingerprintEntry): Thread | undefined {
   return (entry.threadId ? threads.find(t => t.id === entry.threadId) : undefined) ?? threads.find(t =>
-    t.path === entry.fingerprint.file && t.comments[0]?.bot && FINDING_MARKER.exec(t.comments[0].body)?.[1] === entry.fingerprint.slug);
+    t.comments[0]?.bot && findingFile(t.comments[0].body, t.path) === entry.fingerprint.file && FINDING_MARKER.exec(t.comments[0].body)?.[1] === entry.fingerprint.slug);
 }
 
 function percent(part: number, whole: number): string {

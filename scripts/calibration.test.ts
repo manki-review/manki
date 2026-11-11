@@ -88,6 +88,13 @@ describe('roundsByPullRequest and findThread', () => {
     expect(findThread(threads, entry('x'))).toBe(threads[3]);
     expect(findThread(threads, { ...entry('x'), threadId: 'T_other' })).toBe(threads[0]);
     expect(findThread(threads, entry('missing'))).toBeUndefined();
+
+    // A thread posted on another file than its finding's names the finding's file in its data.
+    const detached = thread('far');
+    detached.path = 'src/main.rs';
+    detached.comments[0].body += `\n<!-- manki-finding: ${JSON.stringify({ file: 'src/lib.rs', line: 10, detached: true })} -->`;
+    expect(findThread([...threads, detached], entry('far'))).toBe(detached);
+    expect(findThread([...threads, detached], { ...entry('far'), fingerprint: { ...entry('far').fingerprint, file: 'src/main.rs' } })).toBeUndefined();
   });
 });
 
