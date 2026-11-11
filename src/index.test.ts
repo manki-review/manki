@@ -231,6 +231,7 @@ jest.mock('./github', () => ({
   formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
   unreadRecordsLine: jest.requireActual('./github').unreadRecordsLine,
   withheldSummary: jest.requireActual('./github').withheldSummary,
+  listedSummary: jest.requireActual('./github').listedSummary,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   hasWriteAccess: jest.fn().mockResolvedValue(true),
@@ -1921,6 +1922,15 @@ describe('runFullReview orchestration', () => {
       expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, {
         reviewed: { commit: 'abc123' }, approval: { commit: 'abc123', held: false }, pause: null,
       });
+
+      // The check leaves out a summary about a finding the round no longer lists, and shows its title instead.
+      const disproved: Finding = { severity: 'ignore', title: 'Retry drops the error', file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'], gradePath: [{ from: 'warning', to: 'ignore', by: 'refutation' }] };
+      jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
+        verdict: 'APPROVE', outcome: 'READY', summary: 'A retry that fails is never reported.', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'], allJudgedFindings: [disproved],
+      });
+      mockChecksUpdate.mockClear();
+      await callRunFullReview();
+      expect(completedCheck()).toMatchObject({ conclusion: 'success', output: { title: 'Approved', summary: 'Approved' } });
     });
 
     it.each([

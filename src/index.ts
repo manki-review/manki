@@ -65,6 +65,7 @@ import {
   formatOpenBlockers,
   unreadRecordsLine,
   withheldSummary,
+  listedSummary,
   reactToIssueComment,
   fetchLinkedIssues,
   APPROVED_LINE,
@@ -1960,7 +1961,8 @@ async function runFullReview(
     await completeProgressComment(run, stage, reviewTimeMs);
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
     setReviewOutputs(posted.id, context, result);
-    checkReport = outcomeReport(result.outcome, unreadRecords ? [unreadRecordsLine(unreadRecords), withheldSummary(result.summary)].filter(Boolean).join('\n\n') : result.summary, posted.approvalHeld);
+    const summary = listedSummary(result);
+    checkReport = outcomeReport(result.outcome, unreadRecords ? [unreadRecordsLine(unreadRecords), withheldSummary(summary)].filter(Boolean).join('\n\n') : summary, posted.approvalHeld);
   } catch (caught) {
     cancelDashboardFlush(progress);
     // A stopped run reports the stop, whatever error it ended on.

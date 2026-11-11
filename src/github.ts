@@ -12,7 +12,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { isDisprovedRaise, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
+import { findingKey, isDisprovedRaise, isNote, MAX_AGENT_RETRIES, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -2022,9 +2022,22 @@ function formatBlockerCounts({ fresh, earlier, followUp }: BlockerCounts): strin
   return `${countOf(fresh, 'new blocker')} and ${earlier} still open`;
 }
 
+/**
+ * Returns the summary of a round to show. The judge writes its summary before later steps take findings out of the
+ * round, so the summary is left out when the judge kept a finding and `result.findings` holds none of the findings it
+ * kept. An incomplete round's summary says why the round did not finish, so it is returned as it is.
+ */
+export function listedSummary(result: Pick<ReviewResult, 'summary' | 'findings' | 'allJudgedFindings' | 'reviewComplete'>): string {
+  if (!result.reviewComplete) return result.summary;
+  // A finding the judge kept and a later step dropped is `ignore` too, by a step that is not the judge's.
+  const kept = (result.allJudgedFindings ?? []).filter(f => f.severity !== 'ignore' || f.gradePath?.at(-1)?.by !== 'judge');
+  const listed = new Set(result.findings.map(findingKey));
+  return kept.length > 0 && !kept.some(f => listed.has(findingKey(f))) ? '' : result.summary;
+}
+
 /** Returns what goes wrong in practice, from the judge summary or else the top blocker's description. */
 function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string {
-  const summary = sanitizeMarkdown(result.summary.trim());
+  const summary = sanitizeMarkdown(listedSummary(result).trim());
   if (result.outcome === 'READY') return result.verdictReport ? '' : summary;
   if (result.outcome !== 'ADDRESS_FIRST') return '';
   // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
@@ -2038,8 +2051,8 @@ function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string 
  * round records of `unreadRecords` kept from approving leads with that, since none of its open threads is a known blocker.
  */
 function formatLead(result: ReviewResult, blocking: Finding[], blockers: BlockerCounts, posted: PostedFindings, limitWarning?: string, unreadRecords?: string[]): string {
-  if (!result.outcome) return [sanitizeMarkdown(result.summary.trim()), limitWarning].filter(Boolean).join('\n\n');
-  if (unreadRecords) return [unreadRecordsLine(unreadRecords), limitWarning, withheldSummary(result.summary)].filter(Boolean).join('\n\n');
+  if (!result.outcome) return [sanitizeMarkdown(listedSummary(result).trim()), limitWarning].filter(Boolean).join('\n\n');
+  if (unreadRecords) return [unreadRecordsLine(unreadRecords), limitWarning, withheldSummary(listedSummary(result))].filter(Boolean).join('\n\n');
   const detail = formatVerdictDetail(result, blocking);
   const label = result.outcome === 'ADDRESS_FIRST' ? 'What blocks' : 'Summary';
   return [VERDICT_LINES[result.outcome](result, blockers, posted), limitWarning, detail && `**${label}:** ${detail}`].filter(Boolean).join('\n\n');

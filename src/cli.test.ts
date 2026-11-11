@@ -86,6 +86,11 @@ describe('formatReviewText', () => {
   it('shows only the outcome and summary when nothing was found, and a held approval as the round would', () => {
     expect(formatReviewText(review('READY'))).toBe('## Approved: aaaaaaa..bbbbbbb\n\nSummary of the round\n');
     expect(formatReviewText(review('READY', [], 'config'))).toMatch(/^## Approval held: a config file did not load: /);
+    // The judge's summary is left out when the refuter disproved the round's only finding.
+    const clean = review('READY');
+    const disproved = { ...clean, result: { ...clean.result, allJudgedFindings: [{ ...finding, severity: 'ignore' as const, gradePath: [{ from: 'blocker' as const, to: 'ignore' as const, by: 'refutation' as const }] }] } };
+    expect(formatReviewText(disproved)).toBe('## Approved: aaaaaaa..bbbbbbb\n');
+    expect(JSON.parse(formatReviewJson(disproved)).summary).toBe('');
   });
 
   it('drops control characters a model wrote, keeping tabs and line breaks', () => {
