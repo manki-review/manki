@@ -530,29 +530,52 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
   const patterns = names.map(name => [name, referencePattern(name)] as const);
   const found = new Map<string, RelatedHit[]>();
   for (const { repo, dir } of checkouts) {
-    // A translation the name's own search already finds, or one too short or too common to tell anything, is not searched.
-    const guesses = [...(translations.get(repo) ?? [])].flatMap(([name, list]) =>
-      list.filter(as => !isGeneric(as) && !referencePattern(name).test(as)).map(as => ({ repo, name, as, lines: 0, pattern: translatedPattern(as) })));
+    // The root guide files are left out, so their text reaches a prompt only through a finder's own read.
+    const search = async (words: string[], ignoreCase: boolean): Promise<Hit[]> =>
+      (await grepWords(dir, words, { onDisk: true, ignoreCase })).filter(hit => !GUIDE_FILES.includes(hit.file));
     let hits: Hit[];
     try {
-      const words = new Set([...names.flatMap(nameVariants), ...guesses.flatMap(({ as }) => (isCodeLike(as) ? nameVariants(as) : [as]))]);
-      // The root guide files are left out, so their text reaches a prompt only through a finder's own read.
-      hits = (await grepWords(dir, [...words], { onDisk: true, ignoreCase: true })).filter(hit => !GUIDE_FILES.includes(hit.file));
+      hits = await search(names.flatMap(nameVariants), true);
     } catch (error) {
       core.warning(`Skipped the search of the ${kind} repo ${repo}: ${error instanceof Error ? error.message : String(error)}`);
       continue;
     }
+    // The lines each name finds itself, so a translated name does not list one of them again.
+    const listed = new Set<string>();
     for (const hit of hits) {
-      const listed = new Set(patterns.filter(([, pattern]) => pattern.test(hit.text)).map(([name]) => name));
-      for (const name of listed) appendTo(found, name, { ...hit, repo });
-      for (const guess of guesses.filter(({ pattern }) => pattern.test(hit.text))) {
-        guess.lines++;
-        if (listed.has(guess.name)) continue;
-        listed.add(guess.name);
-        appendTo(found, guess.name, { ...hit, repo, as: guess.as });
+      for (const [name] of patterns.filter(([, pattern]) => pattern.test(hit.text))) {
+        listed.add(`${name}\0${hit.file}\0${hit.line}`);
+        appendTo(found, name, { ...hit, repo });
       }
     }
-    translated.push(...guesses.map(({ pattern: _pattern, ...guess }) => guess));
+    // A translation the name's own search already finds, or one too short or too common to tell anything, is not searched.
+    const guesses = [...(translations.get(repo) ?? [])].flatMap(([name, list]) =>
+      list.filter(as => !isGeneric(as) && !referencePattern(name).test(as)).map(as => ({ repo, name, as, lines: 0, pattern: translatedPattern(as) })));
+    // The translated names are searched after the diff's names and apart from them, so a search they make fail costs only
+    // them. A plain word is searched in its exact case, since ignoring case would return every line that holds the word.
+    for (const coded of [true, false]) {
+      const group = guesses.filter(({ as }) => isCodeLike(as) === coded);
+      if (group.length === 0) continue;
+      const record = () => group.map(({ pattern: _pattern, ...guess }) => guess);
+      let guessed: Hit[];
+      try {
+        guessed = await search([...new Set(group.flatMap(({ as }) => (coded ? nameVariants(as) : [as])))], coded);
+      } catch (error) {
+        core.warning(`Skipped the search of the ${kind} repo ${repo} for ${group.length} translated ${group.length === 1 ? 'name' : 'names'}: ${error instanceof Error ? error.message : String(error)}`);
+        translated.push(...record().map(guess => ({ ...guess, failed: true as const })));
+        continue;
+      }
+      for (const hit of guessed) {
+        for (const guess of group.filter(({ pattern }) => pattern.test(hit.text))) {
+          guess.lines++;
+          const key = `${guess.name}\0${hit.file}\0${hit.line}`;
+          if (listed.has(key)) continue;
+          listed.add(key);
+          appendTo(found, guess.name, { ...hit, repo, as: guess.as });
+        }
+      }
+      translated.push(...record());
+    }
   }
   const namesPerFile = new Map<string, Set<string>>();
   for (const [name, hits] of found) {

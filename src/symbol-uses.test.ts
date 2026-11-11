@@ -865,4 +865,24 @@ describe('listRelatedUses', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('keeps the lines the diff\'s names find when the search for a translated name fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'manki-reference-'));
+    try {
+      writeFileSync(join(dir, 'limits.h'), 'static const int MAX_SIZE = 10;\n');
+      // A plain word on a line larger than a search may return makes the search for it fail.
+      writeFileSync(join(dir, 'flood.txt'), `Flood ${' '.repeat(65 * 1024 * 1024)}\n`);
+      const translation = { names: new Map([['example/server', new Map([['MAX_SIZE', ['Flood']]])]]) };
+      const { section, record } = await listRelatedUses([{ repo: 'example/server', kind: 'reference', dir }], ['MAX_SIZE'], translation);
+
+      expect(section).toContain('### `MAX_SIZE`\n\n```\nexample/server:limits.h:1: static const int MAX_SIZE = 10;\n```');
+      expect(record).toEqual({
+        reference: [{ name: 'MAX_SIZE', lines: ['example/server:limits.h:1'] }],
+        translation: { names: [{ repo: 'example/server', name: 'MAX_SIZE', as: 'Flood', lines: 0, failed: true }] },
+      });
+      expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Skipped the search of the reference repo example\/server for 1 translated name: /));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
