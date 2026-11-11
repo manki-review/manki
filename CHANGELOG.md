@@ -7,17 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [7.4.0] - 2026-11-10
+## [7.4.0] - 2026-11-11
 
-Manki 7.4 makes follow-up rounds work with the threads earlier rounds opened. A finding that restates an open thread joins it, a partly fixed thread stays open at the grade of what remains, and an outdated thread is judged on the code it moved to. Subtle changes are reviewed at `xhigh` effort, a repository can set the judge's effort, and an opt-in sweep looks for more places with a blocker's mistake. Some settings change with no transition, so read Upgrading first.
+Manki 7.4 makes follow-up rounds work with the threads earlier rounds opened. A finding that restates an open thread joins it, a partly fixed thread stays open at the grade of what remains, and an outdated thread is judged on the code it moved to. A deeper review runs at the new `xhigh` effort, a repository can set the judge's effort, and an opt-in sweep looks for more places with a blocker's mistake. Some settings change with no transition, so read Upgrading first.
 
 ### Upgrading
 
 1. `exclude_paths` now replaces the default list instead of adding to it, like any other setting, and `exclude_paths: []` excludes nothing. A repository with its own list loses every default pattern it does not repeat, so add `dist/**`, `*.generated.*` or the lockfile names back if you relied on them. The default list no longer hides every `.lock` file. It names the package lockfiles, such as `Cargo.lock`, `poetry.lock`, `Gemfile.lock` and `composer.lock`, so another `.lock` file, such as `.github/workflows/actions.lock` or `flake.lock`, is now reviewed as text ([#1347](https://github.com/manki-review/manki/pull/1347)).
 2. `critical` on a review class is gone. List critical paths in the new `review.critical_paths` instead, as globs or path aliases such as `@security_paths`. A `.manki.yml` that sets `critical` on any class, built-in or not, no longer loads. Move that class's `paths_any` to `review.critical_paths`, and drop the class if it only marked critical paths. The judge's "Critical area" note names the first glob that matches the file ([#1349](https://github.com/manki-review/manki/pull/1349)).
-3. Reviewer effort `auto`, which every built-in review group uses, now runs the finders at `xhigh` on a change the planner marks subtle, instead of `high`. Other changes stay at `medium`. A round without a planner answer counts as subtle, so it also runs at `xhigh`. A subtle round costs about twice as much. To keep the old level, redefine `pair` and `solo` under `review.groups` with `effort: high` on their reviewers, and repeat the built-in routes under `review.routing`: `security`, `supply_chain`, `data_contract` and `behavior` to `pair`, `internal` to `solo` and `docs` to `trivial`. Setting `review.groups` without `review.routing` sends every class to `default_group` ([#1370](https://github.com/manki-review/manki/pull/1370)).
-4. New setting `judge.effort`. The default `auto` keeps the planner's pick, and `low`, `medium`, `high`, `xhigh` or `max` fixes the level for the judge and the refuter on every round. The round record and the progress comment show the judge's effort, also when no planner ran ([#1377](https://github.com/manki-review/manki/pull/1377), [#1380](https://github.com/manki-review/manki/pull/1380)).
-5. New setting `review.sweep`, off by default. When it is on, each blocker the judge keeps starts one call that states the defect class in general terms and lists every other place in the diff with the same mistake. A round runs at most three sweeps, security blockers first, and their findings get one more judge call. A place that a judged finding already cites is dropped. The round record lists each sweep under `sweeps`, and its findings name `Sweep 1`, `Sweep 2` and so on as their reviewer ([#1374](https://github.com/manki-review/manki/pull/1374), [#1390](https://github.com/manki-review/manki/pull/1390)).
+3. New setting `judge.effort`. The default `auto` keeps the planner's pick, and `low`, `medium`, `high`, `xhigh` or `max` fixes the level for the judge and the refuter on every round. The round record and the progress comment show the judge's effort, also when no planner ran ([#1377](https://github.com/manki-review/manki/pull/1377), [#1380](https://github.com/manki-review/manki/pull/1380)).
+4. New setting `review.sweep`, off by default. When it is on, each blocker the judge keeps starts one call that states the defect class in general terms and lists every other place in the diff with the same mistake. A round runs at most three sweeps, security blockers first, and their findings get one more judge call. A place that a judged finding already cites is dropped. The round record lists each sweep under `sweeps`, and its findings name `Sweep 1`, `Sweep 2` and so on as their reviewer ([#1374](https://github.com/manki-review/manki/pull/1374), [#1390](https://github.com/manki-review/manki/pull/1390)).
 
 ### Earlier threads
 
@@ -45,11 +44,13 @@ Manki 7.4 makes follow-up rounds work with the threads earlier rounds opened. A 
 
 ### Reviewer groups and models
 
-- `xhigh` is a new effort level between `high` and `max`. Claude Opus 4.7 and later receive it, and earlier Claude models get `high`. OpenAI models get their highest level up to `xhigh`, and Gemini maps it like `high`. A deeper review steps `xhigh` to `max` ([#1364](https://github.com/manki-review/manki/pull/1364)).
+- `xhigh` is a new effort level between `high` and `max`. Claude Opus 4.7 and later receive it, and earlier Claude models get `high`. OpenAI models get their highest level up to `xhigh`, and Gemini maps it like `high` ([#1364](https://github.com/manki-review/manki/pull/1364)).
+- A deeper review runs a finder on effort `auto` at `xhigh`. A finder with a set effort runs one level higher, so `high` steps to `xhigh` and `xhigh` to `max`. Reviewer effort `auto` itself is unchanged: `high` on a change the planner marks subtle, and `medium` otherwise ([#1370](https://github.com/manki-review/manki/pull/1370), [#1400](https://github.com/manki-review/manki/pull/1400)).
 - With `models.reviewer` on a Fable model and no `models.reviewer_pair`, a paired round now runs Fable and Opus instead of two Fable finders. A Fable stage also falls back to Opus ([#1348](https://github.com/manki-review/manki/pull/1348)).
 
 ### Reliability
 
+- A PR whose own `.manki.yml` does not load no longer fails the round. The round runs on the base branch's settings and warns with the reason. When the PR changed its copy and the copy does not load, Manki holds its approval and says so. A copy that cannot be read or compared counts as changed. A PR that only predates the base branch's copy can still be approved ([#1395](https://github.com/manki-review/manki/pull/1395)).
 - An incomplete round keeps in its record everything its stages produced before the failure, such as the planner result, retries, dedup counts, the judge's findings and `judge.effort` ([#1385](https://github.com/manki-review/manki/pull/1385), [#1386](https://github.com/manki-review/manki/pull/1386)).
 
 ### Internal
