@@ -1772,6 +1772,7 @@ export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (c
   survivor.variantOf ??= copy.variantOf;
   survivor.threadId ??= copy.threadId;
   survivor.howToFix ??= copy.howToFix;
+  survivor.rule ??= copy.rule;
   // Every merged copy must pass the pre-existing checks on its own, or the merged finding is not pre-existing.
   if (!copy.preExisting || (staysPreExisting && !staysPreExisting(copy))) delete survivor.preExisting;
   const evidence = mergeEvidence(survivor.evidence, copy.evidence);
@@ -1974,9 +1975,9 @@ function hasReversalWord(finding: Finding): boolean {
 }
 
 /**
- * Keeps the first finding per title and file, with the highest grade a finder gave any copy. The kept one stays
- * pre-existing only when every dropped copy was marked so too and `staysPreExisting` accepts it, since a dropped copy's
- * line and proof are lost.
+ * Keeps the first finding per title and file, with the highest grade a finder gave any copy and the first rule a copy
+ * quotes. The kept one stays pre-existing only when every dropped copy was marked so too and `staysPreExisting` accepts
+ * it, since a dropped copy's line and proof are lost.
  */
 export function deduplicateFindings(findings: Finding[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
   const kept = new Map<string, Finding>();
@@ -1990,7 +1991,7 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
     const filed = higherFinderGrade(first, f);
     const { preExisting, ...unmarked } = first;
     const stays = preExisting && f.preExisting && (!staysPreExisting || staysPreExisting(f));
-    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...(filed && { reviewerSeverity: filed }) });
+    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...(filed && { reviewerSeverity: filed }), ...(!first.rule && f.rule && { rule: f.rule }) });
   }
   return [...kept.values()];
 }

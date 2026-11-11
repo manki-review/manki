@@ -340,7 +340,8 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       config,
       diff,
       rawDiff,
-      repoContext,
+      repoContext: repoContext.text,
+      instructionFiles: repoContext.files,
       prContext: { title, body: input.body ?? '', baseBranch: input.base },
       workspace,
       headSha: head,
@@ -368,7 +369,7 @@ export async function reviewLocal(input: LocalReviewInput): Promise<LocalReview>
       prNumber: 0, commitSha: head, trigger: { event: 'local', sender: 'local' }, options: {}, config, reviewSource: loaded.source,
       models, plannerEnabled: !!clients.planner, recap: { previousFindings: followUp?.previousFindings ?? [], priorRounds: followUp?.priorRounds ?? [] },
       priorRoundCount: followUp?.priorRounds.length ?? 0, maxAutoRounds: 0, diff, changeDigest: changeDigest(fullDiff), excludedFiles,
-      openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled',
+      openThreads: followUp?.openThreads ?? [], interRoundDiff: followUp?.interRoundDiff, memoryLoadStatus: 'disabled', instructions: repoContext,
     }, result, { plannerDurationMs, judgeDurationMs: Date.now() - reviewEndTime, wallClockMs: Date.now() - startTime });
     return { result, context, base, head, approvalHeld: brokenConfig(loaded.source, loaded.brokenHead?.changed ?? false) ? 'config' : false };
   } finally {

@@ -205,7 +205,7 @@ jest.mock('./github', () => ({
   brokenConfig: jest.requireActual('./github').brokenConfig,
   configFailed: jest.requireActual('./github').configFailed,
   capNotes: jest.requireActual('./github').capNotes,
-  fetchRepoContext: jest.fn().mockResolvedValue(''),
+  fetchRepoContext: jest.fn().mockResolvedValue({ text: '', files: [] }),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),
   fetchCommitsSince: jest.fn().mockResolvedValue([]),
@@ -1853,7 +1853,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue({ id: 123, approvalHeld: false });
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
-    jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue('');
+    jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue({ text: '', files: [] });
     jest.mocked(ghUtils.fetchFileContents).mockResolvedValue(new Map());
     jest.mocked(ghUtils.fetchLinkedIssues).mockResolvedValue([]);
     jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValue(undefined);
@@ -2085,18 +2085,19 @@ describe('runFullReview orchestration', () => {
       ].join('\n');
       configFiles(head, async () => base);
       const note = (title: string) => ({ severity: 'suggestion' as const, title, file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'] });
+      const rule = { file: 'AGENTS.md', quote: 'A constant must be named after its unit.' };
       jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
-        verdict: 'APPROVE', outcome: 'READY', summary: 's', findings: [note('Reuse the helper'), note('Name the constant')], highlights: [], reviewComplete: true, agentNames: ['general'],
+        verdict: 'APPROVE', outcome: 'READY', summary: 's', findings: [note('Reuse the helper'), { ...note('Name the constant'), rule }], highlights: [], reviewComplete: true, agentNames: ['general'],
       });
 
       await callRunFullReview();
 
       expect(reviewedConfig()).toEqual(actualLoadConfig(base));
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: undefined }));
-      // The base branch's `review.notes` caps the notes, and the record keeps the one past it.
+      // The base branch's `review.notes` caps the notes, and the record keeps the one past it, with the rule it names.
       const [, , , , , posted, , record] = jest.mocked(ghUtils.postReview).mock.calls[0];
       expect(posted.findings.map(f => f.title)).toEqual(['Reuse the helper']);
-      expect(record?.findings).toMatchObject({ count: 1, unposted: [{ title: 'Name the constant', unpostedReason: 'note_cap', posted: 'record' }] });
+      expect(record?.findings).toMatchObject({ count: 1, unposted: [{ title: 'Name the constant', unpostedReason: 'note_cap', posted: 'record', rule }] });
       // A first round has no earlier change to tag origins against, and says nothing about it.
       expect(record?.findings.originsWithoutPrior).toBeUndefined();
       expect(jest.mocked(core.info)).toHaveBeenCalledWith(
@@ -3311,6 +3312,8 @@ describe('runFullReview orchestration', () => {
       findings: [finding2], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
+    const instructionFiles = [{ path: 'AGENTS.md', text: 'Every bug fix needs a test.' }];
+    jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue({ text: '## AGENTS.md\n\nEvery bug fix needs a test.', files: instructionFiles, cut: 'AGENTS.md' });
 
     await callRunFullReview();
 
@@ -3318,6 +3321,11 @@ describe('runFullReview orchestration', () => {
     // dedup runs before the judge stage.
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     expect(runReviewCall.previousFindings).toEqual(previousFindings);
+    // The base branch's instruction files go along with the context text, for the check of a quoted rule.
+    expect([runReviewCall.repoContext, runReviewCall.instructionFiles]).toEqual(['## AGENTS.md\n\nEvery bug fix needs a test.', instructionFiles]);
+    expect(jest.mocked(ghUtils.fetchRepoContext).mock.calls[0][3]).toBe(baseArgs.baseRef);
+    // The record names the files read and the one cut at the size limit, never their text.
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.instructions).toEqual({ files: ['AGENTS.md'], cut: 'AGENTS.md' });
   });
 
   it('forwards prior rounds from recap state to runReview when memory is enabled', async () => {
@@ -4219,6 +4227,7 @@ describe('runFullReview orchestration', () => {
         gradeIfConfirmed: 'blocker' as const,
         doubts: [{ premise: 'Shutdown runs while a request is in flight', decides: 'grade' as const }],
         cell: { row: 'wrong' as const, column: 'normal' as const, judgeColumn: 'rare' as const },
+        rule: { file: 'src/AGENTS.md', quote: 'A change to shutdown handling needs an integration test.' },
       }, {
         severity: 'warning' as const,
         title: 'js/sql-injection: Query built from user input',
@@ -4240,6 +4249,7 @@ describe('runFullReview orchestration', () => {
         reviewerSeverity: 'suggestion' as const, judgeConfidence: 'high' as const, judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
         gradeIfConfirmed: 'suggestion' as const, doubts: [{ premise: 'Callers read the old name', decides: 'defect' as const }],
         cell: { row: 'improvement' as const, column: 'normal' as const },
+        rule: { file: 'AGENTS.md', quote: 'A helper is named after what it returns.' },
       }],
       highlights: [], reviewComplete: true, agentNames: ['Concurrency'],
     });
@@ -4258,6 +4268,7 @@ describe('runFullReview orchestration', () => {
       reviewerSeverity: 'suggestion', judgeConfidence: 'high', judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
       gradeIfConfirmed: 'suggestion', doubts: [{ premise: 'Callers read the old name', decides: 'defect' }],
       cell: { row: 'improvement', column: 'normal' },
+      rule: { file: 'AGENTS.md', quote: 'A helper is named after what it returns.' },
     }]);
     expect(rc!.findings.entries.map(e => [e.toolEvidence, e.toolSource])).toEqual([['contradicted', undefined], ['confirmed', 'CodeQL']]);
     // A first round has no earlier change to compare with, so every finding is new.
@@ -4271,6 +4282,8 @@ describe('runFullReview orchestration', () => {
     expect([entry.gradeIfConfirmed, entry.doubts]).toEqual(['blocker', [{ premise: 'Shutdown runs while a request is in flight', decides: 'grade' }]]);
     // The cell the grade was worked out from, and the column the judge stated before a check moved it.
     expect(entry.cell).toEqual({ row: 'wrong', column: 'normal', judgeColumn: 'rare' });
+    // Only a rule finding names its rule and the instruction file the rule comes from.
+    expect(rc!.findings.entries.map(e => e.rule)).toEqual([{ file: 'src/AGENTS.md', quote: 'A change to shutdown handling needs an integration test.' }, undefined]);
   });
 
   it('splits judge suppression counters by tag in RoundContext.judge', async () => {

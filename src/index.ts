@@ -1865,7 +1865,7 @@ async function runFullReview(
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, configHold: brokenConfig(reviewSource, brokenHead?.changed ?? false), models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
-      diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis,
+      diff, changeDigest: digest, excludedFiles, lockfiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, memorySkip, staticAnalysis, instructions: repoContext,
       commentId, dashboard, progress, startTime, parseEndTime,
     };
 
@@ -1878,7 +1878,8 @@ async function runFullReview(
       config,
       diff,
       rawDiff,
-      repoContext,
+      repoContext: repoContext.text,
+      instructionFiles: repoContext.files,
       memory,
       fileContents,
       prContext: prContext && staticSignals.length > 0 ? { ...prContext, staticSignals } : prContext,

@@ -7,7 +7,7 @@ import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, r
 import { mapWithConcurrency, parseRetryNote } from './utils';
 import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, collectPriorBlockers, computeProvenanceMap, foldInto } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
-import { dynamicFence, fenceText, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
+import { dynamicFence, fenceText, InstructionFile, LinkedIssue, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, titleOverlapType } from './recap';
 import { canLeaveOut, cellGrade, FOLLOW_UP_TAG, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
@@ -98,6 +98,10 @@ function markPreExisting(findings: Finding[], diff: ParsedDiff, excludedPaths: R
 export const CLAIMS_MISSING_RULE = 'When a finding says something is missing or handled nowhere, set `"claimsMissing": true` and put the search that came back empty in `emptySearch`, such as "grep `close(` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.';
 
 export const PRE_EXISTING_RULE = 'When the defect sits on code this PR did not change and exists without this PR\'s change, set `"preExisting": true` and say in `preExistingReason`, in one line, why the code before this PR already had it. Never set it when this PR causes or exposes the defect, such as an unchanged caller that breaks because the PR changed what a function returns or takes. Never set it either on the defect this PR fixes in one path and leaves in a sibling path, such as an auth check added to `POST /items` while `PUT /items/:id` stays open: the fix is incomplete, so report it as part of the change and cite the line of the fix in `proof`. A pre-existing finding never blocks unless it is a security defect.';
+
+const UNRELATED_RULE = 'never report a change only for being unrelated to the PR\'s purpose';
+const NO_SPLIT_RULE = `Never propose splitting the PR, and ${UNRELATED_RULE}.`;
+const SPLIT_RULE = `Propose splitting the PR only when an instruction file under "Repository Context" requires focused changes, such as one concern per PR, and only with proof that a part is independent: search the repository and show that the rest of the PR does not use the part and that the part does not use the rest. Quote the rule, name the parts and list what you searched in \`evidence\`. Without such a rule or such proof, never propose a split, and ${UNRELATED_RULE}.`;
 
 const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   READY: 'APPROVE',
@@ -322,9 +326,10 @@ export function intersectFindings(passes: Finding[][], threshold: number): Findi
 
   for (const pass of passes) {
     for (const f of pass) {
-      if (!allCandidates.some(c => findingsMatch(c, f))) {
-        allCandidates.push(f);
-      }
+      const seen = allCandidates.findIndex(c => findingsMatch(c, f));
+      if (seen < 0) allCandidates.push(f);
+      // The rule a later pass quotes stays, as it does for a duplicate the judge folds.
+      else if (f.rule && !allCandidates[seen].rule) allCandidates[seen] = { ...allCandidates[seen], rule: f.rule };
     }
   }
 
@@ -602,6 +607,8 @@ export interface ReviewOptions {
   diff: ParsedDiff;
   rawDiff: string;
   repoContext: string;
+  /** The instruction files in `repoContext`. A rule a finder quotes is looked up in them. */
+  instructionFiles?: readonly InstructionFile[];
   memory?: RepoMemory | null;
   fileContents?: Map<string, string>;
   prContext?: PrContext;
@@ -766,6 +773,7 @@ export async function runReview(
   // Only a retry passes `retryNote`, the note of the reply it corrects, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
     effort: finder.effort, language: plannerResult?.language, workspace, related: related && { ...related, ...(guides && { guides }) }, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges,
+    instructionFiles: options.instructionFiles,
     ...(retryNote && { retryNote }),
   });
 
@@ -1620,6 +1628,7 @@ interface RunReviewerAgentOptions {
   earlierBlockers?: BuildReviewerUserMessageOptions['earlierBlockers'];
   usesOutsideDiff?: string;
   lockfileChanges?: string;
+  instructionFiles?: readonly InstructionFile[];
   /** The `parseRetryNote` of the reply a retry corrects, added after the user message. */
   retryNote?: string;
 }
@@ -1719,7 +1728,7 @@ async function runReviewerOnSlice(
   options: RunReviewerAgentOptions = {},
   sliceNote?: string,
 ): Promise<AgentResult> {
-  const { effort, language, workspace, related, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges, retryNote } = options;
+  const { effort, language, workspace, related, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges, instructionFiles, retryNote } = options;
   const tools = !!workspace && !!client.repoTools;
   const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, tools);
   const message = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues, changedSinceLastRound, earlierBlockers, sliceNote, usesOutsideDiff, lockfileChanges });
@@ -1735,7 +1744,7 @@ async function runReviewerOnSlice(
   }
   let findings: Finding[];
   try {
-    findings = parseFindings(response.content, finder.name);
+    findings = parseFindings(response.content, finder.name, instructionFiles);
   } catch (error) {
     throw new FinderReplyError(error instanceof Error ? error.message : String(error));
   }
@@ -1858,7 +1867,7 @@ These rules hold in every round. A later round searches the whole PR as fully as
 - If you find NO issues, respond with an empty array: []
 - When full file contents are provided, use them to follow the paths the change affects: variable definitions, imports, callers and surrounding logic.
 - When review memory is provided, respect its learnings. Leave out a warning, suggestion or nitpick that matches a suppression, but report a blocker or a security issue even when it matches one. Memory is the maintainers' recorded decision, not a claim to check.
-- If you notice changes in the diff that appear unrelated to the PR's stated purpose (title and description), flag them as a "suggestion" severity finding titled "Unrelated change: [brief description]". Recommend splitting into a separate PR. Only flag changes that are clearly out of scope. Don't flag shared config, imports, or test files that naturally accompany the main changes.
+- ${tools ? SPLIT_RULE : NO_SPLIT_RULE}
 
 ${WRITING_RULES}`;
 
@@ -1970,7 +1979,7 @@ export function buildReviewerUserMessage(
   return message;
 }
 
-export function parseFindings(responseText: string, reviewerName: string): Finding[] {
+export function parseFindings(responseText: string, reviewerName: string, instructionFiles: readonly InstructionFile[] = []): Finding[] {
   core.debug(`${reviewerName} response length: ${responseText.length}`);
 
   if (responseText.trim().length === 0) {
@@ -2006,6 +2015,7 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
       ...((lead || f.notChecked === true) && { notChecked: true }),
       ...(lead && { lead }),
       ...preExistingOf(f),
+      ...ruleOf(f, instructionFiles),
     };
   });
 }
@@ -2020,6 +2030,27 @@ export function howToFixOf(f: Record<string, unknown>): Pick<Finding, 'howToFix'
 function preExistingOf(f: Record<string, unknown>): Pick<Finding, 'preExisting'> {
   const reason = f.preExisting === true ? textOf(f.preExistingReason) : '';
   return reason ? { preExisting: reason } : {};
+}
+
+// Longer than a single requirement word, so a word the file happens to hold does not pass for a quoted rule.
+const MIN_RULE_QUOTE_CHARS = 10;
+
+/** Returns `text` in lower case, without Markdown emphasis and code marks and with each run of whitespace as one space. */
+function plainText(text: string): string {
+  return text.toLowerCase().replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Reads `rule` with its `ruleFile`. The mark is kept only when `instructionFiles` holds that file and the file holds the
+ * quote, so a rule the reviewer made up or read in a file the PR edits is no rule finding. Whether the quote states a
+ * requirement is not checked.
+ */
+function ruleOf(f: Record<string, unknown>, instructionFiles: readonly InstructionFile[]): Pick<Finding, 'rule'> {
+  const file = textOf(f.ruleFile);
+  const quote = textOf(f.rule);
+  const source = instructionFiles.find(loaded => loaded.path === file)?.text;
+  const plain = plainText(quote);
+  return source !== undefined && plain.length >= MIN_RULE_QUOTE_CHARS && plainText(source).includes(plain) ? { rule: { file, quote } } : {};
 }
 
 const EVIDENCE_LINE_CHARS = 300;

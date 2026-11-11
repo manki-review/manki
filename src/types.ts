@@ -304,6 +304,8 @@ export interface Finding {
   preExisting?: string;
   /** How a claim in `preExisting` was checked against the diff: held, or the condition that failed. */
   preExistingCheck?: PreExistingCheck;
+  /** The required rule the reviewer says the change breaks: the loaded instruction file and the rule quoted from it. */
+  rule?: { file: string; quote: string };
 }
 
 /**
@@ -361,6 +363,12 @@ export interface RelatedWork {
 export interface RoundRelatedWork {
   candidates: Array<Pick<RelatedItem, 'kind' | 'number' | 'sharedFiles' | 'relation' | 'reason'>>;
   skipped?: string[];
+}
+
+export interface RoundInstructions {
+  files: string[];
+  /** The file cut at the size limit. Files after it were left out, so the round saw no rule of theirs. */
+  cut?: string;
 }
 
 /** How one configured related repo fared in a round, and how often the round's finders read it. */
@@ -1431,6 +1439,8 @@ export interface RoundContext {
   tokenService?: TokenServiceCall[];
   /** How the diff was split, when it was read in several slices. */
   slicing?: RoundSlicing;
+  /** The instruction files the round read from the base branch, in the order the prompts print them. */
+  instructions?: RoundInstructions;
   /** The configured related repos, with the outcome of each fetch. */
   relatedRepos?: RoundRelatedRepo[];
   /** What the finders were shown as uses outside the diff. */
@@ -1784,6 +1794,8 @@ export interface RoundJudgeDrop {
   doubts?: Doubt[];
   /** Mirrors `Finding.cell`. A dropped finding has one only when a later stage dropped it. */
   cell?: GradeCell;
+  /** Mirrors `Finding.rule`. */
+  rule?: Finding['rule'];
 }
 
 export interface RoundAgentMetric {
@@ -2087,6 +2099,8 @@ export interface FindingFingerprintEntry {
   gradePath?: GradeStep[];
   /** The reviewer's pre-existing claim kept by the judge, and how it was checked against the diff. */
   preExisting?: { reason: string; check: PreExistingCheck };
+  /** Mirrors `Finding.rule`. */
+  rule?: Finding['rule'];
   /** Mirrors `Finding.unpostedReason`. */
   unpostedReason?: UnpostedReason;
   /**
