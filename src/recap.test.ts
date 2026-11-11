@@ -2337,6 +2337,12 @@ describe('parseFindingFromComment', () => {
     const unconfirmed = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], checkStatus: 'unconfirmed' }, TEST_LINKS);
     expect(unconfirmed).toContain('_Manki could not confirm this, so please check it._');
     expect(parseFindingFromComment(unconfirmed)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+    // The sentence on a warning an earlier round missed is not part of the description either, alone or after the other one.
+    for (const checkStatus of [undefined, 'unconfirmed' as const]) {
+      const late = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], origin: 'reviewed', tags: ['follow-up'], checkStatus }, TEST_LINKS);
+      expect(late).toContain('_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._');
+      expect(parseFindingFromComment(late)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+    }
     // The issue box, and the link that replaces it once ticked, are not part of the description.
     expect(body).toContain('Create an issue for this');
     const filed = body.replace(/- \[ \] Create an issue for this[^\n]*/, 'Issue #12 created by @bob');

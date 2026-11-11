@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, paginateGraphql, titleToSlug } from './github';
+import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, paginateGraphql, titleToSlug } from './github';
 import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
@@ -813,7 +813,9 @@ function parseFindingFromComment(body: string): FindingMetadata {
     }
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
-  if (descSlice.startsWith(UNCONFIRMED_NOTE)) descSlice = descSlice.slice(UNCONFIRMED_NOTE.length).replace(/^\s+/, '');
+  for (const note of [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE]) {
+    if (descSlice.startsWith(note)) descSlice = descSlice.slice(note.length).replace(/^\s+/, '');
+  }
   const label = [WHAT_GOES_WRONG_LABEL, WHY_LABEL].find(l => descSlice === l || descSlice.startsWith(`${l} `));
   if (label) descSlice = descSlice.slice(label.length).trimStart();
   const remainingSubs = descSlice.match(/^(?:<sub>[^\n]*<\/sub>\s*\n?)+/);

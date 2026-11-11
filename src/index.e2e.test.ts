@@ -1112,6 +1112,42 @@ describe('runFullReview end to end', () => {
     expect(thread.comments.at(-1)?.body).toMatch(/^Fixed in f1f1f1f\./);
   });
 
+  it('posts a warning on code an earlier round reviewed in a thread that does not block, and the next round leaves it there', async () => {
+    await reviewRound();
+    expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
+
+    // A push that changes only the README, so the lines in `src/math.ts` are the ones round 1 reviewed.
+    const readme = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+Sums are kept in a variable.\n';
+    mockGitHub.headSha = 'b2'.repeat(20);
+    mockGitHub.prDiffs[mockGitHub.headSha] = `${PR_DIFF}${readme}`;
+    mockGitHub.commitDiffs[mockGitHub.headSha] = readme;
+    const warning = { ...BLOCKER, severity: 'warning' };
+    Object.assign(mockLLM.replies, {
+      reviewer: JSON.stringify([warning]),
+      judge: JSON.stringify({ summary: 'One warning.', findings: [{ id: 1, title: warning.title, row: 'degraded', reasoning: 'Only very large sums are off.' }] }),
+    });
+    await reviewRound();
+
+    const late = postedReviews().at(-1)!;
+    expect(late.state).toBe('APPROVED');
+    expect(late.body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning, which doesn't block\./u);
+    expect(late.body.replace(/<!--[\s\S]*?-->/g, '')).not.toMatch(/Missed by an earlier review|Sum is never range checked/);
+    expect(mockGitHub.threads.map(t => [t.path, t.line, t.isResolved])).toEqual([['src/math.ts', 2, false]]);
+    expect(mockGitHub.threads[0].comments[0].body).toContain('**Sum is never range checked**\n\n_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._\n\n');
+    expect(mockGitHub.roundContext(late).meta.outcome).toBe('READY');
+    expect(mockGitHub.roundContext(late).findings.entries).toEqual([expect.objectContaining({ severity: 'warning', origin: 'reviewed', posted: 'thread' })]);
+
+    // The next round names it again. It stays in its thread, and the PR stays approved.
+    mockLLM.replies.judge = JSON.stringify({ summary: 'One warning.', findings: [{ id: 1, title: warning.title, row: 'degraded', reasoning: 'Only very large sums are off.', sameAs: 'P1' }] });
+    await forcedRound();
+
+    const again = postedReviews().at(-1)!;
+    expect(again.state).toBe('APPROVED');
+    expect(again.body).not.toContain('Missed by an earlier review');
+    expect(mockGitHub.threads).toHaveLength(1);
+    expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'warning', posted: 'earlier_thread', threadId: 'PRRT_1' })]);
+  });
+
   // A finding below `warning` gets a thread only when it is a security finding.
   it.each([
     ['blocker', 'blocker', 'CHANGES_REQUESTED'],

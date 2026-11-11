@@ -1321,6 +1321,9 @@ function inlineHtml(markdown: string): string {
 /** Heads the findings on code an earlier round already reviewed. */
 const MISSED_EARLIER = 'Missed by an earlier review';
 
+/** Shown under the title of a thread for a finding on such code that does not block. */
+const MISSED_EARLIER_NOTE = '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._';
+
 /** Lines shown on each side of the flagged line in a finding's code preview. */
 const PREVIEW_CONTEXT = 2;
 
@@ -1569,8 +1572,9 @@ function formatNotesSection(notes: Finding[], unposted: Finding[], links: CodeLi
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
  * gets a file-level comment. A finding that one of the open `existingThreads` already carries
  * is not posted again. A blocker whose `threadId` names one of them is listed in the body under
- * a link to that thread. When `interRoundDiff` is given, non-blocking findings on code it did not
- * change are only counted.
+ * a link to that thread. Three kinds of finding that do not block stay in the body: a pre-existing one,
+ * one that restates a finding an earlier round listed in its body, and a security note on code an
+ * earlier round reviewed.
  *
  * When `context` is provided without `reviewTimeMs`, the hidden stats line
  * records `0s` for review time. Pass both together to avoid this.
@@ -1642,7 +1646,8 @@ export async function postReview(
         if (matched) leftTo.set(f, matched);
       } else if (isListedNote(f)) {
         notes.push(f);
-      } else if (isPreExisting(f) || f.origin === 'reviewed' || f.origin === 'earlier') {
+      } else if (isPreExisting(f) || f.origin === 'earlier' || (f.origin === 'reviewed' && isNote(f.severity))) {
+        // On code an earlier round reviewed, only a warning gets a thread. A security note there stays listed.
         bodyFindings.push(f);
       } else {
         nonBlocking.push(f);
@@ -2835,6 +2840,7 @@ function formatFindingComment(finding: Finding, links: CodeLinks): string {
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
   const note = trustNote(finding);
   if (note) comment += `${note}\n\n`;
+  if (finding.origin === 'reviewed' && !isBlockingFinding(finding)) comment += `${MISSED_EARLIER_NOTE}\n\n`;
   // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold.
   const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
   const suggestion = suggestionBlock(fixParts);
@@ -3349,5 +3355,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };
