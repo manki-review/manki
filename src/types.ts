@@ -247,9 +247,10 @@ export interface Finding {
 export type PreExistingCheck = 'pre_existing' | 'no_location' | 'excluded_file' | 'deleted_file' | 'touches_diff';
 
 /** How a round split a diff too large to read at once. */
-/** A fetched reference repo: its `owner/name` and the directory holding its checkout. */
-export interface ReferenceCheckout {
+/** A fetched related repo: its `owner/name`, its kind and the directory holding its checkout. */
+export interface RelatedCheckout {
   repo: string;
+  kind: RelatedRepoKind;
   dir: string;
 }
 
@@ -292,7 +293,7 @@ export interface RoundRelatedRepo {
   repo: string;
   ref?: string;
   /**
-   * `fetched`, `failed` with the `reason`, `unused` when no tool call named it, or `skipped` with the `reason` when the
+   * `fetched`, `failed` with the `reason`, `unused` when nothing asked for it, or `skipped` with the `reason` when the
    * round gave no finder the repo.
    */
   status: 'fetched' | 'failed' | 'unused' | 'skipped';
@@ -321,6 +322,12 @@ export interface RoundUses {
   referenceMissing?: string[];
   /** Names found in the reference repos that the cap on reference lines left out. */
   referenceCapped?: string[];
+  /** Each name found in the consumer repos, with the lines shown. */
+  consumer?: RoundReferenceUse[];
+  /** Names searched for that no consumer line holds. */
+  consumerMissing?: string[];
+  /** Names found in the consumer repos that the cap on consumer lines left out. */
+  consumerCapped?: string[];
 }
 
 export interface RoundReferenceUse {

@@ -4,7 +4,7 @@ import { devNull, tmpdir } from 'os';
 import { dirname, join, resolve, sep } from 'path';
 
 import { runTool } from './binary-analyzers';
-import { ReferenceCheckout, RelatedRepo, RelatedRepoTools, RoundRelatedRepo } from './types';
+import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RoundRelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
 // A tool call that runs for the fetch and the wait after it must end before the CLI's 90 second stale limit.
@@ -109,12 +109,12 @@ function isHolderAlive(lock: string): boolean {
 }
 
 /**
- * Fetches each `reference` repo of `related` the way a tool call does, so the round's tool servers reuse the checkout,
- * and returns those fetched. One that fails is left out, and the round record says why.
+ * Fetches each repo of `related` the way a tool call does, so the round's tool servers reuse the checkout, and returns
+ * those fetched. One that fails is left out, and the round record says why.
  */
-export async function fetchReferenceRepos(related: RelatedRepoTools, options: RelatedRepoLoaderOptions = {}): Promise<ReferenceCheckout[]> {
+export async function fetchRelatedRepos(related: RelatedRepoTools, options: RelatedRepoLoaderOptions = {}): Promise<RelatedCheckout[]> {
   const load = relatedRepoLoader(related, { log: message => core.info(message), ...options });
-  const fetched = await Promise.allSettled(related.repos.filter(r => r.kind === 'reference').map(async ({ repo }) => ({ repo, dir: await load(repo) })));
+  const fetched = await Promise.allSettled(related.repos.map(async ({ repo, kind }) => ({ repo, kind, dir: await load(repo) })));
   return fetched.flatMap(result => (result.status === 'fulfilled' ? [result.value] : []));
 }
 
@@ -122,7 +122,7 @@ export async function fetchReferenceRepos(related: RelatedRepoTools, options: Re
  * Returns the guide file at the root of each of `checkouts` that has one, by `owner/name`, or `undefined` when none
  * has. Only a regular file counts, so a guide is never a link that leaves the checkout.
  */
-export function relatedRepoGuides(checkouts: ReferenceCheckout[]): Record<string, string> | undefined {
+export function relatedRepoGuides(checkouts: RelatedCheckout[]): Record<string, string> | undefined {
   const guides = checkouts.flatMap(({ repo, dir }) => {
     const guide = GUIDE_FILES.find(name => lstatSync(join(dir, name), { throwIfNoEntry: false })?.isFile());
     return guide ? [[repo, guide]] : [];
@@ -139,8 +139,8 @@ export function fetchedRelatedRepos(stateDir: string): Map<string, string> {
 const MAX_REASON_CHARS = 300;
 
 /**
- * Returns how each of `repos` fared in the round in `stateDir`: fetched, failed with the reason, or unused when no tool
- * call named it, with how long a fetch took from its lock to its outcome, and the guide of `guides` the finders were
+ * Returns how each of `repos` fared in the round in `stateDir`: fetched, failed with the reason, or unused when nothing
+ * asked for it, with how long a fetch took from its lock to its outcome, and the guide of `guides` the finders were
  * pointed to. Warns about each repo it could not fetch.
  */
 export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guides: Record<string, string> = {}): RoundRelatedRepo[] {

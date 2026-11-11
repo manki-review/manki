@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { devNull, tmpdir } from 'os';
 import { join } from 'path';
 
-import { fetchedRelatedRepos, fetchReferenceRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
+import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir } from './related-repos';
 import { RelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -257,13 +257,15 @@ describe('relatedRepoLoader', () => {
       "Could not fetch related repo dashpay/dips, which must be public on github.com: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
     );
 
-    // Fetching the references up front takes each outcome of the round, leaves out the failed one and never fetches a consumer.
+    // Fetching the related repos up front takes each outcome of the round, fetches the consumer no call named yet and leaves out the failed one.
     const before = calls.length;
-    expect(await fetchReferenceRepos({ repos: [DASH, DIPS, PLATFORM], cacheDir, stateDir }, { run, log })).toEqual([{ repo: 'dashpay/dash', dir: join(cacheDir, 'dashpay', 'dash') }]);
-    expect(calls).toHaveLength(before);
+    const dirOf = ({ repo }: RelatedRepo) => join(cacheDir, ...repo.split('/'));
+    expect(await fetchRelatedRepos({ repos: [DASH, DIPS, PLATFORM], cacheDir, stateDir }, { run, log })).toEqual([DASH, PLATFORM].map(r => ({ repo: r.repo, kind: r.kind, dir: dirOf(r) })));
+    expect(calls.length).toBeGreaterThan(before);
+    expect(calls.slice(before).every(c => c.cwd === dirOf(PLATFORM))).toBe(true);
 
     // A repo's guide is its root `AGENTS.md`, else its root `CLAUDE.md`, and only a regular file. The round record names it.
-    const [both, linked, none] = [DASH, DIPS, PLATFORM].map(({ repo }) => ({ repo, dir: mkdtempSync(join(tempDir, 'checkout-')) }));
+    const [both, linked, none] = [DASH, DIPS, PLATFORM].map(({ repo, kind }) => ({ repo, kind, dir: mkdtempSync(join(tempDir, 'checkout-')) }));
     for (const name of ['AGENTS.md', 'CLAUDE.md']) writeFileSync(join(both.dir, name), '');
     symlinkSync(join(tempDir, 'outside.md'), join(linked.dir, 'AGENTS.md'));
     writeFileSync(join(linked.dir, 'CLAUDE.md'), '');

@@ -2057,7 +2057,7 @@ describe('runReview', () => {
     }
   });
 
-  it('hands every finder and the judge the uses outside the diff from the PR head and the reference lines, and records where they are', async () => {
+  it('hands every finder and the judge the uses outside the diff from the PR head and the related repo lines, and records where they are', async () => {
     const { root, diff } = gitWorkspace(
       { 'cmd/fee.go': 'package main\n\nfunc main() {}\n', 'cmd/use.go': 'package main\n\nvar fee = ComputeFee(2)\n' },
       { 'cmd/fee.go': 'package main\n\nfunc main() {}\n\nfunc ComputeFee(n int) int { return n }\n' },
@@ -2065,34 +2065,38 @@ describe('runReview', () => {
     const reference = mkdtempSync(join(tmpdir(), 'manki-reference-'));
     writeFileSync(join(reference, 'fee.cpp'), 'CAmount ComputeFee(int n) { return n; }\n');
     writeFileSync(join(reference, 'AGENTS.md'), '# Repository map\n');
-    const unguided = mkdtempSync(join(tmpdir(), 'manki-reference-'));
-    const fetchSpy = jest.spyOn(relatedRepos, 'fetchReferenceRepos').mockResolvedValue([{ repo: 'o/ref', dir: reference }, { repo: 'o/unguided', dir: unguided }]);
+    const consumer = mkdtempSync(join(tmpdir(), 'manki-consumer-'));
+    writeFileSync(join(consumer, 'app.ts'), 'const fee = computeFee(2);\n');
+    const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: reference }, { repo: 'o/app', kind: 'consumer', dir: consumer }]);
     const clients = makeClients();
     Object.assign(clients.reviewer, { repoTools: true });
     let result: Awaited<ReturnType<typeof runReview>>;
     try {
-      const related_repos = ['o/ref', 'o/unguided'].map(repo => ({ repo, kind: 'reference' as const }));
+      const related_repos = [{ repo: 'o/ref', kind: 'reference' as const }, { repo: 'o/app', kind: 'consumer' as const }];
       result = await runReview(clients, { config: makeConfig({ related_repos }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
     } finally {
       fetchSpy.mockRestore();
-      for (const dir of [root, reference, unguided]) rmSync(dir, { recursive: true, force: true });
+      for (const dir of [root, reference, consumer]) rmSync(dir, { recursive: true, force: true });
     }
 
     const uses = mockedRunJudgeAgent.mock.calls[0][2].usesOutsideDiff;
     expect(uses).toContain('### `ComputeFee` (function)\n\n```\ndeclared at cmd/fee.go:5\ncmd/use.go:3: var fee = ComputeFee(2)\n```');
     expect(uses).toContain('## In the Reference Repos');
     expect(uses).toContain('### `ComputeFee`\n\n```\no/ref:fee.cpp:1: CAmount ComputeFee(int n) { return n; }\n```');
+    expect(uses).toContain('## In the Consumer Repos');
+    expect(uses).toContain('### `ComputeFee`\n\n```\no/app:app.ts:1: const fee = computeFee(2);\n```');
     const finderMessages = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[1]);
     expect(finderMessages.length).toBeGreaterThan(0);
     for (const message of finderMessages) expect(message).toContain(uses);
     expect(result.usesOutsideDiff).toEqual({
       symbols: [{ name: 'ComputeFee', declared: 'cmd/fee.go:5', uses: ['cmd/use.go:3'] }],
       reference: [{ name: 'ComputeFee', lines: ['o/ref:fee.cpp:1'] }],
+      consumer: [{ name: 'ComputeFee', lines: ['o/app:app.ts:1'] }],
     });
-    // The finders are pointed to a guide only for the fetched reference whose checkout holds one, and the round record names it.
+    // The finders are pointed to a guide only for the fetched repo whose checkout holds one, and the round record names it.
     const finderGuides = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools?.related?.guides);
     expect(finderGuides).toEqual(finderMessages.map(() => ({ 'o/ref': 'AGENTS.md' })));
-    expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/unguided', status: 'unused' }]);
+    expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/app', status: 'unused' }]);
   });
 
   it('asks the sibling comparisons alongside the finders and hands the judge their findings under their own reviewer name', async () => {
