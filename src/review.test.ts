@@ -34,7 +34,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { Finding, FindingSeverity, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
+import { cellGrade, Finding, FindingSeverity, GradeCell, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
 import { fingerprintEntriesFromLegacy, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
 import type { LockfileDiff } from './lockfile';
@@ -3010,6 +3010,23 @@ describe('runReview', () => {
     openThread.isSecurity = true;
     expect(await gradeAfter(partly('warning'), touching)).toEqual(['blocker', 'ADDRESS_FIRST']);
     delete openThread.isSecurity;
+
+    // The record keeps the judge's cell as `cell` only when it gives the thread's grade, so no later prompt shows a cell next to another grade.
+    const cellsAfter = async (cell: GradeCell, diff: string, threadId = 'T1') => {
+      mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 's', threadEvaluations: [{ ...partly(cellGrade(cell.row, cell.column)), threadId, cell }] });
+      const [{ grade, cell: kept, judgeCell }] = (await runWith(diff)).threadEvaluations!;
+      return { grade, cell: kept, judgeCell };
+    };
+    const degraded: GradeCell = { row: 'degraded', column: 'normal' };
+    const severe: GradeCell = { row: 'severe', column: 'normal' };
+    const unchecked: GradeCell = { row: 'wrong', column: 'normal', judgeColumn: 'rare' };
+    expect(await cellsAfter(degraded, touching)).toEqual({ grade: 'warning', cell: degraded });
+    expect(await cellsAfter(unchecked, elsewhere)).toEqual({ grade: 'blocker', cell: unchecked });
+    expect(await cellsAfter(degraded, elsewhere)).toEqual({ grade: 'blocker', judgeCell: degraded });
+    openThread.severity = 'warning';
+    expect(await cellsAfter(severe, touching)).toEqual({ grade: 'warning', judgeCell: severe });
+    openThread.severity = 'blocker';
+    expect(await cellsAfter(degraded, touching, 'T9')).toEqual({});
 
     // A thread an earlier partial fix lowered can rise again, up to its own grade, with or without a push to its file.
     openThread.recordedGrade = 'suggestion';

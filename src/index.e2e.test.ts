@@ -960,10 +960,12 @@ describe('runFullReview end to end', () => {
     const guarded = postedReviews().at(-1)!;
     expect(mockLLM.asked.judge).toContain('>>> 2:   const sum = a + b;');
     expect(mockLLM.asked.judge).toContain('  const total = clamp(a) + b;');
+    expect(mockLLM.asked.judge).toContain('still overflows. (graded blocker, row wrong, column normal)');
     expect(guarded.state).toBe('CHANGES_REQUESTED');
-    expect(mockGitHub.roundContext(guarded).judge.threadEvaluations).toEqual([
-      expect.objectContaining({ threadId: 'PRRT_1', status: 'partly_addressed', cell: { row: 'degraded', column: 'normal' }, grade: 'blocker' }),
-    ]);
+    // The thread keeps `blocker`, which the `degraded` row does not give, so the record holds that cell apart from the grade.
+    const [kept] = mockGitHub.roundContext(guarded).judge.threadEvaluations!;
+    expect(kept).toEqual(expect.objectContaining({ threadId: 'PRRT_1', status: 'partly_addressed', judgeCell: { row: 'degraded', column: 'normal' }, grade: 'blocker' }));
+    expect(kept.cell).toBeUndefined();
     expect(mockGitHub.threads[0].isResolved).toBe(false);
 
     // Two commits since the last review: the first rewrites the thread's line, the second only changes the README. GitHub
@@ -980,6 +982,8 @@ describe('runFullReview end to end', () => {
     });
     await reviewRound();
 
+    // The judge is shown the grade the thread kept, without the cell that gives another one.
+    expect(mockLLM.asked.judge).toContain('still overflows. (graded blocker)');
     const fixed = postedReviews().at(-1)!;
     expect(fixed.state).toBe('APPROVED');
     expect(mockGitHub.roundContext(fixed).judge.interRoundDiffState).toBe('changed');
