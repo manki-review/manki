@@ -2118,8 +2118,8 @@ describe('runJudgeAgent', () => {
       ['No rule quoted', 'note', undefined, undefined],
       // A folded copy's confirmed rule goes to the finding that stays.
       ['Schema drift', grade, 'confirmed', `rule: ${grade}`],
-      // A fact the judge could not see leaves the rule unproven whatever it says about the break, and becomes the doubt the refuter checks.
-      ['Unseen file', 'note', 'unproven', undefined, grade, 'No migration under `migrations/` adds the field', ['No migration under `migrations/` adds the field']],
+      // A fact the judge could not see leaves the rule unproven whatever it says about the break. Only the refuter reads it as a doubt, so with no check the note has neither that doubt nor the rule's grade.
+      ['Unseen file', 'note', 'unproven', undefined, undefined, 'No migration under `migrations/` adds the field', undefined],
       // A finding graded by its own damage is not put at risk by a doubt about the rule.
       ['Unseen on a real defect', 'warning', 'unproven', 'judge: warning', undefined, 'No migration adds the field', undefined],
       ['Unseen in advice', 'note', 'no_requirement', undefined],
@@ -2241,6 +2241,12 @@ describe('runJudgeAgent', () => {
       const raised = byTitle['Fact confirmed, damage disproved'];
       expect([raised.cell, raised.doubts, raised.gradeIfConfirmed, raised.refutation?.outcome]).toEqual([undefined, undefined, undefined, 'disproved']);
       expect(byTitle['Fact confirmed, damage unsettled'].doubts?.map(d => d.premise)).toEqual(['The service fails to start without the variable', '`.env.example` has no entry for the variable']);
+      // A note whose fact stays open leaves the judge call without the rule's grade and without the fact as a doubt, so no later step takes them for the damage's. The check's answer and the damage doubt stay.
+      const open = Object.fromEntries((await run('block')).map(f => [f.title, f]));
+      expect(['Fact unsettled', 'Fact unsettled, damage confirmed'].map(title => [open[title].gradeIfConfirmed, open[title].doubts?.map(d => d.premise), open[title].rule?.unseen, open[title].refutation?.premises?.length])).toEqual([
+        [undefined, undefined, '`.env.example` has no entry for the variable', 1],
+        [undefined, ['The service fails to start without the variable'], '`.env.example` has no entry for the variable', 2],
+      ]);
       expect(raised.evidence?.proof).toEqual(['src/index.ts:17', 'src/index.ts:3']);
 
       // The kept warning drops the damage the check disproved, so the next round's judge reads a warning with no cell to restate and no open doubt.

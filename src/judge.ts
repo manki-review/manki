@@ -1533,7 +1533,7 @@ export async function runJudgeAgent(
     restatesEarlier: finding => earlier.some(e => sameProblem(e.finding, finding)),
     preExisting: staysPreExisting, rules: config.review?.rules,
   }) : mapped;
-  const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked);
+  const { findings: suppressed, count: inPrCount, ...suppression } = suppress(checked.map(withoutRuleDoubt));
 
   return {
     findings: suppressed,
@@ -1713,11 +1713,11 @@ function unseenRuleFact(finding: Finding): string | undefined {
 }
 
 /**
- * Returns `finding` without the `gradeIfConfirmed` and the doubt `doubtUnprovenRule` added. Only the refuter of the same
- * round reads the two. The round record keeps neither, since a later round would read the rule's grade as one the damage
- * earned. `rule.unseen` keeps the fact.
+ * Returns `finding` without the `gradeIfConfirmed` and the doubt `doubtUnprovenRule` added. Only the refuter of the judge
+ * call reads the two. Any later step, and the round record, would read the rule's grade as one the damage earned.
+ * `rule.unseen` keeps the fact.
  */
-export function withoutRuleDoubt(finding: Finding): Finding {
+function withoutRuleDoubt(finding: Finding): Finding {
   const fact = unseenRuleFact(finding);
   if (!fact) return finding;
   const { gradeIfConfirmed: _gradeIfConfirmed, doubts, ...kept } = finding;

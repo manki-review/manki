@@ -4355,11 +4355,6 @@ describe('runFullReview orchestration', () => {
         cell: { row: 'wrong' as const, column: 'normal' as const, judgeColumn: 'rare' as const },
         rule: { file: 'src/AGENTS.md', quote: 'A change to shutdown handling needs an integration test.' },
       }, {
-        severity: 'note' as const, title: 'No changelog entry', file: 'src/app.ts', line: 8, description: 'd', reviewers: ['Concurrency'],
-        gradeIfConfirmed: 'blocker' as const,
-        doubts: [{ premise: 'The change is user-facing', decides: 'grade' as const }, { premise: 'CHANGELOG.md has no entry for it', decides: 'defect' as const }],
-        rule: { file: 'AGENTS.md', quote: 'Every fix needs a changelog entry.', verdict: 'unproven' as const, unseen: 'CHANGELOG.md has no entry for it' },
-      }, {
         severity: 'warning' as const,
         title: 'js/sql-injection: Query built from user input',
         file: 'src/app.ts',
@@ -4401,13 +4396,9 @@ describe('runFullReview orchestration', () => {
       cell: { row: 'improvement', column: 'normal' },
       rule: { file: 'AGENTS.md', quote: 'A helper is named after what it returns.' },
     }]);
-    expect(rc!.findings.entries.map(e => [e.toolEvidence, e.toolSource])).toEqual([['contradicted', undefined], ['confirmed', 'CodeQL'], [undefined, undefined]]);
+    expect(rc!.findings.entries.map(e => [e.toolEvidence, e.toolSource])).toEqual([['contradicted', undefined], ['confirmed', 'CodeQL']]);
     // A first round has no earlier change to compare with, so every finding is new.
-    expect(rc!.findings.entries.map(e => e.origin)).toEqual(['new', 'new', 'new']);
-    // The grade and the fact an unproven rule put on a note are for this round's refuter only, so a later round cannot read them as earned by the damage.
-    const ruleNote = rc!.findings.entries[2];
-    expect([ruleNote.title, ruleNote.gradeIfConfirmed, ruleNote.doubts, ruleNote.rule?.unseen])
-      .toEqual(['No changelog entry', undefined, [{ premise: 'The change is user-facing', decides: 'grade' }], 'CHANGELOG.md has no entry for it']);
+    expect(rc!.findings.entries.map(e => e.origin)).toEqual(['new', 'new']);
     const entry = rc!.findings.entries[0];
     expect(entry.judgeNotes).toBe('Reachable only under shutdown');
     expect(entry.checkStatus).toBe('proven');
@@ -4418,8 +4409,7 @@ describe('runFullReview orchestration', () => {
     // The cell the grade was worked out from, and the column the judge stated before a check moved it.
     expect(entry.cell).toEqual({ row: 'wrong', column: 'normal', judgeColumn: 'rare' });
     // Only a rule finding names its rule and the instruction file the rule comes from.
-    expect(rc!.findings.entries.map(e => e.rule?.file)).toEqual(['src/AGENTS.md', undefined, 'AGENTS.md']);
-    expect(entry.rule).toEqual({ file: 'src/AGENTS.md', quote: 'A change to shutdown handling needs an integration test.' });
+    expect(rc!.findings.entries.map(e => e.rule)).toEqual([{ file: 'src/AGENTS.md', quote: 'A change to shutdown handling needs an integration test.' }, undefined]);
   });
 
   it('splits judge suppression counters by tag in RoundContext.judge', async () => {
