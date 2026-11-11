@@ -20,7 +20,7 @@ import { dynamicFence, fenceText, LinkedIssue, titleToSlug } from './github';
 import { jsonOnlyReply, safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
 import { FINDER_TOOLS_TIMEOUT_MS, blockerThreadStaysOpen, determineOutcome, fencePrText, filesChangedByPush, parseProof, preExistingCheck, stringifyFindingFingerprint, truncateDiff } from './review';
-import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
@@ -699,25 +699,6 @@ A finding cites their code as \`owner/name:path:line\`. Its tool evidence says w
 
 - **A divergence from a reference** is graded by the blocker tests and the severity table, like any other finding.
 - **A change that breaks a consumer** is the \`degraded\` row in the \`normal\` column, a \`warning\` that lists the consumer's call sites and says it breaks once the consumer upgrades. It is the \`severe\` row, a \`blocker\`, only when the PR description says the change does not break anything. This replaces the broken public contract part of the \`severe\` row for a consumer.`;
-}
-
-/** Returns the judge rules the base branch's `review` block adds, or an empty string when it adds none. */
-function buildRepositoryRules(config: ReviewConfig): string {
-  const { outside_input: outsideInput, examples, critical_paths: criticalPaths } = config.review ?? {};
-  const hasCriticalAreas = !!criticalPaths?.length;
-  if (!hasCriticalAreas && !outsideInput && !examples) return '';
-  const exampleList = (label: string, list: string[] | undefined) => (list ? ['', label, ...list.map(e => `- ${e.trim()}`)] : []);
-  const parts = ['## Repository Rules', '', 'The repository\'s maintainers set these rules. They add to the rules above and never lower a security defect.'];
-  if (hasCriticalAreas) {
-    parts.push('', '**Critical areas:** a finding marked **Critical area** sits in a path where any wrong result is severe damage. State the `severe` row for a wrong result there, even in a rare internal edge case. The other tests still apply.');
-  }
-  if (outsideInput) {
-    parts.push('', `**Outside input in this repository:** ${outsideInput.trim()}`);
-  }
-  if (examples) {
-    parts.push('', '**Repository examples:**', ...exampleList('Blockers:', examples.blocker), ...exampleList('Not blockers:', examples.not_blocker));
-  }
-  return parts.join('\n');
 }
 
 export function buildJudgeUserMessage(

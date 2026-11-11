@@ -1,4 +1,4 @@
-import { CELL_GRADES, CellRow } from './types';
+import { CELL_GRADES, CellRow, ReviewConfig } from './types';
 
 /** Style rules for every prompt whose output is posted on the pull request. */
 export const WRITING_RULES = `## Writing Style
@@ -44,3 +44,22 @@ A rare internal edge case needs a state that only the code's own logic produces,
 
 /** What counts as outside input in the severity table. The finders and the judge both get it. */
 export const OUTSIDE_INPUT_RULE = "**Outside input** is anything the code does not produce itself: requests and messages from users or network peers, files and data read from disk or other services, and, for code that handles pull requests, anything a PR author or commenter can write. Values the code's own logic produces and checks are internal. A failure that outside input can trigger is never hypothetical, however unlikely it looks. For a library, outside input is also anything a caller of its public API can pass, such as arguments, readers and byte streams. No caller inside the repository is needed.";
+
+/** Returns the judge rules the base branch's `review` block adds, or an empty string when it adds none. */
+export function buildRepositoryRules(config: ReviewConfig): string {
+  const { outside_input: outsideInput, examples, critical_paths: criticalPaths } = config.review ?? {};
+  const hasCriticalAreas = !!criticalPaths?.length;
+  if (!hasCriticalAreas && !outsideInput && !examples) return '';
+  const exampleList = (label: string, list: string[] | undefined) => (list ? ['', label, ...list.map(e => `- ${e.trim()}`)] : []);
+  const parts = ['## Repository Rules', '', 'The repository\'s maintainers set these rules. They add to the rules above and never lower a security defect.'];
+  if (hasCriticalAreas) {
+    parts.push('', '**Critical areas:** a finding marked **Critical area** sits in a path where any wrong result is severe damage. State the `severe` row for a wrong result there, even in a rare internal edge case. The other tests still apply.');
+  }
+  if (outsideInput) {
+    parts.push('', `**Outside input in this repository:** ${outsideInput.trim()}`);
+  }
+  if (examples) {
+    parts.push('', '**Repository examples:**', ...exampleList('Blockers:', examples.blocker), ...exampleList('Not blockers:', examples.not_blocker));
+  }
+  return parts.join('\n');
+}
