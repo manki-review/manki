@@ -31,15 +31,18 @@ const installs = new Map<string, Promise<string>>();
  * Returns the directory a pinned download was installed into. A `.tgz`, `.tar.gz` or `.zip` is unpacked there, and
  * any other file is saved there as an executable under its own name. Each download is installed at most once per run.
  * In the runner's temp folder, other processes such as Manki's tool server reuse it too. A download that fails in
- * passing is tried up to `DOWNLOAD_TRIES` times. Throws when the download still fails or its digest differs from
- * `integrity`, and the next call then tries again.
+ * passing is tried up to `DOWNLOAD_TRIES` times. Throws when it still fails, and the next call then tries again.
+ * Throws at once for a failure another try would hit again, such as a digest that differs from `integrity` or a
+ * download too slow for `DOWNLOAD_DEADLINE_MS`. Every later call of the run gets that failure without a download.
  */
 export function installPinned(download: PinnedDownload): Promise<string> {
   let install = installs.get(download.url);
   if (!install) {
     install = installWithRetries(download);
     installs.set(download.url, install);
-    install.catch(() => installs.delete(download.url));
+    install.catch((error: unknown) => {
+      if (error instanceof TransientDownloadError) installs.delete(download.url);
+    });
   }
   return install;
 }

@@ -103,7 +103,7 @@ describe('installPinned', () => {
     expect(() => accessSync(join(dir, 'tool_linux_amd64'), constants.X_OK)).not.toThrow();
   });
 
-  it('rejects a download whose digest differs, and a failed download, and tries a failed one again', async () => {
+  it('rejects a download whose digest differs or that the server refuses after one try, and keeps that failure for the run', async () => {
     const tampered = `sha512-${createHash('sha512').update('other').digest('base64')}`;
     await expect(installPinned({ url: 'https://example.test/tool-2.tgz', integrity: tampered })).rejects.toThrow(/does not match its pinned sha512 digest/);
 
@@ -112,9 +112,11 @@ describe('installPinned', () => {
     // Neither would end differently on another try, so each was downloaded once.
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
+    // A later call of the run gets the same failure without another download.
     fetchMock.mockImplementation(async () => new Response(data));
-    const retried = await installPinned({ url: 'https://example.test/tool-3.tgz', integrity });
-    expect(readFileSync(join(retried, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+    await expect(installPinned({ url: 'https://example.test/tool-2.tgz', integrity: tampered })).rejects.toThrow(/does not match its pinned sha512 digest/);
+    await expect(installPinned({ url: 'https://example.test/tool-3.tgz', integrity })).rejects.toThrow(/HTTP 404/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   /** A response whose body delivers one of `chunks` every `gapMs` and then ends, or goes on with single bytes when `endless`. */
@@ -162,7 +164,7 @@ describe('installPinned', () => {
     }
   });
 
-  it('lets a slow download finish while data keeps arriving, and stops one that takes over four minutes without another try', async () => {
+  it('lets a slow download finish while data keeps arriving, and stops one that takes over four minutes for the whole run', async () => {
     const third = Math.ceil(data.length / 3);
     const chunks = [data.subarray(0, third), data.subarray(third, 2 * third), data.subarray(2 * third)];
     // A minute in all, three times what a stalled download gets, with 15 seconds between two chunks.
@@ -174,6 +176,10 @@ describe('installPinned', () => {
     fetchMock.mockClear().mockImplementation(async (_url: unknown, init?: RequestInit) => slowResponse([], 15_000, signalOf(init), true));
     await expect(afterTime(() => installPinned({ url: 'https://example.test/endless.tgz', integrity }), 240_000))
       .rejects.toThrow('download of https://example.test/endless.tgz did not finish within 240 seconds');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The link would be as slow for the next call, which fails at once instead of waiting four minutes again.
+    await expect(installPinned({ url: 'https://example.test/endless.tgz', integrity })).rejects.toThrow('did not finish within 240 seconds');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
