@@ -428,7 +428,11 @@ describe('scoreRun', () => {
         description: 'Calls `unlock` early.', reviewerSeverity: 'warning', cell: { row: 'severe', column: 'normal', judgeColumn: 'rare' },
         gradePath: [step('warning', 'blocker', 'judge'), step('blocker', 'warning', 'unproven'), step('warning', 'blocker', 'refutation')], refutation: { ...refutation, defect: undefined },
       }),
-      blocker('Doubted', { gradePath: [step('note', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], gradeIfConfirmed: 'blocker', doubts: [doubt('grade')] }),
+      // The check that confirmed the doubt cited lines of a related repo alone.
+      blocker('Doubted', {
+        gradePath: [step('note', 'warning', 'judge'), step('warning', 'blocker', 'refutation')], gradeIfConfirmed: 'blocker', doubts: [doubt('grade')],
+        refutation: { ...refutation, proof: undefined, relatedProof: ['o/r:src/read.rs:3', 'o/r:src/read.rs:9'] },
+      }),
       blocker('Read', { reviewers: [VERDICT_READER_NAME] }),
       blocker('Ruled', { gradePath: [step('warning', 'blocker', 'rule')], tags: ['security'] }),
       makeFinding({ title: 'Lowered', gradePath: [step('blocker', 'warning', 'pre_existing')], checkStatus: 'proven' }),
@@ -449,7 +453,10 @@ describe('scoreRun', () => {
         finderGrade: 'warning', cell: { row: 'severe', column: 'normal', judgeColumn: 'rare' }, refutation: { outcome: 'confirmed' },
         gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'unproven' }, { from: 'warning', to: 'blocker', by: 'refutation' }],
       },
-      { finderGrade: 'note', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'note', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }], doubts: { defect: 0, grade: 1 } },
+      {
+        finderGrade: 'note', gradeIfConfirmed: 'blocker', gradePath: [{ from: 'note', to: 'warning', by: 'judge' }, { from: 'warning', to: 'blocker', by: 'refutation' }], doubts: { defect: 0, grade: 1 },
+        refutation: { outcome: 'confirmed', defect: 'confirmed', relatedLines: 2, prLines: 0 },
+      },
       { finderGrade: 'blocker', byReader: true },
       { finderGrade: 'warning', gradePath: [{ from: 'warning', to: 'blocker', by: 'rule' }], security: true },
       { finderGrade: 'blocker', gradePath: [{ from: 'blocker', to: 'warning', by: 'pre_existing' }], checkStatus: 'proven' },
