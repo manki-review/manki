@@ -304,8 +304,8 @@ function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefi
  * Grades `given` by the outcome its refutations agree on, after `confirmRuleFact` settled an `unproven` rule from the
  * premise about its fact alone. A `disproof` drops a finding graded below blocker, such as an
  * open lead or a capped blocker, and no check raises a finding beside one that disproves it. A finding with an
- * `overruledDisproof` stays at its grade, without its `cell`, `doubts` and `gradeIfConfirmed`, so only a confirmation
- * gives a capped blocker back. A disproof lowers a
+ * `overruledDisproof` stays at its grade, without its `cell`, `doubts`, `gradeIfConfirmed` and `lead`, so only a
+ * confirmation gives a capped blocker back. A disproof lowers a
  * blocker only to the grade `gradeBeforeJudgeRaise` gives, never one that `restates` an earlier blocker, and such a
  * finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
  * grade, and a security finding changes only when confirmed. A confirmation that raises a finding out of the `rare`
@@ -323,8 +323,8 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
   if (outcome !== 'confirmed' && finding.tags?.includes(SECURITY_TAG)) return graded;
   if (overruledDisproof(graded)) {
     // The cell and the grade it promised state the damage the check disproved, so they go. The cell is no `judgeCell`,
-    // since the finding is no blocker the check lowered.
-    const { cell: _cell, gradeIfConfirmed: _gradeIfConfirmed, doubts: _doubts, ...kept } = graded;
+    // since the finding is no blocker the check lowered. The check finished a lead, which is posted for its rule.
+    const { cell: _cell, gradeIfConfirmed: _gradeIfConfirmed, doubts: _doubts, lead: _lead, notChecked: _notChecked, ...kept } = graded;
     return kept;
   }
   const dropped = finding.severity === 'blocker' ? undefined : disproof(graded);
