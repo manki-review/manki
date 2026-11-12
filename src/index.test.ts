@@ -6863,7 +6863,8 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expectNoRound();
-      expect(jest.mocked(stateModule.holdApproval)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123', undefined);
+      // The last argument is the config's `auto_approve`, which the notice for a draft depends on.
+      expect(jest.mocked(stateModule.holdApproval)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123', undefined, false);
       expect(mockCreateReview).not.toHaveBeenCalled();
     });
 
