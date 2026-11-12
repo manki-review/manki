@@ -10,7 +10,7 @@ import { ConfigOverrides, EarlierFinding, EarlierRound, loadConfigWithOverrides,
 import { cutLegacyCommands, hasAnyProviderCredentials, readProviderInputsFromEnv } from './providers';
 import type { LLMClient, ProviderInputs } from './providers';
 import { buildLLMClient } from './review-clients';
-import { CELL_GRADES, Doubt, Finding, FindingSeverity, GradeCell, isGradeCell, migrateLegacySeverity, migrateStoredSeverities, RoundRelatedRepo, SEVERITY_ORDER } from './types';
+import { CELL_GRADES, CheckStatus, Doubt, Finding, finderGrade, FindingSeverity, GradeCell, GradeStep, isGradeCell, migrateLegacySeverity, migrateStoredSeverities, Refutation, RoundRelatedRepo, SEVERITY_ORDER, VERDICT_READER_NAME, VerdictReason } from './types';
 import { runGit } from './workspace';
 
 export const BENCH_COMMAND = 'bench';
@@ -394,6 +394,22 @@ interface FinderSteps {
   filesRead: number;
 }
 
+/** How a finding got its grade, in grades, kinds and counts only, so a summary can count it for a hold-out case. */
+interface GradeRoute {
+  /** What `finderGrade` returns. */
+  finderGrade: FindingSeverity;
+  cell?: GradeCell;
+  gradeIfConfirmed?: FindingSeverity;
+  /** The steps of the finding's `gradePath`, without their reasons. */
+  gradePath?: Array<Omit<GradeStep, 'reason'>>;
+  /** How many doubts of each `decides` kind the judge named. */
+  doubts?: Partial<Record<Doubt['decides'], number>>;
+  refutation?: Pick<Refutation, 'outcome' | 'defect'>;
+  checkStatus?: CheckStatus;
+  /** Set on a finding the verdict reader named. */
+  byReader?: true;
+}
+
 interface FollowUpScore {
   /** The earlier open threads the round resolved. */
   resolved: string[];
@@ -407,12 +423,14 @@ interface FollowUpScore {
 
 interface RunScore {
   outcome: string;
+  /** Why the review reached its outcome. A report from a ref that does not store it has none. */
+  verdictReason?: VerdictReason;
   /** False for a review that did not complete, or a run that failed. */
   complete: boolean;
   /** Why the run failed or the review did not complete. */
   error?: string;
-  /** Each finding with the text the matcher read. A report from a ref that kept no finding text holds no `description`. */
-  findings: Array<Omit<MatchedFinding, 'description'> & Partial<Pick<MatchedFinding, 'description'>>>;
+  /** Each finding with the text the matcher read. A report from a ref that kept no finding text holds no `description`, and one from a ref that stored no route holds no `route`. */
+  findings: Array<Omit<MatchedFinding, 'description'> & Partial<Pick<MatchedFinding, 'description'>> & { route?: GradeRoute }>;
   matches: ItemMatch[];
   /** Must-catch items matched, over all must-catch items. `null` for a clean case and an incomplete run. */
   mustCatchRecall: number | null;
@@ -581,14 +599,33 @@ function resolvedThreads(benchCase: BenchCase, review: LocalReview): string[] {
   return [...new Set((review.result.threadEvaluations ?? []).filter(e => e.status === 'addressed' && open.has(e.threadId)).map(e => e.threadId))];
 }
 
-/** What a run records about its review whether or not the findings could be matched. */
-function reviewFacts(review: LocalReview): Pick<RunScore, 'outcome' | 'findings' | 'finders' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
-  const usage = review.context.usage ?? {};
+/** Returns how `f` got its grade, without any text of the finding. */
+function gradeRoute(f: Finding): GradeRoute {
+  const { cell, gradeIfConfirmed, gradePath, doubts = [], refutation, checkStatus } = f;
+  const doubtsOf = (decides: Doubt['decides']) => doubts.filter(d => d.decides === decides).length;
   return {
-    outcome: review.result.outcome,
-    findings: raisedFindings(review).map(({ severity, title, file, line, description, howToFix, suggestedFix }) => ({
-      severity, title, file, line, description, ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }),
-    })),
+    finderGrade: finderGrade(f),
+    ...(cell && { cell: { row: cell.row, column: cell.column, ...(cell.judgeColumn && { judgeColumn: cell.judgeColumn }) } }),
+    ...(gradeIfConfirmed && { gradeIfConfirmed }),
+    ...(gradePath && { gradePath: gradePath.map(({ from, to, by }) => ({ from, to, by })) }),
+    ...(doubts.length > 0 && { doubts: { defect: doubtsOf('defect'), grade: doubtsOf('grade') } }),
+    ...(refutation && { refutation: { outcome: refutation.outcome, ...(refutation.defect && { defect: refutation.defect }) } }),
+    ...(checkStatus && { checkStatus }),
+    ...(f.reviewers.includes(VERDICT_READER_NAME) && { byReader: true as const }),
+  };
+}
+
+/** What a run records about its review whether or not the findings could be matched. */
+function reviewFacts(review: LocalReview): Pick<RunScore, 'outcome' | 'verdictReason' | 'findings' | 'finders' | 'relatedRepos' | 'costUsd' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+  const usage = review.context.usage ?? {};
+  const { outcome, verdictReason } = review.result;
+  return {
+    outcome,
+    ...(verdictReason && { verdictReason }),
+    findings: raisedFindings(review).map((f) => {
+      const { severity, title, file, line, description, howToFix, suggestedFix } = f;
+      return { severity, title, file, line, description, ...(howToFix && { howToFix }), ...(suggestedFix && { suggestedFix }), route: gradeRoute(f) };
+    }),
     finders: finderSteps(review),
     ...(review.context.relatedRepos && { relatedRepos: review.context.relatedRepos.map(({ repo, ref, status, commit, asOf }) => ({ repo, ...(ref && { ref }), status, ...(commit && { commit }), ...(asOf && { asOf }) })) }),
     costUsd: usage.estimatedCostUsd ?? 0,
@@ -769,6 +806,13 @@ function unmatchedFindings(c: CaseReport, run: RunScore): RunScore['findings'] {
   const repeatIds = repeatItemIds(c);
   const matched = matchedFindings(run.matches, id => repeatIds.has(id));
   return run.findings.filter((_, n) => !matched.has(n));
+}
+
+/** The highest grade among the key items that finding `n` of a reported run matches, by the rule of `matchedFindings`. None when it matches no key item. */
+function matchedKeyGrade(c: CaseReport, run: RunScore, n: number): KeySeverity | undefined {
+  const repeatIds = repeatItemIds(c);
+  const items = c.items.filter(item => matchedFindings(run.matches.filter(m => m.item === item.id), id => repeatIds.has(id)).has(n));
+  return KEY_SEVERITIES.find(severity => items.some(item => item.severity === severity));
 }
 
 /** The warning findings of a reported run that match no key item. They are counted from the run's findings and matches when its ref did not score them. */
@@ -1172,6 +1216,51 @@ export function formatComparison(variants: VariantReport[]): string {
   ].join('\n');
 }
 
+const BLOCKER_ROUTES = {
+  finder: 'filed by a finder and kept',
+  judge: 'raised by the judge',
+  doubt: 'raised by a confirmed doubt',
+  reader: 'verdict reader',
+  other: 'other',
+  unknown: 'unknown',
+} as const;
+type BlockerRoute = keyof typeof BLOCKER_ROUTES;
+
+/**
+ * Returns which stage made a posted blocker a blocker. A blocker a finder filed as one is `finder`, whatever lowered
+ * and restored it between. Any other blocker is named by the last step that raised it to blocker. A step that gives
+ * back the blocker an `unproven` cap lowered is no raise. A raise by `judge` is the judge's cell alone, and a raise by
+ * `refutation` is a check that confirmed the doubts holding the finding down. It is `unknown` without a stored route.
+ */
+function blockerRoute(route: GradeRoute | undefined): BlockerRoute {
+  if (!route) return 'unknown';
+  if (route.byReader) return 'reader';
+  if (route.finderGrade === 'blocker') return 'finder';
+  const steps = route.gradePath ?? [];
+  const raise = steps.filter((step, i) => step.to === 'blocker' && steps[i - 1]?.by !== 'unproven').at(-1);
+  return raise?.by === 'judge' ? 'judge' : raise?.by === 'refutation' ? 'doubt' : 'other';
+}
+
+/**
+ * Returns a Markdown table of the blockers the complete runs posted, by variant and set: the route each took, by
+ * `blockerRoute`, against the grade of the key item it matches, fully or partly. It holds counts only, so it covers
+ * hold-out cases. Returns an empty string when no complete run posted a blocker.
+ */
+export function formatBlockerRoutes(variants: VariantReport[]): string {
+  const rows = variants.flatMap(v => setSummaries(v).flatMap(({ label, set }) => {
+    const blockers = v.cases.filter(c => c.set === set).flatMap(c => c.runs.filter(run => run.complete).flatMap(run => run.findings.flatMap((f, n) => (
+      f.severity === 'blocker' ? [{ route: blockerRoute(f.route), grade: matchedKeyGrade(c, run, n) }] : []
+    ))));
+    return (Object.keys(BLOCKER_ROUTES) as BlockerRoute[]).flatMap((route) => {
+      const taken = blockers.filter(b => b.route === route);
+      const counts = [...KEY_SEVERITIES, undefined].map(grade => taken.filter(b => b.grade === grade).length);
+      return taken.length > 0 ? [`| ${[`${label ? `${v.name} ${label}` : v.name}: ${BLOCKER_ROUTES[route]}`, ...counts, taken.length].join(' | ')} |`] : [];
+    });
+  }));
+  if (rows.length === 0) return '';
+  return ['| Route of a posted blocker | Key blocker | Key warning | Key note | No key item | Total |', '| --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
+}
+
 /**
  * Returns the report as plain text: per variant and case, each key item's catch rate and the run totals, then the
  * summary of each set, and last a Markdown table that sets the variants and sets side by side.
@@ -1203,6 +1292,8 @@ export function formatBenchSummary(report: BenchReport): string {
     lines.push('');
   }
   lines.push(formatComparison(report.variants));
+  const routes = formatBlockerRoutes(report.variants);
+  if (routes) lines.push('', routes);
   return `${lines.join('\n')}\n`;
 }
 

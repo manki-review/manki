@@ -51,7 +51,11 @@ describe('formatReportSummary and the commands on a stored report', () => {
     const summaryOf = (benchCase: BenchCase, text: string) => formatReportSummary(reportOf(benchCase, text));
     const shown = summaryOf(tuning, 'SHOWN-TEXT');
     for (const text of ['(source SHOWN-TEXT)', 'src/SHOWN-TEXT.rs:3: title SHOWN-TEXT', '    | description SHOWN-TEXT', 'run 2: FAILED: failed on SHOWN-TEXT']) expect(shown).toContain(text);
+    // The findings hold no route, as in the report of a ref that stored none.
+    const routes = (name: string) => `\n\n| Route of a posted blocker | Key blocker | Key warning | Key note | No key item | Total |\n| --- | --- | --- | --- | --- | --- |\n| ${name}: unknown | 0 | 0 | 0 | 1 | 1 |\n\n`;
+    expect(shown).toContain(routes('base'));
     const held = summaryOf({ ...tuning, set: 'holdout' }, 'HOLDOUT-TEXT');
+    expect(held).toContain(routes('base holdout'));
     expect(held).toContain('\nrdc-1295\n');
     expect(held).toContain('  run 2: FAILED: the reason is in the report\n');
     expect(held).not.toContain('HOLDOUT-TEXT');
