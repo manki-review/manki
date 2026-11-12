@@ -471,31 +471,39 @@ describe('run', () => {
       { name: 'memory on, fix_rate false', memory: true, fixRate: false, records: false, toMemory: false },
       { name: 'memory off, fix_rate unset', memory: false, fixRate: undefined, records: false, toMemory: false },
       { name: 'memory off, fix_rate true', memory: false, fixRate: true, records: true, toMemory: false },
-    ])('records the fix rate of a merged pull request: $name', async ({ memory, fixRate, records, toMemory }) => {
+      { name: 'no base commit in the payload', memory: true, fixRate: undefined, records: true, toMemory: true, noBase: true },
+    ])('records the fix rate of a merged pull request: $name', async ({ memory, fixRate, records, toMemory, noBase }) => {
+      const baseSha = noBase ? undefined : 'base-sha';
+      // The merged branch holds the PR's own config, which lowered the role. The base commit from before the merge still says `admin`.
       jest.mocked(configModule.loadConfig).mockReturnValueOnce({
         memory: { enabled: memory, repo: '' },
-        author_clear_role: 'admin',
+        author_clear_role: 'write',
         ...(fixRate !== undefined && { metrics: { fix_rate: fixRate } }),
       } as ReviewConfig);
+      if (records && baseSha) jest.mocked(configModule.loadConfig).mockReturnValueOnce({ author_clear_role: 'admin' } as ReviewConfig);
       if (toMemory) jest.mocked(memoryModule.openMemoryStore).mockResolvedValueOnce({ store: MEMORY_STORE });
       setContext({
         eventName: 'pull_request',
         payload: {
           action: 'closed',
           sender: { login: 'user' },
-          pull_request: { number: 7, merged: true, merge_commit_sha: 'merged', head: { sha: 'head' }, base: { ref: 'main' }, user: { login: 'author' } },
+          pull_request: { number: 7, merged: true, merge_commit_sha: 'merged', head: { sha: 'head' }, base: { ref: 'main', sha: baseSha }, user: { login: 'author' } },
         },
       });
 
       await run();
 
+      const readAt = jest.mocked(ghUtils.readConfigFile).mock.calls.map(call => call[3]);
       if (!records) {
+        expect(readAt).toEqual(['main']);
         expect(fixRateModule.recordFixRate).not.toHaveBeenCalled();
         return;
       }
+      // Without the base commit the role is unknown, and the merged branch's own value is never used.
+      expect(readAt).toEqual(baseSha ? ['main', baseSha] : ['main']);
       expect(fixRateModule.recordFixRate).toHaveBeenCalledWith(
         expect.anything(), TEST_BOT, 'test-owner', 'test-repo',
-        { number: 7, headSha: 'head', mergedSha: 'merged', authorLogin: 'author', clearRole: 'admin' },
+        { number: 7, headSha: 'head', mergedSha: 'merged', authorLogin: 'author', clearRole: baseSha ? 'admin' : undefined },
         toMemory ? MEMORY_STORE : undefined,
       );
       expect(ghUtils.postProgressComment).not.toHaveBeenCalled();
@@ -720,7 +728,7 @@ describe('run', () => {
 
       expect(jest.mocked(interaction.handlePRComment)).toHaveBeenCalledWith(
         expect.anything(), TEST_BOT, null, 'test-owner', 'test-repo', 10,
-        undefined, expect.anything(),
+        undefined, expect.anything(), false,
       );
     });
   });
@@ -1692,8 +1700,8 @@ describe('main', () => {
     }
   });
 
-  it('fails the run when the config fetched for a non-review event is invalid', async () => {
-    jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'config_path' ? 'ci/manki.yml' : ''));
+  it('approves nothing when the config fetched for a non-review event is invalid, and reads it at the repo-relative `config_path`', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'config_path' ? './ci/manki.yml' : ''));
     jest.mocked(ghUtils.readConfigFile).mockResolvedValueOnce('auto_approve: [');
     jest.mocked(configModule.loadConfig).mockImplementationOnce(() => {
       throw new Error('Invalid YAML in ci/manki.yml: bad');
@@ -1711,7 +1719,11 @@ describe('main', () => {
 
     expect(jest.mocked(ghUtils.readConfigFile)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 'main', 'ci/manki.yml');
     expect(jest.mocked(configModule.loadConfig)).toHaveBeenCalledWith('auto_approve: [', 'ci/manki.yml');
-    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Invalid YAML in ci/manki.yml'));
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not load ci/manki.yml on the base branch, using the defaults and no approval: Invalid YAML in ci/manki.yml: bad');
+    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    // The role a PR author needs is unknown too, so no thread is read as cleared or reopened.
+    expect(jest.mocked(recapModule.fetchRecapState)).not.toHaveBeenCalled();
+    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).not.toHaveBeenCalled();
     expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
   });
 
@@ -2207,8 +2219,8 @@ describe('runFullReview orchestration', () => {
     });
 
     it.each([
-      ['cannot be read', async () => { throw new Error('socket hang up'); }, 'Could not read .manki.yml on the base branch, reviewing with the defaults and no approval: socket hang up'],
-      ['is invalid YAML', async () => 'auto_approve: [\n', 'Could not load .manki.yml on the base branch, reviewing with the defaults and no approval: Invalid YAML'],
+      ['cannot be read', async () => { throw new Error('socket hang up'); }, 'Could not read .manki.yml on the base branch, using the defaults and no approval: socket hang up'],
+      ['is invalid YAML', async () => 'auto_approve: [\n', 'Could not load .manki.yml on the base branch, using the defaults and no approval: Invalid YAML'],
       ['routes a floor class below the floor', async () => 'review:\n  routing:\n    data_contract: solo\n', 'routes the `data_contract` floor class to the `solo` group'],
     ])('reviews with the defaults and no approval, never the PR\'s copy, when the base branch config %s', async (_label, base, warning) => {
       configFiles('review:\n  routing:\n    data_contract: pair\n', base);
@@ -2228,11 +2240,14 @@ describe('runFullReview orchestration', () => {
     it('fetches the base config at the repo-relative path of `config_path`', async () => {
       for (const [input, expected] of [['./ci/manki.yml', 'ci/manki.yml'], [path.join(process.cwd(), 'ci', 'manki.yml'), 'ci/manki.yml'], ['../outside.yml', '.manki.yml']]) {
         jest.mocked(ghUtils.readConfigFile).mockClear();
+        jest.mocked(staticSignalsModule.collectStaticSignals).mockClear();
         jest.mocked(core.getInput).mockImplementation((name: string) => name === 'anthropic_api_key' ? 'test-api-key' : name === 'config_path' ? input : '');
 
         await callRunFullReview();
 
         expect([input, jest.mocked(ghUtils.readConfigFile).mock.calls[0]?.[4]]).toEqual([input, expected]);
+        // The static analysis settings are read from the same file.
+        expect([input, jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0]?.[1].configPath]).toEqual([input, expected]);
       }
     });
   });
@@ -7121,7 +7136,18 @@ describe('handleInteraction', () => {
       'test-owner', 'test-repo', 7,
       undefined,          // memory (not enabled)
       expect.anything(),  // config
+      false,              // the config was read
     );
+
+    // A config that cannot be read reaches the command handler as held, so its check approves nothing.
+    jest.mocked(interaction.handlePRComment).mockClear();
+    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up'));
+
+    await handleInteraction();
+
+    const [call] = jest.mocked(interaction.handlePRComment).mock.calls;
+    expect(call[7]?.author_clear_role).toBeUndefined();
+    expect(call[8]).toBe(true);
   });
 
   it('calls setFailed when parseModelSpec throws for an unknown model', async () => {
@@ -7380,7 +7406,7 @@ describe('handleIssueInteraction', () => {
       TEST_BOT,
       null,               // no claude client for issue interactions
       'test-owner', 'test-repo', 15,
-      undefined, expect.anything(),
+      undefined, expect.anything(), false,
     );
   });
 });
@@ -7455,18 +7481,18 @@ describe('handleReviewStateCheck', () => {
       'PR #5 auto-approved after all findings resolved',
     );
 
-    // A config that cannot be read gives the defaults with no `author_clear_role`, so no PR author clears a guarded thread.
+    // A config that cannot be read says neither whether Manki may approve nor which role clears a thread, so the check does nothing.
     jest.mocked(recapModule.fetchRecapState).mockClear();
+    jest.mocked(stateModule.reopenAuthorResolvedThreads).mockClear();
     jest.mocked(stateModule.checkAndAutoApprove).mockClear();
     jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up'));
 
     await handleReviewStateCheck();
 
-    expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not read .manki.yml on main, using the defaults: socket hang up');
-    expect(jest.mocked(recapModule.fetchRecapState).mock.calls.map(call => call[6])).toEqual([undefined]);
-    const [checked] = jest.mocked(stateModule.checkAndAutoApprove).mock.calls;
-    expect(checked[5]).toEqual(jest.requireActual<typeof import('./config')>('./config').fallbackConfig());
-    expect(checked[5]?.author_clear_role).toBeUndefined();
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not read .manki.yml on the base branch, using the defaults and no approval: socket hang up');
+    expect(jest.mocked(recapModule.fetchRecapState)).not.toHaveBeenCalled();
+    expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).not.toHaveBeenCalled();
+    expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
   });
 });
 
@@ -7513,6 +7539,18 @@ describe('handleReviewCommentInteraction auto-approve', () => {
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
       expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 8, expect.objectContaining({ auto_approve: true }),
     );
+
+    // With a config that cannot be read, the reply is still answered, with no role for the PR author, and nothing is approved.
+    jest.mocked(interaction.handleReviewCommentReply).mockClear();
+    jest.mocked(stateModule.checkAndAutoApprove).mockClear();
+    jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up'));
+
+    await handleReviewCommentInteraction();
+
+    const [reply] = jest.mocked(interaction.handleReviewCommentReply).mock.calls;
+    expect(reply[8]).toEqual(jest.requireActual<typeof import('./config')>('./config').fallbackConfig());
+    expect(reply[8]?.author_clear_role).toBeUndefined();
+    expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
   });
 
   it('uses apiKey auth when only anthropic_api_key is set', async () => {

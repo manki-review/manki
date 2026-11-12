@@ -453,7 +453,8 @@ export async function handleReviewCommentReply(
 }
 
 /**
- * Handle @manki commands in PR comments.
+ * Handle @manki commands in PR comments. `configHeld` says that the base branch's config could not be read or loaded,
+ * so `config` holds the defaults and `check` approves nothing.
  */
 export async function handlePRComment(
   octokit: Octokit,
@@ -464,6 +465,7 @@ export async function handlePRComment(
   issueNumber: number,
   memory?: MemoryStore,
   config?: ReviewConfig,
+  configHeld = false,
 ): Promise<void> {
   const payload = github.context.payload;
   const comment = payload.comment;
@@ -518,7 +520,7 @@ export async function handlePRComment(
       break;
     case 'check':
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
-      await handleCheck(octokit, bot, owner, repo, issueNumber, config);
+      await handleCheck(octokit, bot, owner, repo, issueNumber, config, configHeld);
       break;
     case 'help':
       await reactToIssueComment(octokit, owner, repo, commentId, '+1');
@@ -872,6 +874,9 @@ async function handleForget(
   }
 }
 
+/** The answer to a check while the base branch's config cannot be read or loaded, since it says whether Manki may approve. */
+const CONFIG_HELD_LINE = '**Approval held:** the config file on the base branch could not be read or does not load. The workflow log has the reason.';
+
 async function handleCheck(
   octokit: Octokit,
   bot: BotIdentity,
@@ -879,6 +884,7 @@ async function handleCheck(
   repo: string,
   prNumber: number,
   config?: ReviewConfig,
+  configHeld = false,
 ): Promise<void> {
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
@@ -888,6 +894,11 @@ async function handleCheck(
       issue_number: prNumber,
       body: withMarkers('Only repo collaborators can trigger auto-approve.', BOT_MARKER),
     });
+    return;
+  }
+
+  if (configHeld) {
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(CONFIG_HELD_LINE, BOT_MARKER) });
     return;
   }
 

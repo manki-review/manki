@@ -1249,6 +1249,23 @@ describe('runFullReview end to end', () => {
       expect(mockGitHub.comments.filter(c => /Auto-approv/.test(c.body))).toEqual([]);
     });
 
+    it('reads the config at the repo-relative `config_path` on a thread event, so an absolute path does not hide `author_clear_role: admin`', async () => {
+      jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'config_path' ? join(process.cwd(), INPUTS.config_path) : INPUTS[name] ?? ''));
+      mockGitHub.configs = { main: 'author_clear_role: admin\n' };
+      mockGitHub.role = 'maintain';
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+
+      // Alice is a maintainer and the base branch asks for `admin`, so her resolve does not hold.
+      await resolveThread(thread, 'alice');
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(thread.isResolved).toBe(false);
+      expect(thread.comments.slice(1).map(c => c.body)).toEqual([`${REOPENED} ${PUSH_A_FIX}\n\n<!-- manki -->\n${REOPENED_MARKER}`]);
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+    });
+
     it.each<[string, string, () => Promise<FakeThread>, string | undefined]>([
       ['a maintainer resolved', 'bob', async () => mockGitHub.threads[0], undefined],
       ['the judge marked addressed', 'alice', async () => {

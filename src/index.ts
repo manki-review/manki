@@ -6,7 +6,7 @@ import * as path from 'path';
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AuthResult, createAuthenticatedOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
-import { changedKeys, fallbackConfig, loadConfig, resolveModel } from './config';
+import { changedKeys, loadConfig, resolveModel } from './config';
 import { BENCH_COMMAND, runBenchCommand } from './bench';
 import { REVIEW_COMMAND, runReviewCommand } from './cli';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
@@ -443,19 +443,25 @@ async function showAlreadyReviewed(
 }
 
 /**
- * Loads the config file at `ref` for an event that runs no review round. A file that cannot be read gives
- * `fallbackConfig`, and one that does not load throws.
+ * Returns `config_path` as the repo-relative path the contents API takes. A `./` or absolute path is normalised,
+ * and a path outside the repository reads `.manki.yml`.
  */
-async function loadEventConfig(octokit: Octokit, owner: string, repo: string, ref: string): Promise<ReviewConfig> {
-  const configPath = core.getInput('config_path') || '.manki.yml';
-  let content: string | null;
-  try {
-    content = await readConfigFile(octokit, owner, repo, ref, configPath);
-  } catch (error) {
-    core.warning(`Could not read ${configPath} on ${ref}, using the defaults: ${failureReason(error)}`);
-    return fallbackConfig();
-  }
-  return loadConfig(content ?? undefined, configPath);
+function repoConfigPath(): string {
+  const cwd = path.resolve(process.cwd());
+  const repoRelative = path.relative(cwd, path.resolve(cwd, core.getInput('config_path') || '.manki.yml'));
+  const outside = repoRelative.startsWith('..') || path.isAbsolute(repoRelative);
+  if (outside) core.warning('`config_path` points outside the repository, reading `.manki.yml`');
+  return outside ? '.manki.yml' : repoRelative.split(path.sep).join('/');
+}
+
+/**
+ * Loads the base branch's config at `ref` for an event that runs no review round. `held` says that it could not be
+ * read or loaded. The config is then the defaults without `author_clear_role`, and the event must approve nothing.
+ */
+async function loadEventConfig(octokit: Octokit, owner: string, repo: string, ref: string): Promise<{ config: ReviewConfig; held: boolean }> {
+  const configPath = repoConfigPath();
+  const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, ref, configPath), configPath, failureReason);
+  return { config, held: configFailed(source) };
 }
 
 async function handlePullRequest(): Promise<void> {
@@ -511,11 +517,13 @@ async function handleMergedPullRequest(): Promise<void> {
 
   const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
-  const config = await loadEventConfig(octokit, owner, repo, pr.base.ref);
+  const { config } = await loadEventConfig(octokit, owner, repo, pr.base.ref);
   if (!(config.metrics?.fix_rate ?? config.memory?.enabled)) {
     core.info('Fix-rate metrics are off, skipping');
     return;
   }
+  // The merged base branch holds the PR's own config. `base.sha` is a commit of the base branch from before the merge.
+  const clearRole = pr.base.sha ? (await loadEventConfig(octokit, owner, repo, pr.base.sha)).config.author_clear_role : undefined;
 
   const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, pr.number);
   if (!memory) core.info('The fix rate goes to the job summary only');
@@ -525,7 +533,7 @@ async function handleMergedPullRequest(): Promise<void> {
     headSha: pr.head.sha,
     mergedSha: pr.merge_commit_sha ?? '',
     authorLogin: pr.user?.login,
-    clearRole: config.author_clear_role,
+    clearRole,
   }, memory);
 }
 
@@ -748,14 +756,8 @@ function cancelDashboardFlush(progress: RunProgress): void {
  * changes are logged as applying after merge. A PR file that does not load gives a warning and `brokenHead`, which says
  * whether the PR changed it.
  */
-async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ config: ReviewConfig; reviewSource: ConfigSource; brokenHead?: { changed: boolean } }> {
+async function loadRunConfig(target: RunTarget, repoConfigPath: string): Promise<{ config: ReviewConfig; reviewSource: ConfigSource; brokenHead?: { changed: boolean } }> {
   const { octokit, owner, repo, commitSha, baseRef } = target;
-  // The contents API takes a repo-relative path, so `./`, absolute and outside paths are normalised first.
-  const cwd = path.resolve(process.cwd());
-  const repoRelative = path.relative(cwd, path.resolve(cwd, configPath));
-  const outside = repoRelative.startsWith('..') || path.isAbsolute(repoRelative);
-  if (outside) core.warning('`config_path` points outside the repository, reading `.manki.yml`');
-  const repoConfigPath = outside ? '.manki.yml' : repoRelative.split(path.sep).join('/');
   let headContent: string | null | undefined;
   let headConfig: ReviewConfig | undefined;
   try {
@@ -1777,7 +1779,7 @@ async function runFullReview(
   }
 
   const startTime = Date.now();
-  const configPath = core.getInput('config_path') || '.manki.yml';
+  const configPath = repoConfigPath();
   const { octokit, bot } = await getAuth();
   const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef };
 
@@ -2028,7 +2030,12 @@ async function handleReviewStateCheck(): Promise<void> {
 
   const { owner, repo } = github.context.repo;
   const prNumber = pr.number;
-  const config = await loadEventConfig(octokit, owner, repo, pr.base.ref);
+  const { config, held } = await loadEventConfig(octokit, owner, repo, pr.base.ref);
+  // Without the config nothing says whether Manki may approve, or which role lets the PR author clear a thread.
+  if (held) {
+    core.info('The base branch config could not be read or loaded — skipping the state check');
+    return;
+  }
 
   // A guarded thread the PR author resolved blocks with `auto_approve` off too, so it is reopened first.
   const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, pr.user?.login, config.author_clear_role);
@@ -2061,7 +2068,7 @@ async function handleInteraction(): Promise<void> {
   if (!prNumber) return;
 
   const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-  const config = await loadEventConfig(octokit, owner, repo, pr.base.ref);
+  const { config, held } = await loadEventConfig(octokit, owner, repo, pr.base.ref);
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
@@ -2069,7 +2076,7 @@ async function handleInteraction(): Promise<void> {
 
   const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, prNumber);
 
-  await handlePRComment(octokit, bot, client, owner, repo, prNumber, memory, config);
+  await handlePRComment(octokit, bot, client, owner, repo, prNumber, memory, config, held);
 }
 
 async function handleIssueInteraction(): Promise<void> {
@@ -2084,11 +2091,11 @@ async function handleIssueInteraction(): Promise<void> {
   if (!issueNumber) return;
 
   const { octokit, bot } = await getAuth();
-  const config = await loadEventConfig(octokit, owner, repo, 'main');
+  const { config, held } = await loadEventConfig(octokit, owner, repo, 'main');
 
   const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, issueNumber);
 
-  await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memory, config);
+  await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memory, config, held);
 }
 
 /** Files the findings whose issue box the editor ticked in Manki's review comment or review body. */
@@ -2132,7 +2139,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const { octokit, bot } = await getAuth();
   const { owner, repo } = github.context.repo;
 
-  const config = await loadEventConfig(octokit, owner, repo, payload.pull_request?.base?.ref ?? 'main');
+  const { config, held } = await loadEventConfig(octokit, owner, repo, payload.pull_request?.base?.ref ?? 'main');
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
@@ -2159,7 +2166,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   }
 
   // Check if all review threads are now resolved (e.g. the reply resolved the last conversation)
-  if (prNumber && config.auto_approve) {
+  if (prNumber && !held && config.auto_approve) {
     const approved = await checkAndAutoApprove(octokit, bot, owner, repo, prNumber, config);
     if (approved) {
       core.info(`PR #${prNumber} auto-approved after all findings resolved`);

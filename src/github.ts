@@ -415,7 +415,7 @@ export async function loadBaseConfig(
   describe: (error: unknown) => string,
 ): Promise<{ config: ReviewConfig; source: ConfigSource }> {
   const fallBack = (source: ConfigSource, problem: string, error: unknown) => {
-    core.warning(`${problem} ${configPath} on the base branch, reviewing with the defaults and no approval: ${describe(error)}`);
+    core.warning(`${problem} ${configPath} on the base branch, using the defaults and no approval: ${describe(error)}`);
     return { config: fallbackConfig(), source };
   };
   let content: string | null;

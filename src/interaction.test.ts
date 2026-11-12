@@ -1288,6 +1288,13 @@ describe('handleCheck (via handlePRComment)', () => {
     // A reason that cannot be read still gets a reply.
     expect((await check({ approved: false, why: () => Promise.reject(new Error('API 502')) })).at(-1)).toBe('The approval did not go through. The workflow log has the reason.\n\n<!-- manki -->');
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('API 502'));
+
+    // While the base branch's config cannot be read or loaded, the check approves nothing and says so.
+    jest.mocked(state.approveOrSayWhy).mockClear();
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, config, true);
+    expect(state.approveOrSayWhy).not.toHaveBeenCalled();
+    expect(jest.mocked(octokit.rest.issues.createComment).mock.calls.at(-1)?.[0].body)
+      .toBe('**Approval held:** the config file on the base branch could not be read or does not load. The workflow log has the reason.\n\n<!-- manki -->');
   });
 });
 
