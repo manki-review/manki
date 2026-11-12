@@ -65,6 +65,12 @@ export function failedReport(summary: string): CheckReport {
   return { conclusion: 'failure', title: 'Review failed', summary };
 }
 
+/** The page of this run, which a `Manki` check links to. */
+function runUrl(owner: string, repo: string): string {
+  const { serverUrl, runId } = github.context;
+  return `${serverUrl}/${owner}/${repo}/actions/runs/${runId}`;
+}
+
 /** Sets the queued check `id` in progress with a link to this run. A failure is logged and returns false. */
 async function takeOverCheck(octokit: Octokit, owner: string, repo: string, id: number, detailsUrl: string): Promise<boolean> {
   try {
@@ -90,8 +96,7 @@ async function takeOverCheck(octokit: Octokit, owner: string, repo: string, id: 
  * one without it. A failure is logged and returns `undefined`.
  */
 export async function startReviewCheck(octokit: Octokit, owner: string, repo: string, headSha: string): Promise<ReviewCheck | undefined> {
-  const { serverUrl, runId } = github.context;
-  const detailsUrl = `${serverUrl}/${owner}/${repo}/actions/runs/${runId}`;
+  const detailsUrl = runUrl(owner, repo);
   const queued = queuedChecks.get(octokit);
   queuedChecks.delete(octokit);
   try {
