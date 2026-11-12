@@ -397,6 +397,15 @@ describe('formatFindingComment', () => {
     // A fetched repo with no commit recorded shows the location alone.
     const noCommit = { ...links, related: relatedCommits([{ repo: 'acme/reports', status: 'fetched' }]) };
     expect(formatFindingComment(confirmedBy(['acme/reports:src/import.ts:2', ...hidden]), noCommit)).toContain('**Checked in the code**\nIn a related repository: `acme/reports:src/import.ts:2`\n\n**Double-checked**');
+    // Git allows `:` in a file name, so a PR can hold a file whose path reads like a line of a related repo. A location of that
+    // form never links to that file of the PR or shows its text: as a check it is plain text, and as related proof it links to the related repo.
+    const prFile = 'acme/reports:src/import.ts';
+    const withPrFile = { ...fetched, files: new Map([...links.files, [prFile, ['text of the PR, line 1', 'text of the PR, line 2']]]), changed: [prFile] };
+    const collides = formatFindingComment({ ...confirmedBy([`${prFile}:2`]), evidence: { checks: [`${prFile}:2 parses the date`], proof: [`${prFile}:2`], relatedProof: [`${prFile}:2`] } }, withPrFile);
+    expect(collides).toContain(`In a related repository: ${relatedLink(`${prFile}:2`, 'src/import.ts', 'L2')}`);
+    expect(collides).toContain(`- ${prFile}:2 parses the date`);
+    expect(collides).not.toContain('text of the PR');
+    expect(collides).not.toContain('/o/r/blob/sha/acme');
     // A blocker listed again from an earlier record shows its related lines as locations, also alone and for a repo this round did
     // not fetch. No link is built, since the lines were read at the commit of that earlier round.
     const earlier = ['acme/reports:src/import.ts:2', 'acme/unused:lib/rows.py:9', ...hidden];

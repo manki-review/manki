@@ -1046,8 +1046,12 @@ describe('refuteBlockers', () => {
     const parsesDate = [{ premise: 'acme/reports parses the first column as a date', decides: 'defect' as const }];
     const consumerLine = 'acme/reports:src/import.ts:2';
     const answer = (outcome: string, ...proof: string[]) => ({ outcome, reason: 'r', proof, premises: [{ outcome, reason: 'r', proof }] });
+    // Git allows `:` in a file name, so the PR holds a file whose path reads like a line of the related repo. It has 6
+    // lines, the related file 3. A citation of that form is looked up in the related checkout only, never in the PR.
+    mkdirSync(join(workspace, 'acme', 'reports:src'), { recursive: true });
+    writeFileSync(join(workspace, 'acme', 'reports:src', 'import.ts'), 'line of the PR\n'.repeat(6));
     // Line 0, a range that runs backwards and a line past the last one, in a related repo and in the PR. `src/math.ts` has 3 lines.
-    const notThere = ['acme/reports:src/import.ts:0', 'acme/reports:src/import.ts:2-1', 'acme/reports:src/import.ts:2-40', 'src/math.ts:0', 'src/math.ts:2-1', 'src/math.ts:2-40', 'src/math.ts:4'];
+    const notThere = ['acme/reports:src/import.ts:0', 'acme/reports:src/import.ts:2-1', 'acme/reports:src/import.ts:2-40', 'acme/reports:src/import.ts:5', 'src/math.ts:0', 'src/math.ts:2-1', 'src/math.ts:2-40', 'src/math.ts:4'];
     const client = fakeClient({
       'Related line confirms': answer('confirmed', `\`${consumerLine}\` parses the column with Date.parse`),
       'Related line alone disproves': answer('disproved', consumerLine),
@@ -1087,6 +1091,8 @@ describe('refuteBlockers', () => {
       const cited = await refuteBlockers(client, notThere.map(at => finding(`Cites ${at}`, noProof)), { workspace, diff, related });
       expect(cited.map(f => [f.title, outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual(notThere.map(at => [`Cites ${at}`, 'unsettled', undefined, undefined]));
       expect(checked[0].refutation?.premises).toEqual([{ premise: parsesDate[0].premise, outcome: 'confirmed', reason: 'r', relatedProof: [consumerLine] }]);
+      // The files a stored answer is tied to are files of the PR, and the file with the related repo's name is not among them.
+      expect(checked[0].refutation?.files).toEqual(['src/math.ts']);
       // A list keeps its first 10 related lines, and the answer keeps 10 of its own and its premises' lines together, its own first. No line past the first 10 is looked up.
       const [many, madeUp] = await refuteBlockers(client, ['Many lines', 'Made-up lines first'].map(title => finding(title, noProof)), { workspace, diff, related });
       expect(many.refutation?.premises?.[0].relatedProof).toEqual([consumerLine, ...rowLines.slice(0, 9)]);
