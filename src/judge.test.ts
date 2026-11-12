@@ -2175,6 +2175,7 @@ describe('runJudgeAgent', () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-'));
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.writeFileSync(path.join(workspace, 'src', 'index.ts'), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
+    fs.writeFileSync(path.join(workspace, '.env.example'), 'PORT=8080\n');
     const rule = { file: 'AGENTS.md', quote: 'Every environment variable the binary reads must be listed in `.env.example`.' };
     const unseen = { ruleIsRequirement: true, ruleUnseen: '`.env.example` has no entry for the variable' };
     const answers: Record<string, Record<string, unknown>> = {
@@ -2198,6 +2199,8 @@ describe('runJudgeAgent', () => {
       'Fact disputed': unseen,
       // The judge confirmed the rule, and the finder says something is missing without a search.
       ...Object.fromEntries(['No search, check disproves', 'No search, check confirms', 'No search, check unsettled'].map(title => [title, { ruleIsRequirement: true, ruleBroken: true }])),
+      // A disproof has to cite the finding's file or the diff, and the file that holds the fact is neither.
+      'Fact disproved in another file': unseen,
     };
     const titles = Object.keys(answers);
     const findings = titles.map((title, i) => makeFinding({
@@ -2206,6 +2209,7 @@ describe('runJudgeAgent', () => {
     const premise = (...outcomes: string[]) => ({ reason: `It is ${outcomes.at(-1)}.`, premises: outcomes.map(outcome => ({ outcome, reason: `It is ${outcome}.`, proof: ['src/index.ts:3'] })) });
     const replies: Record<string, unknown> = {
       'Fact confirmed': premise('confirmed'), 'Fact disproved': premise('disproved'), 'Fact unsettled': premise('unsettled'),
+      'Fact disproved in another file': { reason: 'The entry is there.', premises: [{ outcome: 'disproved', reason: 'It is listed.', proof: ['.env.example:1'] }] },
       'Fact confirmed without a search': premise('confirmed'), 'Another premise confirmed': premise('confirmed'), 'Damage disproved': premise('disproved'),
       'Defect disproved': { ...premise('unsettled'), outcome: 'disproved', proof: ['src/index.ts:3'] },
       'Fact confirmed, damage disproved': premise('disproved', 'confirmed'), 'Fact confirmed, damage unsettled': premise('unsettled', 'confirmed'),
@@ -2261,10 +2265,11 @@ describe('runJudgeAgent', () => {
         ['No search, check disproves', 'warning', 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning' : 'rule: warning'],
         ['No search, check confirms', grade, 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning, refutation: blocker' : 'rule: warning'],
         ['No search, check unsettled', 'warning', 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning' : 'rule: warning'],
+        ['Fact disproved in another file', 'note', 'unproven', undefined],
       ];
       expect(await graded()).toEqual(expected('warning'));
       expect(await graded('block')).toEqual(expected('blocker'));
-      expect(refuterMessages).toHaveLength(31);
+      expect(refuterMessages).toHaveLength(33);
       // Two refuters that disagree about the fact leave the rule unproven, and the note as it is.
       expect(await graded(undefined, second)).toEqual(expected('warning', ['note', 'unproven', undefined]));
       expect(await graded('block', second)).toEqual(expected('blocker', ['note', 'unproven', undefined]));
