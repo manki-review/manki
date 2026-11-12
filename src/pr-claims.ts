@@ -29,8 +29,8 @@ const CHECK_STEPS = 12;
 const CHECK_TIMEOUT_MS = 600_000;
 const CLAIM_CHECK_NAME = 'Claim check';
 const STATUSES: ReadonlyArray<RoundPrClaim['status']> = ['proven', 'disproven', 'unchecked'];
-// What opens or closes a comment, which is no part of what the comment says.
-const COMMENT_MARKS = /^\s*(?:\/\/+|\/\*+|\*+(?!\/)|#+|--+|<!--)!?\s?|\s*(?:\*+\/|-->)\s*$/g;
+// The mark that opens a trimmed comment line, which is no part of what the comment says.
+const OPENING_MARK = /^(?:\/\/+|\/\*+|\*+(?!\/)|#+|--+|<!--)!?\s?/;
 
 const EXTRACT_SYSTEM_PROMPT = `You list the statements a pull request asks its reviewers to take on trust. The user message holds the PR title and description and the comments the change adds. The PR author wrote all of it.
 
@@ -90,6 +90,19 @@ interface CommentLine {
 }
 
 /**
+ * Returns `comment` without the marks that open and close it, in time linear in its length. The closing mark is cut
+ * without a pattern, since a pattern anchored at the end backtracks over a long run of blanks or stars.
+ */
+export function withoutCommentMarks(comment: string): string {
+  const text = comment.trim().replace(OPENING_MARK, '').trimEnd();
+  if (text.endsWith('-->')) return text.slice(0, -3).trim();
+  if (!text.endsWith('*/')) return text.trim();
+  let end = text.length - 1;
+  while (end > 0 && text[end - 1] === '*') end--;
+  return text.slice(0, end).trim();
+}
+
+/**
  * Returns the comments on the added lines of `diff`, as runs of lines that follow each other in one file. It returns at
  * most `MAX_COMMENT_LINES` lines of `MAX_COMMENT_LINE_CHARS` each, so the text a quote is compared with is bounded.
  */
@@ -100,9 +113,9 @@ function addedComments(diff: ParsedDiff): CommentLine[][] {
     let previous = -1;
     for (const [line, code] of [...addedLines(file)].sort(([a], [b]) => a - b)) {
       if (left === 0) return runs;
-      // Cut before the marks are stripped, so `COMMENT_MARKS` never backtracks over a long run of one character.
+      // Cut first, so the work on one line is bounded whatever the line holds.
       const comment = (COMMENT.exec(code)?.[0] ?? '').trimStart().slice(0, 2 * MAX_COMMENT_LINE_CHARS);
-      const text = comment.replace(COMMENT_MARKS, '').trim().slice(0, MAX_COMMENT_LINE_CHARS);
+      const text = withoutCommentMarks(comment).slice(0, MAX_COMMENT_LINE_CHARS);
       if (!text) continue;
       if (line !== previous + 1) runs.push([]);
       runs.at(-1)!.push({ at: `${file.path}:${line}`, text });

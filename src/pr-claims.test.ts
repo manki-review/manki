@@ -6,10 +6,11 @@ import { join } from 'path';
 // value of `review` would read it before `review` sets it.
 import './review';
 import { parsePRDiff } from './diff';
-import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
+import { extractPrClaims, prClaimsRecord, runClaimChecks, withoutCommentMarks } from './pr-claims';
 import { LLMClient } from './providers';
 import { repoToolsPrompt } from './providers/cli-utils';
-import { expectLinearTime, fakeClient, gitWorkspace, HANG } from './test-utils';
+import { COMMENT } from './symbol-uses';
+import { fakeClient, gitWorkspace, HANG } from './test-utils';
 import { PrClaim } from './types';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -99,16 +100,6 @@ describe('extractPrClaims', () => {
     expect(user).toContain(`src/a.ts:1: note 1 ${'y'.repeat(293)}\nsrc/a.ts:2: note 2\n`);
     expect(user).toContain('src/a.ts:200: note 200\n```');
     expect(user).not.toContain('note 201');
-
-    // A comment line of one long run, of blanks or of the marks a comment ends with, is read in time linear in its length.
-    for (const run of [' ', '*']) {
-      await expectLinearTime(async size => {
-        const runs = diffAdding('src/a.ts', Array.from({ length: 20 }, () => `// ${run.repeat(size)}x`));
-        const started = performance.now();
-        await extractPrClaims(fakeClient(() => '[]'), undefined, runs);
-        return performance.now() - started;
-      }, 19_000);
-    }
   });
 
   it('asks no model without PR text, and lists no claim when the call or its reply fails', async () => {
@@ -311,6 +302,36 @@ describe('runClaimChecks', () => {
     const noTools = fakeClient(() => proven, false);
     expect(await run(noTools)).toEqual({ findings: [], claims: unchecked('skipped') });
     expect(idle.calls.length + noTools.calls.length).toBe(0);
+  });
+});
+
+describe('withoutCommentMarks', () => {
+  it('strips the marks that open and close a comment, in time linear in its length', () => {
+    const cases: Array<[string, string]> = [
+      ['// note', 'note'],
+      ['/// note', 'note'],
+      ['//! note', 'note'],
+      ['/** note */', 'note'],
+      ['/* note **/', 'note'],
+      ['* note', 'note'],
+      ['*/', ''],
+      ['# note', 'note'],
+      ['-- note', 'note'],
+      ['<!-- note -->', 'note'],
+      ['// **bold** stays', '**bold** stays'],
+      ['// a * b / c', 'a * b / c'],
+    ];
+    for (const [comment, text] of cases) expect(withoutCommentMarks(comment)).toBe(text);
+
+    // Each was a run the old pattern backtracked over from every start, which took seconds at this length.
+    const size = 100_000;
+    const worst = [`// ${' '.repeat(size)}x`, `// ${'*'.repeat(size)}x`, `// x${' '.repeat(size)}*`, `// x${'*'.repeat(size)} /`, `${'*'.repeat(size)}/`];
+    for (const comment of worst) {
+      const started = performance.now();
+      withoutCommentMarks(comment);
+      COMMENT.exec(comment);
+      expect(performance.now() - started).toBeLessThan(100);
+    }
   });
 });
 
