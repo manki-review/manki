@@ -722,8 +722,9 @@ export interface Refutation {
   /** The model that answered. A record from before models were stored has none. */
   model?: string;
   /**
-   * Whether the call of a check that ended unsettled used every tool step it was given. It is `unknown` when the client
-   * does not report the steps of a call. Unset on a check that settled, and on a record from before this was stored.
+   * Whether the call of a check that ended unsettled used all its tool steps. `yes` states that count alone, so it also
+   * holds for a call that was done at its last step. It is `unknown` when the client does not report the steps of a
+   * call. Unset on a check that settled, and on a record from before this was stored.
    */
   stepsUsedUp?: 'yes' | 'no' | 'unknown';
 }
