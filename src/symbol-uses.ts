@@ -49,10 +49,17 @@ const MAX_PARSED_BYTES = 16 * 1024 * 1024;
  */
 const MAX_NESTING = 256;
 const MIN_NAME_LENGTH = 4;
+/** A longer name is no identifier anyone wrote, so it names no declaration, field or type and is never searched. */
+const MAX_NAME_LENGTH = 160;
 const MAX_REFERENCE_LINES = 40;
 /** A reference line is cut to this length before it is ranked, since a minified file can hold one of megabytes. */
 const MAX_REFERENCE_LINE_CHARS = 1000;
 const GREP_TIMEOUT_MS = 30_000;
+/**
+ * The longest pattern a search hands to git grep, which is one command argument. Linux refuses an argument over 32
+ * pages, 128 KiB with pages of 4 KiB, and git grep on macOS was measured to refuse a pattern of 64 KiB.
+ */
+const MAX_PATTERN_BYTES = 48 * 1024;
 const GREP_MAX_BUFFER = 64 * 1024 * 1024;
 const MAX_LOOKUP_FIELDS = 8;
 /** Changed lines a sibling field question quotes, with their hunks. */
@@ -320,11 +327,14 @@ function pythonFieldName(node: SgNode, tree: Tree): SgNode | undefined {
   if (left?.kind() === 'identifier') return grandparent(statement)?.kind() === 'class_definition' ? left : undefined;
   if (left?.kind() !== 'attribute' || left.field('object')?.text() !== 'self') return undefined;
   const method = tree.ancestors(node).find(a => a.kind() === 'function_definition');
-  const inInit = method?.field('name')?.text() === '__init__' && grandparent(method)?.kind() === 'class_definition';
+  const name = method?.field('name');
+  // The name is read only when it is as long as `__init__`, so a long one costs nothing per assignment in its method.
+  const inInit = !!name && name.range().end.index - name.range().start.index === '__init__'.length && name.text() === '__init__'
+    && grandparent(method)?.kind() === 'class_definition';
   return inInit ? left.field('attribute') ?? undefined : undefined;
 }
 
-const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+const IDENTIFIER = new RegExp(`^[A-Za-z_$][\\w$]{0,${MAX_NAME_LENGTH - 1}}$`);
 // A type or trait named by a plain path such as `bincode::Decode`. Any other text, such as a macro, is never quoted in a prompt.
 const TYPE_PATH = /^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*$/;
 // A file name safe to quote in a prompt heading.
@@ -517,7 +527,8 @@ type RelatedHit = Hit & { repo: string; as?: string };
  * without the quoted code. A section is empty when nothing matches. A checkout whose search fails is left out with a
  * warning.
  *
- * A dependency is searched for `dependencyNames` in place of `names`, and never for a translated name.
+ * A dependency is searched for `dependencyNames` in place of `names`, and never for a translated name. A name longer
+ * than `MAX_NAME_LENGTH` is not searched and not named.
  *
  * With `translation`, each other repo is also searched for the names it gives for that repo. A line only a translated
  * name finds is listed under the diff's name, after the lines that name finds itself, and the record counts the lines
@@ -528,7 +539,7 @@ export async function listRelatedUses(checkouts: RelatedCheckout[], names: strin
   for (const kind of RELATED_REPO_KINDS) {
     // A dependency is searched for the names the change calls, which are the dependency's own, so none is translated.
     const [searched, translations] = kind === 'dependency' ? [dependencyNames, undefined] : [names, translation?.names];
-    listed.push(await listKindUses(kind, checkouts.filter(c => c.kind === kind), searched, translations));
+    listed.push(await listKindUses(kind, checkouts.filter(c => c.kind === kind), searched.filter(name => name.length <= MAX_NAME_LENGTH), translations));
   }
   const translated = translation && { translation: translation.skipped ? { skipped: translation.skipped } : { names: listed.flatMap(l => l.translated) } };
   const record: RelatedUsesRecord = Object.assign({}, ...listed.map(l => l.record), translated);
@@ -735,8 +746,9 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   const nothing = { section: '', ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }) };
   if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
 
-  // A file that names the type of a redefined field likely reads that type's field, not a namesake's.
-  const owners = [...new Set([...redefined.values()].flatMap(s => s.owner ?? []))];
+  // A file that names the type of a redefined field likely reads that type's field, not a namesake's. Only a searched
+  // field is listed, so the types of the others are left out, however many fields a PR redefines.
+  const owners = [...new Set(searched.filter(s => redefined.has(s.name)).flatMap(s => s.owner ?? []))];
   const hits = (await grepWords(workspace, [...new Set([...names, ...lookupFields, ...owners])])).filter(hit => !findExcludePattern(hit.file, excludePaths));
   const typeFiles = new Map(owners.map(owner => [owner, new Set<string>()]));
   const ownerPattern = owners.length > 0 ? wordPattern(owners, 'g') : undefined;
@@ -821,9 +833,9 @@ function touchedLines(file: DiffFile): Set<number> {
   return touched;
 }
 
-/** Whether a search for `name` can tell anything: it is long enough to be distinct and no name every codebase uses. */
+/** Whether a search for `name` can tell anything: it is long enough to be distinct, no longer than `MAX_NAME_LENGTH`, and no name every codebase uses. */
 function isSearchable(name: string): boolean {
-  return name.length >= MIN_NAME_LENGTH && !GENERIC_NAMES.has(name);
+  return name.length >= MIN_NAME_LENGTH && name.length <= MAX_NAME_LENGTH && !GENERIC_NAMES.has(name);
 }
 
 /** Whether `name` reads as code, `snake_case`, `camelCase`, `URLInfo` or `ALL_CAPS`, so a search that ignores case finds no common word. */
@@ -1072,6 +1084,7 @@ class ParsedFile {
   private readonly listings = new Map<string, Omit<StructListing, 'file'> | undefined>();
   private readonly groups = new Map<string, number>();
   private readonly marked = new Map<number, boolean>();
+  private readonly testModules = new Map<number, boolean>();
 
   /** `touched` holds the head lines the diff changes in a changed file, whose reads and lookups are collected, and with `reliedOn` the names in `reliedOn`. */
   constructor(root: SgRoot, private readonly rules: FamilyRules, private readonly lines: string[], private readonly tree: Tree, touched = new Set<number>(), reliedOn = false) {
@@ -1124,7 +1137,8 @@ class ParsedFile {
     this.tree.release();
     this.groups.clear();
     this.marked.clear();
-    this.bases.clear();
+    this.testModules.clear();
+    this.scopes.clear();
   }
 
   /** `named` picks one of the names of a node that declares several. */
@@ -1176,8 +1190,7 @@ class ParsedFile {
 
   private namesReliedOn(calls: SgNode[], accesses: SgNode[], touched: Set<number>): string[] {
     const access = this.rules.access;
-    const modules = new Map<number, boolean>();
-    const inTest = (node: SgNode) => this.inTests(node, modules) || this.inTestCode(node);
+    const inTest = (node: SgNode) => this.inTests(node) || this.inTestCode(node);
     const called = calls.flatMap(node => {
       const callee = node.field('function');
       // `send` in `client.send(x)` is the field of an access, `parse` in `Url::parse(x)` the name of a path.
@@ -1270,29 +1283,34 @@ class ParsedFile {
 
   /**
    * Returns the type, trait and bases of the block or class that declares a function, and nothing for a function nested
-   * in another. A base written as a long expression is left out, since only a plain name can match another class's.
+   * in another. They are read once per block or class, however many functions it holds, and a type or trait named with
+   * more than `MAX_NAME_LENGTH` characters is read as none. A base written as a long expression is left out, since only a
+   * plain name can match another class's.
    */
   private scopeOf(node: SgNode): { owner?: string; trait?: string; bases?: string[] } {
     const scope = this.tree.ancestors(node).find(a => this.rules.owners[a.kind()] || this.rules.declarations[a.kind()] === 'function');
     const fields = scope && this.rules.owners[scope.kind()];
     if (!scope || !fields) return {};
-    const owner = typeName(scope.field(fields.type)?.text() ?? '');
-    const traitText = fields.trait && scope.field(fields.trait)?.text();
-    return { owner, trait: traitText ? typeName(traitText) : undefined, bases: this.basesOf(scope) };
+    if (!this.scopes.has(scope.id())) {
+      const named = (text: string) => {
+        const name = typeName(text);
+        return name.length <= MAX_NAME_LENGTH ? name : '';
+      };
+      const traitText = fields.trait && scope.field(fields.trait)?.text();
+      this.scopes.set(scope.id(), { owner: named(scope.field(fields.type)?.text() ?? ''), trait: traitText ? named(traitText) : undefined, bases: this.basesOf(scope) });
+    }
+    return this.scopes.get(scope.id())!;
   }
 
-  private readonly bases = new Map<number, string[]>();
+  private readonly scopes = new Map<number, { owner: string; trait?: string; bases: string[] }>();
   private readonly lineageBases = new Map<number, string[] | undefined>();
 
-  /** Returns the first `MAX_BASES` bases `scope` names, read once per class however many methods it holds. */
+  /** Returns the first `MAX_BASES` bases `scope` names. */
   private basesOf(scope: SgNode): string[] {
-    if (!this.bases.has(scope.id())) {
-      const named = (this.rules.bases?.(scope) ?? []).filter(base => base.range().end.index - base.range().start.index <= MAX_ITEM_CHARS);
-      const bases = named.map(base => typeName(base.text())).filter(base => BASE_PATH.test(base) && !STANDARD_BASES.has(base.split(/\.|::/).at(-1)!));
-      // Each protocol method gets a group key per base, so a crafted class with thousands of bases keeps only the first few.
-      this.bases.set(scope.id(), bases.slice(0, MAX_BASES));
-    }
-    return this.bases.get(scope.id())!;
+    const named = (this.rules.bases?.(scope) ?? []).filter(base => base.range().end.index - base.range().start.index <= MAX_ITEM_CHARS);
+    const bases = named.map(base => typeName(base.text())).filter(base => BASE_PATH.test(base) && !STANDARD_BASES.has(base.split(/\.|::/).at(-1)!));
+    // Each protocol method gets a group key per base, so a crafted class with thousands of bases keeps only the first few.
+    return bases.slice(0, MAX_BASES);
   }
 
   /** Returns the lines of `decl` with their numbers, marking the lines in `added`, each cut after `MAX_EXCERPT_LINE_CHARS` and all after `MAX_EXCERPT_LINES`. */
@@ -1303,13 +1321,12 @@ class ParsedFile {
     return { file, line: decl.start, code: lines.join('\n') };
   }
 
-  /** With `known`, each node around `node` is checked once, however many of the nodes asked about share it. */
-  private inTests(node: SgNode, known?: Map<number, boolean>): boolean {
+  /** Whether a node around `node` is a module of tests. Each node is checked once, however many of the nodes asked about share it. */
+  private inTests(node: SgNode): boolean {
     const test = this.rules.testModule;
-    if (!test || !known) return !!test && this.tree.ancestors(node).some(test);
-    return this.tree.ancestors(node).some(around => {
-      if (!known.has(around.id())) known.set(around.id(), test(around));
-      return known.get(around.id())!;
+    return !!test && this.tree.ancestors(node).some(around => {
+      if (!this.testModules.has(around.id())) this.testModules.set(around.id(), test(around));
+      return this.testModules.get(around.id())!;
     });
   }
 
@@ -1441,11 +1458,20 @@ function isTopLevelConstant(node: SgNode, tree: Tree): boolean {
 
 /**
  * Returns each line of a tracked text file in `workspace` that holds one of `names` as a whole word. With `onDisk`, it
- * searches the files on disk instead, so a sparse checkout never fetches the blobs it left out.
+ * searches the files on disk instead, so a sparse checkout never fetches the blobs it left out. A name that no longer
+ * fits the `MAX_PATTERN_BYTES` the names before it left is not searched.
  */
 async function grepWords(workspace: string, names: string[], { onDisk = false, ignoreCase = false } = {}): Promise<Hit[]> {
+  const words: string[] = [];
+  let bytes = 0;
+  for (const word of names.map(escapeRegExp)) {
+    const size = Buffer.byteLength(word) + 1;
+    if (bytes + size > MAX_PATTERN_BYTES) continue;
+    bytes += size;
+    words.push(word);
+  }
   // One alternation, since git grep checks each `-e` pattern on its own, which is slow on a file full of near matches.
-  const pattern = `(${names.map(escapeRegExp).join('|')})`;
+  const pattern = `(${words.join('|')})`;
   const args = ['grep', ...(onDisk ? ['--no-index'] : []), '-n', '-z', '-I', '-w', ...(ignoreCase ? ['-i'] : []), '--no-color', '-E', '-e', pattern];
   const stdout = await execFileAsync('git', args, { cwd: workspace, env: gitEnv(), timeout: GREP_TIMEOUT_MS, maxBuffer: GREP_MAX_BUFFER })
     .then(result => result.stdout)

@@ -306,7 +306,7 @@ describe('listUsesOutsideDiff', () => {
     expect(section).toContain('### `slice_lines` (config key)\n\n```\ndeclared at manki.yml:3\nsrc/config.ts:1: export const lines = (c: Config) => c.slice_lines;\n```');
   });
 
-  it('leaves out generic names and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {
+  it('leaves out generic names and names longer than an identifier, and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {
     const callers: Record<string, string> = {};
     const fns = Array.from({ length: 18 }, (_, i) => `compute_part_${i}`);
     for (let file = 0; file < 6; file++) {
@@ -366,6 +366,25 @@ describe('listUsesOutsideDiff', () => {
     // The fields share the reserved slots in turn, so each gets 10.
     expect(half.record?.symbols?.filter(s => fields.includes(s.name)).map(s => s.uses.length)).toEqual([10, 10, 10]);
     expect(half.record?.symbols?.flatMap(s => s.uses)).toHaveLength(60);
+
+    // A name longer than any identifier is no name: the untouched fields of a changed type, the functions of a file
+    // without a grammar and a name a comment mentions. A few such names make the one pattern of the search longer than
+    // git grep takes, which would lose the whole list.
+    jest.mocked(core.warning).mockClear();
+    const long = Array.from({ length: 8 }, (_, i) => `f${i}${'a'.repeat(19_000)}`);
+    const big = (type: string) => `pub struct Big {\n    pub real_field_here: ${type},\n${long.map(f => `    pub ${f}: u8,\n`).join('')}}\n`;
+    const script = `${long.map(f => `def ${f}\nend\n`).join('')}# like \`${long[0]}\`\ndef real_function_here\nend\n`;
+    const overlong = await usesFor(
+      { 'src/big.rs': big('u8'), 'src/read.rs': 'fn read(b: &Big) -> u8 {\n    b.real_field_here\n}\n', 'tools/run.rb': 'real_function_here\n' },
+      { 'src/big.rs': big('u16'), 'tools/gen.rb': script },
+    );
+    expect(core.warning).not.toHaveBeenCalled();
+    expect(overlong.record?.symbols).toEqual([
+      { name: 'real_field_here', declared: 'src/big.rs:2', uses: ['src/read.rs:2'] },
+      { name: 'real_function_here', declared: 'tools/gen.rb:18', uses: ['tools/run.rb:1'] },
+    ]);
+    expect(overlong.referenceNames).toEqual(['real_field_here', 'real_function_here']);
+    expect(JSON.stringify(overlong)).not.toContain('aaaa');
   });
 
   it('names what the diff changes and reads and what its comments mention for the reference search, leaving out tests', async () => {
@@ -714,6 +733,26 @@ ${body}	return true
     const calls = (n: number) => `mod ${'m'.repeat(7 * n)} {\n    fn run() {\n        ${'f_ab();'.repeat(n)}\n    }\n}\n`;
     const inModule = await usesInLinearTime(n => [{ 'src/calls.rs': 'fn run() {}\n' }, { 'src/calls.rs': calls(n) }, [], true], 70_000);
     expect(inModule.dependencyNames).toEqual(['f_ab']);
+
+    // Many lookups in such a module, and many functions: the name is read once for those too.
+    const lookups = (n: number) => `mod ${'m'.repeat(7 * n)} {\n    fn run(a: &A) {\n        ${'a.jobs[k];'.repeat(n)}\n    }\n}\n`;
+    await usesInLinearTime(n => [{ 'src/lookups.rs': 'fn run() {}\n' }, { 'src/lookups.rs': lookups(n) }], 55_000, { smaller: 1_700 });
+    const functions = (n: number) => `mod ${'m'.repeat(7 * n)} {\n${'fn f(){}\n'.repeat(n)}}\n`;
+    await usesInLinearTime(n => [{ 'src/functions.rs': 'fn run() {}\n' }, { 'src/functions.rs': functions(n) }], 55_000, { smaller: 1_700 });
+
+    // Many methods of a class with a long name: the name is read once per class, and one that long names no type.
+    const methods = (n: number) => `export class ${'C'.repeat(7 * n)} {\n${Array.from({ length: n }, (_, i) => `  m${i}() {}\n`).join('')}}\n`;
+    await usesInLinearTime(n => [{ 'src/methods.ts': 'export const c = 0;\n' }, { 'src/methods.ts': methods(n) }], 8_000, { smaller: 500 });
+
+    // Many assignments in a Python method with a long name: the name is not read to tell whether the method is `__init__`.
+    const assigned = (n: number, x: number) => `class A:\n    def ${'m'.repeat(37 * n)}(self):\n${Array.from({ length: n }, (_, i) => `        self.a${i} = 1\n`).join('')}x = ${x}\n`;
+    await usesInLinearTime(n => [{ 'src/assigned.py': assigned(n, 1) }, { 'src/assigned.py': assigned(n, 2) }], 16_000, { smaller: 1_000 });
+
+    // A redefined field in each of many types, and as many lines that name one of the types: only the types of the
+    // searched fields are searched for and looked for in each line found.
+    const typed = (n: number, type: string) => Array.from({ length: n }, (_, i) => `pub struct T${i} { pub fld_${i}: ${type} }\n`).join('');
+    const owned = await usesInLinearTime(n => [{ 'src/typed.rs': typed(n, 'u8'), 'src/hits.rs': 'fn x(t: T0) {}\n'.repeat(n) }, { 'src/typed.rs': typed(n, 'u16') }], 8_000, { smaller: 500 });
+    expect(owned.record?.types?.[0]).toBe('src/typed.rs:1: struct T0 { fld_0 }');
   }, 300_000);
 
   it('parses at most 200 files a round and says how many it left unparsed', async () => {
@@ -830,6 +869,23 @@ describe('listRelatedUses', () => {
         referenceMissing: ['MAX_HEADER_COUNT'],
       });
       expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Skipped the search of the reference repo o\/gone: /));
+      // The names are searched in one pattern, which is one command argument. The names that no longer fit its size are
+      // left out, the first ones kept, so the search runs whatever it is given.
+      jest.mocked(core.warning).mockClear();
+      const flood = Array.from({ length: 2_000 }, (_, i) => `FLOOD_${i}_${'A'.repeat(140)}`);
+      const bounded = await listRelatedUses([server], [...flood.slice(0, 100), 'MAX_SIZE', ...flood.slice(100)]);
+      expect(bounded.section).toContain('### `MAX_SIZE`\n\n```\nexample/server:src/serialize.h:1: static constexpr uint64_t MAX_SIZE = 0x02000000;\n');
+      // A name longer than an identifier is not searched and not named, alone or next to others. A name of 160
+      // characters is the longest one searched.
+      const huge = `HUGE_${'A'.repeat(200_000)}`;
+      const [longest, tooLong] = ['L'.repeat(160), 'L'.repeat(161)];
+      writeFileSync(join(dir, 'src/long.h'), `${longest}\n${tooLong}\n`);
+      expect(await listRelatedUses([server], [huge])).toEqual({ section: '' });
+      const short = await listRelatedUses([server], [huge, tooLong, longest, 'MAX_HEADER_COUNT']);
+      expect(short.record).toEqual({ reference: [{ name: longest, lines: ['example/server:src/long.h:1'] }], referenceMissing: ['MAX_HEADER_COUNT'] });
+      expect(short.section).not.toContain('AAAA');
+      expect(short.section).not.toContain(tooLong);
+      expect(core.warning).not.toHaveBeenCalled();
       // A name past the cap on reference lines is named in the section and kept in the record.
       const many = Array.from({ length: 11 }, (_, i) => `CAPPED_NAME_${i}`);
       writeFileSync(join(dir, 'src/caps.h'), many.map(name => `${name}(1);\n`.repeat(4)).join(''));
