@@ -1,7 +1,8 @@
 import { LLMClient, SendMessageOptions } from './providers';
+import { repoToolsPrompt } from './providers/cli-utils';
 import { runSweeps, startsSweep } from './sweep';
 import { Finding, SweepMode } from './types';
-import { UNTRUSTED_CONTENT_RULE } from './writing-rules';
+import { RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE } from './writing-rules';
 
 jest.mock('@actions/core');
 
@@ -86,6 +87,12 @@ describe('runSweeps', () => {
     expect(user).toContain('- **Location**: src/cache.ts:10');
     expect(user).toContain('const key = `${user}:${page}`;');
     expect(options).toEqual({ effort: 'high', repoTools: { root: '/work', steps: 15 }, timeoutMs: 600_000 });
+    // With related repos configured, the tools of a sweep read them too, under the rule that their content is untrusted.
+    const related = { repos: [{ repo: 'acme/reports', kind: 'consumer' as const }], cacheDir: '/cache', stateDir: '/state' };
+    await runSweeps(() => client, [blocker('Cache key misses the locale', { evidence: cites })], { rawDiff, effort: 'high', workspace: '/work', related });
+    const withRelated = client.calls.at(-1)!.options!.repoTools!;
+    expect(withRelated).toStrictEqual({ root: '/work', steps: 15, related });
+    expect(repoToolsPrompt(withRelated, 'Read, Grep and Glob')).toContain(RELATED_REPO_TRUST_RULE);
   });
 
   it('sweeps at most three findings, security ones first, then by grade and the best checked, and records why each one found nothing', async () => {

@@ -382,6 +382,9 @@ describe('relatedRepoLoader', () => {
       expect(relatedRepoTools(undefined)).toBeUndefined();
       expect(repoTools('/work/head', 15, first)).toStrictEqual({ root: '/work/head', steps: 15, related: first });
       expect(repoTools('/work/head', 15, undefined)).toStrictEqual({ root: '/work/head', steps: 15, related: undefined });
+      // A call that checks one finding or statement is marked, so its prompt gives it no rules for grading.
+      expect(repoTools('/work/head', 15, first, 'check')).toStrictEqual({ root: '/work/head', steps: 15, related: first, checking: true });
+      expect(repoTools('/work/head', 15, first, 'find')).toStrictEqual(repoTools('/work/head', 15, first));
     } finally {
       for (const { stateDir } of [first, second]) rmSync(stateDir, { recursive: true, force: true });
     }

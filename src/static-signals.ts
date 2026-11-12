@@ -24,6 +24,10 @@ const MAX_CLAIMED_SYMBOLS = 5;
 /** How far a check annotation may sit from a finding's line and still confirm the error the finding claims. */
 const ERROR_LINE_WINDOW = 3;
 const MAX_CITATIONS = 10;
+/** How far from a cited line of a related repo the code a reviewer quotes for it may sit. */
+const QUOTE_LINE_WINDOW = 3;
+/** A quote shorter than this, without its whitespace, could match almost any line. */
+const MIN_QUOTE_CHARS = 6;
 // `owner/name:path:line` or `owner/name:path:start-end`, the form reviewers cite a related repo's code in.
 const RELATED_CITATION = /(?<![\w./-])([\w.-]+\/[\w.-]+):([^\s:`'"()<>]+):(\d+)(?:-(\d+))?/g;
 const CHECK_POLL_MS = 15_000;
@@ -471,7 +475,7 @@ export function checkFindingClaims(finding: Finding, sources: ClaimSources): Too
     const found = pattern.test(rawDiff) || (content !== undefined && pattern.test(content));
     checked.push(found ? `\`${symbol}\` occurs` : `\`${symbol}\` not found in ${content !== undefined ? `${finding.file} or ` : ''}the diff`);
   }
-  if (related) checked.push(...checkRelatedCitations(`${finding.title}\n${finding.description}`, related));
+  if (related) checked.push(...checkRelatedCitations(finding, related));
   if (TYPE_ERROR_CLAIM.test(`${finding.title} ${finding.description}`)) {
     const annotation = signals.find(s => s.source === 'checks' && s.severity === 'error' && isTypeChecker(s) && s.file === finding.file && Math.abs(s.line - finding.line) <= ERROR_LINE_WINDOW);
     if (annotation) {
@@ -490,22 +494,76 @@ export function isUnconfirmedBuildClaim(finding: Finding): boolean {
   return !!finding.buildClaim && !finding.toolSource && !finding.tags?.includes(SECURITY_TAG) && finding.toolEvidence?.status !== 'confirmed';
 }
 
+/** A line or a range of lines of a related repo, as a finding or a check cites it. */
+export interface RelatedCitation {
+  /** The citation as written: `owner/name:path:line` or `owner/name:path:start-end`. */
+  citation: string;
+  repo: string;
+  path: string;
+  start: number;
+  end: number;
+}
+
+/** Returns each distinct citation in `text` of a line of one of the repos `names`, in the order written. */
+export function relatedCitations(text: string, names: readonly string[]): RelatedCitation[] {
+  const cited = [...text.matchAll(RELATED_CITATION)].filter(([, repo]) => names.includes(repo));
+  return [...new Map(cited.map(c => [c[0], c])).values()]
+    .map(([citation, repo, path, start, end]) => ({ citation, repo, path, start: Number(start), end: Number(end ?? start) }));
+}
+
+/** Returns the citation an evidence or proof entry starts with, when it cites a line of one of the repos `names`. */
+export function leadingRelatedCitation(entry: string, names: readonly string[]): RelatedCitation | undefined {
+  const text = entry.replace(/^[\s`]+/, '');
+  const [first] = relatedCitations(text, names);
+  return first && text.startsWith(first.citation) ? first : undefined;
+}
+
 /**
- * Returns, for each cited line of a configured related repo, whether it is in the checkout the reviewers read. Only a
- * citation found there lets the judge treat it as evidence.
+ * Returns, for each line of a configured related repo that the finding's title or description cites, whether it is in
+ * the checkout the round fetched. Only a citation found there lets the judge treat it as evidence. An evidence line
+ * that starts with a citation and quotes code in backticks is compared with the fetched lines: the note says whether
+ * they hold the quoted code, and a citation that does not is no such evidence.
  */
-function checkRelatedCitations(text: string, { names, checkouts }: NonNullable<ClaimSources['related']>): string[] {
-  const citations = [...text.matchAll(RELATED_CITATION)].filter(([, repo]) => names.includes(repo));
-  return [...new Map(citations.map(c => [c[0], c])).values()].slice(0, MAX_CITATIONS).map(([citation, repo, path, start, end]) => {
+function checkRelatedCitations(finding: Finding, { names, checkouts }: NonNullable<ClaimSources['related']>): string[] {
+  const quotes = new Map<string, { cited: RelatedCitation; code: string[] }>();
+  for (const entry of finding.evidence?.checks ?? []) {
+    const cited = leadingRelatedCitation(entry, names);
+    // The backtick that closes a quoted citation would pair with the next quote's opening one.
+    const code = cited ? quotedCode(entry.slice(entry.indexOf(cited.citation) + cited.citation.length).replace(/^`/, '')) : [];
+    if (cited && code.length > 0) quotes.set(cited.citation, { cited, code: [...(quotes.get(cited.citation)?.code ?? []), ...code] });
+  }
+  const stated = relatedCitations(`${finding.title}\n${finding.description}`, names);
+  // A citation that only an evidence line makes is checked when that line quotes code to compare.
+  const all = [...stated, ...[...quotes.values()].map(q => q.cited).filter(q => !stated.some(s => s.citation === q.citation))];
+  return all.slice(0, MAX_CITATIONS).map(({ citation, repo, path, start, end }) => {
     const dir = checkouts.get(repo);
     if (!dir) return `\`${citation}\` is unchecked: ${repo} was not fetched this round`;
-    const missing = citedLineMissing(dir, path, Math.max(Number(start), Number(end ?? start)));
-    return missing ? `\`${citation}\` is not in the fetched checkout: ${missing}` : `\`${citation}\` is in the fetched checkout`;
+    const missing = citedLineMissing(dir, path, end);
+    if (missing) return `\`${citation}\` is not in the fetched checkout: ${missing}`;
+    const quoted = quotes.get(citation)?.code;
+    if (!quoted) return `\`${citation}\` is in the fetched checkout`;
+    return holdsQuotedCode(dir, path, start, end, quoted)
+      ? `\`${citation}\` is in the fetched checkout and holds the quoted code`
+      : `\`${citation}\` does not hold the quoted code: none of it is within ${QUOTE_LINE_WINDOW} lines of the cited line`;
   });
 }
 
+const withoutWhitespace = (text: string): string => text.replace(/\s+/g, '');
+
+/** Returns the code `text` quotes in backticks, without whitespace, each part of a quote cut by an ellipsis on its own. */
+function quotedCode(text: string): string[] {
+  return [...text.matchAll(/`([^`]+)`/g)].flatMap(([, quote]) => quote.split(/\.{3}|…/)).map(withoutWhitespace).filter(part => part.length >= MIN_QUOTE_CHARS);
+}
+
+/** Whether the lines `start` to `end` of `path` in the checkout at `dir`, or the `QUOTE_LINE_WINDOW` lines around them, hold one of `quoted`. */
+function holdsQuotedCode(dir: string, path: string, start: number, end: number, quoted: readonly string[]): boolean {
+  const lines = readFileSync(resolveInRoot(dir, path).absolute, 'utf-8').split('\n');
+  const window = withoutWhitespace(lines.slice(Math.max(0, start - 1 - QUOTE_LINE_WINDOW), end + QUOTE_LINE_WINDOW).join('\n'));
+  return quoted.some(code => window.includes(code));
+}
+
 /** Returns why line `line` of `path` is not in the checkout at `dir`, or `undefined` when it is. */
-function citedLineMissing(dir: string, path: string, line: number): string | undefined {
+export function citedLineMissing(dir: string, path: string, line: number): string | undefined {
   let absolute: string;
   try {
     ({ absolute } = resolveInRoot(dir, path));

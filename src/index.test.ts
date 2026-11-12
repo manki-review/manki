@@ -901,9 +901,12 @@ describe('run', () => {
           action: 'created',
           sender: { login: 'user' },
           comment: { body: 'The caller checks this.', in_reply_to_id: 123, user: { type: 'User' } },
-          pull_request: { number: 1, base: { ref: 'main' }, head: { sha: 'abc123' } },
+          pull_request: { number: 1, base: { ref: 'release-2' }, head: { sha: 'abc123', ref: 'feature' } },
         },
       });
+      // The PR's own config lists a repo the base branch does not.
+      const configAt: Record<string, string> = { 'release-2': 'related_repos:\n  - repo: acme/reports\n    kind: consumer\n', abc123: 'related_repos:\n  - repo: evil/planted\n    kind: consumer\n' };
+      jest.mocked(ghUtils.readConfigFile).mockImplementationOnce(async (_octokit, _owner, _repo, ref) => configAt[ref] ?? configAt.abc123);
 
       await run();
 
@@ -911,6 +914,9 @@ describe('run', () => {
       expect(fetchWorkspace).not.toHaveBeenCalled();
       const call = jest.mocked(interaction.handleReviewCommentReply).mock.calls.at(-1);
       expect(call?.[8]).toBe(jest.mocked(configModule.loadConfig).mock.results.at(-1)?.value);
+      // The reply's config, and with it the related repos its tools may fetch, comes from the base branch alone, so a PR cannot add a repo.
+      expect(jest.mocked(ghUtils.readConfigFile).mock.calls.map(c => c[3])).toEqual(['release-2']);
+      expect(jest.mocked(configModule.loadConfig).mock.calls.at(-1)?.[0]).toBe(configAt['release-2']);
       const loadWorkspace = call?.[7] as () => Promise<string | undefined>;
       expect(await loadWorkspace()).toBe('/work/head');
       expect(fetchWorkspace).toHaveBeenCalledWith(expect.stringMatching(/\/.+\.git$/), 'abc123', 'ghs_app');
@@ -4034,7 +4040,8 @@ describe('runFullReview orchestration', () => {
           call('reviewer', 'bbbbbbbbbbbb', { agent: 'general', stepBudget: 15, wrapUpNoted: true, relatedReads: { 'o/r': 3 } }),
           call('reviewer', 'aaaaaaaaaaaa', { agent: 'security', relatedReads: { 'o/r': 1 } }),
           call('reviewer', 'aaaaaaaaaaaa', { agent: 'general', attempt: 2, failed: true, relatedReads: { 'o/r': 2 } }), call('judge', 'cccccccccccc', { limits: [limit] }),
-          call('compare', 'dddddddddddd', { agent: 'Sibling field: utxos vs spent' }),
+          call('compare', 'dddddddddddd', { agent: 'Sibling field: utxos vs spent', relatedReads: { 'o/r': 2 } }),
+          call('judge', 'cccccccccccc', { agent: 'refute', relatedReads: { 'o/r': 4, 'o/s': 1 } }),
         ],
         comparisons,
         sweeps: [{ reviewer: 'Sweep: Bug', source: 'src/app.ts:5', severity: 'blocker' as const, status: 'answered' as const, class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', source: 'src/app.ts:9', severity: 'note' as const, status: 'cut' as const }],
@@ -4091,8 +4098,11 @@ describe('runFullReview orchestration', () => {
       // The second refuter answers that the defect does not exist, while its premise and the first refuter settle nothing. Its reason is the one listed.
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]?.disproved).toEqual([{ title: 'Rename the helper', file: 'src/app.ts', line: 9, reason: 'r' }]);
       expect(rc.slicing).toEqual({ files: [3, 2], reader: [{ verdict: 'READY', blockers: 0 }, { verdict: 'ADDRESS_FIRST', blockers: 1 }] });
-      // Each related repo carries the reads of every call of the round, a failed one too, and each call its own.
-      expect(rc.relatedRepos).toEqual([{ repo: 'o/r', status: 'fetched', durationMs: 900, reads: 6 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }]);
+      // Each related repo carries the reads of every call of the round, a failed one too, in all and by the stage that made them, and each call its own.
+      expect(rc.relatedRepos).toEqual([
+        { repo: 'o/r', status: 'fetched', durationMs: 900, reads: 12, readsByStage: { reviewer: 6, compare: 2, refute: 4 } },
+        { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found', reads: 1, readsByStage: { refute: 1 } },
+      ]);
       expect(rc.usage.llmCalls?.[1]).toMatchObject({ relatedReads: { 'o/r': 1 } });
       expect(rc.usesOutsideDiff).toEqual({ symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] });
       // The record keeps the classification but none of the other PRs' and issues' text.

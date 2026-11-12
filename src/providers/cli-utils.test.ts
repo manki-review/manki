@@ -6,6 +6,7 @@ import * as core from '@actions/core';
 
 import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, cutLegacyCommands, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, removeSeededAuthFiles, repoToolsPrompt, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
+import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
 
 function encode(json: unknown): string {
   return Buffer.from(JSON.stringify(json), 'utf8').toString('base64');
@@ -249,6 +250,18 @@ describe('repoToolsPrompt', () => {
     for (const text of added) expect(withDependency).toContain(text);
     expect(added.reduce((text, part) => text.replace(part, ''), withDependency)).toBe(prompt());
     expect(prompt()).not.toContain('dependency');
+
+    // A call that checks one finding or statement reads a related repo only for the code that check rests on, and gets no rules for grading.
+    const checking = repoToolsPrompt({ root: '/work/repo', steps: 15, related: { ...related, guides: { 'acme/server': 'AGENTS.md' } }, checking: true }, 'Read, Grep and Glob');
+    expect(checking).toContain('so name one only when what you check cites its code as `owner/name:path:line` or rests on what that code does. Read that code before you answer.');
+    expect(checking).toContain(rule);
+    expect(checking).not.toMatch(/graded|\*\*reference\*\*|\*\*consumer\*\*|is a `warning`/);
+    expect(checking).toMatchSnapshot();
+    // Whatever a call does with the repos, it learns that their content is untrusted and that it never answers from memory for one it could not read.
+    for (const text of [prompt(), guided, withDependency, checking]) {
+      expect(text.endsWith(`${RELATED_REPO_TRUST_RULE} A call that names a repo Manki cannot fetch returns the reason. You have not read that repo then: say that you could not read it, treat whatever rests on its code as unchecked, and never answer about its code from memory.`)).toBe(true);
+    }
+    expect(repoToolsPrompt({ root: '/work/repo', steps: 15, related: undefined }, 'Read, Grep and Glob')).not.toMatch(/Related repos|related repo/);
   });
 });
 

@@ -473,7 +473,7 @@ export interface RoundRelatedRepo {
   ref?: string;
   /**
    * `fetched`, `failed` with the `reason`, `unused` when nothing asked for it, or `skipped` with the `reason` when the
-   * round gave no finder the repo.
+   * round gave no model the repo.
    */
   status: 'fetched' | 'failed' | 'unused' | 'skipped';
   reason?: string;
@@ -481,7 +481,9 @@ export interface RoundRelatedRepo {
   durationMs?: number;
   /** Tool calls that read the repo, over every call of the round. */
   reads?: number;
-  /** The guide file at the repo's root that the finders were pointed to as a map of the repo. */
+  /** Those tool calls by the stage that made them, with the refuters as `refute` and `refute_pair`. */
+  readsByStage?: Record<string, number>;
+  /** The guide file at the repo's root that the round's models were pointed to as a map of the repo. */
   guide?: string;
   /** The commit the round checked out, when it fetched the repo. */
   commit?: string;
@@ -688,6 +690,8 @@ export interface PremiseCheck {
   outcome: RefutationOutcome;
   reason: string;
   proof?: string[];
+  /** The lines of related repos that decide it, as `owner/name:path:line`. They can confirm, and never count toward a disproof. */
+  relatedProof?: string[];
 }
 
 /** The outcome of the judge's attempt to refute a finding with tools. */
@@ -702,6 +706,11 @@ export interface Refutation {
   rule?: string;
   /** The `file:line` locations the judge cites: the failure for `confirmed`, the reason it cannot happen for `disproved`. */
   proof?: string[];
+  /**
+   * The lines of related repos the outcome cites, as `owner/name:path:line`, each in a checkout the round fetched. They
+   * can confirm, and never count toward a disproof. A check that cites one is never reused in a later round.
+   */
+  relatedProof?: string[];
   /** The answer to each premise in the finding's `doubts`, in order. The `outcome` follows from them. */
   premises?: PremiseCheck[];
   /** The finding's own file and the files the outcome cites. */
@@ -2435,6 +2444,8 @@ export interface ReplyRecord {
   usage: RoundUsage;
   /** The token service calls the run made before the reply. */
   tokenService?: TokenServiceCall[];
+  /** How each related repo fared in a thread reply whose tools could read them. */
+  relatedRepos?: RoundRelatedRepo[];
   /** What a thread reply that settles the finding decided. */
   decision?: ReplyDecision;
 }

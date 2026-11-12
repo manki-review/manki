@@ -8,7 +8,7 @@ import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus } from './refute';
 import { repoTools } from './related-repos';
 import { CLAIMS_MISSING_RULE, parseFindings, parseLocation, PRE_EXISTING_RULE, truncateDiff } from './review';
-import { CheckStatus, disproof, EffortLevel, Finding, RoundSweep, SECURITY_TAG, SEVERITY_ORDER, SweepMode } from './types';
+import { CheckStatus, disproof, EffortLevel, Finding, RelatedRepoTools, RoundSweep, SECURITY_TAG, SEVERITY_ORDER, SweepMode } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
@@ -120,6 +120,8 @@ export interface SweepOptions {
   effort?: EffortLevel;
   /** The checked-out PR head, which a client with `repoTools` reads with read-only tools. */
   workspace?: string;
+  /** The round's related repos, which the tools also read. */
+  related?: RelatedRepoTools;
 }
 
 /**
@@ -131,7 +133,7 @@ export interface SweepOptions {
  * `failed`. It never throws.
  */
 export async function runSweeps(
-  clientFor: (reviewer: string) => LLMClient, sources: readonly Finding[], { rawDiff, effort, workspace }: SweepOptions,
+  clientFor: (reviewer: string) => LLMClient, sources: readonly Finding[], { rawDiff, effort, workspace, related }: SweepOptions,
 ): Promise<{ findings: Finding[]; sweeps: RoundSweep[] }> {
   const ordered = byPriority(sources);
   // A name never carries text a model wrote from the PR, so each sweep is numbered and its record names the source's location.
@@ -145,7 +147,7 @@ export async function runSweeps(
     const record = { reviewer, ...from(source) };
     const options: SendMessageOptions = {
       ...(effort && { effort }),
-      ...(tools && { repoTools: repoTools(workspace!, SWEEP_STEPS, undefined), timeoutMs: SWEEP_TIMEOUT_MS }),
+      ...(tools && { repoTools: repoTools(workspace!, SWEEP_STEPS, related), timeoutMs: SWEEP_TIMEOUT_MS }),
     };
     try {
       const { general, defectClass, findings } = await sendWithParseRetry(

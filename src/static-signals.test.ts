@@ -899,6 +899,34 @@ describe('checkFindingClaims', () => {
         '`o/s:x.rs:1` is unchecked: o/s was not fetched this round',
       ].join(', ')}.` });
       expect(checkFindingClaims(finding({ description }), sources).note).toBe('Checked: the file is in the diff, the line is in the file.');
+
+      // An evidence line that starts with a citation and quotes code is compared with the fetched lines around it.
+      const quoting = (...evidence: string[]) => checkFindingClaims(
+        finding({ description: 'Used at `o/r:src/lib.rs:2`.', evidence: { checks: evidence, proof: [] } }), { ...sources, related },
+      ).note.replace('Checked: the file is in the diff, the line is in the file, ', '');
+      expect([
+        quoting('`o/r:src/lib.rs:2`, the consumer calls `pub fn b()` there'),
+        // Whitespace does not count, and a quote cut by an ellipsis is compared part by part.
+        quoting('o/r:src/lib.rs:2 defines `pub  fn b( ) ... gone()`'),
+        // The code may sit a few lines from the cited one.
+        quoting('o/r:src/lib.rs:1 has `pub fn b() {}`'),
+        quoting('`o/r:src/lib.rs:2`, where it reads `review.body.includes(MARKER)`'),
+        // A quote too short to tell lines apart, or a line that starts with no citation, compares nothing.
+        quoting('`o/r:src/lib.rs:2` uses `b()`'),
+        quoting('The call at `o/r:src/lib.rs:2` reads `review.body.includes(MARKER)`'),
+        // A citation that only an evidence line makes is checked once that line quotes code.
+        quoting('o/r:src/lib.rs:1, which defines `pub fn a()`', '`o/r:src/lib.rs:1-2` is where it is called'),
+        quoting('o/s:x.rs:1 calls `removed_function()`'),
+      ]).toEqual([
+        '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/lib.rs:1` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` does not hold the quoted code: none of it is within 3 lines of the cited line.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/lib.rs:1` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/s:x.rs:1` is unchecked: o/s was not fetched this round.',
+      ]);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }

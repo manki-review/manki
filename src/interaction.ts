@@ -11,10 +11,10 @@ import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
-import { AuthorClearRole, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
-import { repoTools } from './related-repos';
+import { AuthorClearRole, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
+import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
 import { formatReplyRecord } from './review-record';
-import { buildRoundUsage } from './round-context';
+import { buildRoundUsage, withReads } from './round-context';
 import { COMMENT_MARKER as BOT_MARKER, redactSecrets, safeTruncate, sanitizeTokens, withMarkers } from './utils';
 import { WRITING_RULES } from './writing-rules';
 
@@ -235,7 +235,10 @@ async function resolvePermission(
   return { mayResolve: isTrusted || isPrAuthor, isPrAuthor, mayClear };
 }
 
-/** Asks `client` once, and returns the answer with the hidden usage record to post along with it. */
+/**
+ * Asks `client` once, and returns the answer with the hidden usage record to post along with it. The record says how
+ * each repo of `related` fared, when the call's tools could read them.
+ */
 async function askWithRecord(
   client: LLMClient,
   kind: ReplyRecord['kind'],
@@ -243,13 +246,15 @@ async function askWithRecord(
   systemPrompt: string,
   userMessage: string,
   options?: SendMessageOptions,
+  related?: RelatedRepoTools,
 ): Promise<{ content: string; record: (decision?: ReplyDecision) => string }> {
   const calls: LLMCall[] = [];
   const response = await recordCalls(client, { stage: 'reply' }, calls).sendMessage(systemPrompt, userMessage, options);
   const tokenService = tokenServiceCalls();
+  const relatedRepos = related && relatedRepoOutcomes(related.repos, related.stateDir).map(repo => withReads(repo, calls));
   const record = (decision?: ReplyDecision) => formatReplyRecord({
     kind, prNumber, timestamp: new Date().toISOString(), mankiVersion: MANKI_VERSION, usage: buildRoundUsage(calls),
-    ...(tokenService.length > 0 && { tokenService }), ...(decision && { decision }),
+    ...(tokenService.length > 0 && { tokenService }), ...(relatedRepos && { relatedRepos }), ...(decision && { decision }),
   });
   return { content: response.content, record };
 }
@@ -334,7 +339,8 @@ async function answerOrSayWhy(octokit: Octokit, owner: string, repo: string, iss
 
 /**
  * Handle a reply to one of our review comments. `loadWorkspace` checks out the PR head once the thread turns out to be
- * Manki's, and with it a client with `repoTools` checks the developer's point with read-only tools. With `config`, a reply
+ * Manki's, and with it a client with `repoTools` checks the developer's point with read-only tools, which also read
+ * the `related_repos` of `config`. With `config`, a reply
  * in a guarded thread the PR author resolved reopens the thread, and the answer says why. Throws when the reply gets no
  * answer, after saying so in a thread that is Manki's.
  */
@@ -417,8 +423,10 @@ export async function handleReviewCommentReply(
     );
 
     const workspace = client.repoTools ? await loadWorkspace?.() : undefined;
-    const tools = workspace ? { repoTools: repoTools(workspace, REPLY_STEPS, undefined), timeoutMs: REPLY_TOOLS_TIMEOUT_MS } : undefined;
-    const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools);
+    // No repo is fetched up front: the tool server fetches one the first time the model names it.
+    const related = workspace ? relatedRepoTools(config?.related_repos) : undefined;
+    const tools = workspace ? { repoTools: repoTools(workspace, REPLY_STEPS, related, 'check'), timeoutMs: REPLY_TOOLS_TIMEOUT_MS } : undefined;
+    const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools, related);
     const findingBody = root.comment.body ?? '';
     // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
     const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody, filePath);

@@ -5,7 +5,7 @@ import { LLMClient, SendMessageOptions } from './providers';
 import { repoTools } from './related-repos';
 import { CLAIMS_MISSING_RULE, parseFindings, PRE_EXISTING_RULE } from './review';
 import { CodeExcerpt, SiblingFieldQuestion, SiblingImplementationQuestion, SiblingQuestions } from './symbol-uses';
-import { EffortLevel, Finding, RoundComparison } from './types';
+import { EffortLevel, Finding, RelatedRepoTools, RoundComparison } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
@@ -115,6 +115,8 @@ export interface ComparisonOptions {
   effort?: EffortLevel;
   /** The checked-out PR head, which a client with `repoTools` reads with read-only tools. */
   workspace?: string;
+  /** The round's related repos, which the tools also read. */
+  related?: RelatedRepoTools;
   /** Stops the questions still running or not yet asked, which are then recorded as `timed_out`. */
   signal?: AbortSignal;
 }
@@ -126,7 +128,7 @@ export interface ComparisonOptions {
  * A call that fails is recorded as `failed`, and one `signal` stopped as `timed_out`. It never throws.
  */
 export async function runComparisons(
-  clientFor: (reviewer: string) => LLMClient, siblings: SiblingQuestions, { effort, workspace, signal }: ComparisonOptions = {},
+  clientFor: (reviewer: string) => LLMClient, siblings: SiblingQuestions, { effort, workspace, related, signal }: ComparisonOptions = {},
 ): Promise<{ findings: Finding[]; comparisons: RoundComparison[] }> {
   const questions = questionsOf(siblings);
   const fields = questions.filter(q => q.kind === 'field');
@@ -142,7 +144,7 @@ export async function runComparisons(
     const options: SendMessageOptions = {
       ...(effort && { effort }),
       ...(signal && { signal }),
-      ...(tools && { repoTools: repoTools(workspace!, COMPARE_STEPS, undefined), timeoutMs: COMPARE_TIMEOUT_MS }),
+      ...(tools && { repoTools: repoTools(workspace!, COMPARE_STEPS, related), timeoutMs: COMPARE_TIMEOUT_MS }),
     };
     try {
       const findings = await sendWithParseRetry(

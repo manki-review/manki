@@ -760,47 +760,61 @@ export async function runReview(
 
   const memoryContext = memory ? buildMemoryContext(memory, new Set(diff.files.map(f => f.path))) : '';
   const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f.model), 'reviewer', f.name)]));
-  const related = workspace && [...finderClients.values()].some(c => c.repoTools) ? relatedRepoTools(config.related_repos, options.relatedReposAsOf) : undefined;
+  const comparisonModel = resolveReviewerModel(config, undefined);
+  const finderTools = [...finderClients.values()].some(c => c.repoTools);
+  // Every stage with repository tools reads the related repos, so one model with tools is enough to offer them.
+  const anyTools = finderTools || [pickReviewerClient(clients, comparisonModel).client, clients.judge, clients.refuterPair].some(c => c?.repoTools);
+  const related = workspace && anyTools ? relatedRepoTools(config.related_repos, options.relatedReposAsOf) : undefined;
+  // The guide of each repo fetched before the finders run, known once that fetch is done.
+  const pointedTo: { guides?: Record<string, string> } = {};
+  // Every configured related repo is recorded: fetched, failed, unused, or skipped when no model could read it. A stage
+  // after the finders can be the first to fetch one, so each way the round ends reads the outcomes then.
+  const relatedRecord = (): Pick<ReviewResult, 'relatedRepos'> => {
+    const relatedRepos: RoundRelatedRepo[] | undefined = related
+      ? relatedRepoOutcomes(related.repos, related.stateDir, pointedTo.guides, related.asOf)
+      : config.related_repos?.map(({ repo, ref }) => ({
+        repo, ...(ref && { ref }), status: 'skipped' as const,
+        reason: workspace ? 'no model of the round has repository tools' : 'the PR head was not checked out for the tools',
+      }));
+    return relatedRepos?.length ? { relatedRepos } : {};
+  };
   const changedSinceLastRound = filesChangedSinceLastRound(diffWithLockfiles, priorRounds, interRoundDiff);
   if (changedSinceLastRound) recorded.changedSinceLastRoundCount = changedSinceLastRound.length;
   const earlierBlockers = blockersToRecheck(previousFindings ?? [], changedSinceLastRound);
   const uses = await usesPromise;
   const agentFailureReasons = new Map<string, string>();
   const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
-  let finderContext: Pick<ReviewResult, 'relatedRepos' | 'usesOutsideDiff' | 'comparisons'> = {};
+  let finderContext: Pick<ReviewResult, 'usesOutsideDiff' | 'comparisons'> = {};
   // Related work is left out: the posted incomplete review would render it.
   const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
     verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
     agentNames: team.finders.map(a => a.name), ...recorded, ...extra,
     ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-    ...(modelFallbacks.length > 0 && { modelFallbacks }), llmCalls, ...finderContext,
+    ...(modelFallbacks.length > 0 && { modelFallbacks }), llmCalls, ...finderContext, ...relatedRecord(),
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
   });
   // A round that reads its related repos as of a time ends here, before any finder runs, when one of them cannot be read as of then.
   const unread = related?.asOf ? await requireRelatedRepos(related).then(() => undefined, (error: Error) => error.message) : undefined;
-  if (related && unread) {
-    finderContext = { relatedRepos: relatedRepoOutcomes(related.repos, related.stateDir, {}, related.asOf) };
-    return incomplete(unread);
-  }
+  if (related && unread) return incomplete(unread);
   // Asked alongside the finders on the reviewer model, at the effort of its finder. An unanswered question leaves the round complete, since the finders read the whole change.
-  const comparisonModel = resolveReviewerModel(config, undefined);
   const comparisonEffort = (team.finders.find(f => f.model === comparisonModel) ?? team.finders[0]).effort;
   const comparisonDeadline = new AbortController();
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
-    effort: comparisonEffort, workspace, signal: comparisonDeadline.signal,
+    effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal,
   });
   const referenceNames = uses.referenceNames ?? [];
   const dependencyNames = uses.dependencyNames ?? [];
   // `dependencyNames` are collected only with a `dependency` repo configured, and such a repo is searched for those alone.
-  const checkouts = related && referenceNames.length + dependencyNames.length > 0 ? await fetchRelatedRepos(related) : [];
+  const checkouts = related && finderTools && referenceNames.length + dependencyNames.length > 0 ? await fetchRelatedRepos(related) : [];
   const translation = await translateNames(clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'translate'), referenceNames, diff.files.map(f => f.path), checkouts.filter(c => c.kind !== 'dependency'));
   const relatedUses = await listRelatedUses(checkouts, referenceNames, translation, dependencyNames);
-  const guides = relatedRepoGuides(checkouts);
+  const guides = pointedTo.guides = relatedRepoGuides(checkouts);
+  const relatedTools = related && { ...related, ...(guides && { guides }) };
   const usesOutsideDiff = uses.section + relatedUses.section;
   const usesRecord = uses.record || relatedUses.record ? { ...uses.record, ...relatedUses.record } : undefined;
   // Only a retry passes `retryNote`, the note of the reply it corrects, so a first attempt never carries one.
   const finderOptions = (finder: Finder, retryNote?: string): RunReviewerAgentOptions => ({
-    effort: finder.effort, language: plannerResult?.language, workspace, related: related && { ...related, ...(guides && { guides }) }, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges,
+    effort: finder.effort, language: plannerResult?.language, workspace, related: relatedTools, changedSinceLastRound, earlierBlockers, usesOutsideDiff, lockfileChanges,
     instructionFiles: options.instructionFiles,
     ...(retryNote && { retryNote }),
   });
@@ -1160,14 +1174,7 @@ export async function runReview(
   clearTimeout(comparisonGrace);
   allFindings.push(...comparisonFindings);
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
-  // Every configured related repo is recorded: fetched, failed, unused, or skipped when no finder could read it.
-  const relatedRepos: RoundRelatedRepo[] | undefined = related
-    ? relatedRepoOutcomes(related.repos, related.stateDir, guides, related.asOf)
-    : config.related_repos?.map(({ repo, ref }) => ({
-      repo, ...(ref && { ref }), status: 'skipped' as const,
-      reason: workspace ? 'no finder has repository tools' : 'the PR head was not checked out for the tools',
-    }));
-  finderContext = { ...(relatedRepos?.length && { relatedRepos }), ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }) };
+  finderContext = { ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }) };
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
     const summary = quotaErrors.size > 0
@@ -1186,7 +1193,8 @@ export async function runReview(
   const staticSignals = prContext?.staticSignals ?? [];
   const claimSources: ClaimSources = {
     diff: diffWithLockfiles, rawDiff, fileContents, signals: staticSignals,
-    ...(related && { related: { names: related.repos.map(r => r.repo), checkouts: fetchedRelatedRepos(related.stateDir) } }),
+    // A stage after the finders can fetch a repo, so each check reads which ones the round holds by then.
+    ...(related && { related: { names: related.repos.map(r => r.repo), get checkouts() { return fetchedRelatedRepos(related.stateDir); } } }),
   };
   const round = (priorRounds?.length ?? 0) + 1;
   // Warning leads need the judge's tools to be settled, so without them they stay only listed.
@@ -1283,6 +1291,7 @@ export async function runReview(
   const refutation = workspace && clients.judge.repoTools ? {
     client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge?.client.repoTools ? clients.fallbacks.judge : undefined }, 'judge', 'refute'),
     workspace,
+    related: relatedTools,
     ...(clients.refuterPair?.repoTools && { pair: withFallback({ client: clients.refuterPair }, 'judge', 'refute_pair') }),
     doubtBudget: { left: MAX_DOUBT_CHECKS },
   } : undefined;
@@ -1364,7 +1373,7 @@ export async function runReview(
   const sweepSources = finalFindings.filter(f => startsSweep(f, config.review?.sweep ?? 'off') && (f.severity === 'blocker' || unchangedCheck(f) !== 'pre_existing'));
   if (sweepSources.length > 0) {
     const sweep = await runSweeps(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweepSources, {
-      rawDiff, effort: comparisonEffort, workspace,
+      rawDiff, effort: comparisonEffort, workspace, related: relatedTools,
     });
     sweeps = sweep.sweeps;
     // A place the round already judged, kept or dropped, is not judged twice. The rest count as raw findings, like a finder's.
@@ -1432,7 +1441,7 @@ export async function runReview(
     const earlier = earlierFindings(priorRounds ?? [], openThreads ?? [], judgeThreadEvaluations);
     const kept = finalFindings;
     const checked = await refuteBlockers(refutation.client, kept, {
-      workspace: refutation.workspace, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
+      workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, doubtBudget: refutation.doubtBudget, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff,
       outsideInput: config.review?.outside_input, restatesEarlier: finding => earlier.some(e => sameProblem(e.finding, finding)),
       preExisting: finding => unchangedCheck(finding) === 'pre_existing', roundEnd: true, rules: config.review?.rules,
     });
@@ -1547,7 +1556,7 @@ export async function runReview(
       // A disproof never lowers a blocker of the reader's, so the outcome stands and the refutation only shows what it
       // found. It drops a claimed build failure that was posted as a warning.
       const refuted = (refutation
-        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, pair: refutation.pair, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
+        ? await refuteBlockers(refutation.client, readerBlockers, { workspace: refutation.workspace, related: refutation.related, pair: refutation.pair, priorRounds, effort: judgeEffort, diff: diffWithLockfiles, usesOutsideDiff, outsideInput: config.review?.outside_input })
         : readerBlockers).filter(f => f.severity !== 'ignore');
       const restated = (await foldIntoEarlierFindings(refuted, earlier, earlierWrap?.client)).map(guard);
       const foldWrap = clients.dedup && wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
@@ -1653,6 +1662,7 @@ export async function runReview(
     ...(modelFallbacks.length > 0 && { modelFallbacks }),
     llmCalls,
     ...finderContext,
+    ...relatedRecord(),
     ...(sweeps && { sweeps }),
     ...(relatedWork && { relatedWork }),
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),

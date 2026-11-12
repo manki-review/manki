@@ -1,10 +1,15 @@
 import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isLLMAccessAllowed } from './interaction';
 import { ReplyRecord, ReviewConfig } from './types';
 import { extractReplyRecords, formatReviewRecord } from './review-record';
-import { WRITING_RULES } from './writing-rules';
+import { RELATED_REPO_TRUST_RULE, WRITING_RULES } from './writing-rules';
+import { rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import * as github from '@actions/github';
 import * as core from '@actions/core';
+import { DEFAULT_CONFIG } from './config';
 import { LLMClient } from './providers';
+import { repoToolsPrompt } from './providers/cli-utils';
+import * as relatedRepos from './related-repos';
 import * as memory from './memory';
 import * as ghUtils from './github';
 import * as state from './state';
@@ -1053,9 +1058,60 @@ describe('handleReviewCommentReply', () => {
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: 'not a bot comment', path: 'file.ts', line: 5 } });
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, loadWorkspace);
 
-    expect(jest.mocked(client.sendMessage).mock.calls.map(call => call[2])).toEqual([{ repoTools: { root: '/work/head', steps: 10 }, timeoutMs: 300_000 }]);
+    expect(jest.mocked(client.sendMessage).mock.calls.map(call => call[2])).toEqual([{ repoTools: { root: '/work/head', steps: 10, checking: true }, timeoutMs: 300_000 }]);
     expect(jest.mocked(plain.sendMessage).mock.calls[0][2]).toBeUndefined();
     expect(loadWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets the tools of a reply read the related repos of the config, fetches none up front, and records one that could not be fetched', async () => {
+    setContext({ comment: { id: 1, body: 'The reports importer reads this column as text.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' }, pull_request: { number: 1 } });
+    const octokit = createMockOctokit();
+    const related_repos = [{ repo: 'acme/reports', kind: 'consumer' as const }, { repo: 'acme/billing', kind: 'consumer' as const }];
+    const config = { ...DEFAULT_CONFIG, related_repos };
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos');
+    const stateDirs: string[] = [];
+    const client = { ...createMockClient(), repoTools: true } as LLMClient;
+    // The model names `acme/reports`, whose fetch fails: the tool server records that in the reply's state directory.
+    jest.mocked(client.sendMessage).mockImplementation(async (_system, _user, options) => {
+      const { stateDir } = options!.repoTools!.related!;
+      stateDirs.push(stateDir);
+      writeFileSync(join(stateDir, 'acme%2Freports.lock'), String(process.pid));
+      writeFileSync(join(stateDir, 'acme%2Freports.failed'), 'fatal: repository not found');
+      return { content: '**Unverified.** I could not read `acme/reports`, so a maintainer should confirm this.' };
+    });
+    const plain = createMockClient();
+    try {
+      await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, async () => '/work/head', config);
+      // Without the PR head there are no tools, and so no related repos either.
+      await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, async () => undefined, config);
+      await handleReviewCommentReply(octokit, TEST_BOT, plain, 'test-owner', 'test-repo', 1, undefined, async () => '/work/head', config);
+
+      const [withRelated, noWorkspace] = jest.mocked(client.sendMessage).mock.calls.map(call => call[2]);
+      const tools = withRelated!.repoTools!;
+      expect(tools).toEqual({ root: '/work/head', steps: 10, checking: true, related: { repos: related_repos, cacheDir: relatedRepos.relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') } });
+      expect(noWorkspace).toBeUndefined();
+      expect(jest.mocked(plain.sendMessage).mock.calls[0][2]).toBeUndefined();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      // The prompt of the call says that the content of a related repo is untrusted, and that a repo it could not read is never answered for from memory.
+      const prompt = repoToolsPrompt(tools, 'Read, Grep and Glob');
+      expect(prompt).toContain(RELATED_REPO_TRUST_RULE);
+      expect(prompt).toContain('A call that names a repo Manki cannot fetch returns the reason. You have not read that repo then: say that you could not read it, treat whatever rests on its code as unchecked, and never answer about its code from memory.');
+
+      const [first, second] = octokit.rest.pulls.createReplyForReviewComment.mock.calls.map((call: [{ body: string }]) => call[0].body);
+      expect(first.startsWith('**Unverified.** I could not read `acme/reports`')).toBe(true);
+      const record = (body: string) => extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord)[0];
+      expect(record(first).relatedRepos).toEqual([
+        { repo: 'acme/reports', status: 'failed', reason: 'fatal: repository not found', durationMs: expect.any(Number) },
+        { repo: 'acme/billing', status: 'unused' },
+      ]);
+      expect(record(second).relatedRepos).toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith('Could not fetch related repo acme/reports, which must be public on github.com: fatal: repository not found');
+    } finally {
+      warnSpy.mockRestore();
+      fetchSpy.mockRestore();
+      for (const dir of stateDirs) rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it.each([

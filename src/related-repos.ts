@@ -38,9 +38,12 @@ export function relatedRepoTools(repos: RelatedRepo[] | undefined, asOf?: string
   return repos?.length ? { repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }) } : undefined;
 }
 
-/** Returns the read-only tools of a call on the checkout at `root`. Every stage builds its `RepoTools` here, so each one states its related repos. */
-export function repoTools(root: string, steps: number, related: RelatedRepoTools | undefined): RepoTools {
-  return { root, steps, related };
+/**
+ * Returns the read-only tools of a call on the checkout at `root`. Every stage builds its `RepoTools` here, so each one
+ * states its related repos. `use` is `check` for a call that checks one finding or statement, and `find` for one that reports findings.
+ */
+export function repoTools(root: string, steps: number, related: RelatedRepoTools | undefined, use: 'find' | 'check' = 'find'): RepoTools {
+  return { root, steps, related, ...(use === 'check' && { checking: true as const }) };
 }
 
 /**
