@@ -10,7 +10,7 @@ body: |
   Proof of concept for detecting and adapting cached_property decorated functions for slotted classes. This addresses:
 
   Caching dynamic properties when using slots=True. (upstream issue 164)
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: blocker
@@ -27,4 +27,14 @@ must_catch:
     mechanism: "The generated `__getattr__` from `_make_cached_property_getattr` only falls back to `cd.get(\"__getattr__\")`, the `__getattr__` defined in the class body itself. A `__getattr__` inherited from a base class or mixin is never consulted, so any attribute that is not a cached property raises `AttributeError` instead of reaching the parent's `__getattr__`. The fallback has to follow the MRO, for example through `super().__getattr__`."
     locations: ["src/attr/_make.py", "_make_cached_property_getattr", "__getattr__", "_create_slots_class"]
     fix: "80e8a6b8cda020818c77688f6a306275887c8aa3"
-nice_to_have: []
+  - id: K4
+    severity: warning
+    mechanism: "`_create_slots_class` takes the cached property functions out of the class dict and keeps them only in the `cached_properties` dict that `_make_cached_property_getattr` closes over, together with the class's own `__getattr__`. The loop that points `__class__` closure cells at the new slotted class only walks `cls.__dict__.values()`, so it never reaches those functions. A cached property, or a wrapped `__getattr__`, that uses the no-arg `super()` or `__class__` still refers to the original class, and `super()` raises `TypeError: super(type, obj): obj must be an instance or subtype of type`."
+    locations: ["src/attr/_make.py", "_create_slots_class", "_make_cached_property_getattr", "cached_properties", "__closure__", "super()"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "The generated `__getattr__` ends with `raise AttributeError(item)`, so a missing attribute on a slotted class with a cached property reports only the bare name instead of Python's usual `'A' object has no attribute 'x'` message."
+    locations: ["src/attr/_make.py", "_make_cached_property_getattr", "AttributeError"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

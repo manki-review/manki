@@ -32,7 +32,7 @@ body: |
   - `npm run typecheck`. The full suite runs in CI.
 
   Closes #1173
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: blocker
@@ -49,4 +49,14 @@ must_catch:
     mechanism: "For a blocker block, `bodyFinding` splits on `'\\n'` and matches the title line against `/^\\*\\*(.+)\\*\\*$/`. In a review body saved with CRLF line endings the title line ends in `\\r`, which `.` does not match, so no title is found and the ticked box is skipped with only a log warning."
     locations: ["src/issue-tick.ts", "bodyFinding", "handleReviewBoxTick"]
     fix: "c8ee105368aa97e531f2d657b0548d945e23a25c"
-nice_to_have: []
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "`bodyFinding` calls a fold a security finding when its decoded `<summary>` matches `/ · Security\\b/`. The summary holds the finding's location after the header, behind the same ` · `, so a finding in a file whose path starts with `Security` matches too. `issueBoxFor` gave that finding a box, since it has no `security` tag, but `handleReviewBoxTick` skips its tick without a log or a reply."
+    locations: ["src/issue-tick.ts", "bodyFinding", "handleReviewBoxTick", "issueBoxFor", "Security"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+  - id: N2
+    severity: warning
+    mechanism: "`formatFindingFold` renders the title with `inlineHtml`, which turns `**x**` inside it into a nested `<b>x</b>`. `bodyFinding` reads the title with the lazy `<b>(.*?)<\\/b>`, which stops at the inner closing tag, so the issue a tick files gets a title cut off after the first bold word."
+    locations: ["src/issue-tick.ts", "bodyFinding", "src/github.ts", "inlineHtml", "formatFindingFold"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

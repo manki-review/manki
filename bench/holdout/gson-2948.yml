@@ -14,7 +14,7 @@ body: |
   I've been meaning to make this change for a while, but the need to do so becomes more urgent with JDK commit cc05530b813564a40c233eaaa80b906795c6d752, which makes a number of `java.time` fields `transient`. That means that, in JDK 26, the reflective-based adapter will no longer work with the classes that were changed.
 
   This addresses upstream issues 1059 and 739. All relevant classes in the `java.time` package are covered.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: warning
@@ -31,3 +31,18 @@ nice_to_have:
     severity: suggestion
     mechanism: "`LOCAL_DATE_TIME` and `ZONED_DATE_TIME` report a missing field with `requireNonNull`, which throws `NullPointerException` instead of a `JsonSyntaxException` naming the field and the JSON path, unlike `ZONE_REGION`."
     locations: ["gson/src/main/java/com/google/gson/internal/bind/TypeAdapters.java", "LOCAL_DATE_TIME", "ZONED_DATE_TIME", "requireNonNull"]
+  - id: N2
+    severity: warning
+    mechanism: "The animal-sniffer signature in `pom.xml` moves from `android-api-level-21` to `android-api-level-26` so that the `java.time` references pass. The check then accepts any API added up to level 26 anywhere in Gson, while `README.md` still states API level 21 as the minimum, so it no longer guards the documented minimum."
+    locations: ["pom.xml", "android-api-level-26", "animal-sniffer", "README.md"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+  - id: N3
+    severity: warning
+    mechanism: "The new adapters write fixed property names, and `JAVA_TIME_FACTORY` is registered ahead of `ReflectiveTypeAdapterFactory`, so they ignore the configured `FieldNamingStrategy`, the `Excluder` and the `ReflectionAccessFilter` that the reflective adapter applied. A `Gson` with a non-default `FieldNamingPolicy` that serialized `java.time` values reflectively, on a JDK that allowed it, now writes other names and no longer reads the JSON it stored."
+    locations: ["gson/src/main/java/com/google/gson/Gson.java", "gson/src/main/java/com/google/gson/internal/bind/TypeAdapters.java", "JAVA_TIME_FACTORY", "FieldNamingPolicy", "ReflectionAccessFilter"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+  - id: N4
+    severity: warning
+    mechanism: "`roundTrip` in `DefaultTypeAdaptersTest` compares with `ReflectiveTypeAdapterFactory` only when `JAVA_TIME_FIELDS_ARE_ACCESSIBLE` is true. Surefire runs the tests with `--illegal-access=deny` and CI uses JDK 11, 17, 21 and 25, where `setAccessible` on `Instant.seconds` throws `InaccessibleObjectException`. `checkReflectiveTypeAdapterFactory` therefore never runs in CI, and nothing checks that the frozen format equals the reflective one."
+    locations: ["gson/src/test/java/com/google/gson/functional/DefaultTypeAdaptersTest.java", "JAVA_TIME_FIELDS_ARE_ACCESSIBLE", "checkReflectiveTypeAdapterFactory", "roundTrip"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

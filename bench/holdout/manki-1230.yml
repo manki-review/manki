@@ -33,7 +33,7 @@ body: |
 
   Closes #1203
   Part of #1224
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: warning
@@ -71,3 +71,18 @@ nice_to_have:
     mechanism: "`loadLocalConfig` calls `loadConfig` on the base `.manki.yml` without a catch, so an invalid base config makes `manki review` exit 2, while a pull request round warns and falls back to the defaults through `loadBaseConfig`."
     locations: ["src/local-review.ts", "loadLocalConfig"]
     fix: "a530b86f94e200ecc81a62864e6c2eb7df42a7fa"
+  - id: N2
+    severity: warning
+    mechanism: "A pull request round stops before any model call when the diff is over `config.max_diff_lines` or `MAX_REVIEW_CHARS`. `reviewLocal` only checks that some file is reviewable and then calls `runReview`, so a local change of any size, also a large `--patch`, goes to every finder and the judge, and the repository's `max_diff_lines` is ignored."
+    locations: ["src/local-review.ts", "reviewLocal", "max_diff_lines", "MAX_REVIEW_CHARS"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+  - id: N3
+    severity: warning
+    mechanism: "`runReviewCommand` writes the `--record` file with `writeFileSync` before it prints the review. A path that cannot be written throws into the catch block, which prints one error line and returns 2, so the finished review is never shown."
+    locations: ["src/cli.ts", "runReviewCommand", "--record", "writeFileSync"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+  - id: N4
+    severity: warning
+    mechanism: "`gitRepoFiles.read` reads a path with `git cat-file blob`, which for a symlink returns the link's target path, not the target's content. A symlinked `AGENTS.md`, `CLAUDE.md` or `.manki.yml` is therefore read as one line holding a path, and the rules or settings of the real file are lost."
+    locations: ["src/local-review.ts", "gitRepoFiles", "cat-file", "symlink"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

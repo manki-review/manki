@@ -26,7 +26,7 @@ body: |
   200 | ~50 | ~150
 
   This will also affect how throttling works with asynchronous functions. The current implementation basically doesn't throttle at all for typical async functions, whereas the new one does.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: warning
@@ -38,4 +38,9 @@ must_catch:
     mechanism: "`isPromiseLike` only checks for a `then` method, but the result is then used as `result.finally(done)`. A thenable without `finally` makes that line throw a `TypeError` out of the throttled call after `throttlingAsync` was set to `true`, and `done` never runs, so `throttling` stays true for good and every later call is dropped. Wrapping it as `Promise.resolve(result).finally(done)` handles any thenable."
     locations: ["async/unstable_throttle.ts", "throttle", "isPromiseLike", "throttlingAsync"]
     fix: "f36b9ea8aef751b61995d350e5fe334121a3fe29"
-nice_to_have: []
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "With `ensureLastCall`, a throttled call schedules `setTimeout(() => flush?.(), tf)` without regard to `throttlingAsync`, and `tf` starts at 0 for a function `timeframe`. When the async `fn` runs longer than `tf`, the trailing call starts while the first is still pending. Both calls share the one `throttlingAsync` flag, so `done` of whichever settles first clears it and sets `lastExecution` while the other still runs, and `throttling` reads false. `throttled.flush()` starts an overlapping call the same way."
+    locations: ["async/unstable_throttle.ts", "throttle", "ensureLastCall", "throttlingAsync", "flush"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

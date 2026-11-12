@@ -58,7 +58,7 @@ body: |
 
   Closes #30
   Part of manki-review/manki#1036
-key_version: 1
+key_version: 2
 prior_round:
   head: 3b4d551c3da94003dce64abcb76bdc504b9ebfca
   findings:
@@ -105,3 +105,13 @@ nice_to_have:
     mechanism: "A settings edit is routed with `writer: false`, so the installation limiter counts it as an outsider's delivery. Only a writer can edit Manki's comment, so during an outsider flood a writer's Pause or Cancel tick can be refused."
     locations: ["src/routing.ts", "routeIssueComment", "src/webhook.ts", "handleWebhook"]
     fix: "c8319a240a6b0dec401d1a3c452af9647d15908e"
+  - id: N2
+    severity: warning
+    mechanism: "`start` retries an item whose handler throws for as long as it throws, and `nextQueued` takes the lowest id, so the lane takes the same item again after every backoff. `revertBoxes` throws on any failed read or `PATCH` of the settings comment, such as a 404 after the comment was deleted, and `cancelReview` throws while GitHub refuses the cancel. Such a settings edit holds every later tick on the PR, a writer's Pause or Cancel included, until `QUEUED_MAX_AGE_MS` drops it after a day."
+    locations: ["src/coordinator.ts", "revertBoxes", "cancelReview", "nextQueued", "QUEUED_MAX_AGE_MS"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+  - id: N3
+    severity: warning
+    mechanism: "`applySettings` keeps a writer's Pause only as `settings.paused` in the `pr_state` meta. `cleanUpWhenIdle` deletes all storage a week after the PR closed, or after `IDLE_RETENTION_MS` without a delivery, and `reported()` then returns the default with `paused: false`. A PR that is reopened or pushed to after that is reviewed automatically again while its settings comment still shows Pause ticked."
+    locations: ["src/coordinator.ts", "applySettings", "cleanUpWhenIdle", "settings.paused", "deleteAll"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

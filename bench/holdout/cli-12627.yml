@@ -25,7 +25,7 @@ body: |
   - The Copilot detection in `SuggestedReviewerActorsForRepo` piggybacks on `pullRequests(first: 1, states: [OPEN])` — it requires at least one open PR to detect Copilot availability. This is a pragmatic tradeoff; there's no repo-level API to check Copilot reviewer eligibility without a PR context.
   - The organization query gracefully handles personal repos by checking for the `"Could not resolve to an Organization"` error and continuing with partial data.
   - Dry-run tests with `--reviewer` that previously ran under the github.com path now live in `Test_createRun_GHES` since they test the legacy ID-resolution flow. The github.com path test (`"request reviewers by login"`) validates the new `RequestReviewsByLogin` mutation directly.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: blocker
@@ -54,3 +54,8 @@ nice_to_have:
     mechanism: "When `reviewerSearchFunc` is set, `MetadataSurvey` still sets `Reviewers` and `TeamReviewers` in `RepoMetadataInput`, so the expensive assignable users and teams fetch the PR means to remove still runs and its result goes unused."
     locations: ["pkg/cmd/pr/shared/survey.go", "MetadataSurvey", "RepoMetadataInput"]
     fix: "e361335e5c1f67154216c80bfaeccdce29966321"
+  - id: N3
+    severity: warning
+    mechanism: "With `ActorReviewers` set, `AddMetadataToIssueParams` no longer resolves reviewers through `MembersToIDs` and `TeamsToIDs` before the PR exists. A mistyped or unknown `--reviewer` is only refused by `RequestReviewsByLogin` after `CreatePullRequest` has created the PR, so `gh pr create` leaves a PR without the reviewer and exits with `pull request update failed`, where it used to stop before creating anything."
+    locations: ["pkg/cmd/pr/shared/params.go", "api/queries_pr.go", "AddMetadataToIssueParams", "MembersToIDs", "RequestReviewsByLogin", "CreatePullRequest"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

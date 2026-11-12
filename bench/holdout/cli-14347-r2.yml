@@ -36,7 +36,7 @@ body: |
   ### Notes for reviewers
 
   Start with `.github/workflows/scripts/bump-go.sh`, then review the setup and linter configuration in `.github/workflows/bump-go.yml` and `.github/workflows/lint.yml`. The failed job above shows the original Go 1.26 toolchain rejecting the new Go 1.27 directive.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: warning
@@ -58,4 +58,14 @@ must_catch:
     mechanism: "`bump-go.yml` installs Go through setup-go's `stable` alias, which resolves from the actions/go-versions manifest, while `bump-go.sh` picks the target from go.dev. During a release rollout the two can disagree, so the job runs the old toolchain under `GOTOOLCHAIN=local` against a `go.mod` that requires the new one and `go mod tidy` fails again."
     locations: [".github/workflows/bump-go.yml", ".github/workflows/scripts/bump-go.sh", "TOOLCHAIN_VERSION"]
     fix: "6232ed14d69f74cae5c74dfa9f9d804932780f6f"
-nice_to_have: []
+  - id: K5
+    severity: blocker
+    mechanism: "`bump-go.sh` now rewrites the golangci-lint pin in `.github/workflows/lint.yml`, stages it with `git add -u` and pushes the branch with the credentials `actions/checkout` stored, which are the job's `GITHUB_TOKEN`. GitHub refuses a push from that token that creates or updates a workflow file, and the `permissions` block of `bump-go.yml` cannot grant the `workflows` scope. Whenever the `latest` linter the job installs differs from the pin, `git push` fails, so the job ends red and no bump PR is opened."
+    locations: [".github/workflows/scripts/bump-go.sh", ".github/workflows/bump-go.yml", ".github/workflows/lint.yml", "LINT_WORKFLOW", "GITHUB_TOKEN", "git push"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "`bump-go.sh` runs `go test ./...` and `golangci-lint run ./...` before the `git diff --quiet` check that ends a run with nothing to bump. Every nightly run therefore runs the full test suite and the linter, and a flaky test or a finding of a new linter release fails the scheduled job on a day with no Go update."
+    locations: [".github/workflows/scripts/bump-go.sh", "go test", "golangci-lint run", "git diff --quiet"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

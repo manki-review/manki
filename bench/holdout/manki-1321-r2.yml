@@ -27,7 +27,7 @@ body: |
   `npx jest src/symbol-uses.test.ts src/compare.test.ts src/review.test.ts` passes. The sibling-implementation test adds the following, on classes with and without a shared base: Python dunder methods, Go `String`, Rust `Display::fmt` and `new`, TypeScript `constructor` and `toString`, a dotted base, two shared bases, and classes sharing only `Generic` and `ABC`. Only the shared-base groups remain, each asked once. Each of these cases fails without its fix. The size test adds one Python class with 20,000 bases and 2,000 methods.
 
   Part of #1281
-key_version: 1
+key_version: 2
 prior_round:
   head: 18d8e16b92d296792319ee25cd2fc75b977780d4
   findings:
@@ -82,8 +82,8 @@ must_resolve: [P2, P3, P4, P5]
 must_keep_open:
   - id: P1
     severity: blocker
-    mechanism: "`basesOf` now reads a class's bases once and caches them by `scope.id()`, but it keeps every base. `keysOf` still builds one group key per base for every dunder or protocol method, so a crafted class with tens of thousands of bases and thousands of such methods still costs bases times methods."
-    locations: ["src/symbol-uses.ts", "basesOf", "keysOf"]
+    mechanism: "`basesOf` now reads a class's bases once and caches them by `scope.id()`, but it keeps every base. `keysOf` still builds one group key per base for every dunder or protocol method, so a crafted class with tens of thousands of bases and thousands of such methods still costs bases times methods. Each base also gets a group of its own in `siblingImplementations`, which reads and normalizes the bodies of the group's members before the `asked` check drops a repeated group, so two classes that share tens of thousands of bases and hold one large method cost bases times body size."
+    locations: ["src/symbol-uses.ts", "basesOf", "keysOf", "siblingImplementations"]
     fix: "377c724b64630d60b4e7803b12e45a8de5459815"
 must_catch: []
 nice_to_have: []
