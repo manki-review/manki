@@ -843,15 +843,17 @@ describe('central memory through the token service', () => {
     expect((await pastRetryWait(() => loadMemory(store))).suppressions).toHaveLength(1);
     expect(service.requests.map(r => r.endpoint)).toEqual(['/memory/read', '/memory/read']);
 
-    failures = 0;
-    service.requests.length = 0;
-    const failingWrites = jest.mocked(global.fetch).getMockImplementation()!;
-    jest.mocked(global.fetch).mockImplementation(async (url, init) => (
-      String(url).endsWith('/memory/read') ? failingWrites(url, init) : new Response('Bad Gateway', { status: 502 })
-    ));
-    await expect(writeSuppression(store, makeSuppression({ pattern: 'new pattern' }))).rejects.toThrow('answered 502 to `/memory/write`');
-    await expect(appendMemoryLine(store, 'metrics/fix-rate.jsonl', { pr: 7 }, 'Record fix rate')).rejects.toThrow('answered 502 to `/memory/append`');
-    expect(service.requests.map(r => r.endpoint)).toEqual(['/memory/read']);
+    // Every call is counted before it is answered, so a write or an append sent twice shows here.
+    const sent: string[] = [];
+    const answer = jest.mocked(global.fetch).getMockImplementation()!;
+    jest.mocked(global.fetch).mockImplementation(async (url, init) => {
+      const endpoint = new URL(String(url)).pathname;
+      sent.push(endpoint);
+      return endpoint === '/memory/read' ? answer(url, init) : new Response('Bad Gateway', { status: 502 });
+    });
+    await expect(pastRetryWait(() => writeSuppression(store, makeSuppression({ pattern: 'new pattern' })))).rejects.toThrow('answered 502 to `/memory/write`');
+    await expect(pastRetryWait(() => appendMemoryLine(store, 'metrics/fix-rate.jsonl', { pr: 7 }, 'Record fix rate'))).rejects.toThrow('answered 502 to `/memory/append`');
+    expect(sent).toEqual(['/memory/read', '/memory/write', '/memory/append']);
   });
 
   it('refuses to overwrite a file the token service returned without its text', async () => {

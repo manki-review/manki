@@ -62,7 +62,9 @@ describe('resolveGitHubToken', () => {
     jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
     for (const [reply, reason] of [
       [Response.json({ error: 'App not installed on this repository' }, { status: 404 }), 'HTTP 404'],
+      [Response.json({ error: 'OIDC verification failed' }, { status: 403 }), 'HTTP 403'],
       [Response.json({ error: 'Too many requests' }, { status: 429 }), 'HTTP 429'],
+      [new Response('<html>error code: 1015</html>', { status: 429 }), 'HTTP 429'],
       [Response.json({ token: '' }), 'a reply without a token'],
       [Response.json({ expires_at: '2026-03-28T12:00:00Z' }), 'a reply without a token'],
       [Response.json({ token: 12345 }), 'a reply without a token'],
@@ -79,6 +81,7 @@ describe('resolveGitHubToken', () => {
     ['a network error', () => Promise.reject(new TypeError('fetch failed'))],
     ['a 5xx', async () => new Response('Bad Gateway', { status: 502 })],
     ['a 4xx that is not the service\'s own', async () => new Response('<html>Access denied</html>', { status: 403 })],
+    ['a status the service does not refuse a run with', async () => Response.json({ error: 'Invalid JSON body' }, { status: 400 })],
   ])('tries once more after %s, and uses the token of the retry', async (_case, firstReply) => {
     jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
     global.fetch = jest.fn().mockImplementationOnce(firstReply).mockImplementationOnce(async () => tokenReply()) as jest.Mock;
@@ -92,6 +95,7 @@ describe('resolveGitHubToken', () => {
     jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
     mockFetch(async () => new Response('Service Unavailable', { status: 503 }));
     await expect(resolveWithRetryWait()).rejects.toThrow('Could not get a token from the Manki token service (HTTP 503). Retry the run.');
+    expect(global.fetch).toHaveBeenCalledTimes(2);
 
     mockFetch(async () => { throw new TypeError('fetch failed'); });
     await expect(resolveWithRetryWait()).rejects.toThrow('(TypeError: fetch failed)');
@@ -144,6 +148,11 @@ describe('fetchPrState', () => {
     json: () => new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))),
   }) as unknown as Response;
 
+  // Only a 403 and a 404 of the service's own say that it holds no state for the run.
+  const ownStatus = (status: number): [string, () => Promise<Response>, string] => (
+    [`the service itself answers ${status}`, async () => Response.json({ error: 'refused' }, { status }), `HTTP ${status}`]
+  );
+
   it.each([
     ['the run has no OIDC token', () => jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC')), 0],
     ['the App is not installed on the repository', () => mockFetch(async () => Response.json({ error: 'App not installed on this repository' }, { status: 404 })), 1],
@@ -166,6 +175,7 @@ describe('fetchPrState', () => {
     ['a 403 is not the service\'s own', async () => new Response('<html>error code: 1020</html>', { status: 403 }), 'HTTP 403'],
     ['a 404 is not the service\'s own', async () => Response.json({ message: 'Not Found' }, { status: 404 }), 'HTTP 404'],
     ['the reply is a 3xx', async () => new Response(null, { status: 304 }), 'HTTP 304'],
+    ownStatus(400), ownStatus(401), ownStatus(405), ownStatus(409), ownStatus(413),
     ['the service throttles the account', async () => Response.json({ error: 'Too many requests' }, { status: 429 }), 'HTTP 429', 1],
     ['Cloudflare throttles the call', async () => new Response('<html>error code: 1015</html>', { status: 429 }), 'HTTP 429', 1],
   ])('throws a `TokenServiceError` when %s, after a second try unless the call was throttled', async (_case, reply, reason, calls = 2) => {
@@ -220,13 +230,16 @@ describe('reportPrState', () => {
   });
 
   it.each([
-    ['the run has no OIDC token', () => jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC'))],
-    ['the service refuses the report', () => mockFetch(async () => Response.json({ error: 'run 7 is not active on this PR' }, { status: 403 }))],
-    ['the request fails twice', () => mockFetch(async () => { throw new Error('network down'); })],
-  ])('warns once and goes on when %s', async (_case, arrange) => {
+    ['the run has no OIDC token', () => jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC')), 0],
+    ['the service refuses the report', () => mockFetch(async () => Response.json({ error: 'run 7 is not active on this PR' }, { status: 403 })), 1],
+    ['the request fails twice', () => mockFetch(async () => { throw new Error('network down'); }), 2],
+    ['the service answers a status it does not refuse a run with, twice', () => mockFetch(async () => Response.json({ error: 'Malformed report' }, { status: 400 })), 2],
+  ])('warns once and goes on when %s', async (_case, arrange, calls) => {
+    mockFetch(async () => Response.json({ changed: [] }));
     arrange();
     await expect(pastRetryWait(() => reportPrState(OWNER, REPO, 12, { pause: { reason: 'Paused.' } }))).resolves.toBeUndefined();
     expect(core.warning).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledTimes(calls);
   });
 
   it('sends the report once more after a 5xx, and not after a refusal or a throttled call', async () => {
@@ -510,13 +523,15 @@ describe('changeThreadThroughService', () => {
   });
 
   it.each([
-    ['the service refuses the thread', () => mockFetch(async () => Response.json({ error: 'No Manki review thread' }, { status: 404 })), '(404)'],
-    ['the service fails twice', () => mockFetch(async () => new Response('Internal Server Error', { status: 500 })), '(500)'],
-    ['the run has lost its OIDC token', () => jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC')), '(no OIDC token)'],
-  ])('throws when %s, so the caller keeps the thread open', async (_case, arrange, detail) => {
+    ['the service refuses the thread', () => mockFetch(async () => Response.json({ error: 'No Manki review thread' }, { status: 404 })), '(404)', 1],
+    ['the service throttles the call', () => mockFetch(async () => Response.json({ error: 'Too many requests' }, { status: 429 })), '(429)', 1],
+    ['the service fails twice', () => mockFetch(async () => new Response('Internal Server Error', { status: 500 })), '(500)', 2],
+    ['the run has lost its OIDC token', () => jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC')), '(no OIDC token)', 0],
+  ])('throws when %s, so the caller keeps the thread open', async (_case, arrange, detail, calls) => {
     const octokit = await serviceClient(async () => Response.json({ resolved: true }));
     arrange();
     await expect(pastRetryWait(() => changeThreadThroughService(octokit, 'PRRT_1', true, 'ADDRESSED')))
       .rejects.toThrow(`The token service did not resolve the thread ${detail}`);
+    expect(global.fetch).toHaveBeenCalledTimes(calls);
   });
 });

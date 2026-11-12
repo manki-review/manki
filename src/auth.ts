@@ -99,21 +99,28 @@ async function refusalOf(response: Response): Promise<Pick<TokenServiceCall, 'er
 }
 
 /**
- * Whether a failed reply leaves the answer unknown. The service refuses a request with a 4xx and a JSON body that names
- * the `error`, and would refuse the same request again. Every other failed reply is unknown: a 5xx, a timeout (408), a
- * throttled call (429), and a reply without that body, which Cloudflare or a proxy in front of the service sent. A
- * caller must never read an unknown answer as a refusal.
+ * The statuses with which the service says that it has nothing for the run, on every endpoint: a workflow or run it
+ * does not accept (403), and a repository without the App, or a path or thread the service does not know (404).
  */
-function leavesAnswerUnknown(status: number, error: string | undefined): boolean {
-  return status < 400 || status >= 500 || status === 408 || status === 429 || error === undefined;
+export const NOTHING_FOR_RUN: readonly number[] = [403, 404];
+
+/**
+ * Whether a failed reply leaves the answer unknown. Only a status the caller names in `refusals`, sent with the
+ * service's JSON body that names the `error`, is a refusal the service would give again. Every other failed reply is
+ * unknown: any other status, such as a 5xx or a throttled call (429), and a reply without that body, which Cloudflare
+ * or a proxy in front of the service sent. A caller must never read an unknown answer as a refusal.
+ */
+function leavesAnswerUnknown(status: number, error: string | undefined, refusals: readonly number[]): boolean {
+  return error === undefined || !refusals.includes(status);
 }
 
 /**
  * Posts `body` to the token service at `url` with the workflow's OIDC token, and reads the JSON reply of a 2xx response.
- * The timeout covers the reply too. Returns `null` when the run has no OIDC token. Each call is logged under `endpoint`
- * in `tokenServiceCalls`.
+ * The timeout covers the reply too. Returns `null` when the run has no OIDC token. A failed reply is unknown unless its
+ * status is one of `refusals`, as `leavesAnswerUnknown` decides. Each call is logged under `endpoint` in
+ * `tokenServiceCalls`.
  */
-async function postToTokenService(url: string, body: unknown, endpoint: string): Promise<TokenServiceResponse | null> {
+async function postToTokenService(url: string, body: unknown, endpoint: string, refusals: readonly number[]): Promise<TokenServiceResponse | null> {
   const start = Date.now();
   const logCall = (outcome: Omit<TokenServiceCall, 'endpoint' | 'durationMs'>) => serviceCalls.push({ endpoint, ...outcome, durationMs: Date.now() - start });
   let oidcToken: string;
@@ -135,7 +142,7 @@ async function postToTokenService(url: string, body: unknown, endpoint: string):
     if (!response.ok) {
       const refusal = await refusalOf(response);
       logCall({ status: response.status, ...refusal });
-      return { ok: false, status: response.status, unknown: leavesAnswerUnknown(response.status, refusal.error) };
+      return { ok: false, status: response.status, unknown: leavesAnswerUnknown(response.status, refusal.error, refusals) };
     }
     const data: unknown = await response.json();
     logCall({ status: response.status });
@@ -152,10 +159,10 @@ async function postToTokenService(url: string, body: unknown, endpoint: string):
  * Posts as `postToTokenService` does, and tries a call that got no reply or an unknown answer once more after a short
  * wait. Returns the reply of the last try, or throws its error. Only for a call the service may safely get twice.
  */
-async function postWithRetry(url: string, body: unknown, endpoint: string): Promise<TokenServiceResponse | null> {
+async function postWithRetry(url: string, body: unknown, endpoint: string, refusals: readonly number[]): Promise<TokenServiceResponse | null> {
   let failure: string;
   try {
-    const reply = await postToTokenService(url, body, endpoint);
+    const reply = await postToTokenService(url, body, endpoint, refusals);
     // The service throttles an account per minute, so a throttled call would get the same answer after the short wait.
     if (!reply?.unknown || reply.status === 429) return reply;
     failure = `HTTP ${reply.status}`;
@@ -164,15 +171,16 @@ async function postWithRetry(url: string, body: unknown, endpoint: string): Prom
   }
   core.info(`The token service failed on \`${endpoint}\` (${failure}), trying again`);
   await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-  return postToTokenService(url, body, endpoint);
+  return postToTokenService(url, body, endpoint, refusals);
 }
 
 /**
- * Posts `body` to the token service endpoint `path`, such as `state`, as `postToTokenService` does. With `retry` a
- * failed call is tried once more, as `postWithRetry` does.
+ * Posts `body` to the token service endpoint `path`, such as `state`, as `postToTokenService` does. `refusals` names
+ * the statuses with which the service refuses this endpoint for good. With `retry` a failed call is tried once more,
+ * as `postWithRetry` does.
  */
-export function callTokenService(path: string, body: unknown, retry = false): Promise<TokenServiceResponse | null> {
-  return (retry ? postWithRetry : postToTokenService)(new URL(path, tokenServiceUrl()).href, body, path);
+export function callTokenService(path: string, body: unknown, refusals: readonly number[], retry = false): Promise<TokenServiceResponse | null> {
+  return (retry ? postWithRetry : postToTokenService)(new URL(path, tokenServiceUrl()).href, body, path, refusals);
 }
 
 /**
@@ -181,7 +189,7 @@ export function callTokenService(path: string, body: unknown, retry = false): Pr
  */
 export async function resolveGitHubToken(tokenUrl: string, owner: string, repo: string): Promise<TokenResult> {
   // `takes_over_check` tells the service that this run takes over the queued check the reply names.
-  const response = await postWithRetry(tokenUrl, { owner, repo, takes_over_check: true }, 'token').catch((error: unknown) => {
+  const response = await postWithRetry(tokenUrl, { owner, repo, takes_over_check: true }, 'token', NOTHING_FOR_RUN).catch((error: unknown) => {
     throw new TokenServiceError(String(error));
   });
   if (!response) throw new TokenServiceError('no OIDC token, so the workflow needs `id-token: write`');
@@ -212,11 +220,11 @@ function modesOf(items: unknown, keep: (item: Record<string, unknown>) => boolea
  * Reads the coordinator's state of PR `prNumber` from the token service, with the modes of run `runId`. A failed read
  * is tried once more, as `postWithRetry` does. Throws `TokenServiceError` when the answer stays unknown, since the
  * run's modes are unknown then. Returns `null` with a warning when the run has no OIDC token or the service itself
- * refuses to give a state.
+ * answers with one of `NOTHING_FOR_RUN`, since it holds no state for such a run.
  */
 export async function fetchPrState(owner: string, repo: string, prNumber: number, runId: number): Promise<PrState | null> {
   const failed = (reason: string) => new TokenServiceError(reason, 'read the PR state from');
-  const response = await callTokenService('state', { owner, repo, pr: prNumber }, true).catch((error: unknown) => {
+  const response = await callTokenService('state', { owner, repo, pr: prNumber }, NOTHING_FOR_RUN, true).catch((error: unknown) => {
     throw failed(String(error));
   });
   if (response?.unknown) throw failed(`HTTP ${response.status}`);
@@ -248,7 +256,7 @@ export async function changeThreadThroughService(octokit: Octokit, threadId: str
   const { owner, repo } = github.context.repo;
   const body = { owner, repo, thread_id: threadId, resolved, ...(reason !== undefined && { reason }) };
   // Resolving or reopening twice leaves the thread as one call does, so a failed call is tried once more.
-  const response = await callTokenService('resolve', body, true);
+  const response = await callTokenService('resolve', body, NOTHING_FOR_RUN, true);
   if (!response?.ok) {
     throw new Error(`The token service did not ${resolved ? 'resolve' : 'reopen'} the thread (${response ? response.status : 'no OIDC token'})`);
   }
@@ -261,7 +269,7 @@ export async function changeThreadThroughService(octokit: Octokit, threadId: str
  */
 export async function reportPrState(owner: string, repo: string, prNumber: number, report: StateReport): Promise<void> {
   try {
-    const response = await callTokenService('state/report', { owner, repo, pr: prNumber, ...report }, true);
+    const response = await callTokenService('state/report', { owner, repo, pr: prNumber, ...report }, NOTHING_FOR_RUN, true);
     if (!response?.ok) {
       core.warning(`The token service did not take the PR state of #${prNumber} (${response ? response.status : 'no OIDC token'})`);
     }
