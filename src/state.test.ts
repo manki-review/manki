@@ -300,6 +300,7 @@ describe('fetchBotReviewThreads', () => {
     expect(threads.flatMap(t => t.addressed ? [t.id] : [])).toEqual(['addressed']);
     expect(threads.flatMap(t => t.writerReplyLogin ? [[t.id, t.writerReplyLogin]] : [])).toEqual([['writer', 'bob'], ['author-last', 'author']]);
     expect(unclearedThreads(threads, TEST_BOT, 'author').map(t => t.id)).toEqual(['alone', 'reader', 'author-last', 'by-author', 'cut-off']);
+    expect(threads.flatMap(t => t.repliesUnread ? [t.id] : [])).toEqual(['cut-off']);
   });
 
   it('filters out non-bot threads', async () => {
@@ -797,6 +798,8 @@ describe('checkAndAutoApprove', () => {
         `1 thread blocks the approval:\n- test finding (resolved by \`author\`, who may not clear it)\n\n${FOLLOWS}`],
       ['a blocking thread Manki resolved with no addressed record and no reply from a maintainer', { threads: [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'manki-review[bot]' })] },
         `1 thread blocks the approval:\n- test finding (Manki resolved it, but no review record confirms a fix, and the latest reply is not from a maintainer other than the PR author)\n\n${FOLLOWS}`],
+      ['a blocking thread Manki resolved that is at the comment limit', { threads: [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'manki-review[bot]', replies: Array.from({ length: 99 }, () => ({ body: 'Every caller bounds it.', author: { login: 'bob' } })) })] },
+        `1 thread blocks the approval:\n- test finding (Manki resolved it, but no review record confirms a fix, and the thread has too many comments for Manki to read its latest reply)\n\n${FOLLOWS}`],
       ['an open thread the review blocks on though its marker says note',
         { threads: [thread('t1', 'note')], existingReviews: [{ id: 7, body: blocked([], [prior('t1')]), state: 'CHANGES_REQUESTED', commit_id: HEAD, user }] },
         `1 thread blocks the approval:\n- Lock is never released (Manki's latest review blocks on this thread)\n\n${FOLLOWS}`],
