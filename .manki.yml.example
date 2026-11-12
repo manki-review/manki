@@ -168,8 +168,8 @@
 #       - "A slow export of the monthly report: `note`."
 #   sweep: false                     # search the diff for other instances of each kept blocker's defect class
 #   notes: 3                         # how many notes a review lists at most. 0 lists none
-#   rules: warn                      # a broken required rule of AGENTS.md, CLAUDE.md or CONTRIBUTING.md, such as
-#                                    # "every migration needs a rollback", is posted as a warning. `block` makes it
+#   rules: warn                      # a broken required rule of your instruction files, such as
+#                                    # "every migration needs a rollback", is at least a warning. `block` makes it
 #                                    # a blocker, so the PR is not approved until the rule is followed
 
 # CI results the reviewers read as evidence (default: all on), and the

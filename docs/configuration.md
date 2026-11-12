@@ -81,7 +81,7 @@ planner:
 #         - { model: gpt-5.5, effort: high }
 #   routing:
 #     security: deep
-#   rules: warn    # a broken required rule of the instruction files is a warning. `block` makes it a blocker
+#   rules: warn    # a broken required rule of the instruction files is at least a warning. `block` makes it a blocker
 
 # CI results the reviewers read as evidence (default: all on), and Manki's
 # own analyzers. Read from the base branch, never from the PR.
@@ -120,8 +120,9 @@ static_analysis:
 #   fix_rate: true
 
 # Additional context for reviewers. Reviewers also read the root `AGENTS.md`,
-# `CLAUDE.md` and `CONTRIBUTING.md` files, the nearest `AGENTS.md` and `CLAUDE.md`
-# above each changed file, and the `.md` files these link to.
+# `CLAUDE.md`, `.claude/CLAUDE.md` and `CONTRIBUTING.md` files, the nearest
+# `AGENTS.md` and `CLAUDE.md` above each changed file, and the `.md` files these
+# link to.
 instructions: |
   This is a Rust project. Focus on ownership and error handling.
 
