@@ -16,10 +16,12 @@ Install Manki on a GitHub repository: the App, a provider credential and the wor
 
 1. Go to **Settings > Branches > Branch protection rules**, or a ruleset under **Settings > Rules**
 2. Edit the rule for `main` (or your default branch)
-3. Under "Require status checks to pass", add `Manki` (the check Manki creates on the PR), and your CI checks such as `build`
+3. Under "Require status checks to pass", add `Manki` (the check Manki creates on the PR), and your CI checks such as `build`. Pick the App Manki posts as, the Manki App (`manki-review`) or your own App, as the source of `Manki`, so a check of that name from anything else does not count
 4. Under "Require pull request reviews before merging":
    - Set to 1 required review. Manki's APPROVE counts as a review
    - Check **"Dismiss stale pull request approvals when new commits are pushed"**
+
+Require the review as well as the check when you rely on Manki to gate merges. The `Manki` check alone does not hold every PR, for two reasons. GitHub counts a skipped or neutral check as passed, and the check is neutral when Manki holds its approval: the PR conflicts, is a draft, has files no model read, or a config file did not load. The check also sits on the head commit, so of two PRs with the same head commit, the one Manki does not review shows the check of the other, and its diff differs when the two have different base branches. The required review covers both cases, since Manki approves only a PR it reviewed.
 
 > **Note**: If the action finds blocking issues, it posts REQUEST_CHANGES which blocks the merge. Warnings and notes still result in APPROVE.
 
@@ -283,7 +285,7 @@ models:
 
 ### Action inputs
 
-The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents) and optionally `memory_repo_token`. `github_token` defaults to the workflow token, so set it only to read with a different token. To use a config file elsewhere in the repository, set `config_path` to its path (default: `.manki.yml`). To post as [your own GitHub App](#your-own-github-app), set `github_app_id` and `github_app_private_key`. `manki_token_url` points at a different token service. See [`action.yml`](../action.yml) for the full input reference.
+The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents) and optionally `memory_repo_token`. `github_token` defaults to the workflow token, so set it only to read with a different token. To use a config file elsewhere in the repository, set `config_path` to its path (default: `.manki.yml`). The Manki service, which decides whether a run starts, reads the skip rules, `drafts` and `auto_review` from the root `.manki.yml` only. To post as [your own GitHub App](#your-own-github-app), set `github_app_id` and `github_app_private_key`. `manki_token_url` points at a different token service. See [`action.yml`](../action.yml) for the full input reference.
 
 ### Action outputs
 
@@ -354,7 +356,7 @@ You can also forward `severity_counts` or `findings_json` to a metrics sink (Sla
 | `issue_comment: [created, edited]` | `/manki` commands on PRs and issues, and ticks in the settings block. PR-only: `review`, `check`, `explain`, `dismiss` and free-form questions. Available on both: `help`, `remember`, `forget`. |
 | `pull_request_review_comment: [created, edited]` | Replies to review comment threads, and ticks of a finding's "Create an issue for this" box |
 | `pull_request_review: [submitted, dismissed, edited]` | Auto-approve check when reviews change state, and ticks of a finding's issue box in Manki's review |
-| `pull_request_review_thread: [resolved, unresolved]` | Auto-approve check when someone resolves the last open thread by hand |
+| `pull_request_review_thread: [resolved, unresolved]` | Auto-approve check when someone resolves the last open thread by hand. When the PR author resolves a blocker or security thread, Manki reopens it |
 
 The service starts no run for anything Manki or another bot did, a PR closed without merging, or a comment that neither mentions `@manki` or `/manki` nor replies in a review thread.
 
@@ -362,11 +364,12 @@ Manki itself decides who can start it from a comment, on a PR, an issue or a rev
 
 ### What the service does
 
-- **Events run in order.** Each PR has two queues. Reviews, thread replies, `check` and `dismiss` run one at a time in the order they arrived, except that a waiting thread reply runs before a waiting review. Several pushes during a review become one review of the newest head. `explain`, `remember`, `forget` and free questions run one at a time in a second queue beside it, so a question never waits behind a review. The service answers `help` on a PR itself, without a run.
+- **Events run in order.** Each PR has two queues. Reviews, thread replies, `check` and `dismiss` run one at a time in the order they arrived, except that a waiting thread reply runs before a waiting review or auto-approve check, for at most 5 minutes. A command or a thread reply from someone with write access gets an eyes reaction as soon as it is queued. Several pushes during a review become one review of the newest head. `explain`, `remember`, `forget` and free questions run one at a time in a second queue beside it, so a question never waits behind a review. The service answers `help` on a PR itself, without a run.
 - **A running review stops by itself on a new push.** It checks the PR head while it works, and when a new commit lands it stops within about 30 seconds, posts no verdict, and marks its progress comment superseded. The next run in the queue then reviews the new head. A run that receives SIGTERM, for example when the job is cancelled, stops writing to the PR.
 - **A paused PR starts no push review.** After each review Manki tells the service the reviewed commit, the approval and whether automatic review is paused, by the round cap or by a blocker that came back. While it is paused, or the Pause box in the settings block is ticked, a push starts no run. Replies, thread resolutions and the boxes still do.
 - **Every run uses the current version.** The service always starts the workflow on the default branch, so reviews, comment commands and thread replies all run the Manki version pinned there.
-- **A `Manki` check on the PR.** Every run belongs to the default branch, so its job shows on no PR. A check named `Manki` on the PR head shows the review instead. The Manki service creates it as soon as it starts the review run, so it shows queued with the title "Waiting for a runner" until GitHub Actions gives the run a runner. Manki then takes it over: it shows in progress during the review, links to the run, and ends with the result: success when Manki approves, failure when it requests changes or needs a human, or when the review is incomplete or the run fails, neutral when it holds its approval (the PR conflicts, is a draft, has files no model read, or a config file did not load), cancelled when a newer push replaces the review or the run is cancelled, skipped when a skip rule matches, and action required when the PR must be rebased before a review, no model could read any changed file, the PR is too big for an automatic review or for any review, or automatic review is paused. A review that never starts ends the check as well: cancelled when a newer commit replaced its head or the PR was closed, failure when GitHub refused to start the run, and timed out when no runner picked the run up. This needs the App's **Checks: read and write** permission. Until your installation approves it, the PR shows no Manki check and each review logs a warning, so don't require one before then. Once it shows, you can require the `Manki` check in branch protection.
+- **A `Manki` check on the PR.** Every run belongs to the default branch, so its job shows on no PR. A check named `Manki` on the PR head shows the review instead. When the head commit has no `Manki` check yet, the Manki service creates one right before it starts the review run, so it shows queued with the title "Waiting for a runner" until GitHub Actions gives the run a runner. Manki then takes it over: it shows in progress during the review, links to the run, and ends with the result: success when Manki approves, failure when it requests changes or needs a human, or when the review is incomplete or the run fails, neutral when it holds its approval (the PR conflicts, is a draft, has files no model read, or a config file did not load), cancelled when a newer push replaces the review or the run is cancelled, skipped when a skip rule matches, and action required when the PR must be rebased before a review, no model could read any changed file, the PR is too big for an automatic review or for any review, or automatic review is paused. A review that never starts ends the check as well: cancelled when a newer commit replaced its head or the PR was closed, failure when GitHub refused to start the run, and timed out when no runner picked the run up. This needs the App's **Checks: read and write** permission. Until your installation approves it, the PR shows no Manki check and each review logs a warning, so don't require one before then. Once it shows, you can require the `Manki` check in branch protection. The check sits on the head commit, so two PRs with the same head commit show the same `Manki` check.
+- **One review per head commit.** Of a repository's open PRs with the same head commit on a branch of the repository itself, Manki reviews only the lowest numbered one. The other PR is told so, in the status line of its settings block or in a note, and shows the `Manki` check of the reviewed one. Nothing starts the held review on its own. A review command, a review box or a push to the held PR asks again. Thread replies, other commands and auto-approve checks are not held, and a PR from a fork is neither held nor counted.
 - **Resolving a thread can approve the PR.** Resolving the last open thread by hand runs the auto-approve check at once.
 - **Missed events come back.** Every 5 minutes the service retries the deliveries GitHub failed to hand over and queues a review for any open, non-draft PR from your repository, updated in the last day and not opened by a bot, whose head has no Manki review yet.
 
@@ -374,7 +377,7 @@ Manki itself decides who can start it from a comment, on a PR, an issue or a rev
 
 ### Pull requests from forks
 
-A push to a PR from a fork starts no review. Someone with write access can still ask for a review of a fork PR with a review command in a PR comment, and Manki reviews it like any other PR. Replies in its review threads and resolved threads start no run, so ask again with a review command. Manki ignores a comment from anyone else, including the fork PR's author (see [Events Manki handles](#events-manki-handles)).
+A push to a PR from a fork starts no review. Someone with write access can still ask for a review of a fork PR with a review command in a PR comment, and Manki reviews it like any other PR. Replies in its review threads, resolved threads, submitted or dismissed reviews and ticks of a finding's issue box start no run, so ask again with a review command. Manki ignores a comment from anyone else, including the fork PR's author (see [Events Manki handles](#events-manki-handles)).
 
 ### Cache access
 
@@ -432,7 +435,7 @@ Manki's newest progress comment ends with a settings block. It holds a status li
 | No run starts | The Manki workflow must be on the default branch and declare the dispatch inputs, no other workflow may run Manki on events, and the repository's account must be one the service serves (see [Step 3](#step-3-add-the-workflow)) |
 | "above the limit ... for automatic review" | Split the PR, tick Review again to review it in full, or raise `auto_review_max_lines` |
 | "above the limit ... that Manki reviews" | Split the PR, or raise `max_diff_lines` |
-| Auto-approve not working | `auto_approve` is on by default. Check that `.manki.yml` on the base branch does not set it to `false` |
+| Auto-approve not working | `auto_approve` is on by default. Check that `.manki.yml` on the base branch does not set it to `false`. Comment `/manki check` on the PR, and Manki replies with what holds the approval |
 | A finding has no line comment | Only a changed line can take one. A blocking finding on any other line is posted as a comment on its file, or on the first changed file when its own file is not part of the PR. The others are listed in the review body |
 
 ## Known Limitations
