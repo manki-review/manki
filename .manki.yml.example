@@ -166,7 +166,8 @@
 #       - "A rounding error in a ledger balance, however rare."
 #     not_blocker:
 #       - "A slow export of the monthly report: `note`."
-#   sweep: false                     # search the diff for other instances of each kept blocker's defect class
+#   sweep: off                       # search the diff for other instances of a kept finding's defect class.
+#                                    # `blockers`, `warnings` or `notes` names the lowest grade that starts a search
 #   notes: 3                         # how many notes a review lists at most. 0 lists none
 #   rules: warn                      # a broken required rule of your instruction files, such as
 #                                    # "every migration needs a rollback", is at least a warning. `block` makes it

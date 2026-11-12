@@ -24,7 +24,7 @@ import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_T
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listRelatedUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
-import { citedBy, runSweeps } from './sweep';
+import { citedBy, runSweeps, startsSweep } from './sweep';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -1351,7 +1351,7 @@ export async function runReview(
   });
   await checkpoint?.();
 
-  // A blocker's defect class can recur elsewhere in the diff, so with `review.sweep` each kept blocker starts a search for it.
+  // A finding's defect class can recur elsewhere in the diff, so the kept findings that `review.sweep` names each start a search for it.
   let sweeps: RoundSweep[] | undefined;
   let sweepRaw: Finding[] = [];
   // The sweep and the checks at the round's end change what the judge's call recorded, so a round that ends incomplete after it records these as they then are.
@@ -1359,10 +1359,10 @@ export async function runReview(
     allJudgedFindings, rawFindings: [...allFindings, ...sweepRaw], rawFindingCount: checkedFindings.length + sweepRaw.length, staticDedupCount, llmDedupCount,
     ...(duplicateMatches.length > 0 && { duplicateMatches }), ...(sweeps && { sweeps }), ...(openLeads.length > 0 && { openLeads }),
   });
-  // A blocker the refuters disproved stays posted, but it starts no sweep, so one false blocker never turns into several.
-  const sweptBlockers = config.review?.sweep ? finalFindings.filter(f => f.severity === 'blocker' && !disproof(f)) : [];
-  if (sweptBlockers.length > 0) {
-    const sweep = await runSweeps(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweptBlockers, {
+  // Below blocker, a finding on code the PR did not change is posted only once a later check confirms it, so it starts none.
+  const sweepSources = finalFindings.filter(f => startsSweep(f, config.review?.sweep ?? 'off') && (f.severity === 'blocker' || unchangedCheck(f) !== 'pre_existing'));
+  if (sweepSources.length > 0) {
+    const sweep = await runSweeps(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'sweep', reviewer), sweepSources, {
       rawDiff, effort: comparisonEffort, workspace,
     });
     sweeps = sweep.sweeps;

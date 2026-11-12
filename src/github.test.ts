@@ -1986,7 +1986,7 @@ describe('postReview body lead', () => {
     // A blocker the round carries on an earlier thread follows the same rule.
     expect(sentences({ ...blocker, threadId: 'PRRT_1' }, { ...confirmed, threadId: 'PRRT_1' })).toEqual(['Nothing blocks merge.', fromBlocker]);
     // A sweep's finding is graded in a later call than the one that wrote the summary.
-    const sweeps = [{ reviewer: 'Sweep 1', blocker: 'src/a.ts:20', status: 'answered' as const }];
+    const sweeps = [{ reviewer: 'Sweep 1', source: 'src/a.ts:20', severity: 'blocker' as const, status: 'answered' as const }];
     expect(roundSentence(blocked([lowered, { ...byJudge, reviewers: ['Sweep 1'] }], { sweeps }))).toBe('The first item is read unchecked.');
     expect(roundSentence(blocked([lowered, byJudge], { sweeps }))).toBe('Nothing blocks merge.');
     // One such blocker is enough, next to one the judge graded.

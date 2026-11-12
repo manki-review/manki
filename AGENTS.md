@@ -54,7 +54,7 @@ At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 - `src/refute.ts`: the refuter (`refuteBlockers`).
 - `src/verdict.ts`: verdict reader (`runVerdictReader`).
 - `src/compare.ts`: sibling comparisons (`runComparisons`) on the questions `listUsesOutsideDiff` (`src/symbol-uses.ts`) finds.
-- `src/sweep.ts`: with `review.sweep`, one search of the diff per kept blocker for other instances of its defect class (`runSweeps`).
+- `src/sweep.ts`: with `review.sweep`, one search of the diff per kept finding the setting names (`startsSweep`) for other instances of its defect class (`runSweeps`).
 - `src/recap.ts`: prior-round state from review threads, and dedup (static and LLM) against earlier findings.
 - `src/github.ts`: GitHub API helpers (diffs, progress comments, posting reviews).
 - `src/interaction.ts`: comment commands and replies in review threads.
