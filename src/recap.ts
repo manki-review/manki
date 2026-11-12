@@ -351,6 +351,8 @@ interface PreviousFinding extends FindingMetadata {
   originalLine?: number;
   /** The commit the thread was posted on, which still holds the code it names after the thread goes outdated. */
   originalCommit?: string;
+  /** The thread sits on another file than its finding's, so GitHub moves no line of it: `line` stays the one the finding named when posted, or 0. */
+  detached?: boolean;
   /**
    * Line the finding named when it was posted, from the thread's hidden finding data. A finding on a line outside the
    * diff is posted on a fallback line, so only this line matches it to its round record. `currentFindingLine` gives
@@ -609,6 +611,7 @@ async function fetchRecapState(
       ...(t.originalLine && { originalLine: t.originalLine }),
       ...(t.originalCommit && { originalCommit: t.originalCommit }),
       ...(t.findingLine && { findingLine: t.findingLine }),
+      ...(t.detached && { detached: true }),
       authorReplyText: t.authorReplyText,
       authorReplyLogin: t.authorReplyLogin,
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
@@ -845,6 +848,7 @@ interface ReviewThread extends FindingMetadata {
   originalLine?: number;
   originalCommit?: string;
   findingLine?: number;
+  detached?: boolean;
   isBotThread: boolean;
   isResolved: boolean;
   resolvedByHuman: boolean;
@@ -1070,6 +1074,7 @@ async function fetchReviewThreads(
         ...(thread.originalLine && !data?.detached && { originalLine: thread.originalLine }),
         ...(firstComment?.originalCommit?.oid && { originalCommit: firstComment.originalCommit.oid }),
         ...(findingLine && { findingLine }),
+        ...(data?.detached && { detached: true }),
         ...(markerSlug && { markerSlug }),
         severity,
         authorReplyText,

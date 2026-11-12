@@ -1113,11 +1113,13 @@ async function collectOpenThreads(
   }
 
   // An outdated thread has no line at the head, so the judge sees the code it named when posted and where that code is now.
+  // GitHub moves no line of a thread on another file either, so its line is checked against the posted code the same way.
   const postedAt = new Map(recap.previousFindings.flatMap(f => {
     const line = f.findingLine ?? f.originalLine;
-    return f.threadId && f.file && !f.line && f.originalCommit && line ? [[f.threadId, { commit: f.originalCommit, line }] as const] : [];
+    const outdated = f.detached || (!f.line && f.originalCommit);
+    return f.threadId && f.file && outdated && line ? [[f.threadId, { commit: f.originalCommit, line }] as const] : [];
   }));
-  const postedContents = new Map(await Promise.all([...new Set([...postedAt.values()].map(p => p.commit))].map(async commit => {
+  const postedContents = new Map(await Promise.all([...new Set([...postedAt.values()].flatMap(p => p.commit ?? []))].map(async commit => {
     const files = [...new Set(baseOpenThreads.filter(t => postedAt.get(t.threadId)?.commit === commit).map(t => t.file))];
     try {
       return [commit, await fetchFileContents(octokit, owner, repo, commit, files)] as const;
@@ -1129,12 +1131,17 @@ async function collectOpenThreads(
   const openThreads = baseOpenThreads.map((t): OpenThread => {
     const contents = parsed.has(t.file) ? lockfileContents : fileContents;
     const posted = postedAt.get(t.threadId);
-    const old = posted && postedContents.get(posted.commit)?.get(t.file);
+    const commit = posted?.commit;
+    const old = commit && postedContents.get(commit)?.get(t.file);
     const current = contents?.get(t.file);
-    // Without both copies of the code, nothing can be said about where it went, so the thread keeps the plain path.
-    if (!posted || old === undefined || current === undefined || posted.line > old.split('\n').length) {
-      return { ...t, currentCode: extractCurrentCodeWindow(contents, t.file, t.line) };
+    // Without both copies of the code, nothing can be said about where it went, so the thread keeps the plain path. A
+    // thread on another file then names no line, since the one it was posted with may hold other code by now.
+    if (!posted || !commit || old === undefined || current === undefined || posted.line > old.split('\n').length) {
+      const line = posted ? 0 : t.line;
+      return { ...t, line, currentCode: extractCurrentCodeWindow(contents, t.file, line) };
     }
+    // A thread on another file keeps its line while that file reads as it did when the thread was posted.
+    if (t.line && old === current) return { ...t, currentCode: extractCurrentCodeWindow(contents, t.file, t.line) };
     // An unchanged file holds the code where it was, however few of its lines could vote.
     const now = old === current ? posted.line : locatePostedLine(old, posted.line, current);
     // Code that left its file counts as moved only when exactly one other file the PR changes holds it unchanged.
@@ -1147,7 +1154,7 @@ async function collectOpenThreads(
       ...t,
       line: near,
       postedCode: extractCurrentCodeWindow(new Map([[t.file, old]]), t.file, posted.line),
-      postedCommit: posted.commit,
+      postedCommit: commit,
       ...(elsewhere ? { movedTo: elsewhere.file } : now === undefined && { postedCodeGone: true }),
       currentCode: elsewhere ? extractCurrentCodeWindow(fileContents, elsewhere.file, elsewhere.line) : extractCurrentCodeWindow(contents, t.file, near),
     };

@@ -1355,7 +1355,7 @@ describe('fetchRecapState', () => {
       ]);
       // GitHub reports a file-level thread on line 1. A flagged thread takes the line its data names, and none when it names none.
       expect(state.previousFindings.map(currentFindingLine)).toEqual([30, 0, 1]);
-      expect(state.previousFindings.map(f => [f.line, f.originalLine])).toEqual([[30, undefined], [0, undefined], [1, 1]]);
+      expect(state.previousFindings.map(f => [f.line, f.originalLine, f.detached])).toEqual([[30, undefined, true], [0, undefined, true], [1, 1, undefined]]);
       // So the round record's blocker finds its thread, and the thread from before the flag stays on GitHub's path.
       expect(state.priorRounds[0].findings.entries.map(e => e.threadId)).toEqual(['T_FILE', 'T_NONE', undefined]);
     });
