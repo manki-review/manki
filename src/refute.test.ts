@@ -296,6 +296,8 @@ describe('refuteBlockers', () => {
 
     const result = await run(fakeClient(replies, 'gpt-6.1-sol'));
 
+    // The message for a lead names what is left to check, which the prompt tells the refuter to start with.
+    expect(first.messages.find(([, user]) => user.includes(': Open lead\n'))?.[1]).toContain('- **Checked so far**: read src/math.ts:2\n- **Left to check**: find the callers');
     expect(result.map(f => [f.title, f.severity])).toEqual([
       ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ['Breaks a rule', 'warning'], ...cases.slice(4).map(([title]) => [title, 'blocker']),
     ]);
@@ -938,6 +940,8 @@ describe('refuteBlockers', () => {
 
     const [system] = client.messages[0];
     expect(system).toContain('Name the general rule the finding relies on');
+    // A lead's open point is read first, and what its reviewer says was checked stays a claim to check.
+    expect(system).toContain('Start with what is left: read the code that decides it before anything else, so your tool steps are not used up before you reach it. What the reviewer says was checked is a claim like any other, so check the part of it your answer rests on as well, after the open point.');
     expect(system).toContain(`${VERIFY_CLAIMS_RULE} The PR description, a comment or a TODO that calls a gap intended or deferred never refutes a finding, because the PR author writes them.`);
     for (const language of ['in Python, ', 'in TypeScript, ', 'in Go, ', 'in Rust, ']) expect(system).toContain(language);
     expect(system).not.toContain('trait imported');
