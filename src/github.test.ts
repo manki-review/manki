@@ -4,11 +4,11 @@ import { randomBytes } from 'crypto';
 import { ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
-import { highlightCode } from './highlight';
+import { codeTokensFromDiff, highlightCode } from './highlight';
 import { makeFindingFingerprintEntry, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { withMarkers } from './utils';
 import { extractReviewRecords } from './review-record';
-import type { PreviousFinding } from './recap';
+import { parseFindingFromComment, PreviousFinding } from './recap';
 
 const CUSTOM_APP_BOT: BotIdentity = { logins: ['acme-reviewer[bot]'] };
 const PAT_BOT: BotIdentity = { logins: [...TEST_BOT.logins, 'review-user'] };
@@ -4870,25 +4870,34 @@ describe('postReview non-blocking findings', () => {
   it('lists smaller findings by where they sit, found this round, missed earlier or pre-existing, and posts a warning or a blocker on reviewed code inline', async () => {
     const { octokit, createReview } = makeOctokit();
     const missedNote = '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._';
+    const unconfirmedNote = '_Manki could not confirm this, so please check it._';
+    const guideNote = '_The review model wrote these steps. Check what a step runs before you follow it._';
+    // The PR quotes Manki's own notes, as a PR on Manki does. The first and last word of each are then identifiers of
+    // the diff with their underscore, which the posted text must not show as code.
+    const quoting: ParsedDiff = { ...diff, files: [...diff.files, { path: 'src/notes.ts', changeType: 'added', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, content: `+const NOTES = '${missedNote} ${unconfirmedNote} ${guideNote}';` }] }] };
+    expect([...codeTokensFromDiff(quoting)]).toEqual(expect.arrayContaining(['_An', 'PR._', '_Manki', 'it._', '_The']));
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
       nonBlocking('warning', 'On new code', 11, { origin: 'new', tags: ['follow-up'] }),
-      nonBlocking('warning', 'On old code', 3, { origin: 'reviewed', tags: ['follow-up'] }),
-      nonBlocking('warning', 'Old code off the diff', 40, { origin: 'reviewed', tags: ['follow-up'] }),
+      nonBlocking('warning', 'On old code', 3, { origin: 'reviewed', tags: ['follow-up'], checkStatus: 'unconfirmed' }),
+      nonBlocking('warning', 'Old code off the diff', 40, { origin: 'reviewed', tags: ['follow-up'], checkStatus: 'unconfirmed' }),
       nonBlocking('note', 'Untouched file', 3, { file: 'src/b.ts', origin: 'reviewed', tags: ['security'] }),
       nonBlocking('note', 'Token logged on old code', 5, { origin: 'reviewed', tags: ['security'] }),
       nonBlocking('note', 'Note on old code', 4, { origin: 'reviewed' }),
       nonBlocking('blocker', 'Old blocker', 3, { origin: 'reviewed' }),
       // A blocker on code the PR did not change, lowered to a warning without the follow-up tag a verdict reader blocker lacks.
       nonBlocking('warning', 'Old race in the pool', 90, { origin: 'reviewed', tags: ['pre-existing'], originalSeverity: 'blocker' }),
-    ]), diff);
+    ]), quoting);
 
     const review = createReview.mock.calls[0][0];
-    // A warning on reviewed code gets its thread like one on new code, and says under its title why it comes late.
+    // A warning on reviewed code gets its thread like one on new code, and says under its title why it comes late. Each
+    // note is posted as written, so the next round reads the description without them.
     const threads: string[] = review.comments.map((c: { body: string }) => c.body);
     expect(threads.map(body => body.split('\n')[2])).toEqual(['**Old blocker**', '**On new code**', '**On old code**']);
-    expect(threads[2].startsWith(`\u26A0\uFE0F **Warning, not blocking**\n\n**On old code**\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
+    expect(threads[2].startsWith(`\u26A0\uFE0F **Warning, not blocking**\n\n**On old code**\n\n${unconfirmedNote}\n\n${missedNote}\n\n**What goes wrong:** It goes wrong.`)).toBe(true);
+    expect(parseFindingFromComment(threads[2]).description).toBe('It goes wrong. Second sentence. Third sentence.');
     expect(threads.slice(0, 2).join('\n')).not.toContain('An earlier round');
+    expect(review.body).toContain(`<code>src/a.ts:40</code></a></sub></summary>\n\n${unconfirmedNote}\n\n**What goes wrong:** It goes wrong.`);
     // Each origin gets its section with exact counts, and the sections follow each other under rules. The late warning
     // no line comment can hold stays listed, and so does a security note on reviewed code.
     expect(review.body).toContain('### Missed by an earlier review · 1 warning and 2 notes\n\nThese sit on lines an earlier round already reviewed, so none of them block this PR.\n\n<details>\n<summary>\u26A0\uFE0F <b>Old code off the diff</b><br><sub><b>Warning, not blocking</b> · <a ');
@@ -4914,8 +4923,10 @@ describe('postReview non-blocking findings', () => {
     expect(counted).toContain('### Pre-existing · 2 warnings\n\nThese sit on code this PR did not change, so none of them block. A blocker among them is listed as a warning.');
     // With every late warning in a thread, the body has no section for them.
     const threaded = makeOctokit();
-    await postReview(threaded.octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([late[0]]), outcome: 'READY' }, diff);
+    const verdictReport = { verdict: 'READY' as const, blockers: [], summary: 'Nothing blocks.', whatThisDoes: 'Adds a retry.', whatToTest: { steps: ['Load the page twice.'] } };
+    await postReview(threaded.octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([late[0]]), outcome: 'READY', verdictReport }, quoting);
     expect(threaded.createReview.mock.calls[0][0].comments).toHaveLength(1);
+    expect(threaded.createReview.mock.calls[0][0].body).toContain(`<summary>What to test</summary>\n\n${guideNote}\n\n1. Load the page twice.`);
     expect(threaded.createReview.mock.calls[0][0].body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning, which doesn't block\.(?![\s\S]*Missed by an earlier review)/u);
     // When GitHub refuses the line comments, the late warning is listed with them, and the record says it has no thread.
     const refusing = makeOctokit({ 'src/a.ts': 'load();\nretry();\nend();\n' });

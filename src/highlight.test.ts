@@ -1,3 +1,4 @@
+import { MISSED_EARLIER_NOTE, TEST_GUIDE_NOTE, UNCONFIRMED_NOTE } from './github';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { ParsedDiff } from './types';
 
@@ -70,6 +71,34 @@ describe('highlightCode', () => {
     const escaped = 'The overrides of \\`Vec<T>::consensus_decode\\` and \\`Vec<u8>::consensus_decode\\` now call the finite-reader decode.';
     expect(highlightCode(escaped, new Set(['consensus_decode']))).toBe(escaped);
     expect(highlightCode('Escaped \\`run createReview\\` stays, then createReview.', tokens)).toBe('Escaped \\`run createReview\\` stays, then `createReview`.');
+  });
+
+  it('keeps a line of plain prose in italics as written, whatever identifiers the diff holds', () => {
+    // The diff quotes each sentence, so its first and last word are identifiers of the diff with their underscore.
+    const note = '_An earlier round already reviewed createReview, and it doesn\'t block this PR._';
+    const notes = [note, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, TEST_GUIDE_NOTE];
+    const quoting = codeTokensFromDiff({ ...diff, files: [{ ...diff.files[0], hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 2, content: `+const NOTES = '${notes.join(' ')}';\n+_resetOctokitCache();` }] }] });
+    expect([...quoting]).toEqual(expect.arrayContaining(['_An', 'PR._', '_Manki', 'it._', '_The', '_resetOctokitCache']));
+    const all = new Set([...tokens, ...quoting]);
+    for (const fixed of notes) expect(highlightCode(fixed, all)).toBe(fixed);
+    expect(highlightCode(`**Title**\n\n${note}\n\nThen createReview.`, all)).toBe(`**Title**\n\n${note}\n\nThen \`createReview\`.`);
+    expect(highlightCode(`- Item\n\n  ${note}\n  Then createReview.`, all)).toBe(`- Item\n\n  ${note}\n  Then \`createReview\`.`);
+    // Markdown shows a line that opens with an identifier and holds no other underscore as one italic too.
+    const opening = '_resetOctokitCache is called by createReview, then always_';
+    expect(highlightCode(opening, all)).toBe(opening);
+    // An underscore, a code span or anything else that is not plain prose leaves the line to the other rules.
+    expect(highlightCode('_Before:_ createReview runs, _always_', all)).toBe('_Before:_ `createReview` runs, _always_');
+    expect(highlightCode('_resetOctokitCache is called by createReview, then _always_', all)).toBe('`_resetOctokitCache` is called by `createReview`, then _always_');
+    expect(highlightCode('_An is read from review_body by createReview twice_', all)).toBe('`_An` is read from `review_body` by `createReview` twice_');
+    expect(highlightCode('_An calls `parse`, then createReview twice_', all)).toBe('`_An` calls `parse`, then `createReview` twice_');
+    expect(highlightCode('_An reads [the docs](https://example.com/createReview), then createReview twice_', all)).toBe('`_An` reads [the docs](https://example.com/createReview), then `createReview` twice_');
+    // A code span that opens on an italic line and closes on the next one stays one span.
+    const spanning = '_It calls `parse then_\nretries createReview` once.';
+    expect(highlightCode(spanning, all)).toBe(spanning);
+    // Italics inside a line protect nothing, and neither does a line in bold.
+    expect(highlightCode('Here _An is read_ by createReview.', all)).toBe('Here `_An` is read_ by `createReview`.');
+    expect(highlightCode('__Twice, createReview runs here__', all)).toBe('__Twice, `createReview` runs here__');
+    expect(highlightCode('_An is read by createReview', all)).toBe('`_An` is read by `createReview`');
   });
 
   it('wraps tokens in a summary in code tags, since GitHub does not parse Markdown there', () => {

@@ -1116,8 +1116,10 @@ describe('runFullReview end to end', () => {
     await reviewRound();
     expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
 
-    // A push that changes only the README, so the lines in `src/math.ts` are the ones round 1 reviewed.
-    const readme = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+Sums are kept in a variable.\n';
+    // A push that changes only the README, so the lines in `src/math.ts` are the ones round 1 reviewed. The new line
+    // quotes the sentence Manki puts in the thread, so `_An` and `PR._` are identifiers of the diff.
+    const missedNote = '_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._';
+    const readme = `diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+A late warning says: ${missedNote}\n`;
     mockGitHub.headSha = 'b2'.repeat(20);
     mockGitHub.prDiffs[mockGitHub.headSha] = `${PR_DIFF}${readme}`;
     mockGitHub.commitDiffs[mockGitHub.headSha] = readme;
@@ -1133,7 +1135,7 @@ describe('runFullReview end to end', () => {
     expect(late.body).toMatch(/^\u2705 \*\*Approved\.\*\* 1 warning, which doesn't block\./u);
     expect(late.body.replace(/<!--[\s\S]*?-->/g, '')).not.toMatch(/Missed by an earlier review|Sum is never range checked/);
     expect(mockGitHub.threads.map(t => [t.path, t.line, t.isResolved])).toEqual([['src/math.ts', 2, false]]);
-    expect(mockGitHub.threads[0].comments[0].body).toContain('**Sum is never range checked**\n\n_An earlier round already reviewed these lines and missed this, and it doesn\'t block this PR._\n\n');
+    expect(mockGitHub.threads[0].comments[0].body).toContain(`**Sum is never range checked**\n\n${missedNote}\n\n`);
     expect(mockGitHub.roundContext(late).meta.outcome).toBe('READY');
     expect(mockGitHub.roundContext(late).findings.entries).toEqual([expect.objectContaining({ severity: 'warning', origin: 'reviewed', posted: 'thread' })]);
 
@@ -1141,6 +1143,8 @@ describe('runFullReview end to end', () => {
     mockLLM.replies.judge = JSON.stringify({ summary: 'One warning.', findings: [{ id: 1, title: warning.title, row: 'degraded', reasoning: 'Only very large sums are off.', sameAs: 'P1' }] });
     await forcedRound();
 
+    // The judge reads the thread's finding without the sentence.
+    expect(mockLLM.asked.judge).toContain('### PRRT_1 — src/math.ts:2\n- **Original concern**: Large inputs overflow silently.');
     const again = postedReviews().at(-1)!;
     expect(again.state).toBe('APPROVED');
     expect(again.body).not.toContain('Missed by an earlier review');
