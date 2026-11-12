@@ -1591,10 +1591,11 @@ async function grepWords(workspace: string, names: string[], { onDisk = false, i
   return { hits, unsearched };
 }
 
-/** What Node reports of a `git grep` that failed: an exit code or an error code, and whether the timeout killed it. */
+/** What Node reports of a `git grep` that failed: an exit code or an error code, whether the timeout killed it, and the signal that ended it. */
 interface GrepFailure {
   code?: number | string | null;
   killed?: boolean;
+  signal?: string | null;
   stdout?: string;
   stderr?: string;
 }
@@ -1603,10 +1604,12 @@ interface GrepFailure {
  * Says why a `git grep` failed, naming the limit it reached. The message Node gives a failed command holds every
  * argument, so every searched name, and is not used. What git wrote is quoted without `pattern`.
  */
-function grepFailureReason({ code, killed, stderr = '' }: GrepFailure, pattern: string): string {
+function grepFailureReason({ code, killed, signal, stderr = '' }: GrepFailure, pattern: string): string {
   if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return `the search found more than ${GREP_MAX_BUFFER / 1024 / 1024} MB of matching lines`;
   if (killed) return `the search took longer than ${GREP_TIMEOUT_MS / 1000} s`;
   if (typeof code === 'string') return `git grep could not start (${code})`;
+  // A signal Node did not send, such as the kernel's when memory runs out, leaves no exit code.
+  if (typeof code !== 'number') return signal ? `git grep was killed by ${signal}` : 'git grep failed without an exit code';
   const said = stderr.split(pattern).join('the pattern').trim().split('\n')[0].slice(0, MAX_LINE_CHARS);
   return `git grep failed with exit code ${code}${said ? `: ${said}` : ''}`;
 }

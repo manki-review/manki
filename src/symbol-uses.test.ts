@@ -949,6 +949,17 @@ ${body}	return true
       const broken = await listUsesOutsideDiff(root, diff, { loadApi });
       expect(broken).toEqual({ ...NOTHING, record: { failed: expect.stringMatching(/^git grep failed with exit code 128: fatal: not a git repository/) } });
       expect(core.warning).toHaveBeenLastCalledWith(`Skipped the list of uses outside the diff: ${broken.record?.failed}`);
+      // A `git grep` that a signal ends leaves no exit code, and the reason names the signal.
+      const bin = mkdtempSync(join(tmpdir(), 'manki-bin-'));
+      const path = process.env.PATH;
+      try {
+        writeFileSync(join(bin, 'git'), '#!/bin/sh\nkill -KILL $$\n', { mode: 0o755 });
+        process.env.PATH = bin;
+        expect((await listUsesOutsideDiff(root, diff, { loadApi })).record).toEqual({ failed: 'git grep was killed by SIGKILL' });
+      } finally {
+        process.env.PATH = path;
+        rmSync(bin, { recursive: true, force: true });
+      }
       expect(broken.record?.failed).not.toContain('compute_total');
     } finally {
       rmSync(root, { recursive: true, force: true });
