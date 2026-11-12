@@ -146,6 +146,12 @@ describe('formatFindingComment', () => {
     const givenBack = [...byRule.gradePath, { from: 'blocker' as const, to: 'warning' as const, by: 'unproven' as const }, { from: 'warning' as const, to: 'blocker' as const, by: 'refutation' as const }];
     expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: givenBack })).toContain(blocksByRule);
     // A warning, and a blocker whose own damage blocks, name the rule without the reason for blocking.
+    // The damage made this one a blocker first, the cap held it back twice, and a check gave it back, as it would without the setting.
+    const capped = { from: 'blocker' as const, to: 'warning' as const, by: 'unproven' as const };
+    const byDamage = [{ from: 'note' as const, to: 'blocker' as const, by: 'judge' as const }, capped, { from: 'warning' as const, to: 'blocker' as const, by: 'rule' as const }, capped, { from: 'warning' as const, to: 'blocker' as const, by: 'refutation' as const }];
+    for (const gradePath of [byDamage, byDamage.slice(1)]) {
+      expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, gradePath })).toContain(`**Repository rule**\n${ruleLine}\n\n**Checked in the code**`);
+    }
     expect(render({ ...baseFinding, severity: 'warning', rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] })).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
     // A rule warning on code an earlier round reviewed says so under its title and names the rule the same way.
     const late = render({ ...baseFinding, severity: 'warning', origin: 'reviewed', tags: ['follow-up'], rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] });
