@@ -656,6 +656,12 @@ describe('buildJudgeUserMessage', () => {
     const withUnshown = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, changedFiles, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, ['docs/api.md', 'assets/`logo`.png']);
     expect(withUnshown).toContain("### .manki.yml (+0/-0)\n\n\n### Changed, but not shown to you\n\nThe PR also changes the files below. No model reads them:");
     expect(withUnshown).toContain("such as a binary, an empty file or a file that was only renamed.\n\n- docs/api.md\n- assets/logo.png\n");
+    expect(withUnshown).not.toContain('The list is cut');
+    // Past 200 paths the list is cut, and the judge is told how many files it does not name.
+    const generated = Array.from({ length: 203 }, (_, i) => `gen/${i}.pb.go`);
+    const cut = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, changedFiles, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, generated);
+    expect(cut).toContain('- gen/199.pb.go\n\nThe list is cut at 200 paths. Changed files it does not name: 3. Any of them can hold what a rule requires.\n');
+    expect(cut).not.toContain('gen/200.pb.go');
   });
 
   it('omits changed files section when empty', () => {
