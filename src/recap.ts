@@ -1253,7 +1253,7 @@ type DedupItem = { title: string; file: string; line: number; description?: stri
 
 /** Returns `f` as one line for the dedup model: its title, its location and the start of its description. */
 function describeForDedup(f: DedupItem): string {
-  return `"${sanitize(f.title)}" (${sanitize(f.file)}:${f.line})${f.description ? `: "${sanitize(f.description, LLM_DEDUP_DESCRIPTION_CHARS)}"` : ''}`;
+  return `"${sanitize(f.title)}" (${sanitize(f.file)}${f.line > 0 ? `:${f.line}` : ''})${f.description ? `: "${sanitize(f.description, LLM_DEDUP_DESCRIPTION_CHARS)}"` : ''}`;
 }
 
 /**

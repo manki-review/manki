@@ -2428,6 +2428,12 @@ describe('llmDeduplicateFindings', () => {
     const [, prompt] = jest.mocked(match.sendMessage).mock.calls[0];
     expect(prompt).toContain('(src/memory.ts:84): "Before this change, an empty memory.repo meant');
     expect(prompt).toContain('(src/memory.ts:79): "Before this change, an empty memory.repo resolved to');
+    // A finding or a thread that names no line is listed by its file alone.
+    const wholeFile = { ...waived, findingLine: undefined, originalLine: undefined };
+    await llmDeduplicateFindings([{ ...second, line: 0 }], [wholeFile], match);
+    const fileOnly = jest.mocked(match.sendMessage).mock.calls.at(-1)![1];
+    expect(fileOnly).not.toContain('src/memory.ts:');
+    expect(fileOnly.match(/\(src\/memory\.ts\): "/g)).toHaveLength(2);
 
     // The static match sends the next wording to the judge with the answer in the thread of the one before.
     const answered = makePrevious({ ...memory, status: 'replied', threadId: 'T2', line: 79, title: second.title, answer: 'Unverified. The move is not in this PR.' });
@@ -2517,6 +2523,13 @@ describe('parseFindingFromComment', () => {
     expect(parseFindingFromComment(filed)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     const toolBody = formatFindingComment({ severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2)', category: 'security', effort: 'quick' }, TEST_LINKS);
     expect(parseFindingFromComment(toolBody)).toEqual({ description: 'The query uses `name`.', suggestedFix: undefined });
+    // A tool name cannot pass as the end of a title line, and a line of the description cannot pass as the fix label.
+    const oddTool = formatFindingComment({ severity: 'warning', title: 'Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2):: beta' }, TEST_LINKS);
+    expect(oddTool.split('\n')[0]).toContain('(CodeQL (1.2) beta)');
+    expect(parseFindingFromComment(oddTool)).toEqual({ description: 'The query uses `name`.', suggestedFix: undefined });
+    const fixLine = formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.\n**Fix:** move it.', reviewers: [], howToFix: 'Move it to a helper.' }, TEST_LINKS);
+    expect(fixLine).toContain('\n**Fix:** Move it to a helper.');
+    expect(parseFindingFromComment(fixLine)).toEqual({ description: 'The logic is duplicated.\n**Fix**: move it.', suggestedFix: undefined, howToFix: 'Move it to a helper.' });
     // A thread posted on another file opens with a note on where the finding is, which is no part of the description.
     // The note is read by its place, so it is skipped whatever the highlighting of the diff's identifiers makes of it.
     const identifiers = new Set(['This', 'Comments', 'thread', 'posted', 'here', 'src/store.ts', '_store_file_', 'src/_store_file_.ts']);

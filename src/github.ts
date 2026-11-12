@@ -1288,7 +1288,9 @@ export function findingLocation(finding: Pick<Finding, 'file' | 'line'>): string
  */
 function labelDescription(finding: Finding, description: string): string {
   const label = isBlockingSeverity(finding.severity) ? WHAT_GOES_WRONG_LABEL : WHY_LABEL;
-  return `${label}${/^(?:[-*+]\s|#{1,6}\s|>|\d+[.)]\s)/.test(description) ? '\n\n' : ' '}${description}`;
+  // `parseFindingFromComment` ends the description at a line that starts with `FIX_LABEL`, so no line of the description does.
+  const text = description.replace(/^\*\*Fix:\*\*/gm, '**Fix**:');
+  return `${label}${/^(?:[-*+]\s|#{1,6}\s|>|\d+[.)]\s)/.test(text) ? '\n\n' : ' '}${text}`;
 }
 
 /** Returns the `trustNote` and what goes wrong, as listed under a finding in the review body. */
@@ -2502,7 +2504,8 @@ function suggestionBlock(parts: FixPart[]): string | undefined {
 function formatFindingHeader(finding: Finding): string {
   const severity = `${finding.severity[0].toUpperCase()}${finding.severity.slice(1)}`;
   const label = `**${isBlockingFinding(finding) ? severity : `${severity}, not blocking`}**`;
-  const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource)})` : '';
+  // `matchTitleLine` reads `):` on the first line as the end of the tool name in the one-line layout, so the name holds none.
+  const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource).replace(/\):+/g, ')')})` : '';
   const kind = [isPreExisting(finding) && 'Pre-existing', finding.category && FINDING_CATEGORIES[finding.category], finding.effort && FINDING_EFFORTS[finding.effort]].filter(Boolean);
   return [`${label}${tool}`, ...kind].join(' · ');
 }
