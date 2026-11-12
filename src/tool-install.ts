@@ -144,8 +144,14 @@ function note(text: string): void {
   process.stderr.write(`${text}\n`);
 }
 
-/** Whether this process already said that the tool cache is not trusted, so the log says it once. */
-let distrustNoted = false;
+const noted = new Set<string>();
+
+/** Writes `text` as `note` does, once per process, for a line about the tool cache as a whole. */
+function noteOnce(text: string): void {
+  if (noted.has(text)) return;
+  noted.add(text);
+  note(text);
+}
 
 /** Whether `path` is a folder itself, not a link to one, that this user owns and no one else can write. */
 function ownFolder(path: string): boolean {
@@ -175,8 +181,7 @@ function keptFolder(create: boolean): string | undefined {
       if (create) mkdirSync(folder, { recursive: true, mode: 0o700 });
       if (ownFolder(folder)) return folder;
     }
-    if (!distrustNoted) note(`Not keeping downloads in ${folder}: it and ${root} must be folders that only this user can write`);
-    distrustNoted = true;
+    noteOnce(`Not keeping downloads in ${folder}: it and ${root} must be folders that only this user can write`);
     return undefined;
   } catch {
     return undefined;
@@ -214,8 +219,8 @@ function keptDownload(download: PinnedDownload): Buffer | undefined {
     const now = new Date();
     try {
       futimesSync(fd, now, now);
-    } catch {
-      // The file then counts as unused.
+    } catch (error) {
+      noteOnce(`Could not set the time of last use in ${folder}, so its downloads count as unused: ${error instanceof Error ? error.message : String(error)}`);
     }
     note(`Using the kept download ${file} instead of downloading it`);
     return data;
