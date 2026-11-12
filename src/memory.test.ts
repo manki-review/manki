@@ -126,6 +126,8 @@ describe('applySuppressions', () => {
       makeFinding({ severity: 'warning', title: 'Unused variable the check confirmed', refutation: { ...refutation, outcome: 'confirmed' } }),
       makeFinding({ severity: 'warning', title: 'Unused variable the check left open', refutation, gradePath: [{ from: 'note', to: 'warning', by: 'judge' }] }),
       makeFinding({ severity: 'note', title: 'Unused variable lead', pairRefutation: refutation }),
+      // No answer raises a finding in the `rare` column, so its `gradeIfConfirmed` protects it from no suppression.
+      makeFinding({ severity: 'warning', title: 'Unused variable in a rare state', refutation: { ...refutation, outcome: 'confirmed' }, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' } }),
     ];
     expect(applySuppressions(unchanged, suppressions, true).suppressed.map(f => f.title)).toEqual(unchanged.map(f => f.title));
   });

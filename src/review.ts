@@ -9,7 +9,7 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, disproof, findingKey, isBlockingSeverity, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, disproof, findingKey, isBlockingSeverity, isRareClaim, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
@@ -100,14 +100,15 @@ function markPreExisting(findings: Finding[], checkOf: (finding: Finding) => Pre
  * Splits off the warnings that `needsProof` and that nothing proves, by `unprovenReason`, as `unposted` with that
  * reason, for the round record only. A warning is left out only when it is certain that no rule keeps it, so these
  * stay `posted` too: a finding `foldIntoEarlierFindings` or the judge put under one an earlier round still shows, and
- * a finding that `wouldBlock`. Each posted blocker and warning that no tool reported gets its `checkStatus`.
+ * a finding that `wouldBlock`. A finding that `isRareClaim` stays `posted` as well, whatever its check answered. Each
+ * posted blocker and warning that no tool reported gets its `checkStatus`.
  */
 function hideUnprovenWarnings(findings: Finding[], wouldBlock = wouldBlockIfTrue): { posted: Finding[]; unposted: Finding[] } {
   const posted: Finding[] = [];
   const unposted: Finding[] = [];
   for (const f of findings) {
     const unpostedReason = needsProof(f) ? unprovenReason(f) : undefined;
-    if (!unpostedReason || f.threadId || f.answeredIn || f.raisedIn !== undefined || wouldBlock(f)) {
+    if (!unpostedReason || f.threadId || f.answeredIn || f.raisedIn !== undefined || wouldBlock(f) || isRareClaim(f.cell)) {
       posted.push(isBlockingSeverity(f.severity) && !f.toolSource ? { ...f, checkStatus: checkStatus(f) } : f);
     } else {
       core.info(`Recording warning "${f.title}" on ${f.file}:${f.line} without posting it: ${UNPOSTED_REASONS[unpostedReason]}`);

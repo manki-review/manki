@@ -14,7 +14,7 @@ export type CellColumn = 'normal' | 'rare';
 export interface GradeCell {
   row: CellRow;
   column: CellColumn;
-  /** The column the judge stated, when Manki grades in another one: a tool check moved the finding, it is a security finding, or the cell is what remains of a partly fixed thread. */
+  /** The column the judge stated, when Manki grades in another one: it is a security finding, or the cell is what remains of a partly fixed thread. An earlier record can hold it for a finding a tool check moved. */
   judgeColumn?: CellColumn;
 }
 
@@ -36,9 +36,14 @@ export function isGradeCell(cell: GradeCell | undefined): cell is GradeCell {
   return !!cell && Object.hasOwn(CELL_GRADES, cell.row) && (cell.column === 'normal' || cell.column === 'rare');
 }
 
-/** Whether the column decides if a finding on `row` blocks. Only there is the `rare` column a claim the refuter checks. */
+/** Whether the column decides if a finding on `row` blocks. */
 export function columnDecidesBlock(row: CellRow): boolean {
   return cellGrade(row, 'normal') === 'blocker' && cellGrade(row, 'rare') !== 'blocker';
+}
+
+/** Whether `cell` is in the `rare` column of a row where `columnDecidesBlock`, so the column is a claim the refuter checks. */
+export function isRareClaim(cell: GradeCell | undefined): boolean {
+  return isGradeCell(cell) && columnDecidesBlock(cell.row) && cell.column === 'rare';
 }
 
 /** The kind of problem a finding names, as the judge classifies it, with the label a reader sees. */
@@ -331,13 +336,14 @@ export interface Finding {
   lead?: OpenLead;
   /** The round an open lead first came up in, when an earlier round left it unsettled. */
   leadSince?: number;
-  /** The severity table cell the grade is worked out from. The judge states it, and a tool check can move its column. */
+  /** The severity table cell the grade is worked out from. The judge states it, and no tool check moves its column. */
   cell?: GradeCell;
   /** The cell the judge stated, on a blocker `applyRefutation` put back at its finders' grade. Only for the record: no prompt shows it. */
   judgeCell?: GradeCell;
   /**
    * The grade the finding's `cell` gives once every premise in `doubts` holds, worked out by Manki. Set when the finding
-   * has a doubt. The refuter checks the finding, and a confirmation of every doubt gives it this grade.
+   * has a doubt. The refuter checks the finding, and a confirmation of every doubt gives it this grade. On a finding
+   * that `isRareClaim` it is the grade of the `normal` column, which no confirmation gives.
    */
   gradeIfConfirmed?: FindingSeverity;
   /** The premises the judge doubts, which the refuter checks one by one. */
@@ -608,9 +614,17 @@ export function finderGrade(finding: Pick<Finding, 'reviewerSeverity' | 'gradePa
   return finding.reviewerSeverity ?? finding.gradePath?.[0]?.from ?? finding.severity;
 }
 
-/** Whether the judge or a finder graded `f` a blocker at any point, or the judge would if the premises it doubts hold. */
-export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'reviewerSeverity' | 'gradePath'>): boolean {
-  return f.gradeIfConfirmed === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
+/**
+ * Returns the grade a check gives `f` when it confirms every premise in its `doubts`. A finding that `isRareClaim` has
+ * none: its `gradeIfConfirmed` is the grade of the `normal` column, and no answer moves it there.
+ */
+export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): FindingSeverity | undefined {
+  return isRareClaim(f.cell) ? undefined : f.gradeIfConfirmed;
+}
+
+/** Whether the judge or a finder graded `f` a blocker at any point, or its `pendingGrade` is one. */
+export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'cell' | 'reviewerSeverity' | 'gradePath'>): boolean {
+  return pendingGrade(f) === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
 }
 
 /** Whether `applyRefutation` put the blocker the judge alone made of `finding` back at its finders' grade. Nothing else lowers a blocker by a refutation. */
@@ -622,8 +636,8 @@ export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
 
 /**
  * A premise the judge doubts, stated as a fact the code can confirm or disprove. It `decides` either whether the defect
- * exists at all, so a disproof drops the finding, or only whether the finding earns its `gradeIfConfirmed`, such as
- * whether normal use or outside input produces the state a finding in the `rare` column needs.
+ * exists at all, so a disproof drops the finding, or only which cell the finding belongs in, such as whether normal
+ * use or outside input produces the state a finding in the `rare` column needs.
  */
 export interface Doubt {
   premise: string;
@@ -632,7 +646,7 @@ export interface Doubt {
 
 /**
  * The claim the `rare` column makes on a row where `columnDecidesBlock`, as a premise for the refuter. Manki adds it to
- * every finding in such a cell, and only its confirmation moves the finding to the `normal` column.
+ * every finding in such a cell. The refuter's answer is recorded and never moves the finding to the `normal` column.
  */
 export const REACH_DOUBT: Doubt = { premise: 'Normal use or outside input can produce the state this failure needs', decides: 'grade' };
 

@@ -402,7 +402,7 @@ describe('refuteBlockers', () => {
     expect(client.messages.find(([, user]) => user.includes(': Unbuilt confirmed\n'))![1]).toContain('## Claimed build failure: Unbuilt confirmed');
   });
 
-  it('checks each premise the judge doubts on its own, raises a finding only when every premise is confirmed, and then moves it out of the `rare` column', async () => {
+  it('checks each premise the judge doubts on its own, raises a finding with a blocker cell only when every premise is confirmed, and never raises or moves one in the `rare` column', async () => {
     const exists = { premise: 'No caller bounds `a`', decides: 'defect' as const };
     const reached = { premise: 'A public handler passes `a` through', decides: 'grade' as const };
     const confirmed = (proof: string) => ({ outcome: 'confirmed', reason: 'It holds.', proof: [proof] });
@@ -419,10 +419,10 @@ describe('refuteBlockers', () => {
       'Rare claim not among the premises': { reason: 'Both hold.', premises: [confirmed('src/math.ts:2'), confirmed('src/api.ts:4')] },
       'Confirmed where both columns block': { reason: 'It holds.', premises: [confirmed('src/api.ts:4')] },
       'Confirmed build claim in the rare column': { reason: 'It holds.', premises: [confirmed('src/api.ts:4')] },
-      'Missing claim leaves the rare column': { reason: 'It holds.', premises: [confirmed('src/api.ts:4')] },
     });
     const rare = { row: 'wrong' as const, column: 'rare' as const };
     const findings = [
+      // The judge placed it in the `rare` column, and no answer of the refuter moves it out, so it stays a warning.
       finding('Every premise confirmed', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [exists, REACH_DOUBT], judgeNotes: 'warning. Unsure.' }),
       // One answer never stands for another premise, so a grade rests on every premise the judge named.
       finding('One premise confirmed', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [exists, reached] }),
@@ -435,19 +435,16 @@ describe('refuteBlockers', () => {
       finding('Premises not answered', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
       finding('Doubt confirmed in the normal column', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'normal' }, doubts: [exists] }),
       finding('Rare claim not answered', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [reached] }),
-      // Another confirmed `grade` doubt never stands for the claim of the `rare` column, so the finding neither rises nor moves.
       finding('Rare claim not among the premises', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [exists, reached] }),
-      // The column moves only with a rise in grade, which only a row whose columns differ in blocking gives.
+      // Both columns of the `severe` row block, so its `rare` column is no claim and the blocker stays one.
       finding('Confirmed where both columns block', { gradeIfConfirmed: 'blocker', cell: { row: 'severe', column: 'rare' }, doubts: [REACH_DOUBT] }),
       finding('Confirmed build claim in the rare column', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT], buildClaim: true }),
-      // A confirmed reach is no search for what a finding says is missing, so one that cites no empty search stays a warning.
-      finding('Missing claim leaves the rare column', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT], evidence: { checks: [], proof: ['src/math.ts:2'], emptySearch: '' } }),
     ];
 
     const result = await refuteBlockers(client, findings, { workspace, diff });
 
     expect(result.map(f => [f.title, f.severity, f.refutation?.outcome, f.refutation?.premises?.map(p => p.outcome)])).toEqual([
-      ['Every premise confirmed', 'blocker', 'confirmed', ['confirmed', 'confirmed']],
+      ['Every premise confirmed', 'warning', 'confirmed', ['confirmed', 'confirmed']],
       ['One premise confirmed', 'warning', 'unsettled', ['confirmed', 'unsettled']],
       ['Defect disproved', 'ignore', 'disproved', ['disproved']],
       ['Lowering premise holds', 'warning', 'unsettled', ['disproved']],
@@ -461,12 +458,12 @@ describe('refuteBlockers', () => {
       ['Rare claim not among the premises', 'warning', 'confirmed', ['confirmed', 'confirmed']],
       ['Confirmed where both columns block', 'blocker', 'confirmed', ['confirmed']],
       ['Confirmed build claim in the rare column', 'warning', 'confirmed', ['confirmed']],
-      ['Missing claim leaves the rare column', 'warning', 'confirmed', ['confirmed']],
     ]);
-    // Only a confirmation moves a finding to the `normal` column. The stored premise answer tells the rest apart: the
-    // `rare` claim held (disproved), no one could tell (unsettled), or no check answered (none stored).
+    // No answer moves a finding to the `normal` column. The stored premise answer tells the outcomes apart: the check
+    // contradicts the `rare` claim (confirmed), the claim held (disproved), no one could tell (unsettled), or no check
+    // answered (none stored).
     expect(result.filter(f => f.cell).map(f => [f.title, f.cell, f.refutation?.premises?.at(-1)?.outcome])).toEqual([
-      ['Every premise confirmed', { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, 'confirmed'],
+      ['Every premise confirmed', rare, 'confirmed'],
       ['One premise confirmed', rare, 'unsettled'],
       ['Lowering premise holds', rare, 'disproved'],
       ['Doubt confirmed in the normal column', { row: 'wrong', column: 'normal' }, 'confirmed'],
@@ -474,14 +471,10 @@ describe('refuteBlockers', () => {
       ['Rare claim not among the premises', rare, 'confirmed'],
       ['Confirmed where both columns block', { row: 'severe', column: 'rare' }, 'confirmed'],
       ['Confirmed build claim in the rare column', rare, 'confirmed'],
-      ['Missing claim leaves the rare column', { row: 'wrong', column: 'normal', judgeColumn: 'rare' }, 'confirmed'],
     ]);
-    // A move always comes with the `refutation` step that raised the grade.
-    expect(result.filter(f => f.cell).map(f => [!!f.cell?.judgeColumn, !!f.gradePath?.some(step => step.by === 'refutation')])).toEqual([
-      [true, true], [false, false], [false, false], [false, true], [false, false], [false, false], [false, false], [false, false], [true, true],
-    ]);
-    // The cap on a missing claim without a search follows the rise, and the finding carries its tag.
-    expect([result.at(-1)?.gradePath?.map(step => [step.by, step.to]), result.at(-1)?.tags]).toEqual([[['refutation', 'blocker'], ['unproven', 'warning']], ['unproven-blocker']]);
+    // Only the doubt the judge listed on a blocker cell has a `refutation` step, and a confirmed reach leaves the finding as the judge graded it.
+    expect(result.filter(f => f.gradePath?.some(step => step.by === 'refutation')).map(f => f.title)).toEqual(['Defect disproved', 'Disproved beside a confirmed premise', 'Doubt confirmed in the normal column']);
+    expect([result[0].gradePath, result[0].gradeIfConfirmed, result[0].doubts, result[0].evidence?.proof]).toEqual([undefined, 'blocker', [exists, REACH_DOUBT], findings[0].evidence?.proof]);
     expect(result[0].refutation).toMatchObject({
       proof: ['src/math.ts:2', 'src/api.ts:4'],
       premises: [{ premise: 'No caller bounds `a`', outcome: 'confirmed', reason: 'It holds.', proof: ['src/math.ts:2'] }, { premise: REACH_DOUBT.premise, outcome: 'confirmed', reason: 'It holds.', proof: ['src/api.ts:4'] }],
@@ -785,16 +778,14 @@ describe('refuteBlockers', () => {
       ['Open lead', lead, ['blocker', 'confirmed'], ['blocker', 'unconfirmed']],
       // With no answer the finder's word stands that it did not finish checking, whatever lines the lead cites.
       ['Open lead and the call fails', lead, ['blocker', 'unconfirmed'], ['blocker', 'unconfirmed']],
-      ['Open lead in the rare column', { ...lead, ...rare }, ['blocker', 'confirmed'], ['warning', 'unconfirmed'], ['blocker', 'unconfirmed'], ['warning', 'confirmed']],
+      ['Open lead in the rare column', { ...lead, ...rare }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
       ['Blocker the finder did not finish checking', { notChecked: true }, ['blocker', 'confirmed'], ['blocker', 'unconfirmed']],
       ['Blocker a doubt holds at a warning', {
         severity: 'warning', gradeIfConfirmed: 'blocker', doubts: exists,
       }, ['blocker', 'confirmed'], ['warning', 'unconfirmed'], ['blocker', 'unconfirmed'], ['warning', 'confirmed']],
       ['Blocker capped for want of proof', { severity: 'warning', tags: ['unproven-blocker'], ...noProof }, ['blocker', 'confirmed'], ['warning', 'unconfirmed']],
-      // A confirmed reach is no search for what the finding says is missing, so the cap comes back and the finding is unconfirmed.
-      ['Missing claim in the rare column', {
-        ...rare, evidence: { checks: [], proof: ['src/math.ts:2'], emptySearch: '' },
-      }, ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
+      // No answer raises a finding out of the `rare` column, and only the defect answer confirms it.
+      ['Warning in the rare column', rare, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
       // Reading code never confirms a build failure, capped from a blocker or graded a warning.
       ['Capped build claim', { ...buildClaim, tags: ['unconfirmed-build-claim'] }, ['warning', 'unconfirmed'], ['warning', 'unconfirmed']],
       ['Build claim graded a warning', {
@@ -816,10 +807,10 @@ describe('refuteBlockers', () => {
         severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists, ...noProof,
       }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
       ['Warning on unchanged code', { severity: 'warning', preExisting: 'The loop predates this PR.' }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
-      // The reach decides only whether it blocks. A check that confirms the defect and not the reach leaves a warning the review posts.
+      // The answer about the reach changes nothing. A check that confirms the defect leaves a warning the review posts, with or without the reach.
       ['Warning on unchanged code in the rare column', {
         ...rare, preExisting: 'The loop predates this PR.',
-      }, ['blocker', 'confirmed'], ['warning', 'unconfirmed'], ['blocker', 'unconfirmed'], ['warning', 'confirmed']],
+      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
       ['Security warning the judge doubts', {
         severity: 'warning', tags: ['security'], doubts: exists,
       }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
@@ -1035,15 +1026,18 @@ describe('refuteBlockers', () => {
     expect(client.calls).toHaveLength(1);
     // The earlier round's cell comes back with its doubts, in place of the cell the judge stated without one.
     const [recelled] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
-      workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'rare' }, doubts: [REACH_DOUBT] }), diff,
+      workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'normal' } }), diff,
     });
-    expect([recelled.severity, recelled.cell]).toEqual(['blocker', { row: 'wrong', column: 'normal', judgeColumn: 'rare' }]);
-    // An earlier `rare` cell stored without the claim of that column gets it, and never rises on another confirmed doubt alone.
-    const [unclaimed] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
-      workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'rare' } }), diff,
-    });
-    expect([unclaimed.severity, unclaimed.cell, unclaimed.doubts]).toEqual(['warning', { row: 'wrong', column: 'rare' }, [...doubts, REACH_DOUBT]]);
-    expect(unclaimed.refutation?.premises?.map(p => p.outcome)).toEqual(['confirmed', 'unsettled']);
+    expect([recelled.severity, recelled.cell]).toEqual(['blocker', { row: 'wrong', column: 'normal' }]);
+    // No doubt capped an earlier grade in the `rare` column, so such a finding stays as the judge stated it and gets no check.
+    const callsBefore = client.calls.length;
+    for (const earlier of [{ doubts: [REACH_DOUBT] }, {}]) {
+      const [kept] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
+        workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'wrong', column: 'rare' }, ...earlier }), diff,
+      });
+      expect([kept.severity, kept.cell, kept.gradeIfConfirmed, kept.doubts, kept.refutation]).toEqual(['warning', stated, undefined, undefined, undefined]);
+    }
+    expect(client.calls).toHaveLength(callsBefore);
     // A stored cell the table does not know, as another Manki version could write, counts as none.
     const [unknown] = await refuteBlockers(client, [finding('Sum overflows', { severity: 'warning', line: 4, cell: stated })], {
       workspace, priorRounds: rounds({ refutation: premise('unsettled'), cell: { row: 'serious', column: 'rare' } }), diff,
