@@ -227,7 +227,10 @@ const JUDGE_TIMEOUT_MS = 300_000;
 /** How many lines cited outside the diff the judge sees the code around, per finding and per round. */
 const MAX_CITED_WINDOWS_PER_FINDING = 5;
 const MAX_CITED_WINDOWS = 40;
-/** How many cited files the judge's windows try to read, per finding and per round, whether or not the file is there. */
+/**
+ * How many cited files the judge's windows try to read, whether or not the file is there: per finding for the PR's files,
+ * again for related files, and per round.
+ */
 const MAX_CITED_READS_PER_FINDING = 10;
 const MAX_CITED_READS = 80;
 /** A line of a window is cut at this many characters. */
@@ -1095,23 +1098,24 @@ function reviewerEvidenceLines({ evidence, notChecked, lead, leadSince, preExist
  * and around the lines of `related` repos that its title, description and evidence cite, read from the checkouts the
  * round fetched. Citations that cannot be read are skipped, and at most `MAX_CITED_WINDOWS` windows are shown in all.
  * A citation of a file that is not there shows no window, so the reads have limits of their own: `MAX_CITED_READS_PER_FINDING`
- * and `MAX_CITED_READS`. A file tried before costs nothing, whether it was there or not.
+ * for the PR's files of a finding and again for its related files, and `MAX_CITED_READS` in all. A file tried before costs
+ * nothing, whether it was there or not.
  */
 function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: string, related?: RelatedRepoTools): Map<Finding, string[]> {
   // The files read, by the directory they were read from. A file of the PR and one of a related checkout never share
   // an entry, whatever the PR names its files.
   const filesRead = new Map<string, { contents: Map<string, string>; lineCounts: Map<string, number>; unread: Set<string> }>();
   let reads = 0;
-  let readsOfFinding = 0;
   // Returns the files read from `root`, with `file` among them, or `undefined` when it could not be read or no read is left.
-  const read = (root: string, file: string) => {
+  // `ofFinding` counts the reads of one finding of one kind, so missing files of the PR never use up the related reads.
+  const read = (root: string, file: string, ofFinding: { reads: number }) => {
     const files = filesRead.get(root) ?? { contents: new Map<string, string>(), lineCounts: new Map<string, number>(), unread: new Set<string>() };
     filesRead.set(root, files);
     if (files.unread.has(file)) return undefined;
     if (!files.contents.has(file)) {
-      if (reads >= MAX_CITED_READS || readsOfFinding >= MAX_CITED_READS_PER_FINDING) return undefined;
+      if (reads >= MAX_CITED_READS || ofFinding.reads >= MAX_CITED_READS_PER_FINDING) return undefined;
       reads++;
-      readsOfFinding++;
+      ofFinding.reads++;
       const content = readFileInRoot(root, file);
       if (!content || content === 'too large') {
         files.unread.add(file);
@@ -1130,13 +1134,14 @@ function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: 
   for (const finding of findings) {
     const lines: string[] = [];
     let windows = 0;
-    readsOfFinding = 0;
+    const prReads = { reads: 0 };
+    const relatedReads = { reads: 0 };
     for (const location of finding.evidence?.proof ?? []) {
       if (shown >= MAX_CITED_WINDOWS || windows >= MAX_CITED_WINDOWS_PER_FINDING) break;
       const [, file, start, end] = location.match(/^(.+):(\d+)(?:-(\d+))?$/) ?? [];
       if (!file) continue;
       const diffFile = diff.files.find(f => f.path === file);
-      const head = diffFile && isLineInDiff(diffFile, Number(start), Number(end ?? start)) ? undefined : read(workspace, file);
+      const head = diffFile && isLineInDiff(diffFile, Number(start), Number(end ?? start)) ? undefined : read(workspace, file, prReads);
       if (!head) continue;
       const window = extractCurrentCodeWindow(head.contents, file, Number(start));
       if (!window || window === '(file content unavailable)') continue;
@@ -1148,7 +1153,7 @@ function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: 
     for (const { citation, repo, path, start, end } of relatedCitations(text, relatedNames)) {
       if (shown >= MAX_CITED_WINDOWS || windows >= MAX_CITED_WINDOWS_PER_FINDING) break;
       const dir = checkouts.get(repo);
-      const fetched = dir ? read(dir, path) : undefined;
+      const fetched = dir ? read(dir, path, relatedReads) : undefined;
       if (!fetched || !holdsLines(fetched.lineCounts.get(path)!, start, end)) continue;
       const window = extractCurrentCodeWindow(fetched.contents, path, start);
       if (!window || window === '(file content unavailable)') continue;

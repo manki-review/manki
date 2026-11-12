@@ -1589,6 +1589,7 @@ describe('runJudgeAgent', () => {
     fs.mkdirSync(path.join(checkout, 'src'));
     fs.writeFileSync(path.join(checkout, 'src', 'import.ts'), 'export function importRow(row: string) {\n  return Date.parse(row.split(\',\')[0]);\n}\n');
     fs.writeFileSync(path.join(checkout, 'src', 'twin.ts'), 'text of the consumer, line 1\ntext of the consumer, line 2\n');
+    fs.writeFileSync(path.join(checkout, 'src', 'export.ts'), 'export function exportRow(row: string) {\n  return row;\n}\n');
     fs.writeFileSync(path.join(stateDir, `${encodeURIComponent('acme/reports')}.done`), checkout);
     const repos = [{ repo: 'acme/reports', kind: 'consumer' as const }, { repo: 'acme/billing', kind: 'consumer' as const }];
     const related = { repos, cacheDir: '/cache', stateDir };
@@ -1609,6 +1610,8 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Many citations', severity: 'note', description: `See ${Array.from({ length: 10 }, (_, i) => `acme/reports:src/import.ts:${40 + i}`).join(', ')} and acme/reports:src/import.ts:3.` }),
       // Citations of files that are not there stop at the same 10, so a finding cannot make the judge try a file per citation it writes.
       makeFinding({ title: 'Many missing files', severity: 'note', description: `See ${Array.from({ length: 30 }, (_, i) => `acme/reports:src/gone-${i}.ts:1`).join(', ')}.` }),
+      // Missing files of the PR use up only the PR's reads of a finding, so its related citation is still shown.
+      makeFinding({ title: 'Missing proof beside a related line', severity: 'note', description: 'See acme/reports:src/export.ts:2.', evidence: { checks: [], proof: Array.from({ length: 10 }, (_, i) => `src/starved-${i}.ts:1`) } }),
       // A file that is not there is tried once a round, however often and by however many findings it is cited.
       ...['One missing file cited often', 'The same missing file again'].map(title => makeFinding({ title, severity: 'note', evidence: { checks: [], proof: Array.from({ length: 15 }, (_, i) => `src/missing-again.ts:${i + 1}`) } })),
       // Proof lines of the PR in files that are not there stop at 10 for a finding too, and at 80 for the round.
@@ -1644,7 +1647,8 @@ describe('runJudgeAgent', () => {
     expect(shown[1]).toContain(`- **Cited code in a related repo** (acme/reports:src/import.ts:2), from the checkout this round fetched. ${trustRule}`);
     expect(shown[1]).toContain(">>> 2:   return Date.parse(row.split(',')[0]);");
     expect(shown[1]).toContain('- **Cited code in a related repo** (acme/reports:src/import.ts:1), from the checkout this round fetched.');
-    expect((shown[1] as string).match(/\*\*Cited code in a related repo\*\*/g)).toHaveLength(3);
+    expect((shown[1] as string).match(/\*\*Cited code in a related repo\*\*/g)).toHaveLength(4);
+    expect(shown[1]).toContain('- **Cited code in a related repo** (acme/reports:src/export.ts:2)');
     // A file of the PR at the path a citation spells takes away no window of the related file, and never shows in its place.
     expect(shown[1]).toContain('- **Cited code in a related repo** (acme/reports:src/twin.ts:2), from the checkout this round fetched.');
     expect(shown[1]).toContain('>>> 2: text of the consumer, line 2');
