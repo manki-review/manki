@@ -67,12 +67,13 @@ describe('handleIssueBoxTick', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it.each([
-    ['a warning thread is resolved', false, [['PRRT_1', 'WONT_FIX']]],
-    ['a blocker thread stays open', true, []],
-  ])('files the finding once, links it in place of the box and replies, and %s', async (_case, isBlocking, resolved) => {
+    ['a warning thread is resolved', { isBlocking: false }, [['PRRT_1', 'WONT_FIX']]],
+    ['a blocker thread stays open', { isBlocking: true }, []],
+    ['a security thread below a blocker stays open', { isBlocking: false, isSecurity: true }, []],
+  ])('files the finding once, links it in place of the box and replies, and %s', async (_case, grade, resolved) => {
     const octokit = makeOctokit();
     const body = ticked(finding());
-    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, isBlocking, findingTitle: 'x' }]);
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, ...grade, findingTitle: 'x' }]);
 
     await tick(octokit, comment(body));
 

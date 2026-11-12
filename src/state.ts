@@ -8,7 +8,7 @@ import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, Bot
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadMarkerSlug, threadSeverity } from './recap';
+import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity } from './recap';
 import { formatApprovalRecord, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
@@ -65,6 +65,12 @@ interface ReviewThread {
   rootCommentId?: number;
   isResolved: boolean;
   resolvedByLogin?: string;
+  /** The latest round that evaluated the thread marked it addressed. */
+  addressed?: boolean;
+  /** Who wrote the latest reply by a person, when that person has write access. Read only for a thread Manki resolved, and only below the comment limit. */
+  writerReplyLogin?: string;
+  /** Set on a thread Manki resolved that is at the comment limit, so its latest reply is unknown. */
+  repliesUnread?: boolean;
   isBlocking: boolean;
   isSecurity?: boolean;
   /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after `authorClearRole` confirms the role. */
@@ -84,6 +90,8 @@ function fixedMarker(commitSha: string): string {
 }
 
 const FIXED_MARKER_RE = /<!-- manki-fixed:([0-9a-f]{40}) -->/;
+
+const THREAD_COMMENTS_LIMIT = 100;
 
 /**
  * Fetch all review threads `bot` started on a PR using GraphQL.
@@ -121,7 +129,7 @@ async function fetchBotReviewThreads(
     path
     line
     originalLine
-    comments(first: 100) {
+    comments(first: ${THREAD_COMMENTS_LIMIT}) {
       nodes {
         databaseId
         body
@@ -144,6 +152,13 @@ async function fetchBotReviewThreads(
   // The round records hold each thread's grade, which also decides who may clear a resolved thread.
   const records = botThreads.length > 0 ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : { priorRounds: [] };
   const grades = recordedThreadGrades(records.priorRounds);
+  // Only Manki's own resolve needs a replier to back it. A thread at the comment limit may hide a later reply, so it names none.
+  const byManki = (thread: typeof botThreads[number]) => thread.isResolved && isBotLogin(bot, thread.resolvedBy?.login);
+  const repliesUnread = (thread: typeof botThreads[number]) => byManki(thread) && thread.comments.nodes.length >= THREAD_COMMENTS_LIMIT;
+  const backing = await resolveBacking(octokit, owner, repo, records.priorRounds, botThreads.map(thread => {
+    const replier = byManki(thread) && !repliesUnread(thread) ? latestPersonReply(bot, thread.comments.nodes)?.author?.login : undefined;
+    return { id: thread.id, ...(replier && { latestReplyLogin: replier }) };
+  }));
   if ('priorRoundsIncomplete' in records) core.warning('Without every round record, every Manki thread counts as blocking');
   return botThreads
     .map(thread => {
@@ -178,6 +193,8 @@ async function fetchBotReviewThreads(
         ...(rootCommentId != null && { rootCommentId }),
         isResolved: thread.isResolved,
         ...(resolvedByLogin && { resolvedByLogin }),
+        ...backing.get(thread.id),
+        ...(repliesUnread(thread) && { repliesUnread: true }),
         isBlocking,
         ...(isSecurity && { isSecurity: true }),
         ...(recordedOverride && { recordedOverride }),
@@ -265,11 +282,11 @@ async function reopenAuthorResolvedThreads(
   }
 }
 
-/** Reopens the thread `threadId` that the PR author resolved, and returns whether that worked. A failure is logged and leaves the thread resolved. */
+/** Reopens the thread `threadId` that someone other than Manki resolved, and returns whether that worked. A failure is logged and leaves the thread resolved. */
 async function reopenThread(octokit: Octokit, threadId: string): Promise<boolean> {
   try {
     await unresolveReviewThread(octokit, threadId);
-    core.info(`Reopened thread ${threadId} that the PR author resolved`);
+    core.info(`Reopened thread ${threadId} that someone other than Manki resolved`);
     return true;
   } catch (error) {
     core.warning(`Failed to reopen thread ${threadId}: ${error}`);
@@ -298,15 +315,10 @@ async function announceSecurityOverrides(octokit: Octokit, overrides: Array<Requ
 /**
  * Returns the bot review threads that hold an approval: every blocking thread, and every thread in `named`, that is
  * not cleared. Note threads posted by older versions never block, matching the verdict's bar.
- * A resolved thread is cleared only when Manki resolved it, which it does after the judge marks it
- * addressed or a maintainer agrees, when `mayClearSecurityThread` accepts the resolver,
- * or when the PR author resolved it with `prAuthorRole`, a role `authorClearRole` confirmed.
+ * A resolved thread is cleared only when `settledBy` gives a reason, as in a review round.
  */
 function unclearedThreads(threads: ReviewThread[], bot: BotIdentity, prAuthorLogin?: string, prAuthorRole?: AuthorClearRole, named: ReadonlySet<string> = new Set()): ReviewThread[] {
-  return threads.filter(t => (t.isBlocking || named.has(t.id)) && !(t.isResolved && (
-    isBotLogin(bot, t.resolvedByLogin) || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin)
-    || !!securityOverrideOf(t, prAuthorLogin, prAuthorRole)
-  )));
+  return threads.filter(t => (t.isBlocking || named.has(t.id)) && !settledBy(t, bot, prAuthorLogin, prAuthorRole));
 }
 
 /** The change a round reviews: its commit, and the `changeDigest` of its diff when known. */
@@ -529,10 +541,12 @@ function rolePhrase(role: AuthorClearRole, orHigher = false): string {
  * Lists the threads `open` that hold an approval, for a person who asks why there is none. `named` holds the threads
  * the covering review blocks on whatever grade they show. `instead` replaces the last line when resolving them is not enough.
  */
-function blockingThreadsLine(open: ReviewThread[], named: ReadonlySet<string>, clearRole: AuthorClearRole | undefined, instead?: string): string {
+function blockingThreadsLine(open: ReviewThread[], named: ReadonlySet<string>, bot: BotIdentity, clearRole: AuthorClearRole | undefined, instead?: string): string {
   const list = open.map(t => {
     const title = sanitizeMarkdown(t.findingTitle);
-    const note = t.isResolved ? ` (resolved by ${inline(t.resolvedByLogin ?? 'someone')}, who may not clear it)`
+    const unbacked = t.repliesUnread ? 'the thread has too many comments for Manki to read its latest reply' : 'the latest reply is not from a maintainer other than the PR author';
+    const note = isBotLogin(bot, t.resolvedByLogin) ? ` (Manki resolved it, but no review record confirms a fix, and ${unbacked})`
+      : t.isResolved ? ` (resolved by ${inline(t.resolvedByLogin ?? 'someone')}, who may not clear it)`
       : !t.isBlocking && named.has(t.id) ? ' (Manki\'s latest review blocks on this thread)' : '';
     return `- ${t.threadUrl ? `[${title}](${t.threadUrl})` : title}${note}`;
   }).join('\n');
@@ -700,9 +714,9 @@ async function approveOrSayWhy(
     return withheld(async () => {
       const reviews = await listReviews();
       const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, reviews);
-      if (!covered) return blockingThreadsLine(uncleared(), new Set(), config?.author_clear_role, unreviewedLine(pr.head.sha, config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config)));
+      if (!covered) return blockingThreadsLine(uncleared(), new Set(), bot, config?.author_clear_role, unreviewedLine(pr.head.sha, config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config)));
       const block = blockOf(reviews, bot, covered, threads, owner, repo, prNumber);
-      return blockingThreadsLine(uncleared(block.named), block.named, config?.author_clear_role, block.held && `${block.held}\n\n${NEXT_ROUND_LINE}`);
+      return blockingThreadsLine(uncleared(block.named), block.named, bot, config?.author_clear_role, block.held && `${block.held}\n\n${NEXT_ROUND_LINE}`);
     });
   }
 
@@ -751,7 +765,7 @@ async function approveOrSayWhy(
   const open = uncleared(block.named);
   if (open.length > 0) {
     core.info('A thread the covering review blocks on is not resolved — skipping auto-approve');
-    return withheld(blockingThreadsLine(open, block.named, config?.author_clear_role));
+    return withheld(blockingThreadsLine(open, block.named, bot, config?.author_clear_role));
   }
 
   const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, reason => approvalRecord('held', reason, pr.head.sha));

@@ -158,8 +158,7 @@ class FakeGitHub {
       if (body.resolved ? this.refuseResolve : this.refuseReopen) return json({ error: 'Changing the thread failed', request_id: 'r-1' }, 500);
       const thread = this.threads.find(t => t.id === body.thread_id);
       if (!thread) return json({ error: 'No Manki review thread with that id on the run\'s pull request' }, 404);
-      thread.isResolved = body.resolved === true;
-      thread.resolvedBy = thread.isResolved ? { login: APP_LOGIN.replace(/\[bot\]$/, '') } : null;
+      this.setResolved(thread, body.resolved === true, APP_LOGIN);
       return json({ resolved: thread.isResolved });
     }
     if (pathname === '/graphql' ? String(body.query).trimStart().startsWith('mutation') : method !== 'GET') {
@@ -332,6 +331,16 @@ class FakeGitHub {
     return json(slice, 200, headers);
   }
 
+  /**
+   * Resolves or reopens `thread` as `login`. GitHub documents `resolvedBy` only as "The user who resolved this thread",
+   * so resolving a thread that is already resolved keeps its resolver here.
+   */
+  private setResolved(thread: FakeThread, resolved: boolean, login: string): void {
+    if (resolved && !thread.isResolved) thread.resolvedBy = { login: login.replace(/\[bot\]$/, '') };
+    if (!resolved) thread.resolvedBy = null;
+    thread.isResolved = resolved;
+  }
+
   private graphql(query: string, variables: Record<string, unknown>, login: string): unknown {
     const after = (cursor: unknown) => (typeof cursor === 'string' ? Number(cursor) : 0);
     const connection = <T>(items: T[], first: number, start: number) => ({
@@ -340,10 +349,7 @@ class FakeGitHub {
     });
     if (query.includes('unresolveReviewThread') || query.includes('resolveReviewThread')) {
       const thread = this.threads.find(t => t.id === variables.threadId);
-      if (thread) {
-        thread.isResolved = !query.includes('unresolveReviewThread');
-        thread.resolvedBy = thread.isResolved ? { login: login.replace(/\[bot\]$/, '') } : null;
-      }
+      if (thread) this.setResolved(thread, !query.includes('unresolveReviewThread'), login);
       return { resolveReviewThread: { thread: { isResolved: thread?.isResolved } }, unresolveReviewThread: { thread: { isResolved: thread?.isResolved } } };
     }
     if (query.includes('addPullRequestReviewThreadReply')) {
@@ -1272,7 +1278,7 @@ describe('runFullReview end to end', () => {
 
     it.each<[string, string, () => Promise<FakeThread>, string | undefined]>([
       ['a maintainer resolved', 'bob', async () => mockGitHub.threads[0], undefined],
-      ['the judge marked addressed', 'alice', async () => {
+      ['the judge marked addressed', 'manki-review', async () => {
         mockGitHub.headSha = 'c3'.repeat(20);
         mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
         Object.assign(mockLLM.replies, READY_REPLIES, {
@@ -1467,7 +1473,10 @@ describe('runFullReview end to end', () => {
       expect(thread.isResolved).toBe(true);
     });
 
-    it('pauses automatic review when a security blocker comes back after a maintainer dismissed it', async () => {
+    it.each<[string, string, string]>([
+      ['dismissed it', '@manki dismiss', ''],
+      ['replied and Manki withdrew it', 'Every caller bounds both inputs.', 'Withdrawn. Every caller bounds both inputs, so the sum cannot overflow.'],
+    ])('counts a security blocker as settled once a maintainer %s, and pauses automatic review when it comes back', async (_label, reply, answer) => {
       const security = (sameAs?: string) => JSON.stringify({
         summary: 'One blocker.',
         findings: [{ id: 1, title: BLOCKER.title, row: 'severe', security: true, reasoning: 'Outside input reaches it.', ...(sameAs && { sameAs }) }],
@@ -1476,15 +1485,28 @@ describe('runFullReview end to end', () => {
       await reviewRound();
       const [thread] = mockGitHub.threads;
 
-      await replyInThread(thread, '@manki dismiss', '', 'bob');
+      await replyInThread(thread, reply, answer, 'bob');
       expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, 'manki-review']);
       expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
 
-      // The next push leaves the code as it was, and the round raises the blocker again. No agreement drops a blocker.
+      // A push that raises nothing is approved, and the judge is not shown the settled thread as open.
       const readme = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+Sums are not checked.\n';
       mockGitHub.headSha = 'e5'.repeat(20);
       mockGitHub.prDiffs[mockGitHub.headSha] = `${PR_DIFF}${readme}`;
       mockGitHub.commitDiffs[mockGitHub.headSha] = readme;
+      Object.assign(mockLLM.replies, READY_REPLIES);
+      await reviewRound();
+      const clean = postedReviews().at(-1)!;
+      expect([clean.state, mockGitHub.roundContext(clean).meta.outcome]).toEqual(['APPROVED', 'READY']);
+      expect(mockLLM.asked.judge).not.toContain('PRRT_1');
+
+      // The next push renames the variable and leaves the sum unchecked, and the round raises the blocker again. Neither
+      // an agreement nor Manki's own answer drops a blocker on code the push changed.
+      const renamed = ['+  const sum = a + b;\n+  return sum;', '+  const total = a + b;\n+  return total;'] as const;
+      mockGitHub.headSha = 'f6'.repeat(20);
+      mockGitHub.mathAt[mockGitHub.headSha] = MATH_TS.replace('const sum = a + b;\n  return sum;', 'const total = a + b;\n  return total;');
+      mockGitHub.prDiffs[mockGitHub.headSha] = `${PR_DIFF.replace(...renamed)}${readme}`;
+      mockGitHub.commitDiffs[mockGitHub.headSha] = `diff --git a/src/math.ts b/src/math.ts\n--- a/src/math.ts\n+++ b/src/math.ts\n@@ -2,2 +2,2 @@\n${renamed[0].replace(/^\+/gm, '-')}\n${renamed[1]}\n`;
       Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: security('P1') });
       await reviewRound();
 
@@ -1493,6 +1515,115 @@ describe('runFullReview end to end', () => {
       expect([again.state, mockGitHub.roundContext(again).meta.outcome]).toEqual(['CHANGES_REQUESTED', 'NOT_CONVERGING']);
       expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'blocker', title: BLOCKER.title })]);
       expect(again.body).toContain('Needs a human');
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ['security', { row: 'severe', security: true }],
+      ['plain', { row: 'wrong' }],
+    ])('blocks on a %s blocker thread Manki resolved with nothing to back it, until a round confirms the fix', async (_label, cell) => {
+      const raised = JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, ...cell, reasoning: 'Reachable from any caller.' }] });
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES, { judge: raised });
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+
+      // As after a run that resolved the thread and stopped before it posted the review with the record.
+      await resolveThread(thread, 'manki-review');
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+
+      // A push that leaves the file alone shows the judge the thread, and the round blocks on it.
+      const readme = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+Sums are not checked.\n';
+      mockGitHub.headSha = 'e5'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = `${PR_DIFF}${readme}`;
+      mockGitHub.commitDiffs[mockGitHub.headSha] = readme;
+      Object.assign(mockLLM.replies, READY_REPLIES);
+      await reviewRound();
+      expect(mockLLM.asked.judge).toContain('PRRT_1');
+      const blocked = postedReviews().at(-1)!;
+      expect(blocked.state).toBe('CHANGES_REQUESTED');
+      expect(blocked.body).toContain('Still open from earlier reviews');
+
+      // The fix push lets the judge mark the thread addressed, and that record backs Manki's resolve from then on.
+      mockGitHub.headSha = 'c3'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = `${FIXED_PR_DIFF}${readme}`;
+      Object.assign(mockLLM.replies, READY_REPLIES, {
+        judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
+      });
+      await reviewRound();
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(postedReviews().at(-1)!.state).toBe('APPROVED');
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, 'manki-review']);
+    });
+
+    it('counts a fix the judge confirms on a thread the PR author resolved twice, by resolving the thread as Manki', async () => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+
+      // Manki reopens the thread once. The author's second resolve stays, and keeps blocking.
+      await resolveThread(thread, 'alice');
+      expect(thread.isResolved).toBe(false);
+      await resolveThread(thread, 'alice');
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, 'alice']);
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+
+      // The fix push also brings a new blocker, so the round requests changes and the approval is left to the state check.
+      const other = { ...BLOCKER, title: 'Range error is never caught', line: 3, description: 'Callers do not expect a throw.', proof: ['src/math.ts:3'] };
+      mockGitHub.headSha = 'c3'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
+      Object.assign(mockLLM.replies, READY_REPLIES, {
+        reviewer: JSON.stringify([other]),
+        judge: JSON.stringify({
+          summary: 'One blocker.',
+          findings: [{ id: 1, title: other.title, row: 'wrong', reasoning: 'Reachable from any caller.' }],
+          threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }],
+        }),
+      });
+      await reviewRound();
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(postedReviews().at(-1)!.state).toBe('CHANGES_REQUESTED');
+      // GitHub names Manki only because the thread was reopened first, and the round record backs Manki's resolve.
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, 'manki-review']);
+
+      await resolveThread(mockGitHub.threads[1], 'bob');
+      expect(postedReviews().at(-1)!.state).toBe('APPROVED');
+    });
+
+    it('blocks in the round and in the approval check when the PR author resolves a reopened thread the judge once marked addressed', async () => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+      mockGitHub.headSha = 'c3'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
+      Object.assign(mockLLM.replies, READY_REPLIES, {
+        judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
+      });
+      await reviewRound();
+      expect([postedReviews().at(-1)!.state, thread.resolvedBy?.login]).toEqual(['APPROVED', 'manki-review']);
+
+      // Someone reopens the thread and the author resolves it. The old record backs only Manki's own resolve, so Manki
+      // reopens the thread once, and the author's second resolve stays.
+      await resolveThread(thread, 'alice');
+      expect(thread.isResolved).toBe(false);
+      await resolveThread(thread, 'alice');
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, 'alice']);
+
+      const readme = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # widgets\n+Sums are checked.\n';
+      mockGitHub.headSha = 'e5'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = `${FIXED_PR_DIFF}${readme}`;
+      mockGitHub.commitDiffs[mockGitHub.headSha] = readme;
+      Object.assign(mockLLM.replies, READY_REPLIES);
+      await reviewRound();
+      const blocked = postedReviews().at(-1)!;
+      expect(mockLLM.asked.judge).toContain('PRRT_1');
+      expect(blocked.state).toBe('CHANGES_REQUESTED');
+      expect(blocked.body).toContain('Still open from earlier reviews');
+
+      await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: String(PR_NUMBER) });
+      expect(postedReviews().at(-1)!.state).toBe('CHANGES_REQUESTED');
+
+      await resolveThread(thread, 'bob');
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(postedReviews().at(-1)!.state).toBe('APPROVED');
     });
   });
 });

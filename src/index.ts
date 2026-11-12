@@ -76,6 +76,7 @@ import {
   isApprovedOnCommit,
   hasBotReviewOnCommit,
   fetchPRComments,
+  fetchReviewThreadNodes,
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
   markProgressCommentSuperseded,
@@ -88,7 +89,7 @@ import {
   showSettings,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, findUnchangedVerdict, fixedMarker, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -1358,6 +1359,14 @@ async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Pr
   const interRoundDiffKnownEmpty = hasPriorRounds && isEmptyInterRoundDiff(run.interRoundDiff);
   const resolved: OpenThread[] = [];
   const stillOpen: OpenThread[] = [];
+  let resolvedByOthers: Promise<Set<string>> | undefined;
+  const resolvedByOther = (threadId: string) => (resolvedByOthers ??= fetchReviewThreadNodes<{ id: string; isResolved: boolean; resolvedBy: { login: string } | null }>(
+    run.octokit, run.owner, run.repo, run.prNumber, 'id isResolved resolvedBy { login }',
+  ).then(live => new Set(live.filter(t => t.isResolved && !isBotLogin(run.bot, t.resolvedBy?.login)).map(t => t.id)))
+    .catch((error: unknown) => {
+      core.warning(`Could not read who resolved the threads, resolving them as they are: ${error}`);
+      return new Set<string>();
+    })).then(ids => ids.has(threadId));
   if (result.threadEvaluations && result.threadEvaluations.length > 0) {
     const knownThreads = new Map(run.openThreads.map(t => [t.threadId, t]));
     for (const { threadId, status, reason } of result.threadEvaluations) {
@@ -1373,6 +1382,8 @@ async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Pr
         continue;
       }
       try {
+        // The round record backs only a resolve GitHub credits to Manki, so a thread someone else resolved is reopened first.
+        if (await resolvedByOther(threadId) && !await reopenThread(run.octokit, threadId)) throw new Error('someone else resolved it, and it could not be reopened for Manki to resolve');
         await resolveReviewThread(run.octokit, threadId, 'ADDRESSED');
         core.info(`Judge resolved: "${reason}" — thread ${threadId}`);
       } catch (error) {

@@ -99,12 +99,19 @@ describe('unclearedThreads', () => {
     expect(unclearedThreads(threads, TEST_BOT)).toEqual([]);
   });
 
-  it.each([true, false])('counts a resolved blocking thread only for Manki or a human other than the PR author, security %s', isSecurity => {
-    const resolvedBy = (resolvedByLogin: string) => [makeThread({ isResolved: true, isSecurity, resolvedByLogin })];
+  it.each([true, false])('counts a resolved blocking thread only once it is settled, security %s', isSecurity => {
+    const resolvedBy = (resolvedByLogin: string | undefined, evidence: Partial<ReviewThread> = {}) => [makeThread({ isResolved: true, isSecurity, resolvedByLogin, ...evidence })];
     expect(unclearedThreads(resolvedBy('author'), TEST_BOT, 'author')).not.toEqual([]);
     expect(unclearedThreads(resolvedBy('dependabot[bot]'), TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(resolvedBy(undefined), TEST_BOT, 'author')).not.toEqual([]);
     expect(unclearedThreads(resolvedBy('alice'), TEST_BOT, 'author')).toEqual([]);
-    expect(unclearedThreads(resolvedBy('manki-review[bot]'), TEST_BOT, 'author')).toEqual([]);
+    // Manki's own resolve counts only with a record that says addressed, or after a latest reply from a maintainer other than the PR author.
+    expect(unclearedThreads(resolvedBy('manki-review[bot]'), TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(resolvedBy('manki-review[bot]', { addressed: true }), TEST_BOT, 'author')).toEqual([]);
+    expect(unclearedThreads(resolvedBy('manki-review[bot]', { writerReplyLogin: 'alice' }), TEST_BOT, 'author')).toEqual([]);
+    expect(unclearedThreads(resolvedBy('manki-review[bot]', { writerReplyLogin: 'author' }), TEST_BOT, 'author')).not.toEqual([]);
+    // Neither makes the PR author's own resolve count, also not after a thread was reopened.
+    expect(unclearedThreads(resolvedBy('author', { addressed: true, writerReplyLogin: 'alice' }), TEST_BOT, 'author')).not.toEqual([]);
     // With the PR author unknown, any human resolver has write access.
     expect(unclearedThreads(resolvedBy('alice'), TEST_BOT)).toEqual([]);
     // A PR author with a confirmed role clears their own.
@@ -266,6 +273,34 @@ describe('fetchBotReviewThreads', () => {
     const unreadThreads = await fetchBotReviewThreads(unread, TEST_BOT, 'owner', 'repo', 1);
     expect(unreadThreads.map(t => [t.id, t.isBlocking])).toEqual([['s', true], ['l', true]]);
     expect(unclearedThreads(unreadThreads, TEST_BOT).map(t => t.id)).toEqual(['l']);
+  });
+
+  it('reads what backs a thread Manki resolved: a record that says addressed, or a latest reply from someone with write access', async () => {
+    const manki = 'manki-review[bot]';
+    const reply = (login: string) => ({ body: 'Every caller bounds it.', author: { login } });
+    const resolved = (id: string, replies: ReturnType<typeof reply>[], resolvedBy = manki) => makeGraphqlFetchThreadNode({ id, isResolved: true, resolvedBy, replies });
+    const graphql = jest.fn().mockResolvedValueOnce(makeGraphqlFetchResponse([
+      resolved('addressed', []),
+      resolved('alone', []),
+      resolved('writer', [reply('author'), reply('bob'), reply(manki)]),
+      resolved('reader', [reply('dave')]),
+      resolved('author-last', [reply('bob'), reply('author')]),
+      resolved('by-author', [reply('bob')], 'author'),
+      // A thread at the comment limit may hide a later reply.
+      resolved('cut-off', Array.from({ length: 99 }, () => reply('bob'))),
+    ]));
+    const octokit = threadsOctokit(graphql, [{ id: 1, user: { login: manki }, body: `<!-- manki-context: ${JSON.stringify(makeRoundContext(1, {
+      judge: { summary: '', threadEvaluations: [{ threadId: 'addressed', status: 'addressed', reason: 'r' }, { threadId: 'alone', status: 'not_addressed', reason: 'r' }] },
+    }))} -->` }]);
+    const permissions: Record<string, string> = { author: 'write', bob: 'write', dave: 'read' };
+    Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async ({ username }: { username: string }) => ({ data: { permission: permissions[username] } })) } });
+
+    const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
+
+    expect(threads.flatMap(t => t.addressed ? [t.id] : [])).toEqual(['addressed']);
+    expect(threads.flatMap(t => t.writerReplyLogin ? [[t.id, t.writerReplyLogin]] : [])).toEqual([['writer', 'bob'], ['author-last', 'author']]);
+    expect(unclearedThreads(threads, TEST_BOT, 'author').map(t => t.id)).toEqual(['alone', 'reader', 'author-last', 'by-author', 'cut-off']);
+    expect(threads.flatMap(t => t.repliesUnread ? [t.id] : [])).toEqual(['cut-off']);
   });
 
   it('filters out non-bot threads', async () => {
@@ -542,7 +577,7 @@ describe('checkAndAutoApprove', () => {
       id, body: `<!-- manki:${severity}:${titleToSlug(at.title ?? 'Lock is never released')} --> ${id}`, isResolved: !!resolvedBy, ...(resolvedBy && { resolvedBy }),
       path: 'src/lock.ts', ...(at.line !== undefined && { line: at.line }), ...(at.commit && { commit: at.commit }),
     });
-    const fixed = (id = 't1', severity: 'blocker' | 'warning' = 'blocker', at: Place = {}) => thread(id, severity, 'manki-review[bot]', at);
+    const fixed = (id = 't1', severity: 'blocker' | 'warning' = 'blocker', at: Place = {}) => thread(id, severity, 'reviewer', at);
     const NO_THREAD = 'names no thread for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
     const GONE = 'names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- Lock is never released (`src/lock.ts`)';
     const NEXT_ROUND = 'The next review round decides. Push a commit or comment `@manki review` to start one.';
@@ -682,7 +717,7 @@ describe('checkAndAutoApprove', () => {
       expect(await check(raced.body, [])).toBe(false);
       held();
       expect(createReviewMock).not.toHaveBeenCalled();
-      expect(await check(raced.body, [posted('manki-review[bot]')])).toBe(true);
+      expect(await check(raced.body, [posted('reviewer')])).toBe(true);
       expect(createReviewMock.mock.calls.map(([args]) => args.event)).toEqual(['APPROVE']);
     });
 
@@ -747,7 +782,7 @@ describe('checkAndAutoApprove', () => {
       };
       expect(await asked(reviews)).toBe(`${told}\n\n${NEXT_ROUND}`);
       const withThread = [{ ...reviews[1], body: roundBody(blockingRound('sha-2')) }];
-      const own = (commit: string) => [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'manki-review[bot]', commit })];
+      const own = (commit: string) => [makeGraphqlFetchThreadNode({ isResolved: true, commit })];
       // The same thread on an earlier commit is not that round's.
       expect(await asked(withThread, own('sha-1'))).toBe(`The record of Manki's review of \`sha-2\` names a thread that does not exist for 1 blocker, so resolving threads cannot lift the block:\n- test finding (\`src/a.ts\`)\n\n${NEXT_ROUND}`);
       expect(createReviewMock).not.toHaveBeenCalled();
@@ -761,6 +796,10 @@ describe('checkAndAutoApprove', () => {
         `1 thread blocks the approval:\n- [Null deref in \`parse\`](https://github.com/o/r/pull/1#r1)\n\n${FOLLOWS}`],
       ['a blocking thread the PR author resolved', { threads: [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'author' })] },
         `1 thread blocks the approval:\n- test finding (resolved by \`author\`, who may not clear it)\n\n${FOLLOWS}`],
+      ['a blocking thread Manki resolved with no addressed record and no reply from a maintainer', { threads: [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'manki-review[bot]' })] },
+        `1 thread blocks the approval:\n- test finding (Manki resolved it, but no review record confirms a fix, and the latest reply is not from a maintainer other than the PR author)\n\n${FOLLOWS}`],
+      ['a blocking thread Manki resolved that is at the comment limit', { threads: [makeGraphqlFetchThreadNode({ isResolved: true, resolvedBy: 'manki-review[bot]', replies: Array.from({ length: 99 }, () => ({ body: 'Every caller bounds it.', author: { login: 'bob' } })) })] },
+        `1 thread blocks the approval:\n- test finding (Manki resolved it, but no review record confirms a fix, and the thread has too many comments for Manki to read its latest reply)\n\n${FOLLOWS}`],
       ['an open thread the review blocks on though its marker says note',
         { threads: [thread('t1', 'note')], existingReviews: [{ id: 7, body: blocked([], [prior('t1')]), state: 'CHANGES_REQUESTED', commit_id: HEAD, user }] },
         `1 thread blocks the approval:\n- Lock is never released (Manki's latest review blocks on this thread)\n\n${FOLLOWS}`],

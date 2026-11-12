@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { BotIdentity, sanitizeMarkdown } from './github';
 import { filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
-import { parseFindingData } from './recap';
+import { isGuarded, parseFindingData } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
 import { withMarkers } from './utils';
 
@@ -125,8 +125,8 @@ export async function handleIssueBoxTick(
     // Opening with "Agreed." records the deferral, so a later round does not raise the finding in a new thread.
     if (filed && thread) await replyToReviewThread(octokit, thread.id, `Agreed. Filed as #${filed.number} for later work.`);
   }
-  // A deferred finding no longer needs this PR, but only someone other than the author clears a blocker.
-  if (thread && allFiled && !thread.isBlocking && !thread.isResolved) await resolveReviewThread(octokit, thread.id, 'WONT_FIX');
+  // A deferred finding no longer needs this PR, but only someone other than the author clears a blocker or a security finding.
+  if (thread && allFiled && !isGuarded(thread) && !thread.isResolved) await resolveReviewThread(octokit, thread.id, 'WONT_FIX');
 }
 
 const BLOCK_HEADER_RE = /^\*\*(?:Blocker|Warning|Suggestion|Nitpick)\b/gm;
