@@ -1518,6 +1518,31 @@ describe('runFullReview end to end', () => {
       expect(thread.comments.at(-1)?.body).toMatch(/^Kept\. Nothing bounds `b`/);
     });
 
+    it('tells the person when a reply gets no answer, fails the run, and changes no thread and approves nothing', async () => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+      // A maintainer resolved the thread, so an approval check would approve the PR.
+      Object.assign(thread, { isResolved: true, resolvedBy: { login: 'bob' } });
+      const writes = mockGitHub.writes.length;
+
+      mockLLM.onCall = () => { throw new Error('Failed to install Claude CLI: The operation was aborted due to timeout'); };
+      await replyInThread(thread, 'The caller bounds both inputs.', 'unused');
+
+      expect(thread.comments.at(-1)?.body).toBe('Manki could not answer this reply (Failed to install Claude CLI: The operation was aborted due to timeout). Reply again to start a new try.\n\n<!-- manki -->');
+      expect(core.setFailed).toHaveBeenCalledWith('Manki encountered an error: Failed to install Claude CLI: The operation was aborted due to timeout');
+      expect(thread).toMatchObject({ isResolved: true, resolvedBy: { login: 'bob' } });
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      // The reaction and the note are all the run wrote.
+      expect(mockGitHub.writes.slice(writes).filter(write => !write.includes('/reactions'))).toHaveLength(1);
+
+      // A new reply starts a new try, and that run ends with the approval check as every answered reply does.
+      mockLLM.onCall = undefined;
+      await replyInThread(thread, 'The caller bounds both inputs, as I said.', 'Kept. Nothing bounds `b` before `src/math.ts:3` returns the sum.');
+      expect(thread.comments.at(-1)?.body).toMatch(/^Kept\. Nothing bounds `b`/);
+      expect(postedReviews().map(r => r.state)).toContain('APPROVED');
+    });
+
     it('never approves a PR that conflicts with its base, and says so once per head', async () => {
       mockGitHub.mergeable = false;
       const held = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result. If the push starts no review, as while automatic review is off or paused, comment `@manki review`.';

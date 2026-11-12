@@ -1086,13 +1086,36 @@ describe('handleReviewCommentReply', () => {
     expect(body).toContain(`\n\nSaved a learning for \`src/fi'le.ts\`, so findings like this one are not raised there again. \`/manki forget ${learning.id}\` removes it.\n\n<!-- manki -->`);
   });
 
-  it('handles API errors gracefully', async () => {
-    setContext({ comment: { id: 1, body: 'reply text', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'CONTRIBUTOR' }, pull_request: { number: 1 } });
+  it('throws when a reply gets no answer, and says so in the thread only when the thread is Manki\'s', async () => {
+    setContext({ comment: { id: 1, body: 'reply text', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' }, pull_request: { number: 1 } });
     const octokit = createMockOctokit();
-    octokit.rest.pulls.getReviewComment.mockRejectedValue(new Error('API error'));
     const client = createMockClient();
-    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to handle review comment reply'));
+    const reply = () => handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, MEMORY);
+
+    // Whose thread it is cannot be read, so nothing is posted in it.
+    octokit.rest.pulls.getReviewComment.mockRejectedValueOnce(new Error('API error'));
+    await expect(reply()).rejects.toThrow('API error');
+    expect(octokit.rest.pulls.createReplyForReviewComment).not.toHaveBeenCalled();
+
+    // The reason is shown without a token, a mention or a marker, and cut to a few words.
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { user: MANKI_USER, body: findingComment('blocker'), path: 'src/file.ts', line: 10 } });
+    const failure = new Error(`Failed to install Claude CLI: The operation was aborted due to timeout. ghs_abc123 @octocat <!-- manki-reopened --> ${'x'.repeat(300)}`);
+    jest.mocked(client.sendMessage).mockRejectedValue(failure);
+    await expect(reply()).rejects.toBe(failure);
+    const [[note], ...more] = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls;
+    expect(more).toEqual([]);
+    expect(note.comment_id).toBe(1);
+    expect(note.body).toMatch(/^Manki could not answer this reply \(Failed to install Claude CLI: The operation was aborted due to timeout\. \[REDACTED\] @\u200Boctocat {2}x+\.\.\.\)\. Reply again to start a new try\.\n\n<!-- manki -->$/);
+    expect(note.body.length).toBeLessThan(300);
+    // The note changes no thread and teaches the memory nothing.
+    expect(state.resolveReviewThread).not.toHaveBeenCalled();
+    expect(state.reopenThread).not.toHaveBeenCalled();
+    expect(memory.writeLearning).not.toHaveBeenCalled();
+
+    // A note that cannot be posted leaves the first failure as the error.
+    octokit.rest.pulls.createReplyForReviewComment.mockRejectedValueOnce(new Error('GitHub is down'));
+    await expect(reply()).rejects.toBe(failure);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to say that the reply got no answer: Error: GitHub is down'));
   });
 });
 
@@ -1378,6 +1401,19 @@ describe('handlePRComment error propagation', () => {
     const client = createMockClient();
     client.sendMessage = jest.fn().mockRejectedValue(new Error('API failure'));
     await expect(handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1)).rejects.toThrow('API failure');
+    // The person who asked is told, since the red run shows on no PR.
+    const note = 'Manki could not answer this comment (API failure). Comment again to start a new try.\n\n<!-- manki -->';
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith({ owner: 'test-owner', repo: 'test-repo', issue_number: 1, body: note });
+
+    setContext({ comment: { id: 43, body: '@manki what does this change?', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+    await expect(handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1)).rejects.toThrow('API failure');
+    expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(expect.objectContaining({ body: note }));
+
+    // A check that fails approves nothing and says so.
+    setContext({ comment: { id: 44, body: '@manki check', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+    jest.mocked(state.approveOrSayWhy).mockRejectedValueOnce(new Error('GitHub returned 502'));
+    await expect(handlePRComment(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig)).rejects.toThrow('GitHub returned 502');
+    expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(expect.objectContaining({ body: note.replace('API failure', 'GitHub returned 502') }));
   });
 });
 
