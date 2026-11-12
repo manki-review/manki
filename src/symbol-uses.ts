@@ -657,7 +657,7 @@ function formatRelatedUses(kind: RelatedRepoKind, names: string[], found: Map<st
   const record: RelatedUsesRecord = Object.fromEntries(Object.entries(lists).filter(([, list]) => list.length > 0));
   if (blocks.length === 0) return { section: '', record };
   const notes = [
-    ...(missing.length > 0 ? [`No ${kind} line holds: ${missing.slice(0, MAX_HIDDEN_NAMES).map(n => `\`${n}\``).join(', ')}${missing.length > MAX_HIDDEN_NAMES ? `, and ${missing.length - MAX_HIDDEN_NAMES} more` : ''}.`] : []),
+    ...(missing.length > 0 ? [`No ${kind} line holds: ${quotedNames(missing)}.`] : []),
     ...(capped.length > 0 ? [`The cap of ${MAX_REFERENCE_LINES} lines left out: ${capped.slice(0, MAX_HIDDEN_NAMES).map(name => `\`${name}\` (${found.get(name)!.length} ${found.get(name)!.length === 1 ? 'line' : 'lines'})`).join(', ')}${capped.length > MAX_HIDDEN_NAMES ? `, and ${capped.length - MAX_HIDDEN_NAMES} more` : ''}.`] : []),
   ];
   const { title, task, searched = 'changes or reads' } = RELATED_SECTIONS[kind];
@@ -1688,6 +1688,11 @@ function formatSymbolUses(
     common: common.map(e => e.symbol.name),
     capped: hidden.map(e => e.symbol.name),
   };
+}
+
+/** Returns the first `MAX_HIDDEN_NAMES` of `names` in code spans, and how many more there are. */
+function quotedNames(names: string[]): string {
+  return `${names.slice(0, MAX_HIDDEN_NAMES).map(name => `\`${name}\``).join(', ')}${names.length > MAX_HIDDEN_NAMES ? `, and ${names.length - MAX_HIDDEN_NAMES} more` : ''}`;
 }
 
 function namesWithCounts(entries: Array<{ symbol: ChangedSymbol; uses: Hit[] }>): string {
