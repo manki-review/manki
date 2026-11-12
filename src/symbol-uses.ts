@@ -368,10 +368,13 @@ const VENDORED_PATH = /(?:^|\/)(?:vendor|third_party|thirdparty|external|extern|
 const DOC_FILE = /\.(?:md|mdx|rst|txt|adoc)$|(?:^|\/)(?:LICENSE|COPYING|NOTICE|AUTHORS)[^/]*$/i;
 // A comment from its start to the end of the line, such as `// note` or `# note`, but not a Rust attribute `#[...]`.
 const COMMENT = /(?:^\s*(?:\*|--|<!--)|(?:^|\s)(?:\/\/|\/\*|#(?![[!]))).*$/;
-// The package's own name in `Cargo.toml`, `pyproject.toml` or `package.json`, or the module in `go.mod`.
-const PACKAGE_NAME = /^\s*(?:name\s*=\s*"|"name"\s*:\s*"|module\s+)([^"\s]+)/m;
+// The package's own name in `Cargo.toml`, `pyproject.toml` or `package.json`, or the module in `go.mod`. Its blanks stay
+// on one line: `\s` also matches a line end, so a run of empty lines would be read again from each of its lines.
+const PACKAGE_NAME = /^[ \t]*(?:name[ \t]*=[ \t]*"|"name"[ \t]*:[ \t]*"|module[ \t]+)([^"\s]+)/m;
 /** A longer package name is not looked for in a manifest. npm allows 214 characters. */
 const MAX_PACKAGE_NAME_CHARS = 256;
+/** The manifest text one round reads and searches for package names. Past it a package may depend on any other. */
+const MAX_MANIFEST_WORK_BYTES = 64 * 1024 * 1024;
 const MANIFESTS = ['Cargo.toml', 'package.json', 'go.mod', 'pyproject.toml', 'setup.py', 'pom.xml', 'build.gradle', 'build.gradle.kts'];
 
 interface ChangedSymbol {
@@ -1604,46 +1607,72 @@ function grepFailureReason({ code, killed, stderr = '' }: GrepFailure, pattern: 
   return `git grep failed with exit code ${code}${said ? `: ${said}` : ''}`;
 }
 
+/** A package's manifests: the name it gives the package, and their text without the line of that name. */
+interface Manifest {
+  name?: string;
+  rest: string;
+}
+
 /** Finds the package of each file, the nearest directory with a manifest such as `Cargo.toml`, and what it depends on. */
 class Packages {
   private readonly cache = new Map<string, string>();
-  private readonly manifests = new Map<string, string | undefined>();
+  private readonly manifests = new Map<string, Manifest | undefined>();
   private readonly dependencies = new Map<string, boolean>();
+  /** The manifest text read and searched so far, which `MAX_MANIFEST_WORK_BYTES` bounds. */
+  private work = 0;
 
   constructor(private readonly workspace: string) {}
 
   /**
    * Whether package `root` names the package `dependency` in its manifest, so code in it can use that package's symbols.
-   * It may when either manifest is not read, or `dependency` has no name of at most `MAX_PACKAGE_NAME_CHARS`.
+   * It may when either manifest is not read, `dependency` has no name of at most `MAX_PACKAGE_NAME_CHARS`, or the round
+   * has no manifest work left.
    */
   dependsOn(root: string, dependency: string): boolean {
     const key = `${root}\0${dependency}`;
     let depends = this.dependencies.get(key);
     if (depends === undefined) {
-      const [mine, theirs] = [this.manifest(root), this.manifest(dependency)];
-      const name = theirs === undefined ? undefined : PACKAGE_NAME.exec(theirs)?.[1];
-      depends = !name || name.length > MAX_PACKAGE_NAME_CHARS || mine === undefined
-        || new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`).test(mine.replace(PACKAGE_NAME, ''));
+      const [mine, name] = [this.manifest(root), this.manifest(dependency)?.name];
+      depends = !mine || !name || name.length > MAX_PACKAGE_NAME_CHARS || !this.spend(mine.rest.length, root)
+        || new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`).test(mine.rest);
       this.dependencies.set(key, depends);
     }
     return depends;
   }
 
-  /** Returns the text of the manifests of package `root`, or `undefined` when one of them is not read. */
-  private manifest(root: string): string | undefined {
-    if (!this.manifests.has(root)) this.manifests.set(root, this.read(root));
+  /** Returns what the manifests of package `root` say, or `undefined` when one of them is not read. */
+  private manifest(root: string): Manifest | undefined {
+    if (!this.manifests.has(root)) {
+      const text = this.read(root);
+      this.manifests.set(root, text === undefined ? undefined : { name: PACKAGE_NAME.exec(text)?.[1], rest: text.replace(PACKAGE_NAME, '') });
+    }
     return this.manifests.get(root);
+  }
+
+  /** Counts `bytes` of manifest text as worked on for `root`, and returns whether the round still had that much left. */
+  private spend(bytes: number, root: string): boolean {
+    const left = this.work <= MAX_MANIFEST_WORK_BYTES;
+    this.work += bytes;
+    if (left && this.work > MAX_MANIFEST_WORK_BYTES) {
+      core.info(`Uses outside the diff: the limit of ${MAX_MANIFEST_WORK_BYTES / 1024 / 1024} MB of manifest text was reached at ${root}, so from here on a package may depend on any other`);
+    }
+    return this.work <= MAX_MANIFEST_WORK_BYTES;
   }
 
   /** A manifest larger than `MAX_FILE_BYTES`, or one that resolves outside the workspace, is not read. */
   private read(root: string): string | undefined {
     try {
-      return MANIFESTS.filter(name => existsSync(join(this.workspace, root, name))).map((name) => {
+      let size = 0;
+      const paths = MANIFESTS.filter(name => existsSync(join(this.workspace, root, name))).map((name) => {
         const { absolute } = resolveInRoot(this.workspace, join(root, name));
-        if (statSync(absolute).size > MAX_FILE_BYTES) throw new Error(`${name} is too large`);
-        return readFileSync(absolute, 'utf-8');
-      }).join('\n');
-    } catch {
+        const bytes = statSync(absolute).size;
+        if (bytes > MAX_FILE_BYTES) throw new Error(`${name} is larger than ${MAX_FILE_BYTES / 1024 / 1024} MB`);
+        size += bytes;
+        return absolute;
+      });
+      return this.spend(size, root) ? paths.map(path => readFileSync(path, 'utf-8')).join('\n') : undefined;
+    } catch (error) {
+      core.info(`Uses outside the diff: did not read the manifest of ${root}, so its package may depend on any other: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
     }
   }

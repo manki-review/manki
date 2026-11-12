@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
@@ -116,13 +116,44 @@ describe('listUsesOutsideDiff', () => {
     // A manifest larger than a parsed file may be is not read, and neither is a package name longer than any registry
     // allows. Such a package may depend on the changed one, so its use ranks with the dependents, before a namesake.
     const change = { 'core/src/order.rs': ORDER('pub discount: Option<u16>, // percent from version 2') };
+    const base = { ...CRATES, 'core/src/order.rs': ORDER('pub discount: Option<u16>,') };
+    const withDependents = ['billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:9', 'promo/src/lib.rs:6', 'core/src/stats.rs:2', 'README.md:1', 'promo/src/lib.rs:2'];
+    const discountUses = (uses: UsesOutsideDiff) => uses.record?.symbols?.find(s => s.name === 'discount')?.uses;
+    const notRead = () => jest.mocked(core.info).mock.calls.map(([message]) => message).filter(message => message.includes('did not read the manifest'));
     for (const manifest of [{ 'promo/Cargo.toml': `[package]\nname = "promo"\n${'# filler\n'.repeat(120_000)}` }, { 'core/Cargo.toml': `[package]\nname = "${'n'.repeat(257)}"\n` }]) {
-      const unread = await usesFor({ ...CRATES, ...manifest, 'core/src/order.rs': ORDER('pub discount: Option<u16>,') }, change);
-      expect(unread.record?.symbols?.find(s => s.name === 'discount')?.uses).toEqual(
-        ['billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:9', 'promo/src/lib.rs:6', 'core/src/stats.rs:2', 'README.md:1', 'promo/src/lib.rs:2'],
-      );
+      expect(discountUses(await usesFor({ ...base, ...manifest }, change))).toEqual(withDependents);
     }
-  });
+    expect(notRead()).toEqual(['Uses outside the diff: did not read the manifest of promo, so its package may depend on any other: Cargo.toml is larger than 1 MB']);
+
+    // A manifest that is a link to a file outside the checkout is not read either, whatever that file says.
+    const outside = mkdtempSync(join(tmpdir(), 'manki-outside-'));
+    const { root, diff } = gitWorkspace(base, change);
+    try {
+      writeFileSync(join(outside, 'Cargo.toml'), CRATES['promo/Cargo.toml']);
+      rmSync(join(root, 'promo/Cargo.toml'));
+      symlinkSync(join(outside, 'Cargo.toml'), join(root, 'promo/Cargo.toml'));
+      expect(discountUses(await listUsesOutsideDiff(root, diff, { loadApi }))).toEqual(withDependents);
+      expect(notRead().at(-1)).toBe('Uses outside the diff: did not read the manifest of promo, so its package may depend on any other: promo/Cargo.toml is outside the repository');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+
+    // One round reads and searches at most 64 MB of manifest text. A package whose manifest falls past that may depend
+    // on the changed one, so its use ranks before the uses of the packages that were read and name no dependency.
+    const crates = Object.fromEntries(Array.from({ length: 36 }, (_, i) => `p${String(i).padStart(2, '0')}`).flatMap(dir => [
+      [`${dir}/Cargo.toml`, `[package]\nname = "${dir}"\n${'# filler\n'.repeat(116_000)}`],
+      [`${dir}/src/lib.rs`, 'pub struct Coupon {\n    pub discount: u8,\n}\n\nfn kind(c: &Coupon) -> u8 {\n    c.discount\n}\n'],
+    ]));
+    const many = await usesFor({ ...base, ...crates }, change);
+    expect(jest.mocked(core.info).mock.calls.map(([message]) => message).filter(message => message.includes('of manifest text'))).toEqual([
+      'Uses outside the diff: the limit of 64 MB of manifest text was reached at p32, so from here on a package may depend on any other',
+    ]);
+    expect(discountUses(many)).toEqual([
+      'billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:9', 'p32/src/lib.rs:6', 'p33/src/lib.rs:6', 'p34/src/lib.rs:6', 'p35/src/lib.rs:6',
+      'promo/src/lib.rs:6', 'core/src/stats.rs:2', 'p00/src/lib.rs:6', 'p01/src/lib.rs:6', 'p02/src/lib.rs:6',
+    ]);
+  }, 120_000);
 
   it('shows a redefined field\'s uses from other files before a fourth from one file, and ranks a same-named field of another type last, in Rust, Python, TypeScript and Go', async () => {
     const reads = (line: (i: number) => string) => Array.from({ length: 5 }, (_, i) => line(i)).join('\n');
@@ -834,6 +865,11 @@ ${body}	return true
     const holders = (n: number, prefix: string, type: string) => Array.from({ length: n }, (_, i) => `pub struct ${prefix}${i} {\n    pub user_id: ${type},\n}\n`).join('');
     const namesakes = await usesInLinearTime(n => [{ 'src/a.rs': holders(n, 'A', 'u32'), 'src/b.rs': holders(n, 'B', 'u32') }, { 'src/a.rs': holders(n, 'A', 'u64') }], 3_000);
     expect(namesakes.record?.symbols).toEqual([{ name: 'user_id', declared: 'src/a.rs:2', uses: Array.from({ length: 12 }, (_, i) => `src/b.rs:${3 * i + 2}`), notShown: 2_988 }]);
+
+    // A manifest that starts with many empty lines: its package name is found in one pass over the lines.
+    const blankLines = (n: number) => ({ ...CRATES, 'promo/Cargo.toml': `${'\n'.repeat(n)}[package]\nname = "promo"\n`, 'core/src/order.rs': ORDER('pub discount: Option<u16>,') });
+    const named = await usesInLinearTime(n => [blankLines(n), { 'core/src/order.rs': ORDER('pub discount: Option<u16>, // percent from version 2') }], 200_000);
+    expect(named.record?.symbols?.find(s => s.name === 'discount')?.uses?.at(-1)).toBe('promo/src/lib.rs:2');
   }, 300_000);
 
   it('parses at most 200 files a round and says how many it left unparsed', async () => {
