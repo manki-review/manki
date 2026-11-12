@@ -100,7 +100,7 @@ describe('refuteBlockers', () => {
       finding('Lead disproved', { severity: 'warning', notChecked: true, lead }),
       finding('Security disproved', { tags: ['security'] }),
       finding('Lead unsettled', { severity: 'warning', notChecked: true, lead }),
-      finding('Blocking lead unsettled', { notChecked: true, lead }),
+      finding('Blocking lead unsettled', { notChecked: true, lead: { checked: '', left: '' } }),
       finding('Failing'),
       finding('A warning', { severity: 'warning' }),
       finding('Elsewhere', { file: 'src/missing.ts' }),
@@ -168,6 +168,8 @@ describe('refuteBlockers', () => {
     expect(client.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15, checking: true }, timeoutMs: 600_000 });
     // Every refuter sees the same list of uses the finders and the judge saw, after the finding.
     expect(client.calls.every(([, , user]) => user.endsWith('\n\n## Uses Outside the Diff\n\nsrc/api.ts:9 checks both inputs.'))).toBe(true);
+    // A lead whose reviewer left a part empty says so, so no line of the message ends without a value.
+    expect(client.calls.find(([title]) => title === 'Blocking lead unsettled')![2]).toContain('- **Checked so far**: nothing\n- **Left to check**: not said\n');
   });
 
   it('runs a second refuter beside the first on each finding, and lets an agreed outcome grade it while a split keeps the grade', async () => {
@@ -309,7 +311,8 @@ describe('refuteBlockers', () => {
 
     const result = await run(fakeClient(replies, 'gpt-6.1-sol'));
 
-    // The message for a lead names what is left to check, which the prompt tells the refuter to start with.
+    // Pins the two message lines the prompt's paragraph on open leads depends on: it tells the refuter to start with
+    // what is left to check.
     expect(first.messages.find(([, user]) => user.includes(': Open lead\n'))?.[1]).toContain('- **Checked so far**: read src/math.ts:2\n- **Left to check**: find the callers');
     expect(result.map(f => [f.title, f.severity])).toEqual([
       ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ['Breaks a rule', 'warning'], ...cases.slice(4).map(([title]) => [title, 'blocker']),

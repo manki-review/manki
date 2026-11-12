@@ -15,7 +15,7 @@ import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { wrapUpNoted } from './tool-steps';
-import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, leadText, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -210,7 +210,7 @@ function buildRefuteMessage(finding: Finding, unchanged: boolean, usesOutsideDif
     `- **Description**: ${sanitizeForPromptEmbed(finding.description)}`,
     ...(finding.evidence?.checks.length ? [`- **Reviewer evidence**: ${finding.evidence.checks.map(sanitizeForPromptEmbed).join(' | ')}`] : []),
     ...(finding.evidence?.proof.length ? [`- **Proving lines cited**: ${finding.evidence.proof.map(sanitizeForPromptEmbed).join(', ')}`] : []),
-    ...(finding.lead ? [`- **Checked so far**: ${sanitizeForPromptEmbed(finding.lead.checked)}`, `- **Left to check**: ${sanitizeForPromptEmbed(finding.lead.left)}`] : []),
+    ...(finding.lead ? [`- **Checked so far**: ${sanitizeForPromptEmbed(leadText(finding.lead).checked)}`, `- **Left to check**: ${sanitizeForPromptEmbed(leadText(finding.lead).left)}`] : []),
     ...(finding.gradeIfConfirmed && finding.judgeNotes ? [`- **Judge's reasoning**: ${sanitizeForPromptEmbed(finding.judgeNotes.slice(0, MAX_JUDGE_NOTES_CHARS))}`] : []),
     ...(finding.doubts ? ['- **Premises the judge doubts**, to answer in order:', ...finding.doubts.map((d, i) => `  ${i + 1}. ${sanitizeForPromptEmbed(d.premise)}`)] : []),
     ...(outsideInput ? [`- **Outside input in this repository, as its maintainers define it**: ${sanitizeForPromptEmbed(outsideInput.trim())}`] : []),
