@@ -1050,17 +1050,21 @@ describe('refuteBlockers', () => {
     // lines, the related file 3. A citation of that form is looked up in the related checkout only, never in the PR.
     mkdirSync(join(workspace, 'acme', 'reports:src'), { recursive: true });
     writeFileSync(join(workspace, 'acme', 'reports:src', 'import.ts'), 'line of the PR\n'.repeat(6));
-    // Line 0, a range that runs backwards and a line past the last one, in a related repo and in the PR. `src/math.ts` has 3 lines.
-    const notThere = ['acme/reports:src/import.ts:0', 'acme/reports:src/import.ts:2-1', 'acme/reports:src/import.ts:2-40', 'acme/reports:src/import.ts:5', 'src/math.ts:0', 'src/math.ts:2-1', 'src/math.ts:2-40', 'src/math.ts:4'];
+    // Line 0, a range that runs backwards and a line past the last one, in a related repo and in the PR. `src/math.ts` has
+    // 3 lines. A range from a real line of a changed file to far past its end is no line either.
+    const notThere = ['acme/reports:src/import.ts:0', 'acme/reports:src/import.ts:2-1', 'acme/reports:src/import.ts:2-40', 'src/math.ts:0', 'src/math.ts:2-1', 'src/math.ts:2-40', 'src/math.ts:4', 'src/api.ts:1-999999'];
+    const prFileLine = 'acme/reports:src/import.ts:5';
     const client = fakeClient({
       'Related line confirms': answer('confirmed', `\`${consumerLine}\` parses the column with Date.parse`),
       'Related line alone disproves': answer('disproved', consumerLine),
       'Related line beside the finding line disproves': answer('disproved', 'src/math.ts:2', consumerLine),
+      'Range past the end of a changed file disproves': answer('disproved', 'src/api.ts:1-999999'),
+      'Range of a changed file disproves': answer('disproved', 'src/api.ts:1-9'),
       'Repo not fetched': answer('confirmed', 'acme/billing:src/import.ts:2'),
       'Repo not configured': answer('confirmed', 'other/repo:src/import.ts:2'),
       'Path leaves the checkout': answer('confirmed', 'acme/reports:../src/import.ts:2'),
       'Path with a dot segment': answer('confirmed', 'acme/reports:src/../src/./import.ts:1-2'),
-      ...Object.fromEntries(notThere.map(at => [`Cites ${at}`, answer('confirmed', at)])),
+      ...Object.fromEntries([...notThere, prFileLine].map(at => [`Cites ${at}`, answer('confirmed', at)])),
       'File too large to read': answer('confirmed', 'acme/reports:src/big.ts:1'),
       'Own file too large to read': answer('confirmed', 'src/big.ts:1'),
       'Premise only': { outcome: 'unsettled', reason: 'r', proof: [], premises: [{ outcome: 'confirmed', reason: 'r', proof: [consumerLine] }] },
@@ -1088,8 +1092,14 @@ describe('refuteBlockers', () => {
       const odd = await refuteBlockers(client, ['Path with a dot segment', 'File too large to read', 'Own file too large to read'].map(title => finding(title, noProof)), { workspace, diff, related });
       expect(odd.map(f => [outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual([['confirmed', undefined, ['acme/reports:src/import.ts:1-2']], ['unsettled', undefined, undefined], ['unsettled', undefined, undefined]]);
       // A cited line that is not there is no proof, so the check settles nothing.
-      const cited = await refuteBlockers(client, notThere.map(at => finding(`Cites ${at}`, noProof)), { workspace, diff, related });
-      expect(cited.map(f => [f.title, outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual(notThere.map(at => [`Cites ${at}`, 'unsettled', undefined, undefined]));
+      for (const lines of [notThere, [prFileLine]]) {
+        const cited = await refuteBlockers(client, lines.map(at => finding(`Cites ${at}`, noProof)), { workspace, diff, related });
+        expect(cited.map(f => [f.title, outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual(lines.map(at => [`Cites ${at}`, 'unsettled', undefined, undefined]));
+      }
+      // A disproof lifts a finding once it cites a line in the diff. A range that touches every hunk of a changed file
+      // only because it runs past the file's end is no such line, where a range the file holds is.
+      const ranges = await refuteBlockers(client, ['Range past the end of a changed file disproves', 'Range of a changed file disproves'].map(title => finding(title, noProof)), { workspace, diff, related });
+      expect(ranges.map(f => [f.severity, outcomeOf(f.refutation!), f.refutation?.proof])).toEqual([['warning', 'unsettled', undefined], ['ignore', 'disproved', ['src/api.ts:1-9']]]);
       expect(checked[0].refutation?.premises).toEqual([{ premise: parsesDate[0].premise, outcome: 'confirmed', reason: 'r', relatedProof: [consumerLine] }]);
       // The files a stored answer is tied to are files of the PR, and the file with the related repo's name is not among them.
       expect(checked[0].refutation?.files).toEqual(['src/math.ts']);
