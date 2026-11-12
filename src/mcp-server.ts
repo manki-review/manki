@@ -11,7 +11,7 @@ import { z } from 'zod';
 
 import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-grep';
 import { fenceText, MANKI_VERSION } from './github';
-import { relatedRepoLoader } from './related-repos';
+import { relatedRepoLoader, RelatedRepoPending } from './related-repos';
 import { writableOnlyByUs } from './tool-install';
 import { stepCheck } from './tool-steps';
 import { RelatedRepoTools } from './types';
@@ -465,6 +465,8 @@ export function createMcpServer(root: string, { fileTools = false, steps, relate
       if (readsFile) writeFileSync(readsFile, JSON.stringify(reads));
     } catch { /* the count only feeds the round record */ }
     return loadRelated(repo).catch((error: unknown) => {
+      // A fetch that only ran out of time in this call did not fail, so the answer must not read as if the repo cannot be fetched.
+      if (error instanceof RelatedRepoPending) throw new Error(`${repo} ${error.message}`);
       throw new Error(`${repo} could not be fetched, so it cannot be read: ${error instanceof Error ? error.message : String(error)}`);
     });
   };

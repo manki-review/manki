@@ -6,12 +6,14 @@ import { dirname, join, resolve, sep } from 'path';
 import { runTool } from './binary-analyzers';
 import { RepoTools } from './providers/types';
 import { makeScratchDir } from './tool-install';
+import { STALE_TIMEOUT_MS } from './tool-steps';
 import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RoundRelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
 /** Where every related repo lives. */
 export const RELATED_REPO_HOST = 'https://github.com';
-// A tool call that runs for the fetch and the wait after it must end before the CLI's 90 second stale limit.
+// A tool call must end before `STALE_TIMEOUT_MS`. It can wait for another's fetch and then fetch in its place, so
+// `sharedCheckout` begins a fetch only while one still fits into the call, and stops waiting before the limit.
 const FETCH_TIMEOUT_MS = 60_000;
 const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
@@ -22,9 +24,21 @@ const GIT_CONFIG = { 'credential.helper': '', 'core.hooksPath': devNull, 'core.f
 /** The files that can be a repo's guide, at its root. The first one found is the guide. */
 export const GUIDE_FILES = ['AGENTS.md', 'CLAUDE.md'];
 
+/**
+ * Thrown when a call ran out of time before a repo was fetched, while no fetch of it failed. Nothing is recorded for
+ * the repo, so the next call that names it goes on from there.
+ */
+export class RelatedRepoPending extends Error {
+  constructor() {
+    super('is not fetched yet, and this call has no time left to fetch it. Call the tool again to read it.');
+  }
+}
+
 export interface RelatedRepoLoaderOptions {
   /** Time limit for fetching one repo. */
   timeoutMs?: number;
+  /** How long one call of the loader may take. Defaults to `STALE_TIMEOUT_MS`, the limit of a tool call. */
+  callLimitMs?: number;
   run?: typeof runTool;
   /** Where progress goes. Defaults to stderr, since a tool server's stdout carries its protocol. */
   log?: (message: string) => void;
@@ -55,7 +69,7 @@ export function repoTools(root: string, steps: number, related: RelatedRepoTools
  */
 export function relatedRepoLoader(
   { repos, cacheDir, stateDir, asOf }: RelatedRepoTools,
-  { timeoutMs = FETCH_TIMEOUT_MS, run = runTool, log = message => process.stderr.write(`${message}\n`) }: RelatedRepoLoaderOptions = {},
+  { timeoutMs = FETCH_TIMEOUT_MS, callLimitMs = STALE_TIMEOUT_MS, run = runTool, log = message => process.stderr.write(`${message}\n`) }: RelatedRepoLoaderOptions = {},
 ): (name: string) => Promise<string> {
   const checkouts = new Map<string, Promise<string>>();
   return name => {
@@ -63,7 +77,12 @@ export function relatedRepoLoader(
     if (!repo) return Promise.reject(new Error(`${name} is not a related repo`));
     let checkout = checkouts.get(name);
     if (!checkout) {
-      checkout = sharedCheckout(repo, join(stateDir, encodeURIComponent(name)), timeoutMs, () => checkoutRelatedRepo(repo, cacheDir, timeoutMs, run, log, asOf));
+      checkout = sharedCheckout(repo, join(stateDir, encodeURIComponent(name)), { timeoutMs, callLimitMs }, () => checkoutRelatedRepo(repo, cacheDir, timeoutMs, run, log, asOf))
+        .catch((error: unknown) => {
+          // The repo has no outcome yet, so the next call asks again.
+          if (error instanceof RelatedRepoPending) checkouts.delete(name);
+          throw error;
+        });
       checkouts.set(name, checkout);
     }
     return checkout;
@@ -80,9 +99,16 @@ function lockPath(marker: string, takeovers: number): string {
  * `<marker>.failed`, and the commit it checked out in `<marker>.commit`. Any other process waits for that outcome.
  * A lock holds its creator's PID. When a holder stopped and left no outcome, the next lock of `lockPath` takes its
  * place. No lock is ever removed or renamed, and a lock is created only if it does not exist, so one process holds each.
+ * The call ends within `callLimitMs`. It throws `RelatedRepoPending`, and records nothing, when a holder stopped too
+ * late in the call for a fetch to fit, or when the call's limit comes before the outcome of another's fetch.
  */
-async function sharedCheckout(repo: RelatedRepo, marker: string, timeoutMs: number, checkout: () => Promise<{ dir: string; commit: string }>): Promise<string> {
+async function sharedCheckout(
+  repo: RelatedRepo, marker: string, { timeoutMs, callLimitMs }: { timeoutMs: number; callLimitMs: number }, checkout: () => Promise<{ dir: string; commit: string }>,
+): Promise<string> {
+  const started = Date.now();
   for (let takeovers = 0; ; takeovers++) {
+    // A fetch takes up to `timeoutMs`, so one begun later than this could run past the call's limit.
+    if (takeovers > 0 && Date.now() - started >= callLimitMs - timeoutMs - WAIT_SLACK_MS) throw new RelatedRepoPending();
     const lock = lockPath(marker, takeovers);
     try {
       writeFileSync(lock, String(process.pid), { flag: 'wx' });
@@ -90,7 +116,7 @@ async function sharedCheckout(repo: RelatedRepo, marker: string, timeoutMs: numb
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
-    const outcome = await waitForCheckout(repo, marker, lock, timeoutMs);
+    const outcome = await waitForCheckout(repo, marker, lock, timeoutMs, started + callLimitMs - WAIT_SLACK_MS);
     if (outcome !== undefined) return outcome;
   }
   try {
@@ -113,8 +139,9 @@ function writeMarker(path: string, text: string): void {
 /**
  * Waits for the outcome the holder of `lock` records and returns the checkout directory, or `undefined` when that
  * holder stopped and left no outcome. Throws the recorded failure, and records one when the holder runs out of time.
+ * Throws `RelatedRepoPending` when the time `until` comes first, which says nothing about the holder.
  */
-async function waitForCheckout(repo: RelatedRepo, marker: string, lock: string, timeoutMs: number): Promise<string | undefined> {
+async function waitForCheckout(repo: RelatedRepo, marker: string, lock: string, timeoutMs: number, until: number): Promise<string | undefined> {
   const outcome = (): string | undefined => {
     if (existsSync(`${marker}.done`)) return readFileSync(`${marker}.done`, 'utf-8');
     if (existsSync(`${marker}.failed`)) throw new Error(readFileSync(`${marker}.failed`, 'utf-8'));
@@ -122,13 +149,14 @@ async function waitForCheckout(repo: RelatedRepo, marker: string, lock: string, 
   };
   // The lock holder gives up on its fetch after `timeoutMs`, so a lock held longer belongs to a holder that hangs.
   const deadline = Date.now() + timeoutMs + WAIT_SLACK_MS;
-  while (Date.now() < deadline) {
+  while (Date.now() < Math.min(deadline, until)) {
     const recorded = outcome();
     if (recorded !== undefined) return recorded;
     // A holder can record its outcome and exit between the two looks, so the outcome is read once more.
     if (!isHolderAlive(lock)) return outcome();
     await new Promise(done => setTimeout(done, WAIT_POLL_MS));
   }
+  if (until < deadline) throw new RelatedRepoPending();
   const reason = `another reviewer's fetch of ${repo.repo} did not finish in time`;
   writeMarker(`${marker}.failed`, reason);
   throw new Error(reason);
@@ -146,12 +174,15 @@ function isHolderAlive(lock: string): boolean {
   }
 }
 
+// A fetch the action runs itself is no tool call, so no CLI waits on it and it takes over whenever a holder stopped.
+const IN_PROCESS: RelatedRepoLoaderOptions = { log: message => core.info(message), callLimitMs: Infinity };
+
 /**
  * Fetches each repo of `related` the way a tool call does, so the round's tool servers reuse the checkout, and returns
  * those fetched. One that fails is left out, and the round record says why.
  */
 export async function fetchRelatedRepos(related: RelatedRepoTools, options: RelatedRepoLoaderOptions = {}): Promise<RelatedCheckout[]> {
-  const load = relatedRepoLoader(related, { log: message => core.info(message), ...options });
+  const load = relatedRepoLoader(related, { ...IN_PROCESS, ...options });
   const fetched = await Promise.allSettled(related.repos.map(async ({ repo, kind }) => ({ repo, kind, dir: await load(repo) })));
   return fetched.flatMap(result => (result.status === 'fulfilled' ? [result.value] : []));
 }
@@ -161,7 +192,7 @@ export async function fetchRelatedRepos(related: RelatedRepoTools, options: Rela
  * such repo and its reason, so no finder of the round reads without it.
  */
 export async function requireRelatedRepos(related: RelatedRepoTools, options: RelatedRepoLoaderOptions = {}): Promise<void> {
-  const load = relatedRepoLoader(related, { log: message => core.info(message), ...options });
+  const load = relatedRepoLoader(related, { ...IN_PROCESS, ...options });
   const fetched = await Promise.allSettled(related.repos.map(({ repo }) => load(repo)));
   const failed = fetched.flatMap((result, i) => (result.status === 'rejected' ? [`${related.repos[i].repo}: ${messageOf(result.reason)}`] : []));
   if (failed.length > 0) throw new Error(`Could not read every related repo${related.asOf ? ` as of ${related.asOf}` : ''}. ${failed.join('. ')}`);
@@ -216,7 +247,7 @@ export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guid
     // No outcome says nothing about the repo: the stage that held the newest lock did not get to the end of its fetch.
     const reason = isHolderAlive(lock)
       ? 'the fetch was still running when the round ended'
-      : 'the stage fetching it was stopped before the fetch finished, and no later stage asked for it';
+      : 'the stage fetching it was stopped before the fetch finished, and no later call fetched it';
     core.warning(`Related repo ${repo} was not fetched: ${reason}`);
     return { ...base, status: 'failed' as const, reason };
   });

@@ -1,10 +1,11 @@
 import * as core from '@actions/core';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
+import { once } from 'events';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { devNull, tmpdir } from 'os';
 import { join } from 'path';
 
-import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
+import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, RelatedRepoPending, relatedReposCacheDir, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { RelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -195,6 +196,35 @@ describe('relatedRepoLoader', () => {
     await expect(loader([broken], { run })('dashpay/broken')).rejects.toThrow('fatal: repository not found');
     expect(run).not.toHaveBeenCalled();
 
+    // A tool server that is already waiting when the holder stops takes over only while a fetch still fits into its call.
+    // Later it records nothing and says the repo is not fetched yet, and the next call fetches with a call's full time.
+    const stopsWhileWaited = async (repo: RelatedRepo, options: RelatedRepoLoaderOptions): Promise<{ load: (name: string) => Promise<string>; waiting: Promise<string> }> => {
+      const holder = spawn('sleep', ['30']);
+      lock(encodeURIComponent(repo.repo), holder.pid);
+      const load = loader([repo], options);
+      const waiting = load(repo.repo);
+      waiting.catch(() => {});
+      await new Promise(done => setTimeout(done, 150));
+      holder.kill('SIGKILL');
+      await once(holder, 'exit');
+      return { load, waiting };
+    };
+    const early: RelatedRepo = { repo: 'dashpay/early', kind: 'reference' };
+    await expect((await stopsWhileWaited(early, { timeoutMs: 5000 })).waiting).resolves.toBe(join(cacheDir, 'dashpay', 'early'));
+    const late: RelatedRepo = { repo: 'dashpay/late', kind: 'reference' };
+    // With these limits a fetch fits only in the first 100 ms of a call.
+    const lateRun = fakeGit();
+    const { load: loadLate, waiting } = await stopsWhileWaited(late, { run: lateRun, timeoutMs: 200, callLimitMs: 2300 });
+    await expect(waiting).rejects.toThrow(RelatedRepoPending);
+    await expect(waiting).rejects.toThrow('is not fetched yet, and this call has no time left to fetch it. Call the tool again to read it.');
+    expect(lateRun).not.toHaveBeenCalled();
+    expect(readdirSync(stateDir).filter(f => f.startsWith('dashpay%2Flate'))).toEqual(['dashpay%2Flate.lock']);
+    // A round where no call asks again records that the fetch was cut off, not that the repo could not be fetched.
+    expect(relatedRepoOutcomes([late], stateDir)).toEqual([{ repo: 'dashpay/late', status: 'failed', reason: 'the stage fetching it was stopped before the fetch finished, and no later call fetched it' }]);
+    jest.mocked(core.warning).mockClear();
+    expect(await loadLate('dashpay/late')).toBe(join(cacheDir, 'dashpay', 'late'));
+    expect(relatedRepoOutcomes([late], stateDir)).toEqual([{ repo: 'dashpay/late', status: 'fetched', durationMs: expect.any(Number) }]);
+
     // A lock with no outcome and no later asker says the stage did not finish, never that the repo cannot be fetched. A repo no call named is unused.
     lock('dashpay%2Fsilent');
     lock('dashpay%2Fcut', gone);
@@ -209,7 +239,7 @@ describe('relatedRepoLoader', () => {
       { repo: 'dashpay/platform', status: 'fetched', durationMs: expect.any(Number) },
       { repo: 'dashpay/broken', status: 'failed', reason: 'fatal: repository not found', durationMs: expect.any(Number) },
       { repo: 'dashpay/silent', status: 'failed', reason: 'the fetch was still running when the round ended' },
-      { repo: 'dashpay/cut', status: 'failed', reason: 'the stage fetching it was stopped before the fetch finished, and no later stage asked for it' },
+      { repo: 'dashpay/cut', status: 'failed', reason: 'the stage fetching it was stopped before the fetch finished, and no later call fetched it' },
       { repo: 'dashpay/unused', ref: 'main', status: 'unused' },
     ]);
     expect(outcomes.every(o => o.durationMs === undefined || o.durationMs >= 0)).toBe(true);
@@ -218,7 +248,7 @@ describe('relatedRepoLoader', () => {
       "Could not fetch related repo dashpay/hung, which must be public on github.com: another reviewer's fetch of dashpay/hung did not finish in time",
       'Could not fetch related repo dashpay/broken, which must be public on github.com: fatal: repository not found',
       'Related repo dashpay/silent was not fetched: the fetch was still running when the round ended',
-      'Related repo dashpay/cut was not fetched: the stage fetching it was stopped before the fetch finished, and no later stage asked for it',
+      'Related repo dashpay/cut was not fetched: the stage fetching it was stopped before the fetch finished, and no later call fetched it',
     ]);
   });
 
