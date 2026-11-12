@@ -422,7 +422,7 @@ Manki tried to disprove this by reading the code and could not. Each member's id
   <div class="ghk-comment" data-part="answer"><img class="ghk-av" src="assets/manki.png" alt=""><div class="ghk-main"><div class="ghk-meta"><b>manki-review</b> <span class="ghk-label">bot</span><span class="ghk-dots">···</span></div><div class="markdown-body ghk-md"><p dir="auto">Fixed in <a class="commit-link" href="https://github.com/manki-review/manki/commit/02e48adec7173b301ae9ff7943f6a83c865eff31"><tt>02e48ad</tt></a>.</p></div></div></div>
   <div class="ghk-foot" data-part="resolved"><span class="ghk-resolved"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16Zm3.78-9.72a.751.751 0 0 0-.018-1.042.751.751 0 0 0-1.042-.018L6.75 9.19 5.28 7.72a.751.751 0 0 0-1.042.018.751.751 0 0 0-.018 1.042l2 2a.75.75 0 0 0 1.06 0Z"/></svg></span><span><b>manki-review</b> marked this conversation as resolved.</span></div>
 </div></div>
-        <p class="cap">Manki reads the code again before it answers. Its reply starts with one word, here Fixed, and it resolves the thread.</p>
+        <p class="cap">The next round checks the thread against the push. The fix holds, so Manki answers with the commit that fixed it and resolves the thread.</p>
       </div>
       <div>
         <div class="tag ok"><i>3</i>Manki approves</div>
@@ -504,7 +504,7 @@ Manki tried to disprove this by reading the code and could not. Each member's id
 <li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Incomplete task"> Deeper review</li>
 </ul></div></div></div>
 </div></div>
-        <p class="cap">One comment tracks every round: who read the change, on which model, and what the judge kept. Its checkboxes pause reviews or ask for another one.</p>
+        <p class="cap">Each round has a progress comment: who read the change, on which model, and what the judge kept. Its checkboxes pause reviews or ask for another one.</p>
       </div>
     </div>
   </div>
@@ -564,7 +564,7 @@ Manki tried to disprove this by reading the code and could not. Each member's id
     </div>
     <div class="floor">
       <svg width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true"><path d="M22 4l15 6v11c0 9-6.2 15.600-15 19-8.800-3.400-15-10-15-19V10l15-6z" fill="currentColor"/><path d="M15 22l5 5 9-10" style="stroke:var(--band)" stroke-width="3.500" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>Security-sensitive paths, CI and dependency files, and data contracts always get at least two finders, whatever the planner answers.</span>
+      <span>Security-sensitive paths, CI and dependency files, and data contracts get at least two finders by default, whatever the planner answers.</span>
     </div>
   </div>
 </section>
@@ -635,7 +635,7 @@ Manki tried to disprove this by reading the code and could not. Each member's id
       </div>
       <div class="step">
         <h3>Add the workflow</h3>
-        <p>Copy the file below into <code>.github/workflows</code>. The next pull request gets a review.</p>
+        <p>Copy the file below into <code>.github/workflows</code> on the default branch. The next pull request gets a review.</p>
         <a class="more" href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md#step-3-add-the-workflow">Read what each part does</a>
       </div>
     </div>
@@ -688,7 +688,7 @@ jobs:
     <h2>Questions.</h2>
     <div>
       <details open><summary>What does it cost?</summary><p>You pay your own provider for the tokens a review uses, or run it on your subscription. There is no per-seat fee. Every review ends with the tokens it used.</p></details>
-      <details><summary>Where does my code go?</summary><p>Only to the model provider you configured, from your own runner. Manki has no server that stores your code.</p></details>
+      <details><summary>Where does my code go?</summary><p>Only to the model provider you configured, from your own runner. The Manki service sees your pull request events, such as titles and comment text, to start the runs. It stores no code.</p></details>
       <details><summary>Can a pull request switch off its own review?</summary><p>No. Manki reads its config from the base branch. A change to the config applies after it merges.</p></details>
       <details><summary>Is it open source?</summary><p>Yes, under AGPL-3.0. You can read every prompt and every line.</p></details>
       <details><summary>Can the author dismiss a blocker?</summary><p>Only a maintainer or an admin of the repository, unless you set another role. For any other author, a blocker or a security finding stays open until someone else with write access resolves it.</p></details>
