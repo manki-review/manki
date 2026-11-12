@@ -2801,7 +2801,8 @@ function refutationPart(label: string, lead: string, check: Refutation, linkTo: 
 function refutationParts(finding: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
   const pairLead = pairRefutation && REFUTATION_SUMMARY[outcomeOf(pairRefutation)];
-  const keptByRule = !!overruledDisproof(finding);
+  // A blocker two disproofs lowered says so on its first check, and its rule only set how far it went down.
+  const keptByRule = !isDisprovedRaise(finding) && !!overruledDisproof(finding);
   // Each check that disproved a finding its rule keeps says why the finding stays.
   const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? OVERRULED_DISPROOF_TEXT : plain);
   const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[outcomeOf(refutation)].text));
