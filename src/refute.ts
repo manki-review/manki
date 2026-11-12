@@ -12,7 +12,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { cellGrade, CheckStatus, columnDecidesBlock, damageDisproof, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt, breaksRule, isCappedRuleBreak } from './types';
+import { cellGrade, CheckStatus, columnDecidesBlock, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, PremiseCheck, REACH_DOUBT, outcomeOf, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, withReachDoubt, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -303,9 +303,9 @@ function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefi
 /**
  * Grades `given` by the outcome its refutations agree on, after `confirmRuleFact` settled an `unproven` rule from the
  * premise about its fact alone. A `disproof` drops a finding graded below blocker, such as an
- * open lead or a capped blocker, and no check raises a finding beside one that disproves it. A finding with a
- * `damageDisproof` stays, without its `cell`, `doubts` and `gradeIfConfirmed`. So a finding that `isCappedRuleBreak`
- * stays the capped warning after any disproof, and only a confirmation gives its blocker back. A disproof lowers a
+ * open lead or a capped blocker, and no check raises a finding beside one that disproves it. A finding with an
+ * `overruledDisproof` stays at its grade, without its `cell`, `doubts` and `gradeIfConfirmed`, so only a confirmation
+ * gives a capped blocker back. A disproof lowers a
  * blocker only to the grade `gradeBeforeJudgeRaise` gives, never one that `restates` an earlier blocker, and such a
  * finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
  * grade, and a security finding changes only when confirmed. A confirmation that raises a finding out of the `rare`
@@ -321,11 +321,9 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
     judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${notes}` : notes,
   };
   if (outcome !== 'confirmed' && finding.tags?.includes(SECURITY_TAG)) return graded;
-  // Only the premises of this round's doubts are about the damage. An outcome reused from an earlier round can rest on others.
-  // No disproof drops a capped blocker that breaks a confirmed rule, whatever the disproof rests on.
-  if ((finding.doubts?.length || isCappedRuleBreak(finding)) && damageDisproof(graded)) {
-    // The cell and the grade it promised state the damage, so they go, and the cell is no `judgeCell`, since a doubt
-    // kept the judge from grading a blocker.
+  if (overruledDisproof(graded)) {
+    // The cell and the grade it promised state the damage the check disproved, so they go. The cell is no `judgeCell`,
+    // since the finding is no blocker the check lowered.
     const { cell: _cell, gradeIfConfirmed: _gradeIfConfirmed, doubts: _doubts, ...kept } = graded;
     return kept;
   }

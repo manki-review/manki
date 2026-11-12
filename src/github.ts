@@ -12,7 +12,7 @@ import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, damageDisproof, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -2491,7 +2491,7 @@ const REFUTATION_PART: Record<RefutationOutcome, { label: string; text: string }
   disproved: { label: 'Doubt found', text: 'Manki found a reason this may not happen, but a disproof alone never clears a blocker or a security finding, so please check it yourself.' },
 };
 const DISPROVED_RAISE_TEXT = 'Manki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself.';
-const DISPROVED_DAMAGE_TEXT = 'Manki found a reason the failure may not happen. The finding stays, since the repository rule is broken either way.';
+const OVERRULED_DISPROOF_TEXT = 'The finding stays, since Manki confirmed that it breaks the repository rule. This check disagrees about the damage or about the defect itself.';
 const PAIR_REFUTATION_LABEL = 'Second check, on another model';
 
 /** Opens the fold under a finding comment, so reading the comment back stops its description there. */
@@ -2747,9 +2747,9 @@ function refutationPart(label: string, lead: string, check: Refutation, linkTo: 
 function refutationParts(finding: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
   const pairLead = pairRefutation && REFUTATION_SUMMARY[outcomeOf(pairRefutation)];
-  const keptByRule = !!damageDisproof(finding);
-  // Each check that disproved the damage of a finding its rule keeps says why the finding stays.
-  const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? DISPROVED_DAMAGE_TEXT : plain);
+  const keptByRule = !!overruledDisproof(finding);
+  // Each check that disproved a finding its rule keeps says why the finding stays.
+  const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? OVERRULED_DISPROOF_TEXT : plain);
   const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[outcomeOf(refutation)].text));
   return [
     ...(refutation && lead ? [refutationPart(REFUTATION_PART[outcomeOf(refutation)].label, lead, refutation, linkTo, known)] : []),

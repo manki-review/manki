@@ -509,8 +509,11 @@ describe('refuteBlockers', () => {
     const noDefect = (...premises: object[]) => ({ outcome: 'disproved', reason: 'Both inputs are checked.', proof: ['src/api.ts:9'], premises });
     const columns = (f: Finding) => [f.title, f.severity, f.refutation?.outcome, f.refutation?.defect, f.pairRefutation?.defect, !!disproof(f), checkStatus(f)];
 
+    const rule = { file: 'AGENTS.md', quote: 'Every bound must be checked.' };
+    const doubtedRule = (verdict: 'confirmed' | 'not_broken', tags?: string[]): Partial<Finding> => ({ severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT], rule: { ...rule, verdict }, ...(tags && { tags }) });
     const client = fakeClient({
       'Reach open': noDefect(open), 'Grade premise holds': noDefect(holds), 'Reach holds': noDefect(holds), 'Security finding': noDefect(open), 'Blocker': noDefect(open),
+      'Rule confirmed': noDefect(open), 'Rule confirmed, reach holds': noDefect(holds), 'Rule not confirmed': noDefect(open), 'Security rule finding': noDefect(open),
     });
     const alone = await refuteRound(client, [
       finding('Reach open', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT] }),
@@ -518,7 +521,11 @@ describe('refuteBlockers', () => {
       finding('Reach holds', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT] }),
       finding('Security finding', { severity: 'warning', gradeIfConfirmed: 'warning', doubts: [exists], tags: ['security'] }),
       finding('Blocker', { gradeIfConfirmed: 'blocker', doubts: [exists] }),
-    ], { workspace, diff });
+      finding('Rule confirmed', doubtedRule('confirmed')),
+      finding('Rule confirmed, reach holds', doubtedRule('confirmed')),
+      finding('Rule not confirmed', doubtedRule('not_broken')),
+      finding('Security rule finding', doubtedRule('confirmed', ['security'])),
+    ], { workspace, diff, rules: 'block' });
 
     expect(alone.map(columns)).toEqual([
       // The premises settle nothing, and the answer about the defect drops the warning.
@@ -529,7 +536,15 @@ describe('refuteBlockers', () => {
       ['Reach holds', 'ignore', 'confirmed', 'disproved', undefined, true, 'unconfirmed'],
       ['Security finding', 'warning', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
       ['Blocker', 'blocker', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
+      // A rule the judge confirmed keeps its warning, and the answer raises nothing, also with the reach confirmed and with `block`.
+      ['Rule confirmed', 'warning', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
+      ['Rule confirmed, reach holds', 'warning', 'confirmed', 'disproved', undefined, true, 'unconfirmed'],
+      // Any other rule verdict keeps nothing.
+      ['Rule not confirmed', 'ignore', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
+      ['Security rule finding', 'warning', 'unsettled', 'disproved', undefined, true, 'unconfirmed'],
     ]);
+    // The kept rule warning loses the cell and the grade that stated the damage. A security finding changes only when confirmed, so it keeps them.
+    expect(alone.slice(5).map(f => [f.cell, f.gradeIfConfirmed, f.doubts?.length])).toEqual([[undefined, undefined, undefined], [undefined, undefined, undefined], [rare, 'blocker', 1], [rare, 'blocker', 1]]);
     expect(alone[0].gradePath).toEqual([{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'Both inputs are checked.' }]);
     expect(alone[0].judgeNotes).toBe(`Refutation disproved: Both inputs are checked.\n- Premise "${REACH_DOUBT.premise}" unsettled. No caller found.`);
     // Each disproof keeps the lines that disprove the defect, never the lines that confirmed a premise, and covers their file.

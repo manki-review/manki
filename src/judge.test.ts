@@ -31,7 +31,7 @@ import { unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { CELL_GRADES, damageDisproof, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, ThreadEvaluation, isNote } from './types';
+import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, ThreadEvaluation, isNote } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -2189,7 +2189,7 @@ describe('runJudgeAgent', () => {
       'Another premise confirmed': { ...unseen, row: 'degraded', doubts: [{ premise: 'The loop reads the variable on each request', decides: 'defect' }] },
       // The judge's own doubt is about the damage. A disproof of it leaves the confirmed rule broken.
       'Damage disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
-      // The refuter's own answer that the defect does not exist can be about the rule, so it drops the warning.
+      // The judge confirmed the rule, so the refuter's own answer that the defect does not exist drops nothing either.
       'Defect disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
       // A note whose damage the judge doubts too. The refuter answers the damage first, then the fact.
       ...Object.fromEntries([
@@ -2256,8 +2256,8 @@ describe('runJudgeAgent', () => {
         ['Fact confirmed without a search', grade, 'confirmed', `rule: ${grade}`],
         ['Another premise confirmed', 'warning', 'unproven', 'judge: warning'],
         ['Damage disproved', grade, 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning'],
-        // No disproof lowers a blocker the rule raised.
-        ['Defect disproved', grade === 'blocker' ? grade : 'ignore', 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning, refutation: ignore'],
+        // No disproof lowers a blocker the rule raised, or drops the warning the judge's rule verdict keeps.
+        ['Defect disproved', grade, 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning'],
         // The confirmed fact confirms the rule and gives its grade, whatever the answer about the damage.
         ['Fact confirmed, damage disproved', grade, 'confirmed', `rule: ${grade}`],
         ['Fact confirmed, damage unsettled', grade, 'confirmed', `rule: ${grade}`],
@@ -2265,7 +2265,7 @@ describe('runJudgeAgent', () => {
         // A confirmed damage never stands in for the fact.
         ['Fact disproved, damage confirmed', 'ignore', 'unproven', 'refutation: ignore'],
         ['Fact unsettled, damage confirmed', 'note', 'unproven', undefined],
-        // An answer that the defect does not exist raises nothing and drops the note, like any finding below blocker.
+        // An answer that the defect does not exist confirms no rule, so it raises nothing and drops the note, like any finding below blocker without a confirmed rule.
         ['Fact confirmed, defect disproved', 'ignore', 'unproven', 'refutation: ignore'],
         ['Fact disputed', ...disputed],
         // With `warn` the judge's rule verdict alone posts the warning, and no check runs. With `block` the missing search caps
@@ -2306,8 +2306,9 @@ describe('runJudgeAgent', () => {
         [undefined, ['The service fails to start without the variable'], '`.env.example` has no entry for the variable', 2],
       ]);
       expect(raised.evidence?.proof).toEqual(['src/index.ts:17', 'src/index.ts:3']);
-      // The capped blocker a check disproved stays with that check's answer, which the comment shows.
-      expect([open['No search, check disproves'].refutation?.outcome, damageDisproof(open['No search, check disproves'])?.reason]).toEqual(['disproved', 'The entry is there.']);
+      // A finding a check disproved stays with that check's answer, which the comment shows, and without the cell that stated the damage.
+      expect(['No search, check disproves', 'No search, damage blocker, check disproves'].map(title => [open[title].refutation?.outcome, open[title].cell])).toEqual([['disproved', undefined], ['disproved', undefined]]);
+      expect([byTitle['Defect disproved'].refutation?.defect, byTitle['Defect disproved'].cell, byTitle['Defect disproved'].gradeIfConfirmed]).toEqual(['disproved', undefined, undefined]);
 
       // The kept warning drops the damage the check disproved, so the next round's judge reads a warning with no cell to restate and no open doubt.
       const kept = (await run()).find(f => f.title === 'Damage disproved')!;

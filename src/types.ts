@@ -683,24 +683,12 @@ export function disproof(finding: Pick<Finding, 'refutation' | 'pairRefutation'>
 }
 
 /**
- * Whether `finding` breaks a confirmed rule and the `unproven` or `build_claim` cap was the last step to grade it. Such a
- * finding is a blocker held at a warning, whether its damage or `review.rules: block` made it one.
+ * Returns the refutation that disproves a finding that `breaksRule` and is graded below blocker. Such a finding stays in
+ * the review whatever the check disproved: the refuter checks whether a failure can happen, not whether a rule is
+ * followed, and the same rule break with no damage to check is posted unchecked.
  */
-export function isCappedRuleBreak(finding: Pick<Finding, 'rule' | 'gradePath'>): boolean {
-  const cap = finding.gradePath?.at(-1);
-  return breaksRule(finding) && (cap?.by === 'unproven' || cap?.by === 'build_claim');
-}
-
-/**
- * Returns the refutation that disproved only the damage of a finding that `breaksRule`. Such a finding below blocker
- * stays in the review, since the rule is broken either way. A check's own answer that the defect does not exist can be
- * about the rule, so beside one this returns none. A finding that `isCappedRuleBreak` stays beside that answer too:
- * with milder damage, or none, the same rule break is a warning no check runs on, and a cap must not post less.
- */
-export function damageDisproof(finding: Pick<Finding, 'severity' | 'rule' | 'gradePath' | 'refutation' | 'pairRefutation'>): Refutation | undefined {
-  if (finding.severity === 'blocker' || finding.severity === 'ignore' || !breaksRule(finding)) return undefined;
-  const deniesDefect = [finding.refutation, finding.pairRefutation].some(check => check?.defect === 'disproved');
-  return deniesDefect && !isCappedRuleBreak(finding) ? undefined : disproof(finding);
+export function overruledDisproof(finding: Pick<Finding, 'severity' | 'rule' | 'refutation' | 'pairRefutation'>): Refutation | undefined {
+  return finding.severity === 'blocker' || finding.severity === 'ignore' || !breaksRule(finding) ? undefined : disproof(finding);
 }
 
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */
