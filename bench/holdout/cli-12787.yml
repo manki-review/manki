@@ -27,6 +27,11 @@ body: |
   - **Draft issue fetch**: When only one of `--title` or `--body` is passed, we fetch the current draft issue via a `node(id)` query and use its title/body in mutation for the field that wasn't available.
   - **queries package**: Exposed `Query` on the shared client so item-edit can run the draft-issue fetch query.
   - **Tests**: Added tests according to the changes
-key_version: 1
+key_version: 2
 must_catch: []
-nice_to_have: []
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "When only `--title` or only `--body` is passed, `updateDraftIssue` reads the draft issue with `fetchDraftIssueByID`, and `buildEditDraftIssue` writes the other field's old value back in the mutation. An edit someone else makes to that field between the read and the write is silently overwritten."
+    locations: ["pkg/cmd/project/item-edit/item_edit.go", "updateDraftIssue", "fetchDraftIssueByID", "buildEditDraftIssue"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

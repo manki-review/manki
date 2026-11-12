@@ -8,7 +8,7 @@ body: |
   We should use FoundationEssentials where possible to avoid the Foundation dependency bloat on Linux
 
   As part of this, Swift `Regex` doesn't support the old `regexInternationalEmail` pattern we had which used code-point ranges (e.g `\^@-ÿĀ-\u017...`), so I had to replace it to use unicode property classes
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: blocker
@@ -25,4 +25,26 @@ must_catch:
     mechanism: "Because `CharacterSet` is not in FoundationEssentials, the whole of `CharacterSet.swift` is commented out with no replacement: the public `.ascii`, `.alphanumeric` and `.characterSet(_:)` validators for `String` and `[String]` and their `ValidatorResults.CharacterSet` and `CollectionCharacterSet` results disappear. Users' validations stop compiling, and `ValidationTests`, which still use `.alphanumeric` and `.characterSet(.alphanumerics + .whitespaces)`, no longer build."
     locations: ["Sources/Vapor/Validation/Validators/CharacterSet.swift", "alphanumeric", "characterSet", "ValidatorResults.CharacterSet", "Tests/VaporTests/ValidationTests.swift"]
     fix: "2d43901c1f1d62360c66bb4fd43c428a05e996dc"
-nice_to_have: []
+  - id: K4
+    severity: warning
+    mechanism: "`Validator.internationalEmail` now builds `Regex(regexInternationalEmail)`, but `regexInternationalEmail` still holds the old pattern with code point ranges, which the PR description says Swift `Regex` does not support. `Regex` throws on it (`invalid bound for character class range`), `try?` turns that into `nil`, and the validator reports every address as invalid."
+    locations: ["Sources/Vapor/Validation/Validators/Email.swift", "internationalEmail", "regexInternationalEmail"]
+    fix: "dd70444a34a78acb50ccc1bdbfe73a32bc1fe033"
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "`Validator.email` and `Validator.internationalEmail` compile their pattern from a `String` with `Regex(...)` inside the validation closure, so every validation parses and compiles the pattern again, and does so before the 320 character length check."
+    locations: ["Sources/Vapor/Validation/Validators/Email.swift", "internationalEmail"]
+    fix: "dd70444a34a78acb50ccc1bdbfe73a32bc1fe033"
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+  - id: N2
+    severity: warning
+    mechanism: "`FileMiddleware.init(bundle:)` is wrapped in `#if !canImport(FoundationEssentials)`, so the public initializer does not exist on a toolchain where FoundationEssentials can be imported, such as Linux. `Tests/VaporTests/MiddlewareTests.swift` still calls `FileMiddleware(bundle: .module, ...)` without that guard, so the test target does not build there."
+    locations: ["Sources/Vapor/Middleware/FileMiddleware.swift", "Tests/VaporTests/MiddlewareTests.swift", "FileMiddleware", "init(bundle:"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+  - id: N3
+    severity: warning
+    mechanism: "Test files such as `HTTPCacheTests.swift`, `ClientTests.swift` and `Utilities/ThreadSafe.swift` now import only `FoundationEssentials` where it can be imported, but still use `DateFormatter`, `JSONSerialization` and `NSLock`, which only the full `Foundation` has. Nothing else those files import brings `Foundation` in, so the test target does not build on Linux."
+    locations: ["Tests/VaporTests/HTTPCacheTests.swift", "Tests/VaporTests/ClientTests.swift", "Tests/VaporTests/Utilities/ThreadSafe.swift", "DateFormatter", "NSLock", "JSONSerialization"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

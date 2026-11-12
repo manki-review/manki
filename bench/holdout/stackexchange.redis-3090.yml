@@ -14,11 +14,17 @@ body: |
   3. if not .NET10+, disable for DNS endpoints if not on Windows
 
   (also updates CI image to Redis 8.8)
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: warning
     mechanism: "The new `OptionKeys.TcpKeepAlive` key (`\"tcpkeepalive\"`) is added to the `switch` in `DoParse` but not to the `normalizedOptions` dictionary, which `OptionKeys.TryNormalize` uses to match option names case-insensitively. A configuration string that spells the option like the property, such as `tcpKeepAlive=false` or `TcpKeepAlive=false`, falls through to `default` and `ConfigurationOptions.Parse` throws `Keyword 'tcpKeepAlive' is not supported`, or with `ignoreUnknown` silently keeps keep-alive enabled. Every other option name is accepted in any case."
     locations: ["src/StackExchange.Redis/ConfigurationOptions.cs", "normalizedOptions", "TryNormalize", "TcpKeepAlive", "DoParse"]
     fix: "957c888b419b5e4929010ead973e91f5c0ed67ac"
+  - id: K2
+    severity: warning
+    mechanism: "`TcpTestFixture` picks its port with `#if NET10_OR_GREATER`, a symbol the SDK never defines. The real one is `NET10_0_OR_GREATER`, which the rest of the repository uses. A net10.0 build falls through to `NET8_0_OR_GREATER` and listens on port 18002 like net8.0, which this PR adds to `TargetFrameworks`. When both test runs overlap, the second `TcpListener.Start()` fails with address in use and every test of the fixture fails for that run."
+    locations: ["tests/StackExchange.Redis.Tests/TcpKeepAliveTests.cs", "TcpTestFixture", "NET10_OR_GREATER", "NET10_0_OR_GREATER"]
+    fix: "2e1ae564df1279968dbb5c6b5342d8af20726497"
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
 nice_to_have: []

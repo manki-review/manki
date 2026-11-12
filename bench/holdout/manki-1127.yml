@@ -28,6 +28,11 @@ body: |
 
   Closes #1100
   Part of #1116
-key_version: 1
+key_version: 2
 must_catch: []
-nice_to_have: []
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "`MODEL_ID` allows only letters, digits and `._:@/-`, so `parseModelSpec` now refuses a Claude Code model id with a context suffix in brackets, such as `claude-sonnet-4-5[1m]`. Before this change the id matched the `claude-` prefix and reached the Claude CLI as given. A config that names such an id now fails to load, although the PR says valid ids behave as before."
+    locations: ["src/providers/model-registry.ts", "MODEL_ID", "parseModelSpec", "[1m]"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

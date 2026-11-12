@@ -68,7 +68,7 @@ body: |
   None. The GUI behaviour changes are:
   - The keep/discard prompt now also appears when closing an unchanged session that still holds reserved coins.
   - The own row on the Participants page is read-only while coins are reserved for it.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: warning
@@ -85,3 +85,8 @@ nice_to_have:
     severity: suggestion
     mechanism: "`saveSession` now reports success to `reject`, but it returns true without checking that `file.write` wrote the whole session or that the file was flushed. On a write error, Save and Close closes the dialog with an incomplete session file while the coins stay reserved."
     locations: ["src/qt/sharedmncreatedialog.cpp", "saveSession", "reject"]
+  - id: N2
+    severity: warning
+    mechanism: "`releaseReservedCoins` unlocks the coins and sets `m_coins_released`, but leaves the contribution in the session. `refreshContributionPage` decides what the coins card says from `myContribution() != nullptr` alone, so after \"Release my coins\" the card still says the coins are reserved and cannot be spent. `refreshContributedCoinLocks` returns early while `m_coins_released` is set and `unlockTerms` does not clear it, so after the new button on the Approvals page and Unlock Terms the coins stay unlocked while the page shows them as reserved."
+    locations: ["src/qt/sharedmncreatedialog.cpp", "releaseReservedCoins", "refreshContributionPage", "m_coins_released", "unlockTerms", "myContribution"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

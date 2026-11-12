@@ -46,6 +46,16 @@ body: |
   ```
 
   An attempt to skip the retry strategy's `GetTimestamp()` calls when neither telemetry nor `OnRetry` can observe the duration was measured at ~1.7 ns and discarded as noise.
-key_version: 1
+key_version: 2
 must_catch: []
-nice_to_have: []
+nice_to_have:
+  - id: N1
+    severity: warning
+    mechanism: "`ExecuteComponentAot` gets a new `_strategy is not null` branch with its own lambda, but the only test of that method, `ExecuteComponentAot_ReturnsCorrectResult`, wraps a `CallbackComponent`, so `_strategy` is null there. Normal test runs take `ExecuteComponent`, since `RuntimeFeature.IsDynamicCodeSupported` is true, and the method has no `[ExcludeFromCodeCoverage]`. The new lines are never run, and `Polly.Core.Tests` requires a coverage `Threshold` of 100."
+    locations: ["src/Polly.Core/Utils/Pipeline/DelegatingComponent.cs", "test/Polly.Core.Tests/Utils/Pipeline/DelegatingComponentTests.cs", "ExecuteComponentAot", "_strategy"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
+  - id: N2
+    severity: warning
+    mechanism: "`AGENTS.md` says pull request descriptions must follow `.github/pull_request_template.md`. The description as this case gives it has the first two sections of the template and lacks the `Confirm the following` checklist. The case body is shortened against the upstream description, which has the checklist."
+    locations: ["AGENTS.md", ".github/pull_request_template.md", "Confirm the following", "pull request template"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"

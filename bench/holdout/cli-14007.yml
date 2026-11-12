@@ -75,7 +75,7 @@ body: |
   | No worktree conflict (normal repo) | Existing behavior unchanged |
 
   All 9 existing `deleteLocalBranch` tests updated with worktree stubs to prevent panics from the new `git worktree list` call.
-key_version: 1
+key_version: 2
 must_catch:
   - id: K1
     severity: warning
@@ -94,3 +94,8 @@ nice_to_have:
     mechanism: "The new `parseWorktrees` parser for `git worktree list --porcelain` has no unit test in the `git` package."
     locations: ["git/client.go", "parseWorktrees"]
     fix: "d7fe64365fd9598964057172c255075acfaae608"
+  - id: N2
+    severity: warning
+    mechanism: "`deleteLocalBranch` drops the errors of `GitClient.Worktrees` and `GitClient.ToplevelDir`. When `ToplevelDir` fails, `currentWorkdir` is empty and never equals `worktrees[0].Path`, so `isInLinkedWorktree` is true whenever more than one worktree exists. A user on the PR head branch in the main worktree then gets local cleanup skipped, with a warning and printed commands that hold an empty path."
+    locations: ["pkg/cmd/pr/merge/merge.go", "deleteLocalBranch", "ToplevelDir", "Worktrees", "isInLinkedWorktree"]
+    source: "hold-out pass on the bench runs 42966217283, 43165981373 and 43170995642"
