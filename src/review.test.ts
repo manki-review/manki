@@ -2553,6 +2553,103 @@ describe('runReview', () => {
         rmSync(checkout, { recursive: true, force: true });
       }
     });
+
+    it('starts a claim check from the lines its terms find in every kind of related repo, and gives every other call the same prompts', async () => {
+      // A change with no name long enough to search, so only the claim fetches the related repos.
+      const { root, diff } = gitWorkspace({ 'src/a.py': 'x = 1\n' }, { 'src/a.py': 'x = 2\n' });
+      // A guide in a repo the claim alone fetched points no finder to it.
+      const dirs = { ref: { 'Round.java': 'int roundAmount(int a) { return a; }\n', 'AGENTS.md': '# roundAmount\n' }, app: { 'total.ts': 'const t = roundTotal(1);\n' }, lib: { 'round.py': 'def round_cents(amount):\n    return amount\n' } };
+      const checkout = (files: Record<string, string>) => {
+        const dir = mkdtempSync(join(tmpdir(), 'manki-claim-terms-'));
+        for (const [file, text] of Object.entries(files)) writeFileSync(join(dir, file), text);
+        return dir;
+      };
+      const [ref, app, lib] = [checkout(dirs.ref), checkout(dirs.app), checkout(dirs.lib)];
+      const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: ref }, { repo: 'o/app', kind: 'consumer', dir: app }, { repo: 'o/lib', kind: 'dependency', dir: lib }]);
+      const quote = 'the ledger library already rounds every amount to cents';
+      const finding = { severity: 'blocker', title: 'An amount is posted unrounded', file: 'src/a.py', line: 1, description: '`x` is never rounded.', proof: ['src/a.py:1'] };
+      const run = async (quotes: string[], terms: () => string | Promise<string>) => {
+        fetchSpy.mockClear();
+        const clients = {
+          ...makeClients(),
+          dedup: { sendMessage: jest.fn(async (system: string) => ({ content: system.startsWith('You list the statements') ? JSON.stringify(quotes) : system.startsWith('You name the code') ? await terms() : '{}' })) } as unknown as LLMClient,
+        };
+        Object.assign(clients.reviewer, { repoTools: true });
+        jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string) => ({ content: isCheck(system) ? checkAnswer('unchecked', []) : JSON.stringify([finding]) }));
+        Object.assign(clients.judge, { repoTools: true });
+        jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string) => {
+          if (system.startsWith('You are a code review judge')) return { content: JSON.stringify({ summary: 's', findings: [1, 2].map(id => ({ id, title: finding.title, row: 'severe', reasoning: 'r' })) }) };
+          return { content: system.startsWith('You check one finding') ? JSON.stringify({ outcome: 'confirmed', reason: 'It is never rounded.', proof: ['src/a.py:1'] }) : READY_VERDICT };
+        });
+        mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+        const result = await runReview(clients, {
+          config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }, { repo: 'o/app', kind: 'consumer' }, { repo: 'o/lib', kind: 'dependency' }] }),
+          diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext: { title: 'Post amounts as they are', body: `Safe, since ${quote}.`, baseBranch: 'main' },
+        });
+        const calls = reviewerCalls(clients);
+        return {
+          result,
+          fetches: fetchSpy.mock.calls.length,
+          checks: calls.filter(([system]) => isCheck(system)).map(([, user]) => user),
+          // The prompts of every other call: the finders on the reviewer model, and the judge and the refuter on the judge's.
+          prompts: {
+            finders: calls.filter(([system]) => !isCheck(system)).map(([system, user, options]) => [system, user, options?.repoTools?.related?.guides]),
+            judge: jest.mocked(clients.judge.sendMessage).mock.calls.map(([system, user]) => [system, user]),
+          },
+        };
+      };
+      const terms = () => JSON.stringify({ 'o/ref': { '1': ['roundAmount'] }, 'o/app': { '1': ['roundTotal'] }, 'o/lib': { '1': ['round_cents'] } });
+      // The 30 s the checks wait for their lines, which the slow run below ends as soon as its term call is asked.
+      const linesLimit = new AbortController();
+      const timeout = AbortSignal.timeout.bind(AbortSignal);
+      const timeoutSpy = jest.spyOn(AbortSignal, 'timeout').mockImplementation(ms => (ms === 30_000 ? linesLimit.signal : timeout(ms)));
+      let claimed;
+      let unclaimed;
+      let failed;
+      let slow;
+      try {
+        claimed = await run([quote], terms);
+        unclaimed = await run([], terms);
+        failed = await run([quote], () => { throw new Error('model down'); });
+        slow = await run([quote], () => {
+          linesLimit.abort();
+          return new Promise<never>(() => undefined);
+        });
+      } finally {
+        timeoutSpy.mockRestore();
+        fetchSpy.mockRestore();
+        for (const dir of [root, ref, app, lib]) rmSync(dir, { recursive: true, force: true });
+      }
+
+      // Only the claim fetches the repos here. Its check is shown the lines of all three kinds after the diff.
+      expect([claimed.fetches, unclaimed.fetches, failed.fetches]).toEqual([1, 0, 1]);
+      expect(claimed.checks).toHaveLength(1);
+      expect(claimed.checks[0]).toContain('\n\n```\no/ref:Round.java:1: int roundAmount(int a) { return a; }\no/app:total.ts:1: const t = roundTotal(1);\no/lib:round.py:1: def round_cents(amount):\n```');
+      expect(claimed.result.usesOutsideDiff).toEqual({ claimTerms: { terms: [
+        { claim: 0, repo: 'o/ref', term: 'roundAmount', lines: 1, shown: 1 },
+        { claim: 0, repo: 'o/app', term: 'roundTotal', lines: 1, shown: 1 },
+        { claim: 0, repo: 'o/lib', term: 'round_cents', lines: 1, shown: 1 },
+      ] } });
+      expect(claimed.result.llmCalls?.filter(c => c.stage === 'claim_terms')).toHaveLength(1);
+      // A term call that fails leaves the check to start without lines, and the round ends the same.
+      expect(failed.checks).toHaveLength(1);
+      expect(failed.checks[0]).not.toContain('## Lines in the Related Repos');
+      expect(failed.result.usesOutsideDiff).toEqual({ claimTerms: { skipped: 'model down' } });
+      // A term call past its limit leaves the check to start without lines, and the check still gets its whole time.
+      expect(slow.checks).toHaveLength(1);
+      expect(slow.checks[0]).not.toContain('## Lines in the Related Repos');
+      expect(slow.result.usesOutsideDiff).toEqual({ claimTerms: { skipped: 'the fetch, the term call or the search took longer than 30 s or ran past the deadline of the checks' } });
+      expect(slow.result.prClaims?.claims?.map(c => [c.status, c.call])).toEqual([['unchecked', undefined]]);
+      expect(unclaimed.result.usesOutsideDiff).toBeUndefined();
+      expect(unclaimed.result.findings.map(f => f.severity)).toContain('blocker');
+      // The finders, the judge and the refuter get the same prompts whatever the claims found.
+      expect(claimed.prompts.judge.map(([system]) => system.slice(0, 30))).toEqual([expect.stringMatching(/^You are a code review judge/), expect.stringMatching(/^You check one finding/)]);
+      for (const { prompts, result } of [claimed, failed, slow]) {
+        expect(prompts).toEqual(unclaimed.prompts);
+        expect(result.findings.map(f => [f.title, f.severity])).toEqual(unclaimed.result.findings.map(f => [f.title, f.severity]));
+        expect(result.verdict).toBe(unclaimed.result.verdict);
+      }
+    });
   });
 
   it('gives none of the eight checks to a warning a later step keeps out of the review, and no check to a warning in the `rare` column a memory suppression hides', async () => {
@@ -2951,10 +3048,21 @@ describe('runReview', () => {
     const queue = (body: string) => `export class Queue {\n  pending: Set<string> = new Set();\n  done: Set<string> = new Set();\n\n  start(id: string) {\n${body}  }\n}\n`;
     const { root, diff } = gitWorkspace({ 'src/queue.ts': queue('') }, { 'src/queue.ts': queue('    if (this.pending.has(id)) return;\n') });
     const quote = 'a finished id is never started again';
-    const clients = { ...makeClients(), dedup: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify([quote]) }) } as unknown as LLMClient };
+    // The call that names the claim's terms never answers, even when it is aborted, so only the deadline ends the wait for its
+    // lines. The finders answer once it is asked, so the deadline comes while it hangs.
+    let termsAsked = () => undefined as void;
+    const asked = new Promise<void>(resolve => { termsAsked = resolve; });
+    const dedup = jest.fn(async (system: string) => {
+      if (!system.startsWith('You name the code')) return { content: system.startsWith('You list the statements') ? JSON.stringify([quote]) : '{}' };
+      termsAsked();
+      return new Promise<never>(() => undefined);
+    });
+    const clients = { ...makeClients(), dedup: { sendMessage: dedup } as unknown as LLMClient };
+    const checkout = mkdtempSync(join(tmpdir(), 'manki-claim-deadline-'));
+    const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/ref', kind: 'reference', dir: checkout }]);
     Object.assign(clients.reviewer, { repoTools: true });
     jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, _user: string, options?: SendMessageOptions) => {
-      if (!system.startsWith('You compare code') && !system.startsWith('You check one statement')) return { content: '[]' };
+      if (!system.startsWith('You compare code') && !system.startsWith('You check one statement')) return asked.then(() => ({ content: '[]' }));
       return new Promise((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
     });
     // The grace timer fires at once, so the hanging comparison is cut as soon as the finders are done.
@@ -2969,14 +3077,17 @@ describe('runReview', () => {
     let result;
     try {
       result = await runReview(clients, {
-        config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, signal: new AbortController().signal,
+        config: makeConfig({ related_repos: [{ repo: 'o/ref', kind: 'reference' }] }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, signal: new AbortController().signal,
         prContext: { title: 'Skip started ids', body: `Safe, since ${quote}.`, baseBranch: 'main' },
       });
     } finally {
       timers.mockRestore();
-      rmSync(root, { recursive: true, force: true });
+      fetchSpy.mockRestore();
+      for (const dir of [root, checkout]) rmSync(dir, { recursive: true, force: true });
     }
 
+    expect(dedup.mock.calls.filter(([system]) => system.startsWith('You name the code'))).toHaveLength(1);
+    expect(result.usesOutsideDiff?.claimTerms).toEqual({ skipped: 'the fetch, the term call or the search took longer than 30 s or ran past the deadline of the checks' });
     expect(result.comparisons).toEqual([{ kind: 'field', reviewer: 'Sibling field: pending vs done', at: ['src/queue.ts:6'], status: 'timed_out' }]);
     expect(result.prClaims).toEqual({ claims: [{ quote, source: 'description', reviewer: 'Claim check 1', status: 'unchecked', call: 'timed_out' }] });
     expect(result.findings).toEqual([]);

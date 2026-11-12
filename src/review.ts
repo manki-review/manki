@@ -9,9 +9,9 @@ import { capUnconfirmedBuildClaim, runJudgeAgent, JudgeInput, PriorFinding, coll
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { AFTER_PUSH_LINE, cachedFileLines, dynamicFence, fenceText, InstructionFile, LinkedIssue, RepoFiles, sanitizeFilePath, titleToSlug } from './github';
 import { blockersToRecheck, collectGuardedThreadIds, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, isGuarded, judgeAddressedThreadIds, llmDeduplicateFindings, llmSameDefects, PreviousFinding, replyClassOf, titleOverlapType } from './recap';
-import { canLeaveOut, disproof, findingKey, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { canLeaveOut, disproof, findingKey, isBlockingSeverity, isRareClaim, staysWarningIfConfirmed, wouldBlockIfTrue, CarriedEnd, CarriedEndReason, cellGrade, FOLLOW_UP_TAG, UNPOSTED_REASONS, leftOutUnproven, gradeStep, isGradeCell, isSecurityFinding, leadText, LeadOutcome, RoundLead, PRE_EXISTING_TAG, PreExistingCheck, SECURITY_TAG, SEVERITY_ORDER, threadBlocks, ReviewConfig, RoundSlicing, RoundSweep, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, NeedsHuman, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, PrClaim, GroupReviewer, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundRelatedRepo, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, RelatedWork, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, isLineInDiff, MAX_LINE_CHARS, MAX_SLICE_CHARS, OverlongLine, overlongChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
-import { translateNames } from './name-translation';
+import { guessClaimTerms, translateNames } from './name-translation';
 import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoOutcomes, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { classifyRelatedWork } from './related-work';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, modelIdentity, resolveRouting } from './routing';
@@ -21,7 +21,7 @@ import { checkStatus, MAX_DOUBT_CHECKS, needsProof, refuteBlockers, unprovenReas
 import { combineVerdictReports, runVerdictReader } from './verdict';
 import { buildRepositoryRules, CLAIMS_MISSING_RULE, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, PRE_EXISTING_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
-import { listRelatedUses, listUsesOutsideDiff } from './symbol-uses';
+import { listClaimLines, listRelatedUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, startsSweep } from './sweep';
@@ -151,6 +151,8 @@ const RISKY_FINDER_STEPS = 40;
 export const FINDER_TOOLS_TIMEOUT_MS = 900_000;
 /** How long the round still waits for the sibling comparisons once the finders are done. */
 const COMPARISON_GRACE_MS = 60_000;
+/** How long the claim checks wait for their lines of the related repos before they start without them. */
+const CLAIM_LINES_LIMIT_MS = 30_000;
 
 /** A finder reply that is not the JSON array of findings or holds no usable element, which a retry with `parseRetryNote` can correct. */
 class FinderReplyError extends Error {}
@@ -806,13 +808,33 @@ export async function runReview(
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
     effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal,
   });
+  const checkWorkspace = quickCheckOnly(team) ? undefined : workspace;
+  // Lines of the related repos for the claims' own checks. A repo is fetched for them also when the diff's names start no search of their own.
+  const claimLines = async (claims: PrClaim[], signal: AbortSignal): ReturnType<typeof listClaimLines> => {
+    if (!related || !checkWorkspace || !pickReviewerClient(clients, comparisonModel).client.repoTools || claims.length === 0) return { lines: new Map() };
+    const fetched = await fetchRelatedRepos(related);
+    const termClient = clients.dedup && withSignal(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'claim_terms'), signal);
+    return listClaimLines(fetched, await guessClaimTerms(termClient, claims.map(c => c.quote), fetched));
+  };
   // Each claim of the PR text gets a check of its own beside the finders, under the comparisons' deadline. No finder waits for it or
-  // is shown it. When the quick check alone reads the change, its claims are recorded without a check.
+  // is shown it or its lines. When the quick check alone reads the change, its claims are recorded without a check.
   const claimChecksPromise = claimsPromise.then(async ({ claims, ...listed }) => {
-    const checked = await runClaimChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'claim_check', reviewer), claims, {
-      rawDiff, effort: comparisonEffort, workspace: quickCheckOnly(team) ? undefined : workspace, related, signal: comparisonDeadline.signal,
+    // The lines are waited for at most `CLAIM_LINES_LIMIT_MS`, so a slow fetch or term call costs the checks their lines and
+    // not their time. The fetch and the search take no signal and finish in the background.
+    const linesLimit = AbortSignal.any([comparisonDeadline.signal, AbortSignal.timeout(CLAIM_LINES_LIMIT_MS)]);
+    const cut = new Promise<Awaited<ReturnType<typeof listClaimLines>>>(resolve => {
+      const stop = () => resolve({ lines: new Map(), record: { skipped: `the fetch, the term call or the search took longer than ${CLAIM_LINES_LIMIT_MS / 1000} s or ran past the deadline of the checks` } });
+      if (linesLimit.aborted) stop();
+      else linesLimit.addEventListener('abort', stop, { once: true });
     });
-    return { findings: checked.findings, record: prClaimsRecord(listed, checked.claims) };
+    const { lines, record: terms } = await Promise.race([claimLines(claims, linesLimit).catch((error: unknown) => {
+      core.warning(`Could not search the related repos for the claims of the PR text, so their checks start without lines of them: ${error instanceof Error ? error.message : String(error)}`);
+      return { lines: new Map<number, string[]>(), record: undefined };
+    }), cut]);
+    const checked = await runClaimChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'claim_check', reviewer), claims, {
+      rawDiff, effort: comparisonEffort, workspace: checkWorkspace, related, relatedLines: lines, signal: comparisonDeadline.signal,
+    });
+    return { findings: checked.findings, record: prClaimsRecord(listed, checked.claims), terms };
   });
   const referenceNames = uses.referenceNames ?? [];
   const dependencyNames = uses.dependencyNames ?? [];
@@ -1187,7 +1209,8 @@ export async function runReview(
   clearTimeout(comparisonGrace);
   allFindings.push(...comparisonFindings, ...claimChecks.findings);
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
-  finderContext = { ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }) };
+  const usesWithTerms = usesRecord || claimChecks.terms ? { ...usesRecord, ...(claimChecks.terms && { claimTerms: claimChecks.terms }) } : undefined;
+  finderContext = { ...(usesWithTerms && { usesOutsideDiff: usesWithTerms }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }) };
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
     const summary = quotaErrors.size > 0

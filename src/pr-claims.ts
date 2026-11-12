@@ -11,7 +11,7 @@ import { diffSection } from './sweep';
 import { COMMENT } from './symbol-uses';
 import { EffortLevel, Finding, ParsedDiff, PrClaim, PrContext, RelatedRepoTools, RoundPrClaim, RoundPrClaims } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
-import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const EXTRACT_TIMEOUT_MS = 45_000;
 /** Claims checked in one round, the first ones listed, so no PR text can start more calls than this. */
@@ -189,12 +189,16 @@ export async function extractPrClaims(client: LLMClient | undefined, prContext: 
   }
 }
 
-function checkMessage({ quote, source }: PrClaim, rawDiff: string): string {
+function checkMessage({ quote, source }: PrClaim, rawDiff: string, relatedLines: readonly string[] = []): string {
   // A path comes from the PR, so it is only ever written inside a fence.
   const where = source === 'description'
     ? `The PR author wrote the statement below in the PR title or description.\n\n${fenceText(quote)}`
     : `The PR author wrote the statement below in a comment the change adds. The first line of the block is where that comment stands.\n\n${fenceText(`${source}\n${quote}`)}`;
-  return `## Statement\n\n${where}\n\n${diffSection(rawDiff, true)}`;
+  // The lines are found through names a model guessed from the statement, so the author's text only picks which lines of the related repos are shown.
+  const related = relatedLines.length > 0
+    ? `\n\n## Lines in the Related Repos\n\nManki searched the related repos for names a model guessed from the statement, and each line below holds one of them. The lines come from a word search and prove nothing: a line may be about something else, and the code that decides the statement may be somewhere else. Use them as places to start reading, and read the code around a line before you rely on it. ${RELATED_REPO_TRUST_RULE}\n\n${fenceText(relatedLines.join('\n'))}`
+    : '';
+  return `## Statement\n\n${where}\n\n${diffSection(rawDiff, true)}${related}`;
 }
 
 /**
@@ -228,22 +232,24 @@ interface ClaimCheckOptions {
   workspace?: string;
   /** The related repos of the round, which a check reads with the same tools. */
   related?: RelatedRepoTools;
+  /** Lines of the related repos to start from, by the position of the claim, each as `owner/name:path:line: text`. */
+  relatedLines?: ReadonlyMap<number, readonly string[]>;
   /** Stops the checks still running or not yet asked, which are then recorded as `timed_out`. */
   signal?: AbortSignal;
 }
 
 /**
  * Asks one call per claim whether the code proves it, `MAX_PARALLEL_CHECKS` at a time, each on the client `clientFor`
- * returns for its reviewer name. A check sees its claim and the diff, never the PR description. Returns the findings of
+ * returns for its reviewer name. A check sees its claim, the diff and its `relatedLines`, never the PR description. Returns the findings of
  * the claims a check disproved, which carry that name, and a record of every claim. A claim whose check did not run,
  * failed or was stopped by `signal` is `unchecked`, with why in `call`. It never throws.
  */
 export async function runClaimChecks(
-  clientFor: (reviewer: string) => LLMClient, claims: readonly PrClaim[], { rawDiff, effort, workspace, related, signal }: ClaimCheckOptions,
+  clientFor: (reviewer: string) => LLMClient, claims: readonly PrClaim[], { rawDiff, effort, workspace, related, relatedLines, signal }: ClaimCheckOptions,
 ): Promise<{ findings: Finding[]; claims: RoundPrClaim[] }> {
   // A name never carries text from the PR, so each check is numbered and its record holds the quote.
-  const asked = claims.map((claim, i) => ({ claim, reviewer: `${CLAIM_CHECK_NAME} ${i + 1}` }));
-  const answers = await mapWithConcurrency(asked, MAX_PARALLEL_CHECKS, async ({ claim, reviewer }): Promise<{ record: RoundPrClaim; findings: Finding[] }> => {
+  const asked = claims.map((claim, i) => ({ claim, reviewer: `${CLAIM_CHECK_NAME} ${i + 1}`, lines: relatedLines?.get(i) }));
+  const answers = await mapWithConcurrency(asked, MAX_PARALLEL_CHECKS, async ({ claim, reviewer, lines }): Promise<{ record: RoundPrClaim; findings: Finding[] }> => {
     const unchecked = (call: NonNullable<RoundPrClaim['call']>) => ({ record: { ...claim, reviewer, status: 'unchecked' as const, call }, findings: [] });
     const client = clientFor(reviewer);
     if (!workspace || !client.repoTools) return unchecked('skipped');
@@ -253,7 +259,7 @@ export async function runClaimChecks(
     };
     try {
       const { reported, ...answer } = await sendWithParseRetry(
-        checkMessage(claim, rawDiff),
+        checkMessage(claim, rawDiff, lines),
         message => client.sendMessage(CHECK_SYSTEM_PROMPT, message, options),
         reply => {
           if (reply.truncated) throw new Error(`response truncated at the output token limit (length ${reply.content.length})`);

@@ -11,7 +11,7 @@ import { addedLines, findExcludePattern, rebuildRawDiff } from './diff';
 import { fenceText } from './github';
 import { resolveInRoot } from './mcp-server';
 import { GUIDE_FILES } from './related-repos';
-import { DiffFile, DiffHunk, NameTranslation, ParsedDiff, RELATED_REPO_KINDS, RelatedCheckout, RelatedRepoKind, RoundNameTranslation, RoundReferenceUse, RoundUses, RoundUsesSymbol } from './types';
+import { ClaimTerms, DiffFile, DiffHunk, NameTranslation, ParsedDiff, RELATED_REPO_KINDS, RelatedCheckout, RelatedRepoKind, RoundClaimTerms, RoundNameTranslation, RoundReferenceUse, RoundUses, RoundUsesSymbol } from './types';
 import { escapeRegExp } from './utils';
 import { gitEnv } from './workspace';
 
@@ -52,6 +52,11 @@ const MIN_NAME_LENGTH = 4;
 /** A longer name is no identifier anyone wrote, so it names no declaration, field or type and is never searched. */
 const MAX_NAME_LENGTH = 160;
 const MAX_REFERENCE_LINES = 40;
+/** A claim term that more lines hold than this is a common word there, so it points at nothing. */
+const MAX_TERM_MATCHES = 20;
+const MAX_LINES_PER_TERM = 3;
+/** Lines of the related repos handed to the claim checks of a round, all claims together. */
+const MAX_CLAIM_LINES = 15;
 /** A reference line is cut to this length before it is ranked, since a minified file can hold one of megabytes. */
 const MAX_REFERENCE_LINE_CHARS = 1000;
 const GREP_TIMEOUT_MS = 30_000;
@@ -575,11 +580,7 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
   const unsearched = new Set<string>();
   const failed: string[] = [];
   for (const { repo, dir } of checkouts) {
-    // The root guide files are left out, so their text reaches a prompt only through a finder's own read.
-    const search = async (words: string[], ignoreCase: boolean): Promise<{ hits: Hit[]; left: Set<string> }> => {
-      const result = await grepWords(dir, words, { onDisk: true, ignoreCase });
-      return { hits: result.hits.filter(hit => !GUIDE_FILES.includes(hit.file)), left: new Set(result.unsearched) };
-    };
+    const search = (words: string[], ignoreCase: boolean) => grepCheckout(dir, words, ignoreCase);
     // A translation the name's own search already finds, or one too short or too common to tell anything, is not searched.
     const guesses = [...(translations.get(repo) ?? [])].flatMap(([name, list]) =>
       list.filter(as => isSearchable(as) && !referencePattern(name).test(as)).map(as => ({ repo, name, as, lines: 0, pattern: translatedPattern(as) })));
@@ -638,6 +639,90 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
     for (const hit of hits) namesPerFile.set(`${hit.repo}:${hit.file}`, (namesPerFile.get(`${hit.repo}:${hit.file}`) ?? new Set()).add(name));
   }
   return { ...formatRelatedUses(kind, names, found, file => namesPerFile.get(file)?.size ?? 0, unsearched, failed), translated };
+}
+
+/**
+ * Returns the lines of the related checkout in `dir` that hold one of `words`, and the words the search left out. The
+ * root guide files are left out, so their text reaches a prompt only through a model's own read.
+ */
+async function grepCheckout(dir: string, words: string[], ignoreCase: boolean): Promise<{ hits: Hit[]; left: Set<string> }> {
+  const result = await grepWords(dir, words, { onDisk: true, ignoreCase });
+  return { hits: result.hits.filter(hit => !GUIDE_FILES.includes(hit.file)), left: new Set(result.unsearched) };
+}
+
+type ClaimTerm = NonNullable<RoundClaimTerms['terms']>[number];
+
+/**
+ * Searches `checkouts` for the `terms` a model guessed for the claims of the PR text. Returns the lines to hand each
+ * claim's check, by the claim's position, each as `owner/name:path:line: text`, and the record of every term. A term is
+ * searched like a translated name. It shows no line when it is too short or too generic to search for, when its search
+ * failed or left it out, or when more than `MAX_TERM_MATCHES` lines hold it.
+ *
+ * A term shows at most `MAX_LINES_PER_TERM` lines, the repo's own code that declares it first, and the claims together
+ * at most `MAX_CLAIM_LINES`. The claims take their lines in turns, so one with many matches leaves the others theirs.
+ */
+export async function listClaimLines(checkouts: RelatedCheckout[], terms?: ClaimTerms): Promise<{ lines: Map<number, string[]>; record?: RoundClaimTerms }> {
+  const lines = new Map<number, string[]>();
+  if (!terms) return { lines };
+  if (terms.skipped) return { lines, record: { skipped: terms.skipped } };
+  const searched: Array<{ entry: ClaimTerm; best: Hit[] }> = [];
+  for (const { repo, dir } of checkouts) {
+    const guesses = [...(terms.terms.get(repo) ?? [])].flatMap(([claim, list]) => list.map(term => {
+      const entry: ClaimTerm = { claim, repo, term, lines: 0, shown: 0, ...(!isSearchable(term) && { notShown: 'unsearchable' as const }) };
+      return { entry, pattern: translatedPattern(term), hits: [] as Hit[] };
+    }));
+    // A plain word is searched in its exact case, as a translated name is.
+    for (const coded of [true, false]) {
+      const group = guesses.filter(({ entry }) => !entry.notShown && isCodeLike(entry.term) === coded);
+      if (group.length === 0) continue;
+      const spellings = ({ entry }: { entry: ClaimTerm }) => (coded ? nameVariants(entry.term) : [entry.term]);
+      try {
+        const { hits, left } = await grepCheckout(dir, [...new Set(group.flatMap(spellings))], coded);
+        // A term is matched against the whole line. Only the kept text is cut.
+        for (const hit of hits) for (const guess of group.filter(({ pattern }) => pattern.test(hit.text))) guess.hits.push({ ...hit, text: hit.text.slice(0, MAX_REFERENCE_LINE_CHARS) });
+        for (const guess of group) if (guess.hits.length === 0 && spellings(guess).some(spelling => left.has(spelling))) guess.entry.notShown = 'failed';
+      } catch (error) {
+        core.warning(`Skipped the search of the related repo ${repo} for ${group.length} ${group.length === 1 ? 'term' : 'terms'} of the PR's claims: ${error instanceof Error ? error.message : String(error)}`);
+        for (const guess of group) guess.entry.notShown = 'failed';
+      }
+    }
+    for (const { entry, pattern, hits } of guesses) {
+      entry.lines = hits.length;
+      if (hits.length > MAX_TERM_MATCHES) entry.notShown = 'common';
+      const declaration = declarationPattern(pattern);
+      const seen = new Map<string, number>();
+      const ranked = entry.notShown ? [] : hits.map(hit => {
+        const nth = seen.get(hit.file) ?? 0;
+        seen.set(hit.file, nth + 1);
+        return { hit, rank: [Number(VENDORED_PATH.test(hit.file)), Number(TEST_PATH.test(hit.file)), Number(!declaration.test(hit.text)), proseRank(pattern, hit), nth] };
+      }).sort((a, b) => compareRanks(a.rank, b.rank) || a.hit.file.localeCompare(b.hit.file) || a.hit.line - b.hit.line);
+      searched.push({ entry, best: ranked.slice(0, MAX_LINES_PER_TERM).map(({ hit }) => hit) });
+    }
+  }
+  // What each claim would show, the best line of each of its terms before the second best of any.
+  const queues = new Map<number, Array<{ entry: ClaimTerm; location: string; text: string }>>();
+  for (let nth = 0; nth < MAX_LINES_PER_TERM; nth++) {
+    for (const { entry, best } of searched) {
+      const hit = best[nth];
+      if (!hit) continue;
+      const queue = queues.get(entry.claim) ?? [];
+      queues.set(entry.claim, queue);
+      const location = `${entry.repo}:${hit.file}:${hit.line}`;
+      if (!queue.some(queued => queued.location === location)) queue.push({ entry, location, text: hit.text.trim().slice(0, MAX_LINE_CHARS) });
+    }
+  }
+  const claims = [...queues.keys()].sort((a, b) => a - b);
+  let total = 0;
+  for (let turn = 0; total < MAX_CLAIM_LINES && claims.some(claim => queues.get(claim)![turn]); turn++) {
+    for (const claim of claims) {
+      const next = queues.get(claim)![turn];
+      if (!next || total >= MAX_CLAIM_LINES) continue;
+      lines.set(claim, [...(lines.get(claim) ?? []), `${next.location}: ${next.text}`]);
+      next.entry.shown++;
+      total++;
+    }
+  }
+  return { lines, record: { terms: searched.map(({ entry }) => entry).sort((a, b) => a.claim - b.claim), ...(terms.cut && { cut: terms.cut }) } };
 }
 
 /**
@@ -950,9 +1035,14 @@ function translatedPattern(name: string): RegExp {
   return isCodeLike(name) ? referencePattern(name) : wordPattern([name]);
 }
 
-/** Matches a line that looks like it declares `word`, as `#define`, a type or a constant does, but not a parameter. */
-function declarationPattern(word: RegExp): RegExp {
-  return new RegExp(`(?:#define\\s+|\\b(?:class|struct|enum|union|const|constexpr|static|typedef|using|fn|def|func|type|let|var|interface)\\b[^;=(){}]*?)${word.source}\\s*(?:[=;{(:[<]|$)`, 'i');
+const DECLARING_KEYWORD = '\\b(?:class|struct|enum|union|const|constexpr|static|typedef|using|fn|def|func|type|let|var|interface)\\b';
+
+/**
+ * Matches a line that looks like it declares `word`, as `#define`, a type or a constant does, but not a parameter. Only
+ * the last keyword before `word` is read on to it, so a line of many keywords is read once and not once per keyword.
+ */
+export function declarationPattern(word: RegExp): RegExp {
+  return new RegExp(`(?:#define\\s+|${DECLARING_KEYWORD}(?:(?!${DECLARING_KEYWORD})[^;=(){}])*?)${word.source}\\s*(?:[=;{(:[<]|$)`, 'i');
 }
 
 function addSymbol(symbols: Map<string, ChangedSymbol>, symbol: ChangedSymbol): void {
