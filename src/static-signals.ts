@@ -322,7 +322,8 @@ async function rustRulePaths(octokit: Octokit, { owner, repo, baseRef, diff }: S
 
 /**
  * Polls the check runs named in `wait_for_checks` until each has finished, and returns the ones still running at the timeout.
- * A poll that fails or meets a rate limit ends the wait. A poll still running `CHECK_POLL_TIMEOUT_MS` after `wait_timeout_seconds` is cut off.
+ * A poll that fails or meets a rate limit ends the wait with no names. A poll still running `CHECK_POLL_TIMEOUT_MS` after
+ * `wait_timeout_seconds` is cut off, and the wait then ends as timed out with the names the last answered poll saw unfinished.
  */
 async function waitForChecks(
   octokit: Octokit, { owner, repo, headSha }: StaticSignalRequest, settings: StaticAnalysisConfig, runtime: Pick<StaticAnalysisRuntime, 'sleep' | 'withDeadline'>,
@@ -331,25 +332,31 @@ async function waitForChecks(
   const names = settings.wait_for_checks.filter(name => name !== github.context.job);
   if (names.length === 0) return [];
   const deadline = Date.now() + settings.wait_timeout_seconds * 1000;
+  const cutOff = AbortSignal.timeout(settings.wait_timeout_seconds * 1000 + CHECK_POLL_TIMEOUT_MS);
+  // The names the last answered poll saw unfinished. Without an answered poll no name counts as finished.
+  let pending: string[] | undefined;
+  const timedOut = () => {
+    const state = pending ? 'still running or not started' : 'no poll was answered, so none of these counts as finished';
+    core.warning(`Static analysis: stopped waiting after ${settings.wait_timeout_seconds}s, ${state}: ${(pending ?? names).join(', ')}`);
+    return pending ?? names;
+  };
   try {
-    const polling = await runtime.withDeadline(octokit, AbortSignal.timeout(settings.wait_timeout_seconds * 1000 + CHECK_POLL_TIMEOUT_MS));
+    const polling = await runtime.withDeadline(octokit, cutOff);
     for (;;) {
       const runs = await polling.paginate(polling.rest.checks.listForRef, { owner, repo, ref: headSha, per_page: 100 });
       // A rerun leaves the earlier, completed run in the list, so a name waits while any of its runs is unfinished.
-      const pending = names.filter(name => {
+      pending = names.filter(name => {
         const named = runs.filter(r => r.name === name);
         return named.length === 0 || named.some(r => r.status !== 'completed');
       });
       if (pending.length === 0) return [];
       const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        core.warning(`Static analysis: stopped waiting after ${settings.wait_timeout_seconds}s, still running or not started: ${pending.join(', ')}`);
-        return pending;
-      }
+      if (remaining <= 0) return timedOut();
       core.info(`Static analysis: waiting for ${pending.join(', ')}`);
       await runtime.sleep(Math.min(CHECK_POLL_MS, remaining));
     }
   } catch (error) {
+    if (cutOff.aborted) return timedOut();
     core.warning(`Static analysis: stopped waiting for checks: ${error instanceof Error ? error.message : String(error)}`);
     return [];
   }

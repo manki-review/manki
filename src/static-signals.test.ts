@@ -26,15 +26,17 @@ jest.mock('@actions/core', () => ({
 }));
 
 // The real client, for the tests of its retries and rate limit waits. `mockFetch` answers every request, and the waits are a thousandth as long.
+// The throttling plugin shares its limiters by `id` across clients, and the tests set the clock back, so each client gets its own.
 jest.mock('@actions/github', () => {
   const actual = jest.requireActual('@actions/github');
+  let clients = 0;
   return {
     context: { job: 'review' },
     getOctokit: (token: string, options: { retry?: object; throttle?: object } = {}, ...plugins: unknown[]) => actual.getOctokit(token, {
       ...options,
       request: { fetch: (url: string, init: RequestInit) => mockFetch(url, init) },
       retry: { ...options.retry, retryAfterBaseValue: 1 },
-      throttle: { ...options.throttle, retryAfterBaseValue: 1 },
+      throttle: { ...options.throttle, retryAfterBaseValue: 1, id: `client-${clients++}` },
     }, ...plugins),
   };
 });
@@ -710,10 +712,8 @@ describe('collectStaticSignals with analyzers and waits', () => {
     ['meets a rate limit', () => json(403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '2' }), 1, 'API rate limit exceeded'],
     ['meets a secondary rate limit', () => json(403, { message: 'You have exceeded a secondary rate limit' }, { 'retry-after': '2' }), 1, 'secondary rate limit'],
     ['gets a 5xx on every try', () => json(503, { message: 'Service Unavailable' }), 2, 'Service Unavailable'],
-    ['is cut by the deadline', RUNNING, 2, 'The operation timed out'],
   ])('stops waiting for checks with a warning when a poll %s, on the real client', async (_case, answer, tries, reason) => {
     const timeout = jest.spyOn(AbortSignal, 'timeout');
-    if (answer === RUNNING) timeout.mockReturnValue(AbortSignal.abort(new DOMException('The operation timed out', 'TimeoutError')));
     let polls = 0;
     mockFetch = async (url, init) => {
       if (url.includes('/contents/')) return json(200, { content: Buffer.from(WAIT_FOR_LINT).toString('base64'), encoding: 'base64', size: WAIT_FOR_LINT.length });
@@ -730,6 +730,32 @@ describe('collectStaticSignals with analyzers and waits', () => {
     expect(record).toBeUndefined();
     // The last poll starts when the 60 seconds are over, and gets 10 seconds to answer.
     expect(timeout).toHaveBeenCalledWith(70_000);
+  });
+
+  it.each<[string, number, boolean, object | undefined, RegExp, number]>([
+    // Four polls answer, and the fifth is tried twice.
+    ['times out with the checks the last answered poll saw running when the deadline cuts the last poll', 60_000, true, { checksStillPending: ['lint'] }, /^Static analysis: stopped waiting after 60s, still running or not started: lint$/, 6],
+    ['times out with every check when the deadline cuts the only poll', 0, true, { checksStillPending: ['lint'] }, /^Static analysis: stopped waiting after 60s, no poll was answered, so none of these counts as finished: lint$/, 2],
+    ['stops with no names when the last poll fails without the deadline', 60_000, false, undefined, /^Static analysis: stopped waiting for checks: .*Service Unavailable/, 6],
+  ])('%s', async (_case, failFrom, cut, expected, warning, tries) => {
+    const cutOff = new AbortController();
+    jest.spyOn(AbortSignal, 'timeout').mockReturnValue(cutOff.signal);
+    let polls = 0;
+    mockFetch = async (url, init) => {
+      if (url.includes('/contents/')) return json(200, { content: Buffer.from(WAIT_FOR_LINT).toString('base64'), encoding: 'base64', size: WAIT_FOR_LINT.length });
+      polls += 1;
+      if (now < failFrom) return RUNNING();
+      if (!cut) return json(503, { message: 'Service Unavailable' });
+      // The poll never answers, so the signal aborts it.
+      cutOff.abort(new DOMException('The operation timed out', 'TimeoutError'));
+      return init.signal!.throwIfAborted() as never;
+    };
+
+    const { record } = await collectStaticSignals(createOctokit('ghs_workflow'), request(), { ...runtime, withDeadline });
+
+    expect(polls).toBe(tries);
+    expect(record).toEqual(expected);
+    expect(jest.mocked(core.warning).mock.calls).toEqual([[expect.stringMatching(warning)]]);
   });
 });
 
