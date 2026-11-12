@@ -17,6 +17,8 @@ export interface ProcessRow {
 }
 
 const SAMPLE_INTERVAL_MS = 2000;
+/** How long the lookup of the workflow run may take, so a stalled API never holds the end of the run. */
+const RUN_LOOKUP_TIMEOUT_MS = 10_000;
 const GIB = 1024 ** 3;
 const MIB = 1024 ** 2;
 
@@ -110,12 +112,13 @@ export function trackCliProcess(): () => void {
 
 /**
  * Records the time from the start of this workflow run until Manki started. It covers the wait for a runner and the
- * job's steps before Manki. A run that cannot be read leaves the time unrecorded, and the promise never rejects.
+ * job's steps before Manki. A run that cannot be read within ten seconds leaves the time unrecorded, and the promise
+ * never rejects.
  */
 export async function recordQueueWait(octokit: Octokit): Promise<void> {
   try {
     const { owner, repo } = github.context.repo;
-    const { data } = await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: github.context.runId });
+    const { data } = await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: github.context.runId, request: { signal: AbortSignal.timeout(RUN_LOOKUP_TIMEOUT_MS) } });
     // A re-run keeps `created_at` of the first attempt.
     const queuedAt = Date.parse(data.run_started_at ?? data.created_at);
     const startedAt = Date.now() - process.uptime() * 1000;

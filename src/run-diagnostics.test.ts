@@ -109,7 +109,8 @@ describe('run diagnostics', () => {
     // A re-run keeps the first attempt's `created_at`, so the time counts from `run_started_at`.
     const getWorkflowRun = jest.fn().mockResolvedValue({ data: { created_at: new Date(started - 3_600_000).toISOString(), run_started_at: new Date(started - 90_000).toISOString() } });
     await recordQueueWait(octokitWithRun(getWorkflowRun));
-    expect(getWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 7 });
+    // The lookup carries a time limit, so a stalled API cannot keep the run open.
+    expect(getWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 7, request: { signal: expect.any(AbortSignal) } });
     const { queuedMs } = runnerDiagnostics();
     expect(queuedMs).toBeGreaterThan(88_000);
     expect(queuedMs).toBeLessThan(92_000);
