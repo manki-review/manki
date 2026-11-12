@@ -32,7 +32,7 @@ import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
-import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
+import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
 import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, FindingSeverity, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
 import {
   fetchPRDiff,
@@ -1041,6 +1041,9 @@ async function postPauseNotice(
   return { conclusion: 'action_required', title: 'Automatic review paused', summary: `${reason} Automatic review is paused until someone asks for another round.` };
 }
 
+/** The boxes whose tick answers a notice. */
+const REVIEW_BOXES: readonly SettingsBox[] = ['again', 'deeper'];
+
 /**
  * Returns Manki's latest notice with `marker` and no ticked box, posted or updated after `lastRoundAt`.
  * A failed lookup returns `undefined`, so a new notice is posted.
@@ -1051,7 +1054,7 @@ async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: st
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
     return comments.find(c => isBotLogin(bot, c.user?.login) && !!c.body?.includes(marker)
-      && !/- \[x\] (?:Review again|Deeper review) /.test(c.body) && Date.parse(c.updated_at) > since);
+      && !REVIEW_BOXES.some(box => parseSettingsBlock(c.body ?? '')?.ticked.has(box)) && Date.parse(c.updated_at) > since);
   } catch (error) {
     core.warning(`Failed to look up an earlier notice: ${error}`);
     return undefined;
@@ -1828,7 +1831,7 @@ async function runFullReview(
       const reason = `Invalid model config: ${error instanceof Error ? error.message : error}`;
       core.setFailed(reason);
       checkReport = failedReport(reason);
-      await dropProgressComment(target, progress, options.settings, 'review failed', `Review failed: ${reason}`);
+      await dropProgressComment(target, progress, options.settings, 'review failed', `Review failed: ${sanitizeMarkdown(reason)}`);
       return;
     }
     const { clients, models } = built;
@@ -2230,7 +2233,7 @@ async function reportTokenFailure({ event, action, number }: ReturnType<typeof d
   const token = core.getInput('github_token');
   if (!token || (event === 'pull_request' && action === 'closed')) return;
   const { owner, repo } = github.context.repo;
-  const body = `${event === 'pull_request' ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${redactSecrets(error.message)}`;
+  const body = `${event === 'pull_request' ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${sanitizeMarkdown(redactSecrets(error.message))}`;
   try {
     const octokit = github.getOctokit(token);
     const comments = await octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });

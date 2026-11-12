@@ -137,9 +137,9 @@ describe('fetchPrState', () => {
     expect(JSON.parse(init.body)).toEqual({ owner: OWNER, repo: REPO, pr: 12 });
   });
 
-  it('reads the state next to a custom token URL, and counts settings that are not a boolean pause as not paused', async () => {
+  it('reads the state next to a custom token URL, and counts settings that are not a boolean pause as not paused and a commit that is no hash as none', async () => {
     mockGetInput.mockImplementation((name: string) => (name === 'manki_token_url' ? 'https://custom.example.com/api/token' : ''));
-    mockFetch(async () => Response.json({ active: [], queue: [], settings: { paused: 'yes' }, last_reviewed: null }));
+    mockFetch(async () => Response.json({ active: [], queue: [], settings: { paused: 'yes' }, last_reviewed: { commit: 'abc` <b>' } }));
 
     expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({ settings: { paused: false }, runModes: new Set(), queuedModes: new Set() });
     expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('https://custom.example.com/api/state');

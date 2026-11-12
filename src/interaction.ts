@@ -765,7 +765,7 @@ async function handleRemember(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: withMarkers(`Stored for future reviews: \`${sanitized}\``, BOT_MARKER),
+      body: withMarkers(`Stored for future reviews: ${inline(sanitized)}`, BOT_MARKER),
     });
 
     core.info(`Stored learning: "${sanitized}"`);
@@ -836,14 +836,14 @@ async function handleForget(
         await octokit.rest.issues.createComment({
           owner, repo,
           issue_number: issueNumber,
-          body: withMarkers(`Removed suppression: \`${removed.pattern}\` (${remaining} remaining)`, BOT_MARKER),
+          body: withMarkers(`Removed suppression: ${inline(removed.pattern)} (${remaining} remaining)`, BOT_MARKER),
         });
         core.info(`Removed suppression: "${removed.pattern}"`);
       } else {
         await octokit.rest.issues.createComment({
           owner, repo,
           issue_number: issueNumber,
-          body: withMarkers(`No suppression matches \`${searchPattern}\`.`, BOT_MARKER),
+          body: withMarkers(`No suppression matches ${inline(searchPattern)}.`, BOT_MARKER),
         });
       }
     } else {
@@ -853,14 +853,14 @@ async function handleForget(
         await octokit.rest.issues.createComment({
           owner, repo,
           issue_number: issueNumber,
-          body: withMarkers(`Removed learning: \`${removed.content}\` (${remaining} remaining)`, BOT_MARKER),
+          body: withMarkers(`Removed learning: ${inline(removed.content)} (${remaining} remaining)`, BOT_MARKER),
         });
         core.info(`Removed learning: "${removed.content}"`);
       } else {
         await octokit.rest.issues.createComment({
           owner, repo,
           issue_number: issueNumber,
-          body: withMarkers(`No learning matches \`${trimmed}\`.`, BOT_MARKER),
+          body: withMarkers(`No learning matches ${inline(trimmed)}.`, BOT_MARKER),
         });
       }
     }

@@ -113,7 +113,7 @@ export async function handleIssueBoxTick(
       allFiled = false;
       // The box is cleared for a retry even when the reply fails, and the other boxes are still handled.
       if (thread) {
-        await replyToReviewThread(octokit, thread.id, `Could not file an issue for this finding: ${String(error).slice(0, 200)}. Tick the box again to retry.`)
+        await replyToReviewThread(octokit, thread.id, `Could not file an issue for this finding: ${sanitizeMarkdown(String(error).slice(0, 200))}. Tick the box again to retry.`)
           .catch((replyError: unknown) => core.warning(`Failed to report the failed filing of ${id}: ${replyError}`));
       }
     }
@@ -206,7 +206,7 @@ export async function handleReviewBoxTick(
       // The review has no thread to reply in, so the PR gets the reason. The box is cleared for a retry either way.
       await octokit.rest.issues.createComment({
         owner, repo, issue_number: prNumber,
-        body: withMarkers(`Could not file an issue for **${sanitizeMarkdown(finding.title)}**: ${String(error).slice(0, 200)}. Tick its box in the review again to retry.`, BOT_MARKER),
+        body: withMarkers(`Could not file an issue for **${sanitizeMarkdown(finding.title)}**: ${sanitizeMarkdown(String(error).slice(0, 200))}. Tick its box in the review again to retry.`, BOT_MARKER),
       }).catch((reportError: unknown) => core.warning(`Failed to report the failed filing of ${id}: ${reportError}`));
     }
     // Each box is saved as soon as it is handled, on the review as it is now, so a tick made meanwhile stays.

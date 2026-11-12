@@ -1669,6 +1669,9 @@ describe('postReview body lead', () => {
     expect(event).toBe('COMMENT');
     expect(approvalHeld).toBe('conflict');
     expect(body).toBe(`**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result.\n\n${approved.body}`);
+    // A branch name is text from the repository, so it is shown without a marker or a tag of its own.
+    mockGet.mockResolvedValueOnce({ data: { ...state, base: { ref: 'rel/<!--x-->`<b>y' } } });
+    expect((await postedBody(ready)).body).toMatch(/^\*\*Approval held:\*\* this PR conflicts with `rel\/'y`\. Rebase it/);
   });
 
   it('holds the approval of a draft as a COMMENT when the PR cannot be read, and approves another PR then', async () => {
@@ -1767,6 +1770,10 @@ describe('postReview body lead', () => {
     // A round without a verdict, such as an incomplete one, shows the box under its summary.
     await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'COMMENT', outcome: undefined, llmCalls }, diff, undefined, undefined, { noVerdict: true });
     expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toMatch(new RegExp(`^All clear\\.\n\n${box.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    // The account and window names come from the provider, so they are posted as text.
+    const named = [{ ...llmCalls[0], limits: [{ account: 'Plan <!-- manki-bot --> @octocat', window: '<b>weekly</b>', usedPercent: 99 }] }];
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, llmCalls: named }, diff);
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toContain('> **Plan  @\u200Boctocat has used 99% of its weekly limit**, past the 90% mark.');
   });
 
   it('holds the approval of a READY round as a COMMENT for a person when a changed file went unread, and marks it so', async () => {
@@ -3516,6 +3523,19 @@ describe('updateProgressComment', () => {
       '- ChatGPT subscription: weekly 12%',
       '',
     ].join('\n'));
+
+    // Names from a provider or the config are text: no marker or mention of theirs reaches the comment.
+    const hostile = (name: string) => `${name} <!-- manki-settings --> @octocat`;
+    const shown = (name: string) => `${name}  @\u200Boctocat`;
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, {
+      ...baseMetadata, config: { ...baseMetadata.config, reviewerModel: hostile('r'), judgeModel: hostile('j'), memoryRepo: hostile('m') },
+      limits: [{ account: hostile('a'), window: hostile('w'), usedPercent: 1 }],
+    });
+    const named = mockUpdateComment.mock.calls.at(-1)![0].body as string;
+    expect(named).toContain(`- Models: reviewer=${shown('r')}, judge=${shown('j')}`);
+    expect(named).toContain(`enabled (${shown('m')})`);
+    expect(named).toContain(`- ${shown('a')}: ${shown('w')} 1%`);
+    expect(named).not.toContain('manki-settings -->');
   });
 
   it('renders judge decisions as kept or dropped', async () => {

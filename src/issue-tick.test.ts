@@ -126,14 +126,15 @@ describe('handleIssueBoxTick', () => {
 
   it('clears the box, says why in the thread and leaves the thread open when filing fails', async () => {
     const octokit = makeOctokit();
-    octokit.rest.issues.create.mockRejectedValue(new Error('Resource not accessible by integration'));
+    // The reason is GitHub's text, so it is posted without a marker or a mention.
+    octokit.rest.issues.create.mockRejectedValue(new Error('Resource not accessible by integration <!-- manki-reopened --> @octocat'));
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, isBlocking: false, findingTitle: 'x' }]);
     const body = ticked(finding());
 
     await tick(octokit, comment(body));
 
     expect(octokit.rest.pulls.updateReviewComment).toHaveBeenCalledWith({ owner: 'o', repo: 'r', comment_id: 501, body: formatFindingComment(finding(), TEST_LINKS) });
-    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Could not file an issue for this finding: Error: Resource not accessible by integration. Tick the box again to retry.']]);
+    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Could not file an issue for this finding: Error: Resource not accessible by integration  @\u200Boctocat. Tick the box again to retry.']]);
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
 
     // A reply that fails too still leaves the box cleared for a retry.
@@ -286,11 +287,11 @@ describe('handleReviewBoxTick', () => {
     expect(written).toMatch(/\r\n- \[x\] Create an issue for this <!-- manki-box:issue:src\/menu\.html:9:Trim-the-label -->$/);
 
     const failing = makeOctokit();
-    failing.rest.issues.create.mockRejectedValue(new Error('Resource not accessible by integration'));
+    failing.rest.issues.create.mockRejectedValue(new Error('Resource not accessible by integration <!-- manki-bot --> @octocat'));
     await tickReview(failing, { ...review, body: crlf });
     expect(jest.mocked(failing.rest.issues.createComment).mock.calls[0][0]).toMatchObject({
       owner: 'o', repo: 'r', issue_number: 5,
-      body: expect.stringMatching(/^Could not file an issue for \*\*Close the menu\*\*: Error: Resource not accessible by integration\. Tick its box in the review again to retry\./),
+      body: expect.stringMatching(/^Could not file an issue for \*\*Close the menu\*\*: Error: Resource not accessible by integration {2}@\u200Boctocat\. Tick its box in the review again to retry\./),
     });
     expect(jest.mocked(failing.rest.pulls.updateReview).mock.calls[0][0].body).toContain('- [ ] Create an issue for this <!-- manki-box:issue:src/menu.html:3:Close-the-menu -->\r\n');
   });

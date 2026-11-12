@@ -239,7 +239,7 @@ export function approvalHoldLine(hold: ApprovalHold): string {
       : '**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit.';
   }
   if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
-  return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
+  return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result.`;
 }
 
 const MAX_UNREVIEWED_LINES = 50;
@@ -966,7 +966,7 @@ function formatResetTime(seconds: number): string {
 }
 
 function formatLimitWindow(limit: LimitUsage): string {
-  return `${limit.window} ${limit.usedPercent}%${limit.resetsAt != null ? ` (resets ${formatResetTime(limit.resetsAt)})` : ''}`;
+  return `${sanitizeMarkdown(limit.window)} ${limit.usedPercent}%${limit.resetsAt != null ? ` (resets ${formatResetTime(limit.resetsAt)})` : ''}`;
 }
 
 const LIMIT_WARNING_THRESHOLDS = [90, 80, 70];
@@ -983,7 +983,7 @@ function formatLimitWarning(limits: readonly LimitUsage[]): string | undefined {
     if (mark === undefined) return [];
     if (mark !== LIMIT_WARNING_THRESHOLDS[0] && limit.usedPercent > mark + LIMIT_WARNING_BAND) return [];
     const resets = limit.resetsAt != null ? ` It resets ${formatResetTime(limit.resetsAt)}.` : '';
-    return [`**${limit.account} has used ${limit.usedPercent}% of its ${limit.window} limit**, past the ${mark}% mark.${resets}`];
+    return [`**${sanitizeMarkdown(limit.account)} has used ${limit.usedPercent}% of its ${sanitizeMarkdown(limit.window)} limit**, past the ${mark}% mark.${resets}`];
   });
   if (lines.length === 0) return undefined;
   return `> [!CAUTION]\n${[...lines, 'Once a limit is used up, reviews on that account stop until it resets.'].map(line => `> ${line}`).join('\n>\n')}`;
@@ -1018,16 +1018,16 @@ export async function updateProgressComment(
     parts.push('');
 
     parts.push('**Config:**');
-    parts.push(`- Models: reviewer=${metadata.config.reviewerModel}, judge=${metadata.config.judgeModel}`);
+    parts.push(`- Models: reviewer=${sanitizeMarkdown(metadata.config.reviewerModel)}, judge=${sanitizeMarkdown(metadata.config.judgeModel)}`);
     parts.push(`- Triage: ${metadata.config.triage}`);
     parts.push(`- Team: ${metadata.config.teamAgents.map(sanitizeMarkdown).join(', ')}`);
-    parts.push(`- Memory: ${metadata.config.memoryEnabled ? `enabled (${metadata.config.memoryRepo})` : 'disabled'}`);
+    parts.push(`- Memory: ${metadata.config.memoryEnabled ? `enabled (${sanitizeMarkdown(String(metadata.config.memoryRepo))})` : 'disabled'}`);
     parts.push('');
 
     if (metadata.limits && metadata.limits.length > 0) {
       parts.push('**Account limits:**');
       for (const account of new Set(metadata.limits.map(l => l.account))) {
-        parts.push(`- ${account}: ${metadata.limits.filter(l => l.account === account).map(formatLimitWindow).join(', ')}`);
+        parts.push(`- ${sanitizeMarkdown(account)}: ${metadata.limits.filter(l => l.account === account).map(formatLimitWindow).join(', ')}`);
       }
       parts.push('');
     }

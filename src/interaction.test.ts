@@ -528,6 +528,24 @@ describe('handlePRComment', () => {
     );
   });
 
+  it('shows text from a commenter or the memory files as one code span that holds no marker, mention or link', async () => {
+    const hostile = 'a`b <!-- note --> @octocat [l](https://evil.example) end';
+    const shown = "`a'b  @\u200Boctocat l end`";
+    const bodyAfter = async (command: string): Promise<string> => {
+      setContext({ comment: { id: 42, body: `@manki ${command}`, user: { type: 'User' }, author_association: 'OWNER' } });
+      const octokit = createMockOctokit();
+      await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, MEMORY);
+      return (jest.mocked(octokit.rest.issues.createComment).mock.calls[0][0] as { body: string }).body;
+    };
+    expect(await bodyAfter(`remember ${hostile}`)).toBe(`Stored for future reviews: ${shown}\n\n<!-- manki -->`);
+    expect(await bodyAfter(`forget ${hostile}`)).toBe(`No learning matches ${shown}.\n\n<!-- manki -->`);
+    expect(await bodyAfter(`forget suppression ${hostile}`)).toBe(`No suppression matches ${shown}.\n\n<!-- manki -->`);
+    (memory.removeLearning as jest.Mock).mockResolvedValueOnce({ removed: { content: hostile }, remaining: 3 });
+    expect(await bodyAfter('forget old learning')).toBe(`Removed learning: ${shown} (3 remaining)\n\n<!-- manki -->`);
+    (memory.removeSuppression as jest.Mock).mockResolvedValueOnce({ removed: { pattern: hostile }, remaining: 1 });
+    expect(await bodyAfter('forget suppression unused-var')).toBe(`Removed suppression: ${shown} (1 remaining)\n\n<!-- manki -->`);
+  });
+
   it('dispatches forget command', async () => {
     (memory.removeLearning as jest.Mock).mockResolvedValueOnce({ removed: { content: 'old learning' }, remaining: 2 });
     setContext({ comment: { id: 42, body: '@manki forget old learning', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
