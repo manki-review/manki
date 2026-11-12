@@ -31,7 +31,7 @@ import { unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, ThreadEvaluation, isNote, pendingGrade, wouldBlockIfTrue } from './types';
+import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, ThreadEvaluation, isNote, pendingGrade, staysWarningIfConfirmed, wouldBlockIfTrue } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -55,6 +55,11 @@ const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   evidence: { checks: [], proof: ['src/index.ts:10'] },
   ...overrides,
 });
+
+/** One warning on a blocker cell the judge keeps at a warning for each state of its check: confirmed, unsettled and unchecked. */
+const keptWarnings = (overrides: Partial<Finding> = {}): Finding[] =>
+  [{ refutation: { outcome: 'confirmed' as const, reason: 'r', files: [], codeDigest: 'd' } }, { refutation: { outcome: 'unsettled' as const, reason: 'r', files: [], codeDigest: 'd' } }, {}].map(check =>
+    makeFinding({ severity: 'warning', gradeIfConfirmed: 'warning', cell: { row: 'wrong', column: 'normal' }, doubts: [{ premise: 'The total is read again', decides: 'defect' }], ...check, ...overrides }));
 
 const makeHunk = (overrides: Partial<DiffHunk> = {}): DiffHunk => ({
   oldStart: 1,
@@ -3975,6 +3980,12 @@ describe('applyInPrSuppression', () => {
     expect(result.count).toBe(1);
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].originalSeverity).toBe('warning');
+
+    // A blocker cell the judge keeps at a warning is a warning here too, whatever its check answered.
+    for (const reason of ['resolved-thread', 'agree-reply'] as const) {
+      const hidden = applyInPrSuppression(keptWarnings(), [makeSuppression({}, reason)]);
+      expect([reason, hidden.count, hidden.findings.map(f => f.severity)]).toEqual([reason, 3, ['ignore', 'ignore', 'ignore']]);
+    }
   });
 
   it('does not suppress blocker findings even on fingerprint match', () => {
@@ -4197,9 +4208,11 @@ describe('mapJudgedToFindings', () => {
     const lowered = mapJudgedToFindings(stated.map(([title, extra]) => proven(title, extra)), stated.map(([title, , entry], i) => ({ id: i + 1, title, ...entry })));
     expect(lowered.map(f => [f.title, f.severity, f.gradeIfConfirmed, f.doubts])).toEqual(stated.map(([title, , , expected]) => [title, ...expected]));
     // The record keeps the cell beside the judge's answer, and only the `rare` column leaves a finding without a `pendingGrade`.
-    expect(lowered.slice(0, 3).map(f => [f.cell, pendingGrade(f), wouldBlockIfTrue(f)])).toEqual([
-      [{ row: 'wrong', column: 'normal' }, 'warning', true], [{ row: 'severe', column: 'normal' }, 'warning', true], [{ row: 'wrong', column: 'normal' }, 'warning', true],
+    // Such a finding is a warning to every later step, so `wouldBlockIfTrue` does not hold for it.
+    expect(lowered.slice(0, 3).map(f => [f.cell, pendingGrade(f), staysWarningIfConfirmed(f), wouldBlockIfTrue(f)])).toEqual([
+      [{ row: 'wrong', column: 'normal' }, 'warning', true, false], [{ row: 'severe', column: 'normal' }, 'warning', true, false], [{ row: 'wrong', column: 'normal' }, 'warning', true, false],
     ]);
+    expect(lowered.filter(f => ['Wrong result, nothing stated', 'Degraded, warning if confirmed'].includes(f.title)).map(staysWarningIfConfirmed)).toEqual([false, false]);
     // A duplicate the judge marked a security finding makes the kept finding one, so the judge's `warning` no longer counts for it.
     const merged = mapJudgedToFindings([proven('Wrong total'), proven('Total leaks the token')], [
       { id: 1, title: 'Wrong total', row: 'wrong', ...kept },
@@ -5439,6 +5452,10 @@ describe('applyCrossRoundSuppression', () => {
       expect(result.suppressedCount).toBe(1);
       expect(result.findings[0].severity).toBe('ignore');
       expect(result.findings[0].tags).toContain('suppressed-by-resolved-thread');
+
+      // A blocker cell the judge keeps at a warning is hidden like any warning, whatever its check answered.
+      const kept = applyCrossRoundSuppression(keptWarnings({ title: 'Old issue', file: 'src/a.ts', line: 10 }), prior, { resolvedThreadIds: new Set(['TH1']), suppressResolvedThreads: true });
+      expect([kept.suppressedCount, kept.findings.map(f => [f.severity, f.tags])]).toEqual([3, Array(3).fill(['ignore', ['suppressed-by-resolved-thread']])]);
     });
 
     it('preserves the agree-reply ratchet behaviour for non-resolved priors', () => {
@@ -5458,6 +5475,10 @@ describe('applyCrossRoundSuppression', () => {
       expect(result.suppressedCount).toBe(1);
       expect(result.findings[0].severity).toBe('ignore');
       expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
+
+      // The author's agreement hides a blocker cell the judge keeps at a warning too, whatever its check answered.
+      const kept = applyCrossRoundSuppression(keptWarnings({ title: 'Old issue', file: 'src/a.ts', line: 10 }), prior, { resolvedThreadIds: new Set(), suppressResolvedThreads: true });
+      expect([kept.suppressedCount, kept.findings.map(f => [f.severity, f.tags])]).toEqual([3, Array(3).fill(['ignore', ['suppressed-by-ratchet']])]);
     });
 
     it('does not suppress when the prior thread is unresolved and authorReply is not agree', () => {

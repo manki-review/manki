@@ -629,10 +629,14 @@ export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): Fin
   return isRareClaim(f.cell) ? undefined : f.gradeIfConfirmed;
 }
 
-/** Whether the judge or a finder graded `f` a blocker at any point, its `pendingGrade` is one, or its `cell` gives one. */
+/** Whether the judge stated a cell for `f` that gives a blocker, and `warning` as the grade `f` earns once every doubt holds. */
+export function staysWarningIfConfirmed(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): boolean {
+  return f.gradeIfConfirmed === 'warning' && isGradeCell(f.cell) && cellGrade(f.cell.row, f.cell.column) === 'blocker';
+}
+
+/** Whether the judge or a finder graded `f` a blocker at any point, or its `pendingGrade` is one. */
 export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'cell' | 'reviewerSeverity' | 'gradePath'>): boolean {
-  return pendingGrade(f) === 'blocker' || (isGradeCell(f.cell) && cellGrade(f.cell.row, f.cell.column) === 'blocker') || f.reviewerSeverity === 'blocker'
-    || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
+  return pendingGrade(f) === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
 }
 
 /** Whether `applyRefutation` put the blocker the judge alone made of `finding` back at its finders' grade. Nothing else lowers a blocker by a refutation. */
