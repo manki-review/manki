@@ -13,7 +13,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
-import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation, namesPrFile } from './static-signals';
+import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
 import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
@@ -108,20 +108,19 @@ function existingLocations(workspace: string, proof: readonly string[]): string[
 /**
  * Returns the lines of related repos that the entries of a refuter's `proof` list start with, as `owner/name:path:line`,
  * each for a repo of `related` and a line in the checkout the round fetched of it. A line of a repo that was not
- * fetched, or that the checkout does not hold, is dropped like a made-up line of the PR. So is one that `namesPrFile`
- * in `workspace`, since the refuter can have read that file of the PR instead. Only the first `MAX_RELATED_PROOF`
- * lines the list cites are looked up, so a long list reads no more files than that. Each location is written again
- * from the repo's configured name and the file's own path in the checkout, so none holds text the model chose beyond a
- * path and line numbers that exist.
+ * fetched, or that the checkout does not hold, is dropped like a made-up line of the PR. Only the first
+ * `MAX_RELATED_PROOF` lines the list cites are looked up, so a long list reads no more files than that. Each location
+ * is written again from the repo's configured name and the file's own path in the checkout, so none holds text the
+ * model chose beyond a path and line numbers that exist.
  */
-function relatedLocations(proof: unknown, workspace: string, related?: RelatedRepoTools): string[] {
+function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] {
   if (!related || !Array.isArray(proof)) return [];
   const names = related.repos.map(r => r.repo);
   const checkouts = fetchedRelatedRepos(related.stateDir);
   const cited = proof.flatMap(entry => (typeof entry === 'string' ? leadingRelatedCitation(entry, names) ?? [] : [])).slice(0, MAX_RELATED_PROOF);
   const shown = cited.flatMap(({ repo, path, start, end }) => {
     const dir = checkouts.get(repo);
-    if (!dir || namesPrFile(workspace, { repo, path }) || citedLineMissing(dir, path, start, end)) return [];
+    if (!dir || citedLineMissing(dir, path, start, end)) return [];
     const location = `${repo}:${resolveInRoot(dir, path).relative}:${start}${end > start ? `-${end}` : ''}`;
     // A symlink can resolve to a file whose name a citation cannot hold, such as one with a space.
     return leadingRelatedCitation(location, names)?.citation === location ? [location] : [];
@@ -136,7 +135,7 @@ function relatedLocations(proof: unknown, workspace: string, related?: RelatedRe
 function shownLines(proof: unknown, workspace: string, related?: RelatedRepoTools): { proof: string[]; relatedProof: string[] } {
   const names = related?.repos.map(r => r.repo) ?? [];
   const own = Array.isArray(proof) ? proof.filter(entry => typeof entry !== 'string' || !leadingRelatedCitation(entry, names)) : proof;
-  return { proof: existingLocations(workspace, parseProof(own)), relatedProof: relatedLocations(proof, workspace, related) };
+  return { proof: existingLocations(workspace, parseProof(own)), relatedProof: relatedLocations(proof, related) };
 }
 
 /** Whether `refutation` rests on a line of a related repo, in its own answer or in a premise. */

@@ -1048,13 +1048,13 @@ describe('refuteBlockers', () => {
     const consumerLine = 'acme/reports:src/import.ts:2';
     const answer = (outcome: string, ...proof: string[]) => ({ outcome, reason: 'r', proof, premises: [{ outcome, reason: 'r', proof }] });
     // Git allows `:` in a file name, so the PR holds a file whose path reads like a line of the related repo. It has 6
-    // lines, the related file 3. A citation of that form can mean either file, so it proves nothing: not line 2, which
-    // both hold, and not line 5, which only the PR's file holds.
+    // lines, the related file 3. A citation of that form is looked up in the related checkout only. So the PR's file
+    // takes nothing away from line 2 of the related file, and adds no line 5.
     mkdirSync(join(workspace, 'acme', 'reports:src'), { recursive: true });
     writeFileSync(join(workspace, 'acme', 'reports:src', 'twin.ts'), 'line of the PR\n'.repeat(6));
     // An entry that reads as a line of the related file `12` is never also line 12 of the PR's file `acme/reports`.
     writeFileSync(join(workspace, 'acme', 'reports'), 'line of the PR\n'.repeat(20));
-    const neither = ['acme/reports:src/twin.ts:2', 'acme/reports:src/twin.ts:5', 'acme/reports:12:34'];
+    const neither = ['acme/reports:src/twin.ts:5', 'acme/reports:12:34'];
     // Line 0, a range that runs backwards and a line past the last one, in a related repo and in the PR. `src/math.ts` has
     // 3 lines. A range from a real line of a changed file to far past its end is no line either.
     const notThere = ['acme/reports:src/import.ts:0', 'acme/reports:src/import.ts:2-1', 'acme/reports:src/import.ts:2-40', 'src/math.ts:0', 'src/math.ts:2-1', 'src/math.ts:2-40', 'src/math.ts:4', 'src/api.ts:1-999999'];
@@ -1063,6 +1063,7 @@ describe('refuteBlockers', () => {
       'Related line alone disproves': answer('disproved', consumerLine),
       'Related line beside the finding line disproves': answer('disproved', 'src/math.ts:2', consumerLine),
       'Range past the end of a changed file disproves': answer('disproved', 'src/api.ts:1-999999'),
+      'Related line of a path the PR also has': answer('confirmed', 'acme/reports:src/twin.ts:2'),
       'Range of a changed file disproves': answer('disproved', 'src/api.ts:1-9'),
       'Repo not fetched': answer('confirmed', 'acme/billing:src/import.ts:2'),
       'Repo not configured': answer('confirmed', 'other/repo:src/import.ts:2'),
@@ -1100,6 +1101,8 @@ describe('refuteBlockers', () => {
         const cited = await refuteBlockers(client, lines.map(at => finding(`Cites ${at}`, noProof)), { workspace, diff, related });
         expect(cited.map(f => [f.title, outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual(lines.map(at => [`Cites ${at}`, 'unsettled', undefined, undefined]));
       }
+      const [twin] = await refuteBlockers(client, [finding('Related line of a path the PR also has', noProof)], { workspace, diff, related });
+      expect([outcomeOf(twin.refutation!), twin.refutation?.proof, twin.refutation?.relatedProof, twin.refutation?.files]).toEqual(['confirmed', undefined, ['acme/reports:src/twin.ts:2'], ['src/math.ts']]);
       // A disproof lifts a finding once it cites a line in the diff. A range that touches every hunk of a changed file
       // only because it runs past the file's end is no such line, where a range the file holds is.
       const ranges = await refuteBlockers(client, ['Range past the end of a changed file disproves', 'Range of a changed file disproves'].map(title => finding(title, noProof)), { workspace, diff, related });

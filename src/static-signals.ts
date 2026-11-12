@@ -522,20 +522,21 @@ export function leadingRelatedCitation(entry: string, names: readonly string[]):
 
 /**
  * Whether the PR's head at `workspace` has a file at `owner/name:path`, the path `cited` spells out, since Git allows
- * `:` in a file name. Such a citation can mean that file of the PR, so it shows nothing of the related repo.
+ * `:` in a file name. It is only ever remarked on: a file of the PR must not take away what a related repo's code shows.
  */
-export function namesPrFile(workspace: string, cited: Pick<RelatedCitation, 'repo' | 'path'>): boolean {
+function namesPrFile(workspace: string, cited: Pick<RelatedCitation, 'repo' | 'path'>): boolean {
   return readFileInRoot(workspace, `${cited.repo}:${cited.path}`) !== undefined;
 }
 
 /**
  * Returns, for each place in a configured related repo that the finding's title or description cites, whether it is in
- * the checkout the round fetched. Only a citation found there lets the judge treat it as evidence, and never one that
- * `namesPrFile`. An evidence line that starts with a citation and quotes code in backticks, before any further
- * citation, is compared with the fetched lines. The note says "holds the quoted code" only when they hold every quoted
- * part. Otherwise it names each part they hold and each they do not. A range of more than `MAX_QUOTED_RANGE` lines is
- * not compared, and its note says only that it is in the checkout. Citations of one file and first line are one place
- * and get one note, the worst of theirs, so no spelling of a place reads better than another.
+ * the checkout the round fetched. Only a citation found there lets the judge treat it as evidence. An evidence line
+ * that starts with a citation and quotes code in backticks, before any further citation, is compared with the fetched
+ * lines. The note says "holds the quoted code" only when they hold every quoted part. Otherwise it names each part they
+ * hold and each they do not. A range of more than `MAX_QUOTED_RANGE` lines is not compared, and its note says only that
+ * it is in the checkout. Citations of one file and first line are one place and get one note, the worst of theirs,
+ * so no spelling of a place reads better than another. A citation that `namesPrFile` gets that as a remark, which
+ * changes nothing else of its note.
  */
 function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }: NonNullable<ClaimSources['related']>): string[] {
   const quotes = new Map<string, { cited: RelatedCitation; code: string[] }>();
@@ -555,7 +556,6 @@ function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }
   const check = ({ citation, repo, path, start, end }: RelatedCitation): { rank: number; says: string } => {
     const dir = checkouts.get(repo);
     if (!dir) return { rank: 0, says: `is unchecked: ${repo} was not fetched this round` };
-    if (namesPrFile(workspace, { repo, path })) return { rank: 0, says: `is unchecked: the PR has a file at \`${repo}:${path}\`, which the citation can mean` };
     const missing = citedLineMissing(dir, path, start, end);
     if (missing) return { rank: 0, says: missing };
     const quoted = quotes.get(citation)?.code;
@@ -571,7 +571,8 @@ function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }
   };
   const places = new Map<string, { citation: string; rank: number; says: string; others: string[] }>();
   for (const cited of all.slice(0, MAX_CITATIONS)) {
-    const result = { citation: cited.citation, ...check(cited) };
+    const { rank, says } = check(cited);
+    const result = { citation: cited.citation, rank, says: namesPrFile(workspace, cited) ? `${says} (the PR also has a file at \`${cited.repo}:${cited.path}\`)` : says };
     const key = `${cited.repo}:${pathInCheckout(checkouts.get(cited.repo), cited.path)}:${cited.start}`;
     const place = places.get(key);
     if (!place) places.set(key, { ...result, others: [] });

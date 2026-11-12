@@ -907,8 +907,8 @@ describe('checkFindingClaims', () => {
         '`o/r:../outside.rs:40` is not in the fetched checkout: ../outside.rs is not a file there',
         // A file over 1 MiB is not read, so its citation is neither confirmed nor called missing.
         '`o/r:big.rs:1` is unchecked: big.rs is too large to read',
-        // A citation that spells a file of the PR can mean that file, so the related line it also names shows nothing.
-        '`o/r:src/twin.rs:1` is unchecked: the PR has a file at `o/r:src/twin.rs`, which the citation can mean',
+        // A file of the PR at the path a citation spells takes nothing away from the related line. The note only remarks on it.
+        '`o/r:src/twin.rs:1` is in the fetched checkout (the PR also has a file at `o/r:src/twin.rs`)',
         '`o/s:x.rs:1` is unchecked: o/s was not fetched this round',
       ].join(', ')}.` });
       expect(checkFindingClaims(finding({ description }), sources).note).toBe('Checked: the file is in the diff, the line is in the file.');
@@ -964,6 +964,9 @@ describe('checkFindingClaims', () => {
         quoting('o/r:src/lib.rs:2-2 defines `pub fn b()`'),
         // A quote that was not compared, for its wide range, outweighs one the lines hold.
         quoting('o/r:src/long.rs:1 has `fn step_1() {}`', 'o/r:src/long.rs:1-30 holds `fn step_25() {}`'),
+        // The quote of a citation that spells a file of the PR is compared with the related file like any other.
+        quoting('o/r:src/twin.rs:1 defines `pub fn twin() {}`'),
+        quoting('o/r:src/twin.rs:1 holds `a file of the PR`'),
       ]).toEqual([
         '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
@@ -989,6 +992,8 @@ describe('checkFindingClaims', () => {
         '`o/r:./src/lib.rs:2` (also cited as `o/r:src/lib.rs:2`) does not hold the quoted code: `removed_function()` is not within 3 lines of the cited line.',
         '`o/r:src/lib.rs:2-2` (also cited as `o/r:src/lib.rs:2`) is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-30` (also cited as `o/r:src/long.rs:1`) is in the fetched checkout.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/twin.rs:1` is in the fetched checkout and holds the quoted code (the PR also has a file at `o/r:src/twin.rs`).',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/twin.rs:1` does not hold the quoted code: `a file of the PR` is not within 3 lines of the cited line (the PR also has a file at `o/r:src/twin.rs`).',
       ]);
     } finally {
       rmSync(base, { recursive: true, force: true });
