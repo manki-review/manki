@@ -23,6 +23,7 @@ import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_T
 import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 import { listRelatedUses, listUsesOutsideDiff } from './symbol-uses';
 import { runComparisons } from './compare';
+import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { citedBy, runSweeps, startsSweep } from './sweep';
 import { formatLockfileChanges, isLockfileAlert, LockfileDiff, withLockfiles } from './lockfile';
 
@@ -703,6 +704,8 @@ export async function runReview(
   const relatedWorkPromise = options.relatedWork && clients.dedup && prContext
     ? classifyRelatedWork(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'related'), prContext, diff, options.relatedWork)
     : Promise.resolve(options.relatedWork);
+  // Listed while the planner runs, since only the claim checks beside the finders read the list.
+  const claimsPromise = extractPrClaims(clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'claims'), prContext, diff);
   let plannerResult: PlannerResult | null = null;
   let plannerUsage: LLMUsage | undefined;
   let plannerDurationMs: number | undefined;
@@ -785,7 +788,7 @@ export async function runReview(
   const uses = await usesPromise;
   const agentFailureReasons = new Map<string, string>();
   const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
-  let finderContext: Pick<ReviewResult, 'usesOutsideDiff' | 'comparisons'> = {};
+  let finderContext: Pick<ReviewResult, 'usesOutsideDiff' | 'comparisons' | 'prClaims'> = {};
   // Related work is left out: the posted incomplete review would render it.
   const incomplete = (summary: string, extra: Partial<ReviewResult> = {}): ReviewResult & { outcome: RoundOutcome } => ({
     verdict: OUTCOME_VERDICT.INCOMPLETE, outcome: 'INCOMPLETE', summary, findings: [], highlights: [], reviewComplete: false,
@@ -802,6 +805,14 @@ export async function runReview(
   const comparisonDeadline = new AbortController();
   const comparisonsPromise = runComparisons(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'compare', reviewer), uses.siblings, {
     effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal,
+  });
+  // Each claim of the PR text gets a check of its own beside the finders, under the comparisons' deadline. No finder waits for it or
+  // is shown it. A trivial change gets the quick check alone, so its claims are recorded without a check.
+  const claimChecksPromise = claimsPromise.then(async ({ claims, ...listed }) => {
+    const checked = await runClaimChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'claim_check', reviewer), claims, {
+      rawDiff, effort: comparisonEffort, workspace: trivial ? undefined : workspace, signal: comparisonDeadline.signal,
+    });
+    return { findings: checked.findings, record: prClaimsRecord(listed, checked.claims) };
   });
   const referenceNames = uses.referenceNames ?? [];
   const dependencyNames = uses.dependencyNames ?? [];
@@ -1172,10 +1183,11 @@ export async function runReview(
   // A slow comparison must not hold the round long after the finders are done, so it gets a short grace and is then cut.
   const comparisonGrace = setTimeout(() => comparisonDeadline.abort(), COMPARISON_GRACE_MS);
   const { findings: comparisonFindings, comparisons } = await comparisonsPromise;
+  const claimChecks = await claimChecksPromise;
   clearTimeout(comparisonGrace);
-  allFindings.push(...comparisonFindings);
+  allFindings.push(...comparisonFindings, ...claimChecks.findings);
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
-  finderContext = { ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }) };
+  finderContext = { ...(usesRecord && { usesOutsideDiff: usesRecord }), ...(comparisons.length > 0 && { comparisons }), ...(claimChecks.record && { prClaims: claimChecks.record }) };
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
     const summary = quotaErrors.size > 0

@@ -591,7 +591,7 @@ For each finding, evaluate:
 
 ${agentCount >= 2 ? `## Finder Agreement
 
-Two finders read this diff independently, with the same instructions. Each finding names the finder that raised it. A finding named \`Sibling field: ...\`, \`Sibling code: ...\` or \`Sweep N\` comes from a call asked about that spot or that kind of mistake, not from a finder, so it never counts as one of the two.
+Two finders read this diff independently, with the same instructions. Each finding names the finder that raised it. A finding named \`Sibling field: ...\`, \`Sibling code: ...\`, \`Claim check N\` or \`Sweep N\` comes from a call asked about that spot, that statement of the PR author or that kind of mistake, not from a finder, so it never counts as one of the two.
 - **Both finders reported the defect** (one finding from each, which you mark as duplicates): strong evidence that it is real. Drop it only when you can say concretely why both are wrong.
 - **One finder reported it**: ordinary. The other finder's silence is not evidence against it.
 

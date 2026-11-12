@@ -4021,7 +4021,7 @@ describe('runFullReview orchestration', () => {
       expect(metadata?.config.memoryRepo).toBe(`skipped: ${reason}`);
     });
 
-    it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and work, the sibling comparisons and the token service calls', async () => {
+    it('records why the round paused, the prompt versions, what memory loaded and hid, the related repos and work, the sibling comparisons, the claims of the PR text and the token service calls', async () => {
       const blocker = { file: 'src/app.ts', line: 5, title: 'Bug', fingerprint: 'k' };
       const call = (stage: string, promptDigest: string, extra: Partial<LLMCall> = {}): LLMCall => ({
         stage, attempt: 1, promptDigest, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0, ...extra,
@@ -4032,6 +4032,13 @@ describe('runFullReview orchestration', () => {
         { kind: 'field' as const, reviewer: 'Sibling field: utxos vs spent', at: ['src/app.ts:5'], status: 'answered' as const, findings: 0 },
         { kind: 'implementations' as const, reviewer: 'Sibling code: decode', at: ['src/a.rs:3', 'src/b.rs:9'], status: 'cut' as const },
       ];
+      const prClaims = {
+        cut: 2,
+        claims: [
+          { quote: 'every caller holds the lock', source: 'src/app.ts:4', reviewer: 'Claim check 1', status: 'disproven' as const, reason: 'One caller does not.', proof: ['src/app.ts:5'], findings: 1 },
+          { quote: 'the index already rejects duplicates', source: 'description', reviewer: 'Claim check 2', status: 'unchecked' as const, call: 'timed_out' as const },
+        ],
+      };
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING' as const, summary: 'Paused',
         findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
@@ -4044,6 +4051,7 @@ describe('runFullReview orchestration', () => {
           call('judge', 'cccccccccccc', { agent: 'refute', relatedReads: { 'o/r': 4, 'o/s': 1 } }),
         ],
         comparisons,
+        prClaims,
         sweeps: [{ reviewer: 'Sweep: Bug', source: 'src/app.ts:5', severity: 'blocker' as const, status: 'answered' as const, class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', source: 'src/app.ts:9', severity: 'note' as const, status: 'cut' as const }],
         relatedRepos: [{ repo: 'o/r', status: 'fetched', durationMs: 900 }, { repo: 'o/s', status: 'failed', reason: 'fatal: repository not found' }],
         usesOutsideDiff: { symbols: [{ name: 'compute_fee', declared: 'src/fee.rs:4', uses: ['src/tx.rs:9'], notShown: 1 }], types: ['src/fee.rs:1: struct Fee { base, rate }'] },
@@ -4081,6 +4089,7 @@ describe('runFullReview orchestration', () => {
       expect(rc.meta.needsHuman).toEqual({ cause: 'repeated', blockers: [blocker] });
       expect(rc.meta.promptVersions).toEqual({ reviewer: ['aaaaaaaaaaaa', 'bbbbbbbbbbbb'], judge: ['cccccccccccc'], compare: ['dddddddddddd'] });
       expect(rc.comparisons).toEqual(comparisons);
+      expect(rc.prClaims).toEqual(prClaims);
       expect(rc.sweeps).toEqual([{ reviewer: 'Sweep: Bug', source: 'src/app.ts:5', severity: 'blocker', status: 'answered', class: 'a cache key leaves out a field', findings: 1 }, { reviewer: 'Sweep: Other', source: 'src/app.ts:9', severity: 'note', status: 'cut' }]);
       expect(rc.usage.perStage?.compare).toMatchObject({ calls: 1 });
       expect(rc.usage.llmCalls?.[0]).toMatchObject({ stepBudget: 15, wrapUpNoted: true });
