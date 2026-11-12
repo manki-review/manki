@@ -837,6 +837,10 @@ describe('checkFindingClaims', () => {
       .toEqual({ status: 'none', note: 'Checked: the file is in the diff, `parseConfig` not found in the diff.' });
     expect(checkFindingClaims(finding({ title: 'Shadowed `config.lodash`', description: 'Returns `null` early.' }), sources))
       .toEqual({ status: 'none', note: 'Checked: the file is in the diff, the line is in the file, `lodash` occurs.' });
+    // A run of backticks is closed only by a run of the same length. So a symbol in double backticks is one, and a
+    // word between two spans that each hold a backtick is not.
+    expect(checkFindingClaims(finding({ description: 'Calls ``parseConfig()``.' }), sources).note).toBe('Checked: the file is in the diff, the line is in the file, `parseConfig` not found in src/app.ts or the diff.');
+    expect(checkFindingClaims(finding({ description: 'Compare ``a ` b``parseConfig``c ` d``.' }), sources).note).toBe('Checked: the file is in the diff, the line is in the file.');
   });
 
   it('confirms a claimed type error only from a type checker or compiler near the line, never from a lint error', () => {
@@ -880,25 +884,126 @@ describe('checkFindingClaims', () => {
       const checkout = join(base, 'o', 'r');
       mkdirSync(join(checkout, 'src'), { recursive: true });
       writeFileSync(join(checkout, 'src', 'lib.rs'), 'pub fn a() {}\npub fn b() {}\n');
+      writeFileSync(join(checkout, 'src', 'key.rs'), 'let key = `id`;\nlet id = key.len();\n');
+      writeFileSync(join(checkout, 'src', 'long.rs'), Array.from({ length: 30 }, (_, i) => `fn step_${i + 1}() {}\n`).join(''));
       writeFileSync(join(base, 'outside.rs'), `${'x\n'.repeat(50)}`);
       symlinkSync(join(base, 'outside.rs'), join(checkout, 'link.rs'));
-      const related = { names: ['o/r', 'o/s'], checkouts: new Map([['o/r', checkout]]) };
+      writeFileSync(join(checkout, 'big.rs'), 'x\n'.repeat(600_000));
+      writeFileSync(join(checkout, 'src', 'spread.ts'), 'call(...args);\n');
+      writeFileSync(join(checkout, 'src', 'twin.rs'), 'pub fn twin() {}\n');
+      // Git allows `:` in a file name, so the PR holds a file whose path reads like a citation of the related repo.
+      const workspace = join(base, 'pr');
+      mkdirSync(join(workspace, 'o', 'r:src'), { recursive: true });
+      writeFileSync(join(workspace, 'o', 'r:src', 'twin.rs'), 'a file of the PR\n');
+      const related = { names: ['o/r', 'o/s'], checkouts: new Map([['o/r', checkout]]), workspace };
       const description = [
         'Used at `o/r:src/lib.rs:2` and o/r:src/lib.rs:1-2, again at `o/r:src/lib.rs:2`.',
-        'Also o/r:src/lib.rs:2-9, o/r:src/gone.rs:1, o/r:src:1, o/r:link.rs:40, o/r:../outside.rs:40, o/s:x.rs:1 and other/repo:a.rs:1.',
+        'Also o/r:src/lib.rs:2-9, o/r:src/gone.rs:1, o/r:src:1, o/r:link.rs:40, o/r:../outside.rs:40, o/r:big.rs:1, o/r:src/twin.rs:1, o/s:x.rs:1 and other/repo:a.rs:1.',
       ].join(' ');
       expect(checkFindingClaims(finding({ description }), { ...sources, related })).toEqual({ status: 'none', note: `Checked: ${[
         'the file is in the diff', 'the line is in the file',
-        '`o/r:src/lib.rs:2` is in the fetched checkout',
+        // Two citations of one file and first line are one place, and the worse answer is the place's.
+        '`o/r:src/lib.rs:2-9` (also cited as `o/r:src/lib.rs:2`) is not in the fetched checkout: src/lib.rs has 2 lines',
         '`o/r:src/lib.rs:1-2` is in the fetched checkout',
-        '`o/r:src/lib.rs:2-9` is not in the fetched checkout: src/lib.rs has 2 lines',
         '`o/r:src/gone.rs:1` is not in the fetched checkout: src/gone.rs is not a file there',
         '`o/r:src:1` is not in the fetched checkout: src is not a file there',
         '`o/r:link.rs:40` is not in the fetched checkout: link.rs is not a file there',
         '`o/r:../outside.rs:40` is not in the fetched checkout: ../outside.rs is not a file there',
+        // A file over 1 MiB is not read, so its citation is neither confirmed nor called missing.
+        '`o/r:big.rs:1` is unchecked: big.rs is too large to read',
+        // A file of the PR at the path a citation spells takes nothing away from the related line. The note only remarks on it.
+        '`o/r:src/twin.rs:1` is in the fetched checkout (the PR also has a file at `o/r:src/twin.rs`)',
         '`o/s:x.rs:1` is unchecked: o/s was not fetched this round',
       ].join(', ')}.` });
       expect(checkFindingClaims(finding({ description }), sources).note).toBe('Checked: the file is in the diff, the line is in the file.');
+      // A cited line that is not there gets one answer: line 0, a range that runs backwards and a line past the last one.
+      expect(checkFindingClaims(finding({ description: 'See o/r:src/lib.rs:0, o/r:src/lib.rs:2-1 and o/r:src/lib.rs:1-40.' }), { ...sources, related }).note).toBe(`Checked: the file is in the diff, the line is in the file, ${[
+        '`o/r:src/lib.rs:0` is not in the fetched checkout: src/lib.rs has no line 0',
+        '`o/r:src/lib.rs:2-1` is not in the fetched checkout: the range 2-1 runs backwards',
+        '`o/r:src/lib.rs:1-40` is not in the fetched checkout: src/lib.rs has 2 lines',
+      ].join(', ')}.`);
+
+      // An evidence line that starts with a citation and quotes code is compared with the fetched lines around it.
+      const quoting = (...evidence: string[]) => checkFindingClaims(
+        finding({ description: 'Used at `o/r:src/lib.rs:2`.', evidence: { checks: evidence, proof: [] } }), { ...sources, related },
+      ).note.replace('Checked: the file is in the diff, the line is in the file, ', '');
+      expect([
+        quoting('`o/r:src/lib.rs:2`, the consumer calls `pub fn b()` there'),
+        // Whitespace does not count, and a quote cut by an ellipsis is compared part by part.
+        quoting('o/r:src/lib.rs:2 defines `pub  fn b( ) ... fn a() {}`'),
+        // Only a citation with every quoted part there holds the quoted code. One with some of them names the parts found and the parts missing.
+        quoting('o/r:src/lib.rs:2 defines `pub  fn b( ) ... gone()`'),
+        // The parts of several evidence lines for one citation count together.
+        quoting('o/r:src/lib.rs:2 defines `pub fn b()`', '`o/r:src/lib.rs:2` then calls `removed_function()` and `other_gone( x )`'),
+        // A line that quotes the related repo's code beside the PR's own names the PR's code as missing, since that file does not hold it.
+        quoting('o/r:src/lib.rs:2 takes no argument in `pub fn b() {}`, and the change calls `client.b(retries)`'),
+        // A quote in double backticks can hold a backtick, and the prose after it is not compared as code.
+        quoting('o/r:src/key.rs:1 builds ``let key = `id`;`` and the next line reads `let id = key.len();`'),
+        // An unclosed run of backticks quotes nothing, and the quotes after it still count.
+        quoting('o/r:src/key.rs:1 builds ``let key = `id`; and the next line reads `let id = key.len();`'),
+        // A range of up to 7 lines is compared like a line. In a longer one the quote could sit anywhere, so finding it there
+        // says nothing. A quote that is nowhere in it is as certain a miss as in a short range, in whole or in part.
+        quoting('o/r:src/long.rs:1-7 ends before `fn step_10() {}`'),
+        quoting('o/r:src/long.rs:1-7 ends before `fn step_25() {}`'),
+        quoting('o/r:src/long.rs:1-30 holds `fn step_25() {}`'),
+        quoting('o/r:src/long.rs:1-20 holds `fn step_30() {}`'),
+        quoting('o/r:src/long.rs:1-20 holds `fn step_12() {} ... fn step_30() {}`'),
+        // A citation with none of the quoted parts does not hold the quoted code.
+        quoting('o/r:src/lib.rs:2 defines `removed_function() ... other_gone( x )`'),
+        // The code may sit a few lines from the cited one.
+        quoting('o/r:src/lib.rs:1 has `pub fn b() {}`'),
+        quoting('`o/r:src/lib.rs:2`, where it reads `review.body.includes(MARKER)`'),
+        // A quote too short to tell lines apart, or a line that starts with no citation, compares nothing.
+        quoting('`o/r:src/lib.rs:2` uses `b()`'),
+        quoting('The call at `o/r:src/lib.rs:2` reads `review.body.includes(MARKER)`'),
+        // A citation that only an evidence line makes is checked once that line quotes code.
+        quoting('o/r:src/lib.rs:1, which defines `pub fn a()`', '`o/r:src/lib.rs:1-2` is where it is called'),
+        quoting('o/s:x.rs:1 calls `removed_function()`'),
+        // Every part of a quote is compared, also a short one beside a longer one, so no cut quote holds by one part alone.
+        quoting('o/r:src/lib.rs:2 has `gone ... pub fn b() {}`'),
+        quoting('o/r:src/lib.rs:2 reads `fn b ... gone`'),
+        // Code that holds three dots itself is cut there, and both halves are in the line.
+        quoting('o/r:src/spread.ts:1 passes them on in `call(...args)`'),
+        // Code quoted after a further citation belongs to that one, and is not compared with the first.
+        quoting('o/r:src/lib.rs:2 defines `pub fn b()`, unlike o/r:src/long.rs:25 with `fn step_25() {}`'),
+        // Two spellings of one place get one answer. A quote the lines do not hold decides it, whichever spelling it stands with.
+        quoting('o/r:./src/lib.rs:2 reads `removed_function()`'),
+        quoting('o/r:src/lib.rs:2-2 defines `pub fn b()`'),
+        // A quote that was not compared, for its wide range, outweighs one the lines hold.
+        quoting('o/r:src/long.rs:1 has `fn step_1() {}`', 'o/r:src/long.rs:1-30 holds `fn step_25() {}`'),
+        // The quote of a citation that spells a file of the PR is compared with the related file like any other.
+        quoting('o/r:src/twin.rs:1 defines `pub fn twin() {}`'),
+        quoting('o/r:src/twin.rs:1 holds `a file of the PR`'),
+      ]).toEqual([
+        '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` holds only part of the quoted code: `pub  fn b( )` is within 3 lines of the cited line, `gone()` is not.',
+        '`o/r:src/lib.rs:2` holds only part of the quoted code: `pub fn b()` is within 3 lines of the cited line, `removed_function()`, `other_gone( x )` are not.',
+        '`o/r:src/lib.rs:2` holds only part of the quoted code: `pub fn b() {}` is within 3 lines of the cited line, `client.b(retries)` is not.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/key.rs:1` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/key.rs:1` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-7` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-7` does not hold the quoted code: `fn step_25() {}` is not within 3 lines of the cited line.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-30` is in the fetched checkout.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-20` does not hold the quoted code: `fn step_30() {}` is not within 3 lines of the cited line.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-20` holds only part of the quoted code: `fn step_12() {}` is within 3 lines of the cited line, `fn step_30() {}` is not.',
+        '`o/r:src/lib.rs:2` does not hold the quoted code: `removed_function()`, `other_gone( x )` are not within 3 lines of the cited line.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/lib.rs:1` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` does not hold the quoted code: `review.body.includes(MARKER)` is not within 3 lines of the cited line.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/lib.rs:1` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/s:x.rs:1` is unchecked: o/s was not fetched this round.',
+        '`o/r:src/lib.rs:2` holds only part of the quoted code: `pub fn b() {}` is within 3 lines of the cited line, `gone` is not.',
+        '`o/r:src/lib.rs:2` holds only part of the quoted code: `fn b` is within 3 lines of the cited line, `gone` is not.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/spread.ts:1` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
+        '`o/r:./src/lib.rs:2` (also cited as `o/r:src/lib.rs:2`) does not hold the quoted code: `removed_function()` is not within 3 lines of the cited line.',
+        '`o/r:src/lib.rs:2-2` (also cited as `o/r:src/lib.rs:2`) is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-30` (also cited as `o/r:src/long.rs:1`) is in the fetched checkout.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/twin.rs:1` is in the fetched checkout and holds the quoted code (the PR also has a file at `o/r:src/twin.rs`).',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/twin.rs:1` does not hold the quoted code: `a file of the PR` is not within 3 lines of the cited line (the PR also has a file at `o/r:src/twin.rs`).',
+      ]);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }

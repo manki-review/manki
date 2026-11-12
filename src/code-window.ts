@@ -30,6 +30,14 @@ export function extractCurrentCodeWindow(
   return out.join('\n');
 }
 
+/**
+ * Whether a file of `lineCount` lines holds the lines `start` to `end`. Line 0, a range that runs backwards and a line
+ * past the last one are not there.
+ */
+export function holdsLines(lineCount: number, start: number, end = start): boolean {
+  return start >= 1 && end >= start && end <= lineCount;
+}
+
 // A line shorter than this, such as `}`, recurs too often to anchor anything on its own.
 const MIN_LOCATABLE_CHARS = 4;
 // How many lines of the posted window must line up at one place in the head before the code counts as found there.

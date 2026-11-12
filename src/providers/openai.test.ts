@@ -506,7 +506,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
       expect(client.repoTools).toBe(true);
       expect(new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-5.5' }).repoTools).toBe(false);
 
-      await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15 } });
+      await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related: undefined } });
       await client.sendMessage('Review the diff.', 'the diff');
     } finally {
       if (savedRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
@@ -555,7 +555,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     const related = { repos: [{ repo: 'dashpay/dash', kind: 'reference' as const }], cacheDir: '/runner/temp/related', stateDir: '/runner/temp/state' };
 
     const withRelated = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related } });
-    const withoutRelated = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15 } });
+    const withoutRelated = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related: undefined } });
 
     expect(withRelated.relatedReads).toEqual({ 'dashpay/dash': 2 });
     expect(withoutRelated.relatedReads).toBeUndefined();

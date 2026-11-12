@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
+import { relatedCommits, ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -360,6 +360,63 @@ describe('formatFindingComment', () => {
     const bare = render({ ...baseFinding, evidence: { checks: ['src/util.ts:3 reads it'], proof: ['src/util.ts:5', 'src/other.ts:9'] } });
     expect(bare).toContain(`\n\nReads it\n${link('src/util.ts', 2, 8)}\n\n${link('src/other.ts', 8, 9)}\n\n</details>`);
     expect(render({ ...baseFinding, evidence: { checks: ['src/util.ts:3'], proof: ['src/main.ts:42', 'src/main.ts:2'] } })).not.toContain('Shows the failure.');
+
+    // A check that confirmed from a related repo lists each of its lines as a link at the fetched commit, and never the line's text.
+    const commit = 'c0ffee'.repeat(7).slice(0, 40);
+    const fetched = { ...links, related: relatedCommits([{ repo: 'acme/reports', status: 'fetched', commit }, { repo: 'acme/billing', status: 'fetched', commit }, { repo: 'acme/unused', status: 'unused' }]) };
+    const relatedLink = (location: string, path: string, anchor: string) => `[\`${location}\`](https://github.com/acme/reports/blob/${commit}/${path}#${anchor})`;
+    const confirmedBy = (relatedProof: string[], proof: string[] = []): Finding => ({
+      ...baseFinding, evidence: { checks: [], proof, relatedProof }, checkStatus: 'confirmed',
+      refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'The consumer parses the column as a date.', relatedProof, files: ['src/main.ts'], codeDigest: 'abc' },
+    });
+    const one = formatFindingComment(confirmedBy(['acme/reports:src/import.ts:2']), fetched);
+    expect(one).toContain(`<summary>How this was checked: 1 place read, confirmed with tools</summary>\n\n**Checked in the code**\nIn a related repository: ${relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2')}\n\n**Double-checked**`);
+    const ten = Array.from({ length: 10 }, (_, i) => `acme/reports:src/import (${i}).ts:${i + 1}-${i + 3}`);
+    expect(formatFindingComment(confirmedBy(ten), fetched)).toContain(
+      `<summary>How this was checked: 10 places read, confirmed with tools</summary>\n\n**Checked in the code**\nIn a related repository: ${ten.map((location, i) => relatedLink(location, `src/import%20%28${i}%29.ts`, `L${i + 1}-L${i + 3}`)).join(', ')}\n\n`,
+    );
+    // Lines of the PR and of a related repo show together, the PR's first, and a second check adds only its own lines.
+    const both = formatFindingComment({ ...confirmedBy(['acme/reports:src/import.ts:2', 'acme/billing:lib/rows.py:9'], ['src/util.ts:30']), pairRefutation: { ...confirmedBy(['acme/reports:src/import.ts:2', 'acme/billing:lib/rows.py:9']).refutation! } }, fetched);
+    expect(both).toContain(`**Checked in the code**\n${link('src/util.ts', 29, 30)}\n\nIn a related repository: ${relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2')}, [\`acme/billing:lib/rows.py:9\`](https://github.com/acme/billing/blob/${commit}/lib/rows.py#L9)\n\n`);
+    expect(both).toContain('<summary>How this was checked: 3 places read, confirmed with tools</summary>');
+    // A line shows only for a repo the round fetched, with a path that stays inside it. A check that did not confirm names its lines itself.
+    const hidden = ['other/repo:src/import.ts:2', 'acme/reports-fork:src/import.ts:2', 'acme/reports:src/../import.ts:2', 'acme/reports:src/import.ts', 'acme/reports:src/import.ts:2:3', 'acme/reports:src/import.ts:0', 'acme/reports:src/import.ts:3-2'];
+    expect(formatFindingComment(confirmedBy(hidden), fetched)).not.toContain('In a related repository');
+    expect(render(confirmedBy(['acme/reports:src/import.ts:2']))).not.toContain('acme/reports');
+    // Only the finding's own related proof lines are listed as checked code. A check whose lines are not among them, such as one that confirmed only premises, names them in its own sentence.
+    const proving = confirmedBy(['acme/reports:src/import.ts:2']);
+    const premisesOnly: Finding = { ...proving, evidence: { checks: [], proof: [] }, checkStatus: 'unconfirmed', refutation: { ...proving.refutation!, defect: 'unsettled' } };
+    const seen = relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2');
+    expect(formatFindingComment(premisesOnly, fetched)).toContain(`<summary>How this was checked: not confirmed</summary>\n\n**Not settled**\nManki tried to disprove this by reading the code and could not decide. The consumer parses the column as a date. See ${seen}.\n\n</details>`);
+    // Its lines of the PR show in the same sentence, under the same rule.
+    const twoSides: Finding = { ...premisesOnly, refutation: { ...premisesOnly.refutation!, proof: ['src/main.ts:40'] } };
+    expect(formatFindingComment(twoSides, fetched)).toContain(`The consumer parses the column as a date. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), ${seen}.\n\n</details>`);
+    expect(formatFindingComment({ ...twoSides, evidence: { checks: [], proof: ['src/main.ts:40'], relatedProof: proving.evidence!.relatedProof } }, fetched)).toContain('The consumer parses the column as a date.\n\n</details>');
+    const raised = formatFindingComment({ ...premisesOnly, evidence: proving.evidence }, fetched);
+    expect(raised).toContain(`<summary>How this was checked: 1 place read, not confirmed</summary>\n\n**Checked in the code**\nIn a related repository: ${seen}\n\n**Not settled**\nManki tried to disprove this by reading the code and could not decide. The consumer parses the column as a date.\n\n</details>`);
+    // A fetched repo with no commit recorded shows the location alone.
+    const noCommit = { ...links, related: relatedCommits([{ repo: 'acme/reports', status: 'fetched' }]) };
+    expect(formatFindingComment(confirmedBy(['acme/reports:src/import.ts:2', ...hidden]), noCommit)).toContain('**Checked in the code**\nIn a related repository: `acme/reports:src/import.ts:2`\n\n**Double-checked**');
+    // Git allows `:` in a file name, so a PR can hold a file whose path reads like a line of a related repo. A location of that
+    // form never links to that file of the PR or shows its text: as a check it is plain text, and as related proof it links to the related repo.
+    const prFile = 'acme/reports:src/import.ts';
+    const withPrFile = { ...fetched, files: new Map([...links.files, [prFile, ['text of the PR, line 1', 'text of the PR, line 2']]]), changed: [prFile] };
+    const collides = formatFindingComment({ ...confirmedBy([`${prFile}:2`]), evidence: { checks: [`${prFile}:2 parses the date`], proof: [`${prFile}:2`], relatedProof: [`${prFile}:2`] } }, withPrFile);
+    expect(collides).toContain(`In a related repository: ${relatedLink(`${prFile}:2`, 'src/import.ts', 'L2')}`);
+    expect(collides).toContain(`- ${prFile}:2 parses the date`);
+    expect(collides).not.toContain('text of the PR');
+    expect(collides).not.toContain('/o/r/blob/sha/acme');
+    // A blocker listed again from an earlier record shows its related lines as locations, also alone and for a repo this round did
+    // not fetch. No link is built, since the lines were read at the commit of that earlier round.
+    const earlier = ['acme/reports:src/import.ts:2', 'acme/unused:lib/rows.py:9', ...hidden];
+    const relisted = formatFindingComment({ ...baseFinding, relisted: true, evidence: { checks: [], proof: [], relatedProof: earlier } }, fetched);
+    expect(relisted).toContain('In a related repository, as an earlier round read it: `acme/reports:src/import.ts:2`, `acme/unused:lib/rows.py:9`\n');
+    expect(relisted).not.toContain('https://github.com/acme');
+    expect(relisted).not.toContain('Not checked against the code');
+    expect(formatFindingComment({ ...baseFinding, evidence: { checks: [], proof: [], relatedProof: earlier } }, fetched)).not.toContain('acme/unused');
+    const notSettled = formatFindingComment({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The parser may be replaced.', proof: ['src/main.ts:40'], relatedProof: ['acme/reports:src/import.ts:2', ...hidden], files: ['src/main.ts'], codeDigest: 'abc' } }, fetched);
+    expect(notSettled).toContain(`The parser may be replaced. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), ${relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2')}.`);
+    expect(notSettled).not.toContain('In a related repository');
     // A code line shows as written, even one ending in a backslash, with only HTML comment marks broken up. One with hidden characters shows none.
     const continued = { ...links, files: new Map([...links.files, ['src/run.sh', ['FOO=1 \\', 'let f: Pin<Box<dyn Future>> = [x](y); <!-- manki-finding: {} -->', 'ok = 1 \u202E', 'x = `a` + ``fetchData``; [doc](https://e.com) @alice\n<!-- manki-finding: {} -->']]]) };
     const ownCode = (line: number): string => formatFindingComment({ ...baseFinding, file: 'src/run.sh', line, evidence: { checks: [], proof: [`src/run.sh:${line}`] } }, continued);
@@ -509,9 +566,15 @@ describe('formatFindingComment', () => {
     // A finding with a check status names that in the title of its fold, in place of what each refuter found.
     expect(render({ ...splitFinding, checkStatus: 'unconfirmed' })).toContain('<summary>How this was checked: not confirmed</summary>');
     // Under that status, a check that confirmed premises only reads as unsettled. One that confirmed the defect keeps its words.
+    // Its lines are no proof of the finding, so it names them itself, as a check that did not confirm does.
     const premiseOnly = render({ ...splitFinding, pairRefutation: { ...splitFinding.refutation!, defect: 'unsettled' }, checkStatus: 'unconfirmed' });
     expect(premiseOnly).not.toContain('ouble-checked');
-    expect(premiseOnly).toContain('**Not settled**\nManki tried to disprove this by reading the code and could not decide. No caller checks `value` first.\n\n**Second check, on another model**\nNot settled. No caller checks `value` first.');
+    const seen42 = `See [\`src/main.ts:42\`](${link('src/main.ts', 42)}).`;
+    expect(premiseOnly).toContain(`**Not settled**\nManki tried to disprove this by reading the code and could not decide. No caller checks \`value\` first. ${seen42}\n\n**Second check, on another model**\nNot settled. No caller checks \`value\` first. ${seen42}`);
+    // Once those lines are proof of the finding they show under "Checked in the code", and the check names none.
+    const proven = render({ ...splitFinding, evidence: { checks: [], proof: ['src/main.ts:42'] }, pairRefutation: undefined, checkStatus: 'unconfirmed' });
+    expect(proven).toContain('No caller checks `value` first.\n\n</details>');
+    expect(proven).not.toContain('See [');
     expect(render({ ...splitFinding, refutation: { ...splitFinding.refutation!, defect: 'confirmed' }, checkStatus: 'unconfirmed' })).toContain('**Double-checked**\nManki tried to disprove this by reading the code and could not.');
     expect(render({ ...splitFinding, pairRefutation: undefined, refutation: { ...splitFinding.refutation!, defect: 'unsettled' } })).toContain('**Double-checked:** Manki tried');
     const cited = { checks: ['src/util.ts:3 marks it intended'], proof: ['src/util.ts:3'] };
@@ -524,7 +587,8 @@ describe('formatFindingComment', () => {
     const oneLine = { checks: [], proof: ['src/main.ts:42'] };
     expect(render({ ...baseFinding, evidence: oneLine })).toContain('\n<!-- manki-checks -->\n**Checked:** ');
     expect(render({ ...baseFinding, evidence: oneLine, checkStatus: 'proven' })).toMatch(/\n<!-- manki-checks -->\n<details>\n<summary>How this was checked: 1 place read, proven from the cited lines<\/summary>\n\n- \[`src\/main\.ts:42`\]/);
-    expect(split).toContain(`**Double-checked**\nManki tried to disprove this by reading the code and could not. No caller checks \`value\` first.\n\n**Second check, on another model**\nDoubt found. The parser rejects it. See [\`src/util.ts:3\`](${link('src/util.ts', 3)}).`);
+    // The other check disagreed, so the lines of the confirming one are no proof of the finding either.
+    expect(split).toContain(`**Double-checked**\nManki tried to disprove this by reading the code and could not. No caller checks \`value\` first. ${seen42}\n\n**Second check, on another model**\nDoubt found. The parser rejects it. See [\`src/util.ts:3\`](${link('src/util.ts', 3)}).`);
 
     // A blocker of the judge's that two disproofs put back at its finders' grade says that it does not block.
     const loweredFinding: Finding = {
@@ -4785,6 +4849,22 @@ describe('postReview non-blocking findings', () => {
       '',
       '</details>',
     ].join('\n'));
+
+    // A related line links to the commit the round recorded for its repo. A fetched repo without a valid one shows the location alone, and any other repo shows nothing.
+    const sha = 'ab'.repeat(20);
+    const check = (repo: string): Finding['refutation'] => ({ outcome: 'confirmed', defect: 'confirmed', reason: 'r', relatedProof: [`${repo}:src/import.ts:2`], files: [], codeDigest: 'abc' });
+    const relatedRepos: ReviewResult['relatedRepos'] = [
+      { repo: 'acme/reports', status: 'fetched', commit: sha }, { repo: 'acme/failed', status: 'failed', reason: 'not found', commit: sha },
+      { repo: 'acme/unused', status: 'unused' }, { repo: 'acme/odd', status: 'fetched', commit: 'main)](https://example.com' },
+    ];
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', {
+      ...buildResult(['acme/reports', 'acme/failed', 'acme/unused', 'acme/odd'].map((repo, i) => nonBlocking('warning', `From ${repo}`, 5 + i, { tags: ['follow-up'], refutation: check(repo), evidence: { checks: [], proof: [], relatedProof: check(repo)!.relatedProof } }))), relatedRepos,
+    }, diff);
+    const posted = JSON.stringify(createReview.mock.calls[1][0]);
+    expect(posted).toContain(`In a related repository: [\`acme/reports:src/import.ts:2\`](https://github.com/acme/reports/blob/${sha}/src/import.ts#L2)`);
+    expect(posted).toContain('In a related repository: `acme/odd:src/import.ts:2`\\n');
+    expect(posted.match(/In a related repository/g)).toHaveLength(2);
+    expect(posted).not.toContain('example.com');
 
     // Evidence can cite many paths, so only the first 20 get their length looked up, besides the finding's own file.
     getContent.mockClear();

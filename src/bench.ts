@@ -406,7 +406,8 @@ interface GradeRoute {
   gradePath?: Array<Omit<GradeStep, 'reason'>>;
   /** How many doubts of each `decides` kind the judge named. */
   doubts?: Partial<Record<Doubt['decides'], number>>;
-  refutation?: Pick<Refutation, 'outcome' | 'defect'>;
+  /** With `relatedLines`, the lines of related repos the check cited, and `prLines`, the lines of the PR's repository beside them. Both are left out of a check that cited no related line. */
+  refutation?: Pick<Refutation, 'outcome' | 'defect'> & { relatedLines?: number; prLines?: number };
   checkStatus?: CheckStatus;
   /** Set on a finding the verdict reader named. */
   byReader?: true;
@@ -614,7 +615,10 @@ function gradeRoute(f: Finding): GradeRoute {
     ...(judgeIfConfirmed && { judgeIfConfirmed }),
     ...(gradePath && { gradePath: gradePath.map(({ from, to, by }) => ({ from, to, by })) }),
     ...(doubts.length > 0 && { doubts: { defect: doubtsOf('defect'), grade: doubtsOf('grade') } }),
-    ...(refutation && { refutation: { outcome: refutation.outcome, ...(refutation.defect && { defect: refutation.defect }) } }),
+    ...(refutation && { refutation: {
+      outcome: refutation.outcome, ...(refutation.defect && { defect: refutation.defect }),
+      ...(refutation.relatedProof?.length && { relatedLines: refutation.relatedProof.length, prLines: refutation.proof?.length ?? 0 }),
+    } }),
     ...(checkStatus && { checkStatus }),
     ...(f.reviewers.includes(VERDICT_READER_NAME) && { byReader: true as const }),
     ...(isSecurityFinding(f.tags, f.reviewers) && { security: true as const }),

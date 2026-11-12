@@ -3,16 +3,18 @@ import { readFileSync } from 'fs';
 
 import * as core from '@actions/core';
 
+import { holdsLines } from './code-window';
 import { isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
 import { ruleGrade } from './judge';
 import { extractJSON } from './json';
-import { resolveInRoot } from './mcp-server';
+import { readFileInRoot, resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
+import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
-import { isUnconfirmedBuildClaim } from './static-signals';
-import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
+import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
+import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -20,6 +22,7 @@ const REFUTE_STEPS = 15;
 // A safety net. The step budget is what normally ends the call.
 const REFUTE_TIMEOUT_MS = 600_000;
 const MAX_REASON_CHARS = 500;
+const MAX_RELATED_PROOF = 10;
 const MAX_JUDGE_NOTES_CHARS = 1000;
 const MAX_FILE_CHANGE_CHARS = 8000;
 const MAX_PARALLEL_REFUTATIONS = 3;
@@ -91,16 +94,53 @@ function refutationFiles(file: string, proof: readonly string[] = []): string[] 
   return [...new Set([file, ...proof.map(locationFile)])].sort();
 }
 
-/** Keeps the locations whose file is in the workspace and holds the cited line, so no made-up citation settles anything. */
+/**
+ * Keeps the locations whose file is in the workspace and `holdsLines` they cite, so no made-up citation settles anything.
+ * A file `readFileInRoot` does not read, such as one over its size limit, holds no line.
+ */
 function existingLocations(workspace: string, proof: readonly string[]): string[] {
   return proof.filter(location => {
-    const [line] = locationLines(location);
-    try {
-      return line >= 1 && line <= readFileSync(resolveInRoot(workspace, locationFile(location)).absolute, 'utf-8').split('\n').length;
-    } catch {
-      return false;
-    }
+    const file = readFileInRoot(workspace, locationFile(location));
+    return !!file && file !== 'too large' && holdsLines(file.lines.length, ...locationLines(location));
   });
+}
+
+/**
+ * Returns the lines of related repos that the entries of a refuter's `proof` list start with, as `owner/name:path:line`,
+ * each for a repo of `related` and a line in the checkout the round fetched of it. A line of a repo that was not
+ * fetched, or that the checkout does not hold, is dropped like a made-up line of the PR. Only the first
+ * `MAX_RELATED_PROOF` lines the list cites are looked up, so a long list reads no more files than that. Each location
+ * is written again from the repo's configured name and the file's own path in the checkout, so none holds text the
+ * model chose beyond a path and line numbers that exist.
+ */
+function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] {
+  if (!related || !Array.isArray(proof)) return [];
+  const names = related.repos.map(r => r.repo);
+  const checkouts = fetchedRelatedRepos(related.stateDir);
+  const cited = proof.flatMap(entry => (typeof entry === 'string' ? leadingRelatedCitation(entry, names) ?? [] : [])).slice(0, MAX_RELATED_PROOF);
+  const shown = cited.flatMap(({ repo, path, start, end }) => {
+    const dir = checkouts.get(repo);
+    if (!dir || citedLineMissing(dir, path, start, end)) return [];
+    const location = `${repo}:${resolveInRoot(dir, path).relative}:${start}${end > start ? `-${end}` : ''}`;
+    // A symlink can resolve to a file whose name a citation cannot hold, such as one with a space.
+    return leadingRelatedCitation(location, names)?.citation === location ? [location] : [];
+  });
+  return [...new Set(shown)];
+}
+
+/**
+ * Returns the lines a refuter's `proof` list cites that are there: `proof` in the PR's workspace, `relatedProof` in the
+ * related checkouts. An entry that starts with a line of a related repo is never read as a line of the PR as well.
+ */
+function shownLines(proof: unknown, workspace: string, related?: RelatedRepoTools): { proof: string[]; relatedProof: string[] } {
+  const names = related?.repos.map(r => r.repo) ?? [];
+  const own = Array.isArray(proof) ? proof.filter(entry => typeof entry !== 'string' || !leadingRelatedCitation(entry, names)) : proof;
+  return { proof: existingLocations(workspace, parseProof(own)), relatedProof: relatedLocations(proof, related) };
+}
+
+/** Whether `refutation` rests on a line of a related repo, in its own answer or in a premise. */
+function citesRelatedRepo(refutation: Refutation): boolean {
+  return !!refutation.relatedProof?.length || !!refutation.premises?.some(p => p.relatedProof?.length);
 }
 
 /** Whether `proof` cites a line of the finding's own `file` or a line in `diff`, so PR text cannot point a disproof at any file. */
@@ -114,21 +154,25 @@ function citesFindingCode(file: string, proof: readonly string[], diff?: ParsedD
 }
 
 /**
- * Returns the refutation an earlier round stored in `field` for the same finding, the latest first, when it covers every
- * file the finding now cites and none of those files changed since. One stored without a `defect` answer never asked
- * whether the defect exists, so it is not reused.
+ * Returns the refutation an earlier round stored in `field` for the same finding, when it covers every file the finding
+ * now cites and none of those files changed since. Only the latest such answer counts, so no older one is ever reused
+ * in its place. One stored without a `defect` answer never asked whether the defect exists, so it is no such answer.
+ * The latest is not reused, and the finding is checked again, when it `citesRelatedRepo`, since the stored digest
+ * covers the PR's files only and the related repo can have changed, or when it is a disproof that no longer cites the
+ * finding's code.
  */
 function priorRefutation(finding: Finding, field: RefutationField, workspace: string, priorRounds: RoundContext[], diff?: ParsedDiff): Refutation | undefined {
   const cited = refutationFiles(finding.file, finding.evidence?.proof);
   for (const round of [...priorRounds].reverse()) {
-    const stored = [
+    const refutation = [
       ...round.findings.entries.map(e => ({ title: e.title ?? '', file: e.fingerprint.file, line: e.fingerprint.lineStart, refutation: e[field] })),
       ...(round.judge.dropped ?? []).map(d => ({ ...d, refutation: d[field] })),
     ].find(({ title, file, line, refutation }) => refutation?.defect && file === finding.file && Math.abs(line - finding.line) <= LINE_TOLERANCE
       && titlesMatch(title, finding.title) && cited.every(f => refutation.files.includes(f))
-      && codeDigest(workspace, refutation.files) === refutation.codeDigest
-      && (outcomeOf(refutation) !== 'disproved' || citesFindingCode(finding.file, refutation.proof ?? [], diff)));
-    if (stored?.refutation) return stored.refutation;
+      && codeDigest(workspace, refutation.files) === refutation.codeDigest)?.refutation;
+    if (!refutation) continue;
+    const reusable = !citesRelatedRepo(refutation) && (outcomeOf(refutation) !== 'disproved' || citesFindingCode(finding.file, refutation.proof ?? [], diff));
+    return reusable ? refutation : undefined;
   }
   return undefined;
 }
@@ -175,38 +219,50 @@ function premisesOutcome(doubts: readonly Doubt[], checks: readonly PremiseCheck
   return checks.every(c => c.outcome === 'confirmed') ? 'confirmed' : 'unsettled';
 }
 
-function parseRefutation(text: string, workspace: string, finding: Finding, diff?: ParsedDiff): Refutation {
+function parseRefutation(text: string, workspace: string, finding: Finding, diff?: ParsedDiff, related?: RelatedRepoTools): Refutation {
   const parsed = JSON.parse(extractJSON(text)) as Record<string, unknown>;
-  // Either verdict has to cite the code that decides it, so one without real proving lines settles nothing.
-  const settle = (outcome: RefutationOutcome, proof: string[]): RefutationOutcome =>
-    proof.length === 0 || (outcome === 'disproved' && !citesFindingCode(finding.file, proof, diff)) ? 'unsettled' : outcome;
+  // Either verdict has to cite the code that decides it, so one without real proving lines settles nothing. A line of a
+  // related repo counts as such a line. A disproof lifts a finding, so it still needs a line of the finding's own file
+  // or of the PR's diff, whatever it cites in a related repo.
+  const settle = (outcome: RefutationOutcome, proof: string[], relatedProof: string[]): RefutationOutcome =>
+    proof.length + relatedProof.length === 0 || (outcome === 'disproved' && !citesFindingCode(finding.file, proof, diff)) ? 'unsettled' : outcome;
   const reason = replyText(parsed.reason);
   const rule = replyText(parsed.rule);
   const claimed = OUTCOMES.find(o => o === parsed.outcome);
   // A reply that answers the premises and not the defect still grades the finding, and confirms no defect.
   if (!claimed && !finding.doubts) throw new Error(`refutation outcome is ${JSON.stringify(parsed.outcome)}, not one of ${OUTCOMES.join(', ')}`);
-  const shown = existingLocations(workspace, parseProof(parsed.proof));
-  const defect = settle(claimed ?? 'unsettled', shown);
+  const { proof: shown, relatedProof: shownRelated } = shownLines(parsed.proof, workspace, related);
+  const defect = settle(claimed ?? 'unsettled', shown, shownRelated);
   let outcome = defect;
   let proof = shown;
+  let relatedProof = shownRelated;
   let premises: PremiseCheck[] | undefined;
   if (finding.doubts) {
     const answers = parsed.premises;
     if (!Array.isArray(answers)) throw new Error(`refutation answers no \`premises\` for the ${finding.doubts.length} the judge doubts`);
     premises = finding.doubts.map((doubt, i) => {
       const answer = (answers[i] && typeof answers[i] === 'object' ? answers[i] : {}) as Record<string, unknown>;
-      const cited = existingLocations(workspace, parseProof(answer.proof));
-      return { premise: doubt.premise, outcome: settle(OUTCOMES.find(o => o === answer.outcome) ?? 'unsettled', cited), reason: replyText(answer.reason), ...(cited.length > 0 && { proof: cited }) };
+      const { proof: cited, relatedProof: citedRelated } = shownLines(answer.proof, workspace, related);
+      return {
+        premise: doubt.premise, outcome: settle(OUTCOMES.find(o => o === answer.outcome) ?? 'unsettled', cited, citedRelated), reason: replyText(answer.reason),
+        ...(cited.length > 0 && { proof: cited }), ...(citedRelated.length > 0 && { relatedProof: citedRelated }),
+      };
     });
     outcome = premisesOutcome(finding.doubts, premises);
     // A disproof cites only what disproves the defect, never lines that confirmed a premise or the defect.
     const doubts = finding.doubts;
     const disproved = outcome === 'disproved' || defect === 'disproved';
     const cites = (p: PremiseCheck, i: number): boolean => disproved ? p.outcome === 'disproved' && doubts[i].decides === 'defect' : p.outcome !== 'unsettled';
-    proof = [...new Set([...premises.flatMap((p, i) => cites(p, i) ? p.proof ?? [] : []), ...(defect === (disproved ? 'disproved' : 'confirmed') ? shown : [])])];
+    const ownAnswer = defect === (disproved ? 'disproved' : 'confirmed');
+    proof = [...new Set([...premises.flatMap((p, i) => cites(p, i) ? p.proof ?? [] : []), ...(ownAnswer ? shown : [])])];
+    // The answer's own lines come first, so the cut drops lines of a premise before a line that decides the defect.
+    relatedProof = [...new Set([...(ownAnswer ? shownRelated : []), ...premises.flatMap((p, i) => cites(p, i) ? p.relatedProof ?? [] : [])])].slice(0, MAX_RELATED_PROOF);
   }
   const files = refutationFiles(finding.file, proof);
-  return { outcome, defect, reason, ...(rule && { rule }), ...(proof.length > 0 && { proof }), ...(premises && { premises }), files, codeDigest: codeDigest(workspace, files) ?? '' };
+  return {
+    outcome, defect, reason, ...(rule && { rule }), ...(proof.length > 0 && { proof }), ...(relatedProof.length > 0 && { relatedProof }), ...(premises && { premises }),
+    files, codeDigest: codeDigest(workspace, files) ?? '',
+  };
 }
 
 /** Returns `grade` when it is above the grade of `finding`. Reading code never confirms a build failure, so such a claim rises to a warning at most. */
@@ -239,6 +295,16 @@ function confirmedGrade(finding: Finding): FindingSeverity | undefined {
 }
 
 /**
+ * Returns `evidence` with the lines of `answers` added as proof: their lines of the PR to `proof`, and their lines of
+ * related repos to `relatedProof`, which keeps its first `MAX_RELATED_PROOF` however many answers add to it.
+ */
+function withProof(evidence: FindingEvidence | undefined, answers: readonly Pick<Refutation, 'proof' | 'relatedProof'>[]): FindingEvidence {
+  const proof = [...new Set([...(evidence?.proof ?? []), ...answers.flatMap(a => a.proof ?? [])])];
+  const relatedProof = [...new Set([...(evidence?.relatedProof ?? []), ...answers.flatMap(a => a.relatedProof ?? [])])].slice(0, MAX_RELATED_PROOF);
+  return { ...(evidence ?? { checks: [] }), proof, ...(relatedProof.length > 0 && { relatedProof }) };
+}
+
+/**
  * Returns `finding` with its `unproven` rule confirmed and the grade `rules` gives, when `checks` confirm the fact the
  * judge could not see. Only the premise that states that fact decides it, whatever the checks say about the damage.
  * Checks that disagree about that premise leave the rule `unproven`. So does a check's own answer that the defect does
@@ -250,11 +316,10 @@ function confirmRuleFact(finding: Finding, checks: readonly Refutation[], rules?
   const answers = checks.flatMap(r => r.premises?.filter(p => p.premise === rule.unseen) ?? []);
   if (!answers.some(p => p.outcome === 'confirmed') || answers.some(p => p.outcome === 'disproved')) return finding;
   const grade = raisedTo(finding, ruleGrade(rules));
-  const proof = [...new Set([...(finding.evidence?.proof ?? []), ...answers.flatMap(p => p.proof ?? [])])];
   return {
     ...finding, rule: { ...rule, verdict: 'confirmed' },
     // Lines that confirm the fact show no damage, so they are added only where they raise the grade.
-    ...(grade && { ...gradeStep(finding, grade, 'rule', 'a check confirmed the fact that breaks a required rule of the instruction files'), evidence: { ...(finding.evidence ?? { checks: [] }), proof } }),
+    ...(grade && { ...gradeStep(finding, grade, 'rule', 'a check confirmed the fact that breaks a required rule of the instruction files'), evidence: withProof(finding.evidence, answers) }),
   };
 }
 
@@ -337,10 +402,10 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
     const restored = confirmedGrade(finding);
     // Lines that confirm only premises show no defect. They are added where they restore a grade, and never make a warning proven.
-    const proof = [...new Set([...(finding.evidence?.proof ?? []), ...checks.flatMap(r => outcomeOf(r) === 'confirmed' && (restored || confirmsDefect(r)) ? r.proof ?? [] : [])])];
+    const proving = checks.filter(r => outcomeOf(r) === 'confirmed' && (restored || confirmsDefect(r)));
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
     return {
-      ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', checks.find(r => outcomeOf(r) === 'confirmed')!.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
+      ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', checks.find(r => outcomeOf(r) === 'confirmed')!.reason)), evidence: withProof(finding.evidence, proving),
       ...(tags && { tags }),
     };
   }
@@ -475,6 +540,8 @@ function reopenCappedGrade(finding: Finding, priorRounds: readonly RoundContext[
 
 export interface RefuteOptions {
   workspace: string;
+  /** The round's related repos, which the refuter's tools also read. */
+  related?: RelatedRepoTools;
   priorRounds?: RoundContext[];
   effort?: EffortLevel;
   /** The PR's diff, whose lines a disproof may cite besides the finding's own file. A refuter checking a doubt the judge named sees its change to the files the finding cites. */
@@ -514,7 +581,7 @@ export interface RefuteOptions {
  * `gradeIfConfirmed`. A call that fails leaves the grade to the other refuter, or to the judge. With `roundEnd` it makes
  * only the checks `doubtsToCheck` picks.
  */
-export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, preExisting, roundEnd, rules }: RefuteOptions): Promise<Finding[]> {
+export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, related, priorRounds = [], effort, diff, usesOutsideDiff, outsideInput, pair, blockingThreads = [], hiddenLater, unpostedLater, restatesEarlier, doubtBudget, preExisting, roundEnd, rules }: RefuteOptions): Promise<Finding[]> {
   // Unseen code or a caller can change in a file the stored outcome does not cover, so a finding with a `gradeIfConfirmed` is checked afresh.
   const stored = (field: RefutationField, finding: Finding): Refutation | undefined =>
     finding.gradeIfConfirmed ? undefined : priorRefutation(finding, field, workspace, priorRounds, diff);
@@ -529,9 +596,9 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
       const refutation = await sendWithParseRetry(
         buildRefuteMessage(finding, !!preExisting?.(finding), usesOutsideDiff, outsideInput, diff),
         message => refuter.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
-          ...(effort && { effort }), repoTools: { root: workspace, steps: REFUTE_STEPS }, timeoutMs: REFUTE_TIMEOUT_MS,
+          ...(effort && { effort }), repoTools: repoTools(workspace, REFUTE_STEPS, related, 'check'), timeoutMs: REFUTE_TIMEOUT_MS,
         }),
-        reply => ({ ...parseRefutation(reply.content, workspace, finding, diff), ...(reply.model && { model: reply.model }) }),
+        reply => ({ ...parseRefutation(reply.content, workspace, finding, diff, related), ...(reply.model && { model: reply.model }) }),
         error => core.warning(`The ${label} reply for "${finding.title}" could not be used (${error}), asking once more`),
       );
       core.info(`The ${label} of "${finding.title}": ${outcomeOf(refutation)}`);

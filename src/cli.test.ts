@@ -81,6 +81,17 @@ describe('formatReviewText', () => {
     expect(text).toContain('Stop at `len - 1`.');
     expect(text).toContain('On the flagged line: Reads `items[len]`');
     expect(text).not.toContain('manki-checks');
+    // A check that rests on a line of a related repo names that line, linked when the review recorded the fetched commit.
+    const commit = 'ab'.repeat(20);
+    const local = review('ADDRESS_FIRST', [{
+      ...finding, evidence: { ...finding.evidence!, relatedProof: ['acme/app:src/list.ts:7'] },
+      refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'The consumer reads the last item.', relatedProof: ['acme/app:src/list.ts:7'], files: ['src/a.ts'], codeDigest: 'abc' },
+      pairRefutation: { outcome: 'unsettled', reason: 'The caller may be gone.', relatedProof: ['acme/tool:lib/run.py:3-4', 'acme/gone:lib/run.py:3'], files: ['src/a.ts'], codeDigest: 'abc' },
+    }]);
+    const withRelated = formatReviewText({ ...local, result: { ...local.result, relatedRepos: [{ repo: 'acme/app', status: 'fetched', commit }, { repo: 'acme/tool', status: 'fetched' }, { repo: 'acme/gone', status: 'failed', reason: 'not found' }] } });
+    expect(withRelated).toContain(`In a related repository: [\`acme/app:src/list.ts:7\`](https://github.com/acme/app/blob/${commit}/src/list.ts#L7)\n`);
+    expect(withRelated).toContain('The caller may be gone. See `acme/tool:lib/run.py:3-4`.');
+    expect(formatReviewText(local)).not.toMatch(/acme\//);
   });
 
   it('shows only the outcome and summary when nothing was found, and a held approval as the round would', () => {

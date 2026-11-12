@@ -660,7 +660,7 @@ describe('runFullReview end to end', () => {
 
       await reviewRound();
 
-      expect(mockLLM.tools).toContainEqual(['refute', { root: workspace, steps: 15 }]);
+      expect(mockLLM.tools).toContainEqual(['refute', { root: workspace, steps: 15, checking: true }]);
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
       expect(postedReviews()[0].body).not.toContain('Checked and left out');
       // A disproof never clears a blocker, so it is posted with the refuter's reason.

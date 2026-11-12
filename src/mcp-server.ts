@@ -11,7 +11,7 @@ import { z } from 'zod';
 
 import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-grep';
 import { fenceText, MANKI_VERSION } from './github';
-import { relatedRepoLoader } from './related-repos';
+import { relatedRepoLoader, RelatedRepoPending } from './related-repos';
 import { writableOnlyByUs } from './tool-install';
 import { stepCheck } from './tool-steps';
 import { RelatedRepoTools } from './types';
@@ -66,6 +66,29 @@ export function resolveInRoot(root: string, path: string): RepoPath {
   if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`${path} is outside the repository`);
   if (rel === '.git' || rel.startsWith(`.git${sep}`)) throw new Error(`${path} is in .git, which the tools do not read`);
   return { absolute, relative: rel === '' ? '.' : rel.split(sep).join('/') };
+}
+
+/** A file's text and its lines. The empty text after a final line break is no line. */
+export interface FileText {
+  text: string;
+  lines: string[];
+}
+
+/**
+ * Reads the file `path` under `root`. Returns `'too large'` for a file over `MAX_FILE_BYTES`, which is not read, and
+ * `undefined` for a path that `resolveInRoot` refuses, that is no file or that cannot be read.
+ */
+export function readFileInRoot(root: string, path: string): FileText | 'too large' | undefined {
+  try {
+    const { absolute } = resolveInRoot(root, path);
+    const stat = statSync(absolute);
+    if (!stat.isFile()) return undefined;
+    if (stat.size > MAX_FILE_BYTES) return 'too large';
+    const text = readFileSync(absolute, 'utf-8');
+    return { text, lines: text.replace(/\n$/, '').split('\n') };
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -442,6 +465,8 @@ export function createMcpServer(root: string, { fileTools = false, steps, relate
       if (readsFile) writeFileSync(readsFile, JSON.stringify(reads));
     } catch { /* the count only feeds the round record */ }
     return loadRelated(repo).catch((error: unknown) => {
+      // A fetch that only ran out of time in this call did not fail, so the answer must not read as if the repo cannot be fetched.
+      if (error instanceof RelatedRepoPending) throw new Error(`${repo} ${error.message}`);
       throw new Error(`${repo} could not be fetched, so it cannot be read: ${error instanceof Error ? error.message : String(error)}`);
     });
   };

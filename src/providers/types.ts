@@ -159,8 +159,10 @@ export interface RepoTools {
   root: string;
   /** How many tool calls the model may make. Once they are used up, every further call is refused. */
   steps: number;
-  /** Related repos the tools may also read, each named by a `repo` argument. */
-  related?: RelatedRepoTools;
+  /** Related repos the tools may also read, each named by a `repo` argument. Every call states them, so no stage leaves them out unnoticed. */
+  related: RelatedRepoTools | undefined;
+  /** Set on a call that checks one finding or statement. Its prompt then names a related repo only for the code that check rests on, with no rules for grading. */
+  checking?: true;
 }
 
 export interface SendMessageOptions {

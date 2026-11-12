@@ -594,7 +594,7 @@ describe('sendViaOAuth — error paths', () => {
     setupSpawnMock({ stdout: `${JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, num_turns: 16 })}\n`, rawStdout: true, exitCode: 1 });
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' });
 
-    await expect(client.sendMessage('sys', 'user', { repoTools: { root: '/work/repo', steps: 15 } })).rejects.toThrow('Claude CLI used all its turns before it answered');
+    await expect(client.sendMessage('sys', 'user', { repoTools: { root: '/work/repo', steps: 15, related: undefined } })).rejects.toThrow('Claude CLI used all its turns before it answered');
   });
 
   it('sends the system prompt as the CLI system prompt and only the user message on stdin', async () => {

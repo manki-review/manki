@@ -4,10 +4,16 @@ import { devNull, tmpdir } from 'os';
 import { dirname, join, resolve, sep } from 'path';
 
 import { runTool } from './binary-analyzers';
+import { RepoTools } from './providers/types';
+import { makeScratchDir } from './tool-install';
+import { STALE_TIMEOUT_MS } from './tool-steps';
 import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RoundRelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
-// A tool call that runs for the fetch and the wait after it must end before the CLI's 90 second stale limit.
+/** Where every related repo lives. */
+export const RELATED_REPO_HOST = 'https://github.com';
+// A tool call must end before `STALE_TIMEOUT_MS`. It can wait for another's fetch and then fetch in its place, so
+// `sharedCheckout` begins a fetch only while one still fits into the call, and stops waiting before the limit.
 const FETCH_TIMEOUT_MS = 60_000;
 const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
@@ -18,9 +24,21 @@ const GIT_CONFIG = { 'credential.helper': '', 'core.hooksPath': devNull, 'core.f
 /** The files that can be a repo's guide, at its root. The first one found is the guide. */
 export const GUIDE_FILES = ['AGENTS.md', 'CLAUDE.md'];
 
+/**
+ * Thrown when a call ran out of time before a repo was fetched, while no fetch of it failed. Nothing is recorded for
+ * the repo, so the next call that names it goes on from there.
+ */
+export class RelatedRepoPending extends Error {
+  constructor() {
+    super('is not fetched yet, and this call has no time left to fetch it. Call the tool again to read it.');
+  }
+}
+
 export interface RelatedRepoLoaderOptions {
   /** Time limit for fetching one repo. */
   timeoutMs?: number;
+  /** How long one call of the loader may take. Defaults to `STALE_TIMEOUT_MS`, the limit of a tool call. */
+  callLimitMs?: number;
   run?: typeof runTool;
   /** Where progress goes. Defaults to stderr, since a tool server's stdout carries its protocol. */
   log?: (message: string) => void;
@@ -31,6 +49,19 @@ export function relatedReposCacheDir(): string {
   return join(process.env.RUNNER_TEMP || tmpdir(), 'manki-related-repos');
 }
 
+/** Returns what one round or one reply offers its tools of `repos`, with a state directory of its own, or `undefined` without repos. */
+export function relatedRepoTools(repos: RelatedRepo[] | undefined, asOf?: string): RelatedRepoTools | undefined {
+  return repos?.length ? { repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related'), ...(asOf && { asOf }) } : undefined;
+}
+
+/**
+ * Returns the read-only tools of a call on the checkout at `root`. Every stage builds its `RepoTools` here, so each one
+ * states its related repos. `use` is `check` for a call that checks one finding or statement, and `find` for one that reports findings.
+ */
+export function repoTools(root: string, steps: number, related: RelatedRepoTools | undefined, use: 'find' | 'check' = 'find'): RepoTools {
+  return { root, steps, related, ...(use === 'check' && { checking: true as const }) };
+}
+
 /**
  * Returns a function that fetches the related repo `name` and resolves with the directory holding it, or rejects with
  * the reason it could not. Each repo is fetched at most once per round: the first tool server to ask fetches it and
@@ -38,35 +69,64 @@ export function relatedReposCacheDir(): string {
  */
 export function relatedRepoLoader(
   { repos, cacheDir, stateDir, asOf }: RelatedRepoTools,
-  { timeoutMs = FETCH_TIMEOUT_MS, run = runTool, log = message => process.stderr.write(`${message}\n`) }: RelatedRepoLoaderOptions = {},
+  { timeoutMs = FETCH_TIMEOUT_MS, callLimitMs = STALE_TIMEOUT_MS, run = runTool, log = message => process.stderr.write(`${message}\n`) }: RelatedRepoLoaderOptions = {},
 ): (name: string) => Promise<string> {
   const checkouts = new Map<string, Promise<string>>();
+  // The git process of a stopped holder can outlive it and go on writing its clone. So a fetch after a takeover clones
+  // into a directory of its own in the round's state directory, which no cache restores and no other fetch uses.
+  const cloneRoot = (takeovers: number): string => (takeovers === 0 ? cacheDir : join(stateDir, `takeover-${takeovers}`));
   return name => {
     const repo = repos.find(r => r.repo === name);
     if (!repo) return Promise.reject(new Error(`${name} is not a related repo`));
     let checkout = checkouts.get(name);
     if (!checkout) {
-      checkout = sharedCheckout(repo, join(stateDir, encodeURIComponent(name)), timeoutMs, () => checkoutRelatedRepo(repo, cacheDir, timeoutMs, run, log, asOf));
+      checkout = sharedCheckout(repo, join(stateDir, encodeURIComponent(name)), { timeoutMs, callLimitMs }, takeovers => checkoutRelatedRepo(repo, cloneRoot(takeovers), timeoutMs, run, log, asOf))
+        .catch((error: unknown) => {
+          // The repo has no outcome yet, so the next call asks again.
+          if (error instanceof RelatedRepoPending) checkouts.delete(name);
+          throw error;
+        });
       checkouts.set(name, checkout);
     }
     return checkout;
   };
 }
 
+/** Returns the lock a process creates to fetch for `marker` after `takeovers` earlier holders stopped. The first is `<marker>.lock`. */
+function lockPath(marker: string, takeovers: number): string {
+  return `${marker}.lock${takeovers > 0 ? `.${takeovers}` : ''}`;
+}
+
 /**
- * Runs `checkout` in the one process that creates the lock `<marker>.lock`, holding its PID, which records the outcome
- * in `<marker>.done` or `<marker>.failed`, and the commit it checked out in `<marker>.commit`. Any other process waits
- * for that outcome.
+ * Runs `checkout` in the one process that holds the lock of `marker`, which records the outcome in `<marker>.done` or
+ * `<marker>.failed`, and the commit it checked out in `<marker>.commit`. Any other process waits for that outcome.
+ * A lock holds its creator's PID. When a holder stopped and left no outcome, the next lock of `lockPath` takes its
+ * place. No lock is ever removed or renamed, and a lock is created only if it does not exist, so one process holds each.
+ * `checkout` is told how many holders stopped before it. The call ends within `callLimitMs`. It throws
+ * `RelatedRepoPending`, and records nothing, when a holder stopped too late in the call for a fetch to fit, or when
+ * the call's limit comes before the outcome of another's fetch.
  */
-async function sharedCheckout(repo: RelatedRepo, marker: string, timeoutMs: number, checkout: () => Promise<{ dir: string; commit: string }>): Promise<string> {
-  try {
-    writeFileSync(`${marker}.lock`, String(process.pid), { flag: 'wx' });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    return waitForCheckout(repo, marker, timeoutMs);
+async function sharedCheckout(
+  repo: RelatedRepo, marker: string, { timeoutMs, callLimitMs }: { timeoutMs: number; callLimitMs: number },
+  checkout: (takeovers: number) => Promise<{ dir: string; commit: string }>,
+): Promise<string> {
+  const started = Date.now();
+  let takeovers = 0;
+  for (; ; takeovers++) {
+    // A fetch takes up to `timeoutMs`, so one begun later than this could run past the call's limit.
+    if (takeovers > 0 && Date.now() - started >= callLimitMs - timeoutMs - WAIT_SLACK_MS) throw new RelatedRepoPending();
+    const lock = lockPath(marker, takeovers);
+    try {
+      writeFileSync(lock, String(process.pid), { flag: 'wx' });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const outcome = await waitForCheckout(repo, marker, lock, timeoutMs, started + callLimitMs - WAIT_SLACK_MS);
+    if (outcome !== undefined) return outcome;
   }
   try {
-    const { dir, commit } = await checkout();
+    const { dir, commit } = await checkout(takeovers);
     writeMarker(`${marker}.commit`, commit);
     writeMarker(`${marker}.done`, dir);
     return dir;
@@ -82,20 +142,28 @@ function writeMarker(path: string, text: string): void {
   renameSync(`${path}.tmp`, path);
 }
 
-/** Waits for the outcome the lock holder records, and records a failure when the holder stops or runs out of time. */
-async function waitForCheckout(repo: RelatedRepo, marker: string, timeoutMs: number): Promise<string> {
-  // The lock holder gives up on its fetch after `timeoutMs`, so a lock held longer belongs to a holder that hangs.
-  const deadline = Date.now() + timeoutMs + WAIT_SLACK_MS;
-  let reason = `another reviewer's fetch of ${repo.repo} did not finish in time`;
-  while (Date.now() < deadline) {
+/**
+ * Waits for the outcome the holder of `lock` records and returns the checkout directory, or `undefined` when that
+ * holder stopped and left no outcome. Throws the recorded failure, and records one when the holder runs out of time.
+ * Throws `RelatedRepoPending` when the time `until` comes first, which says nothing about the holder.
+ */
+async function waitForCheckout(repo: RelatedRepo, marker: string, lock: string, timeoutMs: number, until: number): Promise<string | undefined> {
+  const outcome = (): string | undefined => {
     if (existsSync(`${marker}.done`)) return readFileSync(`${marker}.done`, 'utf-8');
     if (existsSync(`${marker}.failed`)) throw new Error(readFileSync(`${marker}.failed`, 'utf-8'));
-    if (!isHolderAlive(`${marker}.lock`)) {
-      reason = `the reviewer fetching ${repo.repo} stopped before it finished`;
-      break;
-    }
+    return undefined;
+  };
+  // The lock holder gives up on its fetch after `timeoutMs`, so a lock held longer belongs to a holder that hangs.
+  const deadline = Date.now() + timeoutMs + WAIT_SLACK_MS;
+  while (Date.now() < Math.min(deadline, until)) {
+    const recorded = outcome();
+    if (recorded !== undefined) return recorded;
+    // A holder can record its outcome and exit between the two looks, so the outcome is read once more.
+    if (!isHolderAlive(lock)) return outcome();
     await new Promise(done => setTimeout(done, WAIT_POLL_MS));
   }
+  if (until < deadline) throw new RelatedRepoPending();
+  const reason = `another reviewer's fetch of ${repo.repo} did not finish in time`;
   writeMarker(`${marker}.failed`, reason);
   throw new Error(reason);
 }
@@ -112,12 +180,15 @@ function isHolderAlive(lock: string): boolean {
   }
 }
 
+// A fetch the action runs itself is no tool call, so no CLI waits on it and it takes over whenever a holder stopped.
+const IN_PROCESS: RelatedRepoLoaderOptions = { log: message => core.info(message), callLimitMs: Infinity };
+
 /**
  * Fetches each repo of `related` the way a tool call does, so the round's tool servers reuse the checkout, and returns
  * those fetched. One that fails is left out, and the round record says why.
  */
 export async function fetchRelatedRepos(related: RelatedRepoTools, options: RelatedRepoLoaderOptions = {}): Promise<RelatedCheckout[]> {
-  const load = relatedRepoLoader(related, { log: message => core.info(message), ...options });
+  const load = relatedRepoLoader(related, { ...IN_PROCESS, ...options });
   const fetched = await Promise.allSettled(related.repos.map(async ({ repo, kind }) => ({ repo, kind, dir: await load(repo) })));
   return fetched.flatMap(result => (result.status === 'fulfilled' ? [result.value] : []));
 }
@@ -127,7 +198,7 @@ export async function fetchRelatedRepos(related: RelatedRepoTools, options: Rela
  * such repo and its reason, so no finder of the round reads without it.
  */
 export async function requireRelatedRepos(related: RelatedRepoTools, options: RelatedRepoLoaderOptions = {}): Promise<void> {
-  const load = relatedRepoLoader(related, { log: message => core.info(message), ...options });
+  const load = relatedRepoLoader(related, { ...IN_PROCESS, ...options });
   const fetched = await Promise.allSettled(related.repos.map(({ repo }) => load(repo)));
   const failed = fetched.flatMap((result, i) => (result.status === 'rejected' ? [`${related.repos[i].repo}: ${messageOf(result.reason)}`] : []));
   if (failed.length > 0) throw new Error(`Could not read every related repo${related.asOf ? ` as of ${related.asOf}` : ''}. ${failed.join('. ')}`);
@@ -155,7 +226,7 @@ const MAX_REASON_CHARS = 300;
 
 /**
  * Returns how each of `repos` fared in the round in `stateDir`: fetched, failed with the reason, or unused when nothing
- * asked for it, with how long a fetch took from its lock to its outcome, the commit a fetch checked out, the guide of
+ * asked for it, with how long the fetch took from its lock to its outcome, the commit a fetch checked out, the guide of
  * `guides` the finders were pointed to, and the `asOf` time the round read the repos at. Warns about each repo it could
  * not fetch.
  */
@@ -165,15 +236,26 @@ export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guid
     const marker = encodeURIComponent(repo);
     const base = { repo, ...(ref && { ref }), ...(asOf && { asOf }), ...(guides[repo] && { guide: guides[repo] }) };
     if (!files.has(`${marker}.lock`)) return { ...base, status: 'unused' as const };
-    const took = (outcome: string) => ({ durationMs: Math.max(0, Math.round(statSync(join(stateDir, outcome)).mtimeMs - statSync(join(stateDir, `${marker}.lock`)).mtimeMs)) });
+    let takeovers = 0;
+    while (files.has(lockPath(marker, takeovers + 1))) takeovers++;
+    // The newest lock is the one whose holder recorded the outcome, or was the last to try.
+    const lock = join(stateDir, lockPath(marker, takeovers));
+    const took = (outcome: string) => ({ durationMs: Math.max(0, Math.round(statSync(join(stateDir, outcome)).mtimeMs - statSync(lock).mtimeMs)) });
     if (files.has(`${marker}.done`)) {
       const commit = files.has(`${marker}.commit`) ? readFileSync(join(stateDir, `${marker}.commit`), 'utf-8') : '';
       return { ...base, status: 'fetched' as const, ...(commit && { commit }), ...took(`${marker}.done`) };
     }
-    const failed = files.has(`${marker}.failed`);
-    const reason = failed ? readFileSync(join(stateDir, `${marker}.failed`), 'utf-8') : 'the fetch never finished';
-    core.warning(`Could not fetch related repo ${repo}, which must be public on github.com: ${reason}`);
-    return { ...base, status: 'failed' as const, reason: reason.slice(0, MAX_REASON_CHARS), ...(failed && took(`${marker}.failed`)) };
+    if (files.has(`${marker}.failed`)) {
+      const reason = readFileSync(join(stateDir, `${marker}.failed`), 'utf-8');
+      core.warning(`Could not fetch related repo ${repo}, which must be public on github.com: ${reason}`);
+      return { ...base, status: 'failed' as const, reason: reason.slice(0, MAX_REASON_CHARS), ...took(`${marker}.failed`) };
+    }
+    // No outcome says nothing about the repo: the stage that held the newest lock did not get to the end of its fetch.
+    const reason = isHolderAlive(lock)
+      ? 'the fetch was still running when the round ended'
+      : 'the stage fetching it was stopped before the fetch finished, and no later call fetched it';
+    core.warning(`Related repo ${repo} was not fetched: ${reason}`);
+    return { ...base, status: 'failed' as const, reason };
   });
 }
 
@@ -202,8 +284,8 @@ async function commitAsOf(git: Git, asOf: string): Promise<string> {
 }
 
 /**
- * Fetches one commit of `repo`, with only its `paths` and `GUIDE_FILES`, into its directory under `cacheDir`, reusing the objects of a
- * clone already there, and returns that directory and the commit. The commit is the newest of its `ref`, or with `asOf` the one
+ * Fetches one commit of `repo`, with only its `paths` and `GUIDE_FILES`, into its directory under `cacheDir`, the directory the
+ * clones of one fetch go to, reusing the objects of a clone already there, and returns that directory and the commit. The commit is the newest of its `ref`, or with `asOf` the one
  * `commitAsOf` returns. Throws when it cannot be fetched in time, as a private or missing repo cannot.
  */
 async function checkoutRelatedRepo(
@@ -227,7 +309,7 @@ async function checkoutRelatedRepo(
     if (lstatSync(dir, { throwIfNoEntry: false })) throw new Error(`could not remove ${dir}`);
     mkdirSync(dir, { recursive: true });
     await git('init', '-q');
-    await git('remote', 'add', 'origin', `https://github.com/${repo.repo}.git`);
+    await git('remote', 'add', 'origin', `${RELATED_REPO_HOST}/${repo.repo}.git`);
   };
   try {
     // A symlink restored from the cache could point the clone outside it.
@@ -249,8 +331,9 @@ async function checkoutRelatedRepo(
 }
 
 /**
- * Makes `dir` a new repository with `init`. Of a clone restored from the cache it keeps only the object store, and only
- * once `git fsck` finds every object intact. Whoever can write the cache can write the rest of `.git`, such as its config.
+ * Makes `dir` a new repository with `init`. Of a clone restored from the cache it keeps only the object store, without
+ * the unfinished packs of a stopped fetch, and only once `git fsck` finds every object intact. Whoever can write the
+ * cache can write the rest of `.git`, such as its config.
  */
 async function initReusingObjects(
   dir: string, init: () => Promise<void>, git: Git, log: (message: string) => void,
@@ -267,6 +350,11 @@ async function initReusingObjects(
   rmSync(objects, { recursive: true, force: true });
   renameSync(stash, objects);
   rmSync(join(objects, 'info'), { recursive: true, force: true });
+  // A fetch stopped before its end leaves its unfinished pack behind, which `git fsck` accepts and `git repack` keeps.
+  const packs = join(objects, 'pack');
+  for (const name of isRealDirectory(packs) ? readdirSync(packs) : []) {
+    if (name.startsWith('tmp_')) rmSync(join(packs, name), { recursive: true, force: true });
+  }
   try {
     // The store comes from a blobless clone, so fsck must not report its missing blobs as damage.
     await git('-c', 'remote.origin.promisor=true', '-c', 'remote.origin.partialclonefilter=blob:none', 'fsck', '--no-dangling', '--no-progress');

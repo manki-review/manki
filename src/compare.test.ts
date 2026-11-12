@@ -1,7 +1,8 @@
 import { runComparisons } from './compare';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE } from './review';
-import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
+import { RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 import { LLMClient, SendMessageOptions } from './providers';
+import { repoToolsPrompt } from './providers/cli-utils';
 import { SiblingFieldQuestion, SiblingImplementationQuestion } from './symbol-uses';
 
 jest.mock('@actions/core');
@@ -65,6 +66,12 @@ describe('runComparisons', () => {
     expect(names).toEqual(['Sibling field: idle vs retired', 'Sibling code: FromWire::from_wire']);
     const [field, implementation] = client.calls;
     expect(field.options).toEqual({ effort: 'high', repoTools: { root: '/repo', steps: 12 }, timeoutMs: 600_000 });
+    // With related repos configured, the tools of a comparison read them too, under the rule that their content is untrusted.
+    const related = { repos: [{ repo: 'acme/reports', kind: 'consumer' as const }], cacheDir: '/cache', stateDir: '/state' };
+    await runComparisons(() => client, { fields: [fieldQuestion('retired')], implementations: [] }, { effort: 'high', workspace: '/repo', related });
+    const withRelated = client.calls.at(-1)!.options!.repoTools!;
+    expect(withRelated).toStrictEqual({ root: '/repo', steps: 12, related });
+    expect(repoToolsPrompt(withRelated, 'Read, Grep and Glob')).toContain(RELATED_REPO_TRUST_RULE);
     expect(field.system).toContain('You can read the repository with read-only tools.');
     expect(field.system).toContain('- **warning**: a real case that fails, but not catastrophically. List its proving lines in `proof` too.');
     expect(field.system).toContain(`- ${CLAIMS_MISSING_RULE}\n- ${PRE_EXISTING_RULE}`);

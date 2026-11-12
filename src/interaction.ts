@@ -11,9 +11,11 @@ import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { fetchPriorRoundContexts, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, parseFindingData, REOPENED_MARKER, currentFindingLine, findingPlace } from './recap';
 import { ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, fixedMarker, fetchBotReviewThreads, reopenThread, resolveReviewThread, rolePhrase, unclearedThreads } from './state';
-import { AuthorClearRole, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
+import { AuthorClearRole, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewConfig, ThreadEvaluation } from './types';
+import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
 import { formatReplyRecord } from './review-record';
-import { buildRoundUsage } from './round-context';
+import { buildRoundUsage, withReads } from './round-context';
+import { relatedCitations } from './static-signals';
 import { COMMENT_MARKER as BOT_MARKER, redactSecrets, safeTruncate, sanitizeTokens, withMarkers } from './utils';
 import { WRITING_RULES } from './writing-rules';
 
@@ -234,7 +236,10 @@ async function resolvePermission(
   return { mayResolve: isTrusted || isPrAuthor, isPrAuthor, mayClear };
 }
 
-/** Asks `client` once, and returns the answer with the hidden usage record to post along with it. */
+/**
+ * Asks `client` once, and returns the answer with the hidden usage record to post along with it. The record says how
+ * each repo of `related` fared, when the call's tools could read them.
+ */
 async function askWithRecord(
   client: LLMClient,
   kind: ReplyRecord['kind'],
@@ -242,13 +247,15 @@ async function askWithRecord(
   systemPrompt: string,
   userMessage: string,
   options?: SendMessageOptions,
+  related?: RelatedRepoTools,
 ): Promise<{ content: string; record: (decision?: ReplyDecision) => string }> {
   const calls: LLMCall[] = [];
   const response = await recordCalls(client, { stage: 'reply' }, calls).sendMessage(systemPrompt, userMessage, options);
   const tokenService = tokenServiceCalls();
+  const relatedRepos = related && relatedRepoOutcomes(related.repos, related.stateDir).map(repo => withReads(repo, calls));
   const record = (decision?: ReplyDecision) => formatReplyRecord({
     kind, prNumber, timestamp: new Date().toISOString(), mankiVersion: MANKI_VERSION, usage: buildRoundUsage(calls),
-    ...(tokenService.length > 0 && { tokenService }), ...(decision && { decision }),
+    ...(tokenService.length > 0 && { tokenService }), ...(relatedRepos && { relatedRepos }), ...(decision && { decision }),
   });
   return { content: response.content, record };
 }
@@ -256,24 +263,30 @@ async function askWithRecord(
 /**
  * Returns the code locations `text` cites, as `path:line`. A location in `file` gets the path of `file`, also when the
  * text names only its file name. A path in a code span of its own counts only for `file`, unless `anySpan`: any other
- * text `highlightCode` put into a span, such as a field of the changed code, is no location.
+ * text `highlightCode` put into a span, such as a field of the changed code, is no location. A word that cites a line
+ * of one of the related repos `names` gives that citation, and is never read as a line of the PR.
  */
-function codeLocations(text: string, file: string | undefined, anySpan = false): string[] {
+function codeLocations(text: string, file: string | undefined, names: readonly string[], anySpan = false): string[] {
   const name = file?.split('/').pop();
-  return [...text.matchAll(CODE_LOCATION_RE)].flatMap(([, span, path, line]) => {
-    const own = path === file || path === name;
-    return span && !own && !anySpan ? [] : [`${own ? file : path}:${line}`];
+  return text.split(/\s+/).flatMap(word => {
+    // `highlightCode` can have put the path inside a citation into a code span.
+    const related = relatedCitations(word.replace(/`/g, ''), names);
+    if (related.length > 0) return related.map(cited => cited.citation);
+    return [...word.matchAll(CODE_LOCATION_RE)].flatMap(([, span, path, line]) => {
+      const own = path === file || path === name;
+      return span && !own && !anySpan ? [] : [`${own ? file : path}:${line}`];
+    });
   });
 }
 
 /**
  * Turns a "Kept." reply that cites no code location the finding did not already cite into "Unverified.", since only
- * new lines can show the finding still stands. `file` is the finding's file.
+ * new lines can show the finding still stands. `file` is the finding's file, and `relatedNames` the configured related repos.
  */
-function requireNewProof(reply: string, finding: string, file?: string): string {
+function requireNewProof(reply: string, finding: string, file: string | undefined, relatedNames: readonly string[]): string {
   if (!KEPT_REPLY_RE.test(reply)) return reply;
-  const cited = new Set(codeLocations(finding, file, true));
-  if (codeLocations(reply, file).some(location => !cited.has(location))) return reply;
+  const cited = new Set(codeLocations(finding, file, relatedNames, true));
+  if (codeLocations(reply, file, relatedNames).some(location => !cited.has(location))) return reply;
   return `${reply.replace(KEPT_REPLY_RE, '$1Unverified.$2')} ${UNPROVEN_KEPT}`;
 }
 
@@ -333,7 +346,8 @@ async function answerOrSayWhy(octokit: Octokit, owner: string, repo: string, iss
 
 /**
  * Handle a reply to one of our review comments. `loadWorkspace` checks out the PR head once the thread turns out to be
- * Manki's, and with it a client with `repoTools` checks the developer's point with read-only tools. With `config`, a reply
+ * Manki's, and with it a client with `repoTools` checks the developer's point with read-only tools, which also read
+ * the `related_repos` of `config`. With `config`, a reply
  * in a guarded thread the PR author resolved reopens the thread, and the answer says why. Throws when the reply gets no
  * answer, after saying so in a thread that is Manki's.
  */
@@ -416,11 +430,13 @@ export async function handleReviewCommentReply(
     );
 
     const workspace = client.repoTools ? await loadWorkspace?.() : undefined;
-    const tools = workspace ? { repoTools: { root: workspace, steps: REPLY_STEPS }, timeoutMs: REPLY_TOOLS_TIMEOUT_MS } : undefined;
-    const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools);
+    // No repo is fetched up front: the tool server fetches one the first time the model names it.
+    const related = workspace ? relatedRepoTools(config?.related_repos) : undefined;
+    const tools = workspace ? { repoTools: repoTools(workspace, REPLY_STEPS, related, 'check'), timeoutMs: REPLY_TOOLS_TIMEOUT_MS } : undefined;
+    const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools, related);
     const findingBody = root.comment.body ?? '';
     // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
-    const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody, filePath);
+    const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody, filePath, config?.related_repos?.map(r => r.repo) ?? []);
     const isSecurity = isSecurityThread(findingBody);
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     const outcome = replyOutcome(reply);

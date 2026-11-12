@@ -11,6 +11,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createMcpServer, McpServerOptions, runMcpServer } from './mcp-server';
+import * as relatedRepos from './related-repos';
 import { git } from './test-utils';
 import { RelatedRepoTools } from './types';
 
@@ -304,6 +305,13 @@ describe('Manki tool server', () => {
       }
       expect(await call(claude, 'read_file', { repo: 'o/missing', path: 'x' }))
         .toEqual({ text: 'o/missing could not be fetched, so it cannot be read: fatal: repository not found', isError: true });
+      // A fetch that only ran out of time in the call did not fail, so the answer says to call again and not that the repo cannot be fetched.
+      const loader = jest.spyOn(relatedRepos, 'relatedRepoLoader').mockReturnValueOnce(() => Promise.reject(new relatedRepos.RelatedRepoPending()));
+      const late = await connect(repo, { related });
+      loader.mockRestore();
+      expect(await call(late, 'read_file', { repo: 'o/r', path: 'lib.rs' }))
+        .toEqual({ text: 'o/r is not fetched yet, and this call has no time left to fetch it. Call the tool again to read it.', isError: true });
+      await late.close();
       expect((await call(claude, 'read_file', { repo: 'o/other', path: 'lib.rs' })).isError).toBe(true);
       expect((await call(claude, 'read_file', { path: 'src/a.ts' })).isError).toBe(true);
       // Every call that named a related repo counts, a refused one too, and a call on the PR's repository does not.

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -44,8 +44,9 @@ import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { buildRoundUsage } from './round-context';
-import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, withRefusalFallback, wrapClientForUsage } from './providers';
+import { repoToolsPrompt } from './providers/cli-utils';
 
 const READY_VERDICT = JSON.stringify({
   verdict: 'READY',
@@ -2032,7 +2033,7 @@ describe('runReview', () => {
     mockedApplySuppressions.mockReturnValue({ kept: [], suppressed: [] });
   });
 
-  it('offers the finders and the judge the related repos only when the finders have tools, checks their citations, and warns about each one they could not fetch', async () => {
+  it('offers the related repos only to a round with a model that has tools, checks their citations, and warns about each one it could not fetch', async () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const checkout = mkdtempSync(join(tmpdir(), 'manki-related-checkout-'));
     writeFileSync(join(checkout, 'lib.rs'), 'pub fn api() {}\n');
@@ -2059,6 +2060,9 @@ describe('runReview', () => {
       ];
       const withoutTools = makeClients();
       results.push(await runReview(withoutTools, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' }));
+      // The second refuter runs only next to a judge with tools, so its tools alone give no model the repos.
+      const pairOnly = { ...makeClients(), refuterPair: { repoTools: true, sendMessage: jest.fn() } as unknown as LLMClient };
+      results.push(await runReview(pairOnly, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' }));
 
       // Each round records every configured related repo, and each finder call how often it read one.
       expect(results.map(r => r.relatedRepos)).toEqual([
@@ -2069,7 +2073,8 @@ describe('runReview', () => {
         ],
         related_repos.map(({ repo, ref }) => ({ repo, ...(ref && { ref }), status: 'skipped', reason: 'the PR head was not checked out for the tools' })),
         undefined,
-        related_repos.map(({ repo, ref }) => ({ repo, ...(ref && { ref }), status: 'skipped', reason: 'no finder has repository tools' })),
+        related_repos.map(({ repo, ref }) => ({ repo, ...(ref && { ref }), status: 'skipped', reason: 'no model of the round has repository tools' })),
+        related_repos.map(({ repo, ref }) => ({ repo, ...(ref && { ref }), status: 'skipped', reason: 'no model of the round has repository tools' })),
       ]);
       expect(results[0].llmCalls?.filter(c => c.stage === 'reviewer').map(c => c.relatedReads)).toEqual([{ 'o/s': 2, 'o/r': 1 }, { 'o/s': 2, 'o/r': 1 }]);
 
@@ -2102,14 +2107,113 @@ describe('runReview', () => {
       expect(clients.reviewer.sendMessage).toHaveBeenCalledTimes(asked);
       requireSpy.mockRestore();
       expect(jest.mocked(withoutTools.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools)).toEqual([undefined, undefined]);
-      // The judge gets the related repo rules only for a round whose finders could read them.
-      expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].relatedRepos)).toEqual([related_repos, undefined, undefined, undefined, related_repos]);
+      // The judge gets the related repo rules only for a round whose models could read them.
+      expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].relatedRepos)).toEqual([related_repos, undefined, undefined, undefined, undefined, related_repos]);
       expect(warnSpy).toHaveBeenCalledWith('Could not fetch related repo o/r, which must be public on github.com: fatal: repository not found');
       const notes = mockedRunJudgeAgent.mock.calls.map(call => call[2].findings[0]?.toolEvidence?.note);
       expect(notes[0]).toContain('`o/s:lib.rs:1` is in the fetched checkout, `o/r:x.rs:3` is unchecked: o/r was not fetched this round');
       expect(notes[1]).not.toContain('o/s:lib.rs:1');
     } finally {
       warnSpy.mockRestore();
+      rmSync(checkout, { recursive: true, force: true });
+    }
+  });
+
+  it('gives every stage with repository tools the related repos of the round, and records a repo that a stage after the finders fetched', async () => {
+    const queue = (body: string) => `export class Queue {\n  pending: Set<string> = new Set();\n  done: Set<string> = new Set();\n\n  start(id: string) {\n${body}  }\n}\n`;
+    const checkout = mkdtempSync(join(tmpdir(), 'manki-related-checkout-'));
+    mkdirSync(join(checkout, 'src'));
+    writeFileSync(join(checkout, 'src', 'import.ts'), 'export function importRow(row: string) {\n  return Date.parse(row.split(\',\')[0]);\n}\n');
+    const related_repos = [{ repo: 'acme/reports', kind: 'consumer' as const }, { repo: 'acme/billing', kind: 'consumer' as const }];
+    const blocker = {
+      severity: 'blocker', title: 'A finished id starts again', file: 'src/queue.ts', line: 6, description: 'Only `pending` is checked, and the importer at `acme/reports:src/import.ts:2` starts each id twice.',
+      evidence: ['src/queue.ts:6 checks only `pending`'], proof: ['src/queue.ts:6'],
+    };
+    const fetched = (stateDir: string, repo: string) => {
+      writeFileSync(join(stateDir, `${encodeURIComponent(repo)}.lock`), String(process.pid));
+      writeFileSync(join(stateDir, `${encodeURIComponent(repo)}.done`), checkout);
+    };
+    const run = async (finderTools: boolean) => {
+      const { root, diff } = gitWorkspace({ 'src/queue.ts': queue('') }, { 'src/queue.ts': queue('    if (this.pending.has(id)) return;\n') });
+      const tools = new Map<string, SendMessageOptions['repoTools']>();
+      const clients = makeClients();
+      let judgeMessage = '';
+      let reported = false;
+      Object.assign(clients.reviewer, { repoTools: finderTools });
+      jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, _user: string, options?: SendMessageOptions) => {
+        if (system.startsWith('You compare code')) {
+          tools.set('compare', options?.repoTools);
+          return { content: '[]' };
+        }
+        if (system.startsWith('A code review reported the finding')) {
+          tools.set('sweep', options?.repoTools);
+          return { content: JSON.stringify({ class: 'a lookup checks one of two sets', general: true, findings: [] }) };
+        }
+        tools.set('finder', options?.repoTools);
+        // A finder reads one repo, which fetches it.
+        if (options?.repoTools?.related) fetched(options.repoTools.related.stateDir, 'acme/reports');
+        const content = reported ? '[]' : JSON.stringify([blocker]);
+        reported = true;
+        return { content };
+      });
+      Object.assign(clients.judge, { repoTools: true });
+      jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string, options?: SendMessageOptions) => {
+        if (system.startsWith('You are a code review judge')) {
+          tools.set('judge', options?.repoTools);
+          judgeMessage = user;
+          return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: blocker.title, row: 'severe', reasoning: 'r' }] }) };
+        }
+        if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
+        tools.set('refute', options?.repoTools);
+        // The refuter is the first to read the other repo, after the finders are done.
+        fetched(options!.repoTools!.related!.stateDir, 'acme/billing');
+        return { content: JSON.stringify({ outcome: 'confirmed', reason: 'It does.', proof: ['src/queue.ts:6', 'acme/billing:src/import.ts:2'] }), relatedReads: { 'acme/billing': 2 } };
+      });
+      mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+      try {
+        const result = await runReview(clients, { config: makeConfig({ related_repos, review: { sweep: 'warnings' }, judge: { tool_steps: 5 } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+        return { result, tools, judgeMessage, root };
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+    try {
+      const { result, tools, judgeMessage, root } = await run(true);
+
+      // One state directory for the round, so a repo is fetched once whichever stage names it first.
+      const related = tools.get('finder')!.related!;
+      expect(related).toEqual({ repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') });
+      expect(Object.fromEntries(tools)).toEqual({
+        finder: { root, steps: expect.any(Number), related },
+        compare: { root, steps: 12, related },
+        sweep: { root, steps: 15, related },
+        judge: { root, steps: 5, related, checking: true },
+        refute: { root, steps: 15, related, checking: true },
+      });
+      // Every one of them is told that the content of a related repo is untrusted.
+      for (const stage of tools.values()) expect(repoToolsPrompt(stage!, 'Read, Grep and Glob')).toContain(RELATED_REPO_TRUST_RULE);
+      // The judge is shown the line the finding cites in the repo a finder fetched.
+      expect(judgeMessage).toContain('- **Cited code in a related repo** (acme/reports:src/import.ts:2), from the checkout this round fetched.');
+      expect(judgeMessage).toContain(">>> 2:   return Date.parse(row.split(',')[0]);");
+      // The record is read when the round ends, so it holds the repo the refuter fetched, and which stage read it.
+      expect(result.relatedRepos).toEqual([
+        { repo: 'acme/reports', status: 'fetched', durationMs: expect.any(Number) },
+        { repo: 'acme/billing', status: 'fetched', durationMs: expect.any(Number) },
+      ]);
+      expect(result.llmCalls?.filter(c => c.relatedReads).map(c => [c.stage, c.agent, c.relatedReads])).toEqual([['judge', 'refute', { 'acme/billing': 2 }]]);
+      // The line the refuter cites in the repo it fetched counts, since the round holds that checkout by then.
+      expect(result.findings.map(f => [f.title, f.severity, f.checkStatus, f.refutation?.proof, f.refutation?.relatedProof, f.evidence?.relatedProof])).toEqual([
+        [blocker.title, 'blocker', 'confirmed', ['src/queue.ts:6'], ['acme/billing:src/import.ts:2'], ['acme/billing:src/import.ts:2']],
+      ]);
+
+      // A round whose finders have no tools still offers the repos to the stages that have them.
+      const judgeOnly = await run(false);
+      expect([judgeOnly.tools.get('finder'), judgeOnly.tools.get('compare'), judgeOnly.tools.get('sweep')]).toEqual([undefined, undefined, undefined]);
+      const offered = { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') };
+      expect(judgeOnly.tools.get('judge')).toEqual({ root: judgeOnly.root, steps: 5, related: offered, checking: true });
+      expect(judgeOnly.tools.get('refute')).toEqual({ root: judgeOnly.root, steps: 15, related: offered, checking: true });
+      expect(judgeOnly.result.relatedRepos).toEqual([{ repo: 'acme/reports', status: 'unused' }, { repo: 'acme/billing', status: 'fetched', durationMs: expect.any(Number) }]);
+    } finally {
       rmSync(checkout, { recursive: true, force: true });
     }
   });
@@ -6506,15 +6610,15 @@ describe('recordCalls', () => {
     // A call with tools keeps its step budget, and whether it used enough steps to be told to wrap up. A client
     // without tools ignores them, so it records no budget.
     const budgeted: LLMCall[] = [];
-    for (const steps of [4, 5]) await recordCalls(fallback, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps } });
-    await recordCalls(refusing, finder, budgeted).sendMessage('other', 'user', { repoTools: { root: '/work', steps: 4 } }).catch(() => undefined);
+    for (const steps of [4, 5]) await recordCalls(fallback, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps, related: undefined } });
+    await recordCalls(refusing, finder, budgeted).sendMessage('other', 'user', { repoTools: { root: '/work', steps: 4, related: undefined } }).catch(() => undefined);
     // A client that reports no tool steps, such as Codex, leaves it unknown whether the model was told to wrap up.
     const silent = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 5, model: 'gpt-5', relatedReads: { 'o/r': 2 }, filesRead: ['src/a.ts'] }), repoTools: true } as unknown as LLMClient;
-    await recordCalls(silent, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } });
+    await recordCalls(silent, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3, related: undefined } });
     // A call that failed keeps the related repo reads and files read its error carries.
     const timedOut = Object.assign(new Error('Codex CLI timed out'), { relatedReads: { 'o/r': 1 }, filesRead: ['src/b.ts'] });
     const failing = { sendMessage: jest.fn().mockRejectedValue(timedOut), repoTools: true } as unknown as LLMClient;
-    await recordCalls(failing, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3 } }).catch(() => undefined);
+    await recordCalls(failing, finder, budgeted).sendMessage('sys', 'user', { repoTools: { root: '/work', steps: 3, related: undefined } }).catch(() => undefined);
     expect(budgeted.map(c => [c.stepBudget, c.wrapUpNoted, c.promptDigest === promptDigest, c.relatedReads, c.filesRead])).toEqual([
       [4, true, true, undefined, undefined], [5, undefined, true, undefined, undefined], [undefined, undefined, false, undefined, undefined],
       [3, undefined, true, { 'o/r': 2 }, ['src/a.ts']], [3, undefined, true, { 'o/r': 1 }, ['src/b.ts']],

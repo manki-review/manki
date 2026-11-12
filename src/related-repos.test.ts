@@ -1,10 +1,11 @@
 import * as core from '@actions/core';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
+import { once } from 'events';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { devNull, tmpdir } from 'os';
 import { join } from 'path';
 
-import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, relatedReposCacheDir, requireRelatedRepos } from './related-repos';
+import { fetchedRelatedRepos, fetchRelatedRepos, relatedRepoGuides, relatedRepoLoader, RelatedRepoLoaderOptions, relatedRepoOutcomes, RelatedRepoPending, relatedReposCacheDir, relatedRepoTools, repoTools, requireRelatedRepos } from './related-repos';
 import { RelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -149,8 +150,9 @@ describe('relatedRepoLoader', () => {
     expect(relatedRepoOutcomes([DIPS], stateDir, {}, 'last week')).toEqual([expect.objectContaining({ asOf: 'last week', status: 'failed', reason: '`last week` is not a date' })]);
   });
 
-  it('waits for another tool server that is fetching the repo, takes its outcome, and records a failure when it stops or hangs', async () => {
+  it('waits for another tool server that is fetching the repo, takes its outcome, fetches in its place when it stopped, and records a failure when it hangs', async () => {
     const lock = (name: string, pid = process.pid) => writeFileSync(join(stateDir, `${name}.lock`), String(pid));
+    const gone = spawnSync('true').pid;
     lock('dashpay%2Fdips');
     lock('dashpay%2Fdash');
     const run = fakeGit();
@@ -165,32 +167,95 @@ describe('relatedRepoLoader', () => {
     await expect(dash).rejects.toThrow('fatal: repository not found');
     expect(run).not.toHaveBeenCalled();
 
-    lock('dashpay%2Fplatform', spawnSync('true').pid);
-    await expect(loader([PLATFORM], { run })('dashpay/platform')).rejects.toThrow('the reviewer fetching dashpay/platform stopped before it finished');
     const hung: RelatedRepo = { repo: 'dashpay/hung', kind: 'reference' };
     lock('dashpay%2Fhung');
     await expect(loader([hung], { run, timeoutMs: 100 })('dashpay/hung')).rejects.toThrow("another reviewer's fetch of dashpay/hung did not finish in time");
     expect(run).not.toHaveBeenCalled();
 
-    // A lock that never got an outcome warns too, and a repo no call named is unused.
+    // A holder that stopped mid-fetch left a lock and no outcome. Of the two tool servers that ask next, one fetches and the other waits for it.
+    lock('dashpay%2Fplatform', gone);
+    // The git process of the stopped holder may still write its clone, so the one that takes over clones elsewhere and leaves that clone alone.
+    const stoppedClone = join(cacheDir, 'dashpay', 'platform');
+    const halfWritten = join(stoppedClone, '.git', 'objects', 'pack', 'tmp_pack_1');
+    mkdirSync(join(stoppedClone, '.git', 'objects', 'pack'), { recursive: true });
+    writeFileSync(halfWritten, 'half a pack');
+    const platformDir = join(stateDir, 'takeover-1', 'dashpay', 'platform');
+    const [first, second] = [fakeGit(), fakeGit()];
+    expect(await Promise.all([loader([PLATFORM], { run: first })('dashpay/platform'), loader([PLATFORM], { run: second })('dashpay/platform')])).toEqual([platformDir, platformDir]);
+    expect([first.mock.calls.length, second.mock.calls.length].sort()).toEqual([0, 7]);
+    expect(calls.map(c => c.cwd).filter(cwd => cwd.endsWith(join('dashpay', 'platform')))).toEqual(Array(7).fill(platformDir));
+    expect(readFileSync(halfWritten, 'utf-8')).toBe('half a pack');
+    expect(readdirSync(stateDir).filter(f => f.startsWith('dashpay%2Fplatform')).sort()).toEqual(['dashpay%2Fplatform.commit', 'dashpay%2Fplatform.done', 'dashpay%2Fplatform.lock', 'dashpay%2Fplatform.lock.1']);
+    expect(readFileSync(join(stateDir, 'dashpay%2Fplatform.lock'), 'utf-8')).toBe(String(gone));
+    // A reader after that takes the outcome and fetches nothing.
+    expect(await loader([PLATFORM], { run })('dashpay/platform')).toBe(platformDir);
+    expect(run).not.toHaveBeenCalled();
+
+    // The one that fetches in its place can stop too, and the next asker fetches. A fetch that really fails still ends as failed.
+    const twice: RelatedRepo = { repo: 'dashpay/twice', kind: 'reference' };
+    lock('dashpay%2Ftwice', gone);
+    writeFileSync(join(stateDir, 'dashpay%2Ftwice.lock.1'), String(gone));
+    expect(await loader([twice])('dashpay/twice')).toBe(join(stateDir, 'takeover-2', 'dashpay', 'twice'));
+    expect(existsSync(join(stateDir, 'dashpay%2Ftwice.lock.2'))).toBe(true);
+    const broken: RelatedRepo = { repo: 'dashpay/broken', kind: 'reference' };
+    lock('dashpay%2Fbroken', gone);
+    await expect(loader([broken], { run: fakeGit({ 'dashpay/broken': { fetch: 'fatal: repository not found' } }) })('dashpay/broken')).rejects.toThrow('fatal: repository not found');
+    await expect(loader([broken], { run })('dashpay/broken')).rejects.toThrow('fatal: repository not found');
+    expect(run).not.toHaveBeenCalled();
+
+    // A tool server that is already waiting when the holder stops takes over only while a fetch still fits into its call.
+    // Later it records nothing and says the repo is not fetched yet, and the next call fetches with a call's full time.
+    const stopsWhileWaited = async (repo: RelatedRepo, options: RelatedRepoLoaderOptions): Promise<{ load: (name: string) => Promise<string>; waiting: Promise<string> }> => {
+      const holder = spawn('sleep', ['30']);
+      lock(encodeURIComponent(repo.repo), holder.pid);
+      const load = loader([repo], options);
+      const waiting = load(repo.repo);
+      waiting.catch(() => {});
+      await new Promise(done => setTimeout(done, 150));
+      holder.kill('SIGKILL');
+      await once(holder, 'exit');
+      return { load, waiting };
+    };
+    const early: RelatedRepo = { repo: 'dashpay/early', kind: 'reference' };
+    await expect((await stopsWhileWaited(early, { timeoutMs: 5000 })).waiting).resolves.toBe(join(stateDir, 'takeover-1', 'dashpay', 'early'));
+    const late: RelatedRepo = { repo: 'dashpay/late', kind: 'reference' };
+    // With these limits a fetch fits only in the first 100 ms of a call.
+    const lateRun = fakeGit();
+    const { load: loadLate, waiting } = await stopsWhileWaited(late, { run: lateRun, timeoutMs: 200, callLimitMs: 2300 });
+    await expect(waiting).rejects.toThrow(RelatedRepoPending);
+    await expect(waiting).rejects.toThrow('is not fetched yet, and this call has no time left to fetch it. Call the tool again to read it.');
+    expect(lateRun).not.toHaveBeenCalled();
+    expect(readdirSync(stateDir).filter(f => f.startsWith('dashpay%2Flate'))).toEqual(['dashpay%2Flate.lock']);
+    // A round where no call asks again records that the fetch was cut off, not that the repo could not be fetched.
+    expect(relatedRepoOutcomes([late], stateDir)).toEqual([{ repo: 'dashpay/late', status: 'failed', reason: 'the stage fetching it was stopped before the fetch finished, and no later call fetched it' }]);
+    jest.mocked(core.warning).mockClear();
+    expect(await loadLate('dashpay/late')).toBe(join(stateDir, 'takeover-1', 'dashpay', 'late'));
+    expect(relatedRepoOutcomes([late], stateDir)).toEqual([{ repo: 'dashpay/late', status: 'fetched', durationMs: expect.any(Number) }]);
+
+    // A lock with no outcome and no later asker says the stage did not finish, never that the repo cannot be fetched. A repo no call named is unused.
     lock('dashpay%2Fsilent');
+    lock('dashpay%2Fcut', gone);
     const silent: RelatedRepo = { repo: 'dashpay/silent', kind: 'reference' };
+    const cut: RelatedRepo = { repo: 'dashpay/cut', kind: 'reference' };
     const unused: RelatedRepo = { repo: 'dashpay/unused', kind: 'consumer', ref: 'main' };
-    const outcomes = relatedRepoOutcomes([DIPS, DASH, hung, PLATFORM, silent, unused], stateDir);
+    const outcomes = relatedRepoOutcomes([DIPS, DASH, hung, PLATFORM, broken, silent, cut, unused], stateDir);
     expect(outcomes).toEqual([
       { repo: 'dashpay/dips', status: 'fetched', durationMs: expect.any(Number) },
       { repo: 'dashpay/dash', ref: 'v23.0.0', status: 'failed', reason: 'fatal: repository not found', durationMs: expect.any(Number) },
       { repo: 'dashpay/hung', status: 'failed', reason: "another reviewer's fetch of dashpay/hung did not finish in time", durationMs: expect.any(Number) },
-      { repo: 'dashpay/platform', status: 'failed', reason: 'the reviewer fetching dashpay/platform stopped before it finished', durationMs: expect.any(Number) },
-      { repo: 'dashpay/silent', status: 'failed', reason: 'the fetch never finished' },
+      { repo: 'dashpay/platform', status: 'fetched', durationMs: expect.any(Number) },
+      { repo: 'dashpay/broken', status: 'failed', reason: 'fatal: repository not found', durationMs: expect.any(Number) },
+      { repo: 'dashpay/silent', status: 'failed', reason: 'the fetch was still running when the round ended' },
+      { repo: 'dashpay/cut', status: 'failed', reason: 'the stage fetching it was stopped before the fetch finished, and no later call fetched it' },
       { repo: 'dashpay/unused', ref: 'main', status: 'unused' },
     ]);
     expect(outcomes.every(o => o.durationMs === undefined || o.durationMs >= 0)).toBe(true);
     expect(jest.mocked(core.warning).mock.calls.map(([message]) => message)).toEqual([
       'Could not fetch related repo dashpay/dash, which must be public on github.com: fatal: repository not found',
       "Could not fetch related repo dashpay/hung, which must be public on github.com: another reviewer's fetch of dashpay/hung did not finish in time",
-      'Could not fetch related repo dashpay/platform, which must be public on github.com: the reviewer fetching dashpay/platform stopped before it finished',
-      'Could not fetch related repo dashpay/silent, which must be public on github.com: the fetch never finished',
+      'Could not fetch related repo dashpay/broken, which must be public on github.com: fatal: repository not found',
+      'Related repo dashpay/silent was not fetched: the fetch was still running when the round ended',
+      'Related repo dashpay/cut was not fetched: the stage fetching it was stopped before the fetch finished, and no later call fetched it',
     ]);
   });
 
@@ -199,6 +264,7 @@ describe('relatedRepoLoader', () => {
     mkdirSync(join(dir, '.git', 'objects', 'pack'), { recursive: true });
     mkdirSync(join(dir, '.git', 'objects', 'info'));
     writeFileSync(join(dir, '.git', 'objects', 'pack', 'pack-1.pack'), 'objects');
+    writeFileSync(join(dir, '.git', 'objects', 'pack', 'tmp_pack_Ab12Cd'), 'half a pack');
     writeFileSync(join(dir, '.git', 'objects', 'info', 'alternates'), '/elsewhere/objects');
     writeFileSync(join(dir, '.git', 'config'), '[core]\n\tworktree = /elsewhere\n');
     writeFileSync(join(dir, 'stale.txt'), 'x');
@@ -222,6 +288,8 @@ describe('relatedRepoLoader', () => {
       ['repack', '-a', '-d', '-q'],
     ]);
     expect(readFileSync(join(dashDir, '.git', 'objects', 'pack', 'pack-1.pack'), 'utf-8')).toBe('objects');
+    // A fetch that was stopped left its unfinished pack in the store, and no later round carries it on.
+    expect(readdirSync(join(dashDir, '.git', 'objects', 'pack'))).toEqual(['pack-1.pack']);
     expect(existsSync(join(dashDir, '.git', 'objects', 'info'))).toBe(false);
     expect(existsSync(join(dashDir, '.git', 'config'))).toBe(false);
     expect(existsSync(join(dashDir, 'stale.txt'))).toBe(false);
@@ -367,6 +435,26 @@ describe('relatedRepoLoader', () => {
     } finally {
       if (runnerTemp === undefined) delete process.env.RUNNER_TEMP;
       else process.env.RUNNER_TEMP = runnerTemp;
+    }
+  });
+
+  it('gives each round a state directory of its own, and states the related repos on the tools of every call', () => {
+    const first = relatedRepoTools([DASH, PLATFORM], '2026-01-05T00:00:00Z')!;
+    const second = relatedRepoTools([DASH])!;
+    try {
+      expect(first).toEqual({ repos: [DASH, PLATFORM], cacheDir: relatedReposCacheDir(), stateDir: expect.any(String), asOf: '2026-01-05T00:00:00Z' });
+      expect(lstatSync(first.stateDir).isDirectory()).toBe(true);
+      expect(second.stateDir).not.toBe(first.stateDir);
+      expect(second).not.toHaveProperty('asOf');
+      expect(relatedRepoTools([])).toBeUndefined();
+      expect(relatedRepoTools(undefined)).toBeUndefined();
+      expect(repoTools('/work/head', 15, first)).toStrictEqual({ root: '/work/head', steps: 15, related: first });
+      expect(repoTools('/work/head', 15, undefined)).toStrictEqual({ root: '/work/head', steps: 15, related: undefined });
+      // A call that checks one finding or statement is marked, so its prompt gives it no rules for grading.
+      expect(repoTools('/work/head', 15, first, 'check')).toStrictEqual({ root: '/work/head', steps: 15, related: first, checking: true });
+      expect(repoTools('/work/head', 15, first, 'find')).toStrictEqual(repoTools('/work/head', 15, first));
+    } finally {
+      for (const { stateDir } of [first, second]) rmSync(stateDir, { recursive: true, force: true });
     }
   });
 });
