@@ -420,6 +420,14 @@ export interface NameTranslation {
   skipped?: string;
 }
 
+/** What a model guessed each related repo calls the code that decides a claim of the PR text, for the search of that repo. */
+export interface ClaimTerms {
+  /** Per repo as `owner/name`, then per position of the claim in the round's list, the identifiers to search that repo for. */
+  terms: Map<string, Map<number, string[]>>;
+  /** Why no term was guessed, when the call failed or its reply could not be used. */
+  skipped?: string;
+}
+
 /** A fetched related repo: its `owner/name`, its kind and the directory holding its checkout. */
 export interface RelatedCheckout {
   repo: string;
@@ -531,6 +539,8 @@ export interface RoundUses {
   dependencyUnsearched?: string[];
   /** The names a model translated for the search of the related repos. Unset when that search did not run. */
   translation?: RoundNameTranslation;
+  /** The terms searched in the related repos for the claims of the PR text. Unset when the round had no claim or fetched no related repo for one. */
+  claimTerms?: RoundClaimTerms;
 }
 
 export interface RoundReferenceUse {
@@ -552,6 +562,19 @@ export interface RoundNameTranslation {
    * hold it. `failed` is set when the search for it, or for the diff's names in that repo, failed, so `lines` says nothing.
    */
   names?: Array<{ repo: string; name: string; as: string; lines: number; failed?: true }>;
+}
+
+/** What the search of the related repos for the claims of the PR text gave, which only the claims' own checks are shown. */
+export interface RoundClaimTerms {
+  /** Why no term was guessed, so every claim check started without lines of the related repos. */
+  skipped?: string;
+  /**
+   * Each term a model guessed: the position of its claim in `prClaims.claims`, the repo, the term, the lines of the repo
+   * that hold it and how many of them the claim's check was shown. `notShown` says why a term showed none: it is too
+   * short or too generic to search for (`unsearchable`), too many lines hold it (`common`), or its search failed or left
+   * it out (`failed`, where `lines` says nothing). A term with fewer `shown` than `lines` and no `notShown` was cut by a cap.
+   */
+  terms?: Array<{ claim: number; repo: string; term: string; lines: number; shown: number; notShown?: 'unsearchable' | 'common' | 'failed' }>;
 }
 
 export interface RoundUsesSymbol {
@@ -2545,7 +2568,7 @@ export interface ReplyDecision {
 export interface RoundUsage extends RoundUsageStage {
   /** Wall-clock time of the review run, from its start to the review it posts. `durationMs` is the time spent in model calls. */
   wallClockMs?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'related' | 'translate', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'compare' | 'claims' | 'claim_terms' | 'claim_check' | 'sweep' | 'judge' | 'dedup' | 'verdict' | 'related' | 'translate', RoundUsageStage>>;
   perModel?: Record<string, RoundUsageStage>;
   llmCalls?: LLMCall[];
   /** The newest reading of each subscription usage window the round's calls reported. */

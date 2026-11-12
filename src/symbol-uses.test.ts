@@ -8,7 +8,7 @@ import go from '@ast-grep/lang-go';
 import python from '@ast-grep/lang-python';
 import rust from '@ast-grep/lang-rust';
 
-import { listRelatedUses, listUsesOutsideDiff, UsesOutsideDiff } from './symbol-uses';
+import { listClaimLines, listRelatedUses, listUsesOutsideDiff, UsesOutsideDiff } from './symbol-uses';
 import { expectLinearTime, gitWorkspace } from './test-utils';
 
 jest.mock('@actions/core');
@@ -1195,4 +1195,111 @@ describe('listRelatedUses', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe('listClaimLines', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  /** Writes `files` into a new directory, which stands for a fetched related repo, and returns it. */
+  function checkoutOf(files: Files): string {
+    const dir = mkdtempSync(join(tmpdir(), 'manki-claim-lines-'));
+    for (const [path, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, path)), { recursive: true });
+      writeFileSync(join(dir, path), content);
+    }
+    return dir;
+  }
+
+  it('hands each claim the lines that hold its terms, declarations in own code first, and records every term', async () => {
+    const engine = checkoutOf({
+      'src/verify.rs': 'fn verify_signature(msg: &Message) -> bool {\n    check(&signing_bytes(msg), &msg.sig)\n}\n',
+      'src/sign.rs': '// signing_bytes leaves the sender out.\npub fn signing_bytes(msg: &Message) -> Vec<u8> {\n    msg.payload.clone()\n}\n',
+      'tests/sign_test.rs': 'let bytes = signing_bytes(&msg);\n',
+      'vendor/crypto/sign.rs': 'fn signing_bytes() {}\n',
+      'src/types.rs': `pub struct Verifier;\n// A verifier checks one message.\n${'let m = Message::new();\n'.repeat(21)}`,
+      // A minified line is cut before it is shown, but a term past the cut still counts as found.
+      'src/min.js': `${'var a=1;'.repeat(200)}engineVersion\n`,
+      // The root guide files are never searched.
+      'AGENTS.md': 'verify_signature and signing_bytes check a message.\n',
+    });
+    const app = checkoutOf({ 'src/send.ts': 'const ok = verifySignature(message);\n' });
+    const checkouts = [{ repo: 'acme/engine', kind: 'dependency' as const, dir: engine }, { repo: 'acme/app', kind: 'consumer' as const, dir: app }];
+    const terms = { terms: new Map([
+      ['acme/engine', new Map([
+        // A term is found in any spelling. `Message` is in too many lines to point anywhere, and `data` and `sig` are no search terms.
+        [0, ['signingBytes', 'Message', 'data']],
+        // A plain word is searched in its exact case, so the comment's "verifier" is not a match.
+        [1, ['verify_signature', 'Verifier', 'sig']],
+        [2, ['NotThere', 'engineVersion']],
+      ])],
+      ['acme/app', new Map([[1, ['verify_signature']]])],
+      // A repo that was not fetched is not searched and not recorded.
+      ['acme/unfetched', new Map([[0, ['signing_bytes']]])],
+    ]) };
+    try {
+      const { lines, record } = await listClaimLines(checkouts, terms);
+
+      expect(lines).toEqual(new Map([
+        // The declaration comes first, then other code, then the comment. The test and the vendored copy are past the three lines of a term.
+        [0, ['acme/engine:src/sign.rs:2: pub fn signing_bytes(msg: &Message) -> Vec<u8> {', 'acme/engine:src/verify.rs:2: check(&signing_bytes(msg), &msg.sig)', 'acme/engine:src/sign.rs:1: // signing_bytes leaves the sender out.']],
+        // The best line of each term comes before the second best of any.
+        [1, ['acme/engine:src/verify.rs:1: fn verify_signature(msg: &Message) -> bool {', 'acme/engine:src/types.rs:1: pub struct Verifier;', 'acme/app:src/send.ts:1: const ok = verifySignature(message);']],
+        [2, [`acme/engine:src/min.js:1: ${'var a=1;'.repeat(20)}`]],
+      ]));
+      expect(record).toEqual({ terms: [
+        { claim: 0, repo: 'acme/engine', term: 'signingBytes', lines: 5, shown: 3 },
+        { claim: 0, repo: 'acme/engine', term: 'Message', lines: 23, shown: 0, notShown: 'common' },
+        { claim: 0, repo: 'acme/engine', term: 'data', lines: 0, shown: 0, notShown: 'unsearchable' },
+        { claim: 1, repo: 'acme/engine', term: 'verify_signature', lines: 1, shown: 1 },
+        { claim: 1, repo: 'acme/engine', term: 'Verifier', lines: 1, shown: 1 },
+        { claim: 1, repo: 'acme/engine', term: 'sig', lines: 0, shown: 0, notShown: 'unsearchable' },
+        { claim: 1, repo: 'acme/app', term: 'verify_signature', lines: 1, shown: 1 },
+        { claim: 2, repo: 'acme/engine', term: 'NotThere', lines: 0, shown: 0 },
+        { claim: 2, repo: 'acme/engine', term: 'engineVersion', lines: 1, shown: 1 },
+      ] });
+      expect(core.warning).not.toHaveBeenCalled();
+
+      // Without terms nothing is searched. A guess that was skipped is recorded with its reason, and one that named no term as an empty list.
+      expect(await listClaimLines(checkouts)).toEqual({ lines: new Map() });
+      expect(await listClaimLines(checkouts, { terms: new Map(), skipped: 'timed out' })).toEqual({ lines: new Map(), record: { skipped: 'timed out' } });
+      expect(await listClaimLines(checkouts, { terms: new Map() })).toEqual({ lines: new Map(), record: { terms: [] } });
+
+      // A repo whose search fails gives no line, and its terms are recorded as failed, never as held by no line.
+      const gone = { repo: 'acme/gone', kind: 'reference' as const, dir: join(engine, 'no-such-dir') };
+      const failed = await listClaimLines([gone, checkouts[1]], { terms: new Map([['acme/gone', new Map([[0, ['signing_bytes']]])], ['acme/app', new Map([[0, ['verify_signature']]])]]) });
+      expect(failed.lines).toEqual(new Map([[0, ['acme/app:src/send.ts:1: const ok = verifySignature(message);']]]));
+      expect(failed.record).toEqual({ terms: [
+        { claim: 0, repo: 'acme/gone', term: 'signing_bytes', lines: 0, shown: 0, notShown: 'failed' },
+        { claim: 0, repo: 'acme/app', term: 'verify_signature', lines: 1, shown: 1 },
+      ] });
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Skipped the search of the related repo acme/gone for 1 term of the PR's claims: "));
+    } finally {
+      for (const dir of [engine, app]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('shows at most 15 lines in all, shared out in turns, and a line once for a claim', async () => {
+    // Six terms of three lines each for the first claim, and one term of two lines for the second.
+    const wide = Array.from({ length: 6 }, (_, i) => `wide_term_${i}`);
+    const dir = checkoutOf({
+      ...Object.fromEntries(wide.map(term => [`src/${term}.py`, `def ${term}():\n    pass\n${term}()\n${term}()\n${term}()\n`])),
+      'src/narrow.py': 'def narrow_term():\n    return narrow_term\n',
+      // Two terms of one claim on one line show it once.
+      'src/both.py': 'first_half = second_half\n',
+    });
+    try {
+      const { lines, record } = await listClaimLines([{ repo: 'acme/lib', kind: 'dependency', dir }], { terms: new Map([['acme/lib', new Map([[0, wide], [1, ['narrow_term']], [2, ['first_half', 'second_half']]])]]) });
+
+      expect([...lines].map(([claim, shown]) => [claim, shown.length])).toEqual([[0, 12], [1, 2], [2, 1]]);
+      expect(lines.get(0)!.slice(0, 6)).toEqual(wide.map(term => `acme/lib:src/${term}.py:1: def ${term}():`));
+      expect(lines.get(1)).toEqual(['acme/lib:src/narrow.py:1: def narrow_term():', 'acme/lib:src/narrow.py:2: return narrow_term']);
+      expect(lines.get(2)).toEqual(['acme/lib:src/both.py:1: first_half = second_half']);
+      // The record counts what a term found and what its claim was shown, so a cut is never read as a full list.
+      expect(record!.terms!.map(({ term, lines: found, shown }) => [term, found, shown])).toEqual([
+        ...wide.map(term => [term, 4, 2]), ['narrow_term', 2, 2], ['first_half', 1, 1], ['second_half', 1, 0],
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
