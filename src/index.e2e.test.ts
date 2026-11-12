@@ -1412,11 +1412,10 @@ describe('runFullReview end to end', () => {
       expect(mockLLM.calls).toEqual([]);
     });
 
-    it.each<[string, string, () => void, string]>([
-      ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']), ` ${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`],
-      // A review command would review the merged PR, so the failure names none.
-      ['a merge', 'closed', () => expect(core.info).toHaveBeenCalledWith('No Manki review rounds on this pull request, no fix rate to record'), ''],
-    ])('handles %s whose first read of the PR meets a GitHub 5xx three times, and fails the run on the fourth', async (_event, action, handled, hint) => {
+    it.each<[string, string, () => void]>([
+      ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED'])],
+      ['a merge', 'closed', () => expect(core.info).toHaveBeenCalledWith('No Manki review rounds on this pull request, no fix rate to record')],
+    ])('handles %s whose first read of the PR meets a GitHub 5xx three times, and fails the run on the fourth', async (_event, action, handled) => {
       mockGitHub.configs = { main: 'metrics:\n  fix_rate: true\n' };
       mockGitHub.merged = action === 'closed';
       const failFirstRead = (times: number) => { mockGitHub.failures = [{ method: 'GET', path: new RegExp(`/pulls/${PR_NUMBER}$`), status: 503, times }]; };
@@ -1435,7 +1434,8 @@ describe('runFullReview end to end', () => {
       failFirstRead(4);
       await dispatch(inputs);
 
-      expect(core.setFailed).toHaveBeenCalledWith(`Manki encountered an error: GitHub returned 503 on GET /repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}.${hint}`);
+      // How the reason ends is the test below.
+      expect(core.setFailed).toHaveBeenCalledWith(expect.stringContaining(`Manki encountered an error: GitHub returned 503 on GET /repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}.`));
       expect(mockGitHub.failures[0].times).toBe(0);
     });
 
@@ -1447,6 +1447,7 @@ describe('runFullReview end to end', () => {
       ['a new PR', { event: 'pull_request', action: 'opened', head_sha: HEAD_SHA }, REVIEW_HINT],
       ['a push', { event: 'pull_request', action: 'synchronize', head_sha: HEAD_SHA }, REVIEW_HINT],
       ['a draft marked ready', { event: 'pull_request', action: 'ready_for_review', head_sha: HEAD_SHA }, REVIEW_HINT],
+      // A review command would review the merged PR, so the failure names none.
       ['a merge', { event: 'pull_request', action: 'closed', head_sha: HEAD_SHA }, ''],
       ['an approval check', { event: 'pull_request', action: 'approval_check', head_sha: HEAD_SHA }, CHECK_HINT],
       ['a submitted review', { event: 'pull_request_review', action: 'submitted', review_id: '7' }, CHECK_HINT],
