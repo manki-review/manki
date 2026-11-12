@@ -169,6 +169,15 @@ describe('listUsesOutsideDiff', () => {
       ].join('\n')}\n\`\`\``);
     }
 
+    // A Go receiver name of 160 characters still marks a read through it as the method's own type's, so it ranks last. A
+    // longer one is no name, so that read ranks like any other use.
+    const through = (receiver: string) => `package bank\n\ntype AccountView struct {\n\tBalance int64\n}\n\nfunc (${receiver} *AccountView) Shown() int64 {\n\treturn ${receiver}.Balance\n}\n\nfunc Read(a Account) uint64 { return a.Balance }\n`;
+    const account = (type: string) => `package bank\n\ntype Account struct {\n\tBalance ${type}\n}\n`;
+    for (const [length, uses] of [[160, ['bank/ledger.go:11', 'bank/ledger.go:8', 'bank/ledger.go:4']], [161, ['bank/ledger.go:8', 'bank/ledger.go:11', 'bank/ledger.go:4']]] as const) {
+      const { record } = await usesFor({ 'bank/account.go': account('int64'), 'bank/ledger.go': through('v'.repeat(length)) }, { 'bank/account.go': account('uint64') });
+      expect(record?.symbols?.find(s => s.name === 'Balance')?.uses).toEqual(uses);
+    }
+
     // A base class's own reads of a field its changed subclass overrides read the subclass's value, while an unrelated
     // class's own field ranks after them.
     const models = (value: string) => `class Account:\n    def __init__(self):\n        self.balance = 0\n\n    def total(self):\n        return self.balance\n\n\nclass Savings(Account):\n    def __init__(self):\n        self.balance = ${value}\n`;
@@ -306,7 +315,7 @@ describe('listUsesOutsideDiff', () => {
     expect(section).toContain('### `slice_lines` (config key)\n\n```\ndeclared at manki.yml:3\nsrc/config.ts:1: export const lines = (c: Config) => c.slice_lines;\n```');
   });
 
-  it('leaves out generic names and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {
+  it('leaves out generic names and names longer than an identifier, and caps the uses per symbol, in total and for names too common to list, but lists a redefined field', async () => {
     const callers: Record<string, string> = {};
     const fns = Array.from({ length: 18 }, (_, i) => `compute_part_${i}`);
     for (let file = 0; file < 6; file++) {
@@ -366,6 +375,42 @@ describe('listUsesOutsideDiff', () => {
     // The fields share the reserved slots in turn, so each gets 10.
     expect(half.record?.symbols?.filter(s => fields.includes(s.name)).map(s => s.uses.length)).toEqual([10, 10, 10]);
     expect(half.record?.symbols?.flatMap(s => s.uses)).toHaveLength(60);
+
+    // A name longer than any identifier is no name: the untouched fields of a changed type, the functions of a file
+    // without a grammar and a name a comment mentions. A few such names make the one pattern of the search longer than
+    // git grep takes, which would lose the whole list.
+    jest.mocked(core.warning).mockClear();
+    const long = Array.from({ length: 8 }, (_, i) => `f${i}${'a'.repeat(19_000)}`);
+    const big = (type: string) => `pub struct Big {\n    pub real_field_here: ${type},\n${long.map(f => `    pub ${f}: u8,\n`).join('')}}\n`;
+    const script = `${long.map(f => `def ${f}\nend\n`).join('')}# like \`${long[0]}\`\ndef real_function_here\nend\n`;
+    const overlong = await usesFor(
+      { 'src/big.rs': big('u8'), 'src/read.rs': 'fn read(b: &Big) -> u8 {\n    b.real_field_here\n}\n', 'tools/run.rb': 'real_function_here\n' },
+      { 'src/big.rs': big('u16'), 'tools/gen.rb': script },
+    );
+    expect(core.warning).not.toHaveBeenCalled();
+    expect(overlong.record?.symbols).toEqual([
+      { name: 'real_field_here', declared: 'src/big.rs:2', uses: ['src/read.rs:2'] },
+      { name: 'real_function_here', declared: 'tools/gen.rb:18', uses: ['tools/run.rb:1'] },
+    ]);
+    expect(overlong.referenceNames).toEqual(['real_field_here', 'real_function_here']);
+    expect(JSON.stringify(overlong)).not.toContain('aaaa');
+
+    // Names that each fit an identifier can still be too long to search for together, since a `$` takes two bytes of the
+    // pattern. The ones left out are named as not searched, in the section and in the record.
+    const wide = Array.from({ length: 100 }, (_, i) => `${'$'.repeat(150)}${i}`);
+    const shape = (type: string) => `export interface WideShape {\n  realFieldHere: ${type};\n${wide.map(f => `  ${f}: number;\n`).join('')}}\n`;
+    // A line found for another name can hold a name that was not searched. That is no use of it, so it gets the note alone.
+    const reads = `export const read = (s: WideShape) => s.realFieldHere;\nexport const both = (s: WideShape) => [s.realFieldHere, s.${wide[60]}];\n`;
+    const crowded = await usesFor({ 'src/shape.ts': shape('number'), 'src/read.ts': reads }, { 'src/shape.ts': shape('string') });
+    expect(core.warning).not.toHaveBeenCalled();
+    expect(crowded.record?.symbols).toEqual([
+      { name: 'realFieldHere', declared: 'src/shape.ts:2', uses: ['src/read.ts:1', 'src/read.ts:2'] },
+      { name: 'WideShape', declared: 'src/shape.ts:1', uses: ['src/read.ts:1', 'src/read.ts:2'] },
+    ]);
+    // The list holds the first 80 symbols, so 78 of the fields. The first 50 fill the pattern to just under 15 KiB, which
+    // still fits the Windows command line of 32,767 characters when quoting doubles it.
+    expect(crowded.record?.unsearched).toEqual(wide.slice(50, 78));
+    expect(crowded.section).toContain(`\n\nNot searched, since these names are too long to search for together: \`${wide[50]}\`, `);
   });
 
   it('names what the diff changes and reads and what its comments mention for the reference search, leaving out tests', async () => {
@@ -577,6 +622,7 @@ ${body}	return true
     const methods = (type: string, size: string, before = '') => `impl ${type} {\n    fn is_new(&self) -> bool {\n        self.version >= 3\n    }\n\n${before}    pub fn size(&self) -> usize {\n        ${size}\n    }\n}\n`;
     const refund = (type: string, check: string) => `class ${type}:\n    def refund(self, amount):\n${check}        return self.gateway.send(-amount)\n`;
     const area = (receiver: string, body: string) => `package shapes\n\nfunc (${receiver}) Area() float64 {\n${body}}\n`;
+    const perimeter = (receiver: string, value: string) => `package long\n\nfunc (${receiver}) Perimeter() float64 {\n\treturn ${value}\n}\n`;
     // Methods every type has, on types that share no base or only a standard one such as `Generic`, and standard trait
     // impls: none of them makes two types siblings. Two shared bases ask about a method once, with the base class's own one.
     const display = (type: string, text: string) => `\nimpl fmt::Display for ${type} {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        write!(f, "${text}")\n    }\n}\n\nimpl ${type} {\n    fn new() -> Self {\n        Self { name: "${text}" }\n    }\n}\n`;
@@ -610,6 +656,11 @@ ${body}	return true
       'src/views/beta.ts': view('Beta', ' extends ui.View', '2'),
       'src/views/gamma.ts': view('Gamma', '', '3'),
       'src/views/delta.ts': view('Delta', '', '4'),
+      // A receiver type longer than a name is no type, in Go as in the languages that declare a method inside its type.
+      'src/long/first.go': perimeter(`f First${'T'.repeat(156)}`, '1'),
+      'src/long/second.go': perimeter(`s Second${'T'.repeat(155)}`, '2'),
+      'src/long/first.rs': methods(`First${'T'.repeat(156)}`, '2').replace(/size/g, 'girth'),
+      'src/long/second.rs': methods(`Second${'T'.repeat(155)}`, '3').replace(/size/g, 'girth'),
     };
     const { siblings } = await usesFor(base, {
       'src/parts/text.rs': (decode('TextPart', '        if version > 3 {\n            return Err(Error::Version);\n        }\n') + methods('TextPart', '2') + display('TextPart', 'TEXTS'))
@@ -623,6 +674,8 @@ ${body}	return true
       'src/shapes/circle.go': (area('c *Circle[T]', '\treturn 3 * c.r * c.r\n') + stringer('c *Circle[T]', 'disc')).replace('3 * c.r', '3.14 * c.r'),
       'src/views/alpha.ts': view('Alpha', ' extends ui.View', '10'),
       'src/views/gamma.ts': view('Gamma', '', '30'),
+      'src/long/first.go': perimeter(`f First${'T'.repeat(156)}`, '10'),
+      'src/long/first.rs': methods(`First${'T'.repeat(156)}`, '20').replace(/size/g, 'girth'),
     }, ['*.generated.*']);
 
     expect(siblings.implementations.map(q => [q.trait, q.name, q.members.map(m => `${m.owner}${m.changed ? '*' : ''}`)])).toEqual([
@@ -714,6 +767,26 @@ ${body}	return true
     const calls = (n: number) => `mod ${'m'.repeat(7 * n)} {\n    fn run() {\n        ${'f_ab();'.repeat(n)}\n    }\n}\n`;
     const inModule = await usesInLinearTime(n => [{ 'src/calls.rs': 'fn run() {}\n' }, { 'src/calls.rs': calls(n) }, [], true], 70_000);
     expect(inModule.dependencyNames).toEqual(['f_ab']);
+
+    // Many lookups in such a module, and many functions: the name is read once for those too.
+    const lookups = (n: number) => `mod ${'m'.repeat(7 * n)} {\n    fn run(a: &A) {\n        ${'a.jobs[k];'.repeat(n)}\n    }\n}\n`;
+    await usesInLinearTime(n => [{ 'src/lookups.rs': 'fn run() {}\n' }, { 'src/lookups.rs': lookups(n) }], 55_000, { smaller: 1_700 });
+    const functions = (n: number) => `mod ${'m'.repeat(7 * n)} {\n${'fn f(){}\n'.repeat(n)}}\n`;
+    await usesInLinearTime(n => [{ 'src/functions.rs': 'fn run() {}\n' }, { 'src/functions.rs': functions(n) }], 55_000, { smaller: 1_700 });
+
+    // Many methods of a class with a long name: the name is read once per class, and one that long names no type.
+    const methods = (n: number) => `export class ${'C'.repeat(7 * n)} {\n${Array.from({ length: n }, (_, i) => `  m${i}() {}\n`).join('')}}\n`;
+    await usesInLinearTime(n => [{ 'src/methods.ts': 'export const c = 0;\n' }, { 'src/methods.ts': methods(n) }], 8_000, { smaller: 500 });
+
+    // Many assignments in a Python method with a long name: the name is not read to tell whether the method is `__init__`.
+    const assigned = (n: number, x: number) => `class A:\n    def ${'m'.repeat(37 * n)}(self):\n${Array.from({ length: n }, (_, i) => `        self.a${i} = 1\n`).join('')}x = ${x}\n`;
+    await usesInLinearTime(n => [{ 'src/assigned.py': assigned(n, 1) }, { 'src/assigned.py': assigned(n, 2) }], 16_000, { smaller: 1_000 });
+
+    // A redefined field in each of many types, and as many lines that name one of the types: only the types of the
+    // searched fields are searched for and looked for in each line found.
+    const typed = (n: number, type: string) => Array.from({ length: n }, (_, i) => `pub struct T${i} { pub fld_${i}: ${type} }\n`).join('');
+    const owned = await usesInLinearTime(n => [{ 'src/typed.rs': typed(n, 'u8'), 'src/hits.rs': 'fn x(t: T0) {}\n'.repeat(n) }, { 'src/typed.rs': typed(n, 'u16') }], 8_000, { smaller: 500 });
+    expect(owned.record?.types?.[0]).toBe('src/typed.rs:1: struct T0 { fld_0 }');
   }, 300_000);
 
   it('parses at most 200 files a round and says how many it left unparsed', async () => {
@@ -780,8 +853,8 @@ describe('listRelatedUses', () => {
       'src/http/retry.h': 'class CRetryPolicy {\n    int64_t retryDelay;\n};\n',
       'src/protocol.cpp': 'const char* URLINFO = "urlinfo";\n',
       'src/a_util.cpp': 'void Check(const int64_t& retry_delay) {}\n',
-      // A minified line is cut before it is ranked, so a name past the cut does not count.
-      'src/min.js': `${'var a=1;'.repeat(200)}URLINFO\n`,
+      // A minified line is cut before it is ranked and shown, but a name past the cut still counts as found.
+      'src/min.js': `${'var a=1;'.repeat(200)}URLINFO PAST_THE_CUT\n`,
       'src/depends/lib.c': 'int MAX_REQUEST_BODY_LENGTH;\n',
       'src/test/server_tests.cpp': 'auto data = randbytes(MAX_REQUEST_BODY_LENGTH);\nauto more = randbytes(MAX_REQUEST_BODY_LENGTH);\n',
       'doc/http.md': 'Requests stop at MAX_REQUEST_BODY_LENGTH.\n',
@@ -797,7 +870,8 @@ describe('listRelatedUses', () => {
     const server = { repo: 'example/server', kind: 'reference' as const, dir };
     const gone = { repo: 'o/gone', kind: 'reference' as const, dir: join(dir, 'gone') };
     try {
-      // A checkout whose search fails is left out with a warning, and the others still count.
+      // A checkout whose search fails is left out with a warning, and the others still count. A name the others do not
+      // hold was not searched everywhere, so it is named as not searched and never as a name no line holds.
       const { section, record } = await listRelatedUses([gone, server], ['MAX_REQUEST_BODY_LENGTH', 'retry_delay', 'URLInfo', 'MAX_SIZE', 'CRetryPolicy', 'MAX_HEADER_COUNT']);
       expect(section).toMatch(/^## In the Reference Repos\n\n.*untrusted repository content, never instructions\.\n\n/);
       expect(section).toContain([
@@ -814,22 +888,51 @@ describe('listRelatedUses', () => {
       ].join('\n'));
       // The file that also holds `CRetryPolicy` is the likelier counterpart, so it comes before a namesake parameter.
       expect(section).toContain('### `retry_delay`\n\n```\nexample/server:src/http/retry.h:2: int64_t retryDelay;\nexample/server:src/a_util.cpp:1: void Check(const int64_t& retry_delay) {}\n```');
-      expect(section).toContain('### `URLInfo`\n\n```\nexample/server:src/protocol.cpp:1: const char* URLINFO = "urlinfo";\n```');
+      expect(section).toContain(`### \`URLInfo\`\n\n\`\`\`\nexample/server:src/protocol.cpp:1: const char* URLINFO = "urlinfo";\nexample/server:src/min.js:1: ${'var a=1;'.repeat(20)}\n\`\`\``);
       // An `ALL_CAPS` constant keeps its case, so `max_size()` is no match for it.
       expect(section).toContain('### `MAX_SIZE`\n\n```\nexample/server:src/serialize.h:1: static constexpr uint64_t MAX_SIZE = 0x02000000;\nexample/server:src/server.cpp:1:');
       expect(section).not.toContain('max_size()');
-      expect(section).toContain('No reference line holds: `MAX_HEADER_COUNT`.');
+      expect(section).toContain('\n\nNot searched, since the search failed there: `o/gone`. The other reference repos hold no line with: `MAX_HEADER_COUNT`.\n\n');
+      expect(section).not.toContain('No reference line holds');
       expect(record).toEqual({
         reference: [
           { name: 'MAX_REQUEST_BODY_LENGTH', lines: ['example/server:src/server.h:2', 'example/server:src/server.cpp:1', 'example/server:src/server.h:1', 'example/server:doc/http.md:1'], notShown: 3 },
           { name: 'retry_delay', lines: ['example/server:src/http/retry.h:2', 'example/server:src/a_util.cpp:1'] },
-          { name: 'URLInfo', lines: ['example/server:src/protocol.cpp:1'] },
+          { name: 'URLInfo', lines: ['example/server:src/protocol.cpp:1', 'example/server:src/min.js:1'] },
           { name: 'MAX_SIZE', lines: ['example/server:src/serialize.h:1', 'example/server:src/server.cpp:1'] },
           { name: 'CRetryPolicy', lines: ['example/server:src/http/retry.h:1', 'example/server:doc/AGENTS.md:1'] },
         ],
-        referenceMissing: ['MAX_HEADER_COUNT'],
+        referenceUnsearched: ['MAX_HEADER_COUNT'],
       });
+      expect((await listRelatedUses([server], ['PAST_THE_CUT'])).record).toEqual({ reference: [{ name: 'PAST_THE_CUT', lines: ['example/server:src/min.js:1'] }] });
       expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Skipped the search of the reference repo o\/gone: /));
+      // The names are searched in one pattern, which is one command argument. The names that no longer fit its size are
+      // left out, the first ones kept, so the search runs whatever it is given.
+      jest.mocked(core.warning).mockClear();
+      const flood = Array.from({ length: 2_000 }, (_, i) => `FLOOD_${i}_${'A'.repeat(140)}`);
+      const bounded = await listRelatedUses([server], [...flood.slice(0, 20), 'MAX_SIZE', ...flood.slice(20)]);
+      expect(bounded.section).toContain('### `MAX_SIZE`\n\n```\nexample/server:src/serialize.h:1: static constexpr uint64_t MAX_SIZE = 0x02000000;\n');
+      // A name the pattern had no room for was not searched, so it is named as that and never as a name no line holds.
+      const { referenceMissing = [], referenceUnsearched = [] } = bounded.record ?? {};
+      expect([referenceMissing[0], referenceMissing.length > 20, referenceUnsearched.length > 1_000, [...referenceMissing, ...referenceUnsearched]]).toEqual([flood[0], true, true, flood]);
+      expect(bounded.section).toContain(`\nNo reference line holds: \`${flood[0]}\`, `);
+      expect(bounded.section).toContain(`\n\nNot searched, since these names are too long to search for together: \`${referenceUnsearched[0]}\`, `);
+      expect(bounded.section).toContain(`, and ${referenceUnsearched.length - 20} more.\nNo reference line holds: `);
+      // Two names can share a spelling, here `sharednamex`. It takes room in the pattern once, so its second copy is
+      // not left out when the 15 KiB are nearly full, and both names are searched.
+      const fill = [...Array.from({ length: 100 }, (_, i) => `${'F'.repeat(150)}${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(65 + Math.floor(i / 26))}`), 'G'.repeat(29)];
+      expect(await listRelatedUses([server], [...fill, 'shared_name_x', 'sharednamex'])).toEqual({ section: '', record: { referenceMissing: [...fill, 'shared_name_x', 'sharednamex'] } });
+      // A name longer than an identifier is not searched and not named, alone or next to others. A name of 160
+      // characters is the longest one searched.
+      const huge = `HUGE_${'A'.repeat(200_000)}`;
+      const [longest, tooLong] = ['L'.repeat(160), 'L'.repeat(161)];
+      writeFileSync(join(dir, 'src/long.h'), `${longest}\n${tooLong}\n`);
+      expect(await listRelatedUses([server], [huge])).toEqual({ section: '' });
+      const short = await listRelatedUses([server], [huge, tooLong, longest, 'MAX_HEADER_COUNT']);
+      expect(short.record).toEqual({ reference: [{ name: longest, lines: ['example/server:src/long.h:1'] }], referenceMissing: ['MAX_HEADER_COUNT'] });
+      expect(short.section).not.toContain('AAAA');
+      expect(short.section).not.toContain(tooLong);
+      expect(core.warning).not.toHaveBeenCalled();
       // A name past the cap on reference lines is named in the section and kept in the record.
       const many = Array.from({ length: 11 }, (_, i) => `CAPPED_NAME_${i}`);
       writeFileSync(join(dir, 'src/caps.h'), many.map(name => `${name}(1);\n`.repeat(4)).join(''));
@@ -941,6 +1044,14 @@ describe('listRelatedUses', () => {
     const dir = mkdtempSync(join(tmpdir(), 'manki-reference-'));
     try {
       writeFileSync(join(dir, 'limits.h'), 'static const int MAX_SIZE = 10;\n');
+      // A guess the pattern had no room for was not searched, so the record keeps it as failed, not as one that found no line.
+      const guesses = Array.from({ length: 60 }, (_, i) => `Guess${i}_${'G'.repeat(150)}`);
+      const crowded = await listRelatedUses([{ repo: 'example/server', kind: 'reference', dir }], ['MAX_SIZE'], { names: new Map([['example/server', new Map([['MAX_SIZE', guesses]])]]) });
+      const searchedAs = crowded.record?.translation?.names ?? [];
+      expect([searchedAs.length, searchedAs[0], searchedAs.at(-1)]).toEqual([
+        60, { repo: 'example/server', name: 'MAX_SIZE', as: guesses[0], lines: 0 }, { repo: 'example/server', name: 'MAX_SIZE', as: guesses[59], lines: 0, failed: true },
+      ]);
+      expect(core.warning).not.toHaveBeenCalled();
       // A plain word on a line larger than a search may return makes the search for it fail.
       writeFileSync(join(dir, 'flood.txt'), `Flood ${' '.repeat(65 * 1024 * 1024)}\n`);
       const translation = { names: new Map([['example/server', new Map([['MAX_SIZE', ['Flood']]])]]) };
