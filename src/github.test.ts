@@ -159,6 +159,8 @@ describe('formatFindingComment', () => {
       ['a doubt held a finder\'s blocker at a warning, and the check settled nothing', { ...held, gradePath: [step('blocker', 'warning', 'judge'), byTheRule], refutation: check('unsettled') }, true],
       ['a doubt held a blocker cell at a warning, and both checks disproved it', { ...held, gradePath: [byTheRule], refutation: check('disproved'), pairRefutation: check('disproved') }, true],
       ['the `rare` column held the cell at a warning, and the check settled nothing', { cell: cell('wrong', 'rare'), gradeIfConfirmed: 'blocker', gradePath: [byTheRule], refutation: check('unsettled') }, true],
+      // No answer moves a finding out of the `rare` column, so its damage gives no blocker there.
+      ['the `rare` column held the cell at a warning, and a check confirmed the reach', { cell: cell('wrong', 'rare'), gradeIfConfirmed: 'blocker', gradePath: [byTheRule], refutation: check('confirmed') }, true],
       // A confirmation beside a disproof gives no grade back, so the rule is still the reason.
       ['a doubt held a blocker cell at a warning, and the two checks disagree', { ...held, gradePath: [byTheRule], refutation: check('confirmed'), pairRefutation: check('disproved') }, true],
       ['the same, where the second check says the defect does not exist', { ...held, gradePath: [byTheRule], refutation: check('confirmed'), pairRefutation: { ...check('unsettled'), defect: 'disproved' } }, true],
@@ -166,7 +168,7 @@ describe('formatFindingComment', () => {
       // Without the rule, the confirmation gives each of these its blocker.
       ['a doubt held a blocker cell at a warning, and a check confirmed it', { ...held, gradePath: [byTheRule], refutation: check('confirmed') }, false],
       ['a doubt held a finder\'s blocker at a warning, and a check confirmed it', { ...held, gradePath: [step('blocker', 'warning', 'judge'), byTheRule], refutation: check('unsettled'), pairRefutation: check('confirmed') }, false],
-      ['the `rare` column held the cell at a warning, and a check confirmed the reach', { cell: cell('wrong', 'rare'), gradeIfConfirmed: 'blocker', gradePath: [byTheRule], refutation: check('confirmed') }, false],
+      ['Manki graded it in the `normal` column, not the `rare` one the judge stated, and a check gave it back', { cell: { ...cell('wrong'), judgeColumn: 'rare' }, gradePath: [byTheRule, capped, restored], refutation: check('confirmed') }, false],
       ['the judge raised it to a blocker, the cap held it back twice, and a check gave it back', { cell: cell('wrong'), gradePath: [step('note', 'blocker', 'judge'), capped, byTheRule, capped, restored], refutation: check('confirmed') }, false],
       ['a finder and the judge both graded it a blocker, the cap held it back twice, and a check gave it back', { cell: cell('wrong'), gradePath: [capped, byTheRule, capped, restored], refutation: check('confirmed') }, false],
       ['a record without a cell, and a check confirmed it', { gradePath: [byTheRule], refutation: check('confirmed') }, false],
