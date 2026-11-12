@@ -3,18 +3,17 @@ import { readFileSync } from 'fs';
 
 import * as core from '@actions/core';
 
-import { holdsLines } from './code-window';
 import { isLineInDiff, rebuildRawDiff, shortenLongLines, UNTRUSTED_DIFF_NOTE } from './diff';
 import { fenceText } from './github';
 import { ruleGrade } from './judge';
 import { extractJSON } from './json';
-import { readLinesInRoot, resolveInRoot } from './mcp-server';
+import { resolveInRoot } from './mcp-server';
 import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
 import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
-import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
+import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -94,11 +93,15 @@ function refutationFiles(file: string, proof: readonly string[] = []): string[] 
   return [...new Set([file, ...proof.map(locationFile)])].sort();
 }
 
-/** Keeps the locations whose file is in the workspace and `holdsLines` they cite, so no made-up citation settles anything. */
+/** Keeps the locations whose file is in the workspace and holds the cited line, so no made-up citation settles anything. */
 function existingLocations(workspace: string, proof: readonly string[]): string[] {
   return proof.filter(location => {
-    const lines = readLinesInRoot(workspace, locationFile(location), Infinity);
-    return Array.isArray(lines) && holdsLines(lines.length, ...locationLines(location));
+    const [line] = locationLines(location);
+    try {
+      return line >= 1 && line <= readFileSync(resolveInRoot(workspace, locationFile(location)).absolute, 'utf-8').split('\n').length;
+    } catch {
+      return false;
+    }
   });
 }
 
@@ -279,6 +282,13 @@ function confirmedGrade(finding: Finding): FindingSeverity | undefined {
   return raisedTo(finding, grade);
 }
 
+/** Returns `evidence` with the lines of `answers` added as proof: their lines of the PR to `proof`, and their lines of related repos to `relatedProof`. */
+function withProof(evidence: FindingEvidence | undefined, answers: readonly Pick<Refutation, 'proof' | 'relatedProof'>[]): FindingEvidence {
+  const proof = [...new Set([...(evidence?.proof ?? []), ...answers.flatMap(a => a.proof ?? [])])];
+  const relatedProof = [...new Set([...(evidence?.relatedProof ?? []), ...answers.flatMap(a => a.relatedProof ?? [])])];
+  return { ...(evidence ?? { checks: [] }), proof, ...(relatedProof.length > 0 && { relatedProof }) };
+}
+
 /**
  * Returns `finding` with its `unproven` rule confirmed and the grade `rules` gives, when `checks` confirm the fact the
  * judge could not see. Only the premise that states that fact decides it, whatever the checks say about the damage.
@@ -291,11 +301,10 @@ function confirmRuleFact(finding: Finding, checks: readonly Refutation[], rules?
   const answers = checks.flatMap(r => r.premises?.filter(p => p.premise === rule.unseen) ?? []);
   if (!answers.some(p => p.outcome === 'confirmed') || answers.some(p => p.outcome === 'disproved')) return finding;
   const grade = raisedTo(finding, ruleGrade(rules));
-  const proof = [...new Set([...(finding.evidence?.proof ?? []), ...answers.flatMap(p => p.proof ?? [])])];
   return {
     ...finding, rule: { ...rule, verdict: 'confirmed' },
     // Lines that confirm the fact show no damage, so they are added only where they raise the grade.
-    ...(grade && { ...gradeStep(finding, grade, 'rule', 'a check confirmed the fact that breaks a required rule of the instruction files'), evidence: { ...(finding.evidence ?? { checks: [] }), proof } }),
+    ...(grade && { ...gradeStep(finding, grade, 'rule', 'a check confirmed the fact that breaks a required rule of the instruction files'), evidence: withProof(finding.evidence, answers) }),
   };
 }
 
@@ -378,10 +387,10 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
     const restored = confirmedGrade(finding);
     // Lines that confirm only premises show no defect. They are added where they restore a grade, and never make a warning proven.
-    const proof = [...new Set([...(finding.evidence?.proof ?? []), ...checks.flatMap(r => outcomeOf(r) === 'confirmed' && (restored || confirmsDefect(r)) ? r.proof ?? [] : [])])];
+    const proving = checks.filter(r => outcomeOf(r) === 'confirmed' && (restored || confirmsDefect(r)));
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
     return {
-      ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', checks.find(r => outcomeOf(r) === 'confirmed')!.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
+      ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', checks.find(r => outcomeOf(r) === 'confirmed')!.reason)), evidence: withProof(finding.evidence, proving),
       ...(tags && { tags }),
     };
   }

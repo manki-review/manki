@@ -7,6 +7,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
 import { AgentProgressEntry, agreedOutcome, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, RoundRelatedRepo, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { holdsLines } from './code-window';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -2685,19 +2686,20 @@ export function relatedCommits(repos: readonly RoundRelatedRepo[] = []): Related
 }
 
 /**
- * Returns each line of a related repo in `proof`, the `relatedProof` of a refuter's check, as a link to that line at
+ * Returns each line of a related repo in `proof`, the `relatedProof` of a check or of a finding's evidence, as a link to that line at
  * the commit the round fetched, or as its location alone when `related` has no commit for the repo. A line of a repo
- * that `related` does not hold is left out, and so is one whose path has a `.` or `..` segment. Only the location is
- * shown, never the line's text.
+ * that `related` does not hold is left out, and so is one whose path has a `.` or `..` segment, a line 0 or a range that
+ * runs backwards. Only the location is shown, never the line's text.
  */
 function relatedLineLinks(proof: readonly string[] = [], related: RelatedCommits): string[] {
   return proof.flatMap((location) => {
     const repo = [...related.keys()].find(name => location.startsWith(`${name}:`));
     const [, path, start, end] = (repo && /^([^:]+):(\d+)(?:-(\d+))?$/.exec(location.slice(repo.length + 1))) || [];
-    if (!repo || !path || hasDotSegment(path)) return [];
+    const [first, last] = [Number(start), Number(end ?? start)];
+    if (!repo || !path || hasDotSegment(path) || !holdsLines(Infinity, first, last)) return [];
     const [owner, name] = repo.split('/');
     const commit = related.get(repo);
-    return [linked(inlineCode(location), commit && buildLineLink(owner, name, commit, RELATED_REPO_HOST)(path, Number(start), Number(end ?? start)))];
+    return [linked(inlineCode(location), commit && buildLineLink(owner, name, commit, RELATED_REPO_HOST)(path, first, last))];
   });
 }
 
@@ -2824,12 +2826,16 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
   return linked(inlineCode(rangeLabel(range)), linkTo(range.file, range.start, range.end));
 }
 
-function refutationPart(label: string, lead: string, check: Refutation, { linkTo, related }: CodeLinks, known: readonly string[]): FoldPart {
+/** Returns the part for one refuter's `check`. Its related lines in `listed` show under "Checked in the code" and not here. */
+function refutationPart(label: string, lead: string, check: Refutation, listed: readonly string[], { linkTo, related }: CodeLinks, known: readonly string[]): FoldPart {
   const { reason, proof, relatedProof } = check;
-  // The lines of a check that confirmed are listed under "Checked in the code".
+  // The lines of the PR that a confirming check cites are proof of the finding or nothing, so they never show here.
   const confirmed = outcomeOf(check) === 'confirmed';
   // The refuter keeps only proof locations that exist in the workspace, so a bare file name there is a root file.
-  const cited = confirmed ? [] : [...(proof ?? []).flatMap(p => parseCheck(p, known, true)?.at ?? []).map(r => linkedRange(r, linkTo)), ...relatedLineLinks(relatedProof, related)];
+  const cited = [
+    ...(confirmed ? [] : (proof ?? []).flatMap(p => parseCheck(p, known, true)?.at ?? []).map(r => linkedRange(r, linkTo))),
+    ...relatedLineLinks(relatedProof?.filter(line => !listed.includes(line)), related),
+  ];
   const text = [lead, reason ? oneLine(reason) : '', cited.length ? `See ${cited.join(', ')}.` : '']
     .filter(Boolean).join(' ');
   return { label, text, open: `**${label}:** ${text}` };
@@ -2838,6 +2844,7 @@ function refutationPart(label: string, lead: string, check: Refutation, { linkTo
 /** Returns a part for each refuter that checked `finding`. */
 function refutationParts(finding: Finding, links: CodeLinks, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
+  const listed = finding.evidence?.relatedProof ?? [];
   // A check that confirmed premises only did not say the defect exists, so it reads as unsettled on a finding marked `unconfirmed`.
   const shown = (check: Refutation): RefutationOutcome =>
     (finding.checkStatus === 'unconfirmed' && outcomeOf(check) === 'confirmed' && check.defect !== 'confirmed' ? 'unsettled' : outcomeOf(check));
@@ -2848,8 +2855,8 @@ function refutationParts(finding: Finding, links: CodeLinks, known: readonly str
   const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? OVERRULED_DISPROOF_TEXT : plain);
   const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[shown(refutation)].text));
   return [
-    ...(refutation && lead ? [refutationPart(REFUTATION_PART[shown(refutation)].label, lead, refutation, links, known)] : []),
-    ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`), pairRefutation, links, known)] : []),
+    ...(refutation && lead ? [refutationPart(REFUTATION_PART[shown(refutation)].label, lead, refutation, listed, links, known)] : []),
+    ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`), pairRefutation, listed, links, known)] : []),
   ];
 }
 
@@ -2897,8 +2904,8 @@ function checksSection(finding: Finding, links: CodeLinks, ownLine: string): Fin
   const known = [...changed, ...files.keys(), ...(finding.file ? [finding.file] : [])];
   const checks = findingChecks(finding, known);
   const refutations = refutationParts(finding, links, known);
-  // A check that confirmed from a related repo rests on lines the PR's own files do not hold, so they are listed too.
-  const relatedLines = [...new Set([finding.refutation, finding.pairRefutation].flatMap(check => (check && outcomeOf(check) === 'confirmed' ? relatedLineLinks(check.relatedProof, related) : [])))];
+  // A finding proven from a related repo rests on lines the PR's own files do not hold, so they are listed too.
+  const relatedLines = relatedLineLinks(finding.evidence?.relatedProof, related);
   const status = finding.checkStatus && { status: CHECK_STATUSES[finding.checkStatus] };
   const rule = rulePart(finding);
   if (checks.length === 0 && refutations.length === 0 && !rule) {

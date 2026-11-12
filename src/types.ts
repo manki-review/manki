@@ -803,6 +803,8 @@ export interface FindingEvidence {
   checks: string[];
   /** The `file:line` or `file:start-end` locations that show the failure. A blocker without them is posted as a warning at most. */
   proof: string[];
+  /** The lines of related repos that show the failure, as `owner/name:path:line`. Only a check adds them, when it adds its lines to `proof`. */
+  relatedProof?: string[];
   /**
    * Set when the finding says something is missing or handled nowhere: the search that came back empty, or an empty
    * string when the reviewer cited none. Such a claim never blocks on its own.

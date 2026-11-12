@@ -2,7 +2,6 @@ import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
-import { holdsLines } from './code-window';
 import { DEFAULT_CONFIG, resolveReviewerModel } from './config';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { mapWithConcurrency, parseRetryNote } from './utils';
@@ -2178,16 +2177,13 @@ function textLines(value: unknown, max = MAX_EVIDENCE_LINES): string[] {
 
 /**
  * Returns the `file:line` locations at the start of each entry of a `proof` list, one for each line or range the entry
- * lists, and drops entries without one. A line 0 and a range that runs backwards are no location. It returns at most
- * `MAX_EVIDENCE_LINES`, and the first location of every entry comes before any further one, so an entry that lists many
- * lines cannot push another entry out.
+ * lists, and drops entries without one. It returns at most `MAX_EVIDENCE_LINES`, and the first location of every entry
+ * comes before any further one, so an entry that lists many lines cannot push another entry out.
  */
 export function parseProof(value: unknown): string[] {
-  const inAnyFile = (range: string): boolean => holdsLines(Infinity, ...(range.split('-').map(Number) as [number, number?]));
   const listed = textLines(value, Infinity).flatMap(entry => {
     const [, file, lines] = entry.replace(/`/g, '').match(PROOF_LOCATION) ?? [];
-    const ranges = file ? lines.split(/, ?/).filter(inAnyFile) : [];
-    return ranges.length > 0 ? [ranges.map(range => `${file}:${range}`)] : [];
+    return file ? [lines.split(/, ?/).map(range => `${file}:${range}`)] : [];
   });
   return [...listed.map(([first]) => first), ...listed.flatMap(([, ...more]) => more)].slice(0, MAX_EVIDENCE_LINES);
 }

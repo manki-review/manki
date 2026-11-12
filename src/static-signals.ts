@@ -9,7 +9,7 @@ import { holdsLines } from './code-window';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { LockfileDiff, lockfileSignals } from './lockfile';
-import { readLinesInRoot } from './mcp-server';
+import { readFileInRoot } from './mcp-server';
 import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, SECURITY_TAG, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { escapeRegExp, hiddenCharacters, safeTruncate } from './utils';
 
@@ -522,7 +522,7 @@ export function leadingRelatedCitation(entry: string, names: readonly string[]):
  * Returns, for each line of a configured related repo that the finding's title or description cites, whether it is in
  * the checkout the round fetched. Only a citation found there lets the judge treat it as evidence. An evidence line
  * that starts with a citation and quotes code in backticks is compared with the fetched lines: the note says whether
- * they hold the quoted code, and a citation that does not is no such evidence.
+ * they hold every quoted part and names each part they do not hold. A citation with such a part is no such evidence.
  */
 function checkRelatedCitations(finding: Finding, { names, checkouts }: NonNullable<ClaimSources['related']>): string[] {
   const quotes = new Map<string, { cited: RelatedCitation; code: string[] }>();
@@ -542,25 +542,29 @@ function checkRelatedCitations(finding: Finding, { names, checkouts }: NonNullab
     if (missing) return `\`${citation}\` ${missing}`;
     const quoted = quotes.get(citation)?.code;
     if (!quoted) return `\`${citation}\` is in the fetched checkout`;
-    return holdsQuotedCode(dir, path, start, end, quoted)
+    const absent = missingQuotes(dir, path, start, end, quoted);
+    return absent.length === 0
       ? `\`${citation}\` is in the fetched checkout and holds the quoted code`
-      : `\`${citation}\` does not hold the quoted code: none of it is within ${QUOTE_LINE_WINDOW} lines of the cited line`;
+      : `\`${citation}\` does not hold the quoted code: ${absent.map(part => `\`${part}\``).join(', ')} ${absent.length === 1 ? 'is' : 'are'} not within ${QUOTE_LINE_WINDOW} lines of the cited line`;
   });
 }
 
 const withoutWhitespace = (text: string): string => text.replace(/\s+/g, '');
 
-/** Returns the code `text` quotes in backticks, without whitespace, each part of a quote cut by an ellipsis on its own. */
+/** Returns the code `text` quotes in backticks, each part of a quote cut by an ellipsis on its own. A part under `MIN_QUOTE_CHARS` without its whitespace is left out. */
 function quotedCode(text: string): string[] {
-  return [...text.matchAll(/`([^`]+)`/g)].flatMap(([, quote]) => quote.split(/\.{3}|…/)).map(withoutWhitespace).filter(part => part.length >= MIN_QUOTE_CHARS);
+  return [...text.matchAll(/`([^`]+)`/g)].flatMap(([, quote]) => quote.split(/\.{3}|…/)).map(part => part.trim()).filter(part => withoutWhitespace(part).length >= MIN_QUOTE_CHARS);
 }
 
-/** Whether the lines `start` to `end` of `path` in the checkout at `dir`, or the `QUOTE_LINE_WINDOW` lines around them, hold one of `quoted`. */
-function holdsQuotedCode(dir: string, path: string, start: number, end: number, quoted: readonly string[]): boolean {
-  const lines = readLinesInRoot(dir, path);
-  if (!Array.isArray(lines)) return false;
-  const window = withoutWhitespace(lines.slice(Math.max(0, start - 1 - QUOTE_LINE_WINDOW), end + QUOTE_LINE_WINDOW).join('\n'));
-  return quoted.some(code => window.includes(code));
+/**
+ * Returns the parts of `quoted` that the lines `start` to `end` of `path` in the checkout at `dir`, and the
+ * `QUOTE_LINE_WINDOW` lines around them, do not hold, whitespace aside. A file that cannot be read holds none.
+ */
+function missingQuotes(dir: string, path: string, start: number, end: number, quoted: readonly string[]): string[] {
+  const file = readFileInRoot(dir, path);
+  if (!file || file === 'too large') return [...quoted];
+  const window = withoutWhitespace(file.lines.slice(Math.max(0, start - 1 - QUOTE_LINE_WINDOW), end + QUOTE_LINE_WINDOW).join('\n'));
+  return quoted.filter(part => !window.includes(withoutWhitespace(part)));
 }
 
 /**
@@ -568,9 +572,10 @@ function holdsQuotedCode(dir: string, path: string, start: number, end: number, 
  * does not show them, or `undefined` when `holdsLines`. A file too large to read is unchecked, and never confirms a citation.
  */
 export function citedLineMissing(dir: string, path: string, start: number, end = start): string | undefined {
-  const lines = readLinesInRoot(dir, path);
-  if (lines === 'too large') return `is unchecked: ${path} is too large to read`;
-  if (!lines) return `is not in the fetched checkout: ${path} is not a file there`;
+  const file = readFileInRoot(dir, path);
+  if (file === 'too large') return `is unchecked: ${path} is too large to read`;
+  if (!file) return `is not in the fetched checkout: ${path} is not a file there`;
+  const { lines } = file;
   if (holdsLines(lines.length, start, end)) return undefined;
   const why = start < 1 ? `${path} has no line ${start}` : end < start ? `the range ${start}-${end} runs backwards` : `${path} has ${lines.length} lines`;
   return `is not in the fetched checkout: ${why}`;

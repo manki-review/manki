@@ -68,17 +68,24 @@ export function resolveInRoot(root: string, path: string): RepoPath {
   return { absolute, relative: rel === '' ? '.' : rel.split(sep).join('/') };
 }
 
+/** A file's text and its lines. The empty text after a final line break is no line. */
+export interface FileText {
+  text: string;
+  lines: string[];
+}
+
 /**
- * Returns the lines of the file `path` under `root`. Returns `'too large'` for a file over `maxBytes`, which is not
- * read, and `undefined` for a path that `resolveInRoot` refuses, that is no file or that cannot be read.
+ * Reads the file `path` under `root`. Returns `'too large'` for a file over `MAX_FILE_BYTES`, which is not read, and
+ * `undefined` for a path that `resolveInRoot` refuses, that is no file or that cannot be read.
  */
-export function readLinesInRoot(root: string, path: string, maxBytes = MAX_FILE_BYTES): string[] | 'too large' | undefined {
+export function readFileInRoot(root: string, path: string): FileText | 'too large' | undefined {
   try {
     const { absolute } = resolveInRoot(root, path);
     const stat = statSync(absolute);
     if (!stat.isFile()) return undefined;
-    if (stat.size > maxBytes) return 'too large';
-    return readFileSync(absolute, 'utf-8').replace(/\n$/, '').split('\n');
+    if (stat.size > MAX_FILE_BYTES) return 'too large';
+    const text = readFileSync(absolute, 'utf-8');
+    return { text, lines: text.replace(/\n$/, '').split('\n') };
   } catch {
     return undefined;
   }

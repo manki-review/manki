@@ -1046,8 +1046,8 @@ describe('refuteBlockers', () => {
     const parsesDate = [{ premise: 'acme/reports parses the first column as a date', decides: 'defect' as const }];
     const consumerLine = 'acme/reports:src/import.ts:2';
     const answer = (outcome: string, ...proof: string[]) => ({ outcome, reason: 'r', proof, premises: [{ outcome, reason: 'r', proof }] });
-    // Line 0, a range that runs backwards and a line past the last one, in the PR and in a related repo.
-    const notThere = ['src/math.ts', 'acme/reports:src/import.ts'].flatMap(file => [`${file}:0`, `${file}:2-1`, `${file}:2-40`]);
+    // Line 0, a range that runs backwards and a line past the last one.
+    const notThere = ['acme/reports:src/import.ts:0', 'acme/reports:src/import.ts:2-1', 'acme/reports:src/import.ts:2-40'];
     const client = fakeClient({
       'Related line confirms': answer('confirmed', `\`${consumerLine}\` parses the column with Date.parse`),
       'Related line alone disproves': answer('disproved', consumerLine),
@@ -1058,6 +1058,7 @@ describe('refuteBlockers', () => {
       'Path with a dot segment': answer('confirmed', 'acme/reports:src/../src/./import.ts:1-2'),
       ...Object.fromEntries(notThere.map(at => [`Cites ${at}`, answer('confirmed', at)])),
       'File too large to read': answer('confirmed', 'acme/reports:src/big.ts:1'),
+      'Premise only': { outcome: 'unsettled', reason: 'r', proof: [], premises: [{ outcome: 'confirmed', reason: 'r', proof: [consumerLine] }] },
       'Many lines': { outcome: 'confirmed', reason: 'r', proof: rowLines, premises: [{ outcome: 'confirmed', reason: 'r', proof: [consumerLine, ...rowLines.slice(0, 9)] }] },
       'Made-up lines first': answer('confirmed', ...rowLines.slice(0, 10).map(line => `${line}00`), consumerLine),
     });
@@ -1079,7 +1080,7 @@ describe('refuteBlockers', () => {
       // The stored location is the file's own path in the checkout, which is what the posted link is built from. A line that cannot exist proves nothing.
       const odd = await refuteBlockers(client, ['Path with a dot segment', 'File too large to read'].map(title => finding(title, noProof)), { workspace, diff, related });
       expect(odd.map(f => [outcomeOf(f.refutation!), f.refutation?.relatedProof])).toEqual([['confirmed', ['acme/reports:src/import.ts:1-2']], ['unsettled', undefined]]);
-      // A cited line that is not there gets one answer wherever it is: it is no proof, so the check settles nothing.
+      // A cited line that is not there is no proof, so the check settles nothing.
       const cited = await refuteBlockers(client, notThere.map(at => finding(`Cites ${at}`, noProof)), { workspace, diff, related });
       expect(cited.map(f => [f.title, outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual(notThere.map(at => [`Cites ${at}`, 'unsettled', undefined, undefined]));
       expect(checked[0].refutation?.premises).toEqual([{ premise: parsesDate[0].premise, outcome: 'confirmed', reason: 'r', relatedProof: [consumerLine] }]);
@@ -1089,8 +1090,11 @@ describe('refuteBlockers', () => {
       expect(many.refutation?.relatedProof).toEqual([consumerLine, ...rowLines.slice(0, 9)]);
       expect([outcomeOf(madeUp.refutation!), madeUp.refutation?.relatedProof]).toEqual(['unsettled', undefined]);
       expect(checkStatus(checked[0])).toBe('confirmed');
-      // The finding's own proof lines stay lines of the PR, so no reader of them meets another repository's path.
-      expect(checked[0].evidence?.proof).toEqual([]);
+      // The finding's own proof lines stay lines of the PR, so no reader of them meets another repository's path. The
+      // related lines of a check become the finding's `relatedProof` on the condition that makes its lines of the PR proof.
+      expect(checked[0].evidence).toEqual({ checks: [], proof: [], relatedProof: [consumerLine] });
+      const [premiseOnly] = await refuteBlockers(client, [finding('Premise only', noProof)], { workspace, diff, related });
+      expect([outcomeOf(premiseOnly.refutation!), premiseOnly.refutation?.defect, premiseOnly.refutation?.relatedProof, premiseOnly.evidence]).toEqual(['confirmed', 'unsettled', [consumerLine], { checks: [], proof: [] }]);
 
       // Every call can read the related repos, as a check, and is told that their content is untrusted.
       for (const [, options] of client.calls) {

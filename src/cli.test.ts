@@ -84,7 +84,7 @@ describe('formatReviewText', () => {
     // A check that rests on a line of a related repo names that line, linked when the review recorded the fetched commit.
     const commit = 'ab'.repeat(20);
     const local = review('ADDRESS_FIRST', [{
-      ...finding,
+      ...finding, evidence: { ...finding.evidence!, relatedProof: ['acme/app:src/list.ts:7'] },
       refutation: { outcome: 'confirmed', defect: 'confirmed', reason: 'The consumer reads the last item.', relatedProof: ['acme/app:src/list.ts:7'], files: ['src/a.ts'], codeDigest: 'abc' },
       pairRefutation: { outcome: 'unsettled', reason: 'The caller may be gone.', relatedProof: ['acme/tool:lib/run.py:3-4', 'acme/gone:lib/run.py:3'], files: ['src/a.ts'], codeDigest: 'abc' },
     }]);
