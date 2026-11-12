@@ -1439,6 +1439,34 @@ describe('runFullReview end to end', () => {
       expect(mockGitHub.failures[0].times).toBe(0);
     });
 
+    // What a failed run is repeated with decides the hint, so no hint sends the reader to a review round for less.
+    const REVIEW_HINT = ` ${RETRY_HINT} If that shows the commit as up to date, tick Review again in the settings block.`;
+    const CHECK_HINT = ' Retry with @manki check.';
+    const REPEAT_HINT = ' Repeat the comment or the tick that started this run.';
+    it.each<[string, Record<string, string>, string]>([
+      ['a new PR', { event: 'pull_request', action: 'opened', head_sha: HEAD_SHA }, REVIEW_HINT],
+      ['a push', { event: 'pull_request', action: 'synchronize', head_sha: HEAD_SHA }, REVIEW_HINT],
+      ['a draft marked ready', { event: 'pull_request', action: 'ready_for_review', head_sha: HEAD_SHA }, REVIEW_HINT],
+      ['a merge', { event: 'pull_request', action: 'closed', head_sha: HEAD_SHA }, ''],
+      ['an approval check', { event: 'pull_request', action: 'approval_check', head_sha: HEAD_SHA }, CHECK_HINT],
+      ['a submitted review', { event: 'pull_request_review', action: 'submitted', review_id: '7' }, CHECK_HINT],
+      ['a dismissed review', { event: 'pull_request_review', action: 'dismissed', review_id: '7' }, CHECK_HINT],
+      ['a resolved thread', { event: 'pull_request_review_thread', action: 'resolved' }, CHECK_HINT],
+      ['a reopened thread', { event: 'pull_request_review_thread', action: 'unresolved' }, CHECK_HINT],
+      ['a tick of an issue box in a review', { event: 'pull_request_review', action: 'edited', review_id: '7' }, REPEAT_HINT],
+      ['a comment', { event: 'issue_comment', action: 'created', comment_id: '7' }, REPEAT_HINT],
+      ['a tick in a comment', { event: 'issue_comment', action: 'edited', comment_id: '7' }, REPEAT_HINT],
+      ['a reply in a thread', { event: 'pull_request_review_comment', action: 'created', comment_id: '7' }, REPEAT_HINT],
+      ['a tick of an issue box in a thread', { event: 'pull_request_review_comment', action: 'edited', comment_id: '7' }, REPEAT_HINT],
+    ])('ends the reason of a run for %s that fails on a GitHub 5xx with how to repeat that run', async (_event, inputs, hint) => {
+      mockGitHub.failures = [{ method: 'GET', path: new RegExp(`^/repos/${OWNER}/${REPO}/(pulls|issues)/`), status: 503 }];
+
+      await dispatch({ pr: String(PR_NUMBER), ...inputs });
+
+      expect(jest.mocked(core.setFailed).mock.calls).toEqual([[expect.stringMatching(new RegExp(`^Manki encountered an error: GitHub returned 503 on GET \\S+\\.${hint.replace(/[.@]/g, '\\$&')}$`))]]);
+      expect(mockLLM.calls).toEqual([]);
+    });
+
     it.each<[string, Partial<FakeFailure>]>([
       ['a rate limit', { message: 'API rate limit exceeded', headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 1) } }],
       ['a secondary rate limit', { message: 'You have exceeded a secondary rate limit', headers: { 'retry-after': '1' } }],
