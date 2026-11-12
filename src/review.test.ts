@@ -2387,13 +2387,22 @@ describe('runReview', () => {
       mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
       // A trivial change gets the quick check alone, so its claims are listed and not checked.
       const docs = gitWorkspace({ 'README.md': 'Export\n' }, { 'README.md': 'Export\n\nNo behaviour change for existing configs.\n' });
-      const trivial = claimClients(['No behaviour change for existing configs'], () => checkAnswer('proven', ['README.md:1']));
-      trivial.planner = { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) }) } as unknown as LLMClient;
+      const trivialClients = () => {
+        const made = claimClients(['No behaviour change for existing configs'], () => checkAnswer('proven', ['README.md:1']));
+        made.planner = { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) }) } as unknown as LLMClient;
+        return made;
+      };
+      const trivial = trivialClients();
+      // A deeper review gives the same trivial PR two finders, so its claims are checked.
+      const moved = trivialClients();
       let result;
       let quick;
+      let deeper;
       try {
         result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: root, prContext });
-        quick = await runReview(trivial, { config: makeConfig(), diff: docs.diff, rawDiff: 'raw diff', repoContext: '', workspace: docs.root, prContext: { title: 'Document the export', body: 'No behaviour change for existing configs.', baseBranch: 'main' } });
+        const docsReview = { config: makeConfig(), diff: docs.diff, rawDiff: 'raw diff', repoContext: '', workspace: docs.root, prContext: { title: 'Document the export', body: 'No behaviour change for existing configs.', baseBranch: 'main' } };
+        quick = await runReview(trivial, docsReview);
+        deeper = await runReview(moved, { ...docsReview, deeper: true });
       } finally {
         for (const dir of [root, docs.root]) rmSync(dir, { recursive: true, force: true });
       }
@@ -2427,6 +2436,9 @@ describe('runReview', () => {
       expect(quick.agentNames).toEqual(['Quick check · Claude Sonnet 5.5']);
       expect(reviewerCalls(trivial).filter(([system]) => isCheck(system))).toEqual([]);
       expect(quick.prClaims).toEqual({ claims: [{ quote: 'No behaviour change for existing configs', source: 'description', reviewer: 'Claim check 1', status: 'unchecked', call: 'skipped' }] });
+      expect(deeper.routing).toMatchObject({ group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'trivial' });
+      expect(reviewerCalls(moved).filter(([system]) => isCheck(system))).toHaveLength(1);
+      expect(deeper.prClaims).toEqual({ claims: [{ quote: 'No behaviour change for existing configs', source: 'description', reviewer: 'Claim check 1', status: 'proven', reason: 'The lines decide it.', proof: ['README.md:1'] }] });
     });
 
     it('gives every other call the same input and ends the round the same whatever the PR text claims and whatever the claim checks answer short of a disproof that stands', async () => {

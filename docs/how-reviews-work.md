@@ -326,7 +326,7 @@ Manki keeps a statement only when the PR text holds it word for word, whatever i
 - A statement no check settled is no defect. It is recorded as `unchecked`, and nothing is posted for it. That holds for a check that fails, runs out of steps, or is still running one minute after the finders are done, when the round stops it. The round still completes.
 - A statement is shown to its check inside a fenced block and labelled as the author's untrusted text. One that names a file to skip or tells the model what to answer is checked like any other, against the whole diff and the whole repository.
 
-No check runs on a trivial change, which gets the quick check alone, or when the reviewer model has no repository tools or the PR head is not checked out. The claims are then recorded as `unchecked`.
+No check runs when the quick check alone reads the change, or when the reviewer model has no repository tools or the PR head is not checked out. A trivial PR that a deeper review or `review.routing` gives finders gets its checks. The claims are then recorded as `unchecked`.
 
 The round record lists the claims under `prClaims.claims`: the quote, its `source` (`description` or the `file:line` of the comment), the reviewer name, the `status`, the check's reason and cited lines (`proof`, and `relatedProof` for lines of a related repository), the number of defects it reported, and `call` when the check gave no answer (`failed`, `timed_out` or `skipped`). `prClaims.cut` counts the statements over the cap, and `prClaims.skipped` says why none was listed when the listing call failed. `usage.llmCalls` records each check under the `claim_check` stage.
 

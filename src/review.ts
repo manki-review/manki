@@ -255,6 +255,11 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
   };
 }
 
+/** Whether the trivial verifier alone reads the change. A deeper review or `review.routing` can give a trivial PR finders. */
+function quickCheckOnly(team: TeamRoster): boolean {
+  return team.finders.every(f => f.prompt === TRIVIAL_VERIFIER_AGENT);
+}
+
 /** Cuts a group's `focus` to about `FOCUS_LABEL_LENGTH` characters at a word boundary for a reader's name. */
 function shortFocus(focus: string): string {
   const text = focus.replace(/\s+/g, ' ').trim();
@@ -802,10 +807,10 @@ export async function runReview(
     effort: comparisonEffort, workspace, related, signal: comparisonDeadline.signal,
   });
   // Each claim of the PR text gets a check of its own beside the finders, under the comparisons' deadline. No finder waits for it or
-  // is shown it. A trivial change gets the quick check alone, so its claims are recorded without a check.
+  // is shown it. When the quick check alone reads the change, its claims are recorded without a check.
   const claimChecksPromise = claimsPromise.then(async ({ claims, ...listed }) => {
     const checked = await runClaimChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'claim_check', reviewer), claims, {
-      rawDiff, effort: comparisonEffort, workspace: trivial ? undefined : workspace, related, signal: comparisonDeadline.signal,
+      rawDiff, effort: comparisonEffort, workspace: quickCheckOnly(team) ? undefined : workspace, related, signal: comparisonDeadline.signal,
     });
     return { findings: checked.findings, record: prClaimsRecord(listed, checked.claims) };
   });

@@ -617,8 +617,8 @@ export interface RoundPrClaim extends PrClaim {
   status: 'proven' | 'disproven' | 'unchecked';
   /**
    * Why the check gave no answer: `failed` when the call failed or its reply did not parse twice, `timed_out` when it
-   * was still unanswered once the grace after the finders ran out, and `skipped` when no check ran, on a trivial change
-   * or without repository tools.
+   * was still unanswered once the grace after the finders ran out, and `skipped` when no check ran: the quick check
+   * alone read the change, or no repository tools were there.
    */
   call?: 'failed' | 'timed_out' | 'skipped';
   /** What decided it, or what is left to check, as the check stated it. */
