@@ -1884,8 +1884,8 @@ describe('runFullReview end to end', () => {
 
       expect(thread.comments.at(-1)?.body.replace(/\n<!-- manki-reply-record: .+ -->/, '')).toBe([
         'Unverified. Every caller bounds both inputs, so the sum cannot overflow. I could not point to a line of this repository that shows it, so a maintainer should decide and resolve this thread.',
-        `**Statements of this reply, checked in the code:**\n- Confirmed at \`src/math.ts:2\`: "${said}"`,
-        'I checked each of these statements as listed. What they mean for this finding is for a maintainer to decide.',
+        `**Statements of this reply, and what I checked of each:**\n- Line cited for it exists at \`src/math.ts:2\`: "${said}"`,
+        'Each line says what I checked, not that the statement is right. What they mean for this finding is for a maintainer to decide.',
         'This is a blocking finding, so the thread stays open until the next review confirms the fix, or someone other than the PR author with write access closes it.',
         '<!-- manki -->',
       ].join('\n\n'));

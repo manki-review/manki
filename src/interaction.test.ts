@@ -946,8 +946,8 @@ describe('handleReviewCommentReply', () => {
   // The statements of the developer's reply are listed below the answer. No status of one reaches a thread.
   const CSV = 'The exporter writes rows as CSV columns.';
   const CONFIRMED = { statements: [{ quote: CSV, status: 'confirmed', places: ['src/file.ts:10'] }] };
-  const LISTED = `**Statements of this reply, checked in the code:**\n- Confirmed at \`src/file.ts:10\`: "${CSV}"`;
-  const CHECKED = 'I checked each of these statements as listed.';
+  const LISTED = `**Statements of this reply, and what I checked of each:**\n- Line cited for it exists at \`src/file.ts:10\`: "${CSV}"`;
+  const CHECKED = 'Each line says what I checked, not that the statement is right.';
   const MAINTAINER = `${CHECKED} What they mean for this finding is for a maintainer to decide.`;
   const NEXT_REVIEW = 'the next review confirms the fix, or someone other than the PR author with write access';
   const STAYS_OPEN = `This is a blocking finding, so the thread stays open until ${NEXT_REVIEW} closes it.`;

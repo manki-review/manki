@@ -41,19 +41,21 @@ describe('checkReply', () => {
   const snapshot = 'Nothing calls `Ledger::snapshot`.';
 
   it.each<[string, Record<string, unknown>, string]>([
-    ['a line of the PR that exists confirms', { quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }, `- Confirmed at \`src/ledger.rs:3\`: "${csv}"`],
-    ['a line of a fetched related repo confirms', { quote: csv, status: 'confirmed', places: ['acme/reports:lib/rows.py:2'] }, `- Confirmed at \`acme/reports:lib/rows.py:2\`: "${csv}"`],
-    ['a line that exists contradicts', { quote: csv, status: 'contradicted', places: ['`src/ledger.rs:3` writes CSV, not columns'] }, `- Contradicted at \`src/ledger.rs:3\`: "${csv}"`],
+    ['a line of the PR that exists confirms', { quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }, `- Line cited for it exists at \`src/ledger.rs:3\`: "${csv}"`],
+    ['a line of a fetched related repo confirms', { quote: csv, status: 'confirmed', places: ['acme/reports:lib/rows.py:2'] }, `- Line cited for it exists at \`acme/reports:lib/rows.py:2\`: "${csv}"`],
+    ['lines that exist confirm', { quote: csv, status: 'confirmed', places: ['src/ledger.rs:3', 'acme/reports:lib/rows.py:2'] },
+      `- Lines cited for it exist at \`src/ledger.rs:3\`, \`acme/reports:lib/rows.py:2\`: "${csv}"`],
+    ['a line that exists contradicts', { quote: csv, status: 'contradicted', places: ['`src/ledger.rs:3` writes CSV, not columns'] }, `- Line cited against it exists at \`src/ledger.rs:3\`: "${csv}"`],
     // The search is Manki's own. The model's word that one came back empty counts for nothing.
     ['a search that finds no line says what was searched', { quote: snapshot, status: 'confirmed', search: 'Ledger::snapshot(' },
-      `- Searched \`Ledger::snapshot(\` in this repository, no line found (1 file not searched: binary or over 1 MB): "${snapshot}"`],
+      `- No line of this repository holds \`Ledger::snapshot(\`, ignoring case (1 file not searched: binary or over 1 MB): "${snapshot}"`],
     ['a search in a related repo names the paths it is limited to', { quote: snapshot, status: 'confirmed', search: 'snapshot', repo: 'acme/reports' },
-      `- Searched \`snapshot\` in \`acme/reports\`, no line found (only \`lib/\`, \`docs/*.md\` of that repository is fetched): "${snapshot}"`],
-    ['a blank search falls back to the cited line', { quote: snapshot, status: 'confirmed', search: ' ', places: ['src/ledger.rs:4'] }, `- Confirmed at \`src/ledger.rs:4\`: "${snapshot}"`],
+      `- No line of \`acme/reports\` holds \`snapshot\`, ignoring case (only \`lib/\`, \`docs/*.md\` of that repository is fetched): "${snapshot}"`],
+    ['a blank search falls back to the cited line', { quote: snapshot, status: 'confirmed', search: ' ', places: ['src/ledger.rs:4'] }, `- Line cited for it exists at \`src/ledger.rs:4\`: "${snapshot}"`],
   ])('checks a statement itself: %s', (_name, statement, line) => {
     const checked = checkReply(answer({ statements: [statement] }), REPLY, sources);
 
-    expect(statementList(checked)).toBe(`**Statements of this reply, checked in the code:**\n${line}`);
+    expect(statementList(checked)).toBe(`**Statements of this reply, and what I checked of each:**\n${line}`);
     // No status moves the outcome.
     expect(checked.text).toBe('Unverified. A maintainer should confirm it.');
   });
@@ -71,6 +73,7 @@ describe('checkReply', () => {
   it.each<[string, Run, Record<string, unknown>, string, (() => unknown)?]>([
     ['a search that finds a line, whatever line is cited', 'checkout', { status: 'confirmed', search: 'fn snapshot', places: ['src/ledger.rs:1'] }, 'a search for `fn snapshot` found a line'],
     ['a longer name that holds the term', 'checkout', { status: 'confirmed', search: 'snap' }, 'a search for `snap` found a line'],
+    ['a term in other letter case', 'checkout', { status: 'confirmed', search: 'PUB FN snapshot' }, 'a search for `PUB FN snapshot` found a line'],
     ['a term that starts with a dash, searched as text', 'checkout', { status: 'confirmed', search: '--force' }, 'a search for `--force` found a line'],
     ['a search of a fetched related repo that finds a line', 'checkout', { status: 'confirmed', search: 'csv.reader', repo: 'acme/reports' }, 'a search for `csv.reader` found a line'],
     ['a search that stopped at its file limit', 'checkout', { status: 'confirmed', search: 'Ledger::snapshot(' }, 'the search did not reach every file', cutSearch],
@@ -106,9 +109,9 @@ describe('checkReply', () => {
     const spy = search && jest.spyOn(mcpServer, 'findLines').mockImplementation(search as typeof mcpServer.findLines);
     try {
       const checked = checkReply(answer({ statements: [{ quote: snapshot, ...statement }] }), REPLY, from);
-      expect(statementList(checked)).toBe(`**Statements of this reply, checked in the code:**\n- Not checked, ${reason}: "${snapshot}"`);
+      expect(statementList(checked)).toBe(`**Statements of this reply, and what I checked of each:**\n- Not checked, ${reason}: "${snapshot}"`);
       expect(checked.text).toBe('Unverified. A maintainer should confirm it.');
-      if (spy) expect(spy).toHaveBeenCalledWith(from.workspace, { text: statement.search, maxResults: 1 });
+      if (spy) expect(spy).toHaveBeenCalledWith(from.workspace, { text: statement.search, maxResults: 1, ignoreCase: true });
     } finally {
       spy?.mockRestore();
     }
@@ -131,7 +134,7 @@ describe('checkReply', () => {
     const cut = `${'The cache is warm. '.repeat(8)}The cach`;
     expect(cut).toHaveLength(160);
     expect(statementList(checked)).toBe([
-      '**Statements of this reply, checked in the code:**',
+      '**Statements of this reply, and what I checked of each:**',
       '- Not checked, the review model says code cannot show it: "Nothing calls `Ledger::snapshot`."',
       // A mention and a link in the developer's words are posted as text.
       '- Not checked, the review model says code cannot show it: "see @​alice and the docs"',
@@ -197,20 +200,20 @@ describe('checkReply', () => {
     expect(withdrawn(['src/ledger.rs:3'], { relatedNames: [] })).toBe(`Unverified. The exporter writes CSV. ${UNPROVEN}`);
 
     const checked = checkReply(answer({ statements: [{ quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }] }), REPLY, noCheckout);
-    expect(statementList(checked)).toBe(`**Statements of this reply, checked in the code:**\n- Confirmed at \`src/ledger.rs:3\`: "${csv}"`);
+    expect(statementList(checked)).toBe(`**Statements of this reply, and what I checked of each:**\n- Line cited for it exists at \`src/ledger.rs:3\`: "${csv}"`);
   });
 
   it.each<[string, Record<string, unknown>[], number, string, string]>([
     ['every statement checked', [{ quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }, { quote: snapshot, status: 'confirmed', search: 'Ledger::snapshot(' }], 0,
-      'I checked each of these statements as listed.', 'What they mean for this finding is for a maintainer to decide.'],
+      'Each line says what I checked, not that the statement is right.', 'What they mean for this finding is for a maintainer to decide.'],
     ['one not checked', [{ quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }, { quote: snapshot, status: 'not_checkable' }], 0,
       'I could not check every one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.'],
     ['more statements than a reply gets', [{ quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }], 1,
       'I could not check every one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.'],
     ['one contradicted', [{ quote: csv, status: 'contradicted', places: ['src/ledger.rs:3'] }, { quote: snapshot, status: 'confirmed', search: 'Ledger::snapshot(' }], 0,
-      'The code contradicts at least one of these statements.', 'What they mean for this finding is for a maintainer to decide.'],
+      'I cited a line against at least one of these statements.', 'What they mean for this finding is for a maintainer to decide.'],
     ['one contradicted and one not checked', [{ quote: csv, status: 'contradicted', places: ['src/ledger.rs:3'] }, { quote: snapshot, status: 'not_checkable' }], 0,
-      'The code contradicts at least one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.'],
+      'I cited a line against at least one of these statements.', 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.'],
   ])('sums the checks up without a word on the finding, and leaves a blocking one to a maintainer: %s', (_name, statements, unchecked, checks, decision) => {
     const checked = { ...checkReply(answer({ statements }), REPLY, sources), unchecked };
 

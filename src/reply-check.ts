@@ -103,7 +103,7 @@ function unshownReason(cited: unknown, sources: ReplySources): { why: UncheckedR
 }
 
 /**
- * Searches for `term` as plain text in the PR's checkout, or in the related checkout `repo`. Returns the search when it
+ * Searches for `term` as plain text, ignoring case, in the PR's checkout, or in the related checkout `repo`. Returns the search when it
  * found no line and saw every file it could reach. Anything else returns why the search confirms nothing.
  */
 function emptySearch(term: string, repo: unknown, sources: ReplySources): EmptySearch | { why: UncheckedReason; detail?: string } {
@@ -117,7 +117,7 @@ function emptySearch(term: string, repo: unknown, sources: ReplySources): EmptyS
   if (!root) return { why: 'not_fetched', detail: named };
   let found;
   try {
-    found = findLines(root, { text, maxResults: 1 });
+    found = findLines(root, { text, maxResults: 1, ignoreCase: true });
   } catch {
     return { why: 'search_failed' };
   }
@@ -206,7 +206,7 @@ function searchLine({ term, repo, paths, skipped }: EmptySearch): string {
     ...(paths ? [`only ${paths.map(inline).join(', ')} of that repository is fetched`] : []),
     ...(skipped > 0 ? [`${skipped} ${skipped === 1 ? 'file' : 'files'} not searched: binary or over 1 MB`] : []),
   ];
-  return `Searched ${inline(term)} in ${repo ? inline(repo) : 'this repository'}, no line found${scope.length > 0 ? ` (${scope.join(', ')})` : ''}`;
+  return `No line of ${repo ? inline(repo) : 'this repository'} holds ${inline(term)}, ignoring case${scope.length > 0 ? ` (${scope.join(', ')})` : ''}`;
 }
 
 /** Returns the list of checked statements as Manki posts it below the answer, or `undefined` when the reply listed none. */
@@ -215,11 +215,11 @@ export function statementList({ statements, unchecked }: CheckedReply): string |
   const lines = statements.map(s => {
     const what = s.search ? searchLine(s.search)
       : s.status === 'not_checkable' ? `Not checked, ${UNCHECKED_REASONS[s.why ?? 'outside_code'](s.detail ?? '')}`
-        : `${s.status === 'confirmed' ? 'Confirmed' : 'Contradicted'} at ${s.places.map(inline).join(', ')}`;
+        : `${s.places.length === 1 ? 'Line' : 'Lines'} cited ${s.status === 'confirmed' ? 'for' : 'against'} it ${s.places.length === 1 ? 'exists' : 'exist'} at ${s.places.map(inline).join(', ')}`;
     return `- ${what}: ${shownQuote(s.quote)}`;
   });
   const more = unchecked > 0 ? [`- ${unchecked} more ${unchecked === 1 ? 'statement' : 'statements'} not checked: a reply gets at most ${MAX_REPLY_STATEMENTS}.`] : [];
-  return ['**Statements of this reply, checked in the code:**', ...lines, ...more].join('\n');
+  return ['**Statements of this reply, and what I checked of each:**', ...lines, ...more].join('\n');
 }
 
 /**
@@ -230,9 +230,9 @@ export function statementList({ statements, unchecked }: CheckedReply): string |
 export function statementSummary({ statements, unchecked }: CheckedReply, blocks: boolean): string {
   const contradicted = statements.some(s => s.status === 'contradicted');
   const open = unchecked > 0 || statements.some(s => s.status === 'not_checkable');
-  const checks = contradicted ? 'The code contradicts at least one of these statements.'
+  const checks = contradicted ? 'I cited a line against at least one of these statements.'
     : open ? 'I could not check every one of these statements.'
-      : 'I checked each of these statements as listed.';
+      : 'Each line says what I checked, not that the statement is right.';
   if (!blocks) return checks;
   return `${checks} ${open ? 'A maintainer has to judge the unchecked ones, and what the statements mean for this finding.' : 'What they mean for this finding is for a maintainer to decide.'}`;
 }
