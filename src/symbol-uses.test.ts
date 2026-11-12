@@ -309,7 +309,7 @@ describe('listUsesOutsideDiff', () => {
     // cut, so no reader takes a list for all there is. A change within every cap keeps the wording for a whole search.
     const whole = 'Manki searched the PR\'s head commit for each symbol the diff changes and lists where it is used';
     const typesHeading = (section: string) => section.match(/### Types Behind the Fields the Diff Uses\n\n(.*)\n/)?.[1];
-    const everyType = 'Each type declaring a field the changed lines read or change, with all its fields.';
+    const everyType = 'Types declaring a field the changed lines read or change, each with all its fields.';
     const info = () => jest.mocked(core.info).mock.calls.map(([message]) => message).filter(message => message.includes('past a limit'));
     expect([section.includes(whole), typesHeading(section), info()]).toEqual([true, everyType, []]);
     const handlers = (value: number) => Array.from({ length: 90 }, (_, i) => `export function handler${i}() { return ${value}; }\n`).join('');
@@ -338,7 +338,9 @@ describe('listUsesOutsideDiff', () => {
     const store = `pub struct Store {\n${Array.from({ length: 9 }, (_, i) => `    pub jobs${i}: HashMap<u8, u8>,\n`).join('')}}\n`;
     const run = (body: string) => `fn run(s: &Store, k: u8) {\n${body}}\n`;
     const lookedUp = await usesFor({ 'src/store.rs': store, 'src/run.rs': run('') }, { 'src/run.rs': run(Array.from({ length: 9 }, (_, i) => `    s.jobs${i}.get(&k);\n`).join('')) });
-    expect([lookedUp.section.includes(whole), typesHeading(lookedUp.section)]).toEqual([true, everyType]);
+    // `run` is too short a name to search for, so the one changed symbol counts as not searched.
+    expect(lookedUp.section).toContain('Manki searched the PR\'s head commit for 0 of the 1 symbol the diff changes and lists where each is used');
+    expect(typesHeading(lookedUp.section)).toBe(everyType);
     expect(info().at(-1)).toBe('Uses outside the diff: the change is past a limit of the search, which took 8 of 9 looked-up fields');
     // The log names the limit also when the search lists nothing, since the sibling questions still come from the 8 fields.
     const logged = info().length;
