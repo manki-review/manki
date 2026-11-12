@@ -22,7 +22,7 @@ import { sanitize, titleOverlapType } from './recap';
 import { FINDER_TOOLS_TIMEOUT_MS, guardedThreadStaysOpen, determineOutcome, earlierFindings, fencePrText, filesChangedByPush, parseProof, sameProblem, stringifyFindingFingerprint, truncateDiff } from './review';
 import { buildRepositoryRules, GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
-import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
+import { MAX_DOUBT_CHECKS, MAX_RELATED_PROOF, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
@@ -1827,7 +1827,8 @@ function mergedRule(survivor: Finding, copy: Finding): Pick<Finding, 'rule' | 'e
 
 /**
  * Adds what `b` cites to the evidence of `a`, without repeats. Only `a` decides whether the finding claims something is
- * missing. When it does, an empty search either one cites backs the claim.
+ * missing. When it does, an empty search either one cites backs the claim. The related lines keep their first
+ * `MAX_RELATED_PROOF`, as a check's do.
  */
 function mergeEvidence(a: FindingEvidence | undefined, b: FindingEvidence | undefined): FindingEvidence | undefined {
   if (!b) return a;
@@ -1836,9 +1837,11 @@ function mergeEvidence(a: FindingEvidence | undefined, b: FindingEvidence | unde
     return cited;
   }
   const emptySearch = a.emptySearch === undefined ? undefined : a.emptySearch || b.emptySearch || '';
+  const relatedProof = [...new Set([...(a.relatedProof ?? []), ...(b.relatedProof ?? [])])].slice(0, MAX_RELATED_PROOF);
   return {
     checks: [...new Set([...a.checks, ...b.checks])],
     proof: [...new Set([...a.proof, ...b.proof])],
+    ...(relatedProof.length > 0 && { relatedProof }),
     ...(emptySearch !== undefined && { emptySearch }),
   };
 }

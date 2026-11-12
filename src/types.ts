@@ -820,9 +820,9 @@ export interface FindingEvidence {
   emptySearch?: string;
 }
 
-/** Whether `evidence` cites anything: a check, a proving line or an empty search. */
+/** Whether `evidence` cites anything: a check, a proving line, in the PR or in a related repo, or an empty search. */
 export function citesEvidence(evidence: FindingEvidence | undefined): boolean {
-  return !!evidence && (evidence.checks.length > 0 || evidence.proof.length > 0 || !!evidence.emptySearch);
+  return !!evidence && (evidence.checks.length > 0 || evidence.proof.length > 0 || !!evidence.relatedProof?.length || !!evidence.emptySearch);
 }
 
 /** What a reviewer had checked of a suspicion when it wrapped up, and what was left. */

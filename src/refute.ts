@@ -23,7 +23,7 @@ const REFUTE_STEPS = 15;
 // A safety net. The step budget is what normally ends the call.
 const REFUTE_TIMEOUT_MS = 600_000;
 const MAX_REASON_CHARS = 500;
-const MAX_RELATED_PROOF = 10;
+export const MAX_RELATED_PROOF = 10;
 const MAX_JUDGE_NOTES_CHARS = 1000;
 const MAX_FILE_CHANGE_CHARS = 8000;
 const MAX_PARALLEL_REFUTATIONS = 3;

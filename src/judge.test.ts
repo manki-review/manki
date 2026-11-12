@@ -4363,6 +4363,13 @@ describe('mapJudgedToFindings', () => {
     expect(fold(proven, { checks: [], proof: [], emptySearch: '' }).evidence).not.toHaveProperty('emptySearch');
     expect(fold({ ...proven, emptySearch: '' }, { checks: [], proof: [], emptySearch: 'grep x: no match' })).toMatchObject({ severity: 'blocker', evidence: { emptySearch: 'grep x: no match' } });
     expect(fold(undefined, { checks: [], proof: ['src/math.ts:2'], emptySearch: '' })).toMatchObject({ severity: 'blocker', evidence: { proof: ['src/math.ts:2'] } });
+    // The lines of a related repo that a check added to either finding stay, once each and 10 at most, the kept finding's first.
+    const related = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => `acme/reports:src/rows.ts:${from + i}`);
+    expect(fold({ ...proven, relatedProof: related(1, 2) }, { ...proven, relatedProof: related(2, 3) }).evidence).toEqual({ ...proven, relatedProof: related(1, 3) });
+    expect(fold(proven, { ...proven, relatedProof: related(1, 1) }).evidence).toEqual({ ...proven, relatedProof: related(1, 1) });
+    expect(fold(undefined, { ...proven, relatedProof: related(1, 1) }).evidence).toEqual({ ...proven, relatedProof: related(1, 1) });
+    expect(fold({ ...proven, relatedProof: related(1, 8) }, { ...proven, relatedProof: related(9, 14) }).evidence?.relatedProof).toEqual(related(1, 10));
+    expect(fold(proven, proven).evidence).not.toHaveProperty('relatedProof');
 
     // The kept finding takes the highest grade a finder gave it or a duplicate, so a blocker one finder filed is never the judge's alone.
     const filedAt = (kept: Finding['severity'], duplicate: Finding['severity']) => mapJudgedToFindings(
