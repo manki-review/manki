@@ -283,18 +283,21 @@ function restatesBlocker(finding: Finding, priorRounds: readonly RoundContext[],
 
 /**
  * Returns the grade the finders gave a blocker that only the judge raised to blocker and that two refuters on
- * different models both disproved, or undefined when the blocker stays. A blocker a finder filed stays, since PR
+ * different models both disproved, or undefined when the blocker stays. A finding that `breaksRule` goes no lower than
+ * the grade `rules` gives. A blocker a finder filed stays, since PR
  * content the refuters read could steer them all. So does a tool alert, a security finding, an open lead, which is
  * no finished finding to grade, and a finding whose refuters' models are unknown or the same.
  */
-function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined): FindingSeverity | undefined {
+function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined, rules?: RulesMode): FindingSeverity | undefined {
   const [raise, ...later] = finding.gradePath ?? [];
   if (finding.severity !== 'blocker' || raise?.by !== 'judge' || later.length > 0) return undefined;
   if (finding.toolSource || finding.lead || isSecurityFinding(finding.tags, finding.reviewers)) return undefined;
   if (refutation?.outcome !== 'disproved' || pairRefutation?.outcome !== 'disproved') return undefined;
   if (!refutation.model || !pairRefutation.model || refutation.model === pairRefutation.model) return undefined;
   const filed = finderGrade(finding);
-  return filed === 'blocker' ? undefined : filed;
+  // The rule alone gives a finding that `breaksRule` its grade, whatever the refuters say about the damage.
+  const lowest = breaksRule(finding) && rank(ruleGrade(rules)) < rank(filed) ? ruleGrade(rules) : filed;
+  return lowest === 'blocker' ? undefined : lowest;
 }
 
 /**
@@ -329,7 +332,7 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
   const dropped = finding.severity === 'blocker' ? undefined : disproof(graded);
   if (dropped) return { ...graded, ...gradeStep(finding, 'ignore', 'refutation', dropped.reason) };
   if (outcome === 'disproved') {
-    const filed = restates ? undefined : gradeBeforeJudgeRaise(finding, refutation, pairRefutation);
+    const filed = restates ? undefined : gradeBeforeJudgeRaise(finding, refutation, pairRefutation, rules);
     if (!filed) return graded;
     const reason = `${refutation!.model} and ${pairRefutation!.model} both disproved it, and no finder graded it a blocker`;
     core.info(`Posting blocker "${finding.title}" as a ${filed}: ${reason}`);

@@ -264,6 +264,8 @@ describe('refuteBlockers', () => {
       ['Same as an earlier warning', { ...raised(), sameAs: 'src/old.ts:3:3:old-warning' }],
       // When finders disagree the highest grade counts, and a merged duplicate a finder filed as a blocker makes it a finder's blocker.
       ['Highest finder grade', { ...raised('note'), reviewerSeverity: 'warning' }],
+      // A confirmed rule alone gives a warning, so the finding goes no lower than that, whatever its finder filed.
+      ['Breaks a rule', { ...raised('note'), rule: { file: 'AGENTS.md', quote: 'Every bound must be checked.', verdict: 'confirmed' } }],
       ['Merged finder blocker', { ...raised(), reviewerSeverity: 'blocker' }],
       ['Finder blocker', {}],
       // Any second answer but a disproof keeps the blocker.
@@ -289,15 +291,17 @@ describe('refuteBlockers', () => {
     const earlier = (line: number, slug: string, severity: Finding['severity'], threadId?: string) => ({ fingerprint: { file: 'src/old.ts', lineStart: line, lineEnd: line, slug }, severity, threadId });
     const priorRounds = [{ findings: { entries: [earlier(1, 'old-blocker', 'blocker'), earlier(2, 'in-thread', 'warning', 'T1'), earlier(3, 'old-warning', 'warning', 'T2')] }, judge: {} }] as unknown as RoundContext[];
     const blocking = (file: string) => [{ threadId: 'T1', file, line: 4, severity: 'blocker' }] as OpenThread[];
-    const run = (pair: LLMClient, picked = cases, blockingThreads = blocking('src/old.ts')) =>
-      refuteBlockers(first, picked.map(([title, overrides]) => finding(title, overrides)), { workspace, diff, pair, priorRounds, blockingThreads });
+    const run = (pair: LLMClient, picked = cases, blockingThreads = blocking('src/old.ts'), rules?: 'block') =>
+      refuteBlockers(first, picked.map(([title, overrides]) => finding(title, overrides)), { workspace, diff, pair, priorRounds, blockingThreads, rules });
 
     const result = await run(fakeClient(replies, 'gpt-6.1-sol'));
 
     expect(result.map(f => [f.title, f.severity])).toEqual([
-      ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ...cases.slice(3).map(([title]) => [title, 'blocker']),
+      ['Judge raise', 'warning'], ['Same as an earlier warning', 'warning'], ['Highest finder grade', 'warning'], ['Breaks a rule', 'warning'], ...cases.slice(4).map(([title]) => [title, 'blocker']),
     ]);
-    const [lowered, , , merged] = result;
+    // With `review.rules: block` the rule alone gives a blocker, so that finding stays one.
+    expect((await run(fakeClient(replies, 'gpt-6.1-sol'), cases.slice(2, 4), undefined, 'block')).map(f => f.severity)).toEqual(['warning', 'blocker']);
+    const [lowered, , , , merged] = result;
     const reason = 'claude-opus-5-5 and gpt-6.1-sol both disproved it, and no finder graded it a blocker';
     expect(lowered.gradePath).toEqual([{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'refutation', reason }]);
     expect([lowered.refutation?.model, lowered.pairRefutation?.model]).toEqual(['claude-opus-5-5', 'gpt-6.1-sol']);
