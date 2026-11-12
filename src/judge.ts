@@ -2089,7 +2089,9 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
     const { preExisting, ...unmarked } = first;
     const stays = preExisting && f.preExisting && (!staysPreExisting || staysPreExisting(f));
     const rule = mergedRule(first, f);
-    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...(filed && { reviewerSeverity: filed }), ...(rule && { rule }) });
+    // A rule is confirmed by the line its own finding cites, so that line comes with a confirmed rule the copy brings.
+    const evidence = breaksRule(f) && !breaksRule(first) ? mergeEvidence(first.evidence, f.evidence) : undefined;
+    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...(filed && { reviewerSeverity: filed }), ...(rule && { rule }), ...(evidence && { evidence }) });
   }
   return [...kept.values()];
 }

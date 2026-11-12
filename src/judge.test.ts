@@ -4643,6 +4643,10 @@ describe('deduplicateFindings', () => {
     const confirmed = { ...other, verdict: 'confirmed' as const };
     expect(deduplicateFindings([{ ...findings[0], rule: { ...rule, verdict: 'not_broken' } }, { ...findings[1], rule: confirmed }])[0].rule).toEqual(confirmed);
     expect(deduplicateFindings([{ ...findings[0], rule: confirmed }, { ...findings[1], rule: { ...rule, verdict: 'confirmed' } }])[0].rule).toEqual(confirmed);
+    // The line that proves a confirmed rule comes with it, and only then does a copy's evidence reach the kept finding.
+    const cited = (proof: string): Finding['evidence'] => ({ checks: [], proof: [proof] });
+    const withProof = (verdict: 'confirmed' | 'not_broken') => deduplicateFindings([{ ...findings[0], evidence: cited('src/a.ts:10') }, { ...findings[1], rule: { ...other, verdict }, evidence: cited('src/a.ts:20') }])[0].evidence?.proof;
+    expect([withProof('confirmed'), withProof('not_broken')]).toEqual([['src/a.ts:10', 'src/a.ts:20'], ['src/a.ts:10']]);
 
     // A dropped copy on a changed line, or citing one as proof, ties the finding to this PR, so the mark goes.
     const diff = makeDiff([makeDiffFile({ path: 'src/a.ts', hunks: [{ oldStart: 18, oldLines: 5, newStart: 18, newLines: 5, content: '' }] })]);
