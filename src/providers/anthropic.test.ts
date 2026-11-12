@@ -1158,13 +1158,23 @@ describe('ensureCLI — install path', () => {
     expect(mockInstallPinned.mock.calls[1][0].url).toBe(`https://registry.npmjs.org/@anthropic-ai/claude-code-linux-${process.arch}-musl/-/claude-code-linux-${process.arch}-musl-${CLAUDE_CLI_VERSION}.tgz`);
   });
 
-  it('throws when the install fails or no build is pinned for the platform, and installs again on the next call', async () => {
+  it('tries a failed install once more, throws the second failure, and installs again on the next call', async () => {
     mockExecFileAsync.mockRejectedValue(new Error('not found'));
-    mockInstallPinned.mockRejectedValueOnce(new Error('download does not match its pinned sha512 digest'));
+    mockInstallPinned
+      .mockRejectedValueOnce(new Error('The operation was aborted due to timeout'))
+      .mockRejectedValueOnce(new Error('download does not match its pinned sha512 digest'));
     setupSpawnForSuccess('installed later');
 
     await expect(new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' }).sendMessage('sys', 'user'))
       .rejects.toThrow('Failed to install Claude CLI: download does not match its pinned sha512 digest');
+    expect(mockInstallPinned).toHaveBeenCalledTimes(2);
+
+    // A second try that works is all the call needs.
+    mockInstallPinned.mockRejectedValueOnce(new Error('The operation was aborted due to timeout')).mockResolvedValueOnce('/runner/temp/manki-pinned');
+    const second = await new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' }).sendMessage('sys', 'user');
+    expect(second.content).toBe('installed later');
+    expect(mockInstallPinned).toHaveBeenCalledTimes(4);
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
 
     const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
     Object.defineProperty(process, 'platform', { ...platform, value: 'aix' });
@@ -1178,7 +1188,7 @@ describe('ensureCLI — install path', () => {
     mockInstallPinned.mockResolvedValueOnce('/runner/temp/manki-pinned');
     const result = await new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' }).sendMessage('sys', 'retry');
     expect(result.content).toBe('installed later');
-    expect(mockInstallPinned).toHaveBeenCalledTimes(2);
+    expect(mockInstallPinned).toHaveBeenCalledTimes(5);
   });
 
   it('reuses cached CLI path on second call', async () => {
@@ -1235,10 +1245,10 @@ describe('warmupCLI', () => {
 
   it('propagates ensureCLI errors when install fails', async () => {
     mockExecFileAsync.mockRejectedValueOnce(new Error('not found'));
-    mockInstallPinned.mockRejectedValueOnce(new Error('download failed with HTTP 503'));
+    mockInstallPinned.mockRejectedValue(new Error('download failed with HTTP 503'));
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
-    await expect(client.warmupCLI()).rejects.toThrow('Failed to install Claude CLI');
+    await expect(client.warmupCLI()).rejects.toThrow('Failed to install Claude CLI: download failed with HTTP 503');
   });
 });
 
