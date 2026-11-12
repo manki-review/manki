@@ -9,9 +9,9 @@ import { makeScratchDir } from './tool-install';
 import { RelatedCheckout, RelatedRepo, RelatedRepoTools, RoundRelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
-// A tool call that runs for the fetch and the wait after it must end before the CLI's 90 second stale limit.
 /** Where every related repo lives. */
 export const RELATED_REPO_HOST = 'https://github.com';
+// A tool call that runs for the fetch and the wait after it must end before the CLI's 90 second stale limit.
 const FETCH_TIMEOUT_MS = 60_000;
 const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
