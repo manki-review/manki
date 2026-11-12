@@ -16,7 +16,7 @@ import { findPriorThreadId } from '../src/finding-fingerprint';
 import { replyOutcome } from '../src/interaction';
 import { summarizeCalls } from '../src/providers';
 import type { LLMCall } from '../src/providers';
-import { parseFindingData, threadMarkerSlug, threadSeverity } from '../src/recap';
+import { findingFile, findingLineOf, parseFindingData, threadMarkerSlug, threadSeverity } from '../src/recap';
 import { extractApprovalRecords } from '../src/review-record';
 import { outcomeOf, SEVERITY_ORDER } from '../src/types';
 import type { ApprovalRecord, Refutation, ReplyRecord, RoundContext, TokenServiceCall } from '../src/types';
@@ -229,10 +229,10 @@ function mankiThreads(comments: ThreadComment[]): (PostedThread & { reviewId: nu
     const markerSlug = c.user?.type === 'Bot' && !c.in_reply_to_id && c.body ? threadMarkerSlug(c.body) : undefined;
     if (!markerSlug || !c.path || !c.pull_request_review_id) return [];
     const data = parseFindingData(c.body ?? '');
-    const file = data?.detached ? data.file ?? '' : c.path;
+    const file = findingFile(c.body ?? '', c.path);
     return [{
-      threadId: String(c.id), file, line: c.line ?? 0, markerSlug, reviewId: c.pull_request_review_id,
-      ...(c.original_line && { originalLine: c.original_line }), ...(data?.file === file && data.line && { findingLine: data.line }),
+      threadId: String(c.id), file, line: findingLineOf(c.body ?? '', c.line), markerSlug, reviewId: c.pull_request_review_id,
+      ...(c.original_line && !data?.detached && { originalLine: c.original_line }), ...(data?.file === file && data.line && { findingLine: data.line }),
     }];
   });
 }

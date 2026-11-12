@@ -1033,16 +1033,18 @@ async function fetchReviewThreads(
       const markerSlug = threadMarkerSlug(firstComment?.body ?? '');
 
       const body = firstComment?.body ?? '';
-      const data = isBotThread ? parseFindingData(body) : undefined;
+      // Finding data counts only in Manki's own comment.
+      const ownBody = isBotThread ? body : '';
+      const data = parseFindingData(ownBody);
       const findingTitle = data?.title?.trim() || matchTitleLine(body)?.[1]?.trim() || '';
-      const file = data?.detached ? data.file ?? '' : thread.path ?? '';
+      const file = findingFile(ownBody, thread.path);
       const findingLine = data?.file === file ? data.line : undefined;
 
       const { description, suggestedFix, howToFix } = isBotThread && firstComment?.body
         ? parseFindingFromComment(firstComment.body)
         : {};
 
-      const line = data?.detached ? data.line ?? 0 : thread.line ?? 0;
+      const line = findingLineOf(ownBody, thread.line);
       const lineStart = thread.startLine ?? line;
       const recordedOverride = isBotThread ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
