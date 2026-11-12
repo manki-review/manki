@@ -885,6 +885,7 @@ describe('checkFindingClaims', () => {
       writeFileSync(join(base, 'outside.rs'), `${'x\n'.repeat(50)}`);
       symlinkSync(join(base, 'outside.rs'), join(checkout, 'link.rs'));
       writeFileSync(join(checkout, 'big.rs'), 'x\n'.repeat(600_000));
+      writeFileSync(join(checkout, 'src', 'spread.ts'), 'call(...args);\n');
       writeFileSync(join(checkout, 'src', 'twin.rs'), 'pub fn twin() {}\n');
       // Git allows `:` in a file name, so the PR holds a file whose path reads like a citation of the related repo.
       const workspace = join(base, 'pr');
@@ -951,6 +952,13 @@ describe('checkFindingClaims', () => {
         // A citation that only an evidence line makes is checked once that line quotes code.
         quoting('o/r:src/lib.rs:1, which defines `pub fn a()`', '`o/r:src/lib.rs:1-2` is where it is called'),
         quoting('o/s:x.rs:1 calls `removed_function()`'),
+        // Every part of a quote is compared, also a short one beside a longer one, so no cut quote holds by one part alone.
+        quoting('o/r:src/lib.rs:2 has `gone ... pub fn b() {}`'),
+        quoting('o/r:src/lib.rs:2 reads `fn b ... gone`'),
+        // Code that holds three dots itself is cut there, and both halves are in the line.
+        quoting('o/r:src/spread.ts:1 passes them on in `call(...args)`'),
+        // Code quoted after a further citation belongs to that one, and is not compared with the first.
+        quoting('o/r:src/lib.rs:2 defines `pub fn b()`, unlike o/r:src/long.rs:25 with `fn step_25() {}`'),
         // Two spellings of one place get one answer. A quote the lines do not hold decides it, whichever spelling it stands with.
         quoting('o/r:./src/lib.rs:2 reads `removed_function()`'),
         quoting('o/r:src/lib.rs:2-2 defines `pub fn b()`'),
@@ -974,6 +982,10 @@ describe('checkFindingClaims', () => {
         '`o/r:src/lib.rs:2` is in the fetched checkout.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/lib.rs:1` is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/s:x.rs:1` is unchecked: o/s was not fetched this round.',
+        '`o/r:src/lib.rs:2` holds only part of the quoted code: `pub fn b() {}` is within 3 lines of the cited line, `gone` is not.',
+        '`o/r:src/lib.rs:2` holds only part of the quoted code: `fn b` is within 3 lines of the cited line, `gone` is not.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/spread.ts:1` is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
         '`o/r:./src/lib.rs:2` (also cited as `o/r:src/lib.rs:2`) does not hold the quoted code: `removed_function()` is not within 3 lines of the cited line.',
         '`o/r:src/lib.rs:2-2` (also cited as `o/r:src/lib.rs:2`) is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-30` (also cited as `o/r:src/long.rs:1`) is in the fetched checkout.',

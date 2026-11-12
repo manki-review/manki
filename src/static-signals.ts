@@ -28,7 +28,7 @@ const MAX_CITATIONS = 10;
 const QUOTE_LINE_WINDOW = 3;
 /** A cited range of more lines than this is not compared with a quote, which could sit anywhere in it. It is as many lines as the window around one line. */
 const MAX_QUOTED_RANGE = 2 * QUOTE_LINE_WINDOW + 1;
-/** A quote shorter than this, without its whitespace, could match almost any line. */
+/** A quote shorter than this, without its whitespace, could match almost any line, and is mostly a name in a sentence. */
 const MIN_QUOTE_CHARS = 6;
 // `owner/name:path:line` or `owner/name:path:start-end`, the form reviewers cite a related repo's code in.
 const RELATED_CITATION = /(?<![\w./-])([\w.-]+\/[\w.-]+):([^\s:`'"()<>]+):(\d+)(?:-(\d+))?/g;
@@ -531,19 +531,22 @@ export function namesPrFile(workspace: string, cited: Pick<RelatedCitation, 'rep
 /**
  * Returns, for each place in a configured related repo that the finding's title or description cites, whether it is in
  * the checkout the round fetched. Only a citation found there lets the judge treat it as evidence, and never one that
- * `namesPrFile`. An evidence line that starts with a citation and quotes code in backticks is compared with the
- * fetched lines. The note says "holds the quoted code" only when they hold every quoted part. Otherwise it names each
- * part they hold and each they do not. A range of more than `MAX_QUOTED_RANGE` lines is not compared, and its note
- * says only that it is in the checkout. Citations of one file and first line are one place and get one note, the worst
- * of theirs, so no spelling of a place reads better than another.
+ * `namesPrFile`. An evidence line that starts with a citation and quotes code in backticks, before any further
+ * citation, is compared with the fetched lines. The note says "holds the quoted code" only when they hold every quoted
+ * part. Otherwise it names each part they hold and each they do not. A range of more than `MAX_QUOTED_RANGE` lines is
+ * not compared, and its note says only that it is in the checkout. Citations of one file and first line are one place
+ * and get one note, the worst of theirs, so no spelling of a place reads better than another.
  */
 function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }: NonNullable<ClaimSources['related']>): string[] {
   const quotes = new Map<string, { cited: RelatedCitation; code: string[] }>();
   for (const entry of finding.evidence?.checks ?? []) {
     const cited = leadingRelatedCitation(entry, names);
+    if (!cited) continue;
     // The backtick that closes a quoted citation would pair with the next quote's opening one.
-    const code = cited ? quotedCode(entry.slice(entry.indexOf(cited.citation) + cited.citation.length).replace(/^`+/, '')) : [];
-    if (cited && code.length > 0) quotes.set(cited.citation, { cited, code: [...(quotes.get(cited.citation)?.code ?? []), ...code] });
+    const after = entry.slice(entry.indexOf(cited.citation) + cited.citation.length).replace(/^`+/, '');
+    const [next] = relatedCitations(after, names);
+    const code = quotedCode(next ? after.slice(0, after.indexOf(next.citation)) : after);
+    if (code.length > 0) quotes.set(cited.citation, { cited, code: [...(quotes.get(cited.citation)?.code ?? []), ...code] });
   }
   const stated = relatedCitations(`${finding.title}\n${finding.description}`, names);
   // A citation that only an evidence line makes is checked when that line quotes code to compare.
@@ -591,12 +594,16 @@ function pathInCheckout(dir: string | undefined, path: string): string {
 const withoutWhitespace = (text: string): string => text.replace(/\s+/g, '');
 
 /**
- * Returns the code `text` quotes in backticks, each part of a quote cut by an ellipsis on its own. A part under
- * `MIN_QUOTE_CHARS` without its whitespace is left out. As in Markdown, a run of backticks is closed only by a run of
- * the same length, so a quote in double backticks can hold a backtick itself.
+ * Returns the code `text` quotes in backticks, each part of a quote cut by an ellipsis on its own. Every part of a
+ * quote is returned, so none is left out of the comparison. A quote under `MIN_QUOTE_CHARS`, without its whitespace and
+ * ellipses, is taken as a name the sentence mentions and gives no part. As in Markdown, a run of backticks is closed
+ * only by a run of the same length, so a quote in double backticks can hold a backtick itself.
  */
 function quotedCode(text: string): string[] {
-  return [...text.matchAll(/(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)/g)].flatMap(([, , quote]) => quote.split(/\.{3}|…/)).map(part => part.trim()).filter(part => withoutWhitespace(part).length >= MIN_QUOTE_CHARS);
+  return [...text.matchAll(/(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)/g)]
+    .map(([, , quote]) => quote.split(/\.{3}|…/).map(part => part.trim()).filter(part => part.length > 0))
+    .filter(parts => withoutWhitespace(parts.join('')).length >= MIN_QUOTE_CHARS)
+    .flat();
 }
 
 /**
