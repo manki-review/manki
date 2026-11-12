@@ -1267,10 +1267,11 @@ describe('runFullReview end to end', () => {
       expect(mockLLM.calls).toEqual([]);
     });
 
-    it.each<[string, string, () => void]>([
-      ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED'])],
-      ['a merge', 'closed', () => expect(core.info).toHaveBeenCalledWith('No Manki review rounds on this pull request, no fix rate to record')],
-    ])('handles %s whose first read of the PR meets a GitHub 5xx three times, and fails the run on the fourth', async (_event, action, handled) => {
+    it.each<[string, string, () => void, string]>([
+      ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']), ` ${RETRY_HINT}`],
+      // A review command would review the merged PR, so the failure names none.
+      ['a merge', 'closed', () => expect(core.info).toHaveBeenCalledWith('No Manki review rounds on this pull request, no fix rate to record'), ''],
+    ])('handles %s whose first read of the PR meets a GitHub 5xx three times, and fails the run on the fourth', async (_event, action, handled, hint) => {
       mockGitHub.configs = { main: 'metrics:\n  fix_rate: true\n' };
       mockGitHub.merged = action === 'closed';
       const failFirstRead = (times: number) => { mockGitHub.failures = [{ method: 'GET', path: new RegExp(`/pulls/${PR_NUMBER}$`), status: 503, times }]; };
@@ -1285,7 +1286,7 @@ describe('runFullReview end to end', () => {
       failFirstRead(4);
       await dispatch(inputs);
 
-      expect(core.setFailed).toHaveBeenCalledWith(`Manki encountered an error: GitHub returned 503 on GET /repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}. ${RETRY_HINT}`);
+      expect(core.setFailed).toHaveBeenCalledWith(`Manki encountered an error: GitHub returned 503 on GET /repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}.${hint}`);
       expect(mockGitHub.failures[0].times).toBe(0);
     });
 

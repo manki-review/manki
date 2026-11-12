@@ -606,15 +606,15 @@ interface OctokitErrorFields {
   response?: { headers?: Record<string, string | undefined> };
 }
 
-function failureReason(error: unknown): string {
-  return sanitizeLogOutput(sanitizeTokens(describeFailure(error)));
+function failureReason(error: unknown, retryHint = RETRY_HINT): string {
+  return sanitizeLogOutput(sanitizeTokens(describeFailure(error, retryHint)));
 }
 
 /**
  * Describes a failure in a sentence that always names a cause. A 5xx from GitHub reads as a
- * transient failure, and an Octokit error with an empty message falls back to its status and call.
+ * transient failure that ends with `retryHint`, and an Octokit error with an empty message falls back to its status and call.
  */
-function describeFailure(error: unknown): string {
+function describeFailure(error: unknown, retryHint: string): string {
   if (!(error instanceof Error)) return String(error).trim() || `A ${typeof error} with no message`;
   const message = error.message.trim();
   if (error.name === 'HttpError') {
@@ -624,7 +624,7 @@ function describeFailure(error: unknown): string {
     const requestId = response?.headers?.['x-github-request-id'];
     const where = `${call}${requestId ? ` (request id ${requestId})` : ''}`;
     // Without a response the request never reached GitHub, so the message names the network error.
-    if (response && status !== undefined && status >= 500) return `GitHub returned ${status}${where}. ${RETRY_HINT}`;
+    if (response && status !== undefined && status >= 500) return `GitHub returned ${status}${where}. ${retryHint}`.trimEnd();
     if (!message) return `GitHub returned ${status ?? 'an error'}${where}.`;
   }
   return message || `${error.name} with no message`;
@@ -2282,7 +2282,9 @@ async function main(): Promise<void> {
     }
   } catch (error) {
     if (dispatched !== undefined && error instanceof TokenServiceError) await reportTokenFailure(dispatched, error);
-    core.setFailed(`Manki encountered an error: ${failureReason(error)}`);
+    // No hint for a merge. A review command would review the merged PR instead of recording its fix rate.
+    const retryHint = dispatched?.event === 'pull_request' && dispatched.action === 'closed' ? '' : RETRY_HINT;
+    core.setFailed(`Manki encountered an error: ${failureReason(error, retryHint)}`);
   } finally {
     if (stopSampler) {
       stopSampler();
