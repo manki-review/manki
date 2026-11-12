@@ -1631,7 +1631,7 @@ export function mapJudgedToFindings(
       const verdict = ruleVerdict(finding, match);
       finding.rule = { ...o.rule, verdict, ...(verdict === 'unproven' && match.ruleUnseen && { unseen: match.ruleUnseen }) };
     }
-    applyOwnProposal(finding, provenanceMap);
+    Object.assign(finding, applyOwnProposal(finding, provenanceMap));
     const sameAs = priorKey(priorFindings, match.sameAs);
     const variantOf = sameAs ? undefined : priorKey(priorFindings, match.variantOf);
     if (sameAs) finding.sameAs = sameAs;
@@ -1890,19 +1890,15 @@ function ownProposalOf(finding: Finding, provenanceMap?: ProvenanceEntry[]): Pro
  * object to a change it asked for. A `warning` or `blocker` there means the new code is worse, and it stays. So does
  * a note that `breaksRule`, which `gradeConfirmedRule` raises.
  */
-function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): void {
+function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): Finding {
   const match = ownProposalOf(finding, provenanceMap);
-  if (!match) return;
-  if (!isNote(finding.severity) || breaksRule(finding)) return;
-
-  finding.originalSeverity ??= finding.severity;
-  Object.assign(finding, gradeStep(finding, 'ignore', 'own_proposal'));
-
-  finding.tags = addTag(finding.tags, OWN_PROPOSAL_TAG);
-
+  if (!match || !isNote(finding.severity) || breaksRule(finding)) return finding;
   const safeTitle = match.originatingTitle.replace(/[\n\r`]/g, ' ').slice(0, 200);
   const note = `Own-proposal follow-up: implements round ${match.originatingRound} finding "${safeTitle}"`;
-  finding.judgeNotes = finding.judgeNotes ? `${finding.judgeNotes}\n${note}` : note;
+  return {
+    ...finding, originalSeverity: finding.originalSeverity ?? finding.severity, ...gradeStep(finding, 'ignore', 'own_proposal'),
+    tags: addTag(finding.tags, OWN_PROPOSAL_TAG), judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${note}` : note,
+  };
 }
 
 function addTag(tags: string[] | undefined, tag: string): string[] {
