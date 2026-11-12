@@ -4,11 +4,11 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, inline, NO_VERDICT_MARKER, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, hasWriteAccess, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, inline, NO_VERDICT_MARKER, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, judgeAddressedThreadIds, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadMarkerSlug, threadSettled, threadSeverity } from './recap';
+import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity } from './recap';
 import { formatApprovalRecord, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
@@ -67,7 +67,7 @@ interface ReviewThread {
   resolvedByLogin?: string;
   /** A round record says the judge found the thread addressed. */
   addressed?: boolean;
-  /** Who wrote the latest reply by a person. Set only on a thread Manki resolved, and only when that person has write access. */
+  /** Who wrote the latest reply by a person, when that person has write access. Read only for a thread Manki resolved, and only below the comment limit. */
   writerReplyLogin?: string;
   isBlocking: boolean;
   isSecurity?: boolean;
@@ -150,12 +150,12 @@ async function fetchBotReviewThreads(
   // The round records hold each thread's grade, which also decides who may clear a resolved thread.
   const records = botThreads.length > 0 ? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber) : { priorRounds: [] };
   const grades = recordedThreadGrades(records.priorRounds);
-  const addressed = judgeAddressedThreadIds(records.priorRounds);
-  // Only Manki's own resolve needs a replier to back it. A thread cut off at the comment limit may hide a later reply, so it names none.
-  const latestReplier = (thread: typeof botThreads[number]) => thread.isResolved && isBotLogin(bot, thread.resolvedBy?.login) && thread.comments.nodes.length < THREAD_COMMENTS_LIMIT
-    ? thread.comments.nodes.slice(1).filter(c => !isBotLogin(bot, c.author?.login)).at(-1)?.author?.login : undefined;
-  const repliers = new Set(botThreads.flatMap(t => latestReplier(t) ?? []));
-  const writers = new Set((await Promise.all([...repliers].map(async login => await hasWriteAccess(octokit, owner, repo, login) ? [login] : []))).flat());
+  // Only Manki's own resolve needs a replier to back it. A thread at the comment limit may hide a later reply, so it names none.
+  const backing = await resolveBacking(octokit, owner, repo, records.priorRounds, botThreads.map(thread => {
+    const replier = thread.isResolved && isBotLogin(bot, thread.resolvedBy?.login) && thread.comments.nodes.length < THREAD_COMMENTS_LIMIT
+      ? latestPersonReply(bot, thread.comments.nodes)?.author?.login : undefined;
+    return { id: thread.id, ...(replier && { latestReplyLogin: replier }) };
+  }));
   if ('priorRoundsIncomplete' in records) core.warning('Without every round record, every Manki thread counts as blocking');
   return botThreads
     .map(thread => {
@@ -179,7 +179,6 @@ async function fetchBotReviewThreads(
 
       const rootCommentId = thread.comments.nodes[0]?.databaseId;
       const resolvedByLogin = thread.resolvedBy?.login;
-      const replier = latestReplier(thread);
       const threadUrl = thread.comments.nodes[0]?.url;
       const recordedOverride = isSecurity || isBlocking ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       const fixedOn = thread.comments.nodes.slice(1).flatMap(c => {
@@ -191,8 +190,7 @@ async function fetchBotReviewThreads(
         ...(rootCommentId != null && { rootCommentId }),
         isResolved: thread.isResolved,
         ...(resolvedByLogin && { resolvedByLogin }),
-        ...(addressed.has(thread.id) && { addressed: true }),
-        ...(replier && writers.has(replier) && { writerReplyLogin: replier }),
+        ...backing.get(thread.id),
         isBlocking,
         ...(isSecurity && { isSecurity: true }),
         ...(recordedOverride && { recordedOverride }),
@@ -280,11 +278,11 @@ async function reopenAuthorResolvedThreads(
   }
 }
 
-/** Reopens the thread `threadId` that the PR author resolved, and returns whether that worked. A failure is logged and leaves the thread resolved. */
+/** Reopens the thread `threadId` that someone other than Manki resolved, and returns whether that worked. A failure is logged and leaves the thread resolved. */
 async function reopenThread(octokit: Octokit, threadId: string): Promise<boolean> {
   try {
     await unresolveReviewThread(octokit, threadId);
-    core.info(`Reopened thread ${threadId} that the PR author resolved`);
+    core.info(`Reopened thread ${threadId} that someone other than Manki resolved`);
     return true;
   } catch (error) {
     core.warning(`Failed to reopen thread ${threadId}: ${error}`);
@@ -313,14 +311,10 @@ async function announceSecurityOverrides(octokit: Octokit, overrides: Array<Requ
 /**
  * Returns the bot review threads that hold an approval: every blocking thread, and every thread in `named`, that is
  * not cleared. Note threads posted by older versions never block, matching the verdict's bar.
- * A resolved thread is cleared only when `threadSettled` holds, the rule a review round reads too.
+ * A resolved thread is cleared only when `settledBy` gives a reason, as in a review round.
  */
 function unclearedThreads(threads: ReviewThread[], bot: BotIdentity, prAuthorLogin?: string, prAuthorRole?: AuthorClearRole, named: ReadonlySet<string> = new Set()): ReviewThread[] {
-  return threads.filter(t => (t.isBlocking || named.has(t.id)) && !threadSettled(t, {
-    addressed: !!t.addressed,
-    override: !!securityOverrideOf(t, prAuthorLogin, prAuthorRole),
-    replierMayClear: mayClearSecurityThread(t.writerReplyLogin, bot, prAuthorLogin),
-  }, bot, prAuthorLogin));
+  return threads.filter(t => (t.isBlocking || named.has(t.id)) && !settledBy(t, bot, prAuthorLogin, prAuthorRole));
 }
 
 /** The change a round reviews: its commit, and the `changeDigest` of its diff when known. */

@@ -247,6 +247,7 @@ jest.mock('./github', () => ({
   markProgressCommentSuperseded: jest.fn().mockResolvedValue(undefined),
   isFailedProgress: jest.requireActual('./github').isFailedProgress,
   fetchPRComments: jest.fn().mockResolvedValue([]),
+  fetchReviewThreadNodes: jest.fn().mockResolvedValue([]),
   BOT_LOGIN: 'manki-review[bot]',
   isBotLogin: jest.requireActual('./github').isBotLogin,
   titleToSlug: jest.requireActual('./github').titleToSlug,
@@ -270,6 +271,7 @@ jest.mock('./state', () => ({
   isNewChange: jest.requireActual('./state').isNewChange,
   pauseState: jest.requireActual('./state').pauseState,
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
+  reopenThread: jest.requireActual('./state').reopenThread,
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
   deleteThreadReply: jest.requireActual('./state').deleteThreadReply,
   resolveReviewThread: jest.requireActual('./state').resolveReviewThread,
@@ -6106,7 +6108,10 @@ describe('runFullReview orchestration', () => {
     expect(threadIds).not.toContain('PRRT_resolved');
   });
 
-  it('keeps a blocker thread that fails to resolve open, and requests changes on it instead of approving', async () => {
+  it.each([
+    ['fails to resolve', undefined],
+    ['someone else resolved, and that cannot be reopened', 'alice'],
+  ])('keeps a blocker thread that %s open, and requests changes on it instead of approving', async (_name, resolver) => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -6123,6 +6128,7 @@ describe('runFullReview orchestration', () => {
       priorRounds: [],
     });
 
+    if (resolver) jest.mocked(ghUtils.fetchReviewThreadNodes).mockResolvedValueOnce([{ id: 'PRRT_fail', isResolved: true, resolvedBy: { login: resolver } }]);
     mockGraphql.mockRejectedValueOnce(new Error('GraphQL error'));
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -6137,6 +6143,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Failed to resolve thread PRRT_fail, it stays open'));
+    expect(mockGraphql.mock.calls.map(([query]) => String(query).includes('unresolveReviewThread'))).toEqual([!!resolver]);
     expect(mockGraphql).not.toHaveBeenCalledWith(expect.stringContaining('addPullRequestReviewThreadReply'), expect.anything());
     const posts = jest.mocked(ghUtils.postReview).mock.calls;
     expect(posts).toHaveLength(1);
