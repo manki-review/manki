@@ -107,9 +107,10 @@ export interface SweepOptions {
 
 /**
  * Asks one call per blocker, at most `MAX_SWEEPS`, for every other place in the diff that makes the same kind of
- * mistake, each on the client `clientFor` returns for its reviewer name. The security blockers and those the judge was
- * surest of go first. Returns their findings, which carry that name, without any on a blocker's own line, and a record
- * of every sweep, the ones past the cap as `cut`. A call that fails is recorded as `failed`. It never throws.
+ * mistake, each on the client `clientFor` returns for its reviewer name. The security blockers go first, and among the
+ * others those a check confirmed, then those the cited lines prove. Returns their findings, which carry that name,
+ * without any on a blocker's own line, and a record of every sweep, the ones past the cap as `cut`. A call that fails
+ * is recorded as `failed`. It never throws.
  */
 export async function runSweeps(
   clientFor: (reviewer: string) => LLMClient, blockers: readonly Finding[], { rawDiff, effort, workspace }: SweepOptions,
