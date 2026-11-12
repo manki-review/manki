@@ -346,7 +346,7 @@ The clones go to `manki-related-repos` in the runner's temp directory. To reuse 
           restore-keys: manki-related-repos-
 ```
 
-Of a restored clone Manki keeps only the object store, and only once `git fsck` finds it intact, so a tampered cache entry cannot change how git runs. The fetch then downloads the commit and its trees again, and only the files the cache does not hold yet, and Manki repacks the store so it keeps one copy of each object. A job with `cache-mode: read` restores the cache and saves nothing (see [Cache access](getting-started.md#cache-access)). No other job writes this cache, so such a job fetches every related repository from scratch on each run. A run for a thread reply uses the same directory, so with this step a reply that names a related repository finds its clone already there.
+Of a restored clone Manki keeps only the object store, and only once `git fsck` finds it intact, so a tampered cache entry cannot change how git runs. It first removes an unfinished pack that a stopped fetch left there, which git itself would keep. The fetch then downloads the commit and its trees again, and only the files the cache does not hold yet, and Manki repacks the store so it keeps one copy of each object. A job with `cache-mode: read` restores the cache and saves nothing (see [Cache access](getting-started.md#cache-access)). No other job writes this cache, so such a job fetches every related repository from scratch on each run. A run for a thread reply uses the same directory, so with this step a reply that names a related repository finds its clone already there.
 
 ## Related open PRs and issues
 

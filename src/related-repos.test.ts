@@ -264,6 +264,7 @@ describe('relatedRepoLoader', () => {
     mkdirSync(join(dir, '.git', 'objects', 'pack'), { recursive: true });
     mkdirSync(join(dir, '.git', 'objects', 'info'));
     writeFileSync(join(dir, '.git', 'objects', 'pack', 'pack-1.pack'), 'objects');
+    writeFileSync(join(dir, '.git', 'objects', 'pack', 'tmp_pack_Ab12Cd'), 'half a pack');
     writeFileSync(join(dir, '.git', 'objects', 'info', 'alternates'), '/elsewhere/objects');
     writeFileSync(join(dir, '.git', 'config'), '[core]\n\tworktree = /elsewhere\n');
     writeFileSync(join(dir, 'stale.txt'), 'x');
@@ -287,6 +288,8 @@ describe('relatedRepoLoader', () => {
       ['repack', '-a', '-d', '-q'],
     ]);
     expect(readFileSync(join(dashDir, '.git', 'objects', 'pack', 'pack-1.pack'), 'utf-8')).toBe('objects');
+    // A fetch that was stopped left its unfinished pack in the store, and no later round carries it on.
+    expect(readdirSync(join(dashDir, '.git', 'objects', 'pack'))).toEqual(['pack-1.pack']);
     expect(existsSync(join(dashDir, '.git', 'objects', 'info'))).toBe(false);
     expect(existsSync(join(dashDir, '.git', 'config'))).toBe(false);
     expect(existsSync(join(dashDir, 'stale.txt'))).toBe(false);

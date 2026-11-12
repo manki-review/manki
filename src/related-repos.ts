@@ -331,8 +331,9 @@ async function checkoutRelatedRepo(
 }
 
 /**
- * Makes `dir` a new repository with `init`. Of a clone restored from the cache it keeps only the object store, and only
- * once `git fsck` finds every object intact. Whoever can write the cache can write the rest of `.git`, such as its config.
+ * Makes `dir` a new repository with `init`. Of a clone restored from the cache it keeps only the object store, without
+ * the unfinished packs of a stopped fetch, and only once `git fsck` finds every object intact. Whoever can write the
+ * cache can write the rest of `.git`, such as its config.
  */
 async function initReusingObjects(
   dir: string, init: () => Promise<void>, git: Git, log: (message: string) => void,
@@ -349,6 +350,11 @@ async function initReusingObjects(
   rmSync(objects, { recursive: true, force: true });
   renameSync(stash, objects);
   rmSync(join(objects, 'info'), { recursive: true, force: true });
+  // A fetch stopped before its end leaves its unfinished pack behind, which `git fsck` accepts and `git repack` keeps.
+  const packs = join(objects, 'pack');
+  for (const name of isRealDirectory(packs) ? readdirSync(packs) : []) {
+    if (name.startsWith('tmp_')) rmSync(join(packs, name), { recursive: true, force: true });
+  }
   try {
     // The store comes from a blobless clone, so fsck must not report its missing blobs as damage.
     await git('-c', 'remote.origin.promisor=true', '-c', 'remote.origin.partialclonefilter=blob:none', 'fsck', '--no-dangling', '--no-progress');
