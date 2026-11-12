@@ -21,7 +21,6 @@ jest.mock('@actions/github', () => ({
     payload: {},
     repo: { owner: 'test-owner', repo: 'test-repo' },
   },
-  getOctokit: jest.fn(),
 }));
 
 const mockPullsGet = jest.fn().mockResolvedValue({
@@ -67,6 +66,7 @@ const mockOctokitInstance = {
 
 jest.mock('./auth', () => ({
   createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, bot: { logins: ['manki-review[bot]'] } }),
+  createOctokit: jest.fn(),
   TokenServiceError: jest.requireActual('./auth').TokenServiceError,
   changeThreadThroughService: jest.fn().mockResolvedValue(false),
   tokenServiceCalls: jest.fn().mockReturnValue([]),
@@ -742,13 +742,13 @@ describe('run', () => {
     beforeEach(() => {
       jest.mocked(core.getInput).mockImplementation((name: string) =>
         ({ anthropic_api_key: 'test-api-key', github_token: 'ghs_workflow' })[name] ?? '');
-      jest.mocked(github.getOctokit).mockReturnValue(workflowClient as unknown as ReturnType<typeof github.getOctokit>);
+      jest.mocked(authModule.createOctokit).mockReturnValue(workflowClient as unknown as ReturnType<typeof github.getOctokit>);
       jest.mocked(interaction.hasBotMention).mockReturnValue(true);
       jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
     });
 
     afterEach(() => {
-      jest.mocked(github.getOctokit).mockReset();
+      jest.mocked(authModule.createOctokit).mockReset();
     });
 
     it('runs a review for a private org member that the API shows with write access', async () => {
@@ -1670,12 +1670,12 @@ describe('main', () => {
     const comments: Array<{ body: string }> = [];
     const createComment = jest.fn(async ({ body }: { body: string }) => { comments.push({ body }); });
     const workflowClient = { paginate: jest.fn(async () => comments), rest: { issues: { listComments: {}, createComment } } };
-    jest.mocked(github.getOctokit).mockReturnValue(workflowClient as unknown as ReturnType<typeof github.getOctokit>);
+    jest.mocked(authModule.createOctokit).mockReturnValue(workflowClient as unknown as ReturnType<typeof github.getOctokit>);
     const reviewNote = '⏸️ **Review incomplete:** Could not get a token from the Manki token service (HTTP 503). Retry the run.';
 
     try {
       await main();
-      expect(jest.mocked(github.getOctokit)).toHaveBeenCalledWith('ghs_workflow');
+      expect(jest.mocked(authModule.createOctokit)).toHaveBeenLastCalledWith('ghs_workflow', expect.any(AbortSignal));
       expect(createComment).toHaveBeenCalledWith({ owner: 'test-owner', repo: 'test-repo', issue_number: 7, body: reviewNote });
       expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Could not get a token from the Manki token service'));
 
@@ -1711,7 +1711,7 @@ describe('main', () => {
       expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Could not read the PR state from the Manki token service'));
       expect(reviewModule.runReview).not.toHaveBeenCalled();
     } finally {
-      jest.mocked(github.getOctokit).mockReset();
+      jest.mocked(authModule.createOctokit).mockReset();
       jest.mocked(core.getState).mockReset().mockReturnValue('');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       jest.mocked(authModule.createAuthenticatedOctokit).mockReset().mockResolvedValue({ octokit: mockOctokitInstance as any, bot: TEST_BOT });

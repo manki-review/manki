@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
-import { AuthResult, createAuthenticatedOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
+import { AuthResult, createAuthenticatedOctokit, createOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
 import { fallbackConfig, loadConfig, resolveModel } from './config';
 import { BENCH_COMMAND, runBenchCommand } from './bench';
@@ -173,7 +173,7 @@ async function getAuth(): Promise<AuthResult> {
 /** A client on the workflow's own `github_token`, which needs no call to the token service. */
 async function workflowOctokit(): Promise<Octokit> {
   const token = core.getInput('github_token');
-  return token ? github.getOctokit(token) : (await getAuth()).octokit;
+  return token ? createOctokit(token) : (await getAuth()).octokit;
 }
 
 /** Whether the commenter may start Manki. Refuses without a comment, so a stranger cannot make Manki post. */
@@ -2199,6 +2199,8 @@ async function handleReviewCommentInteraction(): Promise<void> {
 
 const POST_PHASE_STATE_KEY = 'manki_post_phase';
 const TOKEN_FAILURE_LINE = '⚠️ **Manki did not run:**';
+// The run has already failed, so the note must not keep it open for long.
+const TOKEN_FAILURE_NOTE_TIMEOUT_MS = 10_000;
 
 const NOT_DISPATCHED = 'Manki runs only from the `workflow_dispatch` workflow that the Manki service starts. '
   + 'See https://github.com/manki-review/manki/blob/main/docs/getting-started.md#step-3-add-the-workflow';
@@ -2235,7 +2237,7 @@ async function reportTokenFailure({ event, action, number }: ReturnType<typeof d
   const { owner, repo } = github.context.repo;
   const body = `${event === 'pull_request' ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${sanitizeMarkdown(redactSecrets(error.message))}`;
   try {
-    const octokit = github.getOctokit(token);
+    const octokit = createOctokit(token, AbortSignal.timeout(TOKEN_FAILURE_NOTE_TIMEOUT_MS));
     const comments = await octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });
     if (comments.some(comment => comment.body === body)) return;
     await octokit.rest.issues.createComment({ owner, repo, issue_number: number, body });

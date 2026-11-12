@@ -6,6 +6,7 @@ import * as core from '@actions/core';
 
 import { BOT_MARKER, CANCELLED_MARKER, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER } from './github';
 import { REOPENED_MARKER, securityOverrideMarker } from './recap';
+import { RETRY_HINT } from './review';
 import { parseSettingsBlock } from './settings';
 import { _resetOctokitCache, main, runFullReview } from './index';
 import type { SendMessageOptions } from './providers';
@@ -39,7 +40,7 @@ jest.mock('@actions/github', () => {
       ...options,
       request: { fetch: (url: string, init: RequestInit) => mockGitHub.fetch(url, init) },
       throttle: { ...(options.throttle as object), enabled: false },
-      retry: { retryAfterBaseValue: 1 },
+      retry: { ...(options.retry as object), retryAfterBaseValue: 1 },
     }, ...plugins),
   };
 });
@@ -99,7 +100,8 @@ interface FakeComment { id: number; body: string; user: FakeUser; created_at: st
 interface FakeReview { id: number; body: string; state: string; commit_id: string; user: FakeUser; submitted_at: string }
 interface FakeThreadComment { databaseId: number; body: string; url: string; authorAssociation: string; author: { login: string }; originalCommit?: { oid: string } }
 interface FakeThread { id: string; isResolved: boolean; resolvedBy: { login: string } | null; path: string; line: number; startLine: number | null; originalLine: number; comments: FakeThreadComment[] }
-interface FakeFailure { method: string; path: RegExp; status: number }
+/** A status the API answers matching requests with, for the next `times` of them or for all. */
+interface FakeFailure { method: string; path: RegExp; status: number; times?: number }
 
 const REVIEW_STATES: Record<string, string> = { APPROVE: 'APPROVED', REQUEST_CHANGES: 'CHANGES_REQUESTED', COMMENT: 'COMMENTED' };
 
@@ -124,6 +126,7 @@ class FakeGitHub {
   /** `src/math.ts` at a commit that changed it. Every other commit holds `MATH_TS`. */
   mathAt: Record<string, string> = {};
   mergeable: boolean | null = true;
+  merged = false;
   /** The repository's other open PRs, as the GraphQL API lists them. */
   openPrs: Array<{ number: number; title: string; body: string; isDraft: boolean; files: { nodes: Array<{ path: string }> } }> = [];
   /** The open issues the issue search finds, and each query it was sent. */
@@ -143,6 +146,7 @@ class FakeGitHub {
   private nextId = 1000;
 
   fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    init.signal?.throwIfAborted();
     const method = (init.method ?? 'GET').toUpperCase();
     const { pathname, searchParams, origin } = new URL(url);
     const headers = new Headers(init.headers);
@@ -169,7 +173,8 @@ class FakeGitHub {
       this.writes.push(write);
       await this.onWrite?.(write);
     }
-    const failure = this.failures.find(f => f.method === method && f.path.test(pathname));
+    const failure = this.failures.find(f => f.method === method && f.path.test(pathname) && f.times !== 0);
+    if (failure?.times) failure.times -= 1;
     if (failure) return json({ message: 'Server Error' }, failure.status);
     // The App's review token holds no `contents: write`, so only the token service's `/resolve` can change its threads.
     const resolving = /\b(un)?resolveReviewThread\b/.test(String(body.query));
@@ -186,7 +191,7 @@ class FakeGitHub {
     if (method === 'GET' && route === `/actions/runs/${mockContext.runId}` && this.workflowRun) return json(await this.workflowRun);
     if (method === 'GET' && route === `/pulls/${PR_NUMBER}`) {
       if (headers.get('accept')?.includes('diff')) return text(this.prDiffs[this.headSha] ?? PR_DIFF);
-      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: 'User' }, mergeable: this.mergeable, mergeable_state: this.mergeable === false ? 'dirty' : 'clean' });
+      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: 'User' }, merged: this.merged, mergeable: this.mergeable, mergeable_state: this.mergeable === false ? 'dirty' : 'clean' });
     }
     if ((match = route.match(/^\/pulls\/comments\/(\d+)(\/reactions)?$/))) {
       const id = Number(match[1]);
@@ -1196,8 +1201,17 @@ describe('runFullReview end to end', () => {
 
   it('posts nothing as Manki and marks the round incomplete with the workflow token when the token service fails', async () => {
     jest.mocked(core.getIDToken).mockRejectedValue(new Error('no OIDC'));
+    const push = { event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: mockGitHub.headSha };
+    const failList = (times: number) => { mockGitHub.failures = [{ method: 'GET', path: /\/issues\/\d+\/comments$/, status: 503, times }]; };
 
-    await dispatch({ event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: mockGitHub.headSha });
+    // The note retries a request once, so the failed run does not stay open for long.
+    failList(2);
+    await dispatch(push);
+    expect(mockGitHub.comments).toEqual([]);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Could not post that the token service failed'));
+
+    failList(1);
+    await dispatch(push);
 
     expect(mockGitHub.reviews).toEqual([]);
     expect(mockGitHub.comments.map(c => [c.user.login, c.body])).toEqual([[
@@ -1205,6 +1219,12 @@ describe('runFullReview end to end', () => {
       '⏸️ **Review incomplete:** Could not get a token from the Manki token service (no OIDC token, so the workflow needs `id-token: write`). Retry the run.',
     ]]);
     expect(core.setFailed).toHaveBeenCalledWith(expect.stringContaining('Could not get a token from the Manki token service'));
+
+    // Once its deadline has passed the note sends nothing more.
+    mockGitHub.comments = [];
+    jest.spyOn(AbortSignal, 'timeout').mockReturnValue(AbortSignal.abort(new DOMException('The operation timed out', 'TimeoutError')));
+    await dispatch(push);
+    expect(mockGitHub.comments).toEqual([]);
   });
 
   describe('dispatched by the webhook service', () => {
@@ -1236,6 +1256,37 @@ describe('runFullReview end to end', () => {
       expect(core.setFailed).not.toHaveBeenCalled();
       expect(mockGitHub.writes).toEqual([]);
       expect(mockLLM.calls).toEqual([]);
+
+      // A PR that is gone is read once. A second read would find it here and review it.
+      mockGitHub.failures.push({ method: 'GET', path: new RegExp(`/pulls/${PR_NUMBER}$`), status: 404, times: 1 });
+      await dispatch({ event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: HEAD_SHA });
+
+      expect(core.info).toHaveBeenCalledWith(`The dispatched pull_request on #${PR_NUMBER} no longer exists, nothing to do`);
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(mockGitHub.writes).toEqual([]);
+      expect(mockLLM.calls).toEqual([]);
+    });
+
+    it.each<[string, string, () => void]>([
+      ['a push', 'synchronize', () => expect(postedReviews().map(r => r.state)).toEqual(['APPROVED'])],
+      ['a merge', 'closed', () => expect(core.info).toHaveBeenCalledWith('No Manki review rounds on this pull request, no fix rate to record')],
+    ])('handles %s whose first read of the PR meets a GitHub 5xx three times, and fails the run on the fourth', async (_event, action, handled) => {
+      mockGitHub.configs = { main: 'metrics:\n  fix_rate: true\n' };
+      mockGitHub.merged = action === 'closed';
+      const failFirstRead = (times: number) => { mockGitHub.failures = [{ method: 'GET', path: new RegExp(`/pulls/${PR_NUMBER}$`), status: 503, times }]; };
+      const inputs = { event: 'pull_request', action, pr: String(PR_NUMBER), head_sha: HEAD_SHA };
+
+      failFirstRead(3);
+      await dispatch(inputs);
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      handled();
+
+      failFirstRead(4);
+      await dispatch(inputs);
+
+      expect(core.setFailed).toHaveBeenCalledWith(`Manki encountered an error: GitHub returned 503 on GET /repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}. ${RETRY_HINT}`);
+      expect(mockGitHub.failures[0].times).toBe(0);
     });
 
     it('reopens a blocker thread its author resolved, once, and approves when someone else resolves the last open thread', async () => {

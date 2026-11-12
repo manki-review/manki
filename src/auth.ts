@@ -39,9 +39,16 @@ function redactRequests(octokit: Pick<Octokit, 'hook'>): void {
   });
 }
 
-/** Octokit that retries 5xx responses, waits out primary and secondary rate limits and redacts Manki's secret values. */
-function createOctokit(token: string): Octokit {
-  return github.getOctokit(token, { throttle: { onRateLimit, onSecondaryRateLimit: onRateLimit } }, retry, throttling, redactRequests);
+/**
+ * Octokit that retries 5xx responses, waits out primary and secondary rate limits and redacts Manki's secret values.
+ * With `deadline`, every request of the client carries that signal, a 5xx is retried once and no rate limit is waited
+ * out. `paginate` drops a signal passed to it, so a deadline for its pages has to come this way.
+ */
+export function createOctokit(token: string, deadline?: AbortSignal): Octokit {
+  const plugins = { throttle: { onRateLimit, onSecondaryRateLimit: onRateLimit }, ...(deadline && { retry: { retries: 1 } }) };
+  const octokit = github.getOctokit(token, plugins, retry, throttling, redactRequests);
+  if (deadline) octokit.hook.before('request', (options) => { options.request.signal ??= deadline; });
+  return octokit;
 }
 
 export interface AuthResult {

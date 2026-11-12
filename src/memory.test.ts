@@ -718,6 +718,8 @@ describe('memory writes after a write conflict', () => {
     await write(octokit);
 
     expect(octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(2);
+    // The client never sends a write again by itself: its retry would meet the same conflict.
+    expect(jest.mocked(octokit.rest.repos.createOrUpdateFileContents).mock.calls.map(([call]) => call?.request)).toEqual([{ retries: 0 }, { retries: 0 }]);
     expect((store!.get(path) as { id: string }[]).map(item => item.id)).toEqual(ids);
   });
 
