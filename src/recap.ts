@@ -252,7 +252,7 @@ function matchTitleLine(body: string): RegExpMatchArray | null {
  * place, since posting can change its text, and only below a title line at the top of the body, where no text of the
  * finding can stand.
  */
-function withoutDetachedNote(body: string): string {
+export function withoutDetachedNote(body: string): string {
   const title = matchTitleLine(body);
   if (!title || title.index !== 0 || !parseFindingData(body)?.detached) return body;
   const rest = body.slice(title[0].length).trimStart();

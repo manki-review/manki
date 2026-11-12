@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { BotIdentity, buildLineLink, findingLocation, linked, sanitizeMarkdown } from './github';
 import { FILED_ISSUE_OPENER, filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
-import { findingFile, findingLineOf, isGuarded, parseFindingData } from './recap';
+import { findingFile, findingLineOf, isGuarded, parseFindingData, withoutDetachedNote } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
 import { ownMarker, withMarkers } from './utils';
 
@@ -50,8 +50,12 @@ async function findFiledIssue(octokit: Octokit, bot: BotIdentity, owner: string,
   return undefined;
 }
 
-/** Returns `text` up to the anchor of the box of `id`, without Manki's hidden markers. */
-function postedText(text: string, id: string): string {
+/**
+ * Returns `posted` up to the anchor of the box of `id`, without Manki's hidden markers. The line that opens a detached
+ * thread is left out too, since it is about the thread and the issue names the finding's place itself.
+ */
+function postedText(posted: string, id: string): string {
+  const text = withoutDetachedNote(posted);
   const box = issueBoxOffset(text, id);
   const anchor = box >= 0 ? text.lastIndexOf(ISSUE_BOX_ANCHOR, box) : -1;
   return (anchor >= 0 ? text.slice(0, anchor) : text).replace(/^<!-- manki[^\n]*-->\r?\n?/gm, '').trim();

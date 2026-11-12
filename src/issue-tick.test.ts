@@ -103,7 +103,12 @@ describe('handleIssueBoxTick', () => {
     const elsewhere = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 30 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(elsewhere), original_line: 1 });
 
-    expect(jest.mocked(octokit.rest.issues.create).mock.calls[1][0].body).toContain('[`src/store.ts:30`](https://github.com/o/r/blob/abc123/src/store.ts#L30)');
+    const elsewhereIssue: string = jest.mocked(octokit.rest.issues.create).mock.calls[1][0].body;
+    expect(elsewhereIssue).toContain('[`src/store.ts:30`](https://github.com/o/r/blob/abc123/src/store.ts#L30)');
+    // The thread opens with a line about where it is posted, which the issue leaves out.
+    expect(elsewhere).toContain('so the thread is posted here.');
+    expect(elsewhereIssue).toMatch(/^\S+ \*\*Blocker\*\*[^\n]*\n\n\*\*Retry has no limit\*\*\n\n\*\*What goes wrong:\*\* It retries forever\./);
+    expect(elsewhereIssue).not.toContain('thread is');
 
     // That file name is finder output, so it can end neither the code span nor the link, and it mentions nobody.
     const hostile = formatFindingComment(finding({ severity: 'blocker', file: 'src/a`b) @octocat (x.ts', line: 30 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
