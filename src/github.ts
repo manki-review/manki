@@ -1596,7 +1596,8 @@ function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], link
     return formatFindingSection(`${heading} · ${countOf(entries.length, noun)}`, [list, ...(more > 0 ? [`<sub>and ${more} more</sub>`] : [])]);
   });
   // A lead the judge never saw has no entry in that log, so the line shows only with a finding the judge decided.
-  const log = disproved.length + unproven.length > 0 ? ['<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>'] : [];
+  const judgedLead = (result.openLeads ?? []).some(lead => result.allJudgedFindings?.includes(lead));
+  const log = disproved.length + unproven.length > 0 || judgedLead ? ['<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>'] : [];
   return `<details>\n<summary>Checked and left out: ${countOf(total, 'finding')}${split}</summary>\n\n${[...sections, ...log].join('\n\n')}\n\n</details>`;
 }
 

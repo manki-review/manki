@@ -4861,6 +4861,8 @@ describe('postReview non-blocking findings', () => {
     const leadsOnly = await bodyOf({ openLeads: leads });
     expect(leadsOnly).toContain('<summary>Checked and left out: 2 findings</summary>');
     expect(leadsOnly).not.toContain('Judge decisions');
+    // A lead the judge's tools left unsettled has its entry there, so its fold keeps the pointer.
+    expect(await bodyOf({ openLeads: leads, allJudgedFindings: leads.slice(0, 1) })).toContain(`- **Cache may go stale** · ${link(4)}\n\n${log}\n\n</details>`);
 
     // Each kind lists its first ten. A reason ends at its second sentence, or its first when two pass 300 characters.
     const many = Array.from({ length: 12 }, (_, i) => ({ title: `Finding ${i}`, file: 'src/`a`.ts', line: i + 1, reason: `${'Long reason. '.repeat(i === 0 ? 1 : 0)}${'x'.repeat(290)}. More than fits here.` }));
