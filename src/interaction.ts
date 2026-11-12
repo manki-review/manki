@@ -428,7 +428,9 @@ export async function handleReviewCommentReply(
     if (!posts) {
       core.info(`Thread ${thread?.id} already confirms the fix on ${head?.slice(0, 7)}, so the reply posts no second one`);
     } else {
-      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, outcome === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...(noted && reopenNote ? [reopenNote] : []), ...(saved ? [saved] : [])];
+      // After "Fixed." the next review decides, so the reopened thread hears what an open one does, not that it needs a maintainer or a fix.
+      const reopened = noted && reopenNote ? [outcome === 'Fixed' ? staysOpenNote(isSecurity, true, config?.author_clear_role) : reopenNote] : [];
+      const notes = [...(staysOpen ? [staysOpenNote(isSecurity, outcome === 'Fixed', config?.author_clear_role, thread?.isResolved)] : []), ...reopened, ...(saved ? [saved] : [])];
       const decision = replyDecision(outcome, lookupFailed ? 'lookup_failed' : thread, mayResolve, staysOpen || noted, clears);
       await octokit.rest.pulls.createReplyForReviewComment({
         owner,
