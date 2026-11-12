@@ -58,6 +58,7 @@ At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 - `src/recap.ts`: prior-round state from review threads, and dedup (static and LLM) against earlier findings.
 - `src/github.ts`: GitHub API helpers (diffs, progress comments, posting reviews).
 - `src/interaction.ts`: comment commands and replies in review threads.
+- `src/reply-check.ts`: the code checks on a thread reply's structured answer (`checkReply`): its outcome's proof and the statements it lists.
 - `src/state.ts`: the approval check after a thread or review changes.
 - `src/index.ts`: top-level orchestration per dispatched event (`src/dispatch.ts`).
 - `action.yml`: action inputs/outputs.

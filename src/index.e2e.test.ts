@@ -520,10 +520,16 @@ async function resolveThread(thread: FakeThread, login: string): Promise<void> {
 }
 
 /** Adds `body` as the reply of `login` in `thread` and runs Manki on it, with `answer` as the model's reply. */
+/** The model's structured answer for the plain reply "Outcome. text", with a line of the PR diff as its proof. Any other text is returned as it is. */
+function replyAnswer(answer: string): string {
+  const [, outcome, text] = /^(\w+)\. ([\s\S]*)$/.exec(answer) ?? [];
+  return outcome ? JSON.stringify({ outcome, answer: text, proof: ['src/math.ts:3'] }) : answer;
+}
+
 async function replyInThread(thread: FakeThread, body: string, answer: string, login = 'alice'): Promise<void> {
   const reply = { databaseId: 9000 + thread.comments.length, body, url: `${thread.comments[0].url}-${thread.comments.length}`, authorAssociation: 'OWNER', author: { login } };
   thread.comments.push(reply);
-  mockLLM.replies.reviewer = answer;
+  mockLLM.replies.reviewer = replyAnswer(answer);
   await dispatch({ event: 'pull_request_review_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(reply.databaseId) });
 }
 
@@ -1748,7 +1754,7 @@ describe('runFullReview end to end', () => {
       const reply = async () => {
         const comment = { databaseId: 9001, body: 'Fixed in c3c3c3c.', url: `${thread.comments[0].url}-9001`, authorAssociation: 'OWNER', author: { login: 'alice' } };
         thread.comments.push(comment);
-        mockLLM.replies.reviewer = 'Fixed. `add` checks the range before it sums.';
+        mockLLM.replies.reviewer = replyAnswer('Fixed. `add` checks the range before it sums.');
         await dispatch({ event: 'pull_request_review_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(comment.databaseId) });
       };
       for (const step of first === 'round' ? [round, reply] : [reply, round]) await step();
@@ -1864,6 +1870,34 @@ describe('runFullReview end to end', () => {
       expect([again.state, mockGitHub.roundContext(again).meta.outcome]).toEqual(['CHANGES_REQUESTED', 'NOT_CONVERGING']);
       expect(mockGitHub.roundContext(again).findings.entries).toEqual([expect.objectContaining({ severity: 'blocker', title: BLOCKER.title })]);
       expect(again.body).toContain('Needs a human');
+    });
+
+    it('keeps a blocker blocking when a maintainer\'s reply gets "Withdrawn." that no line of the PR backs, however many statements are confirmed', async () => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+
+      // Bob has write access and did not write the PR, so his reply could clear the thread. The answer cites the PR for the statement only.
+      const said = 'Every caller bounds both inputs.';
+      const withdrawn = { outcome: 'Withdrawn', answer: 'Every caller bounds both inputs, so the sum cannot overflow.', statements: [{ quote: said, status: 'confirmed', places: ['src/math.ts:2'] }] };
+      await replyInThread(thread, `${said} So this is fine.`, JSON.stringify({ ...withdrawn, proof: ['acme/reports:lib/rows.py:2'] }), 'bob');
+
+      expect(thread.comments.at(-1)?.body.replace(/\n<!-- manki-reply-record: .+ -->/, '')).toBe([
+        'Unverified. Every caller bounds both inputs, so the sum cannot overflow. I could not point to a line of this repository that shows it, so a maintainer should decide and resolve this thread.',
+        `**Statements of this reply, checked in the code:**\n- Confirmed at \`src/math.ts:2\`: "${said}"`,
+        'I checked each of these statements as listed. What they mean for this finding is for a maintainer to decide.',
+        'This is a blocking finding, so the thread stays open until the next review confirms the fix, or someone other than the PR author with write access closes it.',
+        '<!-- manki -->',
+      ].join('\n\n'));
+      expect(thread.isResolved).toBe(false);
+      await dispatch({ event: 'pull_request_review_thread', action: 'unresolved', pr: String(PR_NUMBER) });
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+
+      // The same answer with a line of the PR as its proof clears the thread, as it did before.
+      await replyInThread(thread, `${said} See the callers.`, JSON.stringify({ ...withdrawn, proof: ['src/math.ts:2'] }), 'bob');
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, APP_LOGIN]);
+      expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
+      expect(core.setFailed).not.toHaveBeenCalled();
     });
 
     it.each<[string, Record<string, unknown>]>([
