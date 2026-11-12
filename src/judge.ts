@@ -1095,24 +1095,28 @@ function reviewerEvidenceLines({ evidence, notChecked, lead, leadSince, preExist
  * and around the lines of `related` repos that its title, description and evidence cite, read from the checkouts the
  * round fetched. Citations that cannot be read are skipped, and at most `MAX_CITED_WINDOWS` windows are shown in all.
  * A citation of a file that is not there shows no window, so the reads have limits of their own: `MAX_CITED_READS_PER_FINDING`
- * and `MAX_CITED_READS`. A file read before costs nothing.
+ * and `MAX_CITED_READS`. A file tried before costs nothing, whether it was there or not.
  */
 function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: string, related?: RelatedRepoTools): Map<Finding, string[]> {
   // The files read, by the directory they were read from. A file of the PR and one of a related checkout never share
   // an entry, whatever the PR names its files.
-  const filesRead = new Map<string, { contents: Map<string, string>; lineCounts: Map<string, number> }>();
+  const filesRead = new Map<string, { contents: Map<string, string>; lineCounts: Map<string, number>; unread: Set<string> }>();
   let reads = 0;
   let readsOfFinding = 0;
   // Returns the files read from `root`, with `file` among them, or `undefined` when it could not be read or no read is left.
   const read = (root: string, file: string) => {
-    const files = filesRead.get(root) ?? { contents: new Map<string, string>(), lineCounts: new Map<string, number>() };
+    const files = filesRead.get(root) ?? { contents: new Map<string, string>(), lineCounts: new Map<string, number>(), unread: new Set<string>() };
     filesRead.set(root, files);
+    if (files.unread.has(file)) return undefined;
     if (!files.contents.has(file)) {
       if (reads >= MAX_CITED_READS || readsOfFinding >= MAX_CITED_READS_PER_FINDING) return undefined;
       reads++;
       readsOfFinding++;
       const content = readFileInRoot(root, file);
-      if (!content || content === 'too large') return undefined;
+      if (!content || content === 'too large') {
+        files.unread.add(file);
+        return undefined;
+      }
       files.contents.set(file, content.text);
       files.lineCounts.set(file, content.lines.length);
     }

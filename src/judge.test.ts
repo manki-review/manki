@@ -1609,6 +1609,8 @@ describe('runJudgeAgent', () => {
       makeFinding({ title: 'Many citations', severity: 'note', description: `See ${Array.from({ length: 10 }, (_, i) => `acme/reports:src/import.ts:${40 + i}`).join(', ')} and acme/reports:src/import.ts:3.` }),
       // Citations of files that are not there stop at the same 10, so a finding cannot make the judge try a file per citation it writes.
       makeFinding({ title: 'Many missing files', severity: 'note', description: `See ${Array.from({ length: 30 }, (_, i) => `acme/reports:src/gone-${i}.ts:1`).join(', ')}.` }),
+      // A file that is not there is tried once a round, however often and by however many findings it is cited.
+      ...['One missing file cited often', 'The same missing file again'].map(title => makeFinding({ title, severity: 'note', evidence: { checks: [], proof: Array.from({ length: 15 }, (_, i) => `src/missing-again.ts:${i + 1}`) } })),
       // Proof lines of the PR in files that are not there stop at 10 for a finding too, and at 80 for the round.
       ...Array.from({ length: 12 }, (_, n) => makeFinding({ title: `Missing proof ${n}`, severity: 'note', evidence: { checks: [], proof: Array.from({ length: 30 }, (_, i) => `src/absent-${n}-${i}.ts:1`) } })),
     ];
@@ -1624,8 +1626,10 @@ describe('runJudgeAgent', () => {
     }
     const tried = readSpy.mock.calls.map(([, file]) => file).filter(file => file.startsWith('src/gone-'));
     const absent = readSpy.mock.calls.filter(([root, file]) => root === workspace && file.startsWith('src/absent-')).map(([, file]) => file);
+    const again = readSpy.mock.calls.filter(([root, file]) => root === workspace && file === 'src/missing-again.ts');
     const reads = readSpy.mock.calls.length;
     readSpy.mockRestore();
+    expect(again).toHaveLength(3);
     // Each of the three rounds stops at 80 reads. Until then each finding tries its first 10 proof lines and no more.
     expect(reads).toBeLessThanOrEqual(3 * 80);
     expect(absent.filter(file => file.startsWith('src/absent-0-'))).toEqual([0, 1, 2].flatMap(() => Array.from({ length: 10 }, (_, i) => `src/absent-0-${i}.ts`)));
