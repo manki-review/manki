@@ -717,7 +717,7 @@ Return one entry per finding, in the same order as the input. Set \`id\` to the 
   }
 
   if (relatedRepos?.length) {
-    prompt += `\n\n${buildRelatedRepoRules(relatedRepos, toolSteps > 0)}`;
+    prompt += `\n\n${buildRelatedRepoRules(relatedRepos, toolSteps > 0, toolsCheckFindings)}`;
   }
 
   if (config.instructions) {
@@ -732,8 +732,15 @@ function threadPlace(thread: OpenThread): string {
   return thread.file ? `${sanitize(thread.file)}${thread.line > 0 ? `:${thread.line}` : ''}` : 'not tied to a file';
 }
 
-/** Returns how to grade a finding about a related repo that reviewers read with their tools. With `ownTools` the judge reads them too. */
-function buildRelatedRepoRules(repos: RelatedRepo[], ownTools: boolean): string {
+/**
+ * Returns how to grade a finding about a related repo that reviewers read with their tools. With `ownTools` the judge
+ * reads them too. `windows` says the round shows the judge the cited lines, which `citedCodeOutsideDiff` reads only
+ * for a judge whose model has tools.
+ */
+function buildRelatedRepoRules(repos: RelatedRepo[], ownTools: boolean, windows: boolean): string {
+  const unseen = windows
+    ? 'Manki shows the lines the fetched checkout holds at a citation under the finding as **Cited code in a related repo**, when it could read them. It shows them for every citation, also one the tool evidence lists as holding only part of the quoted code or none of it, and one the tool evidence does not list. For such a citation the shown lines are what is really at that place, and the citation itself proves nothing: grade from what the shown lines hold, never from what the finding says they hold. A citation that is neither listed as in the fetched checkout nor shown rests on code you cannot see.'
+    : 'Any other citation rests on code you cannot see.';
   const names = (kind: RelatedRepo['kind']) => repos.filter(r => r.kind === kind).map(r => `\`${r.repo}\``).join(', ') || 'none';
   // The rule for a dependency shows only with a dependency repo, so every other prompt keeps its text.
   const dependency = repos.some(r => r.kind === 'dependency');
@@ -741,7 +748,7 @@ function buildRelatedRepoRules(repos: RelatedRepo[], ownTools: boolean): string 
 
 Reviewers can read these repos with their tools. References, which this repository implements or ports: ${names('reference')}. Consumers, which depend on this repository: ${names('consumer')}.${dependency ? ` Dependencies, which this repository depends on: ${names('dependency')}.` : ''}
 
-A finding cites their code as \`owner/name:path:line\`. Its tool evidence says whether each cited line is in the checkout the reviewers read. A citation listed there as in the fetched checkout is evidence the reviewer read, so it counts as code you can see. Manki shows the lines the fetched checkout holds at a citation under the finding as **Cited code in a related repo**, when it could read them. It shows them for every citation, also one the tool evidence lists as holding only part of the quoted code or none of it, and one the tool evidence does not list. For such a citation the shown lines are what is really at that place, and the citation itself proves nothing: grade from what the shown lines hold, never from what the finding says they hold. A citation that is neither listed as in the fetched checkout nor shown rests on code you cannot see.${ownTools ? ' Your tools read these repos too. Read a cited line the tool evidence does not confirm before you grade its finding, and list in `doubts` a citation the finding rests on that you did not read.' : ''}
+A finding cites their code as \`owner/name:path:line\`. Its tool evidence says whether each cited line is in the checkout the reviewers read. A citation listed there as in the fetched checkout is evidence the reviewer read, so it counts as code you can see. ${unseen}${ownTools ? ' Your tools read these repos too. Read a cited line the tool evidence does not confirm before you grade its finding, and list in `doubts` a citation the finding rests on that you did not read.' : ''}
 
 - **A divergence from a reference** is graded by the blocker tests and the severity table, like any other finding.
 - **A change that breaks a consumer** is the \`degraded\` row in the \`normal\` column, a \`warning\` that lists the consumer's call sites and says it breaks once the consumer upgrades. It is the \`severe\` row, a \`blocker\`, only when the PR description says the change does not break anything. This replaces the broken public contract part of the \`severe\` row for a consumer.${dependency ? '\n- **An assumption about a dependency that its code does not keep** is graded by the blocker tests and the severity table, like any other finding. A finding that only says the dependency is designed differently, with no assumption of the change that fails, names no defect, so mark it `ignore`.' : ''}`;
