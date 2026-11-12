@@ -383,6 +383,9 @@ describe('formatFindingComment', () => {
     const hidden = ['other/repo:src/import.ts:2', 'acme/reports-fork:src/import.ts:2', 'acme/reports:src/../import.ts:2', 'acme/reports:src/import.ts', 'acme/reports:src/import.ts:2:3'];
     expect(formatFindingComment(confirmedBy(hidden), fetched)).not.toContain('In a related repository');
     expect(render(confirmedBy(['acme/reports:src/import.ts:2']))).not.toContain('acme/reports');
+    // A fetched repo with no commit recorded shows the location alone.
+    const noCommit = { ...links, related: new Map([['acme/reports', undefined]]) };
+    expect(formatFindingComment(confirmedBy(['acme/reports:src/import.ts:2', ...hidden]), noCommit)).toContain('**Checked in the code**\nIn a related repository: `acme/reports:src/import.ts:2`\n\n**Double-checked**');
     const notSettled = formatFindingComment({ ...baseFinding, refutation: { outcome: 'unsettled', reason: 'The parser may be replaced.', proof: ['src/main.ts:40'], relatedProof: ['acme/reports:src/import.ts:2', ...hidden], files: ['src/main.ts'], codeDigest: 'abc' } }, fetched);
     expect(notSettled).toContain(`The parser may be replaced. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), ${relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2')}.`);
     expect(notSettled).not.toContain('In a related repository');
@@ -4812,7 +4815,7 @@ describe('postReview non-blocking findings', () => {
       '</details>',
     ].join('\n'));
 
-    // A related line links to the commit the round recorded for its repo, and a repo without one gets no link.
+    // A related line links to the commit the round recorded for its repo. A fetched repo without a valid one shows the location alone, and any other repo shows nothing.
     const sha = 'ab'.repeat(20);
     const check = (repo: string): Finding['refutation'] => ({ outcome: 'confirmed', defect: 'confirmed', reason: 'r', relatedProof: [`${repo}:src/import.ts:2`], files: [], codeDigest: 'abc' });
     const relatedRepos: ReviewResult['relatedRepos'] = [
@@ -4824,7 +4827,8 @@ describe('postReview non-blocking findings', () => {
     }, diff);
     const posted = JSON.stringify(createReview.mock.calls[1][0]);
     expect(posted).toContain(`In a related repository: [\`acme/reports:src/import.ts:2\`](https://github.com/acme/reports/blob/${sha}/src/import.ts#L2)`);
-    expect(posted.match(/In a related repository/g)).toHaveLength(1);
+    expect(posted).toContain('In a related repository: `acme/odd:src/import.ts:2`\\n');
+    expect(posted.match(/In a related repository/g)).toHaveLength(2);
     expect(posted).not.toContain('example.com');
 
     // Evidence can cite many paths, so only the first 20 get their length looked up, besides the finding's own file.

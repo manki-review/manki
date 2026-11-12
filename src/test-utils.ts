@@ -250,4 +250,5 @@ const numberedLines = (count: number): string[] => Array.from({ length: count },
 export const TEST_LINKS: CodeLinks = {
   linkTo: (file, line, end = line) => `https://github.com/o/r/blob/sha/${file}#L${line}${end > line ? `-L${end}` : ''}`,
   files: new Map([['src/main.ts', numberedLines(60)], ['src/util.ts', numberedLines(30)]]),
+  related: new Map(),
 };

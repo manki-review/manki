@@ -2676,36 +2676,37 @@ interface CodeRange { file: string; start: number; end: number }
  */
 interface Check { text: string; at?: CodeRange; also?: CodeRange[] }
 
-/** The commit the round fetched of each related repo, by the repo's configured `owner/name`. */
-type RelatedCommits = ReadonlyMap<string, string>;
+/** Each related repo the round fetched, by its configured `owner/name`, with the commit it fetched when the round recorded a valid one. */
+type RelatedCommits = ReadonlyMap<string, string | undefined>;
 
-/** Returns the commit of each related repo of `repos` that the round fetched. */
-function relatedCommits(repos: readonly RoundRelatedRepo[] = []): RelatedCommits {
-  return new Map(repos.flatMap(({ repo, status, commit }) => (status === 'fetched' && commit && /^[0-9a-f]{40,64}$/.test(commit) ? [[repo, commit] as const] : [])));
+/** Returns each related repo of `repos` that the round fetched, with its commit. */
+export function relatedCommits(repos: readonly RoundRelatedRepo[] = []): RelatedCommits {
+  return new Map(repos.flatMap(({ repo, status, commit }) => (status === 'fetched' ? [[repo, commit && /^[0-9a-f]{40,64}$/.test(commit) ? commit : undefined] as const] : [])));
 }
 
 /**
  * Returns each line of a related repo in `proof`, the `relatedProof` of a refuter's check, as a link to that line at
- * the commit the round fetched. The repo and the commit come from `related`, so a line of any other repo is left out,
- * and so is one whose path has a `.` or `..` segment. Only the location is shown, never the line's text.
+ * the commit the round fetched, or as its location alone when `related` has no commit for the repo. A line of a repo
+ * that `related` does not hold is left out, and so is one whose path has a `.` or `..` segment. Only the location is
+ * shown, never the line's text.
  */
-function relatedLineLinks(proof: readonly string[] = [], related: RelatedCommits = new Map()): string[] {
+function relatedLineLinks(proof: readonly string[] = [], related: RelatedCommits): string[] {
   return proof.flatMap((location) => {
     const repo = [...related.keys()].find(name => location.startsWith(`${name}:`));
     const [, path, start, end] = (repo && /^([^:]+):(\d+)(?:-(\d+))?$/.exec(location.slice(repo.length + 1))) || [];
-    if (!repo || !path) return [];
+    if (!repo || !path || hasDotSegment(path)) return [];
     const [owner, name] = repo.split('/');
-    const url = buildLineLink(owner, name, related.get(repo)!, RELATED_REPO_HOST)(path, Number(start), Number(end ?? start));
-    return url ? [linked(inlineCode(location), url)] : [];
+    const commit = related.get(repo);
+    return [linked(inlineCode(location), commit && buildLineLink(owner, name, commit, RELATED_REPO_HOST)(path, Number(start), Number(end ?? start)))];
   });
 }
 
 /**
  * Links a finding's code to the reviewed commit. `files` holds the lines of the files read there, which keep a preview
  * inside its file. With `changed`, the PR's changed files, they give a cited file name its directories. `related`
- * links a line of a related repo.
+ * holds the related repos whose lines a check may show.
  */
-interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[]; related?: RelatedCommits }
+interface CodeLinks { linkTo: LineLink; files: ReadonlyMap<string, readonly string[]>; changed?: readonly string[]; related: RelatedCommits }
 
 /**
  * Returns `path` as the repository path it names. A file name with no directories gets those of the one known file
