@@ -56,10 +56,10 @@ const MAX_REFERENCE_LINES = 40;
 const MAX_REFERENCE_LINE_CHARS = 1000;
 const GREP_TIMEOUT_MS = 30_000;
 /**
- * The longest pattern a search hands to git grep, which is one command argument. Linux refuses an argument over 32
- * pages, 128 KiB with pages of 4 KiB, and git grep on macOS was measured to refuse a pattern of 64 KiB.
+ * The longest pattern a search hands to git grep, as one argument. Windows takes 32,767 characters for a whole command
+ * line (`CreateProcessW`), the smallest limit of the platforms Manki runs on, and quoting can double an argument.
  */
-const MAX_PATTERN_BYTES = 48 * 1024;
+const MAX_PATTERN_BYTES = 15 * 1024;
 const GREP_MAX_BUFFER = 64 * 1024 * 1024;
 const MAX_LOOKUP_FIELDS = 8;
 /** Changed lines a sibling field question quotes, with their hunks. */
