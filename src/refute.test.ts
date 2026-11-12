@@ -1240,11 +1240,12 @@ describe('refuteBlockers', () => {
     expect(second.calls.map(([title]) => title).sort()).toEqual(['Stored warning', ...eight.slice(0, 7)]);
     expect([asked[0].refutation, overLimit(asked), pairBudget]).toEqual([stored.refutation, ['Unproven 8'], { left: 0 }]);
     // An unsettled outcome whose call ended on its step budget may only have run out of steps, so it is checked again and
-    // takes one of the eight. One with steps left is reused, and so is one from a client that lists no steps.
+    // takes one of the eight. One with steps left is reused, and so is one from a client that lists no steps. The answer
+    // of a round before it had steps left, and is never reused in the place of the latest one.
     const usedUp = (stepsUsedUp: string) => [{ findings: { entries: [{ title: 'Stored warning', fingerprint: { file: 'src/math.ts', lineStart: 2 }, refutation: { ...stored.refutation, stepsUsedUp } }] }, judge: {} }] as unknown as RoundContext[];
     for (const [stepsUsedUp, asked, over] of [['yes', ['Stored warning', ...eight.slice(0, 7)], ['Unproven 8']], ['no', eight, []], ['unknown', eight, []]] as const) {
       const again = fakeClient(unsettled, undefined, { 'Stored warning': 15 });
-      const checked = await refuteBlockers(again, warnings, { workspace, diff, priorRounds: usedUp(stepsUsedUp), doubtBudget: { left: 8 } });
+      const checked = await refuteBlockers(again, warnings, { workspace, diff, priorRounds: [...usedUp('no'), ...usedUp(stepsUsedUp)], doubtBudget: { left: 8 } });
       expect([stepsUsedUp, again.calls.map(([title]) => title).sort(), overLimit(checked)]).toEqual([stepsUsedUp, [...asked], [...over]]);
       expect(checked[0].refutation?.stepsUsedUp).toBe(stepsUsedUp);
     }
