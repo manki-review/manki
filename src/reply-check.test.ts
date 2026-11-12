@@ -137,7 +137,7 @@ describe('checkReply', () => {
       '**Statements of this reply, and what I checked of each:**',
       '- Not checked, the review model says code cannot show it: "Nothing calls `Ledger::snapshot`."',
       // A mention and a link in the developer's words are posted as text.
-      '- Not checked, the review model says code cannot show it: "see @​alice and the docs"',
+      '- Not checked, the review model says code cannot show it: "see @\u200Balice and the docs"',
       `- Not checked, the review model says code cannot show it: "${cut}…"`,
       '- Not checked, the review model says code cannot show it: "One."',
       '- Not checked, the review model says code cannot show it: "Two."',
