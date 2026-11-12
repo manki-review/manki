@@ -281,7 +281,7 @@ const RULES: Record<Family, FamilyRules> = {
     access: { kind: 'selector_expression', field: 'field' },
     call: 'call_expression',
     leading: ['comment'],
-    fieldLine: name => new RegExp(`^[\\t ]*(?:[\\w, ]*, *)?${escapeRegExp(name)}(?:, *\\w+)*[\\t ]+[^\\s=:,(]`),
+    fieldLine: name => new RegExp(`^[\\t ]*(?:\\w[\\w, ]*, *)?${escapeRegExp(name)}(?:, *\\w+)*[\\t ]+[^\\s=:,(]`),
     object: 'operand',
     index: 'index_expression',
     owners: {},
