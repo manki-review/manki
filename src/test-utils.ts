@@ -41,11 +41,12 @@ const MARGIN = 4;
 /**
  * Checks that a step takes time linear in its input size. `time` runs the step on an input of the given size and returns
  * the milliseconds the step took. A linear step takes `size / smaller` times as long on `size` as on `smaller`, and
- * `MARGIN` times that is allowed.
+ * `MARGIN` times that is allowed. Throws when `smaller` is not between 0 and `size`, since such a pair compares nothing.
  */
 export async function expectLinearTime(
   time: (size: number) => number | Promise<number>, size: number, { smaller = Math.round(size / SIZE_RATIO) } = {},
 ): Promise<void> {
+  if (!(smaller > 0 && smaller < size)) throw new Error(`expectLinearTime needs 0 < smaller < size, got smaller ${smaller} and size ${size}`);
   // Load only adds time, so the fastest of three runs is the closest to the step's own time.
   let small = Infinity;
   for (let i = 0; i < 3; i++) small = Math.min(small, await time(smaller));
