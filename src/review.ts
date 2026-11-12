@@ -2251,28 +2251,32 @@ function isPriorLikelyUnresolved(
 /**
  * Returns `findings` with each earlier blocker that no thread carries listed again as a blocker, so it gets a thread.
  * A blocker of `findings` that names it carries it already, and one the author's reply settled stays settled. A
- * lower-grade finding that names it lifts nothing and goes to `restated`. Call it only when the threads could be read.
+ * lower-grade finding that names it lifts nothing and goes to `restated`. Whichever of the two is posted is a security
+ * finding when either is. Call it only when the threads could be read.
  */
 function relistThreadlessBlockers(findings: Finding[], priorRounds: FindingFingerprintEntry[], priorRoundLookup: Map<string, number>): { findings: Finding[]; restated: Finding[] } {
   const namedAgain = new Set(findings.flatMap(f => f.severity === 'blocker' && f.sameAs ? [f.sameAs] : []));
-  const relisted = dedupePriorFindings(priorRounds).flatMap((p): Finding[] => {
-    const key = stringifyFindingFingerprint(p.fingerprint);
-    if (p.severity !== 'blocker' || p.threadId || p.authorReplyClass === 'agree' || namedAgain.has(key)) return [];
+  const threadless = dedupePriorFindings(priorRounds).filter(p => p.severity === 'blocker' && !p.threadId).map(p => ({ p, key: stringifyFindingFingerprint(p.fingerprint) }));
+  const relisted = threadless.flatMap(({ p, key }): Finding[] => {
+    if (p.authorReplyClass === 'agree' || namedAgain.has(key)) return [];
     const raisedIn = p.raisedIn ?? priorRoundLookup.get(key);
     // The thread is matched to the earlier blocker by its title's slug, so a title the record cut short is rebuilt from the slug.
     const title = p.title && titleToSlug(p.title) === p.fingerprint.slug ? p.title : p.fingerprint.slug.replace(/-/g, ' ');
+    // A security finding that restates the blocker is left out, so the blocker speaks for it where the record says nothing.
+    const security = findings.find(f => f.sameAs === key && isSecurityFinding(f.tags, f.reviewers));
+    const evidence = p.evidence ?? security?.evidence;
     core.info(`Listing the earlier blocker "${title}" again, since no thread carries it`);
     return [{
       severity: 'blocker',
       title,
       file: p.fingerprint.file,
       line: p.fingerprint.lineStart,
-      description: p.description ?? 'An earlier review listed this blocker without a thread and did not record its description. That review\'s body has it.',
+      description: p.description ?? security?.description ?? 'An earlier review listed this blocker without a thread and did not record its description. That review\'s body has it.',
       reviewers: p.reviewers ?? (p.specialist ? [p.specialist] : []),
-      ...(p.tags?.includes(SECURITY_TAG) && { tags: [SECURITY_TAG] }),
+      ...((security || p.tags?.includes(SECURITY_TAG)) && { tags: [SECURITY_TAG] }),
       ...(p.category && { category: p.category }),
       ...(p.effort && { effort: p.effort }),
-      ...(p.evidence && { evidence: p.evidence }),
+      ...(evidence && { evidence }),
       sameAs: key,
       ...(raisedIn && { raisedIn }),
       relisted: true,
@@ -2281,8 +2285,12 @@ function relistThreadlessBlockers(findings: Finding[], priorRounds: FindingFinge
   const listed = new Set(relisted.map(f => f.sameAs));
   const restates = (f: Finding): boolean => !!f.sameAs && listed.has(f.sameAs);
   for (const f of findings.filter(restates)) core.info(`Leaving out the ${f.severity} "${f.title}", since it restates an earlier blocker this round lists again`);
+  const securityKeys = new Set(threadless.flatMap(({ p, key }) => isSecurityFinding(p.tags, p.reviewers ?? [p.specialist]) ? [key] : []));
+  const carrying = (f: Finding): Finding => f.severity === 'blocker' && f.sameAs && securityKeys.has(f.sameAs) && !f.tags?.includes(SECURITY_TAG)
+    ? { ...f, tags: [...(f.tags ?? []), SECURITY_TAG] }
+    : f;
   return {
-    findings: [...findings.filter(f => !restates(f)), ...relisted],
+    findings: [...findings.filter(f => !restates(f)).map(carrying), ...relisted],
     restated: findings.filter(restates).map((f): Finding => ({ ...f, unpostedReason: 'listed_earlier' })),
   };
 }
@@ -2591,7 +2599,6 @@ async function foldIntoReaderBlockers(findings: Finding[], blockers: Finding[], 
     if (overlap !== 'exact' && overlap !== 'substring') blocker.description = `${blocker.description}\n\nAlso reported as: ${f.title}`;
     foldInto(blocker, f);
     if (!blocker.suggestedFix && f.suggestedFix && f.line === blocker.line) blocker.suggestedFix = f.suggestedFix;
-    if (f.tags?.includes(SECURITY_TAG) && !blocker.tags?.includes(SECURITY_TAG)) blocker.tags = [...(blocker.tags ?? []), SECURITY_TAG];
     core.info(`Folded ${f.severity} "${f.title}" into the verdict reader's blocker "${blocker.title}"`);
     return false;
   });

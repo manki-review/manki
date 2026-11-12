@@ -3367,6 +3367,14 @@ describe('runJudgeAgent', () => {
       expect(result[1].reviewers).toEqual(['Style']);
       // The judge answered nothing about the rule, so it is not confirmed.
       expect(result.map(f => f.rule)).toEqual([{ ...rule, verdict: 'no_requirement' }, undefined]);
+
+      // The kept finding is a security finding when only the duplicate was marked as one.
+      const secured = await runWith(three(), [
+        verdict('Timer never cleared', 'warning'),
+        verdict('Unrelated naming', 'note', 0),
+        { ...verdict('Leaked timeout handle', 'blocker', 1), security: true },
+      ]);
+      expect(secured.map(f => [f.title, f.tags])).toEqual([['Timer never cleared', ['security']], ['Unrelated naming', undefined]]);
     });
 
     it('follows a chain of duplicates to the first finding', async () => {
@@ -4668,6 +4676,9 @@ describe('deduplicateFindings', () => {
     expect(result[0].reviewers).toEqual(['R1']);
     expect(result[0].preExisting).toBeUndefined();
     expect(deduplicateFindings([findings[0], { ...findings[1], preExisting: 'Old code.' }])[0].preExisting).toBe('Old code.');
+    // A dropped copy's security tag stays on the kept finding, next to the tags it has.
+    expect(deduplicateFindings([{ ...findings[0], tags: ['follow-up'] }, { ...findings[1], tags: ['security'] }])[0].tags).toEqual(['follow-up', 'security']);
+    expect(deduplicateFindings([findings[0], { ...findings[1], tags: ['follow-up'] }])[0].tags).toBeUndefined();
     const rule = { file: 'AGENTS.md', quote: 'A pointer must be checked before use.' };
     const other = { file: 'CONTRIBUTING.md', quote: 'Never read a pointer unchecked.' };
     expect(result[0].rule).toBeUndefined();

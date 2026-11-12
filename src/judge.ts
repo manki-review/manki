@@ -1880,9 +1880,13 @@ function higherFinderGrade(survivor: Finding, copy: Finding): FindingSeverity | 
   return SEVERITY_ORDER.indexOf(filed) < SEVERITY_ORDER.indexOf(finderGrade(survivor)) ? filed : undefined;
 }
 
-/** Merges the duplicate `copy` into `survivor`: its reviewers, its finder's grade, its prior-round match and open thread, its fix in words and what it cites. */
+/**
+ * Merges the duplicate `copy` into `survivor`: its reviewers, its finder's grade, its prior-round match and open thread, its
+ * fix in words and what it cites. The survivor is a security finding when either one is.
+ */
 export function foldInto(survivor: Finding, copy: Finding, staysPreExisting?: (copy: Finding) => boolean): void {
   survivor.reviewers = [...new Set([...survivor.reviewers, ...copy.reviewers])];
+  if (copy.tags?.includes(SECURITY_TAG)) survivor.tags = addTag(survivor.tags, SECURITY_TAG);
   const filed = higherFinderGrade(survivor, copy);
   if (filed) survivor.reviewerSeverity = filed;
   survivor.sameAs ??= copy.sameAs;
@@ -2089,8 +2093,8 @@ function hasReversalWord(finding: Finding): boolean {
 
 /**
  * Keeps the first finding per title and file, with the highest grade a finder gave any copy and the first rule a copy
- * quotes. The kept one stays pre-existing only when every dropped copy was marked so too and `staysPreExisting` accepts
- * it, since a dropped copy's line and proof are lost.
+ * quotes. It is a security finding when any copy is. The kept one stays pre-existing only when every dropped copy was
+ * marked so too and `staysPreExisting` accepts it, since a dropped copy's line and proof are lost.
  */
 export function deduplicateFindings(findings: Finding[], staysPreExisting?: (copy: Finding) => boolean): Finding[] {
   const kept = new Map<string, Finding>();
@@ -2104,7 +2108,7 @@ export function deduplicateFindings(findings: Finding[], staysPreExisting?: (cop
     const filed = higherFinderGrade(first, f);
     const { preExisting, ...unmarked } = first;
     const stays = preExisting && f.preExisting && (!staysPreExisting || staysPreExisting(f));
-    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...(filed && { reviewerSeverity: filed }), ...mergedRule(first, f) });
+    kept.set(key, { ...unmarked, ...(stays && { preExisting }), ...(filed && { reviewerSeverity: filed }), ...(f.tags?.includes(SECURITY_TAG) && { tags: addTag(first.tags, SECURITY_TAG) }), ...mergedRule(first, f) });
   }
   return [...kept.values()];
 }

@@ -3411,9 +3411,24 @@ describe('runReview', () => {
     const lowered = await run(makeClients(), [listed()]);
     expect([lowered.findings.map(f => [f.severity, f.title, f.relisted]), lowered.unposted?.map(f => [f.severity, f.title, f.unpostedReason]), lowered.outcome])
       .toEqual([[['blocker', 'Old issue', true]], [['warning', 'Writers may race', 'listed_earlier']], 'ADDRESS_FIRST']);
+    expect(lowered.findings[0]).toMatchObject({ description: expect.stringContaining('did not record its description') });
+    expect(lowered.findings[0].tags).toBeUndefined();
     // A blocker with an open thread keeps blocking beside the same lower-grade finding.
     const beside = await run(makeClients(), [listed({ threadId: 'T1', posted: 'thread' })], { openThreads: [makePriorOpenThread({ threadId: 'T1', file: 'src/outside.ts', severity: 'blocker' })] });
     expect([beside.outcome, beside.verdictReason, beside.verdictTrace?.unresolvedPriors.map(p => p.threadId)]).toEqual(['ADDRESS_FIRST', 'prior_unaddressed', ['T1']]);
+    // A security finding left out that way makes the blocker a security finding, with its text where the record has none.
+    const restating: Finding = { severity: 'warning', title: 'Writers may race', file: 'src/x.ts', line: 30, description: 'Any caller can interleave two writers.', reviewers: ['r'], tags: ['security'], sameAs: key, raisedIn: 1 };
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [restating], summary: 'Less bad.' });
+    const secured = await run(makeClients(), [listed()]);
+    expect([secured.findings, secured.unposted?.map(f => [f.title, f.tags, f.unpostedReason])]).toEqual([
+      [expect.objectContaining({ severity: 'blocker', title: 'Old issue', description: 'Any caller can interleave two writers.', tags: ['security'], relisted: true, ownThread: true })],
+      [['Writers may race', expect.arrayContaining(['security']), 'listed_earlier']],
+    ]);
+    expect((await run(makeClients(), [listed({ description: 'Two writers interleave.' })])).findings).toEqual([expect.objectContaining({ description: 'Two writers interleave.', tags: ['security'] })]);
+    // A blocker of this round that carries an earlier security blocker is a security finding too.
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...restating, severity: 'blocker', tags: undefined }], summary: 'Still there.' });
+    expect((await run(makeClients(), [listed({ tags: ['security'] })])).findings).toEqual([expect.objectContaining({ title: 'Writers may race', tags: ['security'], ownThread: true })]);
+    expect((await run(makeClients(), [listed()])).findings[0].tags).toBeUndefined();
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
 
     // When the threads could not be read, a thread may carry it, so it is not listed again and keeps blocking as an earlier blocker.
