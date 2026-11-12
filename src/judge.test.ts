@@ -4319,6 +4319,12 @@ describe('mapJudgedToFindings', () => {
       [{ row: 'wrong', column: 'normal' }, 'warning', true, false], [{ row: 'severe', column: 'normal' }, 'warning', true, false], [{ row: 'wrong', column: 'normal' }, 'warning', true, false],
     ]);
     expect(lowered.filter(f => ['Wrong result, nothing stated', 'Degraded, warning if confirmed'].includes(f.title)).map(staysWarningIfConfirmed)).toEqual([false, false]);
+    // Only a blocker cell gives a pending `blocker`, whatever doubt the judge names and whatever grade it states beside it.
+    // On any other cell a pending `blocker` comes from a rule or from an earlier round's record alone.
+    const doubtedCells = cells.flatMap(cell => [doubt, reach].flatMap(named => ([undefined, 'blocker', 'warning'] as const).map(gradeIfConfirmed => ({ ...cell, doubts: [named], gradeIfConfirmed }))));
+    const pending = mapJudgedToFindings(doubtedCells.map((_, i) => proven(`Doubted cell ${i}`)), doubtedCells.map((entry, i) => ({ id: i + 1, title: `Doubted cell ${i}`, reasoning: 'r', ...entry })))
+      .filter(f => pendingGrade(f) === 'blocker');
+    expect([...new Set(pending.map(f => `${f.cell?.row} ${f.cell?.column}`))]).toEqual(['severe normal', 'severe rare', 'wrong normal']);
     // A duplicate the judge marked a security finding makes the kept finding one, so the judge's `warning` no longer counts for it.
     const merged = mapJudgedToFindings([proven('Wrong total'), proven('Total leaks the token')], [
       { id: 1, title: 'Wrong total', row: 'wrong', ...kept },
