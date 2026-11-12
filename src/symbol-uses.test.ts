@@ -792,6 +792,12 @@ ${body}	return true
     const wideStruct = (n: number, call: string) => `pub struct Wide {\n    pub jobs: HashMap<u8, (${'u8,'.repeat(3 * n)})>,\n${Array.from({ length: n }, (_, i) => `    pub f${i}: Vec<u8>,\n`).join('')}}\n\nfn run(s: &Wide, k: u8) {\n    ${call}\n}\n`;
     const ranked = await usesInLinearTime(n => [{ 'src/wide.rs': wideStruct(n, 's.jobs.len();') }, { 'src/wide.rs': wideStruct(n, 's.jobs.get(&k);') }], 8_000, { smaller: 500 });
     expect(ranked.siblings.fields.slice(0, 2).map(q => [q.struct, q.field, q.sibling])).toEqual([['Wide', 'jobs', 'f0'], ['Wide', 'jobs', 'f1']]);
+
+    // One field name changed in many types and untouched in as many others: what the changed types may derive from is
+    // read once for the name, not once per use.
+    const holders = (n: number, prefix: string, type: string) => Array.from({ length: n }, (_, i) => `pub struct ${prefix}${i} {\n    pub user_id: ${type},\n}\n`).join('');
+    const namesakes = await usesInLinearTime(n => [{ 'src/a.rs': holders(n, 'A', 'u32'), 'src/b.rs': holders(n, 'B', 'u32') }, { 'src/a.rs': holders(n, 'A', 'u64') }], 3_000);
+    expect(namesakes.record?.symbols).toEqual([{ name: 'user_id', declared: 'src/a.rs:2', uses: Array.from({ length: 12 }, (_, i) => `src/b.rs:${3 * i + 2}`), notShown: 2_988 }]);
   }, 300_000);
 
   it('parses at most 200 files a round and says how many it left unparsed', async () => {

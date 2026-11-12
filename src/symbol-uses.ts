@@ -800,15 +800,32 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   // Placing a use on its type parses the files that hold it. That runs last, so a file it leaves unparsed hides no type,
   // field or lookup and is not counted.
   const unparsed = parser.skipped;
+  // The types whose field of a name the diff changes, with what they may derive from, read once per name so that
+  // placing a use costs the same however many types change that field.
+  const ownerLineages = new Map<string, { owners: Set<string>; bases: Set<string>; closed: boolean }>();
+  const lineagesOf = (name: string) => {
+    let known = ownerLineages.get(name);
+    if (!known) {
+      const changed = changedOwners.get(name) ?? [];
+      const lineages = changed.map(({ owner, file }) => parser.parse(file)?.lineageOf(owner));
+      known = { owners: new Set(changed.map(c => c.owner)), bases: new Set(lineages.flatMap(l => [...l?.names ?? []])), closed: lineages.every(l => l && !l.open) };
+      ownerLineages.set(name, known);
+    }
+    return known;
+  };
   // A use is another type's only when neither that type nor any type whose field of that name the diff changes may derive
   // from the other, as far as the file declaring each tells, since a base class's own reads of a field its subclass
   // overrides read the subclass's value.
   const otherType = (symbol: ChangedSymbol, hit: Hit) => {
-    const owners = symbol.kind === 'field' ? changedOwners.get(symbol.name) ?? [] : [];
-    return owners.length > 0 && owners.every(({ owner, file }) => {
-      const other = parser.parse(hit.file)?.otherTypeAt(symbol.name, hit.line, owner);
-      return other !== undefined && parser.parse(file)?.mayDeriveFrom(owner, other) === false;
-    });
+    if (symbol.kind !== 'field' || !changedOwners.has(symbol.name)) return false;
+    const parsed = parser.parse(hit.file);
+    const other = parsed?.fieldTypeAt(symbol.name, hit.line);
+    if (!parsed || other === undefined) return false;
+    const changed = lineagesOf(symbol.name);
+    const lineage = parsed.lineageOf(other);
+    if (!changed.closed || changed.bases.has(other) || lineage.open) return false;
+    for (const name of lineage.names) if (changed.owners.has(name)) return false;
+    return true;
   };
   // A symbol that was not searched for is in a line only next to another name, so those lines are not its uses.
   const { blocks: sections, symbols: listed, common, capped } = formatSymbolUses(
@@ -1094,6 +1111,12 @@ function nodeKey(node: SgNode): string {
  * A parsed head file. Everything that needs a node's parent or neighbours is computed while it is built, from the
  * `Tree` it is given, and the tree's links are dropped afterwards, so a parsed file keeps no record per syntax node.
  */
+/** The names a type is or derives from, and whether it may derive from any type, as far as its file tells. */
+interface Lineage {
+  names: Set<string>;
+  open: boolean;
+}
+
 class ParsedFile {
   readonly declarations: Declaration[];
   /** The functions declared on a type, outside tests. */
@@ -1339,6 +1362,7 @@ class ParsedFile {
 
   private readonly scopes = new Map<number, { owner: string; trait?: string; bases: string[] }>();
   private readonly lineageBases = new Map<number, string[] | undefined>();
+  private readonly lineages = new Map<string, Lineage>();
 
   /** Returns the first `MAX_BASES` bases `scope` names. */
   private basesOf(scope: SgNode): string[] {
@@ -1386,11 +1410,11 @@ class ParsedFile {
   }
 
   /**
-   * Returns the type other than `owner` whose field `name` is every `name` on `line`: the line declares that type's field,
-   * or reads it as `self.name` in a method of a type that declares its own `name`. A type that may derive from `owner`
-   * counts as `owner`, and a read the parser cannot place, such as `x.name` on a local, counts as a use of `owner`.
+   * Returns the type whose field `name` is every `name` on `line`: the line declares that type's field, or reads it as
+   * `self.name` in a method of a type that declares its own `name`. Returns `undefined` for a read the parser cannot
+   * place, such as `x.name` on a local.
    */
-  otherTypeAt(name: string, line: number, owner: string): string | undefined {
+  fieldTypeAt(name: string, line: number): string | undefined {
     const text = this.lines[line - 1] ?? '';
     if (text.length > MAX_REFERENCE_LINE_CHARS) return undefined;
     const code = text.replace(COMMENT, '');
@@ -1406,28 +1430,40 @@ class ParsedFile {
       const reads = method ? code.match(new RegExp(`(?<![\\w$])${escapeRegExp(method.self!)}\\s*\\??\\.\\s*${word.source}`, 'g'))?.length ?? 0 : 0;
       if (method && reads > 0 && reads === total && this.ownFields.has(`${method.owner}.${name}`)) other = method.owner;
     }
-    return other !== undefined && !this.mayDeriveFrom(other, owner) ? other : undefined;
+    return other;
   }
 
   /**
-   * Whether type `name` is `owner` or may derive from it. It follows the bases of the types this file declares, at most
-   * `MAX_LINEAGE` of them, and past `name` itself never an enum variant. A base declared in another file, named through
-   * a module such as `other.Base`, or declared more than once in this file, may derive from `owner`, and so may a type whose
-   * bases `allBases` cannot read. A standard base such as `Exception` is followed no further.
+   * Returns what type `name` may derive from, read once per type. Type `name` is or derives from each of `names`, and
+   * when `open`, it may derive from any type. The search follows the bases of the types this file declares, at most
+   * `MAX_LINEAGE` of them, and past `name` itself never an enum variant. A type is `open` when it has a base declared
+   * in another file, named through a module such as `other.Base`, or declared more than once in this file, or bases
+   * `allBases` cannot read. A standard base such as `Exception` is followed no further.
    */
-  mayDeriveFrom(name: string, owner: string): boolean {
+  lineageOf(name: string): Lineage {
+    let known = this.lineages.get(name);
+    if (!known) {
+      known = this.readLineage(name);
+      this.lineages.set(name, known);
+    }
+    return known;
+  }
+
+  private readLineage(name: string): Lineage {
+    const names = new Set([name]);
     const lineage = [name];
     for (let i = 0; i < lineage.length; i++) {
       const type = this.typesByName.get(lineage[i]);
       const bases = type && (i === 0 || type.kind === 'type') && this.allBases(type.node);
-      if (lineage[i] === owner || !bases || i >= MAX_LINEAGE) return true;
+      if (!bases || i >= MAX_LINEAGE) return { names, open: true };
       for (const base of bases) {
         const last = base.split(/\.|::/).at(-1)!;
-        if (last === owner || (base !== last && !STANDARD_BASES.has(last))) return true;
+        names.add(last);
+        if (base !== last && !STANDARD_BASES.has(last)) return { names, open: true };
         if (!STANDARD_BASES.has(last) && !lineage.includes(last)) lineage.push(last);
       }
     }
-    return false;
+    return { names, open: false };
   }
 
   /**
