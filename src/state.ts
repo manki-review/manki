@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, inline, NO_VERDICT_MARKER, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { AFTER_PUSH_LINE, ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, givesVerdict, HELD_FOR_PERSON_MARKER, inline, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
@@ -460,7 +460,7 @@ async function coveredCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
   pr: PullHead, reviews: ReviewEntry[],
 ): Promise<string | undefined> {
-  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha && !hasOwnMarker(r.body ?? '', NO_VERDICT_MARKER))) return pr.head.sha;
+  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha && givesVerdict(r))) return pr.head.sha;
   const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha);
   if (standing) core.info(`No change since the reviewed commit ${standing.commitSha.slice(0, 7)}, so its review covers ${pr.head.sha.slice(0, 7)}`);
   return standing?.commitSha;
@@ -491,7 +491,7 @@ function blockOf(
 ): { held?: string; named: Set<string> } {
   const sha = `\`${commitSha.slice(0, 7)}\``;
   // An auto-approval and a round without a verdict decide nothing about blockers, so the round before them stands.
-  const review = reviews.filter(r => isBotReview(bot, r) && r.commit_id === commitSha && !hasOwnMarker(r.body ?? '', NO_VERDICT_MARKER) && !hasOwnMarker(r.body ?? '', AUTO_APPROVE_MARKER)).at(-1);
+  const review = reviews.filter(r => isBotReview(bot, r) && r.commit_id === commitSha && givesVerdict(r) && !hasOwnMarker(r.body ?? '', AUTO_APPROVE_MARKER)).at(-1);
   if (review && restatesApproval(review)) return { named: new Set() };
   const round = review && parseContextBlocks([{ body: review.body ?? '', id: review.id }], owner, repo, prNumber).rounds.at(0);
   if (!round || round.meta.commitSha !== commitSha) {

@@ -877,7 +877,7 @@ describe('runFullReview end to end', () => {
       expect(blocks).toEqual([expect.objectContaining({ lastReviewed: HEAD_SHA.slice(0, 7), status: 'up to date', boxes: new Set(['pause', 'again', 'deeper']) })]);
     });
 
-    it('reviews a commit whose only review is incomplete', async () => {
+    it('reviews a commit whose newest review is incomplete, also after a complete one', async () => {
       mockLLM.replies.reviewer = 'I could not finish the review.';
       await reviewRound();
       expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED']);
@@ -887,6 +887,35 @@ describe('runFullReview end to end', () => {
 
       expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['COMMENTED', HEAD_SHA], ['APPROVED', HEAD_SHA]]);
       expect(skipNotices()).toEqual([]);
+
+      // A Review again run that ends incomplete says to retry with the command, so the command reviews the commit again.
+      mockLLM.replies.reviewer = 'I could not finish the review.';
+      await forcedRound();
+      expect(postedReviews().at(-1)?.body).toMatch(/^⏸️ \*\*Review incomplete:\*\* All reviewers failed\. Retry with @\u200bmanki review\./);
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED', 'COMMENTED']);
+
+      mockLLM.replies.reviewer = READY_REPLIES.reviewer;
+      await reviewCommand();
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED', 'COMMENTED', 'APPROVED']);
+
+      // The newest review has a verdict again, so one more command starts nothing.
+      await reviewCommand();
+      expect(postedReviews()).toHaveLength(4);
+    });
+
+    it('runs the round again when no model could read a file in the newest one', async () => {
+      mockGitHub.prDiffs[HEAD_SHA] = 'diff --git a/dist/index.js b/dist/index.js\n--- a/dist/index.js\n+++ b/dist/index.js\n@@ -1,1 +1,1 @@\n-old();\n+built();\n';
+      await reviewCommand();
+      expect(postedReviews().map(r => [r.state, r.body.split(':')[0]])).toEqual([['COMMENTED', '**Not reviewed** at `a1b2c3d`']]);
+
+      // The approval check counts no review on this commit, and the command it names agrees.
+      await reviewCommand();
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'COMMENTED']);
+      expect(mockLLM.calls).toEqual([]);
+
+      mockGitHub.prDiffs[HEAD_SHA] = PR_DIFF;
+      await reviewCommand();
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'COMMENTED', 'APPROVED']);
     });
 
     it('reviews the head the PR has when it runs, after a push', async () => {

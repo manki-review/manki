@@ -5559,13 +5559,21 @@ describe('hasBotReviewOnCommit', () => {
     expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
   });
 
-  it('does not count an incomplete review, so a later run still reviews the commit', async () => {
+  it('does not count a newest review without a verdict, so a later run still reviews the commit', async () => {
+    const reviewed = (reviews: Parameters<typeof makeMockOctokit>[0]) => hasBotReviewOnCommit(makeMockOctokit(reviews), TEST_BOT, 'owner', 'repo', 1, 'sha-123');
     const incomplete = { state: 'COMMENTED', commit_id: 'sha-123', body: `⏸️ **Review incomplete:** Claude subscription limit reached.\n\n${BOT_MARKER}`, user: { login: BOT_LOGIN, type: 'Bot' } };
-    expect(await hasBotReviewOnCommit(makeMockOctokit([incomplete]), TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+    const unread = { ...incomplete, body: `**Not reviewed** at \`sha-123\`: no model read this PR.\n\n${BOT_MARKER}\n\n<!-- manki-no-verdict -->` };
+    expect(await reviewed([incomplete])).toBe(false);
+    expect(await reviewed([unread])).toBe(false);
 
-    // A blocking review that quotes the incomplete line elsewhere in its body still counts.
-    const quoting = { ...incomplete, state: 'CHANGES_REQUESTED', body: `🔴 **Changes requested:** 1 blocker.\n\n⏸️ **Review incomplete:** quoted\n\n${BOT_MARKER}` };
-    expect(await hasBotReviewOnCommit(makeMockOctokit([quoting, incomplete]), TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
+    // A blocking review that quotes the incomplete line or the marker elsewhere in its body still counts.
+    const quoting = { ...incomplete, state: 'CHANGES_REQUESTED', body: `🔴 **Changes requested:** 1 blocker.\n\n⏸️ **Review incomplete:** quoted \`<!-- manki-no-verdict -->\`\n\n${BOT_MARKER}` };
+    expect(await reviewed([incomplete, unread, quoting])).toBe(true);
+
+    // The newest review decides: a retry that ended without a verdict leaves the commit to be reviewed again.
+    expect(await reviewed([quoting, incomplete])).toBe(false);
+    expect(await reviewed([quoting, unread])).toBe(false);
+    expect(await reviewed([quoting, { ...incomplete, commit_id: 'sha-other' }])).toBe(true);
   });
 
   it('returns true when the matching review is the 501st (beyond the 500-cap), not among the first 500', async () => {

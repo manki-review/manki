@@ -14,7 +14,7 @@ import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fing
 import type { PreviousFinding } from './recap';
 import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, pendingGrade, SEVERITY_ORDER, threadBlocks } from './types';
 import { formatDuration, hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
-import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
+import { formatReviewRecord, hasOwnMarker, omitBulkyDiagnostics } from './review-record';
 import { formatRunner } from './run-diagnostics';
 import { latestLimits } from './providers/instrumentation';
 import type { LimitUsage } from './providers/types';
@@ -3408,9 +3408,19 @@ async function fetchBotReviews(
 }
 
 /**
+ * Whether a Manki review gave a verdict on its commit. An incomplete round and a round in which no model read a file
+ * gave none, so neither stands as the review of that commit.
+ */
+function givesVerdict(review: { state?: string; body?: string | null }): boolean {
+  const body = review.body ?? '';
+  return !hasOwnMarker(body, NO_VERDICT_MARKER) && !(review.state === 'COMMENTED' && body.startsWith(REVIEW_INCOMPLETE_LINE));
+}
+
+/**
  * State-based head-SHA dedupe gate. Returns the most-recent non-DISMISSED
- * review by `bot` whose `commit_id` matches `commitSha`, otherwise
- * `undefined`. An incomplete review does not count, so a later run still reviews the commit.
+ * review by `bot` whose `commit_id` matches `commitSha` when it gave a verdict, otherwise
+ * `undefined`. A newest review without one does not count, so a later run reviews the commit
+ * again, also when an earlier review of the commit is complete.
  * Run entry points consult this before any LLM call so serialized
  * sibling events (e.g., the `pull_request_review` + `pull_request_review_comment`
  * fan-out from a single human review) cannot post duplicate reviews on the
@@ -3420,8 +3430,8 @@ async function findBotReviewOnCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string,
 ): Promise<BotReviewSummary | undefined> {
   const reviews = await fetchBotReviews(octokit, bot, owner, repo, prNumber);
-  const onCommit = reviews.filter(r => r.commitId === commitSha && !(r.state === 'COMMENTED' && r.body.startsWith(REVIEW_INCOMPLETE_LINE)));
-  return onCommit[onCommit.length - 1];
+  const newest = reviews.filter(r => r.commitId === commitSha).at(-1);
+  return newest && givesVerdict(newest) ? newest : undefined;
 }
 
 async function hasBotReviewOnCommit(
@@ -3480,5 +3490,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isBotUser, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, givesVerdict, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };
