@@ -1490,6 +1490,58 @@ describe('runFullReview end to end', () => {
       expect(thread.isResolved).toBe(true);
     });
 
+    it.each<[string, 'addressed' | 'not_addressed' | 'a maintainer resolves' | 'the author resolves again', string[]]>([
+      ['a round whose judge marks it addressed clears it', 'addressed', ['DISMISSED', 'APPROVED']],
+      ['a round whose judge does not keeps it blocking', 'not_addressed', ['DISMISSED', 'CHANGES_REQUESTED']],
+      ['a maintainer who resolves it clears it for the round on the push', 'a maintainer resolves', ['DISMISSED', 'APPROVED']],
+      ['the author who resolves it again and replies again hears nothing more', 'the author resolves again', ['CHANGES_REQUESTED']],
+    ])('reopens a blocker thread the author resolved when her reply gets "Fixed.", says that the next review decides, and %s', async (_label, next, reviews) => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+      // Alice resolves the thread, pushes a fix and says so. Her reply reaches Manki before the resolve and the push do.
+      Object.assign(thread, { isResolved: true, resolvedBy: { login: 'alice' } });
+      mockGitHub.headSha = 'c3'.repeat(20);
+      mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
+      mockGitHub.commitDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
+      const fixed = 'Fixed. `add` checks the range before it sums.';
+      await replyInThread(thread, 'Fixed in c3c3c3c.', fixed);
+
+      // The thread opens again, marked as reopened. The answer does not ask for a maintainer or a fix after confirming one.
+      const staysOpen = 'This is a blocking finding, so the thread stays open until the next review confirms the fix, or someone other than the PR author with write access closes it.';
+      const bodies = () => thread.comments.map(c => c.body.replace(/\n<!-- manki-reply-record: .+ -->/, ''));
+      expect(bodies().at(-1)).toBe(`${fixed}\n\n${staysOpen}\n\n<!-- manki -->\n<!-- manki-fixed:${mockGitHub.headSha} -->\n${REOPENED_MARKER}`);
+      expect(bodies().join('\n')).not.toContain('Reopened.');
+      expect(thread.isResolved).toBe(false);
+      // Confirming the fix clears nothing: the thread blocks until a round marks it addressed or a maintainer clears it.
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      const answered = thread.comments.length;
+
+      if (next === 'a maintainer resolves') {
+        await resolveThread(thread, 'bob');
+        Object.assign(mockLLM.replies, READY_REPLIES);
+        await reviewRound();
+      } else if (next === 'the author resolves again') {
+        // Manki reopens a thread once, and confirms a fix once per head. The thread stays resolved and keeps blocking.
+        await resolveThread(thread, 'alice');
+        await replyInThread(thread, 'It is fixed, see c3c3c3c.', fixed);
+      } else {
+        // The check on a thread or review event finds nothing to reopen, and neither does the start of the round on the push.
+        await dispatch({ event: 'pull_request_review_thread', action: 'unresolved', pr: String(PR_NUMBER) });
+        Object.assign(mockLLM.replies, READY_REPLIES, {
+          judge: JSON.stringify({ summary: 'One thread.', findings: [], threadEvaluations: [{ threadId: thread.id, status: next, reason: 'The range check.' }] }),
+        });
+        await reviewRound();
+      }
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(thread.comments.slice(answered).filter(c => c.author.login !== 'alice')).toEqual([]);
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual({
+        addressed: [true, APP_LOGIN], not_addressed: [false, undefined], 'a maintainer resolves': [true, 'bob'], 'the author resolves again': [true, 'alice'],
+      }[next]);
+      expect(postedReviews().map(r => r.state)).toEqual(reviews);
+    });
+
     it.each<[string, string, string]>([
       ['dismissed it', '@manki dismiss', ''],
       ['replied and Manki withdrew it', 'Every caller bounds both inputs.', 'Withdrawn. Every caller bounds both inputs, so the sum cannot overflow.'],

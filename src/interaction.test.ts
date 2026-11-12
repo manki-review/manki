@@ -856,7 +856,12 @@ describe('handleReviewCommentReply', () => {
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, true],
     ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true, true],
     ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'MEMBER', 'someone', 'pr-author', 'blocker', undefined, true, true],
+    ['Unverified. I can\'t verify from the code that the API sorts the list. A maintainer should confirm it.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined, true, true],
+    // After "Fixed." the thread opens again too, and the answer says what an open thread hears: the next review decides.
+    ['Fixed. The guard now runs first.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined, true, true],
+    ['Fixed. The guard now runs first.', 'OWNER', 'pr-author', 'pr-author', 'security', undefined, true, true],
     // A maintainer's answer that settles the thread clears it: Manki opens the thread and resolves it itself, with no note.
+    ['Fixed. The guard now runs first.', 'MEMBER', 'someone', 'pr-author', 'blocker', 'ADDRESSED', true, true],
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', 'INVALID', true, true],
     ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', 'pr-author', 'security', 'WONT_FIX', true, true],
     // That holds for a thread Manki reopened before, which gets no second note.
@@ -902,7 +907,7 @@ describe('handleReviewCommentReply', () => {
     // A thread that stays resolved by the PR author keeps blocking, which an answer that would settle it says.
     const keepsBlocking = !noted && sender === 'pr-author' && (authorResolved || resolver === 'pr-author') && /^\**(Fixed|Agreed|Withdrawn)\./.test(reply);
     const finding = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding`;
-    const note = noted ? '\n\nReopened. The PR author cannot resolve it.'
+    const note = noted && !reply.startsWith('Fixed') ? '\n\nReopened. The PR author cannot resolve it.'
       : keepsBlocking ? `\n\n${finding}, so resolving the thread does not clear it. It keeps blocking until ${until.replace('closes', 'clears')}.${author.replace('close', 'clear')}`
         : `\n\n${finding}, so the thread stays open until ${until}.${author}`;
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${staysOpen || noted || keepsBlocking ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
