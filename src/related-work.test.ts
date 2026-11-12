@@ -2,6 +2,7 @@ import * as github from '@actions/github';
 
 import type { LLMClient } from './providers';
 import { classifyRelatedWork, findRelatedWork } from './related-work';
+import { expectLinearTime } from './test-utils';
 import type { DiffFile, ParsedDiff, RelatedWork } from './types';
 
 jest.mock('@actions/core', () => ({ warning: jest.fn(), info: jest.fn(), debug: jest.fn() }));
@@ -77,7 +78,18 @@ describe('findRelatedWork', () => {
     const many = makeOctokit([]);
     await findRelatedWork(many.octokit, target(diffOf(file('src/a.ts', names.slice(3).concat('sixthName', 'seventhName').map(name => `export function ${name}() {`))), { title: 'x' }));
     expect(many.search).toHaveBeenCalledWith(expect.objectContaining({ q: 'repo:o/r is:issue is:open (shortName OR otherName OR thirdName OR fourthName OR fifthName OR sixthName)' }));
-  });
+
+    // A body keeps the comment starts that nothing closes, and is read once however many of them it holds.
+    const unclosed = (n: number) => `<!-- closed -->kept ${'<!--'.repeat(n)}`;
+    await expectLinearTime(async (n) => {
+      const issues = makeOctokit([], [{ number: 42, title: 'Open', body: unclosed(n) }]);
+      const started = performance.now();
+      const found = await findRelatedWork(issues.octokit, target(diff));
+      const ms = performance.now() - started;
+      expect(found.items).toEqual([{ kind: 'issue', number: 42, title: 'Open', excerpt: unclosed(100).slice('<!-- closed -->'.length, '<!-- closed -->'.length + 400) }]);
+      return ms;
+    }, 130_000);
+  }, 60_000);
 
   it('skips a list that fails or hangs past the deadline and names why, and searches nothing without a term', async () => {
     const { octokit, search } = makeOctokit([]);

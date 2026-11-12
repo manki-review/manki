@@ -149,8 +149,12 @@ function searchTerms(title: string, diff: ParsedDiff): string[] {
   return terms;
 }
 
+/** Returns the first `max` characters of `body` without its HTML comments. */
 function excerpt(body: string | null | undefined, max: number): string {
-  return (body ?? '').replace(/<!--[\s\S]*?-->/g, '').trim().slice(0, max);
+  const text = body ?? '';
+  // Past the last `-->` no comment ends, and there each `<!--` would be read on to the end of the body.
+  const closed = text.lastIndexOf('-->') + 3;
+  return (text.slice(0, closed).replace(/<!--[\s\S]*?-->/g, '') + text.slice(closed)).trim().slice(0, max);
 }
 
 function skipReason(error: unknown): string {
