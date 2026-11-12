@@ -503,13 +503,14 @@ export function sanitizePlannerField(raw: string, maxLength: number): string {
   s = s.replace(/```[\s\S]*?```/g, '');
   // Strip inline code
   s = s.replace(/`[^`]*`/g, '');
+  // Only keep alphanumeric, spaces, line breaks and basic punctuation. A dropped character could join the halves of
+  // a pattern below, so this runs before them.
+  s = s.replace(/[^a-zA-Z0-9 \n.,;:!?'"/+#&()-]/g, '');
   // Strip markdown headings
   s = s.replace(/^#{1,6}\s+/gm, '');
   // Strip instruction-like patterns (e.g., "You are...", "Ignore previous...", "System:")
   s = s.replace(/\b(you are|ignore|forget|disregard|override)\b.*$/gim, '');
   s = s.replace(/\b(system|assistant|user)\s*:.*$/gim, '');
-  // Only keep alphanumeric, spaces, and basic punctuation
-  s = s.replace(/[^a-zA-Z0-9 .,;:!?'"/+#&()-]/g, '');
   // Collapse whitespace
   s = s.replace(/\s+/g, ' ').trim();
   return s.slice(0, maxLength);
