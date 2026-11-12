@@ -397,8 +397,8 @@ async function run(): Promise<void> {
 const NO_SETTINGS: PrState = { settings: { paused: false }, runModes: new Set(), queuedModes: new Set() };
 
 /**
- * Returns the PR's coordinator state. Without one, as when the token service cannot answer, the PR counts as
- * not paused with no box modes, so a push still gets its review.
+ * Returns the PR's coordinator state. Without one, as on a run with no OIDC token, the PR counts as not paused with no
+ * box modes, so a push still gets its review. Throws `TokenServiceError` when the token service fails to answer.
  */
 async function loadSettings(owner: string, repo: string, prNumber: number): Promise<PrState> {
   return await fetchPrState(owner, repo, prNumber, github.context.runId) ?? NO_SETTINGS;
@@ -2226,8 +2226,8 @@ async function postCleanup(): Promise<void> {
 
 /**
  * Tells the PR or issue a dispatched run is for that the run stopped because the token service failed, once per reason.
- * Only the workflow's `github_token` can post then, so the note comes from `github-actions[bot]` and carries no Manki
- * marker. A merge waits on nobody, so it gets no note.
+ * A failed token call leaves only the workflow's `github_token` to post with, so the note comes from `github-actions[bot]`
+ * and carries no Manki marker. A merge waits on nobody, so it gets no note.
  */
 async function reportTokenFailure({ event, action, number }: ReturnType<typeof dispatchedInputs>, error: TokenServiceError): Promise<void> {
   const token = core.getInput('github_token');

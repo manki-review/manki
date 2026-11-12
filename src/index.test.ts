@@ -1700,6 +1700,16 @@ describe('main', () => {
       jest.mocked(authModule.createAuthenticatedOctokit).mockRejectedValue(new authModule.TokenServiceError('TypeError: fetch failed <!-- manki-bot --> @octocat'));
       await main();
       expect(comments.at(-1)?.body).toBe('⏸️ **Review incomplete:** Could not get a token from the Manki token service (TypeError: fetch failed  @\u200Boctocat). Retry the run.');
+
+      // A PR state that cannot be read hides the run's box modes, so the run fails the same way and reviews nothing.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      jest.mocked(authModule.createAuthenticatedOctokit).mockReset().mockResolvedValue({ octokit: mockOctokitInstance as any, bot: TEST_BOT });
+      jest.mocked(authModule.fetchPrState).mockRejectedValueOnce(new authModule.TokenServiceError('HTTP 503', 'read the PR state from'));
+      jest.mocked(core.setFailed).mockClear();
+      await main();
+      expect(comments.at(-1)?.body).toBe('⏸️ **Review incomplete:** Could not read the PR state from the Manki token service (HTTP 503). Retry the run.');
+      expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Could not read the PR state from the Manki token service'));
+      expect(reviewModule.runReview).not.toHaveBeenCalled();
     } finally {
       jest.mocked(github.getOctokit).mockReset();
       jest.mocked(core.getState).mockReset().mockReturnValue('');

@@ -422,21 +422,29 @@ function pauseState({ priorRounds, lastApprovalAt }: Pick<RecapState, 'priorRoun
 
 /**
  * Returns why no automatic review will run on a new head commit, with how to start one, or `undefined` when a push review will run.
+ * When the token service cannot say whether the PR is paused, the cause is `pause_unknown`, so no caller promises a push review.
  * Reads the PR's rounds unless `rounds` holds them.
  */
 async function autoReviewHalt(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config: ReviewConfig,
   rounds?: Pick<RecapState, 'priorRounds' | 'lastApprovalAt'>,
-): Promise<{ cause: 'auto_review_off' | 'settings_paused' | 'automatic_pause'; text: string } | undefined> {
+): Promise<{ cause: 'auto_review_off' | 'settings_paused' | 'automatic_pause' | 'pause_unknown'; text: string } | undefined> {
   if (!config.auto_review) {
     return { cause: 'auto_review_off', text: 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.' };
   }
-  if ((await fetchPrState(owner, repo, prNumber, github.context.runId))?.settings.paused) {
+  const boxTicked = await fetchPrState(owner, repo, prNumber, github.context.runId).then(state => !!state?.settings.paused, (error: unknown) => {
+    core.warning(`Could not read whether #${prNumber} is paused, so not counting on a push review: ${error instanceof Error ? error.message : error}`);
+    return undefined;
+  });
+  if (boxTicked) {
     return { cause: 'settings_paused', text: 'Automatic review is paused in the settings block. Tick **Review again** there, or comment `@manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.' };
   }
   const { reason, restart } = pauseState(rounds ?? await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
-  return reason
-    ? { cause: 'automatic_pause', text: `${reason} Automatic review is paused. Tick **Review again** in the settings block, or comment \`@manki review\`, to review it.${restart ? ` ${restart}` : ''}` }
+  if (reason) {
+    return { cause: 'automatic_pause', text: `${reason} Automatic review is paused. Tick **Review again** in the settings block, or comment \`@manki review\`, to review it.${restart ? ` ${restart}` : ''}` };
+  }
+  return boxTicked === undefined
+    ? { cause: 'pause_unknown', text: 'Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick **Review again** in the settings block, or comment `@manki review`.' }
     : undefined;
 }
 
@@ -567,7 +575,7 @@ async function postNoticeOnce(
 
 /**
  * Posts a one-time comment that auto-approve is withheld because Manki has not reviewed `headSha`,
- * and no automatic review will. `halt` says why and how to start one.
+ * and no automatic review will, or none is certain. `halt` says why and how to start one.
  * The `manki-stale-approve:<sha>` marker keeps it to one comment per head commit.
  */
 async function postStaleApproveSkippedComment(

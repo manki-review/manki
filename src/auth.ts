@@ -54,10 +54,10 @@ export interface TokenResult {
   queuedCheck?: QueuedCheck;
 }
 
-/** The token service gave no token, so the run cannot post as Manki. */
+/** A token service call that the run cannot go on without failed. `action` says what the call does, by default getting the token. */
 export class TokenServiceError extends Error {
-  constructor(reason: string) {
-    super(`Could not get a token from the Manki token service (${reason}). Retry the run.`);
+  constructor(reason: string, action = 'get a token from') {
+    super(`Could not ${action} the Manki token service (${reason}). Retry the run.`);
     this.name = 'TokenServiceError';
   }
 }
@@ -196,28 +196,28 @@ function modesOf(items: unknown, keep: (item: Record<string, unknown>) => boolea
 
 /**
  * Reads the coordinator's state of PR `prNumber` from the token service, with the modes of run `runId`. A failed read
- * is tried once more. Returns `null` with a warning when the run has no OIDC token or the service gives no state.
+ * is tried once more. Throws `TokenServiceError` when the second try fails too, since the run's modes are unknown then.
+ * Returns `null` with a warning when the run has no OIDC token or the service refuses to give a state.
  */
 export async function fetchPrState(owner: string, repo: string, prNumber: number, runId: number): Promise<PrState | null> {
-  try {
-    const response = await callTokenService('state', { owner, repo, pr: prNumber }, true);
-    if (!response?.ok) {
-      core.warning(`The token service gave no PR state for #${prNumber} (${response ? response.status : 'no OIDC token'}), reviewing as not paused`);
-      return null;
-    }
-    const data = response.data as Record<string, unknown> | null;
-    const settings = data?.settings as Record<string, unknown> | undefined;
-    const reviewed = (data?.last_reviewed as Record<string, unknown> | null | undefined)?.commit;
-    return {
-      settings: { paused: settings?.paused === true },
-      ...(typeof reviewed === 'string' && /^[0-9a-f]+$/.test(reviewed) && { lastReviewed: reviewed }),
-      runModes: modesOf(data?.active, item => item.run_id === runId),
-      queuedModes: modesOf(data?.queue, () => true),
-    };
-  } catch (error) {
-    core.warning(`Could not read the PR state from the token service, reviewing as not paused: ${error}`);
+  const failed = (reason: string) => new TokenServiceError(reason, 'read the PR state from');
+  const response = await callTokenService('state', { owner, repo, pr: prNumber }, true).catch((error: unknown) => {
+    throw failed(String(error));
+  });
+  if (response && response.status >= 500) throw failed(`HTTP ${response.status}`);
+  if (!response?.ok) {
+    core.warning(`The token service gave no PR state for #${prNumber} (${response ? response.status : 'no OIDC token'}), reviewing as not paused`);
     return null;
   }
+  const data = response.data as Record<string, unknown> | null;
+  const settings = data?.settings as Record<string, unknown> | undefined;
+  const reviewed = (data?.last_reviewed as Record<string, unknown> | null | undefined)?.commit;
+  return {
+    settings: { paused: settings?.paused === true },
+    ...(typeof reviewed === 'string' && /^[0-9a-f]+$/.test(reviewed) && { lastReviewed: reviewed }),
+    runModes: modesOf(data?.active, item => item.run_id === runId),
+    queuedModes: modesOf(data?.queue, () => true),
+  };
 }
 
 /** The clients holding the token service's review token, which cannot resolve review threads itself. */

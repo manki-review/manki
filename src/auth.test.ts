@@ -146,16 +146,27 @@ describe('fetchPrState', () => {
     ['the run has no OIDC token', () => jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC')), 0],
     ['the service has no `/state`', () => mockFetch(async () => new Response('Not Found', { status: 404 })), 1],
     ['the service refuses the run', () => mockFetch(async () => Response.json({ error: 'refused' }, { status: 403 })), 1],
-    ['the reply is not JSON', () => mockFetch(async () => new Response('oops', { status: 200 })), 2],
-    ['the request fails twice', () => mockFetch(async () => { throw new Error('network down'); }), 2],
-    ['the service answers 503 twice', () => mockFetch(async () => new Response('Service Unavailable', { status: 503 })), 2],
-    ['a reply body never arrives, twice', () => mockFetch(neverArrives), 2],
   ])('returns null with one warning when %s', async (_case, arrange, calls) => {
     jest.mocked(core.warning).mockClear();
     arrange();
-    expect(await pastRetryWait(() => fetchPrState(OWNER, REPO, 12, 7), 22000)).toBeNull();
+    expect(await fetchPrState(OWNER, REPO, 12, 7)).toBeNull();
     expect(core.warning).toHaveBeenCalledTimes(1);
     if (calls) expect(global.fetch).toHaveBeenCalledTimes(calls);
+  });
+
+  // The run's modes are unknown then, so the caller must not go on as if no box were ticked.
+  it.each([
+    ['the reply is not JSON', async () => new Response('oops', { status: 200 }), /SyntaxError/],
+    ['the request fails', async () => { throw new Error('network down'); }, 'Error: network down'],
+    ['the service answers 503', async () => new Response('Service Unavailable', { status: 503 }), 'HTTP 503'],
+    ['a reply body never arrives', neverArrives, 'Error: aborted'],
+  ])('throws a `TokenServiceError` when %s on both tries', async (_case, reply, reason) => {
+    mockFetch(reply);
+
+    const error = await pastRetryWait(() => fetchPrState(OWNER, REPO, 12, 7).catch((error: unknown) => error), 22000);
+    expect(error).toBeInstanceOf(TokenServiceError);
+    expect((error as Error).message).toMatch(reason instanceof RegExp ? reason : new RegExp(`^Could not read the PR state from the Manki token service \\(${reason}\\)\\. Retry the run\\.$`));
+    expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -240,7 +251,7 @@ describe('tokenServiceCalls', () => {
     mockFetch(async () => { throw new TypeError('fetch failed'); });
     await pastRetryWait(() => reportPrState(OWNER, REPO, 12, { pause: null }));
     mockFetch(async () => new Response('Bad gateway', { status: 502 }));
-    await pastRetryWait(() => fetchPrState(OWNER, REPO, 12, 7));
+    await expect(pastRetryWait(() => fetchPrState(OWNER, REPO, 12, 7))).rejects.toBeInstanceOf(TokenServiceError);
     jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC'));
     await reportPrState(OWNER, REPO, 12, { pause: null });
 
