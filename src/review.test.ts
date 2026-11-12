@@ -2415,7 +2415,7 @@ describe('runReview', () => {
         expect(user).toContain('## Pull Request Diff');
         expect(options).toEqual({ effort: 'high', signal: expect.any(AbortSignal), repoTools: { root, steps: 12 }, timeoutMs: 600_000 });
       }
-      // The finders read the description as before, and nothing about the claims or their checks.
+      // The finders read the description, and nothing about the claims or their checks.
       const finders = reviewerCalls(clients).filter(([system]) => !isCheck(system));
       expect(finders).toHaveLength(2);
       for (const [system, user] of finders) {
@@ -2469,7 +2469,7 @@ describe('runReview', () => {
       let without;
       let runs;
       try {
-        // Without the dedup model no claim is listed, which is the round as it was before claims were checked.
+        // Without the dedup model no claim is listed, so this round is the one the others are compared with.
         const { dedup: _dedup, ...noModel } = claimClients([], () => new Error('no check may run'), found);
         without = await run(noModel);
         runs = [

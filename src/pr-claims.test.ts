@@ -323,7 +323,7 @@ describe('withoutCommentMarks', () => {
     ];
     for (const [comment, text] of cases) expect(withoutCommentMarks(comment)).toBe(text);
 
-    // Each was a run the old pattern backtracked over from every start, which took seconds at this length.
+    // Long runs of blanks or stars around the closing mark, which a pattern anchored at the end would backtrack over.
     const size = 100_000;
     const worst = [`// ${' '.repeat(size)}x`, `// ${'*'.repeat(size)}x`, `// x${' '.repeat(size)}*`, `// x${'*'.repeat(size)} /`, `${'*'.repeat(size)}/`];
     for (const comment of worst) {
