@@ -62,7 +62,7 @@ export class TokenServiceError extends Error {
   }
 }
 
-const TOKEN_RETRY_DELAY_MS = 2000;
+const RETRY_DELAY_MS = 2000;
 
 const OIDC_AUDIENCE = 'manki-api.dustinface.me';
 
@@ -135,6 +135,24 @@ async function postToTokenService(url: string, body: unknown, endpoint: string):
   }
 }
 
+/**
+ * Posts as `postToTokenService` does, and tries a timeout, network error or 5xx once more after a short wait.
+ * Returns the reply of the last try, or throws its error. Only for a call the service may safely get twice.
+ */
+async function postWithRetry(url: string, body: unknown, endpoint: string): Promise<TokenServiceResponse | null> {
+  let failure: string;
+  try {
+    const reply = await postToTokenService(url, body, endpoint);
+    if (!reply || reply.status < 500) return reply;
+    failure = `HTTP ${reply.status}`;
+  } catch (error) {
+    failure = String(error);
+  }
+  core.info(`The token service failed (${failure}), trying again`);
+  await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+  return postToTokenService(url, body, endpoint);
+}
+
 /** Posts `body` to the token service endpoint `path`, such as `state`, as `postToTokenService` does. */
 export function callTokenService(path: string, body: unknown): Promise<TokenServiceResponse | null> {
   return postToTokenService(new URL(path, tokenServiceUrl()).href, body, path);
@@ -145,26 +163,11 @@ export function callTokenService(path: string, body: unknown): Promise<TokenServ
  * once more after a short wait. Throws `TokenServiceError` when no token comes back.
  */
 export async function resolveGitHubToken(tokenUrl: string, owner: string, repo: string): Promise<TokenResult> {
-  let response: Awaited<ReturnType<typeof postToTokenService>> | undefined;
-  for (let attempt = 1; !response; attempt++) {
-    let failure: string;
-    try {
-      // `takes_over_check` tells the service that this run takes over the queued check the reply names.
-      const reply = await postToTokenService(tokenUrl, { owner, repo, takes_over_check: true }, 'token');
-      if (!reply) throw new TokenServiceError('no OIDC token, so the workflow needs `id-token: write`');
-      if (reply.ok || reply.status < 500) {
-        response = reply;
-        break;
-      }
-      failure = `HTTP ${reply.status}`;
-    } catch (error) {
-      if (error instanceof TokenServiceError) throw error;
-      failure = String(error);
-    }
-    if (attempt === 2) throw new TokenServiceError(failure);
-    core.info(`The token service failed (${failure}), trying again`);
-    await new Promise((resolve) => setTimeout(resolve, TOKEN_RETRY_DELAY_MS));
-  }
+  // `takes_over_check` tells the service that this run takes over the queued check the reply names.
+  const response = await postWithRetry(tokenUrl, { owner, repo, takes_over_check: true }, 'token').catch((error: unknown) => {
+    throw new TokenServiceError(String(error));
+  });
+  if (!response) throw new TokenServiceError('no OIDC token, so the workflow needs `id-token: write`');
   if (!response.ok) throw new TokenServiceError(`HTTP ${response.status}`);
   const tokenData = response.data as { token?: unknown; expires_at?: unknown; check_run?: { id?: unknown; head_sha?: unknown } | null } | null;
   if (!tokenData || !tokenData.token || typeof tokenData.token !== 'string') throw new TokenServiceError('a reply without a token');
