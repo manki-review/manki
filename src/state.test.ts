@@ -764,7 +764,7 @@ describe('checkAndAutoApprove', () => {
       }
     });
 
-    it('approves a blocker in a file outside the diff only once the thread a later round gives it is resolved or evaluated as fixed', async () => {
+    it('approves a blocker in a file outside the diff only once a person resolves the thread a later round gives it', async () => {
       const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
       const createReviewMock = jest.fn().mockResolvedValue({});
       const outside = blocker({ posted: 'body', file: 'src/store.ts', title: 'Persisters miss the lock' });
@@ -818,12 +818,11 @@ describe('checkAndAutoApprove', () => {
       expect(await check('sha-3', withThird, [...threads, carrying()])).toBe(false);
       expect(infoSpy).toHaveBeenLastCalledWith(expect.stringContaining('Not all blocking findings resolved'));
       expect(createReviewMock).not.toHaveBeenCalled();
-      // A person resolves the thread, or a later round evaluates it as fixed and Manki resolves it.
-      for (const resolvedBy of ['maintainer', 'manki-review[bot]']) {
-        createReviewMock.mockClear();
-        expect(await check('sha-3', withThird, [...threads, carrying(resolvedBy)])).toBe(true);
-        expect(createReviewMock).toHaveBeenCalledTimes(1);
-      }
+      // Manki's own resolve lifts nothing without a record that confirms the fix. A person who resolves the thread does.
+      expect(await check('sha-3', withThird, [...threads, carrying('manki-review[bot]')])).toBe(false);
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(await check('sha-3', withThird, [...threads, carrying('maintainer')])).toBe(true);
+      expect(createReviewMock).toHaveBeenCalledTimes(1);
     });
 
     it.each<[string, Parameters<typeof makeMockOctokit>[0], string | { approved: true; standing: true }]>([
