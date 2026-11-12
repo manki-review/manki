@@ -1803,17 +1803,23 @@ const isCollection = (type: string): boolean => hasItemBrackets(type) || typeNam
 const elementTypes = (type: string): string[] => typeNames(type).filter(name => !CONTAINERS.has(name) && !TYPE_WRAPPERS.has(name));
 
 /**
- * Ranks how likely a collection field of type `other` holds the items of a collection field of type `own`: 0 for the same
- * type, 1 for the same first element type, such as the key of a map, and 2 for any shared element type. Returns
- * `undefined` when either is no collection or they share no element type.
+ * Returns a function that ranks how likely a collection field of type `other` holds the items of a collection field of
+ * type `own`: 0 for the same type, 1 for the same first element type, such as the key of a map, and 2 for any shared
+ * element type. It returns `undefined` when either is no collection or they share no element type. `own` is read once,
+ * so ranking every field of a type takes time linear in their types.
  */
-function typeAffinity(own: string, other: string): number | undefined {
-  if (!isCollection(own) || !isCollection(other)) return undefined;
-  if (own.replace(/\s+/g, '') === other.replace(/\s+/g, '')) return 0;
+function typeAffinity(own: string): (other: string) => number | undefined {
+  if (!isCollection(own)) return () => undefined;
+  const text = own.replace(/\s+/g, '');
   const mine = elementTypes(own);
-  const theirs = elementTypes(other);
-  if (mine.length > 0 && mine[0] === theirs[0]) return 1;
-  return mine.some(name => theirs.includes(name)) ? 2 : undefined;
+  const shared = new Set(mine);
+  return (other) => {
+    if (!isCollection(other)) return undefined;
+    if (text === other.replace(/\s+/g, '')) return 0;
+    const theirs = elementTypes(other);
+    if (mine.length > 0 && mine[0] === theirs[0]) return 1;
+    return theirs.some(name => shared.has(name)) ? 2 : undefined;
+  };
 }
 
 /** Returns the hunk of `file` holding head line `line` as a diff, cut to `MAX_HUNK_LINES` rows around that line. */
@@ -1863,8 +1869,9 @@ function siblingFields(
       const file = diffFiles.get(u.file);
       return (file && hunkAround(file, u.line)) ?? [];
     }))];
+    const affinity = typeAffinity(own.type);
     return declared.flatMap(other => {
-      const rank = other.name === field ? undefined : typeAffinity(own.type, other.type);
+      const rank = other.name === field ? undefined : affinity(other.type);
       if (rank === undefined) return [];
       const question: SiblingFieldQuestion = {
         struct: decl.name, field, sibling: other.name, item: uses[0].item,

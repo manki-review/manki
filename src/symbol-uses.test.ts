@@ -787,6 +787,11 @@ ${body}	return true
     const typed = (n: number, type: string) => Array.from({ length: n }, (_, i) => `pub struct T${i} { pub fld_${i}: ${type} }\n`).join('');
     const owned = await usesInLinearTime(n => [{ 'src/typed.rs': typed(n, 'u8'), 'src/hits.rs': 'fn x(t: T0) {}\n'.repeat(n) }, { 'src/typed.rs': typed(n, 'u16') }], 8_000, { smaller: 500 });
     expect(owned.record?.types?.[0]).toBe('src/typed.rs:1: struct T0 { fld_0 }');
+
+    // A looked-up field of a long type beside many collection fields: the long type is read once, not once per sibling.
+    const wideStruct = (n: number, call: string) => `pub struct Wide {\n    pub jobs: HashMap<u8, (${'u8,'.repeat(3 * n)})>,\n${Array.from({ length: n }, (_, i) => `    pub f${i}: Vec<u8>,\n`).join('')}}\n\nfn run(s: &Wide, k: u8) {\n    ${call}\n}\n`;
+    const ranked = await usesInLinearTime(n => [{ 'src/wide.rs': wideStruct(n, 's.jobs.len();') }, { 'src/wide.rs': wideStruct(n, 's.jobs.get(&k);') }], 8_000, { smaller: 500 });
+    expect(ranked.siblings.fields.slice(0, 2).map(q => [q.struct, q.field, q.sibling])).toEqual([['Wide', 'jobs', 'f0'], ['Wide', 'jobs', 'f1']]);
   }, 300_000);
 
   it('parses at most 200 files a round and says how many it left unparsed', async () => {
