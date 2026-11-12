@@ -2276,7 +2276,10 @@ describe('runJudgeAgent', () => {
       expect(byTitle['Fact confirmed, damage unsettled'].doubts?.map(d => d.premise)).toEqual(['The service fails to start without the variable', '`.env.example` has no entry for the variable']);
       // A note whose fact stays open leaves the judge call without the rule's grade and without the fact as a doubt, so no later step takes them for the damage's. The check's answer and the damage doubt stay.
       const open = Object.fromEntries((await run('block')).map(f => [f.title, f]));
-      expect(['Fact unsettled', 'Fact unsettled, damage confirmed'].map(title => [open[title].gradeIfConfirmed, open[title].doubts?.map(d => d.premise), open[title].rule?.unseen, open[title].refutation?.premises?.length])).toEqual([
+      // So does a note the refuter dropped, which the round record keeps.
+      expect(['Fact unsettled', 'Fact unsettled, damage confirmed', 'Fact disproved', 'Fact disproved, damage confirmed'].map(title => [open[title].gradeIfConfirmed, open[title].doubts?.map(d => d.premise), open[title].rule?.unseen, open[title].refutation?.premises?.length])).toEqual([
+        [undefined, undefined, '`.env.example` has no entry for the variable', 1],
+        [undefined, ['The service fails to start without the variable'], '`.env.example` has no entry for the variable', 2],
         [undefined, undefined, '`.env.example` has no entry for the variable', 1],
         [undefined, ['The service fails to start without the variable'], '`.env.example` has no entry for the variable', 2],
       ]);

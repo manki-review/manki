@@ -1707,19 +1707,24 @@ function gradeConfirmedRule(finding: Finding, rules?: RulesMode): Finding {
  */
 function doubtUnprovenRule(finding: Finding, rules?: RulesMode): Finding {
   const fact = unseenRuleFact(finding);
-  if (!fact) return finding;
+  if (!fact || !isNote(finding.severity)) return finding;
   return { ...finding, gradeIfConfirmed: ruleGrade(rules), doubts: [...(finding.doubts ?? []), { premise: fact, decides: 'defect' }] };
 }
 
-/** Returns the fact in `rule.unseen` of a note whose rule is `unproven`, the only finding `doubtUnprovenRule` changes. */
+/**
+ * Returns the fact in `rule.unseen` of a note whose rule is `unproven`, the only finding `doubtUnprovenRule` changes.
+ * A note the refuter dropped since then counts too.
+ */
 function unseenRuleFact(finding: Finding): string | undefined {
-  return finding.rule?.verdict === 'unproven' && isNote(finding.severity) ? finding.rule.unseen || undefined : undefined;
+  const drop = finding.severity === 'ignore' ? finding.gradePath?.at(-1) : undefined;
+  const note = isNote(finding.severity) || (drop?.by === 'refutation' && isNote(drop.from));
+  return finding.rule?.verdict === 'unproven' && note ? finding.rule.unseen || undefined : undefined;
 }
 
 /**
  * Returns `finding` without the `gradeIfConfirmed` and the doubt `doubtUnprovenRule` added. Only the refuter of the judge
- * call reads the two. Any later step, and the round record, would read the rule's grade as one the damage earned.
- * `rule.unseen` keeps the fact.
+ * call reads the two. Any later step, and the round record, would read the rule's grade as one the damage earned, also
+ * on a note the refuter dropped. `rule.unseen` keeps the fact.
  */
 function withoutRuleDoubt(finding: Finding): Finding {
   const fact = unseenRuleFact(finding);
