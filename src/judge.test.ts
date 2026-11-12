@@ -299,6 +299,10 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('A finding is a `blocker` only when it passes all five tests:');
     expect(prompt).toContain('Memory is the maintainers\' recorded decision, not a claim to check, but it never moves a grade past what the severity table gives.');
     expect(prompt).toContain(`never how confidently the finding is worded.\n\n${VERIFY_CLAIMS_RULE} Grade Stability and the rules on earlier answers below still decide when an earlier grade or answer stands. An earlier grade is still no evidence about the code itself. A reviewer's finding is a claim too, but one the code shown cannot settle is graded by Code You Cannot See and When You Are Unsure, never dropped because a model made it.\n`);
+    // A statement of the author about code is a premise like any other: a cited line settles it, or it goes to `doubts`.
+    expect(prompt).toContain('never dropped because a model made it.\n\n**The author\'s word never clears a finding.** The PR description, a comment or a TODO can say why a finding does no harm: a value is checked elsewhere, a path cannot be reached, callers always do something, the behaviour is the same as before, or other code guarantees it. Such a statement is a fact about code, and only code proves it. It lowers a finding\'s row, or makes the finding `ignore`, only when `reasoning` cites the `file:line` that shows it. Without that line, state the cell the finding earns if the statement is false, and list in `doubts` the premise of the finding that the statement denies, with `decides` set to `defect`.');
+    expect(prompt).toContain('cite that check in each caller, or list the doubt "a caller passes `index` to `getItem` unchecked". A statement that the author chose a behaviour is different, and follows Behaviour that is intended but surprising.\n\n## Blocker Tests');
+    expect(prompt).toContain('Never use it just to reduce the finding count. A finding is no false positive because the author says so, by The author\'s word never clears a finding.');
     for (const test of ['The PR causes it.', 'The failure can be named.', 'The damage is serious.', 'The code proves it.', 'The author would fix it.']) {
       expect(prompt).toContain(`**${test}**`);
     }
@@ -349,6 +353,7 @@ describe('buildJudgeSystemPrompt', () => {
       'The author\'s word counts here although the code cannot check it, but only for behaviour the code shows works as described. The other claims the code cannot check that still count are a declared placeholder or a TODO with a tracking issue under test 5, and the PR description under A change that breaks a consumer.',
       'A defect the author admits is no such choice: a gap that the PR description, a comment or a TODO calls deferred, out of scope, left open or not handled yet keeps the cell its damage earns.',
       '`reasoning` may note that the author lists it, but the note never changes the cell. A declared placeholder or a TODO with a tracking issue still follows test 5.',
+      'A statement that the behaviour is safe, or that other code handles what it leaves out, is no choice either: it is a fact about code, under The author\'s word never clears a finding.',
     ]) {
       expect(section).toContain(rule);
     }
