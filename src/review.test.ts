@@ -2677,12 +2677,18 @@ describe('runReview', () => {
         leadOf('note', 'The helper name may confuse a reader', 'src/d.ts', 4),
         leadOf('warning', 'The token may leak into the job log', 'src/c.ts', 9),
         leadOf('blocker', 'The sum may overflow on large input', 'src/b.ts', 8),
+        leadOf('warning', 'The new route may be missing from the API docs', 'src/d.ts', 6),
+        leadOf('warning', 'The new flag may be missing from the reference', 'src/d.ts', 7),
       ], true);
+      const rule = { file: 'AGENTS.md', quote: 'Every route must be listed in the API docs.', verdict: 'confirmed' as const };
       mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
         summary: 'ok',
         findings: input.findings.map(f => {
           if (f.file === 'src/a.ts') { const { lead: _lead, ...confirmed } = f; return { ...confirmed, refutation: refuted('confirmed') }; }
           if (f.line === 8) return { ...f, refutation: refuted('disproved') };
+          // A disproved lead that breaks a confirmed rule comes back as a finding: a warning without its `lead`, or the blocker `review.rules: block` makes it.
+          if (f.line === 6) { const { lead: _lead, ...kept } = f; return { ...kept, rule, refutation: refuted('disproved') }; }
+          if (f.line === 7) return { ...f, severity: 'blocker' as const, rule, refutation: refuted('disproved') };
           if (f.file === 'src/b.ts') return { ...f, severity: 'ignore' as const, refutation: refuted('disproved') };
           if (f.line === 9) return { ...f, tags: [SECURITY_TAG], refutation: refuted('unsettled') };
           return { ...f, refutation: refuted('unsettled') };
@@ -2691,11 +2697,11 @@ describe('runReview', () => {
 
       const result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: '', workspace: '/work/pr-head' });
 
-      expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.line)).toEqual([1, 2, 3, 9, 8]);
-      // A disproof never lowers a blocker, and a security lead the tools do not confirm stays posted.
-      expect(result.findings.map(f => [f.line, f.severity])).toEqual([[1, 'warning'], [9, 'warning'], [8, 'blocker']]);
+      expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.line)).toEqual([1, 2, 3, 9, 8, 6, 7]);
+      // A disproof never lowers a blocker, and a security lead the tools do not confirm stays posted. So does a disproved lead its rule keeps.
+      expect(result.findings.map(f => [f.line, f.severity])).toEqual([[1, 'warning'], [9, 'warning'], [8, 'blocker'], [6, 'warning'], [7, 'blocker']]);
       expect(result.openLeads?.map(f => f.line)).toEqual([4, 3]);
-      expect(result.rawFindingCount).toBe(5);
+      expect(result.rawFindingCount).toBe(7);
       expect(result.leads?.map(l => [l.line, l.outcome, l.since, !!l.posted])).toEqual([
         [1, 'confirmed', 1, true],
         [2, 'disproved', 1, false],
@@ -2703,9 +2709,12 @@ describe('runReview', () => {
         [4, 'not_checked', 1, false],
         [9, 'unsettled', 1, true],
         [8, 'disproved', 1, true],
+        // The record says what the check found and that the finding was posted anyway, so the next round carries nothing over.
+        [6, 'disproved', 1, true],
+        [7, 'disproved', 1, true],
       ]);
       // Each lead records the refuter's answer, so a lead listed and never posted still counts in the statistics.
-      expect(result.leads?.map(l => l.refutation?.outcome)).toEqual(['confirmed', 'disproved', 'unsettled', undefined, 'unsettled', 'disproved']);
+      expect(result.leads?.map(l => l.refutation?.outcome)).toEqual(['confirmed', 'disproved', 'unsettled', undefined, 'unsettled', 'disproved', 'disproved', 'disproved']);
     });
 
     it('lists a warning lead without sending it to a judge that has no tools to settle it', async () => {

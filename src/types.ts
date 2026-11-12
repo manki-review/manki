@@ -674,6 +674,18 @@ export function outcomeOf(check: Refutation): RefutationOutcome {
 }
 
 /**
+ * Returns the `outcome` that `checks` agree on, which decides whether a grade is restored and whether a blocker is
+ * lowered. An unsettled check abstains, and a confirmation against a disproof settles nothing. So no check confirms
+ * beside one that disproves, be it the finding, the defect or a premise that only decides the grade.
+ */
+export function agreedOutcome(checks: readonly Refutation[]): RefutationOutcome {
+  const votes = new Set(checks.map(r => r.outcome).filter(o => o !== 'unsettled'));
+  if (votes.size !== 1) return 'unsettled';
+  const [outcome] = votes;
+  return outcome === 'confirmed' && checks.some(r => outcomeOf(r) === 'disproved' || r.premises?.some(p => p.outcome === 'disproved')) ? 'unsettled' : outcome;
+}
+
+/**
  * Returns the refutation that disproves `finding`, by `outcomeOf`: in a premise the defect rests on, or in its answer
  * whether the defect exists. Returns none when another check backs the finding, since a confirmation against a
  * disproof settles nothing. A check backs it when it does not disprove it and confirmed the defect or one of the premises.
@@ -755,7 +767,8 @@ export interface OpenLead {
 
 /**
  * How an open lead ended in a round: `confirmed` and posted, `disproved` by the judge's tools, `dropped` by the judge,
- * `unsettled` by the tools, or `not_checked` because it went to no check and was only listed.
+ * `unsettled` by the tools, or `not_checked` because it went to no check and was only listed. A `disproved` lead is
+ * still posted, with `RoundLead.posted` set, when a disproof cannot drop it: a blocker, or a finding that `breaksRule`.
  */
 export type LeadOutcome = 'confirmed' | 'disproved' | 'dropped' | 'unsettled' | 'not_checked';
 

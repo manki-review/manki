@@ -6,7 +6,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
-import { AgentProgressEntry, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
+import { AgentProgressEntry, agreedOutcome, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -1587,7 +1587,8 @@ function formatLeftOut(result: ReviewResult, disproved: DisprovedFinding[], link
     return formatFindingSection(`${heading} · ${countOf(entries.length, noun)}`, [list, ...(more > 0 ? [`<sub>and ${more} more</sub>`] : [])]);
   });
   // A lead the judge never saw has no entry in that log, so the line shows only with a finding the judge decided.
-  const log = disproved.length + unproven.length > 0 ? ['<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>'] : [];
+  const judgedLead = (result.openLeads ?? []).some(lead => result.allJudgedFindings?.includes(lead));
+  const log = disproved.length + unproven.length > 0 || judgedLead ? ['<sub>The progress comment has the full log under "Judge decisions", in its "Review metadata" fold.</sub>'] : [];
   return `<details>\n<summary>Checked and left out: ${countOf(total, 'finding')}${split}</summary>\n\n${[...sections, ...log].join('\n\n')}\n\n</details>`;
 }
 
@@ -2792,13 +2793,17 @@ function refutationPart(label: string, lead: string, check: Refutation, linkTo: 
 /** Returns a part for each refuter that checked `finding`. */
 function refutationParts(finding: Finding, linkTo: LineLink, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
-  const pairLead = pairRefutation && REFUTATION_SUMMARY[outcomeOf(pairRefutation)];
-  const keptByRule = !!overruledDisproof(finding);
+  // A check that confirmed premises only did not say the defect exists, so it reads as unsettled on a finding marked `unconfirmed`.
+  const shown = (check: Refutation): RefutationOutcome =>
+    (finding.checkStatus === 'unconfirmed' && outcomeOf(check) === 'confirmed' && check.defect !== 'confirmed' ? 'unsettled' : outcomeOf(check));
+  const pairLead = pairRefutation && REFUTATION_SUMMARY[shown(pairRefutation)];
+  // A blocker two disproofs lowered says so on its first check, and its rule only set how far it went down.
+  const keptByRule = !isDisprovedRaise(finding) && !!overruledDisproof(finding);
   // Each check that disproved a finding its rule keeps says why the finding stays.
   const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? OVERRULED_DISPROOF_TEXT : plain);
-  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[outcomeOf(refutation)].text));
+  const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[shown(refutation)].text));
   return [
-    ...(refutation && lead ? [refutationPart(REFUTATION_PART[outcomeOf(refutation)].label, lead, refutation, linkTo, known)] : []),
+    ...(refutation && lead ? [refutationPart(REFUTATION_PART[shown(refutation)].label, lead, refutation, linkTo, known)] : []),
     ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`), pairRefutation, linkTo, known)] : []),
   ];
 }
@@ -2819,13 +2824,19 @@ const NOT_CHECKED: FindingChecks = {
 
 /**
  * Returns the part that names the rule a confirmed rule finding breaks, and says when that rule is why the finding
- * blocks: a step of its `gradePath` shows the rule made it a blocker. The file name and the quote are repository text,
- * so each shows as a code span or not at all.
+ * blocks: the rule raised it to a blocker, and its damage alone would not have. The damage alone blocks only when the
+ * judge's cell sits on a row that can block and the checks confirmed the finding, by `agreedOutcome`, which is what
+ * gives a held or capped blocker back. The file name and the quote are repository text, so each shows as a code span
+ * or not at all.
  */
 function rulePart(finding: Finding): FoldPart | undefined {
   if (!breaksRule(finding) || !finding.rule) return undefined;
   const quote = codeLine(finding.rule.quote);
-  const blocks = finding.severity === 'blocker' && !!finding.gradePath?.some(step => step.by === 'rule' && step.to === 'blocker');
+  const raised = !!finding.gradePath?.some(step => step.by === 'rule' && step.to === 'blocker');
+  // A finding without a cell the table knows is read as one whose damage can block.
+  const damageCanBlock = !isGradeCell(finding.cell) || cellGrade(finding.cell.row, 'normal') === 'blocker';
+  const confirmed = agreedOutcome([finding.refutation, finding.pairRefutation].filter(check => !!check)) === 'confirmed';
+  const blocks = finding.severity === 'blocker' && raised && !(damageCanBlock && confirmed);
   const text = `This PR breaks a required rule of ${codeLine(finding.rule.file) || 'an instruction file'}${quote ? `: ${quote}` : '.'}`
     + (blocks ? ' It blocks because this repository sets `review.rules: block`.' : '');
   return { label: 'Repository rule', text, open: `**Repository rule:** ${text}` };

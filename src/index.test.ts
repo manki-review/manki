@@ -7441,6 +7441,15 @@ describe('handleIssueInteraction', () => {
       'test-owner', 'test-repo', 15,
       undefined, expect.anything(), false,
     );
+    // An issue has no base branch, so the config is the default branch's, and `main` only when the event names none.
+    const readAt = (): unknown => jest.mocked(ghUtils.readConfigFile).mock.calls.at(-1)?.[3];
+    expect(readAt()).toBe('main');
+    setContext({
+      eventName: 'issue_comment',
+      payload: { action: 'created', comment: { body: '@manki help', user: { type: 'User' } }, issue: { number: 15 }, repository: { default_branch: 'trunk' } },
+    });
+    await handleIssueInteraction();
+    expect(readAt()).toBe('trunk');
   });
 });
 

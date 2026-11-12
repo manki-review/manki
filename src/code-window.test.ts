@@ -101,6 +101,9 @@ describe('locatePostedLine', () => {
       expect(locatePostedLine(posted, 2, repeated)).toBe(3 * size + 2);
       return performance.now() - started;
     }, 100_000);
+    // A size too small to divide, or a smaller size that is not smaller, would pass without comparing anything.
+    await expect(expectLinearTime(() => 0, 7)).rejects.toThrow('needs 0 < smaller < size, got smaller 0 and size 7');
+    await expect(expectLinearTime(() => 0, 100, { smaller: 100 })).rejects.toThrow('needs 0 < smaller < size');
   }, 60_000);
 
   it('finds the posted code in another file only when exactly one holds its whole window unchanged', () => {

@@ -140,12 +140,46 @@ describe('formatFindingComment', () => {
     const blocksByRule = `${ruleLine} It blocks because this repository sets \`review.rules: block\`.`;
     const ruleBlocker = render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...byRule });
     expect(ruleBlocker).toContain(`<summary>How this was checked: 1 place read, breaks a repository rule</summary>\n\n**Repository rule**\n${blocksByRule}\n\n**Checked in the code**\n`);
-    // So it is for a blocker cell a doubt held at a warning, and for a rule blocker a check gave back after a cap for want of proof.
-    const held = { cell: { row: 'wrong' as const, column: 'normal' as const }, gradeIfConfirmed: 'blocker' as const, gradePath: [{ from: 'warning' as const, to: 'blocker' as const, by: 'rule' as const }] };
-    expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...held })).toContain(blocksByRule);
-    const givenBack = [...byRule.gradePath, { from: 'blocker' as const, to: 'warning' as const, by: 'unproven' as const }, { from: 'warning' as const, to: 'blocker' as const, by: 'refutation' as const }];
-    expect(render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: givenBack })).toContain(blocksByRule);
-    // A warning, and a blocker whose own damage blocks, name the rule without the reason for blocking.
+    // The reason shows when the finding would not block without the rule: its cell cannot block, or no check confirmed a cell that can.
+    const step = (from: Finding['severity'], to: Finding['severity'], by: NonNullable<Finding['gradePath']>[number]['by']) => ({ from, to, by });
+    const check = (outcome: 'confirmed' | 'unsettled' | 'disproved') => ({ outcome, reason: 'r', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc' });
+    const cell = (row: 'wrong' | 'degraded' | 'improvement', column: 'normal' | 'rare' = 'normal') => ({ row, column });
+    const byTheRule = step('warning', 'blocker', 'rule');
+    const capped = step('blocker', 'warning', 'unproven');
+    const restored = step('warning', 'blocker', 'refutation');
+    const held = { cell: cell('wrong'), gradeIfConfirmed: 'blocker' as const };
+    const paths: Array<[string, Partial<Finding>, boolean]> = [
+      ['the judge lowered a finder\'s blocker to a warning, then the rule raised it', { cell: cell('degraded'), gradePath: [step('blocker', 'warning', 'judge'), byTheRule] }, true],
+      ['the same, and a check confirmed the defect, whose cell still cannot block', { cell: cell('degraded'), gradePath: [step('blocker', 'warning', 'judge'), byTheRule], refutation: check('confirmed') }, true],
+      ['the judge lowered a finder\'s blocker to a note', { cell: cell('improvement'), gradePath: [step('blocker', 'note', 'judge'), step('note', 'blocker', 'rule')] }, true],
+      ['the judge raised a note to a warning', { cell: cell('degraded'), gradePath: [step('note', 'warning', 'judge'), byTheRule] }, true],
+      ['a check gave the rule blocker back after a cap for want of proof', { ...byRule, gradePath: [...byRule.gradePath, capped, restored], refutation: check('confirmed') }, true],
+      ['a check confirmed the fact the judge could not see, and the rule raised the note', { ...byRule, refutation: check('confirmed') }, true],
+      ['a doubt held a blocker cell at a warning, and nothing checked it', { ...held, gradePath: [byTheRule] }, true],
+      ['a doubt held a finder\'s blocker at a warning, and the check settled nothing', { ...held, gradePath: [step('blocker', 'warning', 'judge'), byTheRule], refutation: check('unsettled') }, true],
+      ['a doubt held a blocker cell at a warning, and both checks disproved it', { ...held, gradePath: [byTheRule], refutation: check('disproved'), pairRefutation: check('disproved') }, true],
+      ['the `rare` column held the cell at a warning, and the check settled nothing', { cell: cell('wrong', 'rare'), gradeIfConfirmed: 'blocker', gradePath: [byTheRule], refutation: check('unsettled') }, true],
+      // A confirmation beside a disproof gives no grade back, so the rule is still the reason.
+      ['a doubt held a blocker cell at a warning, and the two checks disagree', { ...held, gradePath: [byTheRule], refutation: check('confirmed'), pairRefutation: check('disproved') }, true],
+      ['the same, where the second check says the defect does not exist', { ...held, gradePath: [byTheRule], refutation: check('confirmed'), pairRefutation: { ...check('unsettled'), defect: 'disproved' } }, true],
+      ['the same, where the second check disproved a premise that only decides the grade', { ...held, gradePath: [byTheRule], refutation: check('confirmed'), pairRefutation: { ...check('unsettled'), premises: [{ premise: 'A caller passes it', outcome: 'disproved', reason: 'r' }] } }, true],
+      // Without the rule, the confirmation gives each of these its blocker.
+      ['a doubt held a blocker cell at a warning, and a check confirmed it', { ...held, gradePath: [byTheRule], refutation: check('confirmed') }, false],
+      ['a doubt held a finder\'s blocker at a warning, and a check confirmed it', { ...held, gradePath: [step('blocker', 'warning', 'judge'), byTheRule], refutation: check('unsettled'), pairRefutation: check('confirmed') }, false],
+      ['the `rare` column held the cell at a warning, and a check confirmed the reach', { cell: cell('wrong', 'rare'), gradeIfConfirmed: 'blocker', gradePath: [byTheRule], refutation: check('confirmed') }, false],
+      ['the judge raised it to a blocker, the cap held it back twice, and a check gave it back', { cell: cell('wrong'), gradePath: [step('note', 'blocker', 'judge'), capped, byTheRule, capped, restored], refutation: check('confirmed') }, false],
+      ['a finder and the judge both graded it a blocker, the cap held it back twice, and a check gave it back', { cell: cell('wrong'), gradePath: [capped, byTheRule, capped, restored], refutation: check('confirmed') }, false],
+      ['a record without a cell, and a check confirmed it', { gradePath: [byTheRule], refutation: check('confirmed') }, false],
+      // A finding that does not block gives no reason for blocking.
+      ['the cap for an unreported build failure held the rule blocker back', { severity: 'warning', cell: cell('degraded'), gradePath: [byTheRule, step('blocker', 'warning', 'build_claim')] }, false],
+      ['the rule blocker sits on a line the PR did not change', { severity: 'warning', ...byRule, gradePath: [...byRule.gradePath, step('blocker', 'warning', 'pre_existing')] }, false],
+      ['two disproofs lowered a blocker of the judge\'s under `review.rules: warn`', { severity: 'warning', gradePath: [step('warning', 'blocker', 'judge'), step('blocker', 'warning', 'refutation')], refutation: check('disproved'), pairRefutation: check('disproved') }, false],
+      ['its own damage made it a blocker and no rule step raised it', { cell: cell('wrong') }, false],
+    ];
+    for (const [name, fields, namesSetting] of paths) {
+      const fold = render({ ...baseFinding, evidence, rule: { ...rule, verdict: 'confirmed' }, ...fields });
+      expect([name, fold.includes(ruleLine), fold.includes(blocksByRule)]).toEqual([name, true, namesSetting]);
+    }
     expect(render({ ...baseFinding, severity: 'warning', rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] })).toContain(`<!-- manki-checks -->\n**Repository rule:** ${ruleLine}\n`);
     // A rule warning on code an earlier round reviewed says so under its title and names the rule the same way.
     const late = render({ ...baseFinding, severity: 'warning', origin: 'reviewed', tags: ['follow-up'], rule: { ...rule, verdict: 'confirmed' }, ...byRule, gradePath: [{ from: 'note', to: 'warning', by: 'rule' }] });
@@ -460,6 +494,12 @@ describe('formatFindingComment', () => {
 
     // A finding with a check status names that in the title of its fold, in place of what each refuter found.
     expect(render({ ...splitFinding, checkStatus: 'unconfirmed' })).toContain('<summary>How this was checked: not confirmed</summary>');
+    // Under that status, a check that confirmed premises only reads as unsettled. One that confirmed the defect keeps its words.
+    const premiseOnly = render({ ...splitFinding, pairRefutation: { ...splitFinding.refutation!, defect: 'unsettled' }, checkStatus: 'unconfirmed' });
+    expect(premiseOnly).not.toContain('ouble-checked');
+    expect(premiseOnly).toContain('**Not settled**\nManki tried to disprove this by reading the code and could not decide. No caller checks `value` first.\n\n**Second check, on another model**\nNot settled. No caller checks `value` first.');
+    expect(render({ ...splitFinding, refutation: { ...splitFinding.refutation!, defect: 'confirmed' }, checkStatus: 'unconfirmed' })).toContain('**Double-checked**\nManki tried to disprove this by reading the code and could not.');
+    expect(render({ ...splitFinding, pairRefutation: undefined, refutation: { ...splitFinding.refutation!, defect: 'unsettled' } })).toContain('**Double-checked:** Manki tried');
     const cited = { checks: ['src/util.ts:3 marks it intended'], proof: ['src/util.ts:3'] };
     expect(render({ ...baseFinding, evidence: cited, refutation: splitFinding.refutation, checkStatus: 'confirmed' })).toContain('<summary>How this was checked: 1 place read, confirmed with tools</summary>');
     expect(render({ ...baseFinding, evidence: cited, howToFix: 'Check for `null` first.', checkStatus: 'proven' })).toContain('<summary>How to fix it and 1 place read · proven from the cited lines</summary>');
@@ -473,14 +513,20 @@ describe('formatFindingComment', () => {
     expect(split).toContain(`**Double-checked**\nManki tried to disprove this by reading the code and could not. No caller checks \`value\` first.\n\n**Second check, on another model**\nDoubt found. The parser rejects it. See [\`src/util.ts:3\`](${link('src/util.ts', 3)}).`);
 
     // A blocker of the judge's that two disproofs put back at its finders' grade says that it does not block.
-    const lowered = render({
+    const loweredFinding: Finding = {
       ...baseFinding, severity: 'warning', evidence: { checks: [], proof: [] },
       gradePath: [{ from: 'warning', to: 'blocker', by: 'judge' }, { from: 'blocker', to: 'warning', by: 'refutation' }],
       refutation: { outcome: 'disproved', reason: 'A `sync.Once` guards the close.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc' },
       pairRefutation: { outcome: 'disproved', reason: 'Both paths close through one guard.', proof: ['src/main.ts:40'], files: ['src/main.ts'], codeDigest: 'abc' },
-    });
+    };
+    const lowered = render(loweredFinding);
     expect(lowered).toContain('**Doubt found**\nManki found a reason this may not happen, and a second check on another model agreed, so this does not block. Please check it yourself. A `sync.Once` guards the close.');
     expect(lowered).toContain('**Second check, on another model**\nDoubt found. Both paths close through one guard.');
+    // One that breaks a confirmed rule reads the same on both checks, and neither says the rule keeps it.
+    const loweredRule = render({ ...loweredFinding, rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } });
+    expect(loweredRule).toContain('so this does not block. Please check it yourself. A `sync.Once` guards the close.');
+    expect(loweredRule).toContain('**Second check, on another model**\nDoubt found. Both paths close through one guard.');
+    expect(loweredRule).not.toContain('The finding stays');
   });
 
   it('keeps the code spans of every check line balanced, so no line breaks the Markdown after it', () => {
@@ -4854,6 +4900,8 @@ describe('postReview non-blocking findings', () => {
     const leadsOnly = await bodyOf({ openLeads: leads });
     expect(leadsOnly).toContain('<summary>Checked and left out: 2 findings</summary>');
     expect(leadsOnly).not.toContain('Judge decisions');
+    // A lead the judge's tools left unsettled has its entry there, so its fold keeps the pointer.
+    expect(await bodyOf({ openLeads: leads, allJudgedFindings: leads.slice(0, 1) })).toContain(`- **Cache may go stale** · ${link(4)}\n\n${log}\n\n</details>`);
 
     // Each kind lists its first ten. A reason ends at its second sentence, or its first when two pass 300 characters.
     const many = Array.from({ length: 12 }, (_, i) => ({ title: `Finding ${i}`, file: 'src/`a`.ts', line: i + 1, reason: `${'Long reason. '.repeat(i === 0 ? 1 : 0)}${'x'.repeat(290)}. More than fits here.` }));
