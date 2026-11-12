@@ -2190,10 +2190,12 @@ describe('runJudgeAgent', () => {
       ].map(title => [title, { ...unseen, doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] }])),
       // The second refuter disproves the fact the first confirms.
       'Fact disputed': unseen,
+      // The judge confirmed the rule, and the finder says something is missing without a search.
+      ...Object.fromEntries(['No search, check disproves', 'No search, check confirms', 'No search, check unsettled'].map(title => [title, { ruleIsRequirement: true, ruleBroken: true }])),
     };
     const titles = Object.keys(answers);
     const findings = titles.map((title, i) => makeFinding({
-      title, line: 10 + i, rule, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`], ...(title === 'Fact confirmed without a search' && { emptySearch: '' }) },
+      title, line: 10 + i, rule, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`], ...((title === 'Fact confirmed without a search' || title.startsWith('No search')) && { emptySearch: '' }) },
     }));
     const premise = (...outcomes: string[]) => ({ reason: `It is ${outcomes.at(-1)}.`, premises: outcomes.map(outcome => ({ outcome, reason: `It is ${outcome}.`, proof: ['src/index.ts:3'] })) });
     const replies: Record<string, unknown> = {
@@ -2205,6 +2207,9 @@ describe('runJudgeAgent', () => {
       'Fact unsettled, damage confirmed': premise('confirmed', 'unsettled'),
       'Fact confirmed, defect disproved': { ...premise('unsettled', 'confirmed'), outcome: 'disproved', proof: ['src/index.ts:3'] },
       'Fact disputed': premise('confirmed'),
+      'No search, check disproves': { outcome: 'disproved', reason: 'The entry is there.', proof: ['src/index.ts:3'] },
+      'No search, check confirms': { outcome: 'confirmed', reason: 'No entry anywhere.', proof: ['src/index.ts:3'] },
+      'No search, check unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
     };
     const refuterMessages: string[] = [];
     const answering = (answers: Record<string, unknown>): LLMClient => ({
@@ -2244,10 +2249,16 @@ describe('runJudgeAgent', () => {
         // An answer that the defect does not exist raises nothing and drops the note, like any finding below blocker.
         ['Fact confirmed, defect disproved', 'ignore', 'unproven', 'refutation: ignore'],
         ['Fact disputed', ...disputed],
+        // With `warn` the judge's rule verdict alone posts the warning, and no check runs. With `block` the missing search caps
+        // the blocker at a warning, so the refuter checks it like any capped blocker: its check is the search the finder left out.
+        // A disproof drops the finding, a confirmation gives the blocker back, and an unsettled check leaves the warning.
+        ['No search, check disproves', ...(grade === 'blocker' ? ['ignore', 'confirmed', 'rule: blocker, unproven: warning, refutation: ignore'] : ['warning', 'confirmed', 'rule: warning'])],
+        ['No search, check confirms', grade, 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning, refutation: blocker' : 'rule: warning'],
+        ['No search, check unsettled', 'warning', 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning' : 'rule: warning'],
       ];
       expect(await graded()).toEqual(expected('warning'));
       expect(await graded('block')).toEqual(expected('blocker'));
-      expect(refuterMessages).toHaveLength(28);
+      expect(refuterMessages).toHaveLength(31);
       // Two refuters that disagree about the fact leave the rule unproven, and the note as it is.
       expect(await graded(undefined, second)).toEqual(expected('warning', ['note', 'unproven', undefined]));
       expect(await graded('block', second)).toEqual(expected('blocker', ['note', 'unproven', undefined]));
