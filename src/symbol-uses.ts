@@ -457,7 +457,7 @@ export interface UsesOutsideDiff {
   record?: RoundUses;
   /** The names the added comments mention, then those the diff changes or reads, to search the reference repos for. */
   referenceNames?: string[];
-  /** The names the added comments mention, then those the diff calls or reads and does not declare, to search the dependency repos for. */
+  /** The names the added comments mention, then those the diff calls or reads outside tests and does not declare, to search the dependency repos for. */
   dependencyNames?: string[];
   siblings: SiblingQuestions;
 }
@@ -465,7 +465,7 @@ export interface UsesOutsideDiff {
 export interface UsesOptions {
   /** Paths a use is never listed from, such as generated files. */
   excludePaths?: string[];
-  /** Whether to collect `dependencyNames`. Without it the calls of the changed files are not read. */
+  /** Whether to collect `dependencyNames`. Without it the calls of the changed files are not queried. */
   dependencyNames?: boolean;
   loadApi?: () => Promise<AstGrepApi>;
 }
@@ -668,7 +668,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   // Every type whose field of a name the diff changes, since `symbols` keeps one declaration per name.
   const changedOwners = new Map<string, Array<{ owner: string; file: string }>>();
   const references = new Map<string, { code: number; count: number; files: Set<string> }>();
-  const called = new Map<string, number>();
+  const reliedOn = new Map<string, number>();
   const lookups: Array<Lookup & { file: string }> = [];
   for (const file of files) {
     const lines = touched.get(file.path)!;
@@ -704,7 +704,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
       }
       // Appended one by one, since spreading a very long list into `push` overflows the call stack.
       if (!TEST_PATH.test(file.path)) for (const lookup of parsed.lookups) lookups.push({ ...lookup, file: file.path });
-      if (parsed.calls.length > 0 && !TEST_PATH.test(file.path)) for (const name of parsed.calls) called.set(name, (called.get(name) ?? 0) + 1);
+      if (parsed.reliedOn.length > 0 && !TEST_PATH.test(file.path)) for (const name of parsed.reliedOn) reliedOn.set(name, (reliedOn.get(name) ?? 0) + 1);
     } else {
       for (const symbol of keywordDeclarations(file)) addSymbol(symbols, symbol);
     }
@@ -730,7 +730,7 @@ async function buildUsesSection(workspace: string, diff: ParsedDiff, excludePath
   // A dependency does not hold what the change declares, so a called or read name the change also declares is left out.
   const dependencyNames = forDependency ? [...new Set([
     ...files.flatMap(mentionedNames),
-    ...[...[...called].sort(([a, x], [b, y]) => y - x || a.localeCompare(b)), ...referenced].map(([name]) => name).filter(name => !symbols.has(name)),
+    ...[...reliedOn].sort(([a, x], [b, y]) => y - x || a.localeCompare(b)).map(([name]) => name).filter(name => !symbols.has(name)),
   ])].filter(name => isCodeLike(name) && !isGeneric(name)).slice(0, MAX_SYMBOLS) : [];
   const nothing = { section: '', ...(referenceNames.length > 0 && { referenceNames }), ...(dependencyNames.length > 0 && { dependencyNames }) };
   if (names.length === 0 && lookupFields.length === 0) return { ...nothing, siblings: { fields: [], implementations } };
@@ -938,8 +938,8 @@ class Parser {
   private bytes = 0;
   skipped = 0;
 
-  /** `calls` asks for the names each changed file calls. */
-  constructor(private readonly workspace: string, private readonly api?: AstGrepApi, private readonly calls = false) {}
+  /** `reliedOn` asks for the names each changed file calls or reads outside tests. */
+  constructor(private readonly workspace: string, private readonly api?: AstGrepApi, private readonly reliedOn = false) {}
 
   /** `touched` holds the head lines the diff changes, for a changed file, which must be parsed before any other use of it. */
   parse(path: string, touched?: Set<number>): ParsedFile | undefined {
@@ -967,7 +967,7 @@ class Parser {
         core.info(`Uses outside the diff: ${path} nests deeper than ${MAX_NESTING} levels, so it is read like a file without a grammar`);
         return undefined;
       }
-      return new ParsedFile(root, RULES[language.family], source.split('\n'), tree, touched, this.calls);
+      return new ParsedFile(root, RULES[language.family], source.split('\n'), tree, touched, this.reliedOn);
     } catch (error) {
       core.info(`Uses outside the diff: could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
@@ -1048,8 +1048,8 @@ class ParsedFile {
   readonly methods: Method[];
   /** The name of each field a touched line reads, such as `b` in `a.b`, leaving out method calls. */
   readonly reads: string[];
-  /** The last name of what each call on a touched line calls, such as `send` in `client.send(x)`, outside tests. Empty unless asked for. */
-  readonly calls: string[];
+  /** The name each touched line calls, such as `send` in `client.send(x)`, or reads as a field, outside tests. Empty unless asked for. */
+  readonly reliedOn: string[];
   /** Each lookup of an item in a collection field on a touched line, outside tests. */
   readonly lookups: Lookup[];
   private readonly byKey = new Map<string, Declaration>();
@@ -1072,8 +1072,8 @@ class ParsedFile {
   private readonly groups = new Map<string, number>();
   private readonly marked = new Map<number, boolean>();
 
-  /** `touched` holds the head lines the diff changes in a changed file, whose reads and lookups are collected, and with `calls` the names it calls. */
-  constructor(root: SgRoot, private readonly rules: FamilyRules, private readonly lines: string[], private readonly tree: Tree, touched = new Set<number>(), calls = false) {
+  /** `touched` holds the head lines the diff changes in a changed file, whose reads and lookups are collected, and with `reliedOn` the names in `reliedOn`. */
+  constructor(root: SgRoot, private readonly rules: FamilyRules, private readonly lines: string[], private readonly tree: Tree, touched = new Set<number>(), reliedOn = false) {
     const kinds = Object.keys(rules.declarations);
     const nodes = root.root().findAll({ rule: { any: kinds.map(kind => ({ kind })) } });
     // A plain TypeScript enum member is a bare property name in the enum's body.
@@ -1119,7 +1119,7 @@ class ParsedFile {
     const accesses = touched.size > 0 && rules.access ? root.root().findAll({ rule: { kind: rules.access.kind } }) : [];
     this.reads = this.fieldReads(accesses, touched);
     this.lookups = this.collectionLookups(accesses, touched);
-    this.calls = calls && touched.size > 0 ? this.calledNames(root.root().findAll({ rule: { kind: rules.call } }), touched) : [];
+    this.reliedOn = reliedOn && touched.size > 0 ? this.namesReliedOn(root.root().findAll({ rule: { kind: rules.call } }), accesses, touched) : [];
     this.tree.release();
     this.groups.clear();
     this.marked.clear();
@@ -1160,30 +1160,33 @@ class ParsedFile {
     return start;
   }
 
-  private fieldReads(accesses: SgNode[], touched: Set<number>): string[] {
+  /** `skip` leaves out the reads it holds for. */
+  private fieldReads(accesses: SgNode[], touched: Set<number>, skip?: (node: SgNode) => boolean): string[] {
     const access = this.rules.access;
     if (!access) return [];
     return accesses.flatMap(node => {
       const field = node.field(access.field);
-      if (!field || !IDENTIFIER.test(field.text()) || !touched.has(lineOf(field))) return [];
+      if (!field || !IDENTIFIER.test(field.text()) || !touched.has(lineOf(field)) || skip?.(node)) return [];
       const parent = this.tree.parent(node);
       const callee = parent?.kind() === this.rules.call ? parent.field('function') : null;
       return callee && nodeKey(callee) === nodeKey(node) ? [] : [field.text()];
     });
   }
 
-  private calledNames(calls: SgNode[], touched: Set<number>): string[] {
+  private namesReliedOn(calls: SgNode[], accesses: SgNode[], touched: Set<number>): string[] {
     const access = this.rules.access;
     const modules = new Map<number, boolean>();
-    return calls.flatMap(node => {
+    const inTest = (node: SgNode) => this.inTests(node, modules) || this.inTestCode(node);
+    const called = calls.flatMap(node => {
       const callee = node.field('function');
       // `send` in `client.send(x)` is the field of an access, `parse` in `Url::parse(x)` the name of a path.
       const name = callee && ((access && callee.kind() === access.kind ? callee.field(access.field) : callee.field('name')) ?? callee);
       // Only a single token is read as text, so each character of the file is read for one call at most.
-      if (!name || !name.isLeaf() || !touched.has(lineOf(name)) || this.inTests(node, modules)) return [];
+      if (!name || !name.isLeaf() || !touched.has(lineOf(name)) || inTest(node)) return [];
       const text = name.text();
       return IDENTIFIER.test(text) ? [text] : [];
     });
+    return [...called, ...this.fieldReads(accesses, touched, inTest)];
   }
 
   /** Returns the type with `key` in `file` as one line with all its fields, or `undefined` when it is no struct-like type. */

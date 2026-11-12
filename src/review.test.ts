@@ -2175,8 +2175,10 @@ describe('runReview', () => {
     const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/lib', kind: 'dependency', dir: lib }]);
     const clients = { ...makeClients(), dedup: { sendMessage: jest.fn().mockResolvedValue({ content: '{}' }) } as unknown as import('./providers').LLMClient };
     Object.assign(clients.reviewer, { repoTools: true });
+    // The same change with a comment that mentions a name, which a model would translate for a reference or a consumer.
+    const mentioned = gitWorkspace({ 'src/main.ts': 'export function main() {}\n' }, { 'src/main.ts': 'export function main() { ledger.roundUp(2); } // like `MAX_ROUND`\n' });
     try {
-      const run = (related_repos: NonNullable<ReviewConfig['related_repos']>) => runReview(clients, { config: makeConfig({ related_repos }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+      const run = (related_repos: NonNullable<ReviewConfig['related_repos']>, change = { root, diff }) => runReview(clients, { config: makeConfig({ related_repos }), diff: change.diff, rawDiff: 'raw diff', repoContext: '', workspace: change.root });
       // Without a dependency the called name is no reason to fetch, as before the kind existed.
       const without = await run([reference]);
       expect(fetchSpy).not.toHaveBeenCalled();
@@ -2187,12 +2189,14 @@ describe('runReview', () => {
       expect(uses).toMatch(/^## In the Dependency Repos\n\nManki searched each fetched `dependency` related repo for the names the diff's added comments mention and those it calls or reads, /);
       expect(uses).toContain('### `roundUp`\n\n```\no/lib:round.ts:1: export function roundUp(n: number): number { return n; }\n```');
       expect(result.usesOutsideDiff).toEqual({ dependency: [{ name: 'roundUp', lines: ['o/lib:round.ts:1'] }] });
-      // The names a change calls are the dependency's own, so no model is asked to translate them.
+      // The names searched in a dependency are its own, so no model is asked to translate even a mentioned one for it.
+      const named = await run([dependency], mentioned);
+      expect(named.usesOutsideDiff).toEqual({ dependency: [{ name: 'roundUp', lines: ['o/lib:round.ts:1'] }], dependencyMissing: ['MAX_ROUND'] });
       expect(clients.dedup.sendMessage).not.toHaveBeenCalled();
       for (const [system] of jest.mocked(clients.reviewer.sendMessage).mock.calls.slice(-1)) expect(system).toContain('. Dependencies: for each function, type or message of a **dependency** related repo');
     } finally {
       fetchSpy.mockRestore();
-      for (const dir of [root, lib]) rmSync(dir, { recursive: true, force: true });
+      for (const dir of [root, lib, mentioned.root]) rmSync(dir, { recursive: true, force: true });
     }
   });
 
