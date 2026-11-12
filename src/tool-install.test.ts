@@ -211,6 +211,8 @@ describe('installPinned', () => {
     const folder = () => join(toolCache, 'manki-pinned');
     const kept = () => join(folder(), keptName);
     const notes = () => stderr.mock.calls.map(([line]) => String(line));
+    /** The real `fs`, for a test that gives the next run one call that answers differently. */
+    const fs = jest.requireActual<typeof import('fs')>('fs');
 
     beforeEach(() => {
       toolCache = mkdtempSync(join(tmpdir(), 'manki-tool-cache-'));
@@ -259,6 +261,15 @@ describe('installPinned', () => {
       expect(second.startsWith(realpathSync(process.env.RUNNER_TEMP!))).toBe(true);
       expect(readFileSync(join(second, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
       expect(notes()).toEqual([expect.stringMatching(/^Using the kept download .*tool\.tgz instead of downloading it\n$/)]);
+
+      // Where the time of last use cannot be set, as in a tool cache mounted read-only, the checked download is still used.
+      jest.doMock('fs', () => ({ ...fs, futimesSync: () => { throw new Error('EROFS: read-only file system, futime'); } }));
+      try {
+        await nextRun();
+      } finally {
+        jest.dontMock('fs');
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     // A file that was read and failed its digest is named in the log. A link and a pipe are never read, so nothing is compared.
@@ -298,7 +309,15 @@ describe('installPinned', () => {
       ['another user can write the folder', () => chmodSync(folder(), 0o777), DISTRUST],
       ['the group can write the folder', () => chmodSync(folder(), 0o770), DISTRUST],
       ['another user can write the tool cache', () => chmodSync(toolCache, 0o777), DISTRUST],
-      ['another user owns the folder', () => jest.spyOn(process, 'getuid').mockReturnValue(statSync(folder()).uid + 1), DISTRUST],
+      // Only `manki-pinned` gets another owner. The tool cache stays this user's own and passes its check.
+      ['another user owns the folder', () => jest.doMock('fs', () => ({
+        ...fs,
+        statSync: (path: string) => {
+          const stats = fs.statSync(path);
+          if (basename(path) === 'manki-pinned') stats.uid += 1;
+          return stats;
+        },
+      })), DISTRUST],
       ['the folder is a link', () => {
         renameSync(folder(), join(toolCache, 'real'));
         symlinkSync(join(toolCache, 'real'), folder());
@@ -321,6 +340,7 @@ describe('installPinned', () => {
         if (getuid) Object.defineProperty(process, 'getuid', getuid);
         else delete (process as { getuid?: unknown }).getuid;
         jest.restoreAllMocks();
+        jest.dontMock('fs');
       }
       // The same file is still there, and nothing was written next to it.
       const after = statSync(kept());
@@ -385,7 +405,6 @@ describe('installPinned', () => {
         return new Response(data);
       });
       // What another run finds under the kept name while a run has written half of its file.
-      const fs = jest.requireActual<typeof import('fs')>('fs');
       const foundMeanwhile: string[] = [];
       const writtenUnder: string[] = [];
       jest.doMock('fs', () => ({
@@ -446,7 +465,6 @@ describe('installPinned', () => {
       fetchMock.mockImplementation(async () => new Response(other));
       const otherIntegrity = `sha256-${createHash('sha256').update(other).digest('base64')}`;
       // Another run on the runner removes the first old file this run looks at, between the listing and the look.
-      const fs = jest.requireActual<typeof import('fs')>('fs');
       const vanished: string[] = [];
       jest.doMock('fs', () => ({
         ...fs,

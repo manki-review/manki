@@ -209,9 +209,14 @@ function keptDownload(download: PinnedDownload): Buffer | undefined {
       note(`The kept download ${file} does not match its pinned digest, downloading it again`);
       return undefined;
     }
-    // The time of the last use decides when `removeUnusedKept` removes the file.
+    // The time of the last use decides when `removeUnusedKept` removes the file. Where it cannot be set, as in a
+    // tool cache mounted read-only, the checked download is used all the same.
     const now = new Date();
-    futimesSync(fd, now, now);
+    try {
+      futimesSync(fd, now, now);
+    } catch {
+      // The file then counts as unused.
+    }
     note(`Using the kept download ${file} instead of downloading it`);
     return data;
   } catch {
