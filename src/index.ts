@@ -2270,7 +2270,7 @@ async function main(): Promise<void> {
       const octokit = await workflowOctokit();
       if (await restoreDispatchedEvent(octokit) === 'run') {
         stopSampler = startMemorySampler();
-        // Only the round record and the last log line read the wait, so the event is handled while the lookup runs.
+        // Only the round record and the last log line read the result, so the event is handled while the lookup runs.
         queueWait = recordQueueWait(octokit);
         await run();
       }

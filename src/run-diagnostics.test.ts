@@ -93,7 +93,7 @@ describe('run diagnostics', () => {
     }
   });
 
-  it('records the wait from the start of the workflow run, and leaves it out when the run cannot be read', async () => {
+  it('records the time from the start of the workflow run, and leaves it out when the run cannot be read', async () => {
     const failing = jest.fn().mockRejectedValue(new Error('Resource not accessible by integration'));
     await recordQueueWait(octokitWithRun(failing));
     expect(runnerDiagnostics()).not.toHaveProperty('queuedMs');
@@ -106,7 +106,7 @@ describe('run diagnostics', () => {
     expect(runnerDiagnostics()).not.toHaveProperty('queuedMs');
 
     const started = Date.now() - process.uptime() * 1000;
-    // A re-run keeps the first attempt's `created_at`, so the wait counts from `run_started_at`.
+    // A re-run keeps the first attempt's `created_at`, so the time counts from `run_started_at`.
     const getWorkflowRun = jest.fn().mockResolvedValue({ data: { created_at: new Date(started - 3_600_000).toISOString(), run_started_at: new Date(started - 90_000).toISOString() } });
     await recordQueueWait(octokitWithRun(getWorkflowRun));
     expect(getWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 7 });
@@ -114,7 +114,7 @@ describe('run diagnostics', () => {
     expect(queuedMs).toBeGreaterThan(88_000);
     expect(queuedMs).toBeLessThan(92_000);
 
-    // A clock ahead of GitHub's never gives a negative wait.
+    // A clock ahead of GitHub's never gives a negative time.
     await recordQueueWait(octokitWithRun(jest.fn().mockResolvedValue({ data: { created_at: new Date(Date.now() + 60_000).toISOString() } })));
     expect(runnerDiagnostics().queuedMs).toBe(0);
   });
@@ -137,14 +137,14 @@ describe('run diagnostics', () => {
 describe('formatRunner', () => {
   const runner: RoundRunner = { environment: 'self-hosted', os: 'linux', arch: 'x64', cpus: 4, memoryBytes: 64 * GIB, memoryLimitBytes: 2 * GIB, queuedMs: 663_000, peakMemoryBytes: 1.9 * GIB, peakCliProcesses: 6 };
 
-  it('shows the kind, the wait and the peak memory against the limit', () => {
-    expect(formatRunner(runner)).toBe('Runner: self-hosted · waited 11m 3s · peak memory 1.9 GiB of 2.0 GiB');
-    expect(formatRunner(runner, true)).toBe('Runner: self-hosted · waited 11m 3s · peak memory 1.9 GiB of 2.0 GiB · 4 CPUs · up to 6 model CLI processes at once');
-    expect(formatRunner({ ...runner, queuedMs: 11_112_000 })).toBe('Runner: self-hosted · waited 3h 5m · peak memory 1.9 GiB of 2.0 GiB');
+  it('shows the kind, the time until Manki started and the peak memory against the limit', () => {
+    expect(formatRunner(runner)).toBe('Runner: self-hosted · started after 11m 3s · peak memory 1.9 GiB of 2.0 GiB');
+    expect(formatRunner(runner, true)).toBe('Runner: self-hosted · started after 11m 3s · peak memory 1.9 GiB of 2.0 GiB · 4 CPUs · up to 6 model CLI processes at once');
+    expect(formatRunner({ ...runner, queuedMs: 11_112_000 })).toBe('Runner: self-hosted · started after 3h 5m · peak memory 1.9 GiB of 2.0 GiB');
   });
 
   it('falls back to the machine memory and leaves out what was not measured', () => {
     expect(formatRunner({ os: 'win32', arch: 'x64', cpus: 1, memoryBytes: 16 * GIB, peakCliProcesses: 1 }, true)).toBe('Runner: win32 · 16.0 GiB memory · 1 CPU · up to 1 model CLI process at once');
-    expect(formatRunner({ ...runner, memoryLimitBytes: undefined, queuedMs: 0, peakMemoryBytes: 300 * MIB })).toBe('Runner: self-hosted · waited 0ms · peak memory 300 MiB of 64.0 GiB');
+    expect(formatRunner({ ...runner, memoryLimitBytes: undefined, queuedMs: 0, peakMemoryBytes: 300 * MIB })).toBe('Runner: self-hosted · started after 0ms · peak memory 300 MiB of 64.0 GiB');
   });
 });

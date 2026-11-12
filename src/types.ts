@@ -1631,7 +1631,7 @@ export interface RoundRunner {
   memoryBytes: number;
   /** The container's memory limit, when it is below the machine's memory. */
   memoryLimitBytes?: number;
-  /** Time from the start of the workflow run to the start of the action: the queue for a runner and the job's earlier steps. */
+  /** Time from the start of the workflow run until Manki started: the wait for a runner and the job's steps before Manki. */
   queuedMs?: number;
   /** The most resident memory the action and its child processes held in one sample. Missing where processes cannot be listed. */
   peakMemoryBytes?: number;
