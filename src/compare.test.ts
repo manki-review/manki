@@ -1,6 +1,5 @@
 import { runComparisons } from './compare';
-import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE } from './review';
-import { RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
+import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 import { LLMClient, SendMessageOptions } from './providers';
 import { repoToolsPrompt } from './providers/cli-utils';
 import { SiblingFieldQuestion, SiblingImplementationQuestion } from './symbol-uses';

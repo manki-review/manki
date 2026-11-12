@@ -6,12 +6,12 @@ import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
 import { shownLines } from './refute';
 import { repoTools } from './related-repos';
-import { CLAIMS_MISSING_RULE, fencePrText, parseFindings, PRE_EXISTING_RULE, unmarkedText } from './review';
+import { fencePrText, parseFindings, unmarkedText } from './review';
 import { diffSection } from './sweep';
 import { COMMENT } from './symbol-uses';
 import { EffortLevel, Finding, ParsedDiff, PrClaim, PrContext, RelatedRepoTools, RoundPrClaim, RoundPrClaims } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
-import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const EXTRACT_TIMEOUT_MS = 45_000;
 /** Claims checked in one round, the first ones listed, so no PR text can start more calls than this. */

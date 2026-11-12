@@ -7,10 +7,10 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient, SendMessageOptions } from './providers';
 import { checkStatus } from './refute';
 import { repoTools } from './related-repos';
-import { CLAIMS_MISSING_RULE, parseFindings, parseLocation, parseProof, PRE_EXISTING_RULE, truncateDiff } from './review';
+import { parseFindings, parseLocation, parseProof, truncateDiff } from './review';
 import { CheckStatus, disproof, EffortLevel, Finding, RelatedRepoTools, RoundSweep, SECURITY_TAG, SEVERITY_ORDER, SweepMode } from './types';
 import { mapWithConcurrency, sendWithParseRetry } from './utils';
-import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
+import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
 const MAX_SWEEPS = 3;
 const SWEEP_STEPS = 15;
