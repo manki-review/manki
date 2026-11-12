@@ -1038,8 +1038,10 @@ describe('refuteBlockers', () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'manki-refute-state-'));
     mkdirSync(join(checkout, 'src'));
     writeFileSync(join(checkout, 'src', 'import.ts'), 'export function importRow(row: string) {\n  return Date.parse(row.split(\',\')[0]);\n}\n');
+    writeFileSync(join(checkout, 'src', 'rows.ts'), 'row\n'.repeat(12));
     writeFileSync(join(stateDir, `${encodeURIComponent('acme/reports')}.done`), checkout);
     const related = { repos: [{ repo: 'acme/reports', kind: 'consumer' as const }, { repo: 'acme/billing', kind: 'consumer' as const }], cacheDir: '/cache', stateDir };
+    const rowLines = Array.from({ length: 12 }, (_, i) => `acme/reports:src/rows.ts:${i + 1}`);
     const parsesDate = [{ premise: 'acme/reports parses the first column as a date', decides: 'defect' as const }];
     const consumerLine = 'acme/reports:src/import.ts:2';
     const answer = (outcome: string, ...proof: string[]) => ({ outcome, reason: 'r', proof, premises: [{ outcome, reason: 'r', proof }] });
@@ -1054,6 +1056,8 @@ describe('refuteBlockers', () => {
       'Path with a dot segment': answer('confirmed', 'acme/reports:src/../src/./import.ts:1-2'),
       'Line zero': answer('confirmed', 'acme/reports:src/import.ts:0'),
       'Range backwards': answer('confirmed', 'acme/reports:src/import.ts:2-1'),
+      'Many lines': { outcome: 'confirmed', reason: 'r', proof: rowLines, premises: [{ outcome: 'confirmed', reason: 'r', proof: [consumerLine, ...rowLines.slice(0, 9)] }] },
+      'Made-up lines first': answer('confirmed', ...rowLines.slice(0, 10).map(line => `${line}00`), consumerLine),
     });
     const noProof = { severity: 'warning' as const, evidence: { checks: [], proof: [] }, doubts: parsesDate };
     const titles = ['Related line confirms', 'Related line alone disproves', 'Related line beside the finding line disproves', 'Repo not fetched', 'Line past the end', 'Repo not configured', 'Path leaves the checkout'];
@@ -1075,6 +1079,11 @@ describe('refuteBlockers', () => {
       const odd = await refuteBlockers(client, ['Path with a dot segment', 'Line zero', 'Range backwards'].map(title => finding(title, noProof)), { workspace, diff, related });
       expect(odd.map(f => [outcomeOf(f.refutation!), f.refutation?.relatedProof])).toEqual([['confirmed', ['acme/reports:src/import.ts:1-2']], ['unsettled', undefined], ['unsettled', undefined]]);
       expect(checked[0].refutation?.premises).toEqual([{ premise: parsesDate[0].premise, outcome: 'confirmed', reason: 'r', relatedProof: [consumerLine] }]);
+      // A list keeps its first 10 related lines, and the answer keeps 10 of its own and its premises' lines together. No line past the first 10 is looked up.
+      const [many, madeUp] = await refuteBlockers(client, ['Many lines', 'Made-up lines first'].map(title => finding(title, noProof)), { workspace, diff, related });
+      expect(many.refutation?.premises?.[0].relatedProof).toEqual([consumerLine, ...rowLines.slice(0, 9)]);
+      expect(many.refutation?.relatedProof).toEqual([consumerLine, ...rowLines.slice(0, 9)]);
+      expect([outcomeOf(madeUp.refutation!), madeUp.refutation?.relatedProof]).toEqual(['unsettled', undefined]);
       expect(checkStatus(checked[0])).toBe('confirmed');
       // The finding's own proof lines stay lines of the PR, so no reader of them meets another repository's path.
       expect(checked[0].evidence?.proof).toEqual([]);
