@@ -851,10 +851,18 @@ ${body}	return true
 
     const { root, diff } = gitWorkspace({ 'src/a.rs': 'pub fn compute_total() {}\n' }, { 'src/a.rs': 'pub fn compute_total() { todo!() }\n' });
     try {
-      expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual(NOTHING);
+      // A failed search leaves its reason in the round record, which tells it from a change with nothing to list.
+      expect(await listUsesOutsideDiff(root, diff, { loadApi: failingLoad })).toEqual({ ...NOTHING, record: { failed: 'no pinned ast-grep build for plan9-x64' } });
       expect(core.warning).toHaveBeenCalledWith('Skipped the list of uses outside the diff: no pinned ast-grep build for plan9-x64');
       expect(await listUsesOutsideDiff(root, diff, { loadApi })).toEqual({ ...NOTHING, referenceNames: ['compute_total'] });
       expect(core.info).toHaveBeenCalledWith(expect.stringMatching(/^Listed uses outside the diff in \d+ ms: none found, with 0 sibling field and 0 sibling implementation comparisons$/));
+      // A `git grep` that fails is reported by what git said, never by its command line, which holds every searched name.
+      rmSync(join(root, '.git'), { recursive: true, force: true });
+      mkdirSync(join(root, '.git'));
+      const broken = await listUsesOutsideDiff(root, diff, { loadApi });
+      expect(broken).toEqual({ ...NOTHING, record: { failed: expect.stringMatching(/^git grep failed with exit code 128: fatal: not a git repository/) } });
+      expect(core.warning).toHaveBeenLastCalledWith(`Skipped the list of uses outside the diff: ${broken.record?.failed}`);
+      expect(broken.record?.failed).not.toContain('compute_total');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -926,7 +934,7 @@ describe('listRelatedUses', () => {
         referenceUnsearched: ['MAX_HEADER_COUNT'],
       });
       expect((await listRelatedUses([server], ['PAST_THE_CUT'])).record).toEqual({ reference: [{ name: 'PAST_THE_CUT', lines: ['example/server:src/min.js:1'] }] });
-      expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Skipped the search of the reference repo o\/gone: /));
+      expect(core.warning).toHaveBeenCalledWith('Skipped the search of the reference repo o/gone: git grep could not start (ENOENT)');
       // The names are searched in one pattern, which is one command argument. The names that no longer fit its size are
       // left out, the first ones kept, so the search runs whatever it is given.
       jest.mocked(core.warning).mockClear();
@@ -1083,7 +1091,8 @@ describe('listRelatedUses', () => {
         reference: [{ name: 'MAX_SIZE', lines: ['example/server:limits.h:1'] }],
         translation: { names: [{ repo: 'example/server', name: 'MAX_SIZE', as: 'Flood', lines: 0, failed: true }] },
       });
-      expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Skipped the search of the reference repo example\/server for 1 translated name: /));
+      // The warning names the limit the search reached, and not the pattern.
+      expect(core.warning).toHaveBeenCalledWith('Skipped the search of the reference repo example/server for 1 translated name: the search found more than 64 MB of matching lines');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

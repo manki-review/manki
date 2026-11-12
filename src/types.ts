@@ -487,6 +487,8 @@ export interface RoundRelatedRepo {
 
 /** What the "Uses Outside the Diff" section showed the finders, as locations without the quoted code. */
 export interface RoundUses {
+  /** Why the search of the PR's head commit failed, which leaves the lists of that search unset and the finders without the section. */
+  failed?: string;
   /** Each symbol listed with its uses. */
   symbols?: RoundUsesSymbol[];
   /** Each type listed with all its fields, as `file:line: struct Name { fields }`. */

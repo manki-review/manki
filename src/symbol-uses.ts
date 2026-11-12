@@ -55,6 +55,8 @@ const MAX_REFERENCE_LINES = 40;
 /** A reference line is cut to this length before it is ranked, since a minified file can hold one of megabytes. */
 const MAX_REFERENCE_LINE_CHARS = 1000;
 const GREP_TIMEOUT_MS = 30_000;
+/** The reason a failed search of the PR's head commit leaves in the log and the round record is cut to this length. */
+const MAX_FAILURE_CHARS = 300;
 /**
  * The longest pattern a search hands to git grep, as one argument. Windows takes 32,767 characters for a whole command
  * line (`CreateProcessW`), the smallest limit of the platforms Manki runs on, and quoting can double an argument.
@@ -515,8 +517,9 @@ export async function listUsesOutsideDiff(workspace: string | undefined, diff: P
     core.info(`Listed uses outside the diff in ${Date.now() - started} ms${uses.section ? '' : ': none found'}, with ${fields.length} sibling field and ${implementations.length} sibling implementation comparisons`);
     return uses;
   } catch (error) {
-    core.warning(`Skipped the list of uses outside the diff: ${error instanceof Error ? error.message : String(error)}`);
-    return { section: '', siblings: NO_SIBLINGS };
+    const failed = (error instanceof Error ? error.message : String(error)).slice(0, MAX_FAILURE_CHARS);
+    core.warning(`Skipped the list of uses outside the diff: ${failed}`);
+    return { section: '', record: { failed }, siblings: NO_SIBLINGS };
   }
 }
 
@@ -1552,18 +1555,39 @@ async function grepWords(workspace: string, names: string[], { onDisk = false, i
   // One alternation, since git grep checks each `-e` pattern on its own, which is slow on a file full of near matches.
   const pattern = `(${words.join('|')})`;
   const args = ['grep', ...(onDisk ? ['--no-index'] : []), '-n', '-z', '-I', '-w', ...(ignoreCase ? ['-i'] : []), '--no-color', '-E', '-e', pattern];
-  const stdout = await execFileAsync('git', args, { cwd: workspace, env: gitEnv(), timeout: GREP_TIMEOUT_MS, maxBuffer: GREP_MAX_BUFFER })
-    .then(result => result.stdout)
+  let stdout = '';
+  try {
+    ({ stdout } = await execFileAsync('git', args, { cwd: workspace, env: gitEnv(), timeout: GREP_TIMEOUT_MS, maxBuffer: GREP_MAX_BUFFER }));
+  } catch (error) {
+    const failure = error as GrepFailure;
     // git grep exits 1 when no line matches.
-    .catch((error: { code?: number; stdout?: string }) => {
-      if (error.code === 1 && !error.stdout) return '';
-      throw error;
-    });
+    if (failure.code !== 1 || failure.stdout) throw new Error(grepFailureReason(failure, pattern));
+  }
   const hits = stdout.split('\n').flatMap(record => {
     const [file, line, text] = record.split('\0');
     return file && text !== undefined ? [{ file, line: Number(line), text }] : [];
   });
   return { hits, unsearched };
+}
+
+/** What Node reports of a `git grep` that failed: an exit code or an error code, and whether the timeout killed it. */
+interface GrepFailure {
+  code?: number | string | null;
+  killed?: boolean;
+  stdout?: string;
+  stderr?: string;
+}
+
+/**
+ * Says why a `git grep` failed, naming the limit it reached. The message Node gives a failed command holds every
+ * argument, so every searched name, and is not used. What git wrote is quoted without `pattern`.
+ */
+function grepFailureReason({ code, killed, stderr = '' }: GrepFailure, pattern: string): string {
+  if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return `the search found more than ${GREP_MAX_BUFFER / 1024 / 1024} MB of matching lines`;
+  if (killed) return `the search took longer than ${GREP_TIMEOUT_MS / 1000} s`;
+  if (typeof code === 'string') return `git grep could not start (${code})`;
+  const said = stderr.split(pattern).join('the pattern').trim().split('\n')[0].slice(0, MAX_LINE_CHARS);
+  return `git grep failed with exit code ${code}${said ? `: ${said}` : ''}`;
 }
 
 /** Finds the package of each file, the nearest directory with a manifest such as `Cargo.toml`, and what it depends on. */
