@@ -1080,7 +1080,8 @@ export interface ReviewConfig {
   auto_approve: boolean;
   /**
    * The lowest repository role with which a PR author may clear a blocker or a security finding on their own PR.
-   * Read from the base branch only. Unset only when that config could not be read or loaded, and then no author may.
+   * Read from the base branch only. `fallbackConfig` sets `admin` while that config cannot be read or loaded.
+   * A config without it lets no author clear.
    */
   author_clear_role?: AuthorClearRole;
   exclude_paths: string[];

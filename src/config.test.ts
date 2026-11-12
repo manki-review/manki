@@ -580,9 +580,8 @@ models:
       for (const value of ['triage', 'read', 'none', 'release-manager', 'Admin', 'true', '[admin]', '', '~']) {
         expect(() => loadConfigFromContent(`author_clear_role: ${value}`)).toThrow('`author_clear_role` must be one of: admin, maintain, write');
       }
-      // A base branch config that could not be read or loaded names no role, so no PR author clears a guarded finding.
-      expect(fallbackConfig()).toEqual({ ...loadConfig(undefined), author_clear_role: undefined });
-      expect('author_clear_role' in fallbackConfig()).toBe(false);
+      // While the base branch config cannot be read or loaded, only the role that every value of the setting allows may clear.
+      expect(fallbackConfig()).toEqual({ ...loadConfig(undefined), author_clear_role: 'admin' });
     });
 
     it('defaults `drafts` to skip, accepts skip and review, and rejects anything else', () => {

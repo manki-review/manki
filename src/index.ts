@@ -6,7 +6,7 @@ import * as path from 'path';
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AuthResult, createAuthenticatedOctokit, fetchPrState, reportPrState, tokenServiceCalls, TokenServiceError } from './auth';
 import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
-import { changedKeys, loadConfig, resolveModel } from './config';
+import { fallbackConfig, loadConfig, resolveModel } from './config';
 import { BENCH_COMMAND, runBenchCommand } from './bench';
 import { REVIEW_COMMAND, runReviewCommand } from './cli';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, latestLimits, parseModelSpec, removeSeededAuthFiles, sanitizeLogOutput } from './providers';
@@ -39,6 +39,7 @@ import {
   brokenConfig,
   ConfigHold,
   configFailed,
+  editedKeys,
   loadBaseConfig,
   readConfigFile,
   githubRepoFiles,
@@ -456,7 +457,7 @@ function repoConfigPath(): string {
 
 /**
  * Loads the base branch's config at `ref` for an event that runs no review round. `held` says that it could not be
- * read or loaded. The config is then the defaults without `author_clear_role`, and the event must approve nothing.
+ * read or loaded. The config is then `fallbackConfig`, and the event must approve nothing.
  */
 async function loadEventConfig(octokit: Octokit, owner: string, repo: string, ref: string): Promise<{ config: ReviewConfig; held: boolean }> {
   const configPath = repoConfigPath();
@@ -523,7 +524,7 @@ async function handleMergedPullRequest(): Promise<void> {
     return;
   }
   // The merged base branch holds the PR's own config. `base.sha` is a commit of the base branch from before the merge.
-  const clearRole = pr.base.sha ? (await loadEventConfig(octokit, owner, repo, pr.base.sha)).config.author_clear_role : undefined;
+  const before = pr.base.sha ? (await loadEventConfig(octokit, owner, repo, pr.base.sha)).config : fallbackConfig();
 
   const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, pr.number);
   if (!memory) core.info('The fix rate goes to the job summary only');
@@ -533,7 +534,7 @@ async function handleMergedPullRequest(): Promise<void> {
     headSha: pr.head.sha,
     mergedSha: pr.merge_commit_sha ?? '',
     authorLogin: pr.user?.login,
-    clearRole,
+    clearRole: before.author_clear_role,
   }, memory);
 }
 
@@ -768,8 +769,7 @@ async function loadRunConfig(target: RunTarget, repoConfigPath: string): Promise
   }
   const { config, source } = await loadBaseConfig(() => readConfigFile(octokit, owner, repo, baseRef, repoConfigPath), repoConfigPath, failureReason);
   if (!headConfig) return { config, reviewSource: source, brokenHead: { changed: await changesConfig(target, repoConfigPath, headContent) } };
-  // The defaults that stand in for a failed base config are not what the PR changes.
-  const changed = configFailed(source) ? [] : changedKeys(headConfig, config);
+  const changed = editedKeys(headConfig, { config, source });
   if (changed.length > 0) {
     core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${repoConfigPath}. The change applies after merge: this round uses the base branch's settings.`);
   }
@@ -2031,7 +2031,7 @@ async function handleReviewStateCheck(): Promise<void> {
   const { owner, repo } = github.context.repo;
   const prNumber = pr.number;
   const { config, held } = await loadEventConfig(octokit, owner, repo, pr.base.ref);
-  // Without the config nothing says whether Manki may approve, or which role lets the PR author clear a thread.
+  // Without the config nothing says whether Manki may approve, or which role below `admin` lets the PR author clear a thread.
   if (held) {
     core.info('The base branch config could not be read or loaded — skipping the state check');
     return;

@@ -278,6 +278,8 @@ describe('reviewLocal', () => {
 
     expect(jest.mocked(runReview).mock.calls[0][1].config.exclude_paths).toEqual(jest.requireActual('./config').DEFAULT_CONFIG.exclude_paths);
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not load .manki.yml on the base branch, using the defaults'));
+    // The defaults that stand in for the broken base config are not what the change edits.
+    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('This change edits'));
     await expect(reviewLocal({ repoRoot: repo, base: 'broken', head: 'fix', configOverrides: { review_passes: 2 }, providerInputs: inputs }))
       .rejects.toThrow('Invalid YAML in .manki.yml');
 

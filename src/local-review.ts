@@ -5,10 +5,10 @@ import { pathToFileURL } from 'url';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 import { extractCurrentCodeWindow } from './code-window';
-import { changedKeys, loadConfig, validateConfig } from './config';
+import { loadConfig, validateConfig } from './config';
 import { addCodeContext, changeDigest, filterDiff, filterRawDiff, hideSeenNotes, ownChangeSince, parsePRDiff, reviewableDiff, tagFindingOrigins } from './diff';
 import { citedLine } from './finding-fingerprint';
-import { ApprovalHeld, brokenConfig, buildRepoContext, cachedFileLines, capNotes, loadBaseConfig, RepoFiles, titleToSlug } from './github';
+import { ApprovalHeld, brokenConfig, buildRepoContext, cachedFileLines, capNotes, editedKeys, loadBaseConfig, RepoFiles, titleToSlug } from './github';
 import { isParsedLockfile, LockfileDiff, lockfilesLast, readLockfileChanges, withLockfiles } from './lockfile';
 import { MAX_LOCKFILE_BYTES } from './static-signals';
 import type { ProviderInputs } from './providers';
@@ -177,7 +177,7 @@ async function loadLocalConfig(
   // A copy that cannot be read or compared counts as changed, so its approval is held.
   if (!headConfig) return { ...loaded, brokenHead: { changed: headContent === undefined || headContent !== await read().catch(() => undefined) } };
   // A key the overrides set differs from the head's whatever the change did, so it is left out.
-  const changed = changedKeys(headConfig, loaded.config).filter(key => !(overrides && key in overrides));
+  const changed = editedKeys(headConfig, loaded).filter(key => !(overrides && key in overrides));
   if (changed.length > 0) {
     core.info(`This change edits ${changed.map(key => `\`${key}\``).join(', ')} in ${configPath}, which applies after merge: this review uses the base's settings.`);
   }

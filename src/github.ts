@@ -5,7 +5,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
+import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
 import { AgentProgressEntry, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
@@ -393,6 +393,14 @@ export async function readConfigFile(
 /** Whether the base branch config could not be read or loaded. */
 export function configFailed(source: ConfigSource): boolean {
   return source === 'base_unreadable' || source === 'base_invalid';
+}
+
+/**
+ * Returns the top-level keys the change's own config `head` edits against the base branch's. A base config that could
+ * not be read or loaded gives none, since the defaults that stand in for it are not what the change edits.
+ */
+export function editedKeys(head: ReviewConfig, base: { config: ReviewConfig; source: ConfigSource }): string[] {
+  return configFailed(base.source) ? [] : changedKeys(head, base.config);
 }
 
 /**

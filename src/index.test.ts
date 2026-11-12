@@ -207,6 +207,7 @@ jest.mock('./github', () => ({
   readConfigFile: jest.fn().mockResolvedValue(null),
   githubRepoFiles: jest.fn(() => ({ read: jest.fn().mockResolvedValue(null), list: jest.fn().mockResolvedValue([]) })),
   loadBaseConfig: jest.requireActual('./github').loadBaseConfig,
+  editedKeys: jest.requireActual('./github').editedKeys,
   brokenConfig: jest.requireActual('./github').brokenConfig,
   configFailed: jest.requireActual('./github').configFailed,
   capNotes: jest.requireActual('./github').capNotes,
@@ -474,13 +475,13 @@ describe('run', () => {
       { name: 'no base commit in the payload', memory: true, fixRate: undefined, records: true, toMemory: true, noBase: true },
     ])('records the fix rate of a merged pull request: $name', async ({ memory, fixRate, records, toMemory, noBase }) => {
       const baseSha = noBase ? undefined : 'base-sha';
-      // The merged branch holds the PR's own config, which lowered the role. The base commit from before the merge still says `admin`.
+      // The merged branch holds the PR's own config, which lowered the role. The base commit from before the merge still says `maintain`.
       jest.mocked(configModule.loadConfig).mockReturnValueOnce({
         memory: { enabled: memory, repo: '' },
         author_clear_role: 'write',
         ...(fixRate !== undefined && { metrics: { fix_rate: fixRate } }),
       } as ReviewConfig);
-      if (records && baseSha) jest.mocked(configModule.loadConfig).mockReturnValueOnce({ author_clear_role: 'admin' } as ReviewConfig);
+      if (records && baseSha) jest.mocked(configModule.loadConfig).mockReturnValueOnce({ author_clear_role: 'maintain' } as ReviewConfig);
       if (toMemory) jest.mocked(memoryModule.openMemoryStore).mockResolvedValueOnce({ store: MEMORY_STORE });
       setContext({
         eventName: 'pull_request',
@@ -499,11 +500,11 @@ describe('run', () => {
         expect(fixRateModule.recordFixRate).not.toHaveBeenCalled();
         return;
       }
-      // Without the base commit the role is unknown, and the merged branch's own value is never used.
+      // Without the base commit the role is unknown, so only an admin's override counts. The merged branch's own value is never used.
       expect(readAt).toEqual(baseSha ? ['main', baseSha] : ['main']);
       expect(fixRateModule.recordFixRate).toHaveBeenCalledWith(
         expect.anything(), TEST_BOT, 'test-owner', 'test-repo',
-        { number: 7, headSha: 'head', mergedSha: 'merged', authorLogin: 'author', clearRole: baseSha ? 'admin' : undefined },
+        { number: 7, headSha: 'head', mergedSha: 'merged', authorLogin: 'author', clearRole: baseSha ? 'maintain' : 'admin' },
         toMemory ? MEMORY_STORE : undefined,
       );
       expect(ghUtils.postProgressComment).not.toHaveBeenCalled();
@@ -2227,10 +2228,9 @@ describe('runFullReview orchestration', () => {
 
       await callRunFullReview();
 
-      // The defaults carry no `author_clear_role`, so no PR author clears a guarded finding under them.
+      // The defaults ask for `admin`, the one role that may clear under every value the base branch can hold.
       expect(reviewedConfig()).toEqual(actualFallbackConfig());
-      expect(reviewedConfig().author_clear_role).toBeUndefined();
-      expect(jest.mocked(recapModule.fetchRecapState).mock.calls.map(call => call[6])).toEqual([undefined]);
+      expect(jest.mocked(recapModule.fetchRecapState).mock.calls.map(call => call[6])).toEqual(['admin']);
       expect(jest.mocked(core.info).mock.calls.map(([message]) => String(message))).not.toContainEqual(expect.stringContaining('This PR changes'));
       expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configHold: 'base' }));
       expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining(warning));
@@ -7146,7 +7146,7 @@ describe('handleInteraction', () => {
     await handleInteraction();
 
     const [call] = jest.mocked(interaction.handlePRComment).mock.calls;
-    expect(call[7]?.author_clear_role).toBeUndefined();
+    expect(call[7]?.author_clear_role).toBe('admin');
     expect(call[8]).toBe(true);
   });
 
@@ -7540,7 +7540,7 @@ describe('handleReviewCommentInteraction auto-approve', () => {
       expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 8, expect.objectContaining({ auto_approve: true }),
     );
 
-    // With a config that cannot be read, the reply is still answered, with no role for the PR author, and nothing is approved.
+    // With a config that cannot be read, the reply is still answered, only an admin author clears a thread, and nothing is approved.
     jest.mocked(interaction.handleReviewCommentReply).mockClear();
     jest.mocked(stateModule.checkAndAutoApprove).mockClear();
     jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up'));
@@ -7549,7 +7549,7 @@ describe('handleReviewCommentInteraction auto-approve', () => {
 
     const [reply] = jest.mocked(interaction.handleReviewCommentReply).mock.calls;
     expect(reply[8]).toEqual(jest.requireActual<typeof import('./config')>('./config').fallbackConfig());
-    expect(reply[8]?.author_clear_role).toBeUndefined();
+    expect(reply[8]?.author_clear_role).toBe('admin');
     expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
   });
 

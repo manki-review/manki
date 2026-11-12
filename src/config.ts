@@ -809,12 +809,11 @@ export function resolveReviewerModel(config: ReviewConfig, ref: string | undefin
 }
 
 /**
- * Returns the defaults for a base branch config that could not be read or loaded. They hold no `author_clear_role`,
- * since the repository may have set a higher role than the default, so no PR author clears a guarded finding meanwhile.
+ * Returns the defaults for a base branch config that could not be read or loaded. `author_clear_role` is `admin` in
+ * them, the one role that may clear under every value the repository can have set.
  */
 export function fallbackConfig(): ReviewConfig {
-  const { author_clear_role: _role, ...config } = loadConfig(undefined);
-  return config;
+  return { ...loadConfig(undefined), author_clear_role: 'admin' };
 }
 
 export function loadConfig(yamlContent: string | undefined, source?: string): ReviewConfig {

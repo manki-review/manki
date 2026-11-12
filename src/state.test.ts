@@ -843,7 +843,7 @@ describe('checkAndAutoApprove', () => {
     ]);
   });
 
-  it.each<[string, string, string, AuthorClearRole | undefined, boolean, boolean]>([
+  it.each<[string, string, string, AuthorClearRole | 'unreadable' | undefined, boolean, boolean]>([
     ['a collaborator', 'alice', 'write', 'maintain', false, true],
     ['the PR author with `write` under the default', 'author', 'write', 'maintain', false, false],
     ['the PR author with `write` under the default, with a recorded override', 'author', 'write', 'maintain', true, false],
@@ -855,8 +855,13 @@ describe('checkAndAutoApprove', () => {
     ['the PR author with `write` under `write`', 'author', 'write', 'write', false, true],
     ['the PR author with `triage` under `write`', 'author', 'triage', 'write', false, false],
     ['the PR author with a custom role under `write`', 'author', 'release-manager', 'write', false, false],
-    ['the PR author with `admin` when the level is unknown', 'author', 'admin', undefined, false, false],
-  ])('approves a security and a plain blocking thread resolved by %s', async (_who, resolver, role, level, recorded, approves) => {
+    // While the base branch config cannot be read, only the role every value of the setting allows may clear.
+    ['the PR author with `admin` under the defaults for an unreadable config', 'author', 'admin', 'unreadable', false, true],
+    ['the PR author with `maintain` under the defaults for an unreadable config', 'author', 'maintain', 'unreadable', false, false],
+    ['the PR author with `admin` under a config without the setting', 'author', 'admin', undefined, false, false],
+  ])('approves a security and a plain blocking thread resolved by %s', async (_who, resolver, role, setting, recorded, approves) => {
+    const config = setting === 'unreadable' ? fallbackConfig() : { ...DEFAULT_CONFIG, author_clear_role: setting };
+    const level = config.author_clear_role;
     const finding = (title: string, tags?: string[]): Finding => ({
       severity: 'blocker', title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
     });
@@ -874,7 +879,7 @@ describe('checkAndAutoApprove', () => {
       role,
     });
 
-    const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, { ...fallbackConfig(), ...(level && { author_clear_role: level }) });
+    const result = await approveOrSayWhy(octokit, TEST_BOT, 'owner', 'repo', 1, config);
     expect(result.approved).toBe(approves);
     expect(createReviewMock).toHaveBeenCalledTimes(approves ? 1 : 0);
     // The reply names the role the repo asks for, and none while that is unknown.
