@@ -4,7 +4,7 @@ import { parse as parseYaml } from 'yaml';
 import { LOCKFILES } from './binary-analyzers';
 import { parseModelSpec } from './providers';
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, canonicalJson, floorShortfall, resolveRouting, routeClass } from './routing';
-import { ANALYZERS, AUTHOR_CLEAR_ROLES, PairedPin, ReviewConfig, StaticAnalysisConfig } from './types';
+import { ANALYZERS, AUTHOR_CLEAR_ROLES, PairedPin, RELATED_REPO_KINDS, ReviewConfig, StaticAnalysisConfig } from './types';
 
 const MAX_WAIT_TIMEOUT_SECONDS = 3600;
 
@@ -134,7 +134,6 @@ const MEMORY_KEYS: ReadonlySet<string> = new Set(['enabled', 'repo']);
 const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
 export const RELATED_REPO_KEYS: ReadonlySet<string> = new Set(['repo', 'kind', 'ref', 'paths']);
-const RELATED_REPO_KINDS = new Set(['reference', 'consumer']);
 const MAX_RELATED_REPOS = 10;
 const MAX_RELATED_REPO_PATHS = 20;
 // A ref is passed to `git fetch`, so it may not start with `-` or hold `..`.
@@ -461,7 +460,7 @@ function validateRelatedRepos(value: unknown, errors: string[], warnings: string
     } else {
       seen.add(repo.toLowerCase());
     }
-    if (!RELATED_REPO_KINDS.has(kind as string)) errors.push(`${at}.kind\` must be one of: reference, consumer`);
+    if (!RELATED_REPO_KINDS.some(known => known === kind)) errors.push(`${at}.kind\` must be one of: ${RELATED_REPO_KINDS.join(', ')}`);
     if (ref !== undefined && (typeof ref !== 'string' || !RELATED_REPO_REF.test(ref))) {
       errors.push(`${at}.ref\` must be a branch, tag or commit name`);
     } else if (typeof ref === 'string' && ABBREVIATED_COMMIT.test(ref)) {

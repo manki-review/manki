@@ -11,7 +11,7 @@ import { addedLines, findExcludePattern, rebuildRawDiff } from './diff';
 import { fenceText } from './github';
 import { resolveInRoot } from './mcp-server';
 import { GUIDE_FILES } from './related-repos';
-import { DiffFile, DiffHunk, NameTranslation, ParsedDiff, RelatedCheckout, RelatedRepoKind, RoundNameTranslation, RoundReferenceUse, RoundUses, RoundUsesSymbol } from './types';
+import { DiffFile, DiffHunk, NameTranslation, ParsedDiff, RELATED_REPO_KINDS, RelatedCheckout, RelatedRepoKind, RoundNameTranslation, RoundReferenceUse, RoundUses, RoundUsesSymbol } from './types';
 import { escapeRegExp } from './utils';
 import { gitEnv } from './workspace';
 
@@ -499,7 +499,7 @@ const RELATED_SECTIONS: Record<RelatedRepoKind, { title: string; task: string }>
   consumer: { title: 'Consumer', task: "Each line is quoted from the consumer's fetched commit and may use what the change touches. Cite one as `owner/name:path:line`, and check that it still works with the change." },
 };
 
-type RelatedUsesRecord = Pick<RoundUses, 'reference' | 'referenceMissing' | 'referenceCapped' | 'consumer' | 'consumerMissing' | 'consumerCapped' | 'translation'>;
+type RelatedUsesRecord = Pick<RoundUses, RelatedRepoKind | `${RelatedRepoKind}Missing` | `${RelatedRepoKind}Capped` | 'translation'>;
 type TranslatedNames = NonNullable<RoundNameTranslation['names']>;
 /** A line of a related repo, and the translated name that found it when none of the diff's names did. */
 type RelatedHit = Hit & { repo: string; as?: string };
@@ -518,7 +518,7 @@ type RelatedHit = Hit & { repo: string; as?: string };
  */
 export async function listRelatedUses(checkouts: RelatedCheckout[], names: string[], translation?: NameTranslation): Promise<{ section: string; record?: RelatedUsesRecord }> {
   const listed = [];
-  for (const kind of ['reference', 'consumer'] as const) listed.push(await listKindUses(kind, checkouts.filter(c => c.kind === kind), names, translation?.names));
+  for (const kind of RELATED_REPO_KINDS) listed.push(await listKindUses(kind, checkouts.filter(c => c.kind === kind), names, translation?.names));
   const translated = translation && { translation: translation.skipped ? { skipped: translation.skipped } : { names: listed.flatMap(l => l.translated) } };
   const record: RelatedUsesRecord = Object.assign({}, ...listed.map(l => l.record), translated);
   return { section: listed.map(l => l.section).join(''), ...(Object.keys(record).length > 0 && { record }) };
@@ -631,9 +631,7 @@ function formatRelatedUses(kind: RelatedRepoKind, names: string[], found: Map<st
     uses.push({ name, lines: shown.map(h => `${h.repo}:${h.file}:${h.line}`), ...(cut > 0 && { notShown: cut }), ...(as.length > 0 && { as }) });
   }
   const missing = names.filter(n => !found.has(n));
-  const lists = kind === 'reference'
-    ? { reference: uses, referenceMissing: missing, referenceCapped: capped }
-    : { consumer: uses, consumerMissing: missing, consumerCapped: capped };
+  const lists = { [kind]: uses, [`${kind}Missing`]: missing, [`${kind}Capped`]: capped };
   const record: RelatedUsesRecord = Object.fromEntries(Object.entries(lists).filter(([, list]) => list.length > 0));
   if (blocks.length === 0) return { section: '', record };
   const notes = [

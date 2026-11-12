@@ -1297,7 +1297,8 @@ export interface AnalyzerSettings {
 }
 
 /** `reference`: a repo this one implements or ports, such as a protocol. `consumer`: a repo that depends on this one. */
-export type RelatedRepoKind = 'reference' | 'consumer';
+export const RELATED_REPO_KINDS = ['reference', 'consumer'] as const;
+export type RelatedRepoKind = (typeof RELATED_REPO_KINDS)[number];
 
 export interface RelatedRepo {
   /** `owner/name` of a public repo on github.com. */
