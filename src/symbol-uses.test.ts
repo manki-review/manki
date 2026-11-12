@@ -851,8 +851,8 @@ describe('listRelatedUses', () => {
       'src/http/retry.h': 'class CRetryPolicy {\n    int64_t retryDelay;\n};\n',
       'src/protocol.cpp': 'const char* URLINFO = "urlinfo";\n',
       'src/a_util.cpp': 'void Check(const int64_t& retry_delay) {}\n',
-      // A minified line is cut before it is ranked, so a name past the cut does not count.
-      'src/min.js': `${'var a=1;'.repeat(200)}URLINFO\n`,
+      // A minified line is cut before it is ranked and shown, but a name past the cut still counts as found.
+      'src/min.js': `${'var a=1;'.repeat(200)}URLINFO PAST_THE_CUT\n`,
       'src/depends/lib.c': 'int MAX_REQUEST_BODY_LENGTH;\n',
       'src/test/server_tests.cpp': 'auto data = randbytes(MAX_REQUEST_BODY_LENGTH);\nauto more = randbytes(MAX_REQUEST_BODY_LENGTH);\n',
       'doc/http.md': 'Requests stop at MAX_REQUEST_BODY_LENGTH.\n',
@@ -885,7 +885,7 @@ describe('listRelatedUses', () => {
       ].join('\n'));
       // The file that also holds `CRetryPolicy` is the likelier counterpart, so it comes before a namesake parameter.
       expect(section).toContain('### `retry_delay`\n\n```\nexample/server:src/http/retry.h:2: int64_t retryDelay;\nexample/server:src/a_util.cpp:1: void Check(const int64_t& retry_delay) {}\n```');
-      expect(section).toContain('### `URLInfo`\n\n```\nexample/server:src/protocol.cpp:1: const char* URLINFO = "urlinfo";\n```');
+      expect(section).toContain(`### \`URLInfo\`\n\n\`\`\`\nexample/server:src/protocol.cpp:1: const char* URLINFO = "urlinfo";\nexample/server:src/min.js:1: ${'var a=1;'.repeat(20)}\n\`\`\``);
       // An `ALL_CAPS` constant keeps its case, so `max_size()` is no match for it.
       expect(section).toContain('### `MAX_SIZE`\n\n```\nexample/server:src/serialize.h:1: static constexpr uint64_t MAX_SIZE = 0x02000000;\nexample/server:src/server.cpp:1:');
       expect(section).not.toContain('max_size()');
@@ -894,12 +894,13 @@ describe('listRelatedUses', () => {
         reference: [
           { name: 'MAX_REQUEST_BODY_LENGTH', lines: ['example/server:src/server.h:2', 'example/server:src/server.cpp:1', 'example/server:src/server.h:1', 'example/server:doc/http.md:1'], notShown: 3 },
           { name: 'retry_delay', lines: ['example/server:src/http/retry.h:2', 'example/server:src/a_util.cpp:1'] },
-          { name: 'URLInfo', lines: ['example/server:src/protocol.cpp:1'] },
+          { name: 'URLInfo', lines: ['example/server:src/protocol.cpp:1', 'example/server:src/min.js:1'] },
           { name: 'MAX_SIZE', lines: ['example/server:src/serialize.h:1', 'example/server:src/server.cpp:1'] },
           { name: 'CRetryPolicy', lines: ['example/server:src/http/retry.h:1', 'example/server:doc/AGENTS.md:1'] },
         ],
         referenceMissing: ['MAX_HEADER_COUNT'],
       });
+      expect((await listRelatedUses([server], ['PAST_THE_CUT'])).record).toEqual({ reference: [{ name: 'PAST_THE_CUT', lines: ['example/server:src/min.js:1'] }] });
       expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Skipped the search of the reference repo o\/gone: /));
       // The names are searched in one pattern, which is one command argument. The names that no longer fit its size are
       // left out, the first ones kept, so the search runs whatever it is given.

@@ -574,6 +574,8 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
     const guesses = [...(translations.get(repo) ?? [])].flatMap(([name, list]) =>
       list.filter(as => isSearchable(as) && !referencePattern(name).test(as)).map(as => ({ repo, name, as, lines: 0, pattern: translatedPattern(as) })));
     const recordOf = (group: typeof guesses) => group.map(({ pattern: _pattern, ...guess }) => guess);
+    // A name is matched against the whole line, so one past the cut still counts as found. Only the kept text is cut.
+    const kept = (hit: Hit): RelatedHit => ({ ...hit, text: hit.text.slice(0, MAX_REFERENCE_LINE_CHARS), repo });
     let hits: Hit[];
     try {
       const searched = await search(names.flatMap(nameVariants), true);
@@ -589,7 +591,7 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
     for (const hit of hits) {
       for (const [name] of patterns.filter(([, pattern]) => pattern.test(hit.text))) {
         listed.add(`${name}\0${hit.file}\0${hit.line}`);
-        appendTo(found, name, { ...hit, repo });
+        appendTo(found, name, kept(hit));
       }
     }
     // The translated names are searched after the diff's names and apart from them, so a search they make fail costs only
@@ -613,7 +615,7 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
           const key = `${guess.name}\0${hit.file}\0${hit.line}`;
           if (listed.has(key)) continue;
           listed.add(key);
-          appendTo(found, guess.name, { ...hit, repo, as: guess.as });
+          appendTo(found, guess.name, { ...kept(hit), as: guess.as });
         }
       }
       // A guess that found nothing while the search left a spelling of it out was not searched, which the record keeps as failed.
@@ -1514,7 +1516,7 @@ async function grepWords(workspace: string, names: string[], { onDisk = false, i
     });
   const hits = stdout.split('\n').flatMap(record => {
     const [file, line, text] = record.split('\0');
-    return file && text !== undefined ? [{ file, line: Number(line), text: onDisk ? text.slice(0, MAX_REFERENCE_LINE_CHARS) : text }] : [];
+    return file && text !== undefined ? [{ file, line: Number(line), text }] : [];
   });
   return { hits, unsearched };
 }
