@@ -9,7 +9,7 @@ import { holdsLines } from './code-window';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { LockfileDiff, lockfileSignals } from './lockfile';
-import { readFileInRoot } from './mcp-server';
+import { readFileInRoot, resolveInRoot } from './mcp-server';
 import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundSignalSourceRun, RoundStaticAnalysis, SECURITY_TAG, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { escapeRegExp, hiddenCharacters, safeTruncate } from './utils';
 
@@ -529,12 +529,13 @@ export function namesPrFile(workspace: string, cited: Pick<RelatedCitation, 'rep
 }
 
 /**
- * Returns, for each line of a configured related repo that the finding's title or description cites, whether it is in
+ * Returns, for each place in a configured related repo that the finding's title or description cites, whether it is in
  * the checkout the round fetched. Only a citation found there lets the judge treat it as evidence, and never one that
  * `namesPrFile`. An evidence line that starts with a citation and quotes code in backticks is compared with the
  * fetched lines. The note says "holds the quoted code" only when they hold every quoted part. Otherwise it names each
  * part they hold and each they do not. A range of more than `MAX_QUOTED_RANGE` lines is not compared, and its note
- * says only that it is in the checkout.
+ * says only that it is in the checkout. Citations of one file and first line are one place and get one note, the worst
+ * of theirs, so no spelling of a place reads better than another.
  */
 function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }: NonNullable<ClaimSources['related']>): string[] {
   const quotes = new Map<string, { cited: RelatedCitation; code: string[] }>();
@@ -547,22 +548,44 @@ function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }
   const stated = relatedCitations(`${finding.title}\n${finding.description}`, names);
   // A citation that only an evidence line makes is checked when that line quotes code to compare.
   const all = [...stated, ...[...quotes.values()].map(q => q.cited).filter(q => !stated.some(s => s.citation === q.citation))];
-  return all.slice(0, MAX_CITATIONS).map(({ citation, repo, path, start, end }) => {
+  // The lower the rank, the worse. A quote that was not compared ranks below one the lines hold, and a citation without a quote says nothing of one.
+  const check = ({ citation, repo, path, start, end }: RelatedCitation): { rank: number; says: string } => {
     const dir = checkouts.get(repo);
-    if (!dir) return `\`${citation}\` is unchecked: ${repo} was not fetched this round`;
-    if (namesPrFile(workspace, { repo, path })) return `\`${citation}\` is unchecked: the PR has a file at \`${repo}:${path}\`, which the citation can mean`;
+    if (!dir) return { rank: 0, says: `is unchecked: ${repo} was not fetched this round` };
+    if (namesPrFile(workspace, { repo, path })) return { rank: 0, says: `is unchecked: the PR has a file at \`${repo}:${path}\`, which the citation can mean` };
     const missing = citedLineMissing(dir, path, start, end);
-    if (missing) return `\`${citation}\` ${missing}`;
+    if (missing) return { rank: 0, says: missing };
     const quoted = quotes.get(citation)?.code;
-    if (!quoted || end - start + 1 > MAX_QUOTED_RANGE) return `\`${citation}\` is in the fetched checkout`;
+    if (!quoted) return { rank: 4, says: 'is in the fetched checkout' };
+    if (end - start + 1 > MAX_QUOTED_RANGE) return { rank: 2, says: 'is in the fetched checkout' };
     const absent = missingQuotes(dir, path, start, end, quoted);
-    if (absent.length === 0) return `\`${citation}\` is in the fetched checkout and holds the quoted code`;
+    if (absent.length === 0) return { rank: 3, says: 'is in the fetched checkout and holds the quoted code' };
     const held = quoted.filter(part => !absent.includes(part));
     const parts = (list: readonly string[]): string => `${list.map(part => `\`${part}\``).join(', ')} ${list.length === 1 ? 'is' : 'are'}`;
     return held.length === 0
-      ? `\`${citation}\` does not hold the quoted code: ${parts(absent)} not within ${QUOTE_LINE_WINDOW} lines of the cited line`
-      : `\`${citation}\` holds only part of the quoted code: ${parts(held)} within ${QUOTE_LINE_WINDOW} lines of the cited line, ${parts(absent)} not`;
-  });
+      ? { rank: 0, says: `does not hold the quoted code: ${parts(absent)} not within ${QUOTE_LINE_WINDOW} lines of the cited line` }
+      : { rank: 1, says: `holds only part of the quoted code: ${parts(held)} within ${QUOTE_LINE_WINDOW} lines of the cited line, ${parts(absent)} not` };
+  };
+  const places = new Map<string, { citation: string; rank: number; says: string; others: string[] }>();
+  for (const cited of all.slice(0, MAX_CITATIONS)) {
+    const result = { citation: cited.citation, ...check(cited) };
+    const key = `${cited.repo}:${pathInCheckout(checkouts.get(cited.repo), cited.path)}:${cited.start}`;
+    const place = places.get(key);
+    if (!place) places.set(key, { ...result, others: [] });
+    else if (result.rank < place.rank) places.set(key, { ...result, others: [...place.others, place.citation] });
+    else place.others.push(cited.citation);
+  }
+  return [...places.values()].map(({ citation, says, others }) =>
+    `\`${citation}\`${others.length > 0 ? ` (also cited as ${others.map(other => `\`${other}\``).join(', ')})` : ''} ${says}`);
+}
+
+/** Returns `path` as the checkout at `dir` names the file, so two spellings of one file compare equal, or `path` itself when the file is not there. */
+function pathInCheckout(dir: string | undefined, path: string): string {
+  try {
+    return dir ? resolveInRoot(dir, path).relative : path;
+  } catch {
+    return path;
+  }
 }
 
 const withoutWhitespace = (text: string): string => text.replace(/\s+/g, '');

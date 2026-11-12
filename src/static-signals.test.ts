@@ -897,9 +897,9 @@ describe('checkFindingClaims', () => {
       ].join(' ');
       expect(checkFindingClaims(finding({ description }), { ...sources, related })).toEqual({ status: 'none', note: `Checked: ${[
         'the file is in the diff', 'the line is in the file',
-        '`o/r:src/lib.rs:2` is in the fetched checkout',
+        // Two citations of one file and first line are one place, and the worse answer is the place's.
+        '`o/r:src/lib.rs:2-9` (also cited as `o/r:src/lib.rs:2`) is not in the fetched checkout: src/lib.rs has 2 lines',
         '`o/r:src/lib.rs:1-2` is in the fetched checkout',
-        '`o/r:src/lib.rs:2-9` is not in the fetched checkout: src/lib.rs has 2 lines',
         '`o/r:src/gone.rs:1` is not in the fetched checkout: src/gone.rs is not a file there',
         '`o/r:src:1` is not in the fetched checkout: src is not a file there',
         '`o/r:link.rs:40` is not in the fetched checkout: link.rs is not a file there',
@@ -912,10 +912,10 @@ describe('checkFindingClaims', () => {
       ].join(', ')}.` });
       expect(checkFindingClaims(finding({ description }), sources).note).toBe('Checked: the file is in the diff, the line is in the file.');
       // A cited line that is not there gets one answer: line 0, a range that runs backwards and a line past the last one.
-      expect(checkFindingClaims(finding({ description: 'See o/r:src/lib.rs:0, o/r:src/lib.rs:2-1 and o/r:src/lib.rs:2-40.' }), { ...sources, related }).note).toBe(`Checked: the file is in the diff, the line is in the file, ${[
+      expect(checkFindingClaims(finding({ description: 'See o/r:src/lib.rs:0, o/r:src/lib.rs:2-1 and o/r:src/lib.rs:1-40.' }), { ...sources, related }).note).toBe(`Checked: the file is in the diff, the line is in the file, ${[
         '`o/r:src/lib.rs:0` is not in the fetched checkout: src/lib.rs has no line 0',
         '`o/r:src/lib.rs:2-1` is not in the fetched checkout: the range 2-1 runs backwards',
-        '`o/r:src/lib.rs:2-40` is not in the fetched checkout: src/lib.rs has 2 lines',
+        '`o/r:src/lib.rs:1-40` is not in the fetched checkout: src/lib.rs has 2 lines',
       ].join(', ')}.`);
 
       // An evidence line that starts with a citation and quotes code is compared with the fetched lines around it.
@@ -951,6 +951,11 @@ describe('checkFindingClaims', () => {
         // A citation that only an evidence line makes is checked once that line quotes code.
         quoting('o/r:src/lib.rs:1, which defines `pub fn a()`', '`o/r:src/lib.rs:1-2` is where it is called'),
         quoting('o/s:x.rs:1 calls `removed_function()`'),
+        // Two spellings of one place get one answer. A quote the lines do not hold decides it, whichever spelling it stands with.
+        quoting('o/r:./src/lib.rs:2 reads `removed_function()`'),
+        quoting('o/r:src/lib.rs:2-2 defines `pub fn b()`'),
+        // A quote that was not compared, for its wide range, outweighs one the lines hold.
+        quoting('o/r:src/long.rs:1 has `fn step_1() {}`', 'o/r:src/long.rs:1-30 holds `fn step_25() {}`'),
       ]).toEqual([
         '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` is in the fetched checkout and holds the quoted code.',
@@ -969,6 +974,9 @@ describe('checkFindingClaims', () => {
         '`o/r:src/lib.rs:2` is in the fetched checkout.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/lib.rs:1` is in the fetched checkout and holds the quoted code.',
         '`o/r:src/lib.rs:2` is in the fetched checkout, `o/s:x.rs:1` is unchecked: o/s was not fetched this round.',
+        '`o/r:./src/lib.rs:2` (also cited as `o/r:src/lib.rs:2`) does not hold the quoted code: `removed_function()` is not within 3 lines of the cited line.',
+        '`o/r:src/lib.rs:2-2` (also cited as `o/r:src/lib.rs:2`) is in the fetched checkout and holds the quoted code.',
+        '`o/r:src/lib.rs:2` is in the fetched checkout, `o/r:src/long.rs:1-30` (also cited as `o/r:src/long.rs:1`) is in the fetched checkout.',
       ]);
     } finally {
       rmSync(base, { recursive: true, force: true });
