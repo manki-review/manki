@@ -220,7 +220,7 @@ Manki reads these results with the workflow token (`github_token`), so grant the
 
 A source Manki cannot read is skipped with one info line in the log. Turn a source off with `static_analysis` in `.manki.yml` (see [Configuration](configuration.md)). Manki reads that block from the base branch, so a PR cannot turn off the tool that would flag it.
 
-Manki only sees checks that finished before it runs. Manki runs in its own workflow, so `needs:` cannot order it after your CI. List the check runs to wait for in `static_analysis.wait_for_checks` instead. Manki polls them on the PR head every 15 seconds and reads the results once each has finished. After `wait_timeout_seconds` (default 300) it stops waiting, reads what is there, and records the checks still running in the `Manki context` block. A name is the check run's name as the PR's checks list shows it, usually the job name.
+Manki only sees checks that finished before it runs. Manki runs in its own workflow, so `needs:` cannot order it after your CI. List the check runs to wait for in `static_analysis.wait_for_checks` instead. Manki polls them on the PR head every 15 seconds and reads the results once each has finished. After `wait_timeout_seconds` (default 300) it stops waiting, reads what is there, and records the checks still running in the `Manki context` block. The last poll starts at that limit and may take up to 11 seconds more. A poll that fails or meets a GitHub rate limit ends the wait early with a warning, and Manki reads what is there. A name is the check run's name as the PR's checks list shows it, usually the job name.
 
 ```yaml
 static_analysis:

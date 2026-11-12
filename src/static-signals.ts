@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { readFileSync, statSync } from 'fs';
 
+import { withDeadline } from './auth';
 import { AstGrepApi, isAstGrepFile, isRustFile, loadAstGrep, runAstGrep } from './ast-grep';
 import { installTool, isLockfile, runActionlint, runGitleaks, runOpengrep, runOsvScanner, runShellcheck, runTool, runZizmor, ToolRunner } from './binary-analyzers';
 import { loadStaticAnalysisConfig } from './config';
@@ -26,6 +27,8 @@ const MAX_CITATIONS = 10;
 // `owner/name:path:line` or `owner/name:path:start-end`, the form reviewers cite a related repo's code in.
 const RELATED_CITATION = /(?<![\w./-])([\w.-]+\/[\w.-]+):([^\s:`'"()<>]+):(\d+)(?:-(\d+))?/g;
 const CHECK_POLL_MS = 15_000;
+// The last poll of `waitForChecks` starts when `wait_timeout_seconds` is over, and may take this long.
+const CHECK_POLL_TIMEOUT_MS = 10_000;
 const MAX_ANALYZED_FILE_BYTES = 1024 * 1024;
 const MAX_ANALYZED_TOTAL_BYTES = 8 * 1024 * 1024;
 export const MAX_LOCKFILE_BYTES = 10 * 1024 * 1024;
@@ -75,6 +78,7 @@ export interface StaticSignalRequest {
 export interface StaticAnalysisRuntime extends ToolRunner {
   loadAstGrep: () => Promise<AstGrepApi>;
   sleep: (ms: number) => Promise<void>;
+  withDeadline: typeof withDeadline;
 }
 
 const DEFAULT_RUNTIME: StaticAnalysisRuntime = {
@@ -82,6 +86,7 @@ const DEFAULT_RUNTIME: StaticAnalysisRuntime = {
   installTool,
   runTool,
   sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+  withDeadline,
 };
 
 export interface StaticAnalysisResult {
@@ -106,7 +111,7 @@ export async function collectStaticSignals(
   });
   const settings = loadStaticAnalysisConfig(content, configPath);
   const [checksStillPending, rustPaths] = await Promise.all([
-    waitForChecks(octokit, request, settings, runtime.sleep),
+    waitForChecks(octokit, request, settings, runtime),
     rustRulePaths(octokit, request, settings),
   ]);
   const analyzers = enabledAnalyzers(settings, rustPaths.size > 0);
@@ -315,17 +320,21 @@ async function rustRulePaths(octokit: Octokit, { owner, repo, baseRef, diff }: S
   }
 }
 
-/** Polls the check runs named in `wait_for_checks` until each has finished, and returns the ones still running at the timeout. */
+/**
+ * Polls the check runs named in `wait_for_checks` until each has finished, and returns the ones still running at the timeout.
+ * A poll that fails or meets a rate limit ends the wait. A poll still running `CHECK_POLL_TIMEOUT_MS` after `wait_timeout_seconds` is cut off.
+ */
 async function waitForChecks(
-  octokit: Octokit, { owner, repo, headSha }: StaticSignalRequest, settings: StaticAnalysisConfig, sleep: StaticAnalysisRuntime['sleep'],
+  octokit: Octokit, { owner, repo, headSha }: StaticSignalRequest, settings: StaticAnalysisConfig, runtime: Pick<StaticAnalysisRuntime, 'sleep' | 'withDeadline'>,
 ): Promise<string[]> {
   // Manki's own run never finishes before this one reads it.
   const names = settings.wait_for_checks.filter(name => name !== github.context.job);
   if (names.length === 0) return [];
   const deadline = Date.now() + settings.wait_timeout_seconds * 1000;
   try {
+    const polling = await runtime.withDeadline(octokit, AbortSignal.timeout(settings.wait_timeout_seconds * 1000 + CHECK_POLL_TIMEOUT_MS));
     for (;;) {
-      const runs = await octokit.paginate(octokit.rest.checks.listForRef, { owner, repo, ref: headSha, per_page: 100 });
+      const runs = await polling.paginate(polling.rest.checks.listForRef, { owner, repo, ref: headSha, per_page: 100 });
       // A rerun leaves the earlier, completed run in the list, so a name waits while any of its runs is unfinished.
       const pending = names.filter(name => {
         const named = runs.filter(r => r.name === name);
@@ -338,7 +347,7 @@ async function waitForChecks(
         return pending;
       }
       core.info(`Static analysis: waiting for ${pending.join(', ')}`);
-      await sleep(Math.min(CHECK_POLL_MS, remaining));
+      await runtime.sleep(Math.min(CHECK_POLL_MS, remaining));
     }
   } catch (error) {
     core.warning(`Static analysis: stopped waiting for checks: ${error instanceof Error ? error.message : String(error)}`);

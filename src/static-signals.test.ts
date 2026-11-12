@@ -11,6 +11,7 @@ import * as napi from '@ast-grep/napi';
 
 import { filterDiff, parsePRDiff } from './diff';
 import type { PackageChange } from './lockfile';
+import { createOctokit, withDeadline } from './auth';
 import * as githubModule from './github';
 import { buildReviewerUserMessage } from './review';
 import { checkFindingClaims, collectStaticSignals, isUnconfirmedBuildClaim, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
@@ -24,9 +25,21 @@ jest.mock('@actions/core', () => ({
   debug: jest.fn(),
 }));
 
-jest.mock('@actions/github', () => ({
-  context: { job: 'review' },
-}));
+// The real client, for the tests of its retries and rate limit waits. `mockFetch` answers every request, and the waits are a thousandth as long.
+jest.mock('@actions/github', () => {
+  const actual = jest.requireActual('@actions/github');
+  return {
+    context: { job: 'review' },
+    getOctokit: (token: string, options: { retry?: object; throttle?: object } = {}, ...plugins: unknown[]) => actual.getOctokit(token, {
+      ...options,
+      request: { fetch: (url: string, init: RequestInit) => mockFetch(url, init) },
+      retry: { ...options.retry, retryAfterBaseValue: 1 },
+      throttle: { ...options.throttle, retryAfterBaseValue: 1 },
+    }, ...plugins),
+  };
+});
+
+let mockFetch: (url: string, init: RequestInit) => Promise<Response>;
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -275,6 +288,7 @@ describe('collectStaticSignals with analyzers and waits', () => {
         return { code: tool === 'osv-scanner' ? 1 : 0, stdout, stderr: '' };
       }),
       sleep: jest.fn(async (ms: number) => { now += ms; }),
+      withDeadline: jest.fn(async (octokit: Octokit) => octokit),
     };
   });
 
@@ -686,6 +700,36 @@ describe('collectStaticSignals with analyzers and waits', () => {
       { source: 'dependency_review', status: 'ran', results: 2 },
     ], checksStillPending: ['lint'] });
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('stopped waiting after 60s, still running or not started: lint'));
+  });
+
+  const WAIT_FOR_LINT = 'static_analysis:\n  checks: false\n  code_scanning: false\n  dependency_review: false\n  wait_for_checks: [lint]\n  wait_timeout_seconds: 60\n';
+  const json = (status: number, data: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
+  const RUNNING = () => json(200, { total_count: 1, check_runs: [{ id: 4, name: 'lint', status: 'in_progress' }] });
+
+  it.each<[string, () => Response, number, string]>([
+    ['meets a rate limit', () => json(403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '2' }), 1, 'API rate limit exceeded'],
+    ['meets a secondary rate limit', () => json(403, { message: 'You have exceeded a secondary rate limit' }, { 'retry-after': '2' }), 1, 'secondary rate limit'],
+    ['gets a 5xx on every try', () => json(503, { message: 'Service Unavailable' }), 2, 'Service Unavailable'],
+    ['is cut by the deadline', RUNNING, 2, 'The operation timed out'],
+  ])('stops waiting for checks with a warning when a poll %s, on the real client', async (_case, answer, tries, reason) => {
+    const timeout = jest.spyOn(AbortSignal, 'timeout');
+    if (answer === RUNNING) timeout.mockReturnValue(AbortSignal.abort(new DOMException('The operation timed out', 'TimeoutError')));
+    let polls = 0;
+    mockFetch = async (url, init) => {
+      if (url.includes('/contents/')) return json(200, { content: Buffer.from(WAIT_FOR_LINT).toString('base64'), encoding: 'base64', size: WAIT_FOR_LINT.length });
+      polls += 1;
+      init.signal?.throwIfAborted();
+      return answer();
+    };
+
+    const { record } = await collectStaticSignals(createOctokit('ghs_workflow'), request(), { ...runtime, withDeadline });
+
+    expect(polls).toBe(tries);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`^Static analysis: stopped waiting for checks: .*${reason}`)));
+    expect(runtime.sleep).not.toHaveBeenCalled();
+    expect(record).toBeUndefined();
+    // The last poll starts when the 60 seconds are over, and gets 10 seconds to answer.
+    expect(timeout).toHaveBeenCalledWith(70_000);
   });
 });
 

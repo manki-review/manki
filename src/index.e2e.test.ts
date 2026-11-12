@@ -1278,10 +1278,14 @@ describe('runFullReview end to end', () => {
       const inputs = { event: 'pull_request', action, pr: String(PR_NUMBER), head_sha: HEAD_SHA };
 
       failFirstRead(3);
+      // The lookup of the workflow run has a deadline of its own, so it is tried once.
+      const runLookup = { method: 'GET', path: new RegExp(`/actions/runs/${mockContext.runId}$`), status: 503, times: 2 };
+      mockGitHub.failures.push(runLookup);
       await dispatch(inputs);
 
       expect(core.setFailed).not.toHaveBeenCalled();
       handled();
+      expect(runLookup.times).toBe(1);
 
       failFirstRead(4);
       await dispatch(inputs);

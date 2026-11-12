@@ -51,6 +51,12 @@ export function createOctokit(token: string, deadline?: AbortSignal): Octokit {
   return octokit;
 }
 
+/** Returns a client on the token of `octokit` that carries `deadline`, as `createOctokit` describes. */
+export async function withDeadline(octokit: Octokit, deadline: AbortSignal): Promise<Octokit> {
+  const { token } = await octokit.auth() as { token: string };
+  return createOctokit(token, deadline);
+}
+
 export interface AuthResult {
   octokit: Octokit;
   bot: BotIdentity;
