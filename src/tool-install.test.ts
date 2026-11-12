@@ -270,6 +270,10 @@ describe('installPinned', () => {
         jest.dontMock('fs');
       }
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(notes().slice(1)).toEqual([
+        expect.stringMatching(/^Could not set the time of last use in .*manki-pinned, so its downloads count as unused: EROFS: read-only file system, futime\n$/),
+        expect.stringMatching(/^Using the kept download /),
+      ]);
     });
 
     // A file that was read and failed its digest is named in the log. A link and a pipe are never read, so nothing is compared.
