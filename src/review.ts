@@ -1195,7 +1195,7 @@ export async function runReview(
   const claimSources: ClaimSources = {
     diff: diffWithLockfiles, rawDiff, fileContents, signals: staticSignals,
     // A stage after the finders can fetch a repo, so each check reads which ones the round holds by then.
-    ...(related && { related: { names: related.repos.map(r => r.repo), get checkouts() { return fetchedRelatedRepos(related.stateDir); } } }),
+    ...(related && workspace && { related: { names: related.repos.map(r => r.repo), workspace, get checkouts() { return fetchedRelatedRepos(related.stateDir); } } }),
   };
   const round = (priorRounds?.length ?? 0) + 1;
   // Warning leads need the judge's tools to be settled, so without them they stay only listed.

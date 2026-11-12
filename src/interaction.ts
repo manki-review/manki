@@ -15,6 +15,7 @@ import { AuthorClearRole, RelatedRepoTools, ReplyDecision, ReplyRecord, ReviewCo
 import { relatedRepoOutcomes, relatedRepoTools, repoTools } from './related-repos';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage, withReads } from './round-context';
+import { relatedCitations } from './static-signals';
 import { COMMENT_MARKER as BOT_MARKER, redactSecrets, safeTruncate, sanitizeTokens, withMarkers } from './utils';
 import { WRITING_RULES } from './writing-rules';
 
@@ -262,24 +263,30 @@ async function askWithRecord(
 /**
  * Returns the code locations `text` cites, as `path:line`. A location in `file` gets the path of `file`, also when the
  * text names only its file name. A path in a code span of its own counts only for `file`, unless `anySpan`: any other
- * text `highlightCode` put into a span, such as a field of the changed code, is no location.
+ * text `highlightCode` put into a span, such as a field of the changed code, is no location. A word that cites a line
+ * of one of the related repos `names` gives that citation, and is never read as a line of the PR.
  */
-function codeLocations(text: string, file: string | undefined, anySpan = false): string[] {
+function codeLocations(text: string, file: string | undefined, names: readonly string[], anySpan = false): string[] {
   const name = file?.split('/').pop();
-  return [...text.matchAll(CODE_LOCATION_RE)].flatMap(([, span, path, line]) => {
-    const own = path === file || path === name;
-    return span && !own && !anySpan ? [] : [`${own ? file : path}:${line}`];
+  return text.split(/\s+/).flatMap(word => {
+    // `highlightCode` can have put the path inside a citation into a code span.
+    const related = relatedCitations(word.replace(/`/g, ''), names);
+    if (related.length > 0) return related.map(cited => cited.citation);
+    return [...word.matchAll(CODE_LOCATION_RE)].flatMap(([, span, path, line]) => {
+      const own = path === file || path === name;
+      return span && !own && !anySpan ? [] : [`${own ? file : path}:${line}`];
+    });
   });
 }
 
 /**
  * Turns a "Kept." reply that cites no code location the finding did not already cite into "Unverified.", since only
- * new lines can show the finding still stands. `file` is the finding's file.
+ * new lines can show the finding still stands. `file` is the finding's file, and `relatedNames` the configured related repos.
  */
-function requireNewProof(reply: string, finding: string, file?: string): string {
+function requireNewProof(reply: string, finding: string, file: string | undefined, relatedNames: readonly string[]): string {
   if (!KEPT_REPLY_RE.test(reply)) return reply;
-  const cited = new Set(codeLocations(finding, file, true));
-  if (codeLocations(reply, file).some(location => !cited.has(location))) return reply;
+  const cited = new Set(codeLocations(finding, file, relatedNames, true));
+  if (codeLocations(reply, file, relatedNames).some(location => !cited.has(location))) return reply;
   return `${reply.replace(KEPT_REPLY_RE, '$1Unverified.$2')} ${UNPROVEN_KEPT}`;
 }
 
@@ -429,7 +436,7 @@ export async function handleReviewCommentReply(
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools, related);
     const findingBody = root.comment.body ?? '';
     // The model read PR content, so its text loses mentions, links, markers and fences before Manki adds its own.
-    const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody, filePath);
+    const reply = requireNewProof(highlightCode(sanitizeMarkdown(response.content).trim(), codeTokens), findingBody, filePath, config?.related_repos?.map(r => r.repo) ?? []);
     const isSecurity = isSecurityThread(findingBody);
     const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
     const outcome = replyOutcome(reply);

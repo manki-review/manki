@@ -1029,6 +1029,13 @@ describe('handleReviewCommentReply', () => {
     // A thread posted on another file reads a file name against the finding's file, not the file it sits on.
     ['cites the finding\'s line by the file name alone, on a thread posted on another file', 'See src/file.ts:10.', 'file.ts:10 still logs the token.', false, 'src/first.ts'],
     ['cites a new line by the file name alone, on a thread posted on another file', '', 'file.ts:12 still logs the token.', true, 'src/first.ts'],
+    // `acme/reports` is a related repo. A line of it is a location of its own, never the line of the PR's file of that name.
+    ['cites a new line of a related repo', 'See src/file.ts:10.', 'acme/reports:src/file.ts:10 still reads the token.', true],
+    ['cites a new line of a related repo in one code span', 'See file.ts:10.', '`acme/reports:file.ts:10` still reads the token.', true],
+    ['cites the related line the finding cites', 'See acme/reports:src/file.ts:10.', 'acme/reports:src/file.ts:10 still reads the token.', false],
+    ['cites the related line the finding links', 'See [`acme/reports:lib/rows.py:9`](https://github.com/acme/reports/blob/abc/lib/rows.py#L9).', 'acme/reports:lib/rows.py:9 still reads the token.', false],
+    ['cites a new line of the changed file where the finding cites the related line', 'See acme/reports:src/file.ts:12.', 'src/file.ts:12 still logs the token.', true],
+    ['cites a line of a repo that is not configured, which reads as a line of the PR', 'See src/file.ts:10.', 'other/repo:src/file.ts:10 still reads the token.', false],
   ])('keeps a "Kept." reply only when it cites a new line: one that %s', async (...[, cited, answer, kept, postedOn]: [string, string, string, boolean, string?]) => {
     setContext({ comment: { id: 1, body: 'This cannot happen.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' }, pull_request: { number: 1 } });
     const octokit = createMockOctokit();
@@ -1038,7 +1045,7 @@ describe('handleReviewCommentReply', () => {
     jest.mocked(client.sendMessage).mockResolvedValue({ content: `**Kept.** ${answer}` });
     jest.mocked(state.resolveReviewThread).mockClear();
 
-    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, { ...DEFAULT_CONFIG, related_repos: [{ repo: 'acme/reports', kind: 'consumer' }] });
 
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
     expect(body.startsWith(kept ? '**Kept.** ' : '**Unverified.** ')).toBe(true);

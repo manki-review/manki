@@ -449,8 +449,8 @@ export interface ClaimSources {
   rawDiff: string;
   fileContents?: Map<string, string>;
   signals: StaticSignal[];
-  /** The round's related repos: every configured `owner/name`, and the checkout of each one a tool server fetched. */
-  related?: { names: string[]; checkouts: Map<string, string> };
+  /** The round's related repos: every configured `owner/name`, the checkout of each one a tool server fetched, and the PR's head. */
+  related?: { names: string[]; checkouts: Map<string, string>; workspace: string };
 }
 
 /**
@@ -521,13 +521,22 @@ export function leadingRelatedCitation(entry: string, names: readonly string[]):
 }
 
 /**
- * Returns, for each line of a configured related repo that the finding's title or description cites, whether it is in
- * the checkout the round fetched. Only a citation found there lets the judge treat it as evidence. An evidence line
- * that starts with a citation and quotes code in backticks is compared with the fetched lines. The note says "holds
- * the quoted code" only when they hold every quoted part. Otherwise it names each part they hold and each they do not.
- * A range of more than `MAX_QUOTED_RANGE` lines is not compared, and its note says only that it is in the checkout.
+ * Whether the PR's head at `workspace` has a file at `owner/name:path`, the path `cited` spells out, since Git allows
+ * `:` in a file name. Such a citation can mean that file of the PR, so it shows nothing of the related repo.
  */
-function checkRelatedCitations(finding: Finding, { names, checkouts }: NonNullable<ClaimSources['related']>): string[] {
+export function namesPrFile(workspace: string, cited: Pick<RelatedCitation, 'repo' | 'path'>): boolean {
+  return readFileInRoot(workspace, `${cited.repo}:${cited.path}`) !== undefined;
+}
+
+/**
+ * Returns, for each line of a configured related repo that the finding's title or description cites, whether it is in
+ * the checkout the round fetched. Only a citation found there lets the judge treat it as evidence, and never one that
+ * `namesPrFile`. An evidence line that starts with a citation and quotes code in backticks is compared with the
+ * fetched lines. The note says "holds the quoted code" only when they hold every quoted part. Otherwise it names each
+ * part they hold and each they do not. A range of more than `MAX_QUOTED_RANGE` lines is not compared, and its note
+ * says only that it is in the checkout.
+ */
+function checkRelatedCitations(finding: Finding, { names, checkouts, workspace }: NonNullable<ClaimSources['related']>): string[] {
   const quotes = new Map<string, { cited: RelatedCitation; code: string[] }>();
   for (const entry of finding.evidence?.checks ?? []) {
     const cited = leadingRelatedCitation(entry, names);
@@ -541,6 +550,7 @@ function checkRelatedCitations(finding: Finding, { names, checkouts }: NonNullab
   return all.slice(0, MAX_CITATIONS).map(({ citation, repo, path, start, end }) => {
     const dir = checkouts.get(repo);
     if (!dir) return `\`${citation}\` is unchecked: ${repo} was not fetched this round`;
+    if (namesPrFile(workspace, { repo, path })) return `\`${citation}\` is unchecked: the PR has a file at \`${repo}:${path}\`, which the citation can mean`;
     const missing = citedLineMissing(dir, path, start, end);
     if (missing) return `\`${citation}\` ${missing}`;
     const quoted = quotes.get(citation)?.code;

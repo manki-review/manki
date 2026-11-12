@@ -885,10 +885,15 @@ describe('checkFindingClaims', () => {
       writeFileSync(join(base, 'outside.rs'), `${'x\n'.repeat(50)}`);
       symlinkSync(join(base, 'outside.rs'), join(checkout, 'link.rs'));
       writeFileSync(join(checkout, 'big.rs'), 'x\n'.repeat(600_000));
-      const related = { names: ['o/r', 'o/s'], checkouts: new Map([['o/r', checkout]]) };
+      writeFileSync(join(checkout, 'src', 'twin.rs'), 'pub fn twin() {}\n');
+      // Git allows `:` in a file name, so the PR holds a file whose path reads like a citation of the related repo.
+      const workspace = join(base, 'pr');
+      mkdirSync(join(workspace, 'o', 'r:src'), { recursive: true });
+      writeFileSync(join(workspace, 'o', 'r:src', 'twin.rs'), 'a file of the PR\n');
+      const related = { names: ['o/r', 'o/s'], checkouts: new Map([['o/r', checkout]]), workspace };
       const description = [
         'Used at `o/r:src/lib.rs:2` and o/r:src/lib.rs:1-2, again at `o/r:src/lib.rs:2`.',
-        'Also o/r:src/lib.rs:2-9, o/r:src/gone.rs:1, o/r:src:1, o/r:link.rs:40, o/r:../outside.rs:40, o/r:big.rs:1, o/s:x.rs:1 and other/repo:a.rs:1.',
+        'Also o/r:src/lib.rs:2-9, o/r:src/gone.rs:1, o/r:src:1, o/r:link.rs:40, o/r:../outside.rs:40, o/r:big.rs:1, o/r:src/twin.rs:1, o/s:x.rs:1 and other/repo:a.rs:1.',
       ].join(' ');
       expect(checkFindingClaims(finding({ description }), { ...sources, related })).toEqual({ status: 'none', note: `Checked: ${[
         'the file is in the diff', 'the line is in the file',
@@ -901,6 +906,8 @@ describe('checkFindingClaims', () => {
         '`o/r:../outside.rs:40` is not in the fetched checkout: ../outside.rs is not a file there',
         // A file over 1 MiB is not read, so its citation is neither confirmed nor called missing.
         '`o/r:big.rs:1` is unchecked: big.rs is too large to read',
+        // A citation that spells a file of the PR can mean that file, so the related line it also names shows nothing.
+        '`o/r:src/twin.rs:1` is unchecked: the PR has a file at `o/r:src/twin.rs`, which the citation can mean',
         '`o/s:x.rs:1` is unchecked: o/s was not fetched this round',
       ].join(', ')}.` });
       expect(checkFindingClaims(finding({ description }), sources).note).toBe('Checked: the file is in the diff, the line is in the file.');

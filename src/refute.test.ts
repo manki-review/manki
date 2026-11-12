@@ -1039,6 +1039,7 @@ describe('refuteBlockers', () => {
     mkdirSync(join(checkout, 'src'));
     writeFileSync(join(checkout, 'src', 'import.ts'), 'export function importRow(row: string) {\n  return Date.parse(row.split(\',\')[0]);\n}\n');
     writeFileSync(join(checkout, 'src', 'rows.ts'), 'row\n'.repeat(12));
+    writeFileSync(join(checkout, 'src', 'twin.ts'), 'line of the consumer\n'.repeat(3));
     writeFileSync(join(checkout, 'src', 'big.ts'), 'row\n'.repeat(300_000));
     writeFileSync(join(stateDir, `${encodeURIComponent('acme/reports')}.done`), checkout);
     const related = { repos: [{ repo: 'acme/reports', kind: 'consumer' as const }, { repo: 'acme/billing', kind: 'consumer' as const }], cacheDir: '/cache', stateDir };
@@ -1047,13 +1048,16 @@ describe('refuteBlockers', () => {
     const consumerLine = 'acme/reports:src/import.ts:2';
     const answer = (outcome: string, ...proof: string[]) => ({ outcome, reason: 'r', proof, premises: [{ outcome, reason: 'r', proof }] });
     // Git allows `:` in a file name, so the PR holds a file whose path reads like a line of the related repo. It has 6
-    // lines, the related file 3. A citation of that form is looked up in the related checkout only, never in the PR.
+    // lines, the related file 3. A citation of that form can mean either file, so it proves nothing: not line 2, which
+    // both hold, and not line 5, which only the PR's file holds.
     mkdirSync(join(workspace, 'acme', 'reports:src'), { recursive: true });
-    writeFileSync(join(workspace, 'acme', 'reports:src', 'import.ts'), 'line of the PR\n'.repeat(6));
+    writeFileSync(join(workspace, 'acme', 'reports:src', 'twin.ts'), 'line of the PR\n'.repeat(6));
+    // An entry that reads as a line of the related file `12` is never also line 12 of the PR's file `acme/reports`.
+    writeFileSync(join(workspace, 'acme', 'reports'), 'line of the PR\n'.repeat(20));
+    const neither = ['acme/reports:src/twin.ts:2', 'acme/reports:src/twin.ts:5', 'acme/reports:12:34'];
     // Line 0, a range that runs backwards and a line past the last one, in a related repo and in the PR. `src/math.ts` has
     // 3 lines. A range from a real line of a changed file to far past its end is no line either.
     const notThere = ['acme/reports:src/import.ts:0', 'acme/reports:src/import.ts:2-1', 'acme/reports:src/import.ts:2-40', 'src/math.ts:0', 'src/math.ts:2-1', 'src/math.ts:2-40', 'src/math.ts:4', 'src/api.ts:1-999999'];
-    const prFileLine = 'acme/reports:src/import.ts:5';
     const client = fakeClient({
       'Related line confirms': answer('confirmed', `\`${consumerLine}\` parses the column with Date.parse`),
       'Related line alone disproves': answer('disproved', consumerLine),
@@ -1064,7 +1068,7 @@ describe('refuteBlockers', () => {
       'Repo not configured': answer('confirmed', 'other/repo:src/import.ts:2'),
       'Path leaves the checkout': answer('confirmed', 'acme/reports:../src/import.ts:2'),
       'Path with a dot segment': answer('confirmed', 'acme/reports:src/../src/./import.ts:1-2'),
-      ...Object.fromEntries([...notThere, prFileLine].map(at => [`Cites ${at}`, answer('confirmed', at)])),
+      ...Object.fromEntries([...notThere, ...neither].map(at => [`Cites ${at}`, answer('confirmed', at)])),
       'File too large to read': answer('confirmed', 'acme/reports:src/big.ts:1'),
       'Own file too large to read': answer('confirmed', 'src/big.ts:1'),
       'Premise only': { outcome: 'unsettled', reason: 'r', proof: [], premises: [{ outcome: 'confirmed', reason: 'r', proof: [consumerLine] }] },
@@ -1092,7 +1096,7 @@ describe('refuteBlockers', () => {
       const odd = await refuteBlockers(client, ['Path with a dot segment', 'File too large to read', 'Own file too large to read'].map(title => finding(title, noProof)), { workspace, diff, related });
       expect(odd.map(f => [outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual([['confirmed', undefined, ['acme/reports:src/import.ts:1-2']], ['unsettled', undefined, undefined], ['unsettled', undefined, undefined]]);
       // A cited line that is not there is no proof, so the check settles nothing.
-      for (const lines of [notThere, [prFileLine]]) {
+      for (const lines of [notThere, neither]) {
         const cited = await refuteBlockers(client, lines.map(at => finding(`Cites ${at}`, noProof)), { workspace, diff, related });
         expect(cited.map(f => [f.title, outcomeOf(f.refutation!), f.refutation?.proof, f.refutation?.relatedProof])).toEqual(lines.map(at => [`Cites ${at}`, 'unsettled', undefined, undefined]));
       }

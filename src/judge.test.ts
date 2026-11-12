@@ -1583,16 +1583,17 @@ describe('runJudgeAgent', () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'manki-judge-state-'));
     fs.mkdirSync(path.join(checkout, 'src'));
     fs.writeFileSync(path.join(checkout, 'src', 'import.ts'), 'export function importRow(row: string) {\n  return Date.parse(row.split(\',\')[0]);\n}\n');
+    fs.writeFileSync(path.join(checkout, 'src', 'twin.ts'), 'text of the consumer, line 1\ntext of the consumer, line 2\n');
     fs.writeFileSync(path.join(stateDir, `${encodeURIComponent('acme/reports')}.done`), checkout);
     const repos = [{ repo: 'acme/reports', kind: 'consumer' as const }, { repo: 'acme/billing', kind: 'consumer' as const }];
     const related = { repos, cacheDir: '/cache', stateDir };
     const refuter = { repoTools: true, sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ outcome: 'unsettled', reason: 'r' }) }) } as unknown as LLMClient;
     // Git allows `:` in a file name, so a PR can hold a file whose path reads like a line of a related repo.
     fs.mkdirSync(path.join(workspace, 'acme', 'reports:src'), { recursive: true });
-    fs.writeFileSync(path.join(workspace, 'acme', 'reports:src', 'import.ts'), 'text of the PR, line 1\ntext of the PR, line 2\n');
+    fs.writeFileSync(path.join(workspace, 'acme', 'reports:src', 'twin.ts'), 'text of the PR, line 1\ntext of the PR, line 2\n');
     const findings = [
-      // Its proof makes the judge read that file of the PR first. The related citation after it still shows the related repo's line.
-      makeFinding({ title: 'A file of the PR named like a related line', severity: 'note', description: 'See acme/reports:src/import.ts:2.', evidence: { checks: [], proof: ['acme/reports:src/import.ts:1'] } }),
+      // Its proof makes the judge read that file of the PR first. The citation after it can mean either file, so it shows neither.
+      makeFinding({ title: 'A file of the PR named like a related line', severity: 'note', description: 'See acme/reports:src/twin.ts:2.', evidence: { checks: [], proof: ['acme/reports:src/twin.ts:1'] } }),
       makeFinding({ title: 'Importer reads a date', severity: 'note', description: 'The consumer parses the column at `acme/reports:src/import.ts:2`.' }),
       makeFinding({ title: 'Cited in the evidence', severity: 'note', evidence: { checks: ['acme/reports:src/import.ts:1 takes the row as text'], proof: [] } }),
       // A repo the round did not fetch, a file its checkout does not hold and a repo that is not configured show nothing.
@@ -1626,10 +1627,11 @@ describe('runJudgeAgent', () => {
     expect(shown[1]).toContain(`- **Cited code in a related repo** (acme/reports:src/import.ts:2), from the checkout this round fetched. ${trustRule}`);
     expect(shown[1]).toContain(">>> 2:   return Date.parse(row.split(',')[0]);");
     expect(shown[1]).toContain('- **Cited code in a related repo** (acme/reports:src/import.ts:1), from the checkout this round fetched.');
-    expect((shown[1] as string).match(/\*\*Cited code in a related repo\*\*/g)).toHaveLength(3);
-    expect(shown[1]).toContain("- **Cited code outside the diff** (acme/reports:src/import.ts:1), at the PR's head.");
+    expect((shown[1] as string).match(/\*\*Cited code in a related repo\*\*/g)).toHaveLength(2);
+    expect(shown[1]).toContain("- **Cited code outside the diff** (acme/reports:src/twin.ts:1), at the PR's head.");
     expect(shown[1]).toContain('>>> 1: text of the PR, line 1');
     expect(shown[1]).not.toContain('>>> 2: text of the PR, line 2');
+    expect(shown[1]).not.toContain('text of the consumer');
     expect(withoutRelated[1]).not.toContain('Cited code in a related repo');
     // Only a judge with tool steps reads the repos itself, as a check, with the rule on their content in its prompt.
     expect((shown[2] as SendMessageOptions).repoTools).toBeUndefined();

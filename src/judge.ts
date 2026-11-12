@@ -25,7 +25,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { criticalAreaOf } from './routing';
-import { isUnconfirmedBuildClaim, relatedCitations } from './static-signals';
+import { isUnconfirmedBuildClaim, namesPrFile, relatedCitations } from './static-signals';
 import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isRareClaim, isSecurityFinding, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, pendingGrade, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RelatedRepoTools, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, staysWarningIfConfirmed, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
@@ -1088,7 +1088,8 @@ function reviewerEvidenceLines({ evidence, notChecked, lead, leadSince, preExist
 /**
  * Returns, for each finding, the code around the lines its proof cites outside the diff, read from the checked-out head,
  * and around the lines of `related` repos that its title, description and evidence cite, read from the checkouts the
- * round fetched. Citations that cannot be read are skipped, and at most `MAX_CITED_WINDOWS` windows are shown in all.
+ * round fetched. Citations that cannot be read are skipped, and so is one that `namesPrFile`. At most `MAX_CITED_WINDOWS`
+ * windows are shown in all.
  */
 function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: string, related?: RelatedRepoTools): Map<Finding, string[]> {
   // The files read, by the directory they were read from. A file of the PR and one of a related checkout never share
@@ -1131,7 +1132,7 @@ function citedCodeOutsideDiff(findings: Finding[], diff: ParsedDiff, workspace: 
     for (const { citation, repo, path, start, end } of relatedCitations(text, relatedNames)) {
       if (shown >= MAX_CITED_WINDOWS || windows >= MAX_CITED_WINDOWS_PER_FINDING) break;
       const dir = checkouts.get(repo);
-      const fetched = dir ? read(dir, path) : undefined;
+      const fetched = dir && !namesPrFile(workspace, { repo, path }) ? read(dir, path) : undefined;
       if (!fetched || !holdsLines(fetched.lineCounts.get(path)!, start, end)) continue;
       const window = extractCurrentCodeWindow(fetched.contents, path, start);
       if (!window || window === '(file content unavailable)') continue;

@@ -13,7 +13,7 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { fetchedRelatedRepos, repoTools } from './related-repos';
 import { parseProof, stringifyFindingFingerprint, titlesMatch, truncateDiff } from './review';
-import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation } from './static-signals';
+import { citedLineMissing, isUnconfirmedBuildClaim, leadingRelatedCitation, namesPrFile } from './static-signals';
 import { agreedOutcome, cellGrade, CheckStatus, disproof, Doubt, EffortLevel, finderGrade, Finding, FindingEvidence, FindingSeverity, gradeStep, isGradeCell, isSecurityFinding, OpenThread, ParsedDiff, pendingGrade, PremiseCheck, outcomeOf, RelatedRepoTools, Refutation, RefutationOutcome, RoundContext, RulesMode, SECURITY_TAG, SEVERITY_ORDER, UNBUILT_TAG, UnprovenReason, UNPROVEN_TAG, breaksRule, overruledDisproof } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { VERIFY_CLAIMS_RULE } from './writing-rules';
@@ -108,24 +108,35 @@ function existingLocations(workspace: string, proof: readonly string[]): string[
 /**
  * Returns the lines of related repos that the entries of a refuter's `proof` list start with, as `owner/name:path:line`,
  * each for a repo of `related` and a line in the checkout the round fetched of it. A line of a repo that was not
- * fetched, or that the checkout does not hold, is dropped like a made-up line of the PR. Only the first
- * `MAX_RELATED_PROOF` lines the list cites are looked up, so a long list reads no more files than that. Each location
- * is written again from the repo's configured name and the file's own path in the checkout, so none holds text the
- * model chose beyond a path and line numbers that exist.
+ * fetched, or that the checkout does not hold, is dropped like a made-up line of the PR. So is one that `namesPrFile`
+ * in `workspace`, since the refuter can have read that file of the PR instead. Only the first `MAX_RELATED_PROOF`
+ * lines the list cites are looked up, so a long list reads no more files than that. Each location is written again
+ * from the repo's configured name and the file's own path in the checkout, so none holds text the model chose beyond a
+ * path and line numbers that exist.
  */
-function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] {
+function relatedLocations(proof: unknown, workspace: string, related?: RelatedRepoTools): string[] {
   if (!related || !Array.isArray(proof)) return [];
   const names = related.repos.map(r => r.repo);
   const checkouts = fetchedRelatedRepos(related.stateDir);
   const cited = proof.flatMap(entry => (typeof entry === 'string' ? leadingRelatedCitation(entry, names) ?? [] : [])).slice(0, MAX_RELATED_PROOF);
   const shown = cited.flatMap(({ repo, path, start, end }) => {
     const dir = checkouts.get(repo);
-    if (!dir || citedLineMissing(dir, path, start, end)) return [];
+    if (!dir || namesPrFile(workspace, { repo, path }) || citedLineMissing(dir, path, start, end)) return [];
     const location = `${repo}:${resolveInRoot(dir, path).relative}:${start}${end > start ? `-${end}` : ''}`;
     // A symlink can resolve to a file whose name a citation cannot hold, such as one with a space.
     return leadingRelatedCitation(location, names)?.citation === location ? [location] : [];
   });
   return [...new Set(shown)];
+}
+
+/**
+ * Returns the lines a refuter's `proof` list cites that are there: `proof` in the PR's workspace, `relatedProof` in the
+ * related checkouts. An entry that starts with a line of a related repo is never read as a line of the PR as well.
+ */
+function shownLines(proof: unknown, workspace: string, related?: RelatedRepoTools): { proof: string[]; relatedProof: string[] } {
+  const names = related?.repos.map(r => r.repo) ?? [];
+  const own = Array.isArray(proof) ? proof.filter(entry => typeof entry !== 'string' || !leadingRelatedCitation(entry, names)) : proof;
+  return { proof: existingLocations(workspace, parseProof(own)), relatedProof: relatedLocations(proof, workspace, related) };
 }
 
 /** Whether `refutation` rests on a line of a related repo, in its own answer or in a premise. */
@@ -221,8 +232,7 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
   const claimed = OUTCOMES.find(o => o === parsed.outcome);
   // A reply that answers the premises and not the defect still grades the finding, and confirms no defect.
   if (!claimed && !finding.doubts) throw new Error(`refutation outcome is ${JSON.stringify(parsed.outcome)}, not one of ${OUTCOMES.join(', ')}`);
-  const shown = existingLocations(workspace, parseProof(parsed.proof));
-  const shownRelated = relatedLocations(parsed.proof, related);
+  const { proof: shown, relatedProof: shownRelated } = shownLines(parsed.proof, workspace, related);
   const defect = settle(claimed ?? 'unsettled', shown, shownRelated);
   let outcome = defect;
   let proof = shown;
@@ -233,8 +243,7 @@ function parseRefutation(text: string, workspace: string, finding: Finding, diff
     if (!Array.isArray(answers)) throw new Error(`refutation answers no \`premises\` for the ${finding.doubts.length} the judge doubts`);
     premises = finding.doubts.map((doubt, i) => {
       const answer = (answers[i] && typeof answers[i] === 'object' ? answers[i] : {}) as Record<string, unknown>;
-      const cited = existingLocations(workspace, parseProof(answer.proof));
-      const citedRelated = relatedLocations(answer.proof, related);
+      const { proof: cited, relatedProof: citedRelated } = shownLines(answer.proof, workspace, related);
       return {
         premise: doubt.premise, outcome: settle(OUTCOMES.find(o => o === answer.outcome) ?? 'unsettled', cited, citedRelated), reason: replyText(answer.reason),
         ...(cited.length > 0 && { proof: cited }), ...(citedRelated.length > 0 && { relatedProof: citedRelated }),
