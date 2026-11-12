@@ -149,8 +149,9 @@ describe('relatedRepoLoader', () => {
     expect(relatedRepoOutcomes([DIPS], stateDir, {}, 'last week')).toEqual([expect.objectContaining({ asOf: 'last week', status: 'failed', reason: '`last week` is not a date' })]);
   });
 
-  it('waits for another tool server that is fetching the repo, takes its outcome, and records a failure when it stops or hangs', async () => {
+  it('waits for another tool server that is fetching the repo, takes its outcome, fetches in its place when it stopped, and records a failure when it hangs', async () => {
     const lock = (name: string, pid = process.pid) => writeFileSync(join(stateDir, `${name}.lock`), String(pid));
+    const gone = spawnSync('true').pid;
     lock('dashpay%2Fdips');
     lock('dashpay%2Fdash');
     const run = fakeGit();
@@ -165,32 +166,59 @@ describe('relatedRepoLoader', () => {
     await expect(dash).rejects.toThrow('fatal: repository not found');
     expect(run).not.toHaveBeenCalled();
 
-    lock('dashpay%2Fplatform', spawnSync('true').pid);
-    await expect(loader([PLATFORM], { run })('dashpay/platform')).rejects.toThrow('the reviewer fetching dashpay/platform stopped before it finished');
     const hung: RelatedRepo = { repo: 'dashpay/hung', kind: 'reference' };
     lock('dashpay%2Fhung');
     await expect(loader([hung], { run, timeoutMs: 100 })('dashpay/hung')).rejects.toThrow("another reviewer's fetch of dashpay/hung did not finish in time");
     expect(run).not.toHaveBeenCalled();
 
-    // A lock that never got an outcome warns too, and a repo no call named is unused.
+    // A holder that stopped mid-fetch left a lock and no outcome. Of the two tool servers that ask next, one fetches and the other waits for it.
+    lock('dashpay%2Fplatform', gone);
+    const platformDir = join(cacheDir, 'dashpay', 'platform');
+    const [first, second] = [fakeGit(), fakeGit()];
+    expect(await Promise.all([loader([PLATFORM], { run: first })('dashpay/platform'), loader([PLATFORM], { run: second })('dashpay/platform')])).toEqual([platformDir, platformDir]);
+    expect([first.mock.calls.length, second.mock.calls.length].sort()).toEqual([0, 7]);
+    expect(readdirSync(stateDir).filter(f => f.startsWith('dashpay%2Fplatform')).sort()).toEqual(['dashpay%2Fplatform.commit', 'dashpay%2Fplatform.done', 'dashpay%2Fplatform.lock', 'dashpay%2Fplatform.lock.1']);
+    expect(readFileSync(join(stateDir, 'dashpay%2Fplatform.lock'), 'utf-8')).toBe(String(gone));
+    // A reader after that takes the outcome and fetches nothing.
+    expect(await loader([PLATFORM], { run })('dashpay/platform')).toBe(platformDir);
+    expect(run).not.toHaveBeenCalled();
+
+    // The one that fetches in its place can stop too, and the next asker fetches. A fetch that really fails still ends as failed.
+    const twice: RelatedRepo = { repo: 'dashpay/twice', kind: 'reference' };
+    lock('dashpay%2Ftwice', gone);
+    writeFileSync(join(stateDir, 'dashpay%2Ftwice.lock.1'), String(gone));
+    expect(await loader([twice])('dashpay/twice')).toBe(join(cacheDir, 'dashpay', 'twice'));
+    expect(existsSync(join(stateDir, 'dashpay%2Ftwice.lock.2'))).toBe(true);
+    const broken: RelatedRepo = { repo: 'dashpay/broken', kind: 'reference' };
+    lock('dashpay%2Fbroken', gone);
+    await expect(loader([broken], { run: fakeGit({ 'dashpay/broken': { fetch: 'fatal: repository not found' } }) })('dashpay/broken')).rejects.toThrow('fatal: repository not found');
+    await expect(loader([broken], { run })('dashpay/broken')).rejects.toThrow('fatal: repository not found');
+    expect(run).not.toHaveBeenCalled();
+
+    // A lock with no outcome and no later asker says the stage did not finish, never that the repo cannot be fetched. A repo no call named is unused.
     lock('dashpay%2Fsilent');
+    lock('dashpay%2Fcut', gone);
     const silent: RelatedRepo = { repo: 'dashpay/silent', kind: 'reference' };
+    const cut: RelatedRepo = { repo: 'dashpay/cut', kind: 'reference' };
     const unused: RelatedRepo = { repo: 'dashpay/unused', kind: 'consumer', ref: 'main' };
-    const outcomes = relatedRepoOutcomes([DIPS, DASH, hung, PLATFORM, silent, unused], stateDir);
+    const outcomes = relatedRepoOutcomes([DIPS, DASH, hung, PLATFORM, broken, silent, cut, unused], stateDir);
     expect(outcomes).toEqual([
       { repo: 'dashpay/dips', status: 'fetched', durationMs: expect.any(Number) },
       { repo: 'dashpay/dash', ref: 'v23.0.0', status: 'failed', reason: 'fatal: repository not found', durationMs: expect.any(Number) },
       { repo: 'dashpay/hung', status: 'failed', reason: "another reviewer's fetch of dashpay/hung did not finish in time", durationMs: expect.any(Number) },
-      { repo: 'dashpay/platform', status: 'failed', reason: 'the reviewer fetching dashpay/platform stopped before it finished', durationMs: expect.any(Number) },
-      { repo: 'dashpay/silent', status: 'failed', reason: 'the fetch never finished' },
+      { repo: 'dashpay/platform', status: 'fetched', durationMs: expect.any(Number) },
+      { repo: 'dashpay/broken', status: 'failed', reason: 'fatal: repository not found', durationMs: expect.any(Number) },
+      { repo: 'dashpay/silent', status: 'failed', reason: 'the fetch was still running when the round ended' },
+      { repo: 'dashpay/cut', status: 'failed', reason: 'the stage fetching it was stopped before the fetch finished, and no later stage asked for it' },
       { repo: 'dashpay/unused', ref: 'main', status: 'unused' },
     ]);
     expect(outcomes.every(o => o.durationMs === undefined || o.durationMs >= 0)).toBe(true);
     expect(jest.mocked(core.warning).mock.calls.map(([message]) => message)).toEqual([
       'Could not fetch related repo dashpay/dash, which must be public on github.com: fatal: repository not found',
       "Could not fetch related repo dashpay/hung, which must be public on github.com: another reviewer's fetch of dashpay/hung did not finish in time",
-      'Could not fetch related repo dashpay/platform, which must be public on github.com: the reviewer fetching dashpay/platform stopped before it finished',
-      'Could not fetch related repo dashpay/silent, which must be public on github.com: the fetch never finished',
+      'Could not fetch related repo dashpay/broken, which must be public on github.com: fatal: repository not found',
+      'Related repo dashpay/silent was not fetched: the fetch was still running when the round ended',
+      'Related repo dashpay/cut was not fetched: the stage fetching it was stopped before the fetch finished, and no later stage asked for it',
     ]);
   });
 

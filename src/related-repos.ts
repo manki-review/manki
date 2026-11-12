@@ -70,17 +70,28 @@ export function relatedRepoLoader(
   };
 }
 
+/** Returns the lock a process creates to fetch for `marker` after `takeovers` earlier holders stopped. The first is `<marker>.lock`. */
+function lockPath(marker: string, takeovers: number): string {
+  return `${marker}.lock${takeovers > 0 ? `.${takeovers}` : ''}`;
+}
+
 /**
- * Runs `checkout` in the one process that creates the lock `<marker>.lock`, holding its PID, which records the outcome
- * in `<marker>.done` or `<marker>.failed`, and the commit it checked out in `<marker>.commit`. Any other process waits
- * for that outcome.
+ * Runs `checkout` in the one process that holds the lock of `marker`, which records the outcome in `<marker>.done` or
+ * `<marker>.failed`, and the commit it checked out in `<marker>.commit`. Any other process waits for that outcome.
+ * A lock holds its creator's PID. When a holder stopped and left no outcome, the next lock of `lockPath` takes its
+ * place. No lock is ever removed or renamed, and a lock is created only if it does not exist, so one process holds each.
  */
 async function sharedCheckout(repo: RelatedRepo, marker: string, timeoutMs: number, checkout: () => Promise<{ dir: string; commit: string }>): Promise<string> {
-  try {
-    writeFileSync(`${marker}.lock`, String(process.pid), { flag: 'wx' });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    return waitForCheckout(repo, marker, timeoutMs);
+  for (let takeovers = 0; ; takeovers++) {
+    const lock = lockPath(marker, takeovers);
+    try {
+      writeFileSync(lock, String(process.pid), { flag: 'wx' });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const outcome = await waitForCheckout(repo, marker, lock, timeoutMs);
+    if (outcome !== undefined) return outcome;
   }
   try {
     const { dir, commit } = await checkout();
@@ -99,20 +110,26 @@ function writeMarker(path: string, text: string): void {
   renameSync(`${path}.tmp`, path);
 }
 
-/** Waits for the outcome the lock holder records, and records a failure when the holder stops or runs out of time. */
-async function waitForCheckout(repo: RelatedRepo, marker: string, timeoutMs: number): Promise<string> {
-  // The lock holder gives up on its fetch after `timeoutMs`, so a lock held longer belongs to a holder that hangs.
-  const deadline = Date.now() + timeoutMs + WAIT_SLACK_MS;
-  let reason = `another reviewer's fetch of ${repo.repo} did not finish in time`;
-  while (Date.now() < deadline) {
+/**
+ * Waits for the outcome the holder of `lock` records and returns the checkout directory, or `undefined` when that
+ * holder stopped and left no outcome. Throws the recorded failure, and records one when the holder runs out of time.
+ */
+async function waitForCheckout(repo: RelatedRepo, marker: string, lock: string, timeoutMs: number): Promise<string | undefined> {
+  const outcome = (): string | undefined => {
     if (existsSync(`${marker}.done`)) return readFileSync(`${marker}.done`, 'utf-8');
     if (existsSync(`${marker}.failed`)) throw new Error(readFileSync(`${marker}.failed`, 'utf-8'));
-    if (!isHolderAlive(`${marker}.lock`)) {
-      reason = `the reviewer fetching ${repo.repo} stopped before it finished`;
-      break;
-    }
+    return undefined;
+  };
+  // The lock holder gives up on its fetch after `timeoutMs`, so a lock held longer belongs to a holder that hangs.
+  const deadline = Date.now() + timeoutMs + WAIT_SLACK_MS;
+  while (Date.now() < deadline) {
+    const recorded = outcome();
+    if (recorded !== undefined) return recorded;
+    // A holder can record its outcome and exit between the two looks, so the outcome is read once more.
+    if (!isHolderAlive(lock)) return outcome();
     await new Promise(done => setTimeout(done, WAIT_POLL_MS));
   }
+  const reason = `another reviewer's fetch of ${repo.repo} did not finish in time`;
   writeMarker(`${marker}.failed`, reason);
   throw new Error(reason);
 }
@@ -172,7 +189,7 @@ const MAX_REASON_CHARS = 300;
 
 /**
  * Returns how each of `repos` fared in the round in `stateDir`: fetched, failed with the reason, or unused when nothing
- * asked for it, with how long a fetch took from its lock to its outcome, the commit a fetch checked out, the guide of
+ * asked for it, with how long the fetch took from its lock to its outcome, the commit a fetch checked out, the guide of
  * `guides` the finders were pointed to, and the `asOf` time the round read the repos at. Warns about each repo it could
  * not fetch.
  */
@@ -182,15 +199,26 @@ export function relatedRepoOutcomes(repos: RelatedRepo[], stateDir: string, guid
     const marker = encodeURIComponent(repo);
     const base = { repo, ...(ref && { ref }), ...(asOf && { asOf }), ...(guides[repo] && { guide: guides[repo] }) };
     if (!files.has(`${marker}.lock`)) return { ...base, status: 'unused' as const };
-    const took = (outcome: string) => ({ durationMs: Math.max(0, Math.round(statSync(join(stateDir, outcome)).mtimeMs - statSync(join(stateDir, `${marker}.lock`)).mtimeMs)) });
+    let takeovers = 0;
+    while (files.has(lockPath(marker, takeovers + 1))) takeovers++;
+    // The newest lock is the one whose holder recorded the outcome, or was the last to try.
+    const lock = join(stateDir, lockPath(marker, takeovers));
+    const took = (outcome: string) => ({ durationMs: Math.max(0, Math.round(statSync(join(stateDir, outcome)).mtimeMs - statSync(lock).mtimeMs)) });
     if (files.has(`${marker}.done`)) {
       const commit = files.has(`${marker}.commit`) ? readFileSync(join(stateDir, `${marker}.commit`), 'utf-8') : '';
       return { ...base, status: 'fetched' as const, ...(commit && { commit }), ...took(`${marker}.done`) };
     }
-    const failed = files.has(`${marker}.failed`);
-    const reason = failed ? readFileSync(join(stateDir, `${marker}.failed`), 'utf-8') : 'the fetch never finished';
-    core.warning(`Could not fetch related repo ${repo}, which must be public on github.com: ${reason}`);
-    return { ...base, status: 'failed' as const, reason: reason.slice(0, MAX_REASON_CHARS), ...(failed && took(`${marker}.failed`)) };
+    if (files.has(`${marker}.failed`)) {
+      const reason = readFileSync(join(stateDir, `${marker}.failed`), 'utf-8');
+      core.warning(`Could not fetch related repo ${repo}, which must be public on github.com: ${reason}`);
+      return { ...base, status: 'failed' as const, reason: reason.slice(0, MAX_REASON_CHARS), ...took(`${marker}.failed`) };
+    }
+    // No outcome says nothing about the repo: the stage that held the newest lock did not get to the end of its fetch.
+    const reason = isHolderAlive(lock)
+      ? 'the fetch was still running when the round ended'
+      : 'the stage fetching it was stopped before the fetch finished, and no later stage asked for it';
+    core.warning(`Related repo ${repo} was not fetched: ${reason}`);
+    return { ...base, status: 'failed' as const, reason };
   });
 }
 
