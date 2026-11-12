@@ -35,7 +35,7 @@ import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import * as napi from '@ast-grep/napi';
 import { formatFindingComment, LinkedIssue, titleToSlug } from './github';
-import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG } from './types';
+import { CELL_GRADES, cellGrade, Finding, FindingFingerprintEntry, FindingSeverity, GradeCell, ReviewResult, RoundContext, RoundLead, OpenThread, RelatedRepoKind, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, REACH_DOUBT, SECURITY_TAG } from './types';
 import { citedLine } from './finding-fingerprint';
 import { fingerprintEntriesFromLegacy, gitWorkspace, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_LINKS } from './test-utils';
 import { listUsesOutsideDiff } from './symbol-uses';
@@ -1523,12 +1523,12 @@ describe('selectTeam', () => {
     // repository tools on a checked-out PR head. Without a repo of that kind, or for any other finder, the check is not shown.
     const withTools: LLMClient = { sendMessage: jest.fn(), repoTools: true };
     const noTools: LLMClient = { sendMessage: jest.fn() };
-    const focusesWith = (related: Array<'reference' | 'consumer'>, clients?: ReviewClients, workspace?: string) => {
+    const focusesWith = (related: RelatedRepoKind[], clients?: ReviewClients, workspace?: string) => {
       const related_repos = related.map(kind => ({ repo: `acme/${kind}`, kind }));
       return selectTeam(plainDiff, makeConfig({ reviewers, related_repos }), { trivial: false, subtle: true, paired: true }, false, clients, workspace).finders.map(f => f.prompt.focus);
     };
     const toolClients: ReviewClients = { reviewer: withTools, judge: withTools };
-    const focusWith = (...related: Array<'reference' | 'consumer'>) => focusesWith(related, toolClients, '/work/pr-head')[0];
+    const focusWith = (...related: RelatedRepoKind[]) => focusesWith(related, toolClients, '/work/pr-head')[0];
     expect(focusWith()).toBe(focus);
     expect(focusesWith(['reference', 'consumer'])).toEqual([focus, focus]);
     expect(focusesWith(['reference', 'consumer'], toolClients)).toEqual([focus, focus]);
@@ -1544,6 +1544,14 @@ describe('selectTeam', () => {
     expect(withConsumer).toMatch(/\n13\. Readers: [^\n]*\n14\. Consumers: for each public type, function or serialized format the change alters, find its uses in each \*\*consumer\*\* related repo and check that they still work with the change\. Start from the lines under "In the Consumer Repos" when that section is given\. [^\n]*\n15\. Sibling state: /);
     expect(withConsumer).not.toContain('Specifications:');
     expect(focusWith('consumer', 'reference')).toMatch(/\n5\. Specifications: [^\n]*\n6\. Error paths: [\s\S]*\n14\. Readers: [^\n]*\n15\. Consumers: [^\n]*\n16\. Sibling state: /);
+    expect({ focus: focusWith('reference', 'consumer') }).toMatchSnapshot();
+    // A dependency adds its check after the reference checks and changes no other line, so a config without one keeps its checklist.
+    const withDependency = focusWith('reference', 'consumer', 'dependency');
+    expect(withDependency).toMatch(/\n5\. Specifications: [^\n]*\n6\. Dependencies: for each function, type or message of a \*\*dependency\*\* related repo that the changed code calls or relies on, name what the change assumes about it: [^\n]* A different design in the dependency is not a finding by itself\. [^\n]*\n7\. Error paths: /);
+    const unnumbered = (text: string): string[] => text.split('\n').map(line => line.replace(/^\d+\. /, ''));
+    expect(unnumbered(withDependency).filter(line => !line.startsWith('Dependencies: '))).toEqual(unnumbered(focusWith('reference', 'consumer')));
+    expect(focusWith('dependency')).not.toMatch(/Specifications:|Consumers:/);
+    for (const related of [[], ['reference'], ['consumer'], ['reference', 'consumer']] as RelatedRepoKind[][]) expect(focusWith(...related)).not.toContain('Dependencies:');
   });
 
   describe('configured routing', () => {
@@ -2155,6 +2163,41 @@ describe('runReview', () => {
     const finderGuides = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools?.related?.guides);
     expect(finderGuides).toEqual(finderMessages.map(() => ({ 'o/ref': 'AGENTS.md' })));
     expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/app', status: 'unused' }]);
+  });
+
+  it('searches a dependency for the names the change calls, and fetches for those names only when one is configured', async () => {
+    // The change declares nothing a search could use, and calls a function of the dependency.
+    const { root, diff } = gitWorkspace({ 'src/main.ts': 'export function main() {}\n' }, { 'src/main.ts': 'export function main() { ledger.roundUp(2); }\n' });
+    const lib = mkdtempSync(join(tmpdir(), 'manki-dependency-'));
+    writeFileSync(join(lib, 'round.ts'), 'export function roundUp(n: number): number { return n; }\n');
+    const reference = { repo: 'o/ref', kind: 'reference' as const };
+    const dependency = { repo: 'o/lib', kind: 'dependency' as const, ref: 'v1.4.2' };
+    const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/lib', kind: 'dependency', dir: lib }]);
+    const clients = { ...makeClients(), dedup: { sendMessage: jest.fn().mockResolvedValue({ content: '{}' }) } as unknown as import('./providers').LLMClient };
+    Object.assign(clients.reviewer, { repoTools: true });
+    // The same change with a comment that mentions a name, which a model would translate for a reference or a consumer.
+    const mentioned = gitWorkspace({ 'src/main.ts': 'export function main() {}\n' }, { 'src/main.ts': 'export function main() { ledger.roundUp(2); } // like `MAX_ROUND`\n' });
+    try {
+      const run = (related_repos: NonNullable<ReviewConfig['related_repos']>, change = { root, diff }) => runReview(clients, { config: makeConfig({ related_repos }), diff: change.diff, rawDiff: 'raw diff', repoContext: '', workspace: change.root });
+      // Without a dependency the called name is no reason to fetch, as before the kind existed.
+      const without = await run([reference]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(without.usesOutsideDiff).toBeUndefined();
+      const result = await run([reference, dependency]);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const uses = mockedRunJudgeAgent.mock.calls.at(-1)![2].usesOutsideDiff;
+      expect(uses).toMatch(/^## In the Dependency Repos\n\nManki searched each fetched `dependency` related repo for the names the diff's added comments mention and those it calls or reads, /);
+      expect(uses).toContain('### `roundUp`\n\n```\no/lib:round.ts:1: export function roundUp(n: number): number { return n; }\n```');
+      expect(result.usesOutsideDiff).toEqual({ dependency: [{ name: 'roundUp', lines: ['o/lib:round.ts:1'] }] });
+      // The names searched in a dependency are its own, so no model is asked to translate even a mentioned one for it.
+      const named = await run([dependency], mentioned);
+      expect(named.usesOutsideDiff).toEqual({ dependency: [{ name: 'roundUp', lines: ['o/lib:round.ts:1'] }], dependencyMissing: ['MAX_ROUND'] });
+      expect(clients.dedup.sendMessage).not.toHaveBeenCalled();
+      for (const [system] of jest.mocked(clients.reviewer.sendMessage).mock.calls.slice(-1)) expect(system).toContain('. Dependencies: for each function, type or message of a **dependency** related repo');
+    } finally {
+      fetchSpy.mockRestore();
+      for (const dir of [root, lib, mentioned.root]) rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('asks the sibling comparisons alongside the finders and hands the judge their findings under their own reviewer name', async () => {

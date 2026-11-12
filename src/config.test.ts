@@ -145,6 +145,7 @@ describe('config', () => {
       const commit = '0123456789abcdef0123456789abcdef01234567';
       expect(loadConfigFromContent(`related_repos:\n  - { repo: dashpay/dash, kind: reference, ref: ${commit} }\n`).related_repos?.[0].ref).toBe(commit);
       expect(loadConfigFromContent('related_repos:\n  - { repo: dashpay/dash, kind: reference, ref: refs/tags/20240115 }\n').related_repos?.[0].ref).toBe('refs/tags/20240115');
+      expect(loadConfigFromContent('related_repos:\n  - { repo: acme/lib, kind: dependency, ref: v1.4.2 }\n').related_repos).toEqual([{ repo: 'acme/lib', kind: 'dependency', ref: 'v1.4.2' }]);
       expect(core.warning).not.toHaveBeenCalled();
     });
 
@@ -154,8 +155,8 @@ describe('config', () => {
       ['a repo without an owner', 'related_repos: [{ repo: dash, kind: reference }]\n', '`related_repos[0].repo` must be in "owner/name" format'],
       ['a repo outside the cache directory', 'related_repos: [{ repo: ../.., kind: reference }]\n', '`related_repos[0].repo` must be in "owner/name" format'],
       ['a repo listed twice', 'related_repos: [{ repo: dashpay/dash, kind: reference }, { repo: DashPay/Dash, kind: consumer }]\n', '`related_repos[1].repo` lists DashPay/Dash a second time'],
-      ['a missing kind', 'related_repos: [{ repo: dashpay/dash }]\n', '`related_repos[0].kind` must be one of: reference, consumer'],
-      ['an unknown kind', 'related_repos: [{ repo: dashpay/dash, kind: upstream }]\n', '`related_repos[0].kind` must be one of: reference, consumer'],
+      ['a missing kind', 'related_repos: [{ repo: dashpay/dash }]\n', '`related_repos[0].kind` must be one of: reference, consumer, dependency'],
+      ['an unknown kind', 'related_repos: [{ repo: dashpay/dash, kind: upstream }]\n', '`related_repos[0].kind` must be one of: reference, consumer, dependency'],
       ['a ref that reads as an option', 'related_repos: [{ repo: dashpay/dash, kind: reference, ref: --upload-pack=x }]\n', '`related_repos[0].ref` must be a branch, tag or commit name'],
       ['an abbreviated commit', 'related_repos: [{ repo: dashpay/dash, kind: reference, ref: 0123abcd }]\n', '`related_repos[0].ref` looks like an abbreviated commit. Use the full hash, or `refs/tags/0123abcd` or `refs/heads/0123abcd`'],
       ['a ref with `..`', 'related_repos: [{ repo: dashpay/dash, kind: reference, ref: a..b }]\n', '`related_repos[0].ref` must be a branch, tag or commit name'],

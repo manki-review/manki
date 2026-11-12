@@ -731,14 +731,16 @@ function threadPlace(thread: OpenThread): string {
 /** Returns how to grade a finding about a related repo that reviewers read with their tools. */
 function buildRelatedRepoRules(repos: RelatedRepo[]): string {
   const names = (kind: RelatedRepo['kind']) => repos.filter(r => r.kind === kind).map(r => `\`${r.repo}\``).join(', ') || 'none';
+  // The rule for a dependency shows only with a dependency repo, so every other prompt keeps its text.
+  const dependency = repos.some(r => r.kind === 'dependency');
   return `## Related Repos
 
-Reviewers can read these repos with their tools. References, which this repository implements or ports: ${names('reference')}. Consumers, which depend on this repository: ${names('consumer')}.
+Reviewers can read these repos with their tools. References, which this repository implements or ports: ${names('reference')}. Consumers, which depend on this repository: ${names('consumer')}.${dependency ? ` Dependencies, which this repository depends on: ${names('dependency')}.` : ''}
 
 A finding cites their code as \`owner/name:path:line\`. Its tool evidence says whether each cited line is in the checkout the reviewers read. A citation listed there as in the fetched checkout is evidence the reviewer read, so it counts as code you can see. Any other citation rests on code you cannot see.
 
 - **A divergence from a reference** is graded by the blocker tests and the severity table, like any other finding.
-- **A change that breaks a consumer** is the \`degraded\` row in the \`normal\` column, a \`warning\` that lists the consumer's call sites and says it breaks once the consumer upgrades. It is the \`severe\` row, a \`blocker\`, only when the PR description says the change does not break anything. This replaces the broken public contract part of the \`severe\` row for a consumer.`;
+- **A change that breaks a consumer** is the \`degraded\` row in the \`normal\` column, a \`warning\` that lists the consumer's call sites and says it breaks once the consumer upgrades. It is the \`severe\` row, a \`blocker\`, only when the PR description says the change does not break anything. This replaces the broken public contract part of the \`severe\` row for a consumer.${dependency ? '\n- **An assumption about a dependency that its code does not keep** is graded by the blocker tests and the severity table, like any other finding. A finding that only says the dependency is designed differently, with no assumption of the change that fails, names no defect, so mark it `ignore`.' : ''}`;
 }
 
 export function buildJudgeUserMessage(
