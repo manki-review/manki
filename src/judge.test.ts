@@ -2178,6 +2178,7 @@ describe('runJudgeAgent', () => {
     fs.writeFileSync(path.join(workspace, '.env.example'), 'PORT=8080\n');
     const rule = { file: 'AGENTS.md', quote: 'Every environment variable the binary reads must be listed in `.env.example`.' };
     const unseen = { ruleIsRequirement: true, ruleUnseen: '`.env.example` has no entry for the variable' };
+    const capped = ['No search', 'Build claim'].flatMap(cap => ['disproves', 'confirms', 'unsettled'].map(answer => `${cap}, damage blocker, check ${answer}`));
     const answers: Record<string, Record<string, unknown>> = {
       'Fact confirmed': unseen,
       'Fact disproved': unseen,
@@ -2201,10 +2202,15 @@ describe('runJudgeAgent', () => {
       ...Object.fromEntries(['No search, check disproves', 'No search, check confirms', 'No search, check unsettled'].map(title => [title, { ruleIsRequirement: true, ruleBroken: true }])),
       // A disproof has to cite the finding's file or the diff, and the file that holds the fact is neither.
       'Fact disproved in another file': unseen,
+      // The damage alone gives the blocker a cap holds back: for want of a search, or as a build failure no CI result reports.
+      ...Object.fromEntries(capped.map(title => [title, { ruleIsRequirement: true, ruleBroken: true, row: 'severe' }])),
+      // The same capped blocker without a rule.
+      'No search, no rule, check disproves': { row: 'severe' },
     };
     const titles = Object.keys(answers);
     const findings = titles.map((title, i) => makeFinding({
-      title, line: 10 + i, rule, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`], ...((title === 'Fact confirmed without a search' || title.startsWith('No search')) && { emptySearch: '' }) },
+      title, line: 10 + i, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`], ...((title === 'Fact confirmed without a search' || title.startsWith('No search')) && { emptySearch: '' }) },
+      ...(!title.includes('no rule') && { rule }), ...(title.startsWith('Build claim') && { buildClaim: true }),
     }));
     const premise = (...outcomes: string[]) => ({ reason: `It is ${outcomes.at(-1)}.`, premises: outcomes.map(outcome => ({ outcome, reason: `It is ${outcome}.`, proof: ['src/index.ts:3'] })) });
     const replies: Record<string, unknown> = {
@@ -2220,6 +2226,9 @@ describe('runJudgeAgent', () => {
       'No search, check disproves': { outcome: 'disproved', reason: 'The entry is there.', proof: ['src/index.ts:3'] },
       'No search, check confirms': { outcome: 'confirmed', reason: 'No entry anywhere.', proof: ['src/index.ts:3'] },
       'No search, check unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
+      ...Object.fromEntries([...capped, 'No search, no rule, check disproves'].map(title => [title, {
+        outcome: title.endsWith('disproves') ? 'disproved' : title.endsWith('confirms') ? 'confirmed' : 'unsettled', reason: 'r', proof: ['src/index.ts:3'],
+      }])),
     };
     const refuterMessages: string[] = [];
     const answering = (answers: Record<string, unknown>): LLMClient => ({
@@ -2266,10 +2275,18 @@ describe('runJudgeAgent', () => {
         ['No search, check confirms', grade, 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning, refutation: blocker' : 'rule: warning'],
         ['No search, check unsettled', 'warning', 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning' : 'rule: warning'],
         ['Fact disproved in another file', 'note', 'unproven', undefined],
+        // A cap holds the damage blocker at a warning, and `block` raises and caps it once more. No disproof drops it in either
+        // mode. Only a confirmation gives the blocker back, and never to a build claim, which reading code cannot confirm.
+        ...capped.map(title => {
+          const cap = title.startsWith('Build claim') ? 'build_claim' : 'unproven';
+          const path = `judge: blocker, ${cap}: warning${grade === 'blocker' ? `, rule: blocker, ${cap}: warning` : ''}`;
+          return title.endsWith('confirms') && cap === 'unproven' ? [title, 'blocker', 'confirmed', `${path}, refutation: blocker`] : [title, 'warning', 'confirmed', path];
+        }),
+        ['No search, no rule, check disproves', 'ignore', undefined, 'judge: blocker, unproven: warning, refutation: ignore'],
       ];
       expect(await graded()).toEqual(expected('warning'));
       expect(await graded('block')).toEqual(expected('blocker'));
-      expect(refuterMessages).toHaveLength(33);
+      expect(refuterMessages).toHaveLength(47);
       // Two refuters that disagree about the fact leave the rule unproven, and the note as it is.
       expect(await graded(undefined, second)).toEqual(expected('warning', ['note', 'unproven', undefined]));
       expect(await graded('block', second)).toEqual(expected('blocker', ['note', 'unproven', undefined]));
@@ -2289,7 +2306,7 @@ describe('runJudgeAgent', () => {
         [undefined, ['The service fails to start without the variable'], '`.env.example` has no entry for the variable', 2],
       ]);
       expect(raised.evidence?.proof).toEqual(['src/index.ts:17', 'src/index.ts:3']);
-      // The capped rule blocker a check disproved stays with that check's answer, which the comment shows.
+      // The capped blocker a check disproved stays with that check's answer, which the comment shows.
       expect([open['No search, check disproves'].refutation?.outcome, damageDisproof(open['No search, check disproves'])?.reason]).toEqual(['disproved', 'The entry is there.']);
 
       // The kept warning drops the damage the check disproved, so the next round's judge reads a warning with no cell to restate and no open doubt.

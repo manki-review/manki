@@ -682,22 +682,25 @@ export function disproof(finding: Pick<Finding, 'refutation' | 'pairRefutation'>
   return checks.some(backs) ? undefined : checks.find(check => outcomeOf(check) === 'disproved');
 }
 
-/** Whether `finding` is a blocker `review.rules: block` made of a confirmed rule that only the `unproven` or `build_claim` cap holds at a warning. */
-export function isCappedRuleBlocker(finding: Pick<Finding, 'rule' | 'gradePath'>): boolean {
-  const [raise, cap] = finding.gradePath?.slice(-2) ?? [];
-  return breaksRule(finding) && raise?.by === 'rule' && raise.to === 'blocker' && (cap?.by === 'unproven' || cap?.by === 'build_claim');
+/**
+ * Whether `finding` breaks a confirmed rule and the `unproven` or `build_claim` cap was the last step to grade it. Such a
+ * finding is a blocker held at a warning, whether its damage or `review.rules: block` made it one.
+ */
+export function isCappedRuleBreak(finding: Pick<Finding, 'rule' | 'gradePath'>): boolean {
+  const cap = finding.gradePath?.at(-1);
+  return breaksRule(finding) && (cap?.by === 'unproven' || cap?.by === 'build_claim');
 }
 
 /**
  * Returns the refutation that disproved only the damage of a finding that `breaksRule`. Such a finding below blocker
  * stays in the review, since the rule is broken either way. A check's own answer that the defect does not exist can be
- * about the rule, so beside one this returns none. A finding that `isCappedRuleBlocker` stays beside that answer too:
- * with `warn` the same finding is a warning no check can drop, and `block` must not post less.
+ * about the rule, so beside one this returns none. A finding that `isCappedRuleBreak` stays beside that answer too:
+ * with milder damage, or none, the same rule break is a warning no check runs on, and a cap must not post less.
  */
 export function damageDisproof(finding: Pick<Finding, 'severity' | 'rule' | 'gradePath' | 'refutation' | 'pairRefutation'>): Refutation | undefined {
   if (finding.severity === 'blocker' || finding.severity === 'ignore' || !breaksRule(finding)) return undefined;
   const deniesDefect = [finding.refutation, finding.pairRefutation].some(check => check?.defect === 'disproved');
-  return deniesDefect && !isCappedRuleBlocker(finding) ? undefined : disproof(finding);
+  return deniesDefect && !isCappedRuleBreak(finding) ? undefined : disproof(finding);
 }
 
 /** `earlier` restates a finding an earlier round listed in its review body, whatever code it sits on. */

@@ -430,8 +430,8 @@ describe('formatFindingComment', () => {
     const ruleWarning: Finding = { ...disprovedFinding, tags: [], rule: { file: 'AGENTS.md', quote: 'Every change needs a test.', verdict: 'confirmed' } };
     expect(render({ ...ruleWarning, refutation: { ...disprovedFinding.refutation!, defect: 'disproved' } }))
       .toContain('Manki found a reason this may not happen, but a disproof alone');
-    // A rule blocker held at a warning for want of a search stays beside that answer too, and says why.
-    const capped: Finding['gradePath'] = [{ from: 'note', to: 'blocker', by: 'rule' }, { from: 'blocker', to: 'warning', by: 'unproven' }];
+    // A blocker held at a warning for want of a search stays beside that answer too, and says why.
+    const capped: Finding['gradePath'] = [{ from: 'blocker', to: 'warning', by: 'unproven' }];
     expect(render({ ...ruleWarning, gradePath: capped, refutation: { ...disprovedFinding.refutation!, defect: 'disproved' } }))
       .toContain('**Doubt found**\nManki found a reason the failure may not happen. The finding stays, since the repository rule is broken either way. A comment says it is intended.');
     // The check that disproved the damage says why the finding stays, also when it is the second one.
