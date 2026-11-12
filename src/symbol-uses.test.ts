@@ -330,6 +330,9 @@ describe('listUsesOutsideDiff', () => {
     const lookedUp = await usesFor({ 'src/store.rs': store, 'src/run.rs': run('') }, { 'src/run.rs': run(Array.from({ length: 9 }, (_, i) => `    s.jobs${i}.get(&k);\n`).join('')) });
     expect([lookedUp.section.includes(whole), typesHeading(lookedUp.section)]).toEqual([true, everyType]);
     expect(info().at(-1)).toBe('Uses outside the diff: the change is past a limit of the search, which took 8 of 9 looked-up fields');
+    // The log names the limit also when the search lists nothing, since the sibling questions still come from the 8 fields.
+    const quiet = await usesFor({ 'src/store.rs': store.replace('pub struct Store', 'struct Store').replace(/pub jobs/g, 'jobs'), 'src/run.rs': run('') }, { 'src/run.rs': run(Array.from({ length: 9 }, (_, i) => `    s.jobs${i}.get(&k);\n`).join('')) }, ['src/store.rs']);
+    expect([quiet.section, info().length, info().at(-1)]).toEqual(['', 5, 'Uses outside the diff: the change is past a limit of the search, which took 8 of 9 looked-up fields']);
   });
 
   it('lists the uses of changed TypeScript fields, functions and interfaces, test files after code', async () => {
