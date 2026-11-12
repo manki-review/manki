@@ -1951,7 +1951,6 @@ jest.mock('./judge', () => ({
   collectPriorBlockers: jest.requireActual('./judge').collectPriorBlockers,
   foldInto: jest.requireActual('./judge').foldInto,
   capUnconfirmedBuildClaim: jest.requireActual('./judge').capUnconfirmedBuildClaim,
-  capUnprovenBlocker: jest.requireActual('./judge').capUnprovenBlocker,
 }));
 
 // The pinned ast-grep build is downloaded at run time, so tests parse with the installed one.
@@ -2380,7 +2379,7 @@ describe('runReview', () => {
     Object.assign(clients.judge, { repoTools: true });
     jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string) => {
       if (system.startsWith('You are a code review judge')) {
-        // The judge calls each wrong only in a state normal use does not produce, which makes it a warning that blocks once the reach is confirmed.
+        // The judge calls each wrong only in a state normal use does not produce, which makes it a warning whatever the check finds about the reach.
         return { content: JSON.stringify({ summary: 's', findings: titles.map((title, i) => ({ id: i + 1, title, row: 'wrong', column: 'rare', preExisting: true, reasoning: 'r' })) }) };
       }
       if (!system.startsWith('You check one finding')) return { content: READY_VERDICT };
@@ -2400,10 +2399,10 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
     // Each is asked once, about the reach and about the defect.
     expect(refuterMessages.map(user => user.includes(`1. ${REACH_DOUBT.premise}`))).toEqual([true, true, true, true]);
-    // A confirmed defect is posted as a warning though its reach is open. A confirmed reach makes it a blocker, which code the PR did not change posts as a warning.
+    // A confirmed defect is posted as a warning though its reach is open. A confirmed reach changes nothing: the finding was never a blocker.
     expect(result.findings.map(f => [f.title, f.severity, f.originalSeverity, f.tags?.includes('pre-existing'), f.checkStatus])).toEqual([
       ['Old parser drops the last row', 'warning', undefined, true, 'confirmed'],
-      ['Old retry sends twice', 'warning', 'blocker', true, 'confirmed'],
+      ['Old retry sends twice', 'warning', undefined, true, 'confirmed'],
     ]);
     expect(result.unpostedPreExisting?.map(f => [f.title, f.severity, f.refutation?.defect])).toEqual([['Old cache may serve a stale entry', 'warning', 'unsettled']]);
     // A disproved defect drops the warning though its reach is open, so it is no warning left out for want of a confirmation.

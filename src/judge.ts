@@ -482,7 +482,7 @@ State each finding's cell: \`row\` is what goes wrong, and \`column\` is when it
 
 ${SEVERITY_TABLE}
 
-**The \`rare\` column is a claim, and Manki checks it.** On the \`wrong\` row it is all that keeps a finding from blocking, so Manki adds the doubt "${REACH_DOUBT.premise}" to every such finding. Do not list that doubt yourself. Name in \`reasoning\` the state and what in the code's own logic produces it.${toolsCheckFindings ? ' Manki then searches the code with tools for a caller, stored data or concurrent use of a public API that produces the state. When it finds one, the finding moves to the `normal` column.' : ''}
+**The \`rare\` column is a claim, and Manki checks it.** On the \`wrong\` row it is all that keeps a finding from blocking, so Manki adds the doubt "${REACH_DOUBT.premise}" to every such finding. Do not list that doubt yourself. Name in \`reasoning\` the state and what in the code's own logic produces it.${toolsCheckFindings ? ' Manki then searches the code with tools for a caller, stored data or concurrent use of a public API that produces the state. What it finds is recorded with the finding and never moves it out of the column you state.' : ''}
 
 **"Not worse than before" is no cell.** A defect in lines this PR adds is graded by its cell, even when the old code failed the same way or the bad state existed before. Never state a lower row, the \`rare\` column or \`ignore\` because the change is "not a regression".
 
@@ -547,7 +547,7 @@ Being certain overrides this. It governs doubt, never judgment.
 
 State on every finding the \`row\` its consequence earns if every premise you doubt holds, such as code you cannot see being as the finding says, the failure path being reached, or this PR causing the defect. A premise you only assume, with no line to cite for it, is still a doubt. So is a premise that lowers or caps the grade, such as callers probably validating a value, a path looking limited or an input looking trusted, unless the code shown or your tool calls prove it. Except for an open lead, which follows its own rule, never mark a finding \`ignore\` for an unsettled doubt alone: when its cell gives \`warning\` or \`blocker\` if the doubt holds, state that cell and list the doubt.
 
-A doubt is only a premise that the code shown and your tool calls leave open. A premise your reasoning settles from lines you cite is not a doubt, so never list it. List each doubt in \`doubts\`, as a fact the code can confirm or disprove: "a public request handler passes \`index\` to \`getItem\` unchecked", not "callers probably validate \`index\`". Set \`decides\` to \`defect\` when the defect does not exist if the premise is false, and to \`grade\` when the finding stands either way and only its cell depends on the premise. Manki counts a \`grade\` doubt only on the \`wrong\` row, where the column decides whether the finding blocks. When you doubt nothing, leave \`doubts\` empty.${toolsCheckFindings ? ' Manki checks each premise with tools when confirming it would raise the grade: on a `blocker` cell with a doubt, and on the `rare` column of the `wrong` row. It also checks each `warning` with a `defect` doubt, and each one whose `proof` is empty, on up to ' + MAX_DOUBT_CHECKS + ' findings a round. A warning the check confirms is posted. One it cannot settle or does not reach is recorded and not posted, unless it would be a blocker if true. A finding gets the higher grade only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.' : ''}
+A doubt is only a premise that the code shown and your tool calls leave open. A premise your reasoning settles from lines you cite is not a doubt, so never list it. List each doubt in \`doubts\`, as a fact the code can confirm or disprove: "a public request handler passes \`index\` to \`getItem\` unchecked", not "callers probably validate \`index\`". Set \`decides\` to \`defect\` when the defect does not exist if the premise is false, and to \`grade\` when the finding stands either way and only its cell depends on the premise. Manki counts a \`grade\` doubt only on the \`wrong\` row, where the column decides whether the finding blocks. When you doubt nothing, leave \`doubts\` empty.${toolsCheckFindings ? ' Manki checks each premise with tools on a `blocker` cell with a doubt, where confirming every premise raises the grade, and on the `rare` column of the `wrong` row, where no answer raises the grade. It also checks each `warning` with a `defect` doubt, and each one whose `proof` is empty, on up to ' + MAX_DOUBT_CHECKS + ' findings a round. A warning the check confirms is posted. One it cannot settle or does not reach is recorded and not posted, unless it would be a blocker if true. A finding with a `blocker` cell gets that grade only when every premise is confirmed. A disproved `defect` premise drops a finding below `blocker`, and a disproved `grade` premise keeps the grade. A finding you mark `ignore` is never checked.' : ''}
 
 Start \`reasoning\` with your verdict, the grade the cell gives or \`ignore\`, then the facts behind it. For a blocker, name the failure and cite the proving lines (e.g., "blocker. When a request omits \`page\`, \`listItems\` at src/api.ts:42 divides by zero and the handler returns 500 for every default listing.").
 
@@ -743,6 +743,27 @@ A finding cites their code as \`owner/name:path:line\`. Its tool evidence says w
 - **A change that breaks a consumer** is the \`degraded\` row in the \`normal\` column, a \`warning\` that lists the consumer's call sites and says it breaks once the consumer upgrades. It is the \`severe\` row, a \`blocker\`, only when the PR description says the change does not break anything. This replaces the broken public contract part of the \`severe\` row for a consumer.${dependency ? '\n- **An assumption about a dependency that its code does not keep** is graded by the blocker tests and the severity table, like any other finding. A finding that only says the dependency is designed differently, with no assumption of the change that fails, names no defect, so mark it `ignore`.' : ''}`;
 }
 
+/**
+ * Returns the `gradeIfConfirmed` of an earlier finding whose grade a doubt capped, which Grade Stability asks the judge
+ * to settle. A finding that `isRareClaim` has the grade of its own cell, so no doubt capped it.
+ */
+function cappedGrade({ severity, gradeIfConfirmed, cell }: Pick<FindingFingerprintEntry, 'severity' | 'gradeIfConfirmed' | 'cell'>): FindingSeverity | undefined {
+  return gradeIfConfirmed !== severity && !isRareClaim(cell) ? gradeIfConfirmed : undefined;
+}
+
+/**
+ * Returns the doubts of an earlier finding for the judge, each with how its check came out. `REACH_DOUBT` on a finding
+ * that `isRareClaim` is left out. Its answer changes no cell, so a later judge is not asked to settle it.
+ */
+function priorDoubts(f: FindingFingerprintEntry): Array<Doubt & { check: string }> | undefined {
+  const shown = (f.doubts ?? []).flatMap((d, i) => (isRareClaim(f.cell) && d.premise === REACH_DOUBT.premise ? [] : [{
+    premise: d.premise.replace(/[\r\n]/g, ' ').replace(/`/g, '').slice(0, MAX_DOUBT_CHARS),
+    decides: d.decides,
+    check: premiseCheck([f.refutation, f.pairRefutation], i),
+  }]));
+  return shown.length > 0 ? shown : undefined;
+}
+
 export function buildJudgeUserMessage(
   findings: Finding[],
   codeContextMap: Map<string, string>,
@@ -874,14 +895,8 @@ export function buildJudgeUserMessage(
             ...(isGradeCell(f.cell) && { row: f.cell.row, column: f.cell.column }),
             title: (f.title ?? '').replace(/[\r\n]/g, ' ').replace(/`/g, '').slice(0, 200),
             authorReply: f.authorReplyClass ?? 'none',
-            ...(f.gradeIfConfirmed && f.gradeIfConfirmed !== f.severity && { gradeIfConfirmed: f.gradeIfConfirmed }),
-            ...(f.doubts && {
-              doubts: f.doubts.map((d, i) => ({
-                premise: d.premise.replace(/[\r\n]/g, ' ').replace(/`/g, '').slice(0, MAX_DOUBT_CHARS),
-                decides: d.decides,
-                check: premiseCheck([f.refutation, f.pairRefutation], i),
-              })),
-            }),
+            ...(cappedGrade(f) && { gradeIfConfirmed: cappedGrade(f) }),
+            doubts: priorDoubts(f),
           })),
       }))
       .filter(r => r.findings.length > 0);
@@ -903,7 +918,7 @@ export function buildJudgeUserMessage(
     priorFindings.forEach(({ entry, round }, i) => {
       const cell = isGradeCell(entry.cell) ? `, row ${entry.cell.row}, column ${entry.cell.column}` : '';
       // A doubt capped this grade below its cell's, and an entry older than the recent rounds is listed only here.
-      const pending = entry.gradeIfConfirmed && entry.gradeIfConfirmed !== entry.severity ? `, gradeIfConfirmed ${entry.gradeIfConfirmed}` : '';
+      const pending = cappedGrade(entry) ? `, gradeIfConfirmed ${cappedGrade(entry)}` : '';
       parts.push(`- **P${i + 1}** (round ${round}, ${entry.severity}${pending}${cell}): "${sanitize(entry.title ?? '')}" at ${sanitize(entry.fingerprint.file)}:${entry.fingerprint.lineStart}`);
     });
     parts.push('');
@@ -1662,7 +1677,9 @@ export function mapJudgedToFindings(
  * Returns the grade fields the judge's cell gives `o`. A security finding is
  * graded in the `normal` column of its row, and no doubt holds it down. Any other blocker cell with a doubt is a
  * warning until the refuter confirms every doubt. A doubt that only decides the cell counts only on a row where
- * `columnDecidesBlock`. A tool alert takes its cell as stated, with no doubts.
+ * `columnDecidesBlock`. A finding that `isRareClaim` gets `REACH_DOUBT` and the grade of the `normal` column as its
+ * `gradeIfConfirmed`. So the refuter checks it and `wouldBlockIfTrue` holds for it, and no answer raises it. A tool
+ * alert takes its cell as stated, with no doubts.
  */
 function gradeByCell(o: Finding, { row, column: judgeColumn = 'normal', doubts: named = [], security }: JudgedFinding): Partial<Pick<Finding, 'severity' | 'gradePath' | 'cell' | 'gradeIfConfirmed' | 'doubts'>> {
   // A dropped finding keeps its doubts for the round record. The refuter never checks a finding marked `ignore`.
@@ -1792,7 +1809,7 @@ export function capUnconfirmedBuildClaim(finding: Finding): Finding {
  * Lowers a blocker to a warning when nothing cites the lines that prove it, or when it says something is missing
  * and cites no search that came back empty. A tool alert names its own location, so it keeps its grade.
  */
-export function capUnprovenBlocker(finding: Finding): Finding {
+function capUnprovenBlocker(finding: Finding): Finding {
   if (finding.severity !== 'blocker' || finding.toolSource) return finding;
   const reason = !finding.evidence?.proof.length ? 'it cites no lines that prove the failure'
     : finding.evidence.emptySearch === '' ? 'it says something is missing but cites no search that came back empty'
