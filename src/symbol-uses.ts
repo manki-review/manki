@@ -368,6 +368,8 @@ const DOC_FILE = /\.(?:md|mdx|rst|txt|adoc)$|(?:^|\/)(?:LICENSE|COPYING|NOTICE|A
 const COMMENT = /(?:^\s*(?:\*|--|<!--)|(?:^|\s)(?:\/\/|\/\*|#(?![[!]))).*$/;
 // The package's own name in `Cargo.toml`, `pyproject.toml` or `package.json`, or the module in `go.mod`.
 const PACKAGE_NAME = /^\s*(?:name\s*=\s*"|"name"\s*:\s*"|module\s+)([^"\s]+)/m;
+/** A longer package name is not looked for in a manifest. npm allows 214 characters. */
+const MAX_PACKAGE_NAME_CHARS = 256;
 const MANIFESTS = ['Cargo.toml', 'package.json', 'go.mod', 'pyproject.toml', 'setup.py', 'pom.xml', 'build.gradle', 'build.gradle.kts'];
 
 interface ChangedSymbol {
@@ -1567,30 +1569,45 @@ async function grepWords(workspace: string, names: string[], { onDisk = false, i
 /** Finds the package of each file, the nearest directory with a manifest such as `Cargo.toml`, and what it depends on. */
 class Packages {
   private readonly cache = new Map<string, string>();
-  private readonly manifests = new Map<string, string>();
+  private readonly manifests = new Map<string, string | undefined>();
   private readonly dependencies = new Map<string, boolean>();
 
   constructor(private readonly workspace: string) {}
 
-  /** Whether package `root` names the package `dependency` in its manifest, so code in it can use that package's symbols. */
+  /**
+   * Whether package `root` names the package `dependency` in its manifest, so code in it can use that package's symbols.
+   * It may when either manifest is not read, or `dependency` has no name of at most `MAX_PACKAGE_NAME_CHARS`.
+   */
   dependsOn(root: string, dependency: string): boolean {
     const key = `${root}\0${dependency}`;
     let depends = this.dependencies.get(key);
     if (depends === undefined) {
-      const name = PACKAGE_NAME.exec(this.manifest(dependency))?.[1];
-      depends = !name || new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`).test(this.manifest(root).replace(PACKAGE_NAME, ''));
+      const [mine, theirs] = [this.manifest(root), this.manifest(dependency)];
+      const name = theirs === undefined ? undefined : PACKAGE_NAME.exec(theirs)?.[1];
+      depends = !name || name.length > MAX_PACKAGE_NAME_CHARS || mine === undefined
+        || new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`).test(mine.replace(PACKAGE_NAME, ''));
       this.dependencies.set(key, depends);
     }
     return depends;
   }
 
-  private manifest(root: string): string {
-    let text = this.manifests.get(root);
-    if (text === undefined) {
-      text = MANIFESTS.map(m => join(this.workspace, root, m)).filter(path => existsSync(path)).map(path => readFileSync(path, 'utf-8')).join('\n');
-      this.manifests.set(root, text);
+  /** Returns the text of the manifests of package `root`, or `undefined` when one of them is not read. */
+  private manifest(root: string): string | undefined {
+    if (!this.manifests.has(root)) this.manifests.set(root, this.read(root));
+    return this.manifests.get(root);
+  }
+
+  /** A manifest larger than `MAX_FILE_BYTES`, or one that resolves outside the workspace, is not read. */
+  private read(root: string): string | undefined {
+    try {
+      return MANIFESTS.filter(name => existsSync(join(this.workspace, root, name))).map((name) => {
+        const { absolute } = resolveInRoot(this.workspace, join(root, name));
+        if (statSync(absolute).size > MAX_FILE_BYTES) throw new Error(`${name} is too large`);
+        return readFileSync(absolute, 'utf-8');
+      }).join('\n');
+    } catch {
+      return undefined;
     }
-    return text;
   }
 
   of(file: string): string {

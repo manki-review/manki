@@ -112,6 +112,16 @@ describe('listUsesOutsideDiff', () => {
     expect(record?.symbols?.find(s => s.name === 'Order')).toMatchObject({ declared: 'core/src/order.rs:1', uses: expect.arrayContaining(['billing/src/invoice.rs:1']) });
     expect(record?.types).toEqual(['core/src/order.rs:1: struct Order { version, discount, line_items, gift_note }']);
     expect(JSON.stringify(record)).not.toContain('is_some');
+
+    // A manifest larger than a parsed file may be is not read, and neither is a package name longer than any registry
+    // allows. Such a package may depend on the changed one, so its use ranks with the dependents, before a namesake.
+    const change = { 'core/src/order.rs': ORDER('pub discount: Option<u16>, // percent from version 2') };
+    for (const manifest of [{ 'promo/Cargo.toml': `[package]\nname = "promo"\n${'# filler\n'.repeat(120_000)}` }, { 'core/Cargo.toml': `[package]\nname = "${'n'.repeat(257)}"\n` }]) {
+      const unread = await usesFor({ ...CRATES, ...manifest, 'core/src/order.rs': ORDER('pub discount: Option<u16>,') }, change);
+      expect(unread.record?.symbols?.find(s => s.name === 'discount')?.uses).toEqual(
+        ['billing/src/invoice.rs:2', 'core/src/render.rs:2', 'core/src/order.rs:9', 'promo/src/lib.rs:6', 'core/src/stats.rs:2', 'README.md:1', 'promo/src/lib.rs:2'],
+      );
+    }
   });
 
   it('shows a redefined field\'s uses from other files before a fourth from one file, and ranks a same-named field of another type last, in Rust, Python, TypeScript and Go', async () => {
