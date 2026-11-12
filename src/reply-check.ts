@@ -83,8 +83,23 @@ function shownPlaces(cited: unknown, sources: ReplySources): { own: string[]; re
     const { proof, relatedProof } = shownLines(cited, sources.workspace, sources.related);
     return { own: proof, related: relatedProof };
   }
-  const own = Array.isArray(cited) ? cited.filter(entry => typeof entry !== 'string' || !leadingRelatedCitation(entry, sources.relatedNames)) : cited;
-  return { own: parseProof(own).filter(location => isDiffLocation(location, sources.diff)), related: [] };
+  return { own: ownCitations(cited, sources.relatedNames).filter(location => isDiffLocation(location, sources.diff)), related: [] };
+}
+
+/** Returns the locations `cited` names in the PR's repository. An entry that starts with a related repo's line is not one. */
+function ownCitations(cited: unknown, relatedNames: readonly string[]): string[] {
+  return parseProof(Array.isArray(cited) ? cited.filter(entry => typeof entry !== 'string' || !leadingRelatedCitation(entry, relatedNames)) : cited);
+}
+
+/** Returns why no line of `cited` could be shown to exist. */
+function unshownReason(cited: unknown, sources: ReplySources): { why: UncheckedReason; detail?: string } {
+  const related = Array.isArray(cited) ? cited.flatMap(entry => (typeof entry === 'string' ? leadingRelatedCitation(entry, sources.relatedNames) ?? [] : [])) : [];
+  if (related.length === 0 && ownCitations(cited, sources.relatedNames).length === 0) return { why: 'no_line' };
+  // Without a checkout only a line inside the diff can be read, so whether the others exist is unknown.
+  if (!sources.workspace) return { why: 'no_checkout' };
+  const fetched = sources.related ? fetchedRelatedRepos(sources.related.stateDir) : new Map<string, string>();
+  const unfetched = related.find(citation => !fetched.has(citation.repo));
+  return unfetched ? { why: 'not_fetched', detail: unfetched.repo } : { why: 'no_line' };
 }
 
 /**
@@ -94,11 +109,12 @@ function shownPlaces(cited: unknown, sources: ReplySources): { own: string[]; re
 function emptySearch(term: string, repo: unknown, sources: ReplySources): EmptySearch | { why: UncheckedReason; detail?: string } {
   const text = term.trim();
   if (text.length < MIN_TERM_CHARS || text.length > MAX_TERM_CHARS || /[\r\n]/.test(text)) return { why: 'search_term' };
-  const named = typeof repo === 'string' && !!repo;
-  const configured = named ? sources.related?.repos.find(r => r.repo === repo) : undefined;
-  if (named && !configured) return { why: 'not_related' };
-  const root = configured && sources.related ? fetchedRelatedRepos(sources.related.stateDir).get(configured.repo) : sources.workspace;
-  if (!root) return configured ? { why: 'not_fetched', detail: configured.repo } : { why: 'no_checkout' };
+  const named = typeof repo === 'string' && repo ? repo : undefined;
+  if (named && !sources.relatedNames.includes(named)) return { why: 'not_related' };
+  if (!sources.workspace) return { why: 'no_checkout' };
+  const configured = named ? sources.related?.repos.find(r => r.repo === named) : undefined;
+  const root = named ? sources.related && fetchedRelatedRepos(sources.related.stateDir).get(named) : sources.workspace;
+  if (!root) return { why: 'not_fetched', detail: named };
   let found;
   try {
     found = findLines(root, { text, maxResults: 1 });
@@ -120,9 +136,10 @@ function checkStatement(entry: Record<string, unknown>, quote: string, sources: 
   if (status === 'confirmed' || status === 'contradicted') {
     const { own, related } = shownPlaces(entry.places, sources);
     const places = [...own, ...related].slice(0, MAX_PLACES);
-    return places.length > 0 ? { quote, status, places } : { quote, status: 'not_checkable', places: [], why: 'no_line' };
+    return places.length > 0 ? { quote, status, places } : { quote, status: 'not_checkable', places: [], ...unshownReason(entry.places, sources) };
   }
-  return { quote, status: 'not_checkable', places: [], why: entry.why === 'not_reachable' ? 'not_reachable' : 'outside_code' };
+  const why = entry.why === 'outside_code' || entry.why === 'not_reachable' ? entry.why : 'no_line';
+  return { quote, status: 'not_checkable', places: [], why };
 }
 
 /**
@@ -165,13 +182,13 @@ export function checkReply(content: string, developerReply: string, sources: Rep
 }
 
 const UNCHECKED_REASONS: Record<UncheckedReason, (detail: string) => string> = {
-  outside_code: () => 'code cannot show it',
-  not_reachable: () => 'the code that would show it could not be read',
-  no_line: () => 'no line that exists was cited for it',
+  outside_code: () => 'the review model says code cannot show it',
+  not_reachable: () => 'the review model could not read the code that would show it',
+  no_line: () => 'no cited line was found in the code that was read',
   search_term: () => `a search needs one line of ${MIN_TERM_CHARS} to ${MAX_TERM_CHARS} characters`,
   not_related: () => 'the repository to search is not a configured related repository',
   not_fetched: repo => `${inline(repo)} was not fetched`,
-  no_checkout: () => 'this run had no checkout to search',
+  no_checkout: () => 'this run had no checkout to read',
   search_failed: () => 'the search failed',
   search_found: term => `a search for ${inline(term)} found a line`,
   search_cut: () => 'the search did not reach every file',

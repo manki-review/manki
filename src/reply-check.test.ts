@@ -44,31 +44,12 @@ describe('checkReply', () => {
     ['a line of the PR that exists confirms', { quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }, `- Confirmed at \`src/ledger.rs:3\`: "${csv}"`],
     ['a line of a fetched related repo confirms', { quote: csv, status: 'confirmed', places: ['acme/reports:lib/rows.py:2'] }, `- Confirmed at \`acme/reports:lib/rows.py:2\`: "${csv}"`],
     ['a line that exists contradicts', { quote: csv, status: 'contradicted', places: ['`src/ledger.rs:3` writes CSV, not columns'] }, `- Contradicted at \`src/ledger.rs:3\`: "${csv}"`],
-    ['a line past the end of the file confirms nothing', { quote: csv, status: 'confirmed', places: ['src/ledger.rs:99'] }, `- Not checked, no line that exists was cited for it: "${csv}"`],
-    ['a line of a repo that was not fetched confirms nothing', { quote: csv, status: 'contradicted', places: ['acme/billing:lib/rows.py:2'] }, `- Not checked, no line that exists was cited for it: "${csv}"`],
-    ['a related line is never read as a line of the PR', { quote: csv, status: 'confirmed', places: ['acme/reports:src/ledger.rs:3'] }, `- Not checked, no line that exists was cited for it: "${csv}"`],
-    ['a confirmation without a place confirms nothing', { quote: csv, status: 'confirmed' }, `- Not checked, no line that exists was cited for it: "${csv}"`],
-    ['the model says that no code can show it', { quote: csv, status: 'not_checkable', why: 'outside_code', places: ['src/ledger.rs:3'] }, `- Not checked, code cannot show it: "${csv}"`],
-    ['the model could not reach the code', { quote: csv, status: 'not_checkable', why: 'not_reachable' }, `- Not checked, the code that would show it could not be read: "${csv}"`],
-    ['an unknown status and reason count as not checked', { quote: csv, status: 'true', why: 'because I say so' }, `- Not checked, code cannot show it: "${csv}"`],
     // The search is Manki's own. The model's word that one came back empty counts for nothing.
     ['a search that finds no line says what was searched', { quote: snapshot, status: 'confirmed', search: 'Ledger::snapshot(' },
       `- Searched \`Ledger::snapshot(\` in this repository, no line found (1 file not searched: binary or over 1 MB): "${snapshot}"`],
-    ['a search that finds a line confirms nothing, whatever line is cited', { quote: snapshot, status: 'confirmed', search: 'fn snapshot', places: ['src/ledger.rs:1'] },
-      `- Not checked, a search for \`fn snapshot\` found a line: "${snapshot}"`],
-    ['a longer name also counts as a line found', { quote: snapshot, status: 'confirmed', search: 'snap' }, `- Not checked, a search for \`snap\` found a line: "${snapshot}"`],
-    ['a term that starts with a dash is searched as text', { quote: snapshot, status: 'confirmed', search: '--force' }, `- Not checked, a search for \`--force\` found a line: "${snapshot}"`],
     ['a search in a related repo names the paths it is limited to', { quote: snapshot, status: 'confirmed', search: 'snapshot', repo: 'acme/reports' },
       `- Searched \`snapshot\` in \`acme/reports\`, no line found (only \`lib/\`, \`docs/*.md\` of that repository is fetched): "${snapshot}"`],
-    ['a search in a related repo that was not fetched confirms nothing', { quote: snapshot, status: 'confirmed', search: 'snapshot', repo: 'acme/billing' },
-      `- Not checked, \`acme/billing\` was not fetched: "${snapshot}"`],
-    ['a search in a repo that is not configured confirms nothing', { quote: snapshot, status: 'confirmed', search: 'snapshot', repo: '../pr' },
-      `- Not checked, the repository to search is not a configured related repository: "${snapshot}"`],
-    ['a term under 3 characters is not searched', { quote: snapshot, status: 'confirmed', search: ' zz ' }, `- Not checked, a search needs one line of 3 to 200 characters: "${snapshot}"`],
-    ['a term over 200 characters is not searched', { quote: snapshot, status: 'confirmed', search: 'z'.repeat(201) }, `- Not checked, a search needs one line of 3 to 200 characters: "${snapshot}"`],
-    ['a term of two lines is not searched', { quote: snapshot, status: 'confirmed', search: 'zzz\nyyy' }, `- Not checked, a search needs one line of 3 to 200 characters: "${snapshot}"`],
     ['a blank search falls back to the cited line', { quote: snapshot, status: 'confirmed', search: ' ', places: ['src/ledger.rs:4'] }, `- Confirmed at \`src/ledger.rs:4\`: "${snapshot}"`],
-    ['a search cannot contradict', { quote: snapshot, status: 'contradicted', search: 'zzzz' }, `- Not checked, no line that exists was cited for it: "${snapshot}"`],
   ])('checks a statement itself: %s', (_name, statement, line) => {
     const checked = checkReply(answer({ statements: [statement] }), REPLY, sources);
 
@@ -77,17 +58,59 @@ describe('checkReply', () => {
     expect(checked.text).toBe('Unverified. A maintainer should confirm it.');
   });
 
-  it.each<[string, () => unknown, string]>([
-    ['stopped at its file limit', () => ({ matches: [], stopped: false, cut: true, skipped: 0 }), 'the search did not reach every file'],
-    ['failed', () => { throw new Error('EACCES'); }, 'the search failed'],
-  ])('confirms nothing by a search that %s', (_name, result, reason) => {
-    const spy = jest.spyOn(mcpServer, 'findLines').mockImplementation(result as typeof mcpServer.findLines);
+  type Run = 'checkout' | 'no checkout' | 'no related repo';
+  const runs = (): Record<Run, ReplySources> => ({
+    'checkout': sources,
+    // As the reply handler passes it: without a checkout no related repo can be fetched.
+    'no checkout': { relatedNames: sources.relatedNames, diff: DIFF },
+    'no related repo': { workspace: sources.workspace, relatedNames: [], diff: DIFF },
+  });
+  const cutSearch = () => ({ matches: [], stopped: false, cut: true, skipped: 0 });
+
+  // The search mock is a rest parameter, since jest passes a `done` callback to a test that takes more parameters than its row has.
+  it.each<[string, Run, Record<string, unknown>, string, (() => unknown)?]>([
+    ['a search that finds a line, whatever line is cited', 'checkout', { status: 'confirmed', search: 'fn snapshot', places: ['src/ledger.rs:1'] }, 'a search for `fn snapshot` found a line'],
+    ['a longer name that holds the term', 'checkout', { status: 'confirmed', search: 'snap' }, 'a search for `snap` found a line'],
+    ['a term that starts with a dash, searched as text', 'checkout', { status: 'confirmed', search: '--force' }, 'a search for `--force` found a line'],
+    ['a search of a fetched related repo that finds a line', 'checkout', { status: 'confirmed', search: 'csv.reader', repo: 'acme/reports' }, 'a search for `csv.reader` found a line'],
+    ['a search that stopped at its file limit', 'checkout', { status: 'confirmed', search: 'Ledger::snapshot(' }, 'the search did not reach every file', cutSearch],
+    ['a search that found a line before its file limit', 'checkout', { status: 'confirmed', search: 'Ledger::snapshot(' }, 'a search for `Ledger::snapshot(` found a line',
+      () => ({ ...cutSearch(), matches: ['src/ledger.rs:4: x'] })],
+    ['a search that failed', 'checkout', { status: 'confirmed', search: 'Ledger::snapshot(' }, 'the search failed', () => { throw new Error('EACCES'); }],
+    ['a search of a related repo that was not fetched', 'checkout', { status: 'confirmed', search: 'snapshot', repo: 'acme/billing' }, '`acme/billing` was not fetched'],
+    ['a search of a repo that is not configured', 'checkout', { status: 'confirmed', search: 'snapshot', repo: '../pr' }, 'the repository to search is not a configured related repository'],
+    ['a search of a repo when none is configured', 'no related repo', { status: 'confirmed', search: 'snapshot', repo: 'acme/reports' }, 'the repository to search is not a configured related repository'],
+    ['a term under 3 characters', 'checkout', { status: 'confirmed', search: ' zz ' }, 'a search needs one line of 3 to 200 characters'],
+    ['a term over 200 characters', 'checkout', { status: 'confirmed', search: 'z'.repeat(201) }, 'a search needs one line of 3 to 200 characters'],
+    ['a term of two lines', 'checkout', { status: 'confirmed', search: 'zzz\nyyy' }, 'a search needs one line of 3 to 200 characters'],
+    ['a search without a checkout', 'no checkout', { status: 'confirmed', search: 'Ledger::snapshot(' }, 'this run had no checkout to read'],
+    ['a search of a configured related repo without a checkout', 'no checkout', { status: 'confirmed', search: 'snapshot', repo: 'acme/reports' }, 'this run had no checkout to read'],
+    ['a search of a repo that is not configured, without a checkout', 'no checkout', { status: 'confirmed', search: 'snapshot', repo: 'acme/other' },
+      'the repository to search is not a configured related repository'],
+    ['a short term without a checkout', 'no checkout', { status: 'confirmed', search: 'zz' }, 'a search needs one line of 3 to 200 characters'],
+    ['a search, which cannot contradict', 'checkout', { status: 'contradicted', search: 'zzzz' }, 'no cited line was found in the code that was read'],
+    ['a confirmation without a place', 'checkout', { status: 'confirmed' }, 'no cited line was found in the code that was read'],
+    ['a line past the end of the file', 'checkout', { status: 'confirmed', places: ['src/ledger.rs:99'] }, 'no cited line was found in the code that was read'],
+    ['a line of a fetched related repo that its checkout does not hold', 'checkout', { status: 'confirmed', places: ['acme/reports:src/ledger.rs:3'] },
+      'no cited line was found in the code that was read'],
+    ['a line of a repo that is not configured', 'no related repo', { status: 'confirmed', places: ['acme/reports:lib/rows.py:2'] }, 'no cited line was found in the code that was read'],
+    ['a line of a related repo that was not fetched', 'checkout', { status: 'contradicted', places: ['acme/billing:lib/rows.py:2'] }, '`acme/billing` was not fetched'],
+    ['a line of the PR outside the diff without a checkout', 'no checkout', { status: 'confirmed', places: ['src/ledger.rs:9'] }, 'this run had no checkout to read'],
+    ['a line of a related repo without a checkout', 'no checkout', { status: 'confirmed', places: ['acme/reports:lib/rows.py:2'] }, 'this run had no checkout to read'],
+    ['a confirmation without a place, without a checkout', 'no checkout', { status: 'confirmed', places: ['not a line'] }, 'no cited line was found in the code that was read'],
+    ['the model saying that no code can show it', 'checkout', { status: 'not_checkable', why: 'outside_code', places: ['src/ledger.rs:3'] }, 'the review model says code cannot show it'],
+    ['the model not reaching the code', 'checkout', { status: 'not_checkable', why: 'not_reachable' }, 'the review model could not read the code that would show it'],
+    ['an unknown status and reason', 'checkout', { status: 'true', why: 'because I say so' }, 'no cited line was found in the code that was read'],
+  ])('gives the true reason a statement was not checked: %s (%s)', (_name, run, statement, reason, ...[search]) => {
+    const from = runs()[run];
+    const spy = search && jest.spyOn(mcpServer, 'findLines').mockImplementation(search as typeof mcpServer.findLines);
     try {
-      const checked = checkReply(answer({ statements: [{ quote: snapshot, status: 'confirmed', search: 'Ledger::snapshot(' }] }), REPLY, sources);
+      const checked = checkReply(answer({ statements: [{ quote: snapshot, ...statement }] }), REPLY, from);
       expect(statementList(checked)).toBe(`**Statements of this reply, checked in the code:**\n- Not checked, ${reason}: "${snapshot}"`);
-      expect(spy).toHaveBeenCalledWith(sources.workspace, { text: 'Ledger::snapshot(', maxResults: 1 });
+      expect(checked.text).toBe('Unverified. A maintainer should confirm it.');
+      if (spy) expect(spy).toHaveBeenCalledWith(from.workspace, { text: statement.search, maxResults: 1 });
     } finally {
-      spy.mockRestore();
+      spy?.mockRestore();
     }
   });
 
@@ -103,18 +126,18 @@ describe('checkReply', () => {
       'One.', 'Two.', 'Three.', 'Four.',
       42,
     ];
-    const checked = checkReply(answer({ statements: quotes.map(quote => ({ quote, status: 'not_checkable' })) }), reply, sources);
+    const checked = checkReply(answer({ statements: quotes.map(quote => ({ quote, status: 'not_checkable', why: 'outside_code' })) }), reply, sources);
 
     const cut = `${'The cache is warm. '.repeat(8)}The cach`;
     expect(cut).toHaveLength(160);
     expect(statementList(checked)).toBe([
       '**Statements of this reply, checked in the code:**',
-      '- Not checked, code cannot show it: "Nothing calls `Ledger::snapshot`."',
+      '- Not checked, the review model says code cannot show it: "Nothing calls `Ledger::snapshot`."',
       // A mention and a link in the developer's words are posted as text.
-      '- Not checked, code cannot show it: "see @​alice and the docs"',
-      `- Not checked, code cannot show it: "${cut}…"`,
-      '- Not checked, code cannot show it: "One."',
-      '- Not checked, code cannot show it: "Two."',
+      '- Not checked, the review model says code cannot show it: "see @​alice and the docs"',
+      `- Not checked, the review model says code cannot show it: "${cut}…"`,
+      '- Not checked, the review model says code cannot show it: "One."',
+      '- Not checked, the review model says code cannot show it: "Two."',
       '- 2 more statements not checked: a reply gets at most 5.',
     ].join('\n'));
     expect(checked).toMatchObject({ unchecked: 2, dropped: 3 });
@@ -163,7 +186,7 @@ describe('checkReply', () => {
     });
   });
 
-  it('counts only a line inside the diff as a line of the PR when the run has no checkout, and searches nothing', () => {
+  it('counts only a line inside the diff as a line of the PR when the run has no checkout', () => {
     const noCheckout: ReplySources = { relatedNames: ['acme/reports'], diff: DIFF };
     const withdrawn = (proof: string[], from = noCheckout) => checkReply(JSON.stringify({ outcome: 'Withdrawn', answer: 'The exporter writes CSV.', proof }), REPLY, from).text;
 
@@ -173,17 +196,8 @@ describe('checkReply', () => {
     expect(withdrawn(['acme/reports:src/ledger.rs:3'])).toBe(`Unverified. The exporter writes CSV. ${UNPROVEN}`);
     expect(withdrawn(['src/ledger.rs:3'], { relatedNames: [] })).toBe(`Unverified. The exporter writes CSV. ${UNPROVEN}`);
 
-    const checked = checkReply(answer({ statements: [
-      { quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] },
-      { quote: snapshot, status: 'confirmed', search: 'Ledger::snapshot(' },
-      { quote: 'The mobile app never stores them', status: 'confirmed', places: ['acme/reports:lib/rows.py:2'] },
-    ] }), REPLY, noCheckout);
-    expect(statementList(checked)).toBe([
-      '**Statements of this reply, checked in the code:**',
-      `- Confirmed at \`src/ledger.rs:3\`: "${csv}"`,
-      `- Not checked, this run had no checkout to search: "${snapshot}"`,
-      '- Not checked, no line that exists was cited for it: "The mobile app never stores them"',
-    ].join('\n'));
+    const checked = checkReply(answer({ statements: [{ quote: csv, status: 'confirmed', places: ['src/ledger.rs:3'] }] }), REPLY, noCheckout);
+    expect(statementList(checked)).toBe(`**Statements of this reply, checked in the code:**\n- Confirmed at \`src/ledger.rs:3\`: "${csv}"`);
   });
 
   it.each<[string, Record<string, unknown>[], number, string, string]>([
