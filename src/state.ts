@@ -475,7 +475,7 @@ function restatesApproval(review: ReviewEntry): boolean {
 }
 
 /** How a PR with a block that resolving threads cannot lift gets its next verdict. */
-const NEXT_ROUND_LINE = 'The next review round decides. Push a commit or comment `@manki review` to start one.';
+const NEXT_ROUND_LINE = 'The next review round decides. Push a commit, or tick **Review again** in the settings block, to start one.';
 
 /**
  * Returns what resolving threads can do about the newest round Manki posted on `commitSha`: `held` says why it cannot

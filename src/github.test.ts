@@ -1869,7 +1869,7 @@ describe('postReview body lead', () => {
     expect(lead(stuck.body)).toMatch(new RegExp([
       '^\u{1F6D1} \\*\\*Needs a human:\\*\\* 2 blockers came back after a fix\\.',
       '---',
-      'Automatic review is paused until someone comments `@manki review`\\.',
+      'Automatic review is paused\\. To get the next round, tick \\*\\*Review again\\*\\* in the settings block, or push and then comment `@manki review`\\.',
       '- `src/a\\.ts:10`: Cache never invalidated \\(\\[view thread\\]\\(https://github\\.com/o/r/pull/1#t1\\)\\)\\n- No migration',
     ].join('\n\n'), 'u'));
 
@@ -1880,7 +1880,7 @@ describe('postReview body lead', () => {
       needsHuman: { cause: 'budget', blockers: [prior] },
     }, [], undefined, 'A review you start by hand also turns automatic review back on for the next 3 rounds.');
     expect(lead(budgetStuck.body)).toMatch(/^\u{1F6D1} \*\*Needs a human:\*\* 1 blocker still open after the last automatic round\./u);
-    expect(budgetStuck.body).toContain('Automatic review is paused until someone comments `@manki review`. A review you start by hand also turns automatic review back on for the next 3 rounds.\n\n- `src/a.ts:10`: Still open prior');
+    expect(budgetStuck.body).toContain('Automatic review is paused. To get the next round, tick **Review again** in the settings block, or push and then comment `@manki review`. A review you start by hand also turns automatic review back on for the next 3 rounds.\n\n- `src/a.ts:10`: Still open prior');
     expect(budgetStuck.body.split('Still open prior')).toHaveLength(2);
     expect(budgetStuck.body).not.toContain('Still open from earlier reviews');
     expect(stuck.body).not.toContain('What this does');

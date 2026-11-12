@@ -2239,7 +2239,7 @@ function formatTraceEntry(p: Pick<VerdictTraceEntry, 'file' | 'title' | 'line' |
 
 function formatNeedsHuman(result: ReviewResult, restart?: string): string | null {
   if (result.outcome !== 'NOT_CONVERGING' || !result.needsHuman) return null;
-  return `Automatic review is paused until someone comments \`@manki review\`.${restart ? ` ${restart}` : ''}\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
+  return `Automatic review is paused. To get the next round, tick **Review again** in the settings block, or push and then comment \`@manki review\`.${restart ? ` ${restart}` : ''}\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
 }
 
 /** Returns `text` for a link label on one line, with the backslashes and brackets that would end the label escaped. */
