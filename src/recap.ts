@@ -51,21 +51,31 @@ export function parseFindingData(body: string): { title?: string; fix?: string; 
 }
 
 /**
- * Returns the file of the finding in a Manki thread's first comment `body`, posted on `path`. A `detached` thread names
- * it in its finding data, and names none for a finding that is not tied to a file.
+ * Returns the place of the finding in a Manki thread's first comment `body`, for a thread GitHub reports on `path`,
+ * `line` and `originalLine`. A `detached` thread takes its file and line from its finding data, which may name none.
  */
-export function findingFile(body: string, path: string | null | undefined): string {
+export function findingPlace(
+  body: string, path: string | null | undefined, line?: number | null, originalLine?: number | null,
+): Pick<PreviousFinding, 'file' | 'line' | 'originalLine' | 'findingLine'> {
   const data = parseFindingData(body);
-  return data?.detached ? data.file ?? '' : path ?? '';
+  const file = data?.detached ? data.file ?? '' : path ?? '';
+  const fromData = !!data?.detached;
+  return {
+    file,
+    line: fromData ? data.line ?? 0 : line ?? 0,
+    ...(!fromData && originalLine && { originalLine }),
+    ...(data?.file === file && data.line && { findingLine: data.line }),
+  };
 }
 
-/**
- * Returns the line of the finding in a Manki thread's first comment `body`, posted on `line`. A `detached` thread sits
- * on a line of another file, so only its finding data names a line, and none for a finding that is not tied to one.
- */
+/** Returns the file of the finding in a Manki thread's first comment `body`, posted on `path`. */
+export function findingFile(body: string, path: string | null | undefined): string {
+  return findingPlace(body, path).file;
+}
+
+/** Returns the line of the finding in a Manki thread's first comment `body`, posted on `line`. */
 export function findingLineOf(body: string, line: number | null | undefined): number {
-  const data = parseFindingData(body);
-  return data?.detached ? data.line ?? 0 : line ?? 0;
+  return findingPlace(body, undefined, line).line;
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -1041,14 +1051,12 @@ async function fetchReviewThreads(
       const ownBody = isBotThread ? body : '';
       const data = parseFindingData(ownBody);
       const findingTitle = data?.title?.trim() || matchTitleLine(body)?.[1]?.trim() || '';
-      const file = findingFile(ownBody, thread.path);
-      const findingLine = data?.file === file ? data.line : undefined;
+      const { file, line, originalLine, findingLine } = findingPlace(ownBody, thread.path, thread.line, thread.originalLine);
 
       const { description, suggestedFix, howToFix } = isBotThread && firstComment?.body
         ? parseFindingFromComment(firstComment.body)
         : {};
 
-      const line = findingLineOf(ownBody, thread.line);
       const lineStart = thread.startLine ?? line;
       const recordedOverride = isBotThread ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       const answer = isBotThread ? latestAnswer(bot, thread.comments.nodes) : undefined;
@@ -1071,7 +1079,7 @@ async function fetchReviewThreads(
         file,
         line,
         lineStart,
-        ...(thread.originalLine && !data?.detached && { originalLine: thread.originalLine }),
+        ...(originalLine && { originalLine }),
         ...(firstComment?.originalCommit?.oid && { originalCommit: firstComment.originalCommit.oid }),
         ...(findingLine && { findingLine }),
         ...(data?.detached && { detached: true }),

@@ -8,7 +8,7 @@ import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, Bot
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
-import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingFile, findingLineOf } from './recap';
+import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, latestPersonReply, parseContextBlocks, recordedThreadGrades, isSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, resolveBacking, settledBy, threadMarkerSlug, threadSeverity, findingPlace } from './recap';
 import { formatApprovalRecord, hasOwnMarker, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
 import { ApprovalRecord, AuthorClearRole, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
@@ -171,13 +171,10 @@ async function fetchBotReviewThreads(
       const markerSlug = threadMarkerSlug(body);
       const data = parseFindingData(body);
       const findingTitle = data?.title?.trim() || (markerSlug?.replace(/-/g, ' ') ?? 'Unknown');
-      const file = findingFile(body, thread.path);
-      const findingLine = data && data.file === file ? data.line : undefined;
       const commit = thread.comments.nodes[0]?.originalCommit?.oid;
-      const place = thread.path && markerSlug ? {
-        file, line: findingLineOf(body, thread.line), markerSlug,
-        ...(thread.originalLine && !data?.detached && { originalLine: thread.originalLine }), ...(findingLine && { findingLine }), ...(commit && { commit }),
-      } : undefined;
+      const place = thread.path && markerSlug
+        ? { ...findingPlace(body, thread.path, thread.line, thread.originalLine), markerSlug, ...(commit && { commit }) }
+        : undefined;
 
       const rootCommentId = thread.comments.nodes[0]?.databaseId;
       const resolvedByLogin = thread.resolvedBy?.login;
