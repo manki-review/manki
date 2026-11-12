@@ -26,7 +26,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isSecurityFinding, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -274,6 +274,8 @@ export interface JudgeInput {
   interRoundDiff?: string;
   /** IDs of prior-round threads a human resolved or Manki resolved as judge-addressed. */
   resolvedThreadIds?: Set<string>;
+  /** IDs of the threads the PR author alone cannot clear. Only a prior with such a thread hides a security finding. */
+  guardedThreadIds?: Set<string>;
   /** When true, resolved prior-round threads suppress matching findings. */
   suppressResolvedThreads?: boolean;
   /** The related repos the round's finders could read with their tools. */
@@ -1367,7 +1369,7 @@ export async function runJudgeAgent(
   inPrSuppressedCount?: number;
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
 }> {
-  const { diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads, relatedRepos, refutation, usesOutsideDiff, lockfiles = [], repoContext } = input;
+  const { diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, guardedThreadIds, suppressResolvedThreads, relatedRepos, refutation, usesOutsideDiff, lockfiles = [], repoContext } = input;
   const findings = input.findings.map(f => withoutPreExistingOnAddedLine(f, diff));
   const toolSteps = refutation ? input.toolSteps ?? 0 : 0;
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
@@ -1515,7 +1517,7 @@ export async function runJudgeAgent(
     ? { applied: true, affectedThreadCount: openThreads!.length }
     : undefined;
 
-  const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations: threadEvaluations ?? input.evaluatedThreads?.evaluations };
+  const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, guardedThreadIds, suppressResolvedThreads, threadEvaluations: threadEvaluations ?? input.evaluatedThreads?.evaluations };
 
   // A copy the judge merges or drops must pass every pre-existing check itself, since only the kept finding is checked later.
   const staysPreExisting = (copy: Finding): boolean => input.preExistingCheck?.(copy) === 'pre_existing';
@@ -1569,6 +1571,8 @@ export async function runJudgeAgent(
  * ratchet guard): a prior resolved or author-agreed thread must not silently
  * drop a current `required` finding, since severity inflation could come from
  * prompt injection or from a genuine regression after a thread was resolved.
+ * A security finding of any severity is hidden only by a `guarded` suppression,
+ * since the PR author alone can resolve or agree away any other thread.
  */
 export function applyInPrSuppression(
   findings: Finding[],
@@ -1583,7 +1587,8 @@ export function applyInPrSuppression(
   const result = findings.map(finding => {
     if (finding.tags?.includes(IN_PR_SUPPRESSED_TAG)) return finding;
     if (finding.severity === 'blocker') return finding;
-    const match = suppressions.find(s => matchesInPrSuppression(finding, s));
+    const security = isSecurityFinding(finding.tags);
+    const match = suppressions.find(s => (s.guarded || !security) && matchesInPrSuppression(finding, s));
     if (!match) return finding;
     const next: Finding = { ...finding };
     if (finding.severity !== 'ignore') {
@@ -1912,10 +1917,11 @@ function ownProposalOf(finding: Finding, provenanceMap?: ProvenanceEntry[]): Pro
 /**
  * Drops a finding below `warning` on code that applies a prior-round `suggestedFix`, so Manki does not
  * object to a change it asked for. A `warning` or `blocker` there means the new code is worse, and it stays.
+ * So does a security finding or a tool alert of any grade.
  */
 function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): Finding {
   const match = ownProposalOf(finding, provenanceMap);
-  if (!match || !isNote(finding.severity)) return finding;
+  if (!match || !canLeaveOut(finding)) return finding;
   const safeTitle = match.originatingTitle.replace(/[\n\r`]/g, ' ').slice(0, 200);
   const note = `Own-proposal follow-up: implements round ${match.originatingRound} finding "${safeTitle}"`;
   return {
@@ -1942,6 +1948,11 @@ export interface CrossRoundSuppressionOptions {
    * `addressed` is left out. Requires `suppressResolvedThreads` to be true.
    */
   resolvedThreadIds?: Set<string>;
+  /**
+   * IDs of the threads the PR author alone cannot clear: a blocker or security thread. A security finding is hidden
+   * only by an agreed or resolved prior with such a thread, since the PR author can resolve or agree away any other thread.
+   */
+  guardedThreadIds?: Set<string>;
   /** When true, treat resolved prior-round threads as accepted priors. */
   suppressResolvedThreads?: boolean;
   /**
@@ -1981,7 +1992,7 @@ export function applyCrossRoundSuppression(
     return { findings, suppressedCount: 0, demotedCount: 0 };
   }
 
-  const { resolvedThreadIds, suppressResolvedThreads, threadEvaluations } = options;
+  const { resolvedThreadIds, guardedThreadIds, suppressResolvedThreads, threadEvaluations } = options;
   const useResolved = suppressResolvedThreads === true && resolvedThreadIds !== undefined && resolvedThreadIds.size > 0;
   const judgeIndex = indexThreadEvaluations(threadEvaluations);
 
@@ -2050,8 +2061,11 @@ export function applyCrossRoundSuppression(
       return current;
     }
 
+    const security = isSecurityFinding(current.tags);
     const ratchetMatch = acceptedPriors.find(({ finding: prior, source }) => {
       if (prior.fingerprint.file !== current.file) return false;
+      // The judge's `addressed` is no person's decision, so it hides no security finding either.
+      if (security && (source === 'judge-addressed' || !(prior.threadId && guardedThreadIds?.has(prior.threadId)))) return false;
       // LLM-derived signals must never suppress blocker or warning findings:
       // only GitHub thread resolution carries enough trust for that.
       if (source === 'judge-addressed' && (current.severity === 'blocker' || current.severity === 'warning')) return false;

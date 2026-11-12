@@ -100,13 +100,18 @@ describe('handleIssueBoxTick', () => {
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain('[`src/net.ts:7`](https://github.com/o/r/blob/abc123/src/net.ts#L7)');
 
     // A blocker in a file outside the diff has its thread on a changed file, and its finding data names its own file.
-    const elsewhere = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 30 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    const elsewhere = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 30 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(elsewhere), original_line: 1 });
 
-    expect(jest.mocked(octokit.rest.issues.create).mock.calls[1][0].body).toContain('[`src/store.ts:30`](https://github.com/o/r/blob/abc123/src/store.ts#L30)');
+    const elsewhereIssue: string = jest.mocked(octokit.rest.issues.create).mock.calls[1][0].body;
+    expect(elsewhereIssue).toContain('[`src/store.ts:30`](https://github.com/o/r/blob/abc123/src/store.ts#L30)');
+    // The thread opens with a line about where it is posted, which the issue leaves out.
+    expect(elsewhere).toContain('so the thread is posted here.');
+    expect(elsewhereIssue).toMatch(/^\S+ \*\*Blocker\*\*[^\n]*\n\n\*\*Retry has no limit\*\*\n\n\*\*What goes wrong:\*\* It retries forever\./);
+    expect(elsewhereIssue).not.toContain('thread is');
 
     // That file name is finder output, so it can end neither the code span nor the link, and it mentions nobody.
-    const hostile = formatFindingComment(finding({ severity: 'blocker', file: 'src/a`b) @octocat (x.ts', line: 30 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    const hostile = formatFindingComment(finding({ severity: 'blocker', file: 'src/a`b) @octocat (x.ts', line: 30 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(hostile), original_line: 1 });
 
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[2][0].body).toContain(
@@ -114,26 +119,27 @@ describe('handleIssueBoxTick', () => {
     );
 
     // A browser resolves `..`, so such a name gets no link.
-    const outside = formatFindingComment(finding({ severity: 'blocker', file: '../../../../evil/x', line: 30 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    const outside = formatFindingComment(finding({ severity: 'blocker', file: '../../../../evil/x', line: 30 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(outside), original_line: 1 });
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[3][0].body).toContain('Found by Manki in #5 at `../../../../evil/x:30`. See');
 
     // A finding on a whole file names no line, so the issue takes none from the line its thread sits on.
-    const whole = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 0 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    const whole = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 0 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(whole), original_line: 1 });
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[4][0].body).toContain('Found by Manki in #5 at [`src/store.ts`](https://github.com/o/r/blob/abc123/src/store.ts). See');
   });
 
   it('clears the box, says why in the thread and leaves the thread open when filing fails', async () => {
     const octokit = makeOctokit();
-    octokit.rest.issues.create.mockRejectedValue(new Error('Resource not accessible by integration'));
+    // The reason is GitHub's text, so it is posted without a marker or a mention.
+    octokit.rest.issues.create.mockRejectedValue(new Error('Resource not accessible by integration <!-- manki-reopened --> @octocat'));
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ id: 'PRRT_1', rootCommentId: 501, isResolved: false, isBlocking: false, findingTitle: 'x' }]);
     const body = ticked(finding());
 
     await tick(octokit, comment(body));
 
     expect(octokit.rest.pulls.updateReviewComment).toHaveBeenCalledWith({ owner: 'o', repo: 'r', comment_id: 501, body: formatFindingComment(finding(), TEST_LINKS) });
-    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Could not file an issue for this finding: Error: Resource not accessible by integration. Tick the box again to retry.']]);
+    expect(jest.mocked(state.replyToReviewThread).mock.calls).toEqual([[octokit, 'PRRT_1', 'Could not file an issue for this finding: Error: Resource not accessible by integration  @\u200Boctocat. Tick the box again to retry.']]);
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
 
     // A reply that fails too still leaves the box cleared for a retry.
@@ -286,11 +292,11 @@ describe('handleReviewBoxTick', () => {
     expect(written).toMatch(/\r\n- \[x\] Create an issue for this <!-- manki-box:issue:src\/menu\.html:9:Trim-the-label -->$/);
 
     const failing = makeOctokit();
-    failing.rest.issues.create.mockRejectedValue(new Error('Resource not accessible by integration'));
+    failing.rest.issues.create.mockRejectedValue(new Error('Resource not accessible by integration <!-- manki-bot --> @octocat'));
     await tickReview(failing, { ...review, body: crlf });
     expect(jest.mocked(failing.rest.issues.createComment).mock.calls[0][0]).toMatchObject({
       owner: 'o', repo: 'r', issue_number: 5,
-      body: expect.stringMatching(/^Could not file an issue for \*\*Close the menu\*\*: Error: Resource not accessible by integration\. Tick its box in the review again to retry\./),
+      body: expect.stringMatching(/^Could not file an issue for \*\*Close the menu\*\*: Error: Resource not accessible by integration {2}@\u200Boctocat\. Tick its box in the review again to retry\./),
     });
     expect(jest.mocked(failing.rest.pulls.updateReview).mock.calls[0][0].body).toContain('- [ ] Create an issue for this <!-- manki-box:issue:src/menu.html:3:Close-the-menu -->\r\n');
   });

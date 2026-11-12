@@ -32,7 +32,7 @@ import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
 import { tickedIssueBoxes } from './issue-box';
 import { handleIssueBoxTick, handleReviewBoxTick } from './issue-tick';
-import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
+import { parseSettingsBlock, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
 import { ConfigSource, DashboardData, disproof, DisprovedFinding, Finding, FindingSeverity, findingKey, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, RelatedWork, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, UnpostedReason, roundContextToFlatAliases, SEVERITY_ORDER, threadBlocks } from './types';
 import {
   fetchPRDiff,
@@ -914,11 +914,11 @@ function initialDashboard(diff: ParsedDiff, config: ReviewConfig, clients: Revie
 async function replacePreviousReviews(
   target: RunTarget, progress: RunProgress, reviewId: number, state: 'CHANGES_REQUESTED' | 'APPROVED' = 'CHANGES_REQUESTED',
 ): Promise<void> {
-  const { octokit, owner, repo, prNumber, commitSha } = target;
+  const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   progress.reviewPosted = true;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   progress.stopHeadWatch();
-  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId, state);
+  await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, reviewId, state);
 }
 
 /**
@@ -1001,8 +1001,8 @@ async function replaceWithNotice(target: RunTarget, progress: RunProgress, marke
  * keeps the Review again and Deeper review boxes, which review the PR anyway.
  */
 async function postTooBigNotice(target: RunTarget, progress: RunProgress, text: string, offerReview: boolean, lastRoundAt?: string): Promise<CheckReport> {
-  const { octokit, owner, repo, prNumber } = target;
-  await dismissPreviousReviews(octokit, owner, repo, prNumber, undefined, 'APPROVED');
+  const { octokit, bot, owner, repo, prNumber } = target;
+  await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, undefined, 'APPROVED');
   const offered = progressSettings(target, progress, offerReview ? 'too big for automatic review' : 'too big to review');
   // Above the hard limit no box can review the PR, so only Pause stays.
   const settings = offered && (offerReview ? offered : { ...offered, boxes: new Set<SettingsBox>(['pause']) });
@@ -1041,6 +1041,9 @@ async function postPauseNotice(
   return { conclusion: 'action_required', title: 'Automatic review paused', summary: `${reason} Automatic review is paused until someone asks for another round.` };
 }
 
+/** The boxes whose tick answers a notice. */
+const REVIEW_BOXES: readonly SettingsBox[] = ['again', 'deeper'];
+
 /**
  * Returns Manki's latest notice with `marker` and no ticked box, posted or updated after `lastRoundAt`.
  * A failed lookup returns `undefined`, so a new notice is posted.
@@ -1051,7 +1054,7 @@ async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: st
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
     return comments.find(c => isBotLogin(bot, c.user?.login) && !!c.body?.includes(marker)
-      && !/- \[x\] (?:Review again|Deeper review) /.test(c.body) && Date.parse(c.updated_at) > since);
+      && !REVIEW_BOXES.some(box => parseSettingsBlock(c.body ?? '')?.ticked.has(box)) && Date.parse(c.updated_at) > since);
   } catch (error) {
     core.warning(`Failed to look up an earlier notice: ${error}`);
     return undefined;
@@ -1338,13 +1341,13 @@ async function reviewRound(
  * approval of an older commit is dismissed, since nothing approved the code since. Returns the report for the PR check.
  */
 async function postIncompleteRound(run: ReviewRun, result: ReviewResult, buildContext: () => RoundContext, reviewTimeMs: number): Promise<CheckReport> {
-  const { octokit, owner, repo, prNumber, commitSha, commentId, dashboard, diff } = run;
+  const { octokit, bot, owner, repo, prNumber, commitSha, commentId, dashboard, diff } = run;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   cancelDashboardFlush(run.progress);
   core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
   result.verdict = 'COMMENT';
   const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, buildContext(), reviewTimeMs, { noVerdict: true });
-  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId, 'APPROVED', commitSha);
+  await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, reviewId, 'APPROVED', commitSha);
   dashboard.phase = 'complete';
   await updateProgressComment(octokit, owner, repo, commentId, { ...dashboard, totalDurationMs: Date.now() - run.startTime }, undefined, progressSettings(run, run.progress, 'review incomplete'));
   return outcomeReport('INCOMPLETE', result.summary);
@@ -1609,7 +1612,7 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
 
 /** Posts the round's review and dismisses the previous one. Returns the new review's id, and whether its approval was held. */
 async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number, restart?: string, unreadRecords?: string[]): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
-  const { octokit, owner, repo, prNumber, commitSha, diff, recap } = run;
+  const { octokit, bot, owner, repo, prNumber, commitSha, diff, recap } = run;
   // A finding on a parsed lockfile gets a thread on its line like any other.
   const disproved = (result.allJudgedFindings ?? []).flatMap((f): DisprovedFinding[] => {
     const by = f.severity === 'ignore' && disproof(f);
@@ -1628,7 +1631,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
   });
   await replacePreviousReviews(run, run.progress, posted.id);
   // A held approval posts a COMMENT, which leaves an approval of an older commit standing unless it is dismissed.
-  if (posted.approvalHeld) await dismissPreviousReviews(octokit, owner, repo, prNumber, posted.id, 'APPROVED', commitSha);
+  if (posted.approvalHeld) await dismissPreviousReviews(octokit, bot, owner, repo, prNumber, posted.id, 'APPROVED', commitSha);
   return posted;
 }
 
@@ -1828,7 +1831,7 @@ async function runFullReview(
       const reason = `Invalid model config: ${error instanceof Error ? error.message : error}`;
       core.setFailed(reason);
       checkReport = failedReport(reason);
-      await dropProgressComment(target, progress, options.settings, 'review failed', `Review failed: ${reason}`);
+      await dropProgressComment(target, progress, options.settings, 'review failed', `Review failed: ${sanitizeMarkdown(reason)}`);
       return;
     }
     const { clients, models } = built;
@@ -2230,7 +2233,7 @@ async function reportTokenFailure({ event, action, number }: ReturnType<typeof d
   const token = core.getInput('github_token');
   if (!token || (event === 'pull_request' && action === 'closed')) return;
   const { owner, repo } = github.context.repo;
-  const body = `${event === 'pull_request' ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${redactSecrets(error.message)}`;
+  const body = `${event === 'pull_request' ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${sanitizeMarkdown(redactSecrets(error.message))}`;
   try {
     const octokit = github.getOctokit(token);
     const comments = await octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });

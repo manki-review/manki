@@ -204,7 +204,7 @@ export async function fetchPrState(owner: string, repo: string, prNumber: number
     const reviewed = (data?.last_reviewed as Record<string, unknown> | null | undefined)?.commit;
     return {
       settings: { paused: settings?.paused === true },
-      ...(typeof reviewed === 'string' && { lastReviewed: reviewed }),
+      ...(typeof reviewed === 'string' && /^[0-9a-f]+$/.test(reviewed) && { lastReviewed: reviewed }),
       runModes: modesOf(data?.active, item => item.run_id === runId),
       queuedModes: modesOf(data?.queue, () => true),
     };

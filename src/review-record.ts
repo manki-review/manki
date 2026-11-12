@@ -1,7 +1,7 @@
 import { gunzipSync, gzipSync } from 'zlib';
 
 import type { ApprovalRecord, ReplyRecord, RoundContext } from './types';
-import { linesBelow, ownMarker, redactSecretsDeep, sanitizeHtmlCommentJson, sanitizeTokens } from './utils';
+import { COMMENT_MARKER, linesBelow, ownMarker, redactSecretsDeep, sanitizeHtmlCommentJson, sanitizeTokens } from './utils';
 
 /** Opens a round record, plain or compressed. */
 const RECORD_OPENER = '<!-- manki-context';
@@ -32,15 +32,21 @@ export function formatApprovalRecord(record: ApprovalRecord): string {
   return `<!-- manki-approval-record: ${sanitizeHtmlCommentJson(recordJson(record))} -->`;
 }
 
-/** Returns the JSON text of the approval record in a review or comment body. Manki writes it last, so an earlier one is quoted text. */
+/**
+ * Returns the JSON text of the approval record in a review or comment body. Manki writes it last, so an earlier one is
+ * quoted text. An approval review writes it below `COMMENT_MARKER`. A notice has no such line.
+ */
 export function extractApprovalRecords(body: string): string[] {
-  const last = ownMarker(body, '<!-- manki-approval-record: ');
+  const last = ownMarker(body, '<!-- manki-approval-record: ', COMMENT_MARKER);
   return last ? [last] : [];
 }
 
-/** Returns the JSON text of the reply record in a comment body. Manki writes it last, so an earlier one is quoted text. */
+/**
+ * Returns the JSON text of the reply record in a comment body. Every reply writes it below `COMMENT_MARKER`, so a body
+ * without that line holds none, and a record above the line is quoted text.
+ */
 export function extractReplyRecords(body: string): string[] {
-  const last = ownMarker(body, '<!-- manki-reply-record: ');
+  const last = body.includes(`\n${COMMENT_MARKER}`) ? ownMarker(body, '<!-- manki-reply-record: ', COMMENT_MARKER) : undefined;
   return last ? [last] : [];
 }
 

@@ -1695,6 +1695,11 @@ describe('main', () => {
       jest.mocked(core.getState).mockReturnValueOnce('true');
       await main();
       expect(createComment).toHaveBeenCalledTimes(2);
+
+      // The reason can be the text of a failed request, so the note shows it without a marker or a mention.
+      jest.mocked(authModule.createAuthenticatedOctokit).mockRejectedValue(new authModule.TokenServiceError('TypeError: fetch failed <!-- manki-bot --> @octocat'));
+      await main();
+      expect(comments.at(-1)?.body).toBe('⏸️ **Review incomplete:** Could not get a token from the Manki token service (TypeError: fetch failed  @\u200Boctocat). Retry the run.');
     } finally {
       jest.mocked(github.getOctokit).mockReset();
       jest.mocked(core.getState).mockReset().mockReturnValue('');
@@ -2058,7 +2063,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title } });
-      expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', 'abc123');
+      expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', 'abc123');
       expect(authModule.reportPrState).toHaveBeenCalledWith('test-owner', 'test-repo', 42, expect.objectContaining({ approval: { commit: 'abc123', held: true } }));
     });
 
@@ -2549,7 +2554,7 @@ describe('runFullReview orchestration', () => {
     expect(warmupCLI).not.toHaveBeenCalled();
     // A request for changes stays, so a push cannot clear a blocker by making the PR too big. Approvals go.
     expect(ghUtils.postReview).not.toHaveBeenCalled();
-    expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), 'test-owner', 'test-repo', 42, undefined, 'APPROVED']]);
+    expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, undefined, 'APPROVED']]);
     // The progress comment becomes the notice, so it keeps the settings block.
     expect(mockOctokitInstance.rest.issues.deleteComment).not.toHaveBeenCalled();
     expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
@@ -2561,7 +2566,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: 9_000, totalDeletions: 0 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
     jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([
-      { id: 71, body: '**Too big for automatic review** ...\n\n<!-- manki -->\n<!-- manki-too-big -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-07T10:00:00Z' },
+      // Only a box in the settings block counts as ticked, not text of the notice that reads like one.
+      { id: 71, body: '**Too big for automatic review** ...\n- `src/a.ts`: - [x] Review again is not offered\n\n<!-- manki -->\n<!-- manki-too-big -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-07T10:00:00Z' },
       { id: 70, body: '**Too big for automatic review** ...\n\n<!-- manki -->\n<!-- manki-too-big -->\n\n---\nNot reviewed yet · head `abc123` · too big for automatic review\n- [x] Review again <!-- manki-box:again -->\n<!-- manki-settings -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-07T09:00:00Z' },
     ] as Awaited<ReturnType<typeof ghUtils.fetchPRComments>>);
 
@@ -2609,7 +2615,7 @@ describe('runFullReview orchestration', () => {
     if (file?.path === 'yarn.lock') expect(posted.summary).toContain('**Static analysis on the skipped files:**\n- `yarn.lock:12`: `osv-scanner GHSA-1234`: `left-pad 1.0.0 is vulnerable`');
     const { diff: analyzed, fullDiff: changed } = jest.mocked(staticSignalsModule.collectStaticSignals).mock.calls[0][1];
     expect([analyzed, changed]).toEqual([expect.objectContaining({ files: file ? [file] : [], binarySkipped }), analyzed]);
-    expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED']]);
+    expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED']]);
     expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'action_required', output: expect.objectContaining({ title: 'Not reviewed' }) }));
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4].totalDurationMs).toEqual(expect.any(Number));
     // Metadata is what makes the progress comment read as complete rather than failed.
@@ -3353,7 +3359,7 @@ describe('runFullReview orchestration', () => {
     );
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith('Review incomplete: Review incomplete');
     expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)![4].totalDurationMs).toEqual(expect.any(Number));
-    expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', 'abc123']]);
+    expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED', 'abc123']]);
     // Should not call dedup since we return early
     expect(jest.mocked(recapModule.deduplicateFindings)).not.toHaveBeenCalled();
   });
@@ -3371,7 +3377,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 42, 123, 'CHANGES_REQUESTED',
+      expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 123, 'CHANGES_REQUESTED',
     );
     expect(jest.mocked(ghUtils.postReview).mock.invocationCallOrder[0])
       .toBeLessThan(jest.mocked(ghUtils.dismissPreviousReviews).mock.invocationCallOrder[0]);
@@ -6341,6 +6347,12 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
         expect.stringContaining('Invalid model config'),
       );
+      expect(jest.mocked(ghUtils.showSettings).mock.calls.at(-1)?.at(-1)).toBe('Review failed: Invalid model config: Either gemini_oauth_token or gemini_api_key must be provided');
+
+      // The reason can quote a model name from the config, so the notice shows it as text.
+      jest.mocked(parseModelSpec).mockImplementation(() => { throw new Error('No provider for <!-- manki-settings --> @octocat'); });
+      await callRunFullReview();
+      expect(jest.mocked(ghUtils.showSettings).mock.calls.at(-1)?.at(-1)).toBe('Review failed: Invalid model config: No provider for  @\u200Boctocat');
     } finally {
       jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
       jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));

@@ -239,7 +239,7 @@ export function approvalHoldLine(hold: ApprovalHold): string {
       : '**Approval held:** this PR\'s copy of the config file does not load or could not be read. Fix it and push, and Manki reviews the new commit.';
   }
   if (hold.reason === 'unread') return `**Approval held:** no model read some of the files this PR changes, so a person needs to approve it.\n\n${formatSkippedFiles(hold.skipped)}`;
-  return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
+  return `**Approval held:** this PR conflicts with ${inline(hold.baseRef)}. Rebase it, and Manki reviews the result.`;
 }
 
 const MAX_UNREVIEWED_LINES = 50;
@@ -966,7 +966,7 @@ function formatResetTime(seconds: number): string {
 }
 
 function formatLimitWindow(limit: LimitUsage): string {
-  return `${limit.window} ${limit.usedPercent}%${limit.resetsAt != null ? ` (resets ${formatResetTime(limit.resetsAt)})` : ''}`;
+  return `${sanitizeMarkdown(limit.window)} ${limit.usedPercent}%${limit.resetsAt != null ? ` (resets ${formatResetTime(limit.resetsAt)})` : ''}`;
 }
 
 const LIMIT_WARNING_THRESHOLDS = [90, 80, 70];
@@ -983,7 +983,7 @@ function formatLimitWarning(limits: readonly LimitUsage[]): string | undefined {
     if (mark === undefined) return [];
     if (mark !== LIMIT_WARNING_THRESHOLDS[0] && limit.usedPercent > mark + LIMIT_WARNING_BAND) return [];
     const resets = limit.resetsAt != null ? ` It resets ${formatResetTime(limit.resetsAt)}.` : '';
-    return [`**${limit.account} has used ${limit.usedPercent}% of its ${limit.window} limit**, past the ${mark}% mark.${resets}`];
+    return [`**${sanitizeMarkdown(limit.account)} has used ${limit.usedPercent}% of its ${sanitizeMarkdown(limit.window)} limit**, past the ${mark}% mark.${resets}`];
   });
   if (lines.length === 0) return undefined;
   return `> [!CAUTION]\n${[...lines, 'Once a limit is used up, reviews on that account stop until it resets.'].map(line => `> ${line}`).join('\n>\n')}`;
@@ -1018,16 +1018,16 @@ export async function updateProgressComment(
     parts.push('');
 
     parts.push('**Config:**');
-    parts.push(`- Models: reviewer=${metadata.config.reviewerModel}, judge=${metadata.config.judgeModel}`);
+    parts.push(`- Models: reviewer=${sanitizeMarkdown(metadata.config.reviewerModel)}, judge=${sanitizeMarkdown(metadata.config.judgeModel)}`);
     parts.push(`- Triage: ${metadata.config.triage}`);
     parts.push(`- Team: ${metadata.config.teamAgents.map(sanitizeMarkdown).join(', ')}`);
-    parts.push(`- Memory: ${metadata.config.memoryEnabled ? `enabled (${metadata.config.memoryRepo})` : 'disabled'}`);
+    parts.push(`- Memory: ${metadata.config.memoryEnabled ? `enabled (${sanitizeMarkdown(String(metadata.config.memoryRepo))})` : 'disabled'}`);
     parts.push('');
 
     if (metadata.limits && metadata.limits.length > 0) {
       parts.push('**Account limits:**');
       for (const account of new Set(metadata.limits.map(l => l.account))) {
-        parts.push(`- ${account}: ${metadata.limits.filter(l => l.account === account).map(formatLimitWindow).join(', ')}`);
+        parts.push(`- ${sanitizeMarkdown(account)}: ${metadata.limits.filter(l => l.account === account).map(formatLimitWindow).join(', ')}`);
       }
       parts.push('');
     }
@@ -1090,6 +1090,7 @@ export async function updateProgressDashboard(
  */
 export async function dismissPreviousReviews(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
@@ -1113,7 +1114,7 @@ export async function dismissPreviousReviews(
 
   for (const review of reviews) {
     const onKeptCommit = keepCommit !== undefined && review.commit_id === keepCommit;
-    if (review.id !== keepReviewId && !onKeptCommit && review.body?.includes(BOT_MARKER) && review.state === state) {
+    if (review.id !== keepReviewId && !onKeptCommit && isBotUser(bot, review.user) && review.body?.includes(BOT_MARKER) && review.state === state) {
       assertWritesAllowed();
       try {
         await octokit.rest.pulls.dismissReview({
@@ -1287,7 +1288,9 @@ export function findingLocation(finding: Pick<Finding, 'file' | 'line'>): string
  */
 function labelDescription(finding: Finding, description: string): string {
   const label = isBlockingSeverity(finding.severity) ? WHAT_GOES_WRONG_LABEL : WHY_LABEL;
-  return `${label}${/^(?:[-*+]\s|#{1,6}\s|>|\d+[.)]\s)/.test(description) ? '\n\n' : ' '}${description}`;
+  // `parseFindingFromComment` ends the description at a line that starts with `FIX_LABEL`, so no line of the description does.
+  const text = description.replace(/^\*\*Fix:\*\*/gm, '**Fix**:');
+  return `${label}${/^(?:[-*+]\s|#{1,6}\s|>|\d+[.)]\s)/.test(text) ? '\n\n' : ' '}${text}`;
 }
 
 /** Returns the `trustNote` and what goes wrong, as listed under a finding in the review body. */
@@ -1659,7 +1662,7 @@ export async function postReview(
   /** The findings posted as threads this round, counted in the verdict line. */
   const threadFindings: Finding[] = [];
   /** The blockers posted as line comments, which get a file-level thread when GitHub refuses the lines. */
-  const lineBlockers: Array<{ path: string; body: string; finding: Finding }> = [];
+  const lineBlockers: Array<{ path: string; finding: Finding }> = [];
   /** The blockers in no changed file, whose threads are on `anchor`. */
   const detached: Finding[] = [];
   /** The findings listed as folds in the review body, under one section per origin. */
@@ -1726,17 +1729,15 @@ export async function postReview(
       continue;
     }
 
-    const commentBody = formatFindingComment(f, links, elsewhere);
-
     if (!elsewhere && (!diff || (f.line > 0 && isLineInDiff(diffFile!, f.line)))) {
-      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
-      lineBlockers.push({ path: f.file, body: commentBody, finding: f });
+      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
+      lineBlockers.push({ path: f.file, finding: f });
       threadFindings.push(f);
     } else if (matched) {
       core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
       leftTo.set(f, matched);
     } else {
-      fileComments.push({ path: elsewhere ? anchor! : f.file, body: commentBody, finding: f });
+      fileComments.push({ path: elsewhere ? anchor! : f.file, body: formatFindingComment(f, links, elsewhere ? 'detached' : 'file'), finding: f });
       threadFindings.push(f);
       if (elsewhere) detached.push(f);
     }
@@ -1863,7 +1864,7 @@ export async function postReview(
   const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(inline), inlineComments.map(highlight));
   onPosted?.();
   // A blocker whose line comment GitHub refused gets a file-level thread on its file.
-  const retried = review.lineComments ? [] : lineBlockers;
+  const retried = review.lineComments ? [] : lineBlockers.map(c => ({ ...c, body: formatFindingComment(c.finding, links, 'file') }));
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, [...fileComments, ...retried].map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
@@ -2503,7 +2504,8 @@ function suggestionBlock(parts: FixPart[]): string | undefined {
 function formatFindingHeader(finding: Finding): string {
   const severity = `${finding.severity[0].toUpperCase()}${finding.severity.slice(1)}`;
   const label = `**${isBlockingFinding(finding) ? severity : `${severity}, not blocking`}**`;
-  const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource)})` : '';
+  // `matchTitleLine` reads `):` on the first line as the end of the tool name in the one-line layout, so the name holds none.
+  const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource).replace(/\):+/g, ')')})` : '';
   const kind = [isPreExisting(finding) && 'Pre-existing', finding.category && FINDING_CATEGORIES[finding.category], finding.effort && FINDING_EFFORTS[finding.effort]].filter(Boolean);
   return [`${label}${tool}`, ...kind].join(' · ');
 }
@@ -2948,18 +2950,23 @@ function detachedNote(finding: Finding, linkTo: LineLink): string {
   return `${where} Comments are only possible on changed files, so the thread is posted here.`;
 }
 
-/** Formats a finding's thread comment. `detached` is set for a thread posted on another file than the finding's. */
-function formatFindingComment(finding: Finding, links: CodeLinks, detached = false): string {
+/**
+ * Formats a finding's thread comment. `place` says where the thread sits: on the finding's line, on its file as a
+ * file-level thread, or `detached` on another file than the finding's.
+ */
+function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' | 'file' | 'detached' = 'line'): string {
+  const detached = place === 'detached';
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
   if (detached) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
   const note = trustNote(finding);
   if (note) comment += `${note}\n\n`;
   if (finding.origin === 'reviewed' && !isBlockingFinding(finding)) comment += `${MISSED_EARLIER_NOTE}\n\n`;
-  // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold.
+  // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold. Committing
+  // writes the block over the commented line, so only a thread on the finding's line gets one.
   const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
-  const suggestion = suggestionBlock(fixParts);
+  const suggestion = place === 'line' ? suggestionBlock(fixParts) : undefined;
   const fix = fixPart(finding, suggestion || fixParts.length === 0 ? undefined : renderFixParts(fixParts, finding.file));
-  const checks = checksSection(finding, links, 'commented');
+  const checks = checksSection(finding, links, place === 'line' ? 'commented' : 'flagged');
   const label = labelDescription(finding, '');
   const open = `${suggestion ? `\n\n${suggestion}` : ''}\n\n${formatFold(fix, '', checks)}`;
   const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - label.length - visibleLength(open));

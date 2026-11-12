@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { BotIdentity, buildLineLink, findingLocation, linked, sanitizeMarkdown } from './github';
 import { FILED_ISSUE_OPENER, filedIssueMarker, ISSUE_BOX_ANCHOR, issueBoxLine, issueBoxOffset, replaceIssueBox, tickedIssueBoxes, withoutFences } from './issue-box';
-import { findingFile, findingLineOf, isGuarded, parseFindingData } from './recap';
+import { findingFile, findingLineOf, isGuarded, parseFindingData, withoutDetachedNote } from './recap';
 import { BOT_MARKER, fetchBotReviewThreads, replyToReviewThread, resolveReviewThread } from './state';
 import { ownMarker, withMarkers } from './utils';
 
@@ -50,8 +50,12 @@ async function findFiledIssue(octokit: Octokit, bot: BotIdentity, owner: string,
   return undefined;
 }
 
-/** Returns `text` up to the anchor of the box of `id`, without Manki's hidden markers. */
-function postedText(text: string, id: string): string {
+/**
+ * Returns `posted` up to the anchor of the box of `id`, without Manki's hidden markers. The line that opens a detached
+ * thread is left out too, since it is about the thread and the issue names the finding's place itself.
+ */
+function postedText(posted: string, id: string): string {
+  const text = withoutDetachedNote(posted);
   const box = issueBoxOffset(text, id);
   const anchor = box >= 0 ? text.lastIndexOf(ISSUE_BOX_ANCHOR, box) : -1;
   return (anchor >= 0 ? text.slice(0, anchor) : text).replace(/^<!-- manki[^\n]*-->\r?\n?/gm, '').trim();
@@ -113,7 +117,7 @@ export async function handleIssueBoxTick(
       allFiled = false;
       // The box is cleared for a retry even when the reply fails, and the other boxes are still handled.
       if (thread) {
-        await replyToReviewThread(octokit, thread.id, `Could not file an issue for this finding: ${String(error).slice(0, 200)}. Tick the box again to retry.`)
+        await replyToReviewThread(octokit, thread.id, `Could not file an issue for this finding: ${sanitizeMarkdown(String(error).slice(0, 200))}. Tick the box again to retry.`)
           .catch((replyError: unknown) => core.warning(`Failed to report the failed filing of ${id}: ${replyError}`));
       }
     }
@@ -206,7 +210,7 @@ export async function handleReviewBoxTick(
       // The review has no thread to reply in, so the PR gets the reason. The box is cleared for a retry either way.
       await octokit.rest.issues.createComment({
         owner, repo, issue_number: prNumber,
-        body: withMarkers(`Could not file an issue for **${sanitizeMarkdown(finding.title)}**: ${String(error).slice(0, 200)}. Tick its box in the review again to retry.`, BOT_MARKER),
+        body: withMarkers(`Could not file an issue for **${sanitizeMarkdown(finding.title)}**: ${sanitizeMarkdown(String(error).slice(0, 200))}. Tick its box in the review again to retry.`, BOT_MARKER),
       }).catch((reportError: unknown) => core.warning(`Failed to report the failed filing of ${id}: ${reportError}`));
     }
     // Each box is saved as soon as it is handled, on the review as it is now, so a tick made meanwhile stays.

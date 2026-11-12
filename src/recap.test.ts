@@ -1,5 +1,5 @@
-import { Finding, FindingFingerprintEntry, RoundContext, ThreadEvaluation, threadBlocks } from './types';
-import { classifyAuthorReply, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment } from './recap';
+import { Finding, FindingFingerprintEntry, RoundContext, SECURITY_TAG, ThreadEvaluation, threadBlocks } from './types';
+import { classifyAuthorReply, collectGuardedThreadIds, collectInPrSuppressions, isGuarded, collectResolvedThreadIds, currentFindingLine, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, replyClassOf, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { determineOutcome } from './review';
@@ -2170,6 +2170,16 @@ describe('collectInPrSuppressions', () => {
       slug: titleToSlug('Missing null check'),
     });
     expect(collectInPrSuppressions([makePrevious({ title: 'Missing null check', file: 'src/a.ts', line: 10, status: 'resolved', fixed: true })])).toEqual([]);
+
+    // Only a thread the PR author alone could not clear is marked as guarded. An unread grade does not make it one.
+    const resolved = (threadId: string, overrides: Partial<PreviousFinding>) => makePrevious({ title: 'Missing null check', file: 'src/a.ts', line: 10, status: 'resolved', severity: 'warning', threadId, ...overrides });
+    const threads = [
+      resolved('plain', {}), resolved('blocker', { severity: 'blocker' }), resolved('security', { isSecurity: true }),
+      resolved('raised', { recordedGrade: 'blocker' }), resolved('unknown', { gradeUnknown: true }),
+    ];
+    expect(collectInPrSuppressions(threads).map(s => s.guarded ?? false)).toEqual([false, true, true, true, false]);
+    expect([...collectGuardedThreadIds(threads)]).toEqual(['blocker', 'security', 'raised']);
+    expect(collectGuardedThreadIds(undefined).size).toBe(0);
   });
 
   // Note: `fetchReviewThreads` always classifies a thread with at least one
@@ -2346,13 +2356,16 @@ describe('llmDeduplicateFindings', () => {
     const both = await llmDeduplicateFindings(findings, [fixed, previous[0]], mockClient);
     expect(both.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
 
-    // A blocker is dropped only for a resolved blocking or security thread, since the PR author can resolve any other.
-    const blocker = { ...findings[0], severity: 'blocker' as const };
-    const notWaived = await llmDeduplicateFindings([blocker], previous, mockClient);
-    expect(notWaived).toEqual({ unique: [blocker], duplicates: [] });
-    for (const guarded of [{ severity: 'blocker' as const }, { isSecurity: true }]) {
-      const waived = await llmDeduplicateFindings([blocker], [makePrevious({ ...previous[0], ...guarded })], mockClient);
-      expect(waived.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
+    // A blocker or a security finding is dropped only for a resolved blocking or security thread, since the PR author can resolve any other.
+    for (const raised of [{ ...findings[0], severity: 'blocker' as const }, { ...findings[0], severity: 'warning' as const, tags: [SECURITY_TAG] }]) {
+      const notWaived = await llmDeduplicateFindings([raised], previous, mockClient);
+      expect(notWaived).toEqual({ unique: [raised], duplicates: [] });
+      expect(deduplicateFindings([raised], [makePrevious({ ...previous[0], title: raised.title })])).toEqual({ unique: [raised], duplicates: [] });
+      for (const guarded of [{ severity: 'blocker' as const }, { isSecurity: true }]) {
+        const waived = await llmDeduplicateFindings([raised], [makePrevious({ ...previous[0], ...guarded })], mockClient);
+        expect(waived.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
+        expect(deduplicateFindings([raised], [makePrevious({ ...previous[0], title: raised.title, ...guarded })]).duplicates).toHaveLength(1);
+      }
     }
   });
 
@@ -2415,6 +2428,12 @@ describe('llmDeduplicateFindings', () => {
     const [, prompt] = jest.mocked(match.sendMessage).mock.calls[0];
     expect(prompt).toContain('(src/memory.ts:84): "Before this change, an empty memory.repo meant');
     expect(prompt).toContain('(src/memory.ts:79): "Before this change, an empty memory.repo resolved to');
+    // A finding or a thread that names no line is listed by its file alone.
+    const wholeFile = { ...waived, findingLine: undefined, originalLine: undefined };
+    await llmDeduplicateFindings([{ ...second, line: 0 }], [wholeFile], match);
+    const fileOnly = jest.mocked(match.sendMessage).mock.calls.at(-1)![1];
+    expect(fileOnly).not.toContain('src/memory.ts:');
+    expect(fileOnly.match(/\(src\/memory\.ts\): "/g)).toHaveLength(2);
 
     // The static match sends the next wording to the judge with the answer in the thread of the one before.
     const answered = makePrevious({ ...memory, status: 'replied', threadId: 'T2', line: 79, title: second.title, answer: 'Unverified. The move is not in this PR.' });
@@ -2504,6 +2523,13 @@ describe('parseFindingFromComment', () => {
     expect(parseFindingFromComment(filed)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     const toolBody = formatFindingComment({ severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2)', category: 'security', effort: 'quick' }, TEST_LINKS);
     expect(parseFindingFromComment(toolBody)).toEqual({ description: 'The query uses `name`.', suggestedFix: undefined });
+    // A tool name cannot pass as the end of a title line, and a line of the description cannot pass as the fix label.
+    const oddTool = formatFindingComment({ severity: 'warning', title: 'Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2):: beta' }, TEST_LINKS);
+    expect(oddTool.split('\n')[0]).toContain('(CodeQL (1.2) beta)');
+    expect(parseFindingFromComment(oddTool)).toEqual({ description: 'The query uses `name`.', suggestedFix: undefined });
+    const fixLine = formatFindingComment({ severity: 'note', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.\n**Fix:** move it.', reviewers: [], howToFix: 'Move it to a helper.' }, TEST_LINKS);
+    expect(fixLine).toContain('\n**Fix:** Move it to a helper.');
+    expect(parseFindingFromComment(fixLine)).toEqual({ description: 'The logic is duplicated.\n**Fix**: move it.', suggestedFix: undefined, howToFix: 'Move it to a helper.' });
     // A thread posted on another file opens with a note on where the finding is, which is no part of the description.
     // The note is read by its place, so it is skipped whatever the highlighting of the diff's identifiers makes of it.
     const identifiers = new Set(['This', 'Comments', 'thread', 'posted', 'here', 'src/store.ts', '_store_file_', 'src/_store_file_.ts']);
@@ -2511,7 +2537,7 @@ describe('parseFindingFromComment', () => {
     for (const file of ['src/store.ts', 'src/_store_file_.ts', 'src/a*b*.ts', 'src/**Warning**: x.ts', 'src/**Blocker** y.ts', 'src/**What goes wrong:** z.ts', '']) {
       // With no other note under it, the line below the note is the description itself.
       for (const checkStatus of [undefined, 'unconfirmed' as const]) {
-        const detached = formatFindingComment({ severity: 'blocker', title: 'Extract helper', file, line: 2, description: 'The logic is duplicated.', reviewers: [], checkStatus }, TEST_LINKS, true);
+        const detached = formatFindingComment({ severity: 'blocker', title: 'Extract helper', file, line: 2, description: 'The logic is duplicated.', reviewers: [], checkStatus }, TEST_LINKS, 'detached');
         expect(detached).toContain(`so the thread is posted here.\n\n${checkStatus ? '_Manki could not confirm this' : '**What goes wrong:** The logic is duplicated.'}`);
         for (const posted of [detached, highlightCode(detached, identifiers)]) {
           expect(parseFindingFromComment(posted)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
@@ -2519,7 +2545,7 @@ describe('parseFindingFromComment', () => {
       }
     }
     // A late warning on such a thread has all three notes under its title. The first is the one on where the finding is, and the other two are skipped in either order.
-    const late = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/store.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], tags: ['follow-up'], checkStatus: 'unconfirmed', origin: 'reviewed' }, TEST_LINKS, true);
+    const late = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/store.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], tags: ['follow-up'], checkStatus: 'unconfirmed', origin: 'reviewed' }, TEST_LINKS, 'detached');
     const notes = late.match(/(This is in [^\n]+)\n\n(_Manki could not confirm[^\n]+)\n\n(_An earlier round already reviewed[^\n]+)\n\n/);
     expect(notes).not.toBeNull();
     for (const order of [[1, 2, 3], [1, 3, 2]]) {
@@ -2527,7 +2553,7 @@ describe('parseFindingFromComment', () => {
       expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     }
     // When the title line is not at the top, the layout is not Manki's own, and no line is dropped on the word of the finding data.
-    const edited = `Edited by hand.\n\n${formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/**Warning**: x.ts', line: 2, description: 'The logic is duplicated.', reviewers: [] }, TEST_LINKS, true)}`;
+    const edited = `Edited by hand.\n\n${formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/**Warning**: x.ts', line: 2, description: 'The logic is duplicated.', reviewers: [] }, TEST_LINKS, 'detached')}`;
     expect(parseFindingFromComment(edited).description).toBe('The logic is duplicated.');
     // The title is the line under the header, so a label in the description is part of the description.
     const labelled = 'It reads **Warning**: not a title, and then goes on.';

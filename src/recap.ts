@@ -247,6 +247,18 @@ function matchTitleLine(body: string): RegExpMatchArray | null {
   return atTop ?? body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
 }
 
+/**
+ * Returns `body` without the line that opens a detached thread and says where its finding is. The line is taken by its
+ * place, since posting can change its text, and only below a title line at the top of the body, where no text of the
+ * finding can stand.
+ */
+export function withoutDetachedNote(body: string): string {
+  const title = matchTitleLine(body);
+  if (!title || title.index !== 0 || !parseFindingData(body)?.detached) return body;
+  const rest = body.slice(title[0].length).trimStart();
+  return `${title[0]}\n${rest.slice(rest.split('\n', 1)[0].length).trimStart()}`;
+}
+
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
 export function sanitize(s: string, maxLength = 200): string {
   const cleaned = s.replace(/[\r\n]/g, ' ').replace(/`/g, '').replace(/"/g, '\\"');
@@ -415,6 +427,7 @@ function collectInPrSuppressions(
     const entry: InPrSuppression = {
       fingerprint: fingerprintFinding(pf.title, pf.file, lineStart, lineEnd),
       reason,
+      ...(isGuarded(pf) && { guarded: true }),
     };
     if (reason === 'agree-reply' && pf.authorReplyLogin) {
       entry.authorLogin = pf.authorReplyLogin;
@@ -895,7 +908,8 @@ interface ReviewThread extends FindingMetadata {
  * fields. Pure string scan, no markdown parser, intentionally conservative so
  * unexpected layouts skip extraction rather than emit garbage.
  */
-function parseFindingFromComment(body: string): FindingMetadata {
+function parseFindingFromComment(posted: string): FindingMetadata {
+  const body = withoutDetachedNote(posted);
   const titleMatch = matchTitleLine(body);
   if (!titleMatch || titleMatch.index === undefined) return {};
   const afterTitle = body.slice(titleMatch.index + titleMatch[0].length);
@@ -921,9 +935,6 @@ function parseFindingFromComment(body: string): FindingMetadata {
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
   const data = parseFindingData(body);
-  // A detached thread opens with the line that says where its finding is. The line is taken by its place, since posting can
-  // change its text, and only below a title line at the top of the body, where no text of the finding can stand.
-  if (data?.detached && titleMatch.index === 0) descSlice = descSlice.slice(descSlice.split('\n', 1)[0].length).trimStart();
   // The other notes under the title are skipped in whatever order they come.
   const leadingNote = (): string | undefined => [UNCONFIRMED_NOTE, MISSED_EARLIER_NOTE].find(n => descSlice.startsWith(n));
   for (let note = leadingNote(); note; note = leadingNote()) descSlice = descSlice.slice(note.length).trimStart();
@@ -1176,11 +1187,11 @@ function firstMatch<P extends PreviousFinding>(finding: Finding, previous: P[]):
 }
 
 /**
- * Whether the resolved `prev` lets dedup drop `finding` as already waived. A blocker is dropped only for a guarded
- * thread, since the PR author alone can resolve any other thread.
+ * Whether the resolved `prev` lets dedup drop `finding` as already waived. A blocker or a security finding is dropped
+ * only for a guarded thread, since the PR author alone can resolve any other thread.
  */
 function mayWaive(prev: PreviousFinding, finding: Finding): boolean {
-  return !prev.fixed && (finding.severity !== 'blocker' || isGuarded(prev));
+  return !prev.fixed && ((finding.severity !== 'blocker' && !isSecurityFinding(finding.tags)) || isGuarded(prev));
 }
 
 /** Returns `finding` with a note for the judge. A finding next to a fixed one can be a new defect, so dedup never drops it. */
@@ -1252,7 +1263,7 @@ type DedupItem = { title: string; file: string; line: number; description?: stri
 
 /** Returns `f` as one line for the dedup model: its title, its location and the start of its description. */
 function describeForDedup(f: DedupItem): string {
-  return `"${sanitize(f.title)}" (${sanitize(f.file)}:${f.line})${f.description ? `: "${sanitize(f.description, LLM_DEDUP_DESCRIPTION_CHARS)}"` : ''}`;
+  return `"${sanitize(f.title)}" (${sanitize(f.file)}${f.line > 0 ? `:${f.line}` : ''})${f.description ? `: "${sanitize(f.description, LLM_DEDUP_DESCRIPTION_CHARS)}"` : ''}`;
 }
 
 /**
@@ -1337,6 +1348,11 @@ async function llmSameDefects(pairs: Array<[DedupItem, DedupItem]>, client: LLMC
     core.warning(`LLM dedup of nearby findings failed, keeping them apart: ${error}`);
     return pairs.map(() => false);
   }
+}
+
+/** Returns the ids of the threads the PR author alone cannot clear. */
+export function collectGuardedThreadIds(previousFindings?: PreviousFinding[]): Set<string> {
+  return new Set((previousFindings ?? []).flatMap(f => (f.threadId && isGuarded(f) ? [f.threadId] : [])));
 }
 
 export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): Set<string> {
