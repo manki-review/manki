@@ -2826,15 +2826,18 @@ function linkedRange(range: CodeRange, linkTo: LineLink): string {
   return linked(inlineCode(rangeLabel(range)), linkTo(range.file, range.start, range.end));
 }
 
-/** Returns the part for one refuter's `check`. Its related lines in `listed` show under "Checked in the code" and not here. */
-function refutationPart(label: string, lead: string, check: Refutation, listed: readonly string[], { linkTo, related }: CodeLinks, known: readonly string[]): FoldPart {
+/**
+ * Returns the part for one refuter's `check`, with the lines it cites. The lines of a confirming check that became
+ * proof of the finding, in `evidence`, show under "Checked in the code" and not here.
+ */
+function refutationPart(label: string, lead: string, check: Refutation, evidence: Finding['evidence'], { linkTo, related }: CodeLinks, known: readonly string[]): FoldPart {
   const { reason, proof, relatedProof } = check;
-  // The lines of the PR that a confirming check cites are proof of the finding or nothing, so they never show here.
   const confirmed = outcomeOf(check) === 'confirmed';
+  const unlisted = (lines: readonly string[] = [], proven: readonly string[] = []): string[] => lines.filter(line => !(confirmed && proven.includes(line)));
   // The refuter keeps only proof locations that exist in the workspace, so a bare file name there is a root file.
   const cited = [
-    ...(confirmed ? [] : (proof ?? []).flatMap(p => parseCheck(p, known, true)?.at ?? []).map(r => linkedRange(r, linkTo))),
-    ...relatedLineLinks(relatedProof?.filter(line => !listed.includes(line)), related),
+    ...unlisted(proof, evidence?.proof).flatMap(p => parseCheck(p, known, true)?.at ?? []).map(r => linkedRange(r, linkTo)),
+    ...relatedLineLinks(unlisted(relatedProof, evidence?.relatedProof), related),
   ];
   const text = [lead, reason ? oneLine(reason) : '', cited.length ? `See ${cited.join(', ')}.` : '']
     .filter(Boolean).join(' ');
@@ -2844,7 +2847,6 @@ function refutationPart(label: string, lead: string, check: Refutation, listed: 
 /** Returns a part for each refuter that checked `finding`. */
 function refutationParts(finding: Finding, links: CodeLinks, known: readonly string[]): FoldPart[] {
   const { refutation, pairRefutation } = finding;
-  const listed = finding.evidence?.relatedProof ?? [];
   // A check that confirmed premises only did not say the defect exists, so it reads as unsettled on a finding marked `unconfirmed`.
   const shown = (check: Refutation): RefutationOutcome =>
     (finding.checkStatus === 'unconfirmed' && outcomeOf(check) === 'confirmed' && check.defect !== 'confirmed' ? 'unsettled' : outcomeOf(check));
@@ -2855,8 +2857,8 @@ function refutationParts(finding: Finding, links: CodeLinks, known: readonly str
   const text = (check: Refutation, plain: string): string => (keptByRule && outcomeOf(check) === 'disproved' ? OVERRULED_DISPROOF_TEXT : plain);
   const lead = refutation && (isDisprovedRaise(finding) ? DISPROVED_RAISE_TEXT : text(refutation, REFUTATION_PART[shown(refutation)].text));
   return [
-    ...(refutation && lead ? [refutationPart(REFUTATION_PART[shown(refutation)].label, lead, refutation, listed, links, known)] : []),
-    ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`), pairRefutation, listed, links, known)] : []),
+    ...(refutation && lead ? [refutationPart(REFUTATION_PART[shown(refutation)].label, lead, refutation, finding.evidence, links, known)] : []),
+    ...(pairRefutation && pairLead ? [refutationPart(PAIR_REFUTATION_LABEL, text(pairRefutation, `${pairLead[0].toUpperCase()}${pairLead.slice(1)}.`), pairRefutation, finding.evidence, links, known)] : []),
   ];
 }
 

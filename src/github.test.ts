@@ -388,6 +388,10 @@ describe('formatFindingComment', () => {
     const premisesOnly: Finding = { ...proving, evidence: { checks: [], proof: [] }, checkStatus: 'unconfirmed', refutation: { ...proving.refutation!, defect: 'unsettled' } };
     const seen = relatedLink('acme/reports:src/import.ts:2', 'src/import.ts', 'L2');
     expect(formatFindingComment(premisesOnly, fetched)).toContain(`<summary>How this was checked: not confirmed</summary>\n\n**Not settled**\nManki tried to disprove this by reading the code and could not decide. The consumer parses the column as a date. See ${seen}.\n\n</details>`);
+    // Its lines of the PR show in the same sentence, under the same rule.
+    const twoSides: Finding = { ...premisesOnly, refutation: { ...premisesOnly.refutation!, proof: ['src/main.ts:40'] } };
+    expect(formatFindingComment(twoSides, fetched)).toContain(`The consumer parses the column as a date. See [\`src/main.ts:40\`](${link('src/main.ts', 40)}), ${seen}.\n\n</details>`);
+    expect(formatFindingComment({ ...twoSides, evidence: { checks: [], proof: ['src/main.ts:40'], relatedProof: proving.evidence!.relatedProof } }, fetched)).toContain('The consumer parses the column as a date.\n\n</details>');
     const raised = formatFindingComment({ ...premisesOnly, evidence: proving.evidence }, fetched);
     expect(raised).toContain(`<summary>How this was checked: 1 place read, not confirmed</summary>\n\n**Checked in the code**\nIn a related repository: ${seen}\n\n**Not settled**\nManki tried to disprove this by reading the code and could not decide. The consumer parses the column as a date.\n\n</details>`);
     // A fetched repo with no commit recorded shows the location alone.
@@ -545,9 +549,15 @@ describe('formatFindingComment', () => {
     // A finding with a check status names that in the title of its fold, in place of what each refuter found.
     expect(render({ ...splitFinding, checkStatus: 'unconfirmed' })).toContain('<summary>How this was checked: not confirmed</summary>');
     // Under that status, a check that confirmed premises only reads as unsettled. One that confirmed the defect keeps its words.
+    // Its lines are no proof of the finding, so it names them itself, as a check that did not confirm does.
     const premiseOnly = render({ ...splitFinding, pairRefutation: { ...splitFinding.refutation!, defect: 'unsettled' }, checkStatus: 'unconfirmed' });
     expect(premiseOnly).not.toContain('ouble-checked');
-    expect(premiseOnly).toContain('**Not settled**\nManki tried to disprove this by reading the code and could not decide. No caller checks `value` first.\n\n**Second check, on another model**\nNot settled. No caller checks `value` first.');
+    const seen42 = `See [\`src/main.ts:42\`](${link('src/main.ts', 42)}).`;
+    expect(premiseOnly).toContain(`**Not settled**\nManki tried to disprove this by reading the code and could not decide. No caller checks \`value\` first. ${seen42}\n\n**Second check, on another model**\nNot settled. No caller checks \`value\` first. ${seen42}`);
+    // Once those lines are proof of the finding they show under "Checked in the code", and the check names none.
+    const proven = render({ ...splitFinding, evidence: { checks: [], proof: ['src/main.ts:42'] }, pairRefutation: undefined, checkStatus: 'unconfirmed' });
+    expect(proven).toContain('No caller checks `value` first.\n\n</details>');
+    expect(proven).not.toContain('See [');
     expect(render({ ...splitFinding, refutation: { ...splitFinding.refutation!, defect: 'confirmed' }, checkStatus: 'unconfirmed' })).toContain('**Double-checked**\nManki tried to disprove this by reading the code and could not.');
     expect(render({ ...splitFinding, pairRefutation: undefined, refutation: { ...splitFinding.refutation!, defect: 'unsettled' } })).toContain('**Double-checked:** Manki tried');
     const cited = { checks: ['src/util.ts:3 marks it intended'], proof: ['src/util.ts:3'] };
@@ -560,7 +570,8 @@ describe('formatFindingComment', () => {
     const oneLine = { checks: [], proof: ['src/main.ts:42'] };
     expect(render({ ...baseFinding, evidence: oneLine })).toContain('\n<!-- manki-checks -->\n**Checked:** ');
     expect(render({ ...baseFinding, evidence: oneLine, checkStatus: 'proven' })).toMatch(/\n<!-- manki-checks -->\n<details>\n<summary>How this was checked: 1 place read, proven from the cited lines<\/summary>\n\n- \[`src\/main\.ts:42`\]/);
-    expect(split).toContain(`**Double-checked**\nManki tried to disprove this by reading the code and could not. No caller checks \`value\` first.\n\n**Second check, on another model**\nDoubt found. The parser rejects it. See [\`src/util.ts:3\`](${link('src/util.ts', 3)}).`);
+    // The other check disagreed, so the lines of the confirming one are no proof of the finding either.
+    expect(split).toContain(`**Double-checked**\nManki tried to disprove this by reading the code and could not. No caller checks \`value\` first. ${seen42}\n\n**Second check, on another model**\nDoubt found. The parser rejects it. See [\`src/util.ts:3\`](${link('src/util.ts', 3)}).`);
 
     // A blocker of the judge's that two disproofs put back at its finders' grade says that it does not block.
     const loweredFinding: Finding = {
