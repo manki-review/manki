@@ -341,9 +341,10 @@ export interface Finding {
   /** The cell the judge stated, on a blocker `applyRefutation` put back at its finders' grade. Only for the record: no prompt shows it. */
   judgeCell?: GradeCell;
   /**
-   * The grade the finding's `cell` gives once every premise in `doubts` holds, worked out by Manki. Set when the finding
-   * has a doubt. The refuter checks the finding, and a confirmation of every doubt gives it this grade. On a finding
-   * that `isRareClaim` it is the grade of the `normal` column, which no confirmation gives.
+   * The grade the finding gets once every premise in `doubts` holds. Set when the finding has a doubt. Manki works it
+   * out from the `cell`, except that it is `warning` in a cell that gives a blocker when the judge stated `warning`.
+   * The refuter checks the finding, and a confirmation of every doubt gives it this grade. On a finding that
+   * `isRareClaim` it is the grade of the `normal` column, which no confirmation gives.
    */
   gradeIfConfirmed?: FindingSeverity;
   /** The premises the judge doubts, which the refuter checks one by one. */
@@ -628,9 +629,10 @@ export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): Fin
   return isRareClaim(f.cell) ? undefined : f.gradeIfConfirmed;
 }
 
-/** Whether the judge or a finder graded `f` a blocker at any point, or its `pendingGrade` is one. */
+/** Whether the judge or a finder graded `f` a blocker at any point, its `pendingGrade` is one, or its `cell` gives one. */
 export function wouldBlockIfTrue(f: Pick<Finding, 'gradeIfConfirmed' | 'cell' | 'reviewerSeverity' | 'gradePath'>): boolean {
-  return pendingGrade(f) === 'blocker' || f.reviewerSeverity === 'blocker' || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
+  return pendingGrade(f) === 'blocker' || (isGradeCell(f.cell) && cellGrade(f.cell.row, f.cell.column) === 'blocker') || f.reviewerSeverity === 'blocker'
+    || !!f.gradePath?.some(step => step.from === 'blocker' || step.to === 'blocker');
 }
 
 /** Whether `applyRefutation` put the blocker the judge alone made of `finding` back at its finders' grade. Nothing else lowers a blocker by a refutation. */

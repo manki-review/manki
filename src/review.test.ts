@@ -2875,6 +2875,8 @@ describe('runReview', () => {
       const lowered = (by: 'unproven' | 'build_claim' | 'refutation' | 'judge') => ({ gradePath: [{ from: 'blocker' as const, to: 'warning' as const, by }] });
       const result = await review({
         'The judge held a blocker cell down': { ...proof, doubts, gradeIfConfirmed: 'blocker', ...checked('unsettled') },
+        // The judge stated `warning` for the case that the doubt holds. The cell still gives a blocker, so an open doubt never leaves it out.
+        'The judge keeps a blocker cell at a warning': { doubts, gradeIfConfirmed: 'warning', cell: { row: 'wrong', column: 'normal' }, ...checked('unsettled') },
         // No answer makes it a blocker, and it is posted whatever its check answered.
         'The judge placed it in the rare column': { doubts, gradeIfConfirmed: 'blocker', cell: { row: 'wrong', column: 'rare' }, ...checked('unsettled') },
         'A blocker without cited lines': { tags: ['unproven-blocker'], ...lowered('unproven'), ...checked('unsettled') },
@@ -2890,7 +2892,7 @@ describe('runReview', () => {
       }, true);
 
       expect(shown(result)).toEqual([
-        ['The judge held a blocker cell down', 'unconfirmed'], ['The judge placed it in the rare column', 'unconfirmed'], ['A blocker without cited lines', 'unconfirmed'], ['A build failure no CI result reports', 'unconfirmed'],
+        ['The judge held a blocker cell down', 'unconfirmed'], ['The judge keeps a blocker cell at a warning', 'unconfirmed'], ['The judge placed it in the rare column', 'unconfirmed'], ['A blocker without cited lines', 'unconfirmed'], ['A build failure no CI result reports', 'unconfirmed'],
         ['A finder filed it as a blocker', 'unconfirmed'], ['A blocker the judge lowered', 'unconfirmed'], ['A security finding', 'unconfirmed'], ['A tool alert', undefined],
         ['A rule blocker without a search', 'unconfirmed'],
       ]);

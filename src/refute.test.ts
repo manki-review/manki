@@ -419,6 +419,7 @@ describe('refuteBlockers', () => {
       'Rare claim not among the premises': { reason: 'Both hold.', premises: [confirmed('src/math.ts:2'), confirmed('src/api.ts:4')] },
       'Confirmed where both columns block': { reason: 'It holds.', premises: [confirmed('src/api.ts:4')] },
       'Confirmed build claim in the rare column': { reason: 'It holds.', premises: [confirmed('src/api.ts:4')] },
+      'Doubt confirmed where the judge keeps a warning': { ...confirmed('src/math.ts:2'), premises: [confirmed('src/math.ts:2')] },
     });
     const rare = { row: 'wrong' as const, column: 'rare' as const };
     const findings = [
@@ -439,6 +440,8 @@ describe('refuteBlockers', () => {
       // Both columns of the `severe` row block, so its `rare` column is no claim and the blocker stays one.
       finding('Confirmed where both columns block', { gradeIfConfirmed: 'blocker', cell: { row: 'severe', column: 'rare' }, doubts: [REACH_DOUBT] }),
       finding('Confirmed build claim in the rare column', { severity: 'warning', gradeIfConfirmed: 'blocker', cell: rare, doubts: [REACH_DOUBT], buildClaim: true }),
+      // The judge stated `warning` as the grade this blocker cell earns once its doubt holds, so the confirmation raises nothing.
+      finding('Doubt confirmed where the judge keeps a warning', { severity: 'warning', gradeIfConfirmed: 'warning', cell: { row: 'wrong', column: 'normal' }, doubts: [exists] }),
     ];
 
     const result = await refuteBlockers(client, findings, { workspace, diff });
@@ -458,6 +461,7 @@ describe('refuteBlockers', () => {
       ['Rare claim not among the premises', 'warning', 'confirmed', ['confirmed', 'confirmed']],
       ['Confirmed where both columns block', 'blocker', 'confirmed', ['confirmed']],
       ['Confirmed build claim in the rare column', 'warning', 'confirmed', ['confirmed']],
+      ['Doubt confirmed where the judge keeps a warning', 'warning', 'confirmed', ['confirmed']],
     ]);
     // No answer moves a finding to the `normal` column. The stored premise answer tells the outcomes apart: the check
     // contradicts the `rare` claim (confirmed), the claim held (disproved), no one could tell (unsettled), or no check
@@ -471,10 +475,13 @@ describe('refuteBlockers', () => {
       ['Rare claim not among the premises', rare, 'confirmed'],
       ['Confirmed where both columns block', { row: 'severe', column: 'rare' }, 'confirmed'],
       ['Confirmed build claim in the rare column', rare, 'confirmed'],
+      ['Doubt confirmed where the judge keeps a warning', { row: 'wrong', column: 'normal' }, 'confirmed'],
     ]);
     // Only the doubt the judge listed on a blocker cell has a `refutation` step, and a confirmed reach leaves the finding as the judge graded it.
     expect(result.filter(f => f.gradePath?.some(step => step.by === 'refutation')).map(f => f.title)).toEqual(['Defect disproved', 'Disproved beside a confirmed premise', 'Doubt confirmed in the normal column']);
     expect([result[0].gradePath, result[0].gradeIfConfirmed, result[0].doubts, result[0].evidence?.proof]).toEqual([undefined, 'blocker', [exists, REACH_DOUBT], findings[0].evidence?.proof]);
+    const keptWarning = result.at(-1)!;
+    expect([keptWarning.gradePath, keptWarning.gradeIfConfirmed, checkStatus(keptWarning)]).toEqual([undefined, 'warning', 'confirmed']);
     expect(result[0].refutation).toMatchObject({
       proof: ['src/math.ts:2', 'src/api.ts:4'],
       premises: [{ premise: 'No caller bounds `a`', outcome: 'confirmed', reason: 'It holds.', proof: ['src/math.ts:2'] }, { premise: REACH_DOUBT.premise, outcome: 'confirmed', reason: 'It holds.', proof: ['src/api.ts:4'] }],
@@ -801,6 +808,10 @@ describe('refuteBlockers', () => {
       }, ['blocker', 'confirmed'], ['warning', 'unconfirmed'], ['blocker', 'unconfirmed'], ['warning', 'confirmed']],
       ['Warning the judge doubts', {
         severity: 'warning', gradeIfConfirmed: 'warning', doubts: exists,
+      }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
+      // The judge stated `warning` as the grade this blocker cell earns once the doubt holds, so no answer raises it.
+      ['Blocker cell the judge keeps at a warning', {
+        severity: 'warning', gradeIfConfirmed: 'warning', cell: { row: 'wrong', column: 'normal' }, doubts: exists,
       }, ['warning', 'confirmed'], ['warning', 'unconfirmed'], ['warning', 'unconfirmed'], ['warning', 'confirmed']],
       ['Warning no cited line proves', { severity: 'warning', ...noProof }, ['warning', 'confirmed'], ['warning', 'unconfirmed']],
       ['Warning no cited line proves, which the judge doubts', {

@@ -111,6 +111,7 @@ describe('applySuppressions', () => {
       makeFinding({ severity: 'warning', title: 'Unused variable does not compile', tags: [UNBUILT_TAG] }),
       // A check protects a finding that was or would be a blocker, and one whose grade it changed.
       makeFinding({ severity: 'warning', title: 'Unused variable hides the error', refutation, gradeIfConfirmed: 'blocker' }),
+      makeFinding({ severity: 'warning', title: 'Unused variable in a blocker cell the judge keeps at a warning', refutation, gradeIfConfirmed: 'warning', cell: { row: 'wrong', column: 'normal' } }),
       makeFinding({ severity: 'warning', title: 'Unused variable a finder called a blocker', pairRefutation: refutation, reviewerSeverity: 'blocker' }),
       makeFinding({ severity: 'warning', title: 'Unused variable the check lowered', refutation, gradePath: [{ from: 'blocker', to: 'warning', by: 'refutation' }] }),
       makeFinding({ severity: 'warning', title: 'Unused variable the check raised', refutation, gradePath: [{ from: 'note', to: 'warning', by: 'refutation' }] }),
