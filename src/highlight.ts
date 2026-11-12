@@ -7,9 +7,11 @@ const TOKEN_RE = /(?<![\w$])[A-Za-z_$][\w$]*(?:[./][A-Za-z_$][\w$-]*)*/g;
 // As in Markdown, inline code closes only on a run of as many backticks, within its paragraph, and an escaped backtick
 // is text. An unclosed run stays text, so it cannot pair with a backtick further on and leave the code after it unprotected.
 // Text between two escaped backticks on a line is code shown as text, so it stays as it is too.
-// A line written wholly in underscore italics stays as written, which is how Manki writes its own notes. Its first and
-// last word would otherwise read as identifiers with the underscore, such as `_An`.
-const PROTECTED_RE = /<summary>[^\n]*?<\/summary>|(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\1[ \t]*(?=\n|$)|\\`[^`\n]*?\\`|\\`|(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\2(?!`)|<!--[\s\S]*?-->|<\/?[A-Za-z][^>\n]*>|!?\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/[^\s)]+|(?<![^\n])[ \t]*_(?![_\s])[^\n]*(?<![_\s])_[ \t]*(?![^\n])/g;
+// A line that is one underscore italic from its first to its last character stays as written, which is how Manki
+// writes its own notes. Its first and last word would otherwise read as identifiers with the underscore, such as `_An`.
+// An underscore inside the line may only sit within a word, so a line holding two italics, or one that only starts and
+// ends with an underscore, is no such line.
+const PROTECTED_RE = /<summary>[^\n]*?<\/summary>|(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\1[ \t]*(?=\n|$)|\\`[^`\n]*?\\`|\\`|(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\2(?!`)|<!--[\s\S]*?-->|<\/?[A-Za-z][^>\n]*>|!?\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/[^\s)]+|(?<![^\n])[ \t]*_(?![_\s])(?:[^_\n]|(?<=[^\W_])_(?=[^\W_]))*(?<!\s)_[ \t]*(?![^\n])/g;
 // Inside a `<summary>`: existing code and the tags, which hold attributes such as link targets.
 const SUMMARY_PROTECTED_RE = /<code>[\s\S]*?<\/code>|<[^>]*>/g;
 

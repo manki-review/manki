@@ -2226,7 +2226,7 @@ function formatLabelled(label: string, text: string): string {
   return `**${label}:**${safe.includes('\n') ? '\n\n' : ' '}${safe}`;
 }
 
-const TEST_GUIDE_NOTE = '_The review model wrote these steps. Check what a step runs before you follow it._';
+export const TEST_GUIDE_NOTE = '_The review model wrote these steps. Check what a step runs before you follow it._';
 
 /**
  * Renders the setup on its own line and the steps as a numbered list, one step per line, under a note that the model

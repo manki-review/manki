@@ -1,3 +1,4 @@
+import { MISSED_EARLIER_NOTE, TEST_GUIDE_NOTE, UNCONFIRMED_NOTE } from './github';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { ParsedDiff } from './types';
 
@@ -72,15 +73,20 @@ describe('highlightCode', () => {
     expect(highlightCode('Escaped \\`run createReview\\` stays, then createReview.', tokens)).toBe('Escaped \\`run createReview\\` stays, then `createReview`.');
   });
 
-  it('keeps a line written wholly in italics as written, whatever identifiers the diff holds', () => {
-    // The diff quotes the sentence, so its first and last word are identifiers of the diff with their underscore.
-    const note = '_An earlier round already reviewed createReview, and it doesn\'t block this PR._';
-    const quoting = codeTokensFromDiff({ ...diff, files: [{ ...diff.files[0], hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, content: `+const NOTE = '${note}';` }] }] });
-    expect([...quoting]).toEqual(expect.arrayContaining(['_An', 'PR._']));
+  it('keeps a line that is one italic as written, whatever identifiers the diff holds', () => {
+    // The diff quotes each sentence, so its first and last word are identifiers of the diff with their underscore.
+    const note = '_An earlier round already reviewed createReview and review_body, and it doesn\'t block this PR._';
+    const notes = [note, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, TEST_GUIDE_NOTE];
+    const quoting = codeTokensFromDiff({ ...diff, files: [{ ...diff.files[0], hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 2, content: `+const NOTES = '${notes.join(' ')}';\n+_resetOctokitCache();` }] }] });
+    expect([...quoting]).toEqual(expect.arrayContaining(['_An', 'PR._', '_Manki', 'it._', '_The', '_resetOctokitCache']));
     const all = new Set([...tokens, ...quoting]);
-    expect(highlightCode(note, all)).toBe(note);
+    for (const fixed of notes) expect(highlightCode(fixed, all)).toBe(fixed);
     expect(highlightCode(`**Title**\n\n${note}\n\nThen createReview.`, all)).toBe(`**Title**\n\n${note}\n\nThen \`createReview\`.`);
     expect(highlightCode(`- Item\n\n  ${note}\n  Then createReview.`, all)).toBe(`- Item\n\n  ${note}\n  Then \`createReview\`.`);
+    // A line that only starts and ends with an underscore is not one italic, so it is highlighted like any other.
+    expect(highlightCode('_Before:_ createReview runs, _always_', all)).toBe('_Before:_ `createReview` runs, _always_');
+    expect(highlightCode('_resetOctokitCache is called by createReview, then _always_', all)).toBe('`_resetOctokitCache` is called by `createReview`, then _always_');
+    expect(highlightCode('_An is read by createReview_, and PR._', all)).toBe('`_An` is read by createReview_, and `PR._`');
     // Italics inside a line protect nothing, and neither does a line in bold.
     expect(highlightCode('Here _An is read_ by createReview.', all)).toBe('Here `_An` is read_ by `createReview`.');
     expect(highlightCode('__Twice, createReview runs here__', all)).toBe('__Twice, `createReview` runs here__');
