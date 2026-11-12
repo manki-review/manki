@@ -967,6 +967,8 @@ export interface ReviewResult {
   agentDurationMs?: Map<string, number>;
   /** Number of CLI/SDK retries per agent. Zero (omitted) when the first try succeeded. */
   agentRetryCount?: Map<string, number>;
+  /** Why each failed attempt of an agent failed, in order, kept when a retry then succeeded. */
+  agentWarnings?: Map<string, string[]>;
   plannerDurationMs?: number;
   judgeDurationMs?: number;
   judgeRetryCount?: number;
@@ -2029,6 +2031,7 @@ export interface RoundAgentMetric {
   durationMs?: number;
   status?: 'success' | 'failed';
   responseLength?: number;
+  /** Why each failed attempt of the agent failed, in order. A retry that then succeeded leaves the reason here. */
   warnings?: string[];
   inputTokens?: number;
   outputTokens?: number;

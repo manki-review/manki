@@ -217,6 +217,13 @@ describe('parseFindings', () => {
     ['null', 'null', /^response is not a JSON array, got null/],
     ['an empty response', '', /^empty response/],
     ['a whitespace-only response', '  \n ', /^empty response/],
+    // An element that holds none of the fields a finding is read from says nothing, however it is shaped.
+    ['findings nested under a key', '[{"finding":{"title":"Unchecked sum","description":"Overflows."}},{"finding":{"title":"b"}}]', /^no element has a title or a description \(2 element\(s\), keys: finding\)$/],
+    ['other key names', '[{"summary":"Unchecked sum","path":"src/a.ts","line":5}]', /^no element has a title or a description \(1 element\(s\), keys: summary, path, line\)$/],
+    ['elements that are no objects', '["Unchecked sum",null,7,["x"],{}]', /^no element has a title or a description \(5 element\(s\), string \| null \| number \| \.\.\.\)$/],
+    ['blank fields and a lead that names nothing', '[{"severity":"blocker","title":" ","description":""},{"lead":true,"checked":"","title":7}]', /\(2 element\(s\), keys: severity, title, description \| keys: lead, checked, title\)$/],
+    // The keys are model output: each is cut, kept to plain characters, and only the first few are named.
+    ['keys that are long, odd or many', JSON.stringify([Object.fromEntries([['a\n::error::`b`', 1], ['k'.repeat(80), 1], ...Array.from({ length: 9 }, (_, i) => [`k${i}`, 1])])]), new RegExp(`\\(1 element\\(s\\), keys: a\\?\\?\\?error\\?\\?\\?b\\?, k{30}, k0, k1, k2, k3, k4, k5, \\.\\.\\.\\)$`)],
   ])('throws on %s', (_label, input, expected) => {
     expect(() => parseFindings(input, 'Reviewer')).toThrow(expected);
   });
@@ -232,16 +239,27 @@ describe('parseFindings', () => {
     }
   });
 
-  it('handles missing fields gracefully', () => {
-    const json = JSON.stringify([{ severity: 'blocker' }]);
+  it('fills the fields an element leaves out, and drops an element without a title and a description next to usable ones', () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    try {
+      const json = JSON.stringify([
+        { severity: 'blocker', description: 'The sum overflows.' },
+        { severity: 'blocker' },
+        { title: 'Unchecked sum' },
+        { lead: true, left: 'find the writers' },
+        'a stray note',
+      ]);
 
-    const findings = parseFindings(json, 'Reviewer');
-    expect(findings).toHaveLength(1);
-    expect(findings[0].title).toBe('Untitled finding');
-    expect(findings[0].file).toBe('');
-    expect(findings[0].line).toBe(0);
-    expect(findings[0].description).toBe('');
-    expect(findings[0].suggestedFix).toBeUndefined();
+      const findings = parseFindings(json, 'Reviewer');
+      expect(findings.map(f => [f.title, f.file, f.line, f.description, f.suggestedFix])).toEqual([
+        ['Untitled finding', '', 0, 'The sum overflows.', undefined],
+        ['Unchecked sum', '', 0, '', undefined],
+        ['Untitled finding', '', 0, 'A reviewer raised this as a suspicion it had not finished checking. It had checked: nothing. Still to check: find the writers.', undefined],
+      ]);
+      expect(warnSpy.mock.calls).toEqual([['Reviewer: dropped 2 of 5 element(s) without a title or a description (keys: severity | string)']]);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('defaults unknown severity to note', () => {
@@ -4104,6 +4122,7 @@ describe('runReview', () => {
     ['the provider call rejects', () => Promise.reject(new Error('API error')), 'API error'],
     ['the output is not JSON', () => Promise.resolve({ content: 'I cannot review this.' }), 'malformed response'],
     ['the output is truncated', () => Promise.resolve({ content: '[]', truncated: true }), 'truncated at the output token limit'],
+    ['no element of the output has a title or a description', () => Promise.resolve({ content: '[{"finding":{"title":"Unchecked sum"}}]' }), 'no element has a title or a description (1 element(s), keys: finding)'],
   ])('returns COMMENT verdict after retries when all agents fail because %s', async (_label, respond, reason) => {
     const sendMessage = jest.fn().mockImplementation(respond);
     const clients: ReviewClients = {
@@ -4124,6 +4143,7 @@ describe('runReview', () => {
     expect(sendMessage).toHaveBeenCalledTimes(2 * (MAX_AGENT_RETRIES + 1));
     for (const name of result.failedAgents!) {
       expect(result.agentFailureReasons?.[name]).toContain(reason);
+      expect(result.agentWarnings?.get(name)).toEqual(Array(MAX_AGENT_RETRIES + 1).fill(result.agentFailureReasons?.[name]));
     }
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
@@ -5531,10 +5551,13 @@ describe('runReview', () => {
     expect(pairSuccess[0].completedAgents).toBeGreaterThan(pairFailure[0].completedAgents!);
   });
 
-  it('retries a finder whose reply is prose with a note that names the error, and keeps the findings of the retry', async () => {
+  it.each<[string, string, RegExp]>([
+    ['is prose', 'I checked the changed files and the sum looks fine.', /^malformed response \(length 51\): .+$/],
+    ['holds no element with a title or a description', '[{"finding":{"title":"Unchecked sum","file":"src/a.ts"}}]', /^no element has a title or a description \(1 element\(s\), keys: finding\)$/],
+  ])('retries a finder whose reply %s with a note that names the error, and keeps the findings of the retry', async (_label, reply, reason) => {
     const finding = { severity: 'blocker', title: 'Unchecked sum', file: 'src/a.ts', line: 5, description: 'Overflows.' };
     const pair = jest.fn()
-      .mockResolvedValueOnce({ content: 'I checked the changed files and the sum looks fine.' })
+      .mockResolvedValueOnce({ content: reply })
       .mockResolvedValue({ content: JSON.stringify([finding]) });
     const clients = pairedClients(jest.fn().mockResolvedValue({ content: '[]' }), pair);
     mockedRunJudgeAgent.mockImplementation(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
@@ -5543,9 +5566,12 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
     expect(result.failedAgents).toBeUndefined();
     expect(pair).toHaveBeenCalledTimes(2);
+    // The record keeps why the first attempt failed, and only for the finder that was retried.
+    expect(result.agentFailureReasons).toBeUndefined();
+    expect([...result.agentWarnings!]).toEqual([['Claude Opus 5.5 · high', [expect.stringMatching(reason)]]]);
     const [[firstSystem, firstMessage], [retrySystem, retryMessage]] = pair.mock.calls as [string, string][];
     expect(retrySystem).toBe(firstSystem);
-    expect(retryMessage).toMatch(/^[\s\S]*\n\nYour previous reply could not be used: malformed response \(length 51\): .+\n\nReply with only the JSON array the system prompt describes, with no text, markdown or code fence around it\.$/);
+    expect(retryMessage.slice(firstMessage.length)).toMatch(new RegExp(`^\n\nYour previous reply could not be used: ${reason.source.slice(1, -1)}\n\nReply with only the JSON array the system prompt describes, with no text, markdown or code fence around it\\.$`));
     expect(retryMessage.startsWith(firstMessage)).toBe(true);
     // Only the retry carries the note: no first attempt does, of this finder or the other one.
     expect(firstMessage).not.toContain('Your previous reply could not be used');
