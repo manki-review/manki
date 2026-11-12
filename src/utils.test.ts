@@ -55,6 +55,14 @@ describe('utils', () => {
       expect(formatDuration(60000)).toBe('1m 0s');
       expect(formatDuration(90000)).toBe('1m 30s');
       expect(formatDuration(125000)).toBe('2m 5s');
+      expect(formatDuration(3_599_400)).toBe('59m 59s');
+    });
+
+    it('formats an hour or more in hours and minutes, and rounds to the second', () => {
+      expect(formatDuration(3_600_000)).toBe('1h 0m');
+      expect(formatDuration(11_112_000)).toBe('3h 5m');
+      expect(formatDuration(1500)).toBe('2s');
+      expect(formatDuration(59_600)).toBe('1m 0s');
     });
 
     it('works with values passed through a helper', () => {

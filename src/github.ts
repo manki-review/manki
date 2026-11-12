@@ -13,7 +13,7 @@ import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, currentFindingLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { AUTHOR_CLEAR_ROLES, AuthorClearRole, breaksRule, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, overruledDisproof, SEVERITY_ORDER, threadBlocks } from './types';
-import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
+import { formatDuration, hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { formatRunner } from './run-diagnostics';
 import { latestLimits } from './providers/instrumentation';
@@ -698,16 +698,6 @@ function renderAgentLines(agents: AgentProgressEntry[]): string {
     }
     return `${INDENT}○ ${name}`;
   }).join('\n');
-}
-
-/** Formats a duration such as `850ms`, `45s`, `4m 12s` or `1h 2m`. */
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 function validPrTypeOrNull(prType: string): string | null {

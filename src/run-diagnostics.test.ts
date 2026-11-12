@@ -140,6 +140,7 @@ describe('formatRunner', () => {
   it('shows the kind, the wait and the peak memory against the limit', () => {
     expect(formatRunner(runner)).toBe('Runner: self-hosted · waited 11m 3s · peak memory 1.9 GiB of 2.0 GiB');
     expect(formatRunner(runner, true)).toBe('Runner: self-hosted · waited 11m 3s · peak memory 1.9 GiB of 2.0 GiB · 4 CPUs · up to 6 model CLI processes at once');
+    expect(formatRunner({ ...runner, queuedMs: 11_112_000 })).toBe('Runner: self-hosted · waited 3h 5m · peak memory 1.9 GiB of 2.0 GiB');
   });
 
   it('falls back to the machine memory and leaves out what was not measured', () => {
