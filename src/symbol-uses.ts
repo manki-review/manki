@@ -1035,9 +1035,14 @@ function translatedPattern(name: string): RegExp {
   return isCodeLike(name) ? referencePattern(name) : wordPattern([name]);
 }
 
-/** Matches a line that looks like it declares `word`, as `#define`, a type or a constant does, but not a parameter. */
-function declarationPattern(word: RegExp): RegExp {
-  return new RegExp(`(?:#define\\s+|\\b(?:class|struct|enum|union|const|constexpr|static|typedef|using|fn|def|func|type|let|var|interface)\\b[^;=(){}]*?)${word.source}\\s*(?:[=;{(:[<]|$)`, 'i');
+const DECLARING_KEYWORD = '\\b(?:class|struct|enum|union|const|constexpr|static|typedef|using|fn|def|func|type|let|var|interface)\\b';
+
+/**
+ * Matches a line that looks like it declares `word`, as `#define`, a type or a constant does, but not a parameter. Only
+ * the last keyword before `word` is read on to it, so a line of many keywords is read once and not once per keyword.
+ */
+export function declarationPattern(word: RegExp): RegExp {
+  return new RegExp(`(?:#define\\s+|${DECLARING_KEYWORD}(?:(?!${DECLARING_KEYWORD})[^;=(){}])*?)${word.source}\\s*(?:[=;{(:[<]|$)`, 'i');
 }
 
 function addSymbol(symbols: Map<string, ChangedSymbol>, symbol: ChangedSymbol): void {

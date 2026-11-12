@@ -8,7 +8,7 @@ import go from '@ast-grep/lang-go';
 import python from '@ast-grep/lang-python';
 import rust from '@ast-grep/lang-rust';
 
-import { listClaimLines, listRelatedUses, listUsesOutsideDiff, UsesOutsideDiff } from './symbol-uses';
+import { declarationPattern, listClaimLines, listRelatedUses, listUsesOutsideDiff, UsesOutsideDiff } from './symbol-uses';
 import { expectLinearTime, gitWorkspace } from './test-utils';
 
 jest.mock('@actions/core');
@@ -1195,6 +1195,31 @@ describe('listRelatedUses', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe('declarationPattern', () => {
+  it('matches a line that declares the word, in time linear in the line', () => {
+    const declares = declarationPattern(/(?<![\w$])(?:retryLimit|retry_limit)(?![\w$])/i);
+    const lines: Array<[string, boolean]> = [
+      ['const retryLimit = 3', true],
+      ['static const retryLimit: u32 = 3;', true],
+      ['fn retry_limit() {', true],
+      ['#define RETRY_LIMIT(n) (n * 2)', true],
+      ['interface Options { retryLimit: number }', false],
+      ['let x = retryLimit;', false],
+      ['foo(retryLimit)', false],
+      ['constant retryLimit = 1', false],
+    ];
+    for (const [line, declared] of lines) expect(declares.test(line)).toBe(declared);
+
+    // Lines of many keywords before the word, which a scan from each keyword to the word would read once per keyword.
+    const size = 100_000;
+    for (const line of [`${'var '.repeat(size / 4)}retryLimit x`, `${'var retryLimit '.repeat(size / 15)}x`]) {
+      const started = performance.now();
+      declares.test(line);
+      expect(performance.now() - started).toBeLessThan(100);
+    }
+  });
 });
 
 describe('listClaimLines', () => {
