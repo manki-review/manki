@@ -1913,7 +1913,7 @@ function ownProposalOf(finding: Finding, provenanceMap?: ProvenanceEntry[]): Pro
  * Drops a finding below `warning` on code that applies a prior-round `suggestedFix`, so Manki does not
  * object to a change it asked for. A `warning` or `blocker` there means the new code is worse, and it stays.
  */
-export function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): Finding {
+function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): Finding {
   const match = ownProposalOf(finding, provenanceMap);
   if (!match || !isNote(finding.severity)) return finding;
   const safeTitle = match.originatingTitle.replace(/[\n\r`]/g, ' ').slice(0, 200);
