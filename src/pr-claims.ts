@@ -4,12 +4,12 @@ import { addedLines } from './diff';
 import { fenceText } from './github';
 import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
-import { existingLocations } from './refute';
+import { existingLocations, relatedLocations } from './refute';
 import { repoTools } from './related-repos';
 import { CLAIMS_MISSING_RULE, fencePrText, parseFindings, parseProof, PRE_EXISTING_RULE, unmarkedText } from './review';
 import { diffSection } from './sweep';
 import { COMMENT } from './symbol-uses';
-import { EffortLevel, Finding, ParsedDiff, PrClaim, PrContext, RoundPrClaim, RoundPrClaims } from './types';
+import { EffortLevel, Finding, ParsedDiff, PrClaim, PrContext, RelatedRepoTools, RoundPrClaim, RoundPrClaims } from './types';
 import { mapWithConcurrency, safeTruncate, sendWithParseRetry } from './utils';
 import { UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 
@@ -66,7 +66,7 @@ Give one status:
 - **disproven**: the code you read shows the statement is false for an input the change relies on. Cite the lines that show it in \`proof\`, and report in \`findings\` what goes wrong in the change because of it.
 - **unchecked**: you could not find the code, could not finish, or the code leaves it open. Say in \`reason\` what is left to check.
 
-A statement you could not check is no defect, so it gets no finding. Neither does a statement that is loosely worded while the code does the right thing. Report a finding only when the status is \`disproven\`, and only a defect that follows from the false statement, since other reviewers read the whole change. Manki keeps \`proven\` and \`disproven\` only with a \`proof\` line that exists in the repository.
+A statement you could not check is no defect, so it gets no finding. Neither does a statement that is loosely worded while the code does the right thing. Report a finding only when the status is \`disproven\`, and only a defect that follows from the false statement, since other reviewers read the whole change. Manki keeps \`proven\` and \`disproven\` only with a \`proof\` line that exists in the repository, or in a related repo when you are given any. Cite a line of a related repo in \`proof\` as \`owner/name:path:line\`.
 
 Respond with ONLY a JSON object (no markdown fences, no explanation):
 
@@ -183,18 +183,24 @@ function checkMessage({ quote, source }: PrClaim, rawDiff: string): string {
 }
 
 /**
- * Reads a check's reply. `proven` and `disproven` stand only with a cited line that exists in `workspace`, and every
- * other answer is `unchecked`. Findings are kept only for a `disproven` that stands, so an unproven claim reports none.
+ * Reads a check's reply. `proven` and `disproven` stand only with a cited line that exists in `workspace` or in a
+ * checkout of `related` the round fetched, and every other answer is `unchecked`. Findings are kept only for a
+ * `disproven` that stands, so an unproven claim reports none.
+ *
+ * A line of a related repo alone can decide either status. Neither lifts a finding: `proven` is only recorded, and
+ * `disproven` reports a finding that the judge and the refuter then check like any other. A stage that ever lowers a
+ * finding on a `proven` claim has to ask for a line of the PR's own code there, as the refuter does for a disproof.
  */
-function parseCheck(text: string, workspace: string, reviewer: string): Pick<RoundPrClaim, 'status' | 'reason' | 'proof'> & { reported: Finding[] } {
+function parseCheck(text: string, workspace: string, reviewer: string, related?: RelatedRepoTools): Pick<RoundPrClaim, 'status' | 'reason' | 'proof' | 'relatedProof'> & { reported: Finding[] } {
   const parsed = JSON.parse(extractJSON(text, 'object')) as Record<string, unknown>;
   const stated = STATUSES.find(status => status === parsed.status);
   if (!stated) throw new Error(`the status is ${JSON.stringify(parsed.status)}, not one of ${STATUSES.join(', ')}`);
   const proof = stated === 'unchecked' ? [] : existingLocations(workspace, parseProof(parsed.proof));
-  const status = proof.length > 0 ? stated : 'unchecked';
+  const relatedProof = stated === 'unchecked' ? [] : relatedLocations(parsed.proof, related);
+  const status = proof.length + relatedProof.length > 0 ? stated : 'unchecked';
   const reason = typeof parsed.reason === 'string' ? safeTruncate(parsed.reason.trim(), MAX_REASON_CHARS) : '';
   const reported = status === 'disproven' && Array.isArray(parsed.findings) ? parseFindings(JSON.stringify(parsed.findings), reviewer) : [];
-  return { status, ...(reason && { reason }), ...(proof.length > 0 && { proof }), reported };
+  return { status, ...(reason && { reason }), ...(proof.length > 0 && { proof }), ...(relatedProof.length > 0 && { relatedProof }), reported };
 }
 
 /** Whether `reviewer` is the name `runClaimChecks` gives a claim check. */
@@ -206,6 +212,8 @@ export interface ClaimCheckOptions {
   effort?: EffortLevel;
   /** The checked-out PR head, which a check reads with read-only tools. Without it no check runs. */
   workspace?: string;
+  /** The related repos of the round, which a check reads with the same tools. */
+  related?: RelatedRepoTools;
   /** Stops the checks still running or not yet asked, which are then recorded as `timed_out`. */
   signal?: AbortSignal;
 }
@@ -217,7 +225,7 @@ export interface ClaimCheckOptions {
  * failed or was stopped by `signal` is `unchecked`, with why in `call`. It never throws.
  */
 export async function runClaimChecks(
-  clientFor: (reviewer: string) => LLMClient, claims: readonly PrClaim[], { rawDiff, effort, workspace, signal }: ClaimCheckOptions,
+  clientFor: (reviewer: string) => LLMClient, claims: readonly PrClaim[], { rawDiff, effort, workspace, related, signal }: ClaimCheckOptions,
 ): Promise<{ findings: Finding[]; claims: RoundPrClaim[] }> {
   // A name never carries text from the PR, so each check is numbered and its record holds the quote.
   const asked = claims.map((claim, i) => ({ claim, reviewer: `${CLAIM_CHECK_NAME} ${i + 1}` }));
@@ -227,7 +235,7 @@ export async function runClaimChecks(
     if (!workspace || !client.repoTools) return unchecked('skipped');
     if (signal?.aborted) return unchecked('timed_out');
     const options: SendMessageOptions = {
-      ...(effort && { effort }), ...(signal && { signal }), repoTools: repoTools(workspace, CHECK_STEPS, undefined), timeoutMs: CHECK_TIMEOUT_MS,
+      ...(effort && { effort }), ...(signal && { signal }), repoTools: repoTools(workspace, CHECK_STEPS, related), timeoutMs: CHECK_TIMEOUT_MS,
     };
     try {
       const { reported, ...answer } = await sendWithParseRetry(
@@ -235,7 +243,7 @@ export async function runClaimChecks(
         message => client.sendMessage(CHECK_SYSTEM_PROMPT, message, options),
         reply => {
           if (reply.truncated) throw new Error(`response truncated at the output token limit (length ${reply.content.length})`);
-          return parseCheck(reply.content, workspace, reviewer);
+          return parseCheck(reply.content, workspace, reviewer, related);
         },
         error => core.warning(`${reviewer} reply could not be used (${error}), asking once more`),
       );

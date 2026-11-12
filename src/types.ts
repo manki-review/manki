@@ -611,8 +611,8 @@ export interface RoundPrClaim extends PrClaim {
   /** The reviewer name its findings carry. */
   reviewer: string;
   /**
-   * `proven` or `disproven` only when the check cited a line that exists in the head commit. Every other end is
-   * `unchecked`. It is a record only: no stage is shown it and no grade depends on it.
+   * `proven` or `disproven` only when the check cited a line that exists in the head commit or in a related repo the
+   * round fetched. Every other end is `unchecked`. It is a record only: no stage is shown it and no grade depends on it.
    */
   status: 'proven' | 'disproven' | 'unchecked';
   /**
@@ -625,6 +625,8 @@ export interface RoundPrClaim extends PrClaim {
   reason?: string;
   /** The existing `file:line` locations the check cited for `proven` or `disproven`. */
   proof?: string[];
+  /** The lines of related repos it cited for that, as `owner/name:path:line`, each in a checkout the round fetched. */
+  relatedProof?: string[];
   /** The defects it reported for a `disproven` claim, before dedup and the judge. */
   findings?: number;
 }

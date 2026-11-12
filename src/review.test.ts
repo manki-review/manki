@@ -46,6 +46,7 @@ import { PreviousFinding } from './recap';
 import { buildRoundUsage } from './round-context';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, RELATED_REPO_TRUST_RULE, SEVERITY_TABLE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
 import { latestLimits, LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, SendMessageOptions, summarizeCalls, withRefusalFallback, wrapClientForUsage } from './providers';
+import { isClaimCheck } from './pr-claims';
 import { repoToolsPrompt } from './providers/cli-utils';
 
 const READY_VERDICT = JSON.stringify({
@@ -2149,6 +2150,10 @@ describe('runReview', () => {
           tools.set('sweep', options?.repoTools);
           return { content: JSON.stringify({ class: 'a lookup checks one of two sets', general: true, findings: [] }) };
         }
+        if (system.startsWith('You check one statement')) {
+          tools.set('claim', options?.repoTools);
+          return { content: JSON.stringify({ status: 'unchecked', reason: 'The importer was not read.' }) };
+        }
         tools.set('finder', options?.repoTools);
         // A finder reads one repo, which fetches it.
         if (options?.repoTools?.related) fetched(options.repoTools.related.stateDir, 'acme/reports');
@@ -2156,6 +2161,8 @@ describe('runReview', () => {
         reported = true;
         return { content };
       });
+      const importerClaim = 'the importer starts each id once';
+      Object.assign(clients, { dedup: { sendMessage: jest.fn(async (system: string) => ({ content: system.startsWith('You list the statements') ? JSON.stringify([importerClaim]) : '[]' })) } as unknown as LLMClient });
       Object.assign(clients.judge, { repoTools: true });
       jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string, user: string, options?: SendMessageOptions) => {
         if (system.startsWith('You are a code review judge')) {
@@ -2171,7 +2178,10 @@ describe('runReview', () => {
       });
       mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
       try {
-        const result = await runReview(clients, { config: makeConfig({ related_repos, review: { sweep: 'warnings' }, judge: { tool_steps: 5 } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+        const result = await runReview(clients, {
+          config: makeConfig({ related_repos, review: { sweep: 'warnings' }, judge: { tool_steps: 5 } }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root,
+          prContext: { title: 'Skip started ids', body: `Safe, since ${importerClaim}.`, baseBranch: 'main' },
+        });
         return { result, tools, judgeMessage, root };
       } finally {
         rmSync(root, { recursive: true, force: true });
@@ -2186,6 +2196,7 @@ describe('runReview', () => {
       expect(Object.fromEntries(tools)).toEqual({
         finder: { root, steps: expect.any(Number), related },
         compare: { root, steps: 12, related },
+        claim: { root, steps: 12, related },
         sweep: { root, steps: 15, related },
         judge: { root, steps: 5, related, checking: true },
         refute: { root, steps: 15, related, checking: true },
@@ -2208,7 +2219,7 @@ describe('runReview', () => {
 
       // A round whose finders have no tools still offers the repos to the stages that have them.
       const judgeOnly = await run(false);
-      expect([judgeOnly.tools.get('finder'), judgeOnly.tools.get('compare'), judgeOnly.tools.get('sweep')]).toEqual([undefined, undefined, undefined]);
+      expect(['finder', 'compare', 'claim', 'sweep'].map(stage => judgeOnly.tools.get(stage))).toEqual([undefined, undefined, undefined, undefined]);
       const offered = { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') };
       expect(judgeOnly.tools.get('judge')).toEqual({ root: judgeOnly.root, steps: 5, related: offered, checking: true });
       expect(judgeOnly.tools.get('refute')).toEqual({ root: judgeOnly.root, steps: 15, related: offered, checking: true });
@@ -2473,6 +2484,62 @@ describe('runReview', () => {
       const statuses = runs.slice(1).map(r => [r.prClaims?.cut, r.prClaims?.claims?.map(c => `${c.status}${c.call ? ` ${c.call}` : ''}`)]);
       expect(statuses).toEqual([[3, Array(5).fill('proven')], [3, Array(5).fill('unchecked')], [3, Array(5).fill('unchecked')], [3, Array(5).fill('unchecked failed')]]);
       expect(runs[1].prClaims?.claims?.map(c => c.quote)).toEqual(decoys.slice(0, 5));
+    });
+
+    it('posts a blocker from a claim that only a related line disproves as a warning until a refuter confirms it', async () => {
+      // The change posts amounts without rounding them, since the ledger is said to round. The ledger stores them as given.
+      const checkout = mkdtempSync(join(tmpdir(), 'manki-claim-ledger-'));
+      mkdirSync(join(checkout, 'ledger'));
+      writeFileSync(join(checkout, 'ledger', 'post.py'), 'def post(amount):\n    return store(amount)\n');
+      const ledgerLine = 'acme/ledger:ledger/post.py:2';
+      const quote = 'the ledger service already rounds every amount to cents';
+      const unrounded = {
+        severity: 'blocker', title: 'An unrounded amount reaches the ledger', file: 'src/export.ts', line: 3, description: 'The ledger stores the amount as given.',
+        evidence: [`${ledgerLine} stores the amount with \`store(amount)\``], proof: [],
+      };
+      const run = async (refuted: object) => {
+        const { root, diff } = gitWorkspace({ 'src/export.ts': exportFile('  return merge(rows.sort());\n') }, files);
+        const clients = claimClients([quote], () => '');
+        jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (system: string, _user: string, options?: SendMessageOptions) => {
+          if (!isCheck(system)) return { content: '[]' };
+          // The check reads the ledger, which fetches it.
+          const { stateDir } = options!.repoTools!.related!;
+          writeFileSync(join(stateDir, `${encodeURIComponent('acme/ledger')}.lock`), String(process.pid));
+          writeFileSync(join(stateDir, `${encodeURIComponent('acme/ledger')}.done`), checkout);
+          return { content: checkAnswer('disproven', [ledgerLine], [unrounded]) };
+        });
+        Object.assign(clients.judge, { repoTools: true });
+        jest.mocked(clients.judge.sendMessage).mockImplementation(async (system: string) => {
+          if (system.startsWith('You are a code review judge')) return { content: JSON.stringify({ summary: 's', findings: [{ id: 1, title: unrounded.title, row: 'severe', reasoning: 'r' }] }) };
+          return { content: system.startsWith('You check one finding') ? JSON.stringify(refuted) : READY_VERDICT };
+        });
+        mockedRunJudgeAgent.mockImplementation(jest.requireActual<typeof import('./judge')>('./judge').runJudgeAgent);
+        try {
+          return await runReview(clients, {
+            config: makeConfig({ related_repos: [{ repo: 'acme/ledger', kind: 'dependency' }] }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root,
+            prContext: { title: 'Post amounts as they are', body: `Safe, since ${quote}.`, baseBranch: 'main' },
+          });
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      };
+      const shape = (result: ReviewResult) => result.findings.map(f => ({
+        severity: f.severity, steps: f.gradePath?.map(step => step.by), status: f.checkStatus, proof: f.evidence?.proof, related: f.refutation?.relatedProof,
+        // The bench route marks a finding as `byClaimCheck` when only claim checks reported it.
+        byClaimCheck: f.reviewers.every(isClaimCheck),
+      }));
+      try {
+        const open = await run({ outcome: 'unsettled', reason: 'The ledger may round later.' });
+        expect(open.prClaims?.claims).toEqual([expect.objectContaining({ status: 'disproven', relatedProof: [ledgerLine], findings: 1 })]);
+        expect(open.prClaims?.claims?.[0]).not.toHaveProperty('proof');
+        // The finding cites no line of the PR as proof, so the blocker of its cell is held at a warning.
+        expect(shape(open)).toEqual([{ severity: 'warning', steps: ['unproven'], status: 'unconfirmed', proof: [], related: undefined, byClaimCheck: true }]);
+
+        const confirmed = await run({ outcome: 'confirmed', reason: 'It stores the amount as given.', proof: [ledgerLine] });
+        expect(shape(confirmed)).toEqual([{ severity: 'blocker', steps: ['unproven', 'refutation'], status: 'confirmed', proof: [], related: [ledgerLine], byClaimCheck: true }]);
+      } finally {
+        rmSync(checkout, { recursive: true, force: true });
+      }
     });
   });
 

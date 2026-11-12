@@ -810,7 +810,7 @@ export async function runReview(
   // is shown it. A trivial change gets the quick check alone, so its claims are recorded without a check.
   const claimChecksPromise = claimsPromise.then(async ({ claims, ...listed }) => {
     const checked = await runClaimChecks(reviewer => withFallback(pickReviewerClient(clients, comparisonModel), 'claim_check', reviewer), claims, {
-      rawDiff, effort: comparisonEffort, workspace: trivial ? undefined : workspace, signal: comparisonDeadline.signal,
+      rawDiff, effort: comparisonEffort, workspace: trivial ? undefined : workspace, related, signal: comparisonDeadline.signal,
     });
     return { findings: checked.findings, record: prClaimsRecord(listed, checked.claims) };
   });
