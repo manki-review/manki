@@ -1455,10 +1455,16 @@ describe('fetchRecapState', () => {
         // A blocker thread follows the same rule as a security thread: Manki's own resolve alone settles nothing.
         'src/blocker-bot-resolved.ts': { resolver: BOT_LOGIN, security: false, blocker: true, blocks: true },
         'src/blocker-collaborator-settled.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: bounded }, security: false, blocker: true, blocks: false },
-        // GraphQL types every resolver as `User`. Only the permission lookup tells that a workflow token is no person.
-        'src/workflow-resolved.ts': { resolver: 'github-actions', security: true, blocks: true },
-        'src/blocker-workflow-resolved.ts': { resolver: 'github-actions', security: false, blocker: true, blocks: true },
+        // GraphQL types every resolver as `User`. Only the permission lookup tells that a workflow token is no person,
+        // under either login GitHub could name it by.
+        'src/workflow-resolved.ts': { resolver: 'github-actions[bot]', security: true, blocks: true },
+        'src/blocker-workflow-resolved.ts': { resolver: 'github-actions[bot]', security: false, blocker: true, blocks: true },
+        'src/bare-workflow-resolved.ts': { resolver: 'github-actions', security: true, blocks: true },
+        'src/blocker-bare-workflow-resolved.ts': { resolver: 'github-actions', security: false, blocker: true, blocks: true },
+        // A person clears by resolving only with write access.
         'src/blocker-reader-resolved.ts': { resolver: 'dave', security: false, blocker: true, blocks: true },
+        'src/blocker-triage-resolved.ts': { resolver: 'tina', security: false, blocker: true, blocks: true },
+        'src/triage-resolved.ts': { resolver: 'tina', security: true, blocks: true },
       };
       const severity = (file: string) => cases[file].security || cases[file].blocker ? 'blocker' as const : 'warning' as const;
       const files = Object.keys(cases);
@@ -1495,10 +1501,14 @@ describe('fetchRecapState', () => {
         });
       }), [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
       // Each login's `role_name`. The legacy `permission` beside it reports `maintain` as `write`.
-      const roles: Record<string, string> = { author: 'write', alice: 'write', bob: 'write', dave: 'read', erin: 'write', 'github-actions': 'write' };
-      const legacy: Record<string, string> = { admin: 'admin', maintain: 'write', write: 'write', read: 'read' };
-      const permission = jest.fn(async ({ username }: { username: string }) => ({ data: roles[username]
-        ? { permission: legacy[roles[username]], role_name: roles[username], user: { type: username === 'github-actions' ? 'Bot' : 'User' } } : { permission: 'none' } }));
+      const roles: Record<string, string> = { author: 'write', alice: 'write', bob: 'write', dave: 'read', erin: 'write', tina: 'triage' };
+      const legacy: Record<string, string> = { admin: 'admin', maintain: 'write', write: 'write', triage: 'read', read: 'read' };
+      // GitHub answers for a bot account with its type and no permission, and with a 404 for the bare `github-actions`.
+      const permission = jest.fn(async ({ username }: { username: string }) => {
+        if (username === 'github-actions') throw new Error('github-actions is not a user');
+        if (username.endsWith('[bot]')) return { data: { permission: 'none', role_name: '', user: { type: 'Bot' } } };
+        return { data: roles[username] ? { permission: legacy[roles[username]], role_name: roles[username], user: { type: 'User' } } : { permission: 'none' } };
+      });
       Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: permission } });
 
       // The author can push, which is below the default level `maintain`, so their own resolve clears nothing.

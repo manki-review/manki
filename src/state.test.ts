@@ -108,6 +108,7 @@ describe('unclearedThreads', () => {
     // A resolver counts only once the permission lookup confirmed a person with write access, so a bot's login clears nothing.
     expect(unclearedThreads(resolvedBy('alice'), TEST_BOT, 'author')).not.toEqual([]);
     expect(unclearedThreads(resolvedBy('github-actions'), TEST_BOT, 'author')).not.toEqual([]);
+    expect(unclearedThreads(resolvedBy('github-actions[bot]'), TEST_BOT, 'author')).not.toEqual([]);
     expect(unclearedThreads(confirmed('dependabot[bot]'), TEST_BOT, 'author')).not.toEqual([]);
     expect(unclearedThreads(confirmed('author'), TEST_BOT, 'author')).not.toEqual([]);
     expect(unclearedThreads(confirmed('alice'), TEST_BOT, 'author')).toEqual([]);
@@ -299,14 +300,19 @@ describe('fetchBotReviewThreads', () => {
       resolved('bot-after-writer', [reply('bob'), reply('ci-app', 'Bot')]),
       resolved('by-writer', [], 'bob'),
       resolved('by-reader', [], 'dave'),
-      // GraphQL types every resolver as `User`, so only the permission lookup tells a bot from a person, whatever its login and permission.
-      resolved('by-workflow-token', [], 'github-actions'),
+      // A person clears by resolving only with write access.
+      resolved('by-triage', [], 'tina'),
+      // GraphQL types every resolver as `User`, so only the permission lookup tells a bot from a person: a workflow token
+      // under either login GitHub could name it by, and an app even if GitHub reported write access for it.
+      resolved('by-workflow-token', [], 'github-actions[bot]'),
+      resolved('by-bare-workflow-token', [], 'github-actions'),
+      makeGraphqlFetchThreadNode({ id: 'security-by-workflow-token', isResolved: true, resolvedBy: 'github-actions[bot]', body: formatFindingComment({ severity: 'warning', title: 'Token leaks into logs', file: 'src/a.ts', line: 10, description: 'd', reviewers: [], tags: ['security'] }, TEST_LINKS) }),
       resolved('by-app', [], 'deploy-app[bot]'),
     ]));
     const octokit = threadsOctokit(graphql, [{ id: 1, user: { login: manki }, body: `<!-- manki-context: ${JSON.stringify(makeRoundContext(1, {
       judge: { summary: '', threadEvaluations: [{ threadId: 'addressed', status: 'addressed', reason: 'r' }, { threadId: 'alone', status: 'not_addressed', reason: 'r' }] },
     }))} -->` }]);
-    const permissions: Record<string, string> = { author: 'write', bob: 'write', dave: 'read', 'deploy-app[bot]': 'write' };
+    const permissions: Record<string, string> = { author: 'write', bob: 'write', dave: 'read', tina: 'read', 'github-actions[bot]': 'none', 'deploy-app[bot]': 'write' };
     Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: jest.fn(async ({ username }: { username: string }) => {
       if (username === 'github-actions') throw new Error('github-actions is not a user');
       return { data: { permission: permissions[username], user: { type: username.endsWith('[bot]') ? 'Bot' : 'User' } } };
@@ -317,7 +323,9 @@ describe('fetchBotReviewThreads', () => {
     expect(threads.flatMap(t => t.addressed ? [t.id] : [])).toEqual(['addressed']);
     expect(threads.flatMap(t => t.writerReplyLogin ? [[t.id, t.writerReplyLogin]] : [])).toEqual([['writer', 'bob'], ['author-last', 'author'], ['bot-after-writer', 'bob']]);
     expect(threads.flatMap(t => t.writerResolverLogin ? [[t.id, t.writerResolverLogin]] : [])).toEqual([['by-author', 'author'], ['by-writer', 'bob']]);
-    expect(unclearedThreads(threads, TEST_BOT, 'author').map(t => t.id)).toEqual(['alone', 'reader', 'author-last', 'by-author', 'cut-off', 'by-reader', 'by-workflow-token', 'by-app']);
+    expect(unclearedThreads(threads, TEST_BOT, 'author').map(t => t.id)).toEqual(['alone', 'reader', 'author-last', 'by-author', 'cut-off', 'by-reader', 'by-triage', 'by-workflow-token', 'by-bare-workflow-token', 'by-app']);
+    // A security thread below a blocker holds an approval only when the covering review names it, and a workflow token's resolve does not clear it then.
+    expect(unclearedThreads(threads, TEST_BOT, 'author', undefined, new Set(['security-by-workflow-token'])).map(t => t.id)).toContain('security-by-workflow-token');
     expect(threads.flatMap(t => t.repliesUnread ? [t.id] : [])).toEqual(['cut-off']);
   });
 

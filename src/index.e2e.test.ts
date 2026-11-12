@@ -281,6 +281,8 @@ class FakeGitHub {
     if (method === 'GET' && route === '') return json({ full_name: `${OWNER}/${REPO}`, description: null });
     if (method === 'GET' && route === '/collaborators/alice/permission') return json({ permission: this.role === 'admin' ? 'admin' : 'write', role_name: this.role, user: { type: 'User' } });
     if (method === 'GET' && route === '/collaborators/bob/permission') return json({ permission: 'write', role_name: 'write', user: { type: 'User' } });
+    // GitHub answers for the workflow token's bot account like this, and with a 404 for the bare `github-actions`.
+    if (method === 'GET' && decodeURIComponent(route) === '/collaborators/github-actions[bot]/permission') return json({ permission: 'none', role_name: '', user: { type: 'Bot' } });
     return json({ message: 'Not Found' }, 404);
   };
 
@@ -333,10 +335,10 @@ class FakeGitHub {
 
   /**
    * Resolves or reopens `thread` as `login`. GitHub documents `resolvedBy` only as "The user who resolved this thread",
-   * so resolving a thread that is already resolved keeps its resolver here.
+   * so resolving a thread that is already resolved keeps its resolver here. GraphQL names a bot resolver `<slug>[bot]`.
    */
   private setResolved(thread: FakeThread, resolved: boolean, login: string): void {
-    if (resolved && !thread.isResolved) thread.resolvedBy = { login: login.replace(/\[bot\]$/, '') };
+    if (resolved && !thread.isResolved) thread.resolvedBy = { login };
     if (!resolved) thread.resolvedBy = null;
     thread.isResolved = resolved;
   }
@@ -1250,9 +1252,11 @@ describe('runFullReview end to end', () => {
       expect(thread.comments).toHaveLength(2);
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
 
-      // A workflow token is no person GitHub knows a permission for, so its resolve clears nothing either.
-      await resolveThread(thread, 'github-actions');
-      expect([thread.isResolved, postedReviews().map(r => r.state)]).toEqual([true, ['CHANGES_REQUESTED']]);
+      // A workflow token is no person, so its resolve clears nothing either, under either login GitHub could name it by.
+      for (const token of ['github-actions[bot]', 'github-actions']) {
+        await resolveThread(thread, token);
+        expect([token, thread.isResolved, postedReviews().map(r => r.state)]).toEqual([token, true, ['CHANGES_REQUESTED']]);
+      }
 
       await resolveThread(thread, 'bob');
 
@@ -1282,7 +1286,7 @@ describe('runFullReview end to end', () => {
 
     it.each<[string, string, () => Promise<FakeThread>, string | undefined]>([
       ['a maintainer resolved', 'bob', async () => mockGitHub.threads[0], undefined],
-      ['the judge marked addressed', 'manki-review', async () => {
+      ['the judge marked addressed', APP_LOGIN, async () => {
         mockGitHub.headSha = 'c3'.repeat(20);
         mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
         Object.assign(mockLLM.replies, READY_REPLIES, {
@@ -1445,7 +1449,7 @@ describe('runFullReview end to end', () => {
         body.startsWith('@manki') ? [] : [`${agreed}${note}\n\n<!-- manki -->${clears ? '' : `\n${REOPENED_MARKER}`}`],
       );
       // Manki resolves the thread itself, since alice's own resolve never counts for the approval.
-      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual(clears ? [true, 'manki-review'] : [false, undefined]);
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual(clears ? [true, APP_LOGIN] : [false, undefined]);
       expect(postedReviews().map(r => r.state)).toEqual(clears ? ['DISMISSED', 'APPROVED'] : ['CHANGES_REQUESTED']);
     });
 
@@ -1490,7 +1494,7 @@ describe('runFullReview end to end', () => {
       const [thread] = mockGitHub.threads;
 
       await replyInThread(thread, reply, answer, 'bob');
-      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, 'manki-review']);
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, APP_LOGIN]);
       expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
 
       // A push that raises nothing is approved, and the judge is not shown the settled thread as open.
@@ -1531,7 +1535,7 @@ describe('runFullReview end to end', () => {
       const [thread] = mockGitHub.threads;
 
       // As after a run that resolved the thread and stopped before it posted the review with the record.
-      await resolveThread(thread, 'manki-review');
+      await resolveThread(thread, APP_LOGIN);
       expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
 
       // A push that leaves the file alone shows the judge the thread, and the round blocks on it.
@@ -1555,7 +1559,7 @@ describe('runFullReview end to end', () => {
       await reviewRound();
       expect(core.setFailed).not.toHaveBeenCalled();
       expect(postedReviews().at(-1)!.state).toBe('APPROVED');
-      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, 'manki-review']);
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, APP_LOGIN]);
     });
 
     it('counts a fix the judge confirms on a thread the PR author resolved twice, by resolving the thread as Manki', async () => {
@@ -1586,7 +1590,7 @@ describe('runFullReview end to end', () => {
       expect(core.setFailed).not.toHaveBeenCalled();
       expect(postedReviews().at(-1)!.state).toBe('CHANGES_REQUESTED');
       // GitHub names Manki only because the thread was reopened first, and the round record backs Manki's resolve.
-      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, 'manki-review']);
+      expect([thread.isResolved, thread.resolvedBy?.login]).toEqual([true, APP_LOGIN]);
 
       await resolveThread(mockGitHub.threads[1], 'bob');
       expect(postedReviews().at(-1)!.state).toBe('APPROVED');
@@ -1602,7 +1606,7 @@ describe('runFullReview end to end', () => {
         judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
       });
       await reviewRound();
-      expect([postedReviews().at(-1)!.state, thread.resolvedBy?.login]).toEqual(['APPROVED', 'manki-review']);
+      expect([postedReviews().at(-1)!.state, thread.resolvedBy?.login]).toEqual(['APPROVED', APP_LOGIN]);
 
       // Someone reopens the thread and the author resolves it. The old record backs only Manki's own resolve, so Manki
       // reopens the thread once, and the author's second resolve stays.
