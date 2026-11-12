@@ -392,11 +392,16 @@ describe('listUsesOutsideDiff', () => {
     }
 
     // A name the change declares is its own, so a call or read of it is no reason to search a dependency. A comment may still name it.
-    // Calls and reads in a test file, in a module named `tests` and under a test attribute are left out.
+    // Calls and reads on untouched lines, in a test file, in a module named `tests` and under a test attribute are left out, and so is a name that is no plain identifier.
+    const kept = 'pub fn keep(p: &Pool) -> u32 {\n    lib::kept_call(p.kept_field)\n}\n';
     const tested = (module: string, name: string) => `\n${module} {\n    fn drains(p: &Pool) {\n        lib::${name}_call(p.${name}_field);\n    }\n}\n`;
-    const pool = `pub struct Pool {\n    pub retry_delay: u32,\n}\n\npub fn drain_pool(p: &Pool) -> u32 {\n    // Like \`flush_pool\`\n    lib::flush_all(p);\n    flush_pool(p) + drain_pool(p) + p.retry_delay + p.inner.max_idle\n}\n\nfn flush_pool(p: &Pool) -> u32 {\n    0\n}\n${tested('#[cfg(test)]\nmod checks', 'attribute')}${tested('mod tests', 'module')}`;
-    const own = await usesFor({ 'src/pool.rs': 'pub fn f() {}\n' }, { 'src/pool.rs': pool, 'tests/pool.rs': tested('mod cases', 'test_file') }, [], true);
-    expect(own.dependencyNames).toEqual(['flush_pool', 'flush_all', 'max_idle']);
+    const pool = `${kept}\npub struct Pool {\n    pub retry_delay: u32,\n}\n\npub fn drain_pool(p: &Pool) -> u32 {\n    // Like \`flush_pool\`\n    lib::flush_all(p);\n    lib::r#flush_raw(p);\n    flush_pool(p) + drain_pool(p) + seal_now(p) + p.retry_delay + p.inner.max_idle\n}\n\nfn flush_pool(p: &Pool) -> u32 {\n    0\n}\n${tested('#[cfg(test)]\nmod checks', 'attribute')}${tested('mod tests', 'module')}`;
+    const own = await usesFor({ 'src/pool.rs': kept }, { 'src/pool.rs': pool, 'tests/pool.rs': tested('mod cases', 'test_file') }, [], true);
+    expect(own.dependencyNames).toEqual(['flush_pool', 'flush_all', 'max_idle', 'seal_now']);
+
+    // The list stops at 80 names.
+    const many = await usesFor({ 'src/many.rs': 'fn run() {}\n' }, { 'src/many.rs': `fn run() {\n${Array.from({ length: 90 }, (_, i) => `    lib::call_${i}();\n`).join('')}}\n` }, [], true);
+    expect(many.dependencyNames).toHaveLength(80);
   });
 
   const SCHEDULER = `use std::collections::{BTreeMap, HashSet};
@@ -913,17 +918,17 @@ describe('listRelatedUses', () => {
           translation: { names: [] },
         });
 
-        // A dependency's code is untrusted too. Lines that hold a name and read like declarations are ranked in time linear
-        // in their count, and in their length, since each is cut before a pattern reads it.
-        const flooded = (line: (n: number) => string, count: (n: number) => number) => async (n: number) => {
-          writeFileSync(join(app, 'flood.rs'), `${line(n)}\n`.repeat(count(n)));
+        // Without a list of its own, a dependency is searched for the names of the other kinds.
+        expect((await listRelatedUses([lib], ['CRetryPolicy'])).record).toEqual({ dependency: [{ name: 'CRetryPolicy', lines: ['example/lib:upload.ts:2'] }] });
+
+        // A dependency's code is untrusted too. A long line that holds a name and reads like a declaration is cut before a pattern reads it.
+        await expectLinearTime(async (n) => {
+          writeFileSync(join(app, 'flood.rs'), `FloodCap ${'struct '.repeat(n)}\n`.repeat(8));
           const started = performance.now();
           const flood = await listRelatedUses([lib], [], undefined, ['FloodCap']);
-          expect(flood.record).toEqual({ dependency: [{ name: 'FloodCap', lines: [1, 2, 3, 4].map(at => `example/lib:flood.rs:${at}`), notShown: count(n) - 4 }] });
+          expect(flood.record).toEqual({ dependency: [{ name: 'FloodCap', lines: [1, 2, 3, 4].map(line => `example/lib:flood.rs:${line}`), notShown: 4 }] });
           return performance.now() - started;
-        };
-        await expectLinearTime(flooded(() => `FloodCap ${'struct '.repeat(300)}`, n => n), 8_000);
-        await expectLinearTime(flooded(n => `FloodCap ${'struct '.repeat(n)}`, () => 8), 40_000);
+        }, 40_000);
       } finally {
         rmSync(app, { recursive: true, force: true });
       }
