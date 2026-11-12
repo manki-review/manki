@@ -548,6 +548,9 @@ describe('refuteBlockers', () => {
     ]);
     // The check finished the lead, so it is a finding to post and no longer one listed as not finished checking.
     expect([alone[9].lead, alone[9].notChecked, alone[9].cell]).toEqual([undefined, undefined, undefined]);
+    // The setting plays no part in that: without `block` the same lead comes back the same way.
+    const ruleLead = finding('Rule lead', { ...doubtedRule('confirmed'), notChecked: true, lead: { checked: 'read src/math.ts:2', left: 'find the callers' } });
+    expect((await refuteRound(client, [ruleLead], { workspace, diff })).map(f => [f.severity, f.lead, !!disproof(f)])).toEqual([['warning', undefined, true]]);
     // The kept rule warning loses the cell and the grade that stated the damage. A security finding changes only when confirmed, so it keeps them.
     expect(alone.slice(5, 9).map(f => [f.cell, f.gradeIfConfirmed, f.doubts?.length])).toEqual([[undefined, undefined, undefined], [undefined, undefined, undefined], [rare, 'blocker', 1], [rare, 'blocker', 1]]);
     expect(alone[0].gradePath).toEqual([{ from: 'warning', to: 'ignore', by: 'refutation', reason: 'Both inputs are checked.' }]);

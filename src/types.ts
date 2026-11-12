@@ -755,7 +755,8 @@ export interface OpenLead {
 
 /**
  * How an open lead ended in a round: `confirmed` and posted, `disproved` by the judge's tools, `dropped` by the judge,
- * `unsettled` by the tools, or `not_checked` because it went to no check and was only listed.
+ * `unsettled` by the tools, or `not_checked` because it went to no check and was only listed. A `disproved` lead is
+ * still posted, with `RoundLead.posted` set, when a disproof cannot drop it: a blocker, or a finding that `breaksRule`.
  */
 export type LeadOutcome = 'confirmed' | 'disproved' | 'dropped' | 'unsettled' | 'not_checked';
 

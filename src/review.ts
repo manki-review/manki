@@ -2187,7 +2187,8 @@ function withEarlierLeads(
 function recordLeads(leads: Finding[], listed: Finding[], judged: Finding[], posted: Finding[], round: number): RoundLead[] {
   return leads.map(l => {
     const verdict = judged.find(j => sameLead(j, l) && j.line === l.line) ?? judged.find(j => sameLead(j, l));
-    // A disproof never lowers a blocker lead, so a disproved one keeps its grade and its `lead` flag.
+    // A disproof never lowers a blocker lead, so a disproved one keeps its grade and its `lead` flag. One that breaks a
+    // confirmed rule is kept as a finding. Both are `disproved` and posted.
     const outcome: LeadOutcome = listed.includes(l) ? 'not_checked'
       : !verdict ? 'dropped'
       : disproof(verdict) ? 'disproved'
