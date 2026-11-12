@@ -208,12 +208,16 @@ describe('runClaimChecks', () => {
     mkdirSync(join(checkout, 'ledger'));
     writeFileSync(join(checkout, 'ledger', 'post.py'), 'def post(amount):\n    return store(amount)\n');
     writeFileSync(join(stateDir, `${encodeURIComponent('acme/ledger')}.done`), checkout);
+    // The PR holds a file named like the related repo.
+    mkdirSync(join(root, 'acme'));
+    writeFileSync(join(root, 'acme', 'ledger'), 'one\ntwo\n');
     const related = { repos: [{ repo: 'acme/ledger', kind: 'dependency' as const }, { repo: 'acme/mailer', kind: 'consumer' as const }], cacheDir: '/cache', stateDir };
     const claims = [
       claim('the ledger service already rounds every amount to cents'),
       claim('the ledger stores an amount in one call'),
       claim('the mailer never reads the amount'),
       claim('the ledger rejects a negative amount'),
+      claim('the ledger keeps a header'),
     ];
     const ledgerLine = 'acme/ledger:ledger/post.py:2';
     const unrounded = { ...defect, title: 'An unrounded amount reaches the ledger' };
@@ -223,6 +227,8 @@ describe('runClaimChecks', () => {
       // A repo the round did not fetch, and a line the fetched file does not hold, prove nothing.
       'mailer': answer('proven', ['acme/mailer:send.py:1']),
       'negative': answer('disproven', ['acme/ledger:ledger/post.py:9'], [defect]),
+      // An entry that reads as a line of the related file `2` is never also line 2 of the PR's file `acme/ledger`.
+      'header': answer('proven', ['acme/ledger:2:9']),
     };
     const client = fakeClient(user => Object.entries(replies).find(([key]) => user.includes(key))![1]);
     try {
@@ -231,6 +237,7 @@ describe('runClaimChecks', () => {
       expect(result.claims.map(({ status, proof, relatedProof, findings }) => ({ status, proof, relatedProof, findings }))).toEqual([
         { status: 'disproven', proof: undefined, relatedProof: [ledgerLine], findings: 1 },
         { status: 'proven', proof: undefined, relatedProof: [ledgerLine], findings: undefined },
+        { status: 'unchecked', proof: undefined, relatedProof: undefined, findings: undefined },
         { status: 'unchecked', proof: undefined, relatedProof: undefined, findings: undefined },
         { status: 'unchecked', proof: undefined, relatedProof: undefined, findings: undefined },
       ]);
@@ -246,7 +253,7 @@ describe('runClaimChecks', () => {
       expect(without.claims.map(c => c.status)).toEqual(['unchecked', 'unchecked']);
       expect(without.findings).toEqual([]);
     } finally {
-      for (const dir of [checkout, stateDir]) rmSync(dir, { recursive: true, force: true });
+      for (const dir of [checkout, stateDir, join(root, 'acme')]) rmSync(dir, { recursive: true, force: true });
     }
   });
 

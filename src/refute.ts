@@ -99,7 +99,7 @@ function refutationFiles(file: string, proof: readonly string[] = []): string[] 
  * Keeps the locations whose file is in the workspace and `holdsLines` they cite, so no made-up citation settles anything.
  * A file `readFileInRoot` does not read, such as one over its size limit, holds no line.
  */
-export function existingLocations(workspace: string, proof: readonly string[]): string[] {
+function existingLocations(workspace: string, proof: readonly string[]): string[] {
   return proof.filter(location => {
     const file = readFileInRoot(workspace, locationFile(location));
     return !!file && file !== 'too large' && holdsLines(file.lines.length, ...locationLines(location));
@@ -114,7 +114,7 @@ export function existingLocations(workspace: string, proof: readonly string[]): 
  * is written again from the repo's configured name and the file's own path in the checkout, so none holds text the
  * model chose beyond a path and line numbers that exist.
  */
-export function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] {
+function relatedLocations(proof: unknown, related?: RelatedRepoTools): string[] {
   if (!related || !Array.isArray(proof)) return [];
   const names = related.repos.map(r => r.repo);
   const checkouts = fetchedRelatedRepos(related.stateDir);

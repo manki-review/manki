@@ -4,9 +4,9 @@ import { addedLines } from './diff';
 import { fenceText } from './github';
 import { extractJSON } from './json';
 import { LLMClient, SendMessageOptions } from './providers';
-import { existingLocations, relatedLocations } from './refute';
+import { shownLines } from './refute';
 import { repoTools } from './related-repos';
-import { CLAIMS_MISSING_RULE, fencePrText, parseFindings, parseProof, PRE_EXISTING_RULE, unmarkedText } from './review';
+import { CLAIMS_MISSING_RULE, fencePrText, parseFindings, PRE_EXISTING_RULE, unmarkedText } from './review';
 import { diffSection } from './sweep';
 import { COMMENT } from './symbol-uses';
 import { EffortLevel, Finding, ParsedDiff, PrClaim, PrContext, RelatedRepoTools, RoundPrClaim, RoundPrClaims } from './types';
@@ -195,8 +195,7 @@ function parseCheck(text: string, workspace: string, reviewer: string, related?:
   const parsed = JSON.parse(extractJSON(text, 'object')) as Record<string, unknown>;
   const stated = STATUSES.find(status => status === parsed.status);
   if (!stated) throw new Error(`the status is ${JSON.stringify(parsed.status)}, not one of ${STATUSES.join(', ')}`);
-  const proof = stated === 'unchecked' ? [] : existingLocations(workspace, parseProof(parsed.proof));
-  const relatedProof = stated === 'unchecked' ? [] : relatedLocations(parsed.proof, related);
+  const { proof, relatedProof } = stated === 'unchecked' ? { proof: [], relatedProof: [] } : shownLines(parsed.proof, workspace, related);
   const status = proof.length + relatedProof.length > 0 ? stated : 'unchecked';
   const reason = typeof parsed.reason === 'string' ? safeTruncate(parsed.reason.trim(), MAX_REASON_CHARS) : '';
   const reported = status === 'disproven' && Array.isArray(parsed.findings) ? parseFindings(JSON.stringify(parsed.findings), reviewer) : [];
@@ -206,7 +205,7 @@ function parseCheck(text: string, workspace: string, reviewer: string, related?:
 /** Whether `reviewer` is the name `runClaimChecks` gives a claim check. */
 export const isClaimCheck = (reviewer: string): boolean => reviewer.startsWith(`${CLAIM_CHECK_NAME} `);
 
-export interface ClaimCheckOptions {
+interface ClaimCheckOptions {
   /** The PR's raw diff, which each check is shown. */
   rawDiff: string;
   effort?: EffortLevel;
