@@ -100,7 +100,9 @@ function addedComments(diff: ParsedDiff): CommentLine[][] {
     let previous = -1;
     for (const [line, code] of [...addedLines(file)].sort(([a], [b]) => a - b)) {
       if (left === 0) return runs;
-      const text = (COMMENT.exec(code)?.[0] ?? '').replace(COMMENT_MARKS, '').trim().slice(0, MAX_COMMENT_LINE_CHARS);
+      // Cut before the marks are stripped, so `COMMENT_MARKS` never backtracks over a long run of one character.
+      const comment = (COMMENT.exec(code)?.[0] ?? '').trimStart().slice(0, 2 * MAX_COMMENT_LINE_CHARS);
+      const text = comment.replace(COMMENT_MARKS, '').trim().slice(0, MAX_COMMENT_LINE_CHARS);
       if (!text) continue;
       if (line !== previous + 1) runs.push([]);
       runs.at(-1)!.push({ at: `${file.path}:${line}`, text });

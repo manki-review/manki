@@ -9,7 +9,7 @@ import { parsePRDiff } from './diff';
 import { extractPrClaims, prClaimsRecord, runClaimChecks } from './pr-claims';
 import { LLMClient } from './providers';
 import { repoToolsPrompt } from './providers/cli-utils';
-import { fakeClient, gitWorkspace, HANG } from './test-utils';
+import { expectLinearTime, fakeClient, gitWorkspace, HANG } from './test-utils';
 import { PrClaim } from './types';
 import { CLAIMS_MISSING_RULE, PRE_EXISTING_RULE, RELATED_REPO_TRUST_RULE, UNTRUSTED_CONTENT_RULE, VERIFY_CLAIMS_RULE } from './writing-rules';
 
@@ -99,6 +99,16 @@ describe('extractPrClaims', () => {
     expect(user).toContain(`src/a.ts:1: note 1 ${'y'.repeat(293)}\nsrc/a.ts:2: note 2\n`);
     expect(user).toContain('src/a.ts:200: note 200\n```');
     expect(user).not.toContain('note 201');
+
+    // A comment line of one long run, of blanks or of the marks a comment ends with, is read in time linear in its length.
+    for (const run of [' ', '*']) {
+      await expectLinearTime(async size => {
+        const runs = diffAdding('src/a.ts', Array.from({ length: 20 }, () => `// ${run.repeat(size)}x`));
+        const started = performance.now();
+        await extractPrClaims(fakeClient(() => '[]'), undefined, runs);
+        return performance.now() - started;
+      }, 19_000);
+    }
   });
 
   it('asks no model without PR text, and lists no claim when the call or its reply fails', async () => {
