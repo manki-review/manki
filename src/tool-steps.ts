@@ -5,6 +5,9 @@ import { join } from 'path';
 /** The argument of `dist/index.js` that runs the Claude CLI hook which counts tool steps, instead of a review. */
 export const STEP_HOOK_COMMAND = 'step-hook';
 
+/** How long a CLI may print nothing before its call is stopped as stalled. A tool call prints nothing while it runs, so it must end sooner. */
+export const STALE_TIMEOUT_MS = 90_000;
+
 /** How many tool steps before the end of its budget a model is told to wrap up. */
 export const WRAP_UP_STEPS = 3;
 

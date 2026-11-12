@@ -9,12 +9,12 @@ import * as core from '@actions/core';
 import { isSecretName, registerSecret, safeJsonParse, sanitizeTokens, SYSTEM_ENV } from '../utils';
 import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, READS_FILE_FLAG, RELATED_REPOS_FLAG, STEPS_FLAG } from '../mcp-server';
 import { trackCliProcess } from '../run-diagnostics';
-import { STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
+import { STALE_TIMEOUT_MS, STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
 import { RelatedRepoTools } from '../types';
 import { RELATED_REPO_TRUST_RULE } from '../writing-rules';
 import { LLMResponse, RepoTools, SendMessageOptions } from './types';
 
-export const STALE_TIMEOUT_MS = 90_000;
+export { STALE_TIMEOUT_MS };
 const HARD_TIMEOUT_MS = 1_200_000;
 const KILL_GRACE_MS = 5000;
 const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
