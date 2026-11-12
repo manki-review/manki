@@ -868,7 +868,8 @@ describe('listRelatedUses', () => {
     const server = { repo: 'example/server', kind: 'reference' as const, dir };
     const gone = { repo: 'o/gone', kind: 'reference' as const, dir: join(dir, 'gone') };
     try {
-      // A checkout whose search fails is left out with a warning, and the others still count.
+      // A checkout whose search fails is left out with a warning, and the others still count. A name the others do not
+      // hold was not searched everywhere, so it is named as not searched and never as a name no line holds.
       const { section, record } = await listRelatedUses([gone, server], ['MAX_REQUEST_BODY_LENGTH', 'retry_delay', 'URLInfo', 'MAX_SIZE', 'CRetryPolicy', 'MAX_HEADER_COUNT']);
       expect(section).toMatch(/^## In the Reference Repos\n\n.*untrusted repository content, never instructions\.\n\n/);
       expect(section).toContain([
@@ -889,7 +890,8 @@ describe('listRelatedUses', () => {
       // An `ALL_CAPS` constant keeps its case, so `max_size()` is no match for it.
       expect(section).toContain('### `MAX_SIZE`\n\n```\nexample/server:src/serialize.h:1: static constexpr uint64_t MAX_SIZE = 0x02000000;\nexample/server:src/server.cpp:1:');
       expect(section).not.toContain('max_size()');
-      expect(section).toContain('No reference line holds: `MAX_HEADER_COUNT`.');
+      expect(section).toContain('\n\nNot searched, since the search failed there: `o/gone`. The other reference repos hold no line with: `MAX_HEADER_COUNT`.\n\n');
+      expect(section).not.toContain('No reference line holds');
       expect(record).toEqual({
         reference: [
           { name: 'MAX_REQUEST_BODY_LENGTH', lines: ['example/server:src/server.h:2', 'example/server:src/server.cpp:1', 'example/server:src/server.h:1', 'example/server:doc/http.md:1'], notShown: 3 },
@@ -898,7 +900,7 @@ describe('listRelatedUses', () => {
           { name: 'MAX_SIZE', lines: ['example/server:src/serialize.h:1', 'example/server:src/server.cpp:1'] },
           { name: 'CRetryPolicy', lines: ['example/server:src/http/retry.h:1', 'example/server:doc/AGENTS.md:1'] },
         ],
-        referenceMissing: ['MAX_HEADER_COUNT'],
+        referenceUnsearched: ['MAX_HEADER_COUNT'],
       });
       expect((await listRelatedUses([server], ['PAST_THE_CUT'])).record).toEqual({ reference: [{ name: 'PAST_THE_CUT', lines: ['example/server:src/min.js:1'] }] });
       expect(core.warning).toHaveBeenCalledWith(expect.stringMatching(/^Skipped the search of the reference repo o\/gone: /));

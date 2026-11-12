@@ -498,7 +498,7 @@ export interface RoundUses {
   referenceMissing?: string[];
   /** Names found in the reference repos that the cap on reference lines left out. */
   referenceCapped?: string[];
-  /** Names found in no reference line that were not searched for in every spelling, since the search pattern was full. */
+  /** Names found in no reference line that were not searched for everywhere: the search pattern was full, or the search of a repo failed. */
   referenceUnsearched?: string[];
   /** Each name found in the consumer repos, with the lines shown. */
   consumer?: RoundReferenceUse[];
@@ -506,7 +506,7 @@ export interface RoundUses {
   consumerMissing?: string[];
   /** Names found in the consumer repos that the cap on consumer lines left out. */
   consumerCapped?: string[];
-  /** Names found in no consumer line that were not searched for in every spelling, since the search pattern was full. */
+  /** Names found in no consumer line that were not searched for everywhere: the search pattern was full, or the search of a repo failed. */
   consumerUnsearched?: string[];
   /** Each name found in the dependency repos, with the lines shown. */
   dependency?: RoundReferenceUse[];
@@ -514,7 +514,7 @@ export interface RoundUses {
   dependencyMissing?: string[];
   /** Names found in the dependency repos that the cap on dependency lines left out. */
   dependencyCapped?: string[];
-  /** Names found in no dependency line that were not searched for in every spelling, since the search pattern was full. */
+  /** Names found in no dependency line that were not searched for everywhere: the search pattern was full, or the search of a repo failed. */
   dependencyUnsearched?: string[];
   /** The names a model translated for the search of the related repos. Unset when that search did not run. */
   translation?: RoundNameTranslation;

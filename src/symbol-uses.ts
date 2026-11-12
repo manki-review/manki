@@ -564,6 +564,7 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
   const found = new Map<string, RelatedHit[]>();
   // The names with a spelling the search left out. One that is found in no line is named as not searched, never as missing.
   const unsearched = new Set<string>();
+  const failed: string[] = [];
   for (const { repo, dir } of checkouts) {
     // The root guide files are left out, so their text reaches a prompt only through a finder's own read.
     const search = async (words: string[], ignoreCase: boolean): Promise<{ hits: Hit[]; left: Set<string> }> => {
@@ -584,6 +585,7 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
     } catch (error) {
       core.warning(`Skipped the search of the ${kind} repo ${repo}: ${error instanceof Error ? error.message : String(error)}`);
       translated.push(...recordOf(guesses).map(guess => ({ ...guess, failed: true as const })));
+      failed.push(repo);
       continue;
     }
     // The lines each name finds itself, so a translated name does not list one of them again.
@@ -626,14 +628,15 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
   for (const [name, hits] of found) {
     for (const hit of hits) namesPerFile.set(`${hit.repo}:${hit.file}`, (namesPerFile.get(`${hit.repo}:${hit.file}`) ?? new Set()).add(name));
   }
-  return { ...formatRelatedUses(kind, names, found, file => namesPerFile.get(file)?.size ?? 0, unsearched), translated };
+  return { ...formatRelatedUses(kind, names, found, file => namesPerFile.get(file)?.size ?? 0, unsearched, failed), translated };
 }
 
 /**
  * `namesIn` counts the names found in a file, given as `owner/name:path`, so the file that ports the change ranks first.
- * A name in `unsearched` that is found in no line is listed as not searched.
+ * A name found in no line is listed as not searched when it is in `unsearched`, or when the search of a repo `failed`.
+ * Only a name that every repo was searched for is listed as held by no line.
  */
-function formatRelatedUses(kind: RelatedRepoKind, names: string[], found: Map<string, RelatedHit[]>, namesIn: (file: string) => number, unsearched: Set<string>): { section: string; record: RelatedUsesRecord } {
+function formatRelatedUses(kind: RelatedRepoKind, names: string[], found: Map<string, RelatedHit[]>, namesIn: (file: string) => number, unsearched: Set<string>, failed: string[]): { section: string; record: RelatedUsesRecord } {
   const blocks: string[] = [];
   let guessed = false;
   const uses: RoundReferenceUse[] = [];
@@ -677,13 +680,16 @@ function formatRelatedUses(kind: RelatedRepoKind, names: string[], found: Map<st
     blocks.push(`### \`${name}\`${as.length > 0 ? `, also searched as ${as.map(a => `\`${a}\``).join(', ')}` : ''}\n\n${fenceText(lines.join('\n'))}${cut > 0 ? `\n\n${cut} more ${cut === 1 ? 'line' : 'lines'} not shown.` : ''}`);
     uses.push({ name, lines: shown.map(h => `${h.repo}:${h.file}:${h.line}`), ...(cut > 0 && { notShown: cut }), ...(as.length > 0 && { as }) });
   }
-  const missing = names.filter(n => !found.has(n) && !unsearched.has(n));
-  const skipped = names.filter(n => !found.has(n) && unsearched.has(n));
-  const lists = { [kind]: uses, [`${kind}Missing`]: missing, [`${kind}Capped`]: capped, [`${kind}Unsearched`]: skipped };
+  const unfound = names.filter(n => !found.has(n));
+  const skipped = unfound.filter(n => unsearched.has(n));
+  const absent = unfound.filter(n => !unsearched.has(n));
+  const missing = failed.length > 0 ? [] : absent;
+  const lists = { [kind]: uses, [`${kind}Missing`]: missing, [`${kind}Capped`]: capped, [`${kind}Unsearched`]: failed.length > 0 ? unfound : skipped };
   const record: RelatedUsesRecord = Object.fromEntries(Object.entries(lists).filter(([, list]) => list.length > 0));
   if (blocks.length === 0) return { section: '', record };
   const notes = [
     ...(skipped.length > 0 ? [`${UNSEARCHED_NOTE}: ${quotedNames(skipped)}.`] : []),
+    ...(failed.length > 0 ? [`Not searched, since the search failed there: ${quotedNames(failed)}.${absent.length > 0 ? ` The other ${kind} repos hold no line with: ${quotedNames(absent)}.` : ''}`] : []),
     ...(missing.length > 0 ? [`No ${kind} line holds: ${quotedNames(missing)}.`] : []),
     ...(capped.length > 0 ? [`The cap of ${MAX_REFERENCE_LINES} lines left out: ${capped.slice(0, MAX_HIDDEN_NAMES).map(name => `\`${name}\` (${found.get(name)!.length} ${found.get(name)!.length === 1 ? 'line' : 'lines'})`).join(', ')}${capped.length > MAX_HIDDEN_NAMES ? `, and ${capped.length - MAX_HIDDEN_NAMES} more` : ''}.`] : []),
   ];
