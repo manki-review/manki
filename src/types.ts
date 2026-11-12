@@ -343,10 +343,10 @@ export interface Finding {
   /**
    * The grade the finding gets once every premise in `doubts` holds. Set when the finding has a doubt. Manki works it
    * out from the `cell`, except that it is `warning` in a cell that gives a blocker when the judge stated `warning`.
-   * The refuter checks the finding, and a confirmation of every doubt gives it this grade. A blocker here is given
-   * only to a finding a finder filed as one, a security finding or one that restates an earlier blocker. Any other
-   * finding gets `warning` here once it is confirmed. On a finding that `isRareClaim` it is the grade of the `normal`
-   * column, which no confirmation gives.
+   * The refuter checks the finding, and a confirmation of every doubt gives it this grade. Before its checks,
+   * `refuteBlockers` sets `warning` here on a blocker cell that no confirmation may raise: no finder filed a blocker,
+   * it is no security finding and it restates no earlier blocker. On a finding that `isRareClaim` it is the grade of
+   * the `normal` column, which no confirmation gives.
    */
   gradeIfConfirmed?: FindingSeverity;
   /** The judge's own answer for `gradeIfConfirmed`, on a finding with a doubt. Unset when it stated none. Only for the record. */
@@ -643,7 +643,7 @@ export function pendingGrade(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): Fin
 
 /**
  * Whether the cell of `f` gives a blocker that no confirmation of its doubts gives. Either the judge stated `warning`
- * for that case, or a check confirmed every doubt and no finder had filed a blocker.
+ * for that case, or `refuteBlockers` set it because no finder filed a blocker.
  */
 export function staysWarningIfConfirmed(f: Pick<Finding, 'gradeIfConfirmed' | 'cell'>): boolean {
   return f.gradeIfConfirmed === 'warning' && isGradeCell(f.cell) && cellGrade(f.cell.row, f.cell.column) === 'blocker';

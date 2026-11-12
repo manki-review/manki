@@ -2323,6 +2323,12 @@ describe('runReview', () => {
         step: 'cross-round suppression of a blocker cell no finder filed as a blocker', title: 'Agreed total no finder filed as a blocker', verdict: { row: 'wrong' },
         ends: r => judged(r, 'Agreed total no finder filed as a blocker'), as: [['ignore', ['suppressed-by-ratchet']]],
       },
+      {
+        // The same finding under a memory suppression. It is kept at a warning before any check, so the suppression hides it unchecked.
+        step: 'memory suppression of a blocker cell no finder filed as a blocker', title: 'Remembered pattern no finder filed as a blocker', verdict: { row: 'wrong' },
+        ends: r => r.memorySuppressed?.filter(f => f.title === 'Remembered pattern no finder filed as a blocker').map(f => [f.suppressedBy, f.cell, f.gradeIfConfirmed, f.refutation]),
+        as: [['sup-1', { row: 'wrong', column: 'normal' }, 'warning', undefined]],
+      },
     ];
     // Behind them, eight warnings the review posts once a check confirms them. The eighth is checked only when no row took a check.
     const postable = Array.from({ length: 8 }, (_, i) => `Postable ${i + 1}`);

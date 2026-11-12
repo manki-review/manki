@@ -2271,6 +2271,9 @@ describe('runJudgeAgent', () => {
       'Damage disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
       // The judge confirmed the rule, so the refuter's own answer that the defect does not exist drops nothing either.
       'Defect disproved': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
+      // No finder filed this one as a blocker, so no answer raises it for its damage. With `warn` its check only changes the
+      // status it shows and waits for the round's end. With `block` the rule made it a blocker, which the refuter checks.
+      'Damage doubted and no finder blocker': { ruleIsRequirement: true, ruleBroken: true, row: 'wrong', doubts: [{ premise: 'The service fails to start without the variable', decides: 'defect' }] },
       // A note whose damage the judge doubts too. The refuter answers the damage first, then the fact.
       ...Object.fromEntries([
         'Fact confirmed, damage disproved', 'Fact confirmed, damage unsettled', 'Fact confirmed, damage confirmed', 'Fact disproved, damage confirmed',
@@ -2291,6 +2294,8 @@ describe('runJudgeAgent', () => {
     const findings = titles.map((title, i) => makeFinding({
       title, line: 10 + i, evidence: { checks: [], proof: [`src/index.ts:${10 + i}`], ...((title === 'Fact confirmed without a search' || title.startsWith('No search')) && { emptySearch: '' }) },
       ...(!title.includes('no rule') && { rule }), ...(title.startsWith('Build claim') && { buildClaim: true }),
+      // A finder filed these two as blockers, so a confirmed doubt could raise them and the judge call checks them.
+      ...(['Damage disproved', 'Defect disproved'].includes(title) && { severity: 'blocker' as const }),
     }));
     const premise = (...outcomes: string[]) => ({ reason: `It is ${outcomes.at(-1)}.`, premises: outcomes.map(outcome => ({ outcome, reason: `It is ${outcome}.`, proof: ['src/index.ts:3'] })) });
     const replies: Record<string, unknown> = {
@@ -2302,7 +2307,7 @@ describe('runJudgeAgent', () => {
       'Fact confirmed, damage confirmed': premise('confirmed', 'confirmed'), 'Fact disproved, damage confirmed': premise('confirmed', 'disproved'),
       'Fact unsettled, damage confirmed': premise('confirmed', 'unsettled'),
       'Fact confirmed, defect disproved': { ...premise('unsettled', 'confirmed'), outcome: 'disproved', proof: ['src/index.ts:3'] },
-      'Fact disputed': premise('confirmed'),
+      'Fact disputed': premise('confirmed'), 'Damage doubted and no finder blocker': premise('confirmed'),
       'No search, check disproves': { outcome: 'disproved', reason: 'The entry is there.', proof: ['src/index.ts:3'] },
       'No search, check confirms': { outcome: 'confirmed', reason: 'No entry anywhere.', proof: ['src/index.ts:3'] },
       'No search, check unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
@@ -2338,6 +2343,7 @@ describe('runJudgeAgent', () => {
         ['Damage disproved', grade, 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning'],
         // No disproof lowers a blocker the rule raised, or drops the warning the judge's rule verdict keeps.
         ['Defect disproved', grade, 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning'],
+        ['Damage doubted and no finder blocker', grade, 'confirmed', grade === 'blocker' ? 'judge: warning, rule: blocker' : 'judge: warning'],
         // The confirmed fact confirms the rule and gives its grade, whatever the answer about the damage.
         ['Fact confirmed, damage disproved', grade, 'confirmed', `rule: ${grade}`],
         ['Fact confirmed, damage unsettled', grade, 'confirmed', `rule: ${grade}`],
@@ -2366,7 +2372,9 @@ describe('runJudgeAgent', () => {
       ];
       expect(await graded()).toEqual(expected('warning'));
       expect(await graded('block')).toEqual(expected('blocker'));
-      expect(refuterMessages).toHaveLength(47);
+      expect(refuterMessages).toHaveLength(48);
+      // Only the run with `block` checked the finding no finder filed as a blocker.
+      expect(refuterMessages.filter(m => m.includes(': Damage doubted and no finder blocker\n'))).toHaveLength(1);
       // Two refuters that disagree about the fact leave the rule unproven, and the note as it is.
       expect(await graded(undefined, second)).toEqual(expected('warning', ['note', 'unproven', undefined]));
       expect(await graded('block', second)).toEqual(expected('blocker', ['note', 'unproven', undefined]));
@@ -2376,8 +2384,12 @@ describe('runJudgeAgent', () => {
       const raised = byTitle['Fact confirmed, damage disproved'];
       expect([raised.cell, raised.doubts, raised.gradeIfConfirmed, raised.refutation?.outcome]).toEqual([undefined, undefined, undefined, 'disproved']);
       expect(byTitle['Fact confirmed, damage unsettled'].doubts?.map(d => d.premise)).toEqual(['The service fails to start without the variable', '`.env.example` has no entry for the variable']);
+      // The rule finding no finder filed as a blocker is kept at a warning before any check: its cell's blocker can no longer come.
+      expect([byTitle['Damage doubted and no finder blocker']].map(f => [f.gradeIfConfirmed, f.cell, f.refutation])).toEqual([['warning', { row: 'wrong', column: 'normal' }, undefined]]);
       // A note whose fact stays open leaves the judge call without the rule's grade and without the fact as a doubt, so no later step takes them for the damage's. The check's answer and the damage doubt stay.
       const open = Object.fromEntries((await run('block')).map(f => [f.title, f]));
+      // A blocker the rule step made is not kept down, so it keeps the pending grade of its cell.
+      expect([open['Damage doubted and no finder blocker']].map(f => [f.severity, f.gradeIfConfirmed, f.refutation?.outcome])).toEqual([['blocker', 'blocker', 'confirmed']]);
       // So does a note the refuter dropped, which the round record keeps.
       expect(['Fact unsettled', 'Fact unsettled, damage confirmed', 'Fact disproved', 'Fact disproved, damage confirmed'].map(title => [open[title].gradeIfConfirmed, open[title].doubts?.map(d => d.premise), open[title].rule?.unseen, open[title].refutation?.premises?.length])).toEqual([
         [undefined, undefined, '`.env.example` has no entry for the variable', 1],
@@ -2385,7 +2397,7 @@ describe('runJudgeAgent', () => {
         [undefined, undefined, '`.env.example` has no entry for the variable', 1],
         [undefined, ['The service fails to start without the variable'], '`.env.example` has no entry for the variable', 2],
       ]);
-      expect(raised.evidence?.proof).toEqual(['src/index.ts:17', 'src/index.ts:3']);
+      expect(raised.evidence?.proof).toEqual(['src/index.ts:18', 'src/index.ts:3']);
       // A finding a check disproved stays with that check's answer, which the comment shows, and without the cell that stated the damage.
       expect(['No search, check disproves', 'No search, damage blocker, check disproves'].map(title => [open[title].refutation?.outcome, open[title].cell])).toEqual([['disproved', undefined], ['disproved', undefined]]);
       expect([byTitle['Defect disproved'].refutation?.defect, byTitle['Defect disproved'].cell, byTitle['Defect disproved'].gradeIfConfirmed]).toEqual(['disproved', undefined, undefined]);

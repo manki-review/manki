@@ -216,22 +216,25 @@ function raisedTo(finding: Finding, grade: FindingSeverity | undefined): Finding
 }
 
 /**
- * Whether a confirmation of every doubt leaves `finding` without its pending blocker. A doubt means the judge named the
- * cell for code it had not seen, and the refuter confirms premises, never how serious the damage is. So the blocker is
- * given only when a finder filed one, on a security finding, or when the finding `restates` an earlier blocker.
+ * Whether no confirmation gives `finding` the pending blocker of its cell. A doubt means the judge named that cell for
+ * code it had not seen, and the refuter confirms premises, never how serious the damage is. So the blocker is given
+ * only when a finder filed one, on a security finding, or when the finding `restates` an earlier blocker. A grade that
+ * a step after the judge's moved, such as a rule blocker, is left alone.
  */
 function keepsWarning(finding: Finding, restates: boolean): boolean {
-  return pendingGrade(finding) === 'blocker' && finderGrade(finding) !== 'blocker' && !restates && !isSecurityFinding(finding.tags, finding.reviewers);
+  const held = pendingGrade(finding) === 'blocker' && isGradeCell(finding.cell) && cellGrade(finding.cell.row, finding.cell.column) === 'blocker'
+    && (finding.gradePath?.at(-1)?.by ?? 'judge') === 'judge';
+  return held && finderGrade(finding) !== 'blocker' && !restates && !isSecurityFinding(finding.tags, finding.reviewers);
 }
 
 /**
  * Returns the grade a confirmation gives, while nothing lowered the finding further since the judge: the blocker an
- * unproven cap lowered, or the finding's `pendingGrade` unless it `keepsWarning`. So a finding that `isRareClaim` gets
- * none: the judge placed it in the `rare` column, and the refuter's answer to `REACH_DOUBT` is recorded without moving it.
+ * unproven cap lowered, or the finding's `pendingGrade`. So a finding that `isRareClaim` gets none: the judge placed it
+ * in the `rare` column, and the refuter's answer to `REACH_DOUBT` is recorded without moving it.
  */
-function confirmedGrade(finding: Finding, restates: boolean): FindingSeverity | undefined {
+function confirmedGrade(finding: Finding): FindingSeverity | undefined {
   const grade = finding.tags?.includes(UNPROVEN_TAG) && finding.severity === 'warning' ? 'blocker'
-    : (finding.gradePath?.at(-1)?.by ?? 'judge') === 'judge' && !keepsWarning(finding, restates) ? pendingGrade(finding) : undefined;
+    : (finding.gradePath?.at(-1)?.by ?? 'judge') === 'judge' ? pendingGrade(finding) : undefined;
   return raisedTo(finding, grade);
 }
 
@@ -302,8 +305,7 @@ function gradeBeforeJudgeRaise(finding: Finding, refutation: Refutation | undefi
  * blocker only to the grade `gradeBeforeJudgeRaise` gives, never one that `restates` an earlier blocker, and such a
  * finding loses its `cell`, so a later round does not restate the blocker from it. An unsettled outcome keeps the
  * grade, and a security finding changes only when confirmed. A confirmation raises a finding only to the grade
- * `confirmedGrade` gives, so a finding that `isRareClaim` keeps its grade and its cell. A confirmed finding that
- * `keepsWarning` gets `warning` as its `gradeIfConfirmed`, so it `staysWarningIfConfirmed` from then on.
+ * `confirmedGrade` gives, so a finding that `isRareClaim` keeps its grade and its cell.
  */
 function applyRefutation(given: Finding, refutation: Refutation | undefined, pairRefutation: Refutation | undefined, restates: boolean, rules?: RulesMode): Finding {
   const checks = [refutation, pairRefutation].filter((r): r is Refutation => !!r);
@@ -333,15 +335,13 @@ function applyRefutation(given: Finding, refutation: Refutation | undefined, pai
   }
   if (outcome === 'confirmed') {
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
-    const restored = confirmedGrade(finding, restates);
+    const restored = confirmedGrade(finding);
     // Lines that confirm only premises show no defect. They are added where they restore a grade, and never make a warning proven.
     const proof = [...new Set([...(finding.evidence?.proof ?? []), ...checks.flatMap(r => outcomeOf(r) === 'confirmed' && (restored || confirmsDefect(r)) ? r.proof ?? [] : [])])];
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
     return {
       ...confirmed, ...(restored && gradeStep(finding, restored, 'refutation', checks.find(r => outcomeOf(r) === 'confirmed')!.reason)), evidence: { ...(finding.evidence ?? { checks: [] }), proof },
       ...(tags && { tags }),
-      // The grade is settled, so no later step and no later round reads the cell as a blocker that is still pending.
-      ...(keepsWarning(finding, restates) && { gradeIfConfirmed: 'warning' as const }),
     };
   }
   return graded;
@@ -541,8 +541,11 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
       return undefined;
     }
   };
+  // No answer raises a finding that `keepsWarning`. With `warning` as its `gradeIfConfirmed` it `staysWarningIfConfirmed`,
+  // so this call and every later step and round treat it as the warning the judge keeps in a blocker cell.
+  const keptDown = (f: Finding): Finding => (keepsWarning(f, restatesBlocker(f, priorRounds, blockingThreads)) ? { ...f, gradeIfConfirmed: 'warning' } : f);
   // The judge call settled each grade, so the call at the round's end reopens none and checks no finding for its grade.
-  const reopened = roundEnd ? findings : findings.map(f => reopenCappedGrade(f, priorRounds));
+  const reopened = roundEnd ? findings : findings.map(f => keptDown(reopenCappedGrade(f, priorRounds)));
   const checkable = (finding: Finding): boolean => !!codeDigest(workspace, [finding.file]);
   const noCheck = (finding: Finding): boolean => !!unpostedLater?.(finding) || !!hiddenLater?.(finding) || !checkable(finding);
   // `MAX_DOUBT_CHECKS` counts refuter calls, so a warning takes none when each refuter asked about it reuses a stored outcome.
@@ -557,10 +560,9 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     if (finding.severity === 'ignore' || !((!roundEnd && alwaysChecked(finding)) || doubtChecks.has(finding))) return finding;
     // Only a check that can raise a finding changes what happens to one a later step hides. A check no grade hangs on
     // is skipped for a finding `noCheck` accepts, as for any warning.
-    const restates = restatesBlocker(finding, priorRounds, blockingThreads);
-    if (decidesGrade(finding) ? !confirmedGrade(finding, restates) && hiddenLater?.(finding) : noCheck(finding)) return finding;
+    if (decidesGrade(finding) ? !confirmedGrade(finding) && hiddenLater?.(finding) : noCheck(finding)) return finding;
     if (!checkable(finding)) return finding;
     const [refutation, pairRefutation] = await Promise.all([check(client, 'refutation', finding), pair && check(pair, 'pairRefutation', finding)]);
-    return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restates, rules) : finding;
+    return refutation || pairRefutation ? applyRefutation(finding, refutation, pairRefutation, restatesBlocker(finding, priorRounds, blockingThreads), rules) : finding;
   });
 }
