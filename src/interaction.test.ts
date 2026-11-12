@@ -1074,10 +1074,12 @@ describe('handleReviewCommentReply', () => {
     const client = { ...createMockClient(), repoTools: true } as LLMClient;
     // The model names `acme/reports`, whose fetch fails: the tool server records that in the reply's state directory.
     jest.mocked(client.sendMessage).mockImplementation(async (_system, _user, options) => {
-      const { stateDir } = options!.repoTools!.related!;
-      stateDirs.push(stateDir);
-      writeFileSync(join(stateDir, 'acme%2Freports.lock'), String(process.pid));
-      writeFileSync(join(stateDir, 'acme%2Freports.failed'), 'fatal: repository not found');
+      const stateDir = options?.repoTools?.related?.stateDir;
+      if (stateDir) {
+        stateDirs.push(stateDir);
+        writeFileSync(join(stateDir, 'acme%2Freports.lock'), String(process.pid));
+        writeFileSync(join(stateDir, 'acme%2Freports.failed'), 'fatal: repository not found');
+      }
       return { content: '**Unverified.** I could not read `acme/reports`, so a maintainer should confirm this.' };
     });
     const plain = createMockClient();
