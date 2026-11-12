@@ -575,11 +575,7 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
   const unsearched = new Set<string>();
   const failed: string[] = [];
   for (const { repo, dir } of checkouts) {
-    // The root guide files are left out, so their text reaches a prompt only through a finder's own read.
-    const search = async (words: string[], ignoreCase: boolean): Promise<{ hits: Hit[]; left: Set<string> }> => {
-      const result = await grepWords(dir, words, { onDisk: true, ignoreCase });
-      return { hits: result.hits.filter(hit => !GUIDE_FILES.includes(hit.file)), left: new Set(result.unsearched) };
-    };
+    const search = (words: string[], ignoreCase: boolean) => grepCheckout(dir, words, ignoreCase);
     // A translation the name's own search already finds, or one too short or too common to tell anything, is not searched.
     const guesses = [...(translations.get(repo) ?? [])].flatMap(([name, list]) =>
       list.filter(as => isSearchable(as) && !referencePattern(name).test(as)).map(as => ({ repo, name, as, lines: 0, pattern: translatedPattern(as) })));
@@ -638,6 +634,15 @@ async function listKindUses(kind: RelatedRepoKind, checkouts: RelatedCheckout[],
     for (const hit of hits) namesPerFile.set(`${hit.repo}:${hit.file}`, (namesPerFile.get(`${hit.repo}:${hit.file}`) ?? new Set()).add(name));
   }
   return { ...formatRelatedUses(kind, names, found, file => namesPerFile.get(file)?.size ?? 0, unsearched, failed), translated };
+}
+
+/**
+ * Returns the lines of the related checkout in `dir` that hold one of `words`, and the words the search left out. The
+ * root guide files are left out, so their text reaches a prompt only through a model's own read.
+ */
+async function grepCheckout(dir: string, words: string[], ignoreCase: boolean): Promise<{ hits: Hit[]; left: Set<string> }> {
+  const result = await grepWords(dir, words, { onDisk: true, ignoreCase });
+  return { hits: result.hits.filter(hit => !GUIDE_FILES.includes(hit.file)), left: new Set(result.unsearched) };
 }
 
 /**

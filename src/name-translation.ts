@@ -56,8 +56,14 @@ function mostly(types: string[]): string {
   return types.length > 0 ? `mostly ${types.map(type => `\`${type}\``).join(', ')} files` : 'file types unknown';
 }
 
-/** Returns, per repo of `repos` and per name of `names`, the identifiers the reply gives. Throws when the reply answers for none of `repos`. */
-function parseTranslations(content: string, names: string[], repos: string[]): NameTranslation['names'] {
+/** Returns one line per related repo for a prompt: its name, its kind and its most common file types. */
+async function repoLines(checkouts: RelatedCheckout[]): Promise<string> {
+  const lines = await Promise.all(checkouts.map(async ({ repo, kind, dir }) => `- \`${repo}\`, ${kind}, ${mostly(await checkoutFileTypes(dir))}`));
+  return lines.join('\n');
+}
+
+/** Returns, per repo of `repos` and per name of `names`, the first `perName` identifiers the reply gives. Throws when the reply answers for none of `repos`. */
+function parseTranslations(content: string, names: string[], repos: string[], perName = MAX_TRANSLATIONS_PER_NAME): NameTranslation['names'] {
   const parsed: unknown = JSON.parse(extractJSON(content, 'object'));
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('the reply is no JSON object');
   const reply = parsed as Record<string, unknown>;
@@ -71,7 +77,7 @@ function parseTranslations(content: string, names: string[], repos: string[]): N
       const given: unknown = (answers as Record<string, unknown>)[name];
       const usable = [...new Set(Array.isArray(given) ? given : [given])]
         .filter((as): as is string => typeof as === 'string' && as.length <= MAX_NAME_CHARS && IDENTIFIER.test(as) && as !== name)
-        .slice(0, MAX_TRANSLATIONS_PER_NAME);
+        .slice(0, perName);
       if (usable.length > 0) byName.set(name, usable);
       if (byName.size === MAX_TRANSLATED_NAMES) break;
     }
@@ -89,10 +95,9 @@ export async function translateNames(client: LLMClient | undefined, names: strin
   if (checkouts.length === 0 || names.length === 0) return undefined;
   if (!client) return { names: new Map(), skipped: 'no model is set up for it' };
   try {
-    const repos = await Promise.all(checkouts.map(async ({ repo, kind, dir }) => `- \`${repo}\`, ${kind}, ${mostly(await checkoutFileTypes(dir))}`));
     const message = [
       `## Names in the change\n\nThe change touches ${mostly(fileTypes(changedFiles))}.\n\n${fenceText(names.join('\n'))}`,
-      `## Related repositories\n\n${repos.join('\n')}`,
+      `## Related repositories\n\n${await repoLines(checkouts)}`,
     ].join('\n\n');
     const response = await client.sendMessage(SYSTEM_PROMPT, message, { effort: 'low', timeoutMs: TRANSLATE_TIMEOUT_MS });
     return { names: parseTranslations(response.content, names, checkouts.map(c => c.repo)) };
