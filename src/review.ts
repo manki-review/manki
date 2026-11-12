@@ -791,9 +791,12 @@ export async function runReview(
     effort: comparisonEffort, workspace, signal: comparisonDeadline.signal,
   });
   const referenceNames = uses.referenceNames ?? [];
-  const checkouts = related && referenceNames.length > 0 ? await fetchRelatedRepos(related) : [];
-  const translation = await translateNames(clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'translate'), referenceNames, diff.files.map(f => f.path), checkouts);
-  const relatedUses = await listRelatedUses(checkouts, referenceNames, translation);
+  const dependencyNames = uses.dependencyNames ?? [];
+  // A dependency is searched for its own names, so with one configured those alone are a reason to fetch.
+  const searched = referenceNames.length > 0 || (dependencyNames.length > 0 && !!related?.repos.some(r => r.kind === 'dependency'));
+  const checkouts = related && searched ? await fetchRelatedRepos(related) : [];
+  const translation = await translateNames(clients.dedup && withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'translate'), referenceNames, diff.files.map(f => f.path), checkouts.filter(c => c.kind !== 'dependency'));
+  const relatedUses = await listRelatedUses(checkouts, referenceNames, translation, dependencyNames);
   const guides = relatedRepoGuides(checkouts);
   const usesOutsideDiff = uses.section + relatedUses.section;
   const usesRecord = uses.record || relatedUses.record ? { ...uses.record, ...relatedUses.record } : undefined;

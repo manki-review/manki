@@ -2165,6 +2165,37 @@ describe('runReview', () => {
     expect(result.relatedRepos).toEqual([{ repo: 'o/ref', guide: 'AGENTS.md', status: 'unused' }, { repo: 'o/app', status: 'unused' }]);
   });
 
+  it('searches a dependency for the names the change calls, and fetches for those names only when one is configured', async () => {
+    // The change declares nothing a search could use, and calls a function of the dependency.
+    const { root, diff } = gitWorkspace({ 'src/main.ts': 'export function main() {}\n' }, { 'src/main.ts': 'export function main() { ledger.roundUp(2); }\n' });
+    const lib = mkdtempSync(join(tmpdir(), 'manki-dependency-'));
+    writeFileSync(join(lib, 'round.ts'), 'export function roundUp(n: number): number { return n; }\n');
+    const reference = { repo: 'o/ref', kind: 'reference' as const };
+    const dependency = { repo: 'o/lib', kind: 'dependency' as const, ref: 'v1.4.2' };
+    const fetchSpy = jest.spyOn(relatedRepos, 'fetchRelatedRepos').mockResolvedValue([{ repo: 'o/lib', kind: 'dependency', dir: lib }]);
+    const clients = { ...makeClients(), dedup: { sendMessage: jest.fn().mockResolvedValue({ content: '{}' }) } as unknown as import('./providers').LLMClient };
+    Object.assign(clients.reviewer, { repoTools: true });
+    try {
+      const run = (related_repos: NonNullable<ReviewConfig['related_repos']>) => runReview(clients, { config: makeConfig({ related_repos }), diff, rawDiff: 'raw diff', repoContext: '', workspace: root });
+      // Without a dependency the called name is no reason to fetch, as before the kind existed.
+      const without = await run([reference]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(without.usesOutsideDiff).toBeUndefined();
+      const result = await run([reference, dependency]);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const uses = mockedRunJudgeAgent.mock.calls.at(-1)![2].usesOutsideDiff;
+      expect(uses).toMatch(/^## In the Dependency Repos\n\nManki searched each fetched `dependency` related repo for the names the diff's added comments mention and those it calls or reads, /);
+      expect(uses).toContain('### `roundUp`\n\n```\no/lib:round.ts:1: export function roundUp(n: number): number { return n; }\n```');
+      expect(result.usesOutsideDiff).toEqual({ dependency: [{ name: 'roundUp', lines: ['o/lib:round.ts:1'] }] });
+      // The names a change calls are the dependency's own, so no model is asked to translate them.
+      expect(clients.dedup.sendMessage).not.toHaveBeenCalled();
+      for (const [system] of jest.mocked(clients.reviewer.sendMessage).mock.calls.slice(-1)) expect(system).toContain('. Dependencies: for each function, type or message of a **dependency** related repo');
+    } finally {
+      fetchSpy.mockRestore();
+      for (const dir of [root, lib]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('asks the sibling comparisons alongside the finders and hands the judge their findings under their own reviewer name', async () => {
     const queue = (body: string) => `export class Queue {\n  pending: Set<string> = new Set();\n  done: Set<string> = new Set();\n\n  start(id: string) {\n${body}  }\n}\n`;
     const { root, diff } = gitWorkspace({ 'src/queue.ts': queue('') }, { 'src/queue.ts': queue('    if (this.pending.has(id)) return;\n') });
