@@ -5,7 +5,7 @@ import { join } from 'path';
 import * as core from '@actions/core';
 
 import { BOT_MARKER, CANCELLED_MARKER, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER } from './github';
-import { REOPENED_MARKER } from './recap';
+import { REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { parseSettingsBlock } from './settings';
 import { _resetOctokitCache, main, runFullReview } from './index';
 import type { SendMessageOptions } from './providers';
@@ -131,8 +131,8 @@ class FakeGitHub {
   refuseResolve = false;
   /** Refuses the token service's `/resolve` when it is asked to reopen a thread. */
   refuseReopen = false;
-  /** What alice, who wrote the PR, may do on the repository. Bob may always write. */
-  permission = 'write';
+  /** The role of alice, who wrote the PR, on the repository. Bob always has `write`. */
+  role = 'write';
   /** The config file at each ref, such as the base branch or the PR's head commit. */
   configs: Record<string, string> = {};
   activeRuns: number[] = [];
@@ -280,8 +280,8 @@ class FakeGitHub {
       return json({ total_count: this.openIssues.length, incomplete_results: false, items: this.openIssues });
     }
     if (method === 'GET' && route === '') return json({ full_name: `${OWNER}/${REPO}`, description: null });
-    if (method === 'GET' && route === '/collaborators/alice/permission') return json({ permission: this.permission });
-    if (method === 'GET' && route === '/collaborators/bob/permission') return json({ permission: 'write' });
+    if (method === 'GET' && route === '/collaborators/alice/permission') return json({ permission: this.role === 'admin' ? 'admin' : 'write', role_name: this.role });
+    if (method === 'GET' && route === '/collaborators/bob/permission') return json({ permission: 'write', role_name: 'write' });
     return json({ message: 'Not Found' }, 404);
   };
 
@@ -1216,6 +1216,8 @@ describe('runFullReview end to end', () => {
     });
 
     it('reopens a blocker thread its author resolved, once, and approves when someone else resolves the last open thread', async () => {
+      // Alice has `write`, and her PR lowers `author_clear_role` to it. The base branch's default, `maintain`, still decides.
+      mockGitHub.configs = { [HEAD_SHA]: 'author_clear_role: write\n' };
       Object.assign(mockLLM.replies, BLOCKER_REPLIES);
       await reviewRound();
       const [thread] = mockGitHub.threads;
@@ -1247,8 +1249,25 @@ describe('runFullReview end to end', () => {
       expect(mockGitHub.comments.filter(c => /Auto-approv/.test(c.body))).toEqual([]);
     });
 
-    it.each<[string, string, () => Promise<FakeThread>]>([
-      ['a maintainer resolved', 'bob', async () => mockGitHub.threads[0]],
+    it('reads the config at the repo-relative `config_path` on a thread event, so an absolute path does not hide `author_clear_role: admin`', async () => {
+      jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'config_path' ? join(process.cwd(), INPUTS.config_path) : INPUTS[name] ?? ''));
+      mockGitHub.configs = { main: 'author_clear_role: admin\n' };
+      mockGitHub.role = 'maintain';
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+
+      // Alice is a maintainer and the base branch asks for `admin`, so her resolve does not hold.
+      await resolveThread(thread, 'alice');
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(thread.isResolved).toBe(false);
+      expect(thread.comments.slice(1).map(c => c.body)).toEqual([`${REOPENED} ${PUSH_A_FIX}\n\n<!-- manki -->\n${REOPENED_MARKER}`]);
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+    });
+
+    it.each<[string, string, () => Promise<FakeThread>, string | undefined]>([
+      ['a maintainer resolved', 'bob', async () => mockGitHub.threads[0], undefined],
       ['the judge marked addressed', 'alice', async () => {
         mockGitHub.headSha = 'c3'.repeat(20);
         mockGitHub.prDiffs[mockGitHub.headSha] = FIXED_PR_DIFF;
@@ -1257,16 +1276,20 @@ describe('runFullReview end to end', () => {
         });
         await reviewRound();
         return mockGitHub.threads[0];
-      }],
-      ['a repo admin overrode', 'alice', async () => {
-        mockGitHub.permission = 'admin';
+      }, undefined],
+      ['a PR author with the `maintain` role overrode, under the default', 'alice', async () => {
+        mockGitHub.role = 'maintain';
         return mockGitHub.threads[0];
-      }],
+      }, 'maintain'],
+      ['a PR author with the `write` role overrode, where the base branch sets `author_clear_role: write`', 'alice', async () => {
+        mockGitHub.configs.main = 'author_clear_role: write\n';
+        return mockGitHub.threads[0];
+      }, 'write'],
       ['that is not guarded', 'alice', async () => {
         const [blocker] = mockGitHub.threads;
         return mockGitHub.addThread('src/math.ts', 3, blocker.comments[0].body.replace('<!-- manki:blocker:', '<!-- manki:warning:'), APP_LOGIN);
-      }],
-    ])('leaves a thread %s resolved, on the resolve and on a reply in it', async (_label, resolver, setUp) => {
+      }, undefined],
+    ])('leaves a thread %s resolved, on the resolve and on a reply in it', async (_label, resolver, setUp, overrodeAs) => {
       Object.assign(mockLLM.replies, BLOCKER_REPLIES);
       await reviewRound();
       const thread = await setUp();
@@ -1279,8 +1302,10 @@ describe('runFullReview end to end', () => {
       expect(core.setFailed).not.toHaveBeenCalled();
       expect(thread.isResolved).toBe(true);
       expect(thread.comments.map(c => c.body).join('\n')).not.toContain('Reopened.');
-      // Only a repo admin's override leaves a note in the thread, and the reply gets its answer.
-      expect(afterResolve).toHaveLength(resolver === 'alice' && mockGitHub.permission === 'admin' ? 1 : 0);
+      // Only the PR author's override leaves a note in the thread, and the reply gets its answer.
+      expect(afterResolve).toEqual(overrodeAs
+        ? [`Finding dismissed by @alice, the PR author, who has the \`${overrodeAs}\` role on this repository.\n\n<!-- manki -->\n${securityOverrideMarker('resolve', 'alice')}`]
+        : []);
       expect(thread.comments.at(-1)?.body).toMatch(/^Kept\. Nothing bounds `b`/);
     });
 
@@ -1373,7 +1398,7 @@ describe('runFullReview end to end', () => {
       expect(answers().slice(2)).toEqual([`${kept}\n\n<!-- manki -->`]);
 
       // Her own agreement or dismissal there clears nothing, and Manki says that the finding keeps blocking.
-      const keepsBlocking = 'This is a blocking finding, so resolving the thread does not clear it. It keeps blocking until a maintainer other than the PR author, or a repo admin, clears it.';
+      const keepsBlocking = 'This is a blocking finding, so resolving the thread does not clear it. It keeps blocking until someone other than the PR author with write access clears it. A PR author can clear it only with the `maintain` role or a higher one.';
       await replyInThread(thread, 'I will handle it in a follow-up.', 'Agreed. A follow-up works.');
       await replyInThread(thread, '@manki dismiss', '');
       expect(answers().slice(3)).toEqual([`Agreed. A follow-up works.\n\n${keepsBlocking}\n\n<!-- manki -->`, `${keepsBlocking}\n\n<!-- manki -->`]);

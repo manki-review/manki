@@ -50,7 +50,7 @@ function mockMemoryStore() {
   return { name: 'owner/review-memory', load: jest.fn(), read: jest.fn(), write: jest.fn(), append: jest.fn().mockResolvedValue(undefined) } satisfies MemoryStore;
 }
 
-const PR = { number: 42, headSha: 'head', mergedSha: 'merged', authorLogin: 'author' };
+const PR = { number: 42, headSha: 'head', mergedSha: 'merged', authorLogin: 'author', clearRole: 'maintain' as const };
 
 function routing(group: string, configDigest: string): RoundRouting {
   return {
@@ -129,6 +129,8 @@ describe('recordFixRate', () => {
     expect(summaryLine()).toEqual(expected);
     expect(core.summary.write).toHaveBeenCalled();
     expect(github.repos.compareCommits).toHaveBeenCalledWith(expect.objectContaining({ base: 'sha1', head: 'head' }));
+    // The threads are read with the role a PR author needs, so an override counts as it did on the PR.
+    expect(fetchRecapState).toHaveBeenCalledWith(expect.anything(), TEST_BOT, 'owner', 'repo', 42, 'author', 'maintain');
 
     expect(memory.append).toHaveBeenCalledWith('metrics/fix-rate.jsonl', [JSON.stringify(expected)], 'Record fix rate of owner/repo#42');
   });

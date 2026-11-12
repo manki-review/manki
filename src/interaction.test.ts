@@ -42,7 +42,7 @@ jest.mock('./memory', () => ({
 }));
 
 const MEMORY = { name: 'test-owner/memory' } as memory.MemoryStore;
-const CONFIG = { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig;
+const CONFIG = { auto_approve: true, author_clear_role: 'maintain' } as Partial<ReviewConfig> as ReviewConfig;
 
 /** A finding Manki posted on the PR, which a named `dismiss` must match before it stores a suppression. */
 const POSTED_FINDING = { id: 'PRRT_posted', rootCommentId: 7, isResolved: false, isBlocking: false, findingTitle: 'Null-check-warning: `parse` skips the guard' };
@@ -55,7 +55,7 @@ jest.mock('./github', () => ({
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   reactToReviewComment: jest.fn().mockResolvedValue(undefined),
   fetchPRDiff: jest.fn().mockResolvedValue(''),
-  isRepoAdmin: jest.fn().mockResolvedValue(false),
+  authorClearRole: jest.fn().mockResolvedValue(undefined),
   hasWriteAccess: jest.fn(async (_octokit: unknown, _owner: string, _repo: string, login: string) => login !== 'reader'),
 }));
 
@@ -67,6 +67,7 @@ jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn(async (overrides: unknown[]) => overrides),
   approveOrSayWhy: jest.fn().mockResolvedValue({ approved: true }),
   authorResolvedNote: jest.fn().mockResolvedValue(undefined),
+  rolePhrase: jest.requireActual('./state').rolePhrase,
   fetchBotReviewThreads: jest.fn().mockResolvedValue([]),
   fixedMarker: jest.requireActual('./state').fixedMarker,
   reopenThread: jest.fn().mockResolvedValue(true),
@@ -830,17 +831,18 @@ describe('handleReviewCommentReply', () => {
 
     // An answer that cannot close an open blocking or security thread says who can.
     const staysOpen = kind !== 'warning' && !reason && !resolved && /^\**(Fixed|Agreed|Withdrawn)\./.test(reply);
-    const until = reply.startsWith('Fixed')
-      ? 'the next review confirms the fix, or a maintainer other than the PR author closes it'
-      : 'a maintainer other than the PR author, or a repo admin, closes it';
+    const other = 'someone other than the PR author with write access closes it';
+    const until = reply.startsWith('Fixed') ? `the next review confirms the fix, or ${other}` : other;
+    // Only an answer the PR author's own role could settle names the role.
+    const author = reply.startsWith('Fixed') ? '' : ' A PR author can close it only with the `maintain` role or a higher one.';
     // The note goes only on a thread that did open, and that the answer does not clear.
     const noted = authorResolved && reopens && !reason;
     // A thread that stays resolved by the PR author keeps blocking, which an answer that would settle it says.
     const keepsBlocking = !noted && sender === 'pr-author' && (authorResolved || resolver === 'pr-author') && /^\**(Fixed|Agreed|Withdrawn)\./.test(reply);
     const finding = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding`;
     const note = noted ? '\n\nReopened. The PR author cannot resolve it.'
-      : keepsBlocking ? `\n\n${finding}, so resolving the thread does not clear it. It keeps blocking until ${until.replace('closes', 'clears')}.`
-        : `\n\n${finding}, so the thread stays open until ${until}.`;
+      : keepsBlocking ? `\n\n${finding}, so resolving the thread does not clear it. It keeps blocking until ${until.replace('closes', 'clears')}.${author.replace('close', 'clear')}`
+        : `\n\n${finding}, so the thread stays open until ${until}.${author}`;
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${staysOpen || noted || keepsBlocking ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason && reopens ? [[octokit, 'PRRT_this', reason]] : []);
     // The reply record keeps what the reply decided for the thread.
@@ -1286,6 +1288,13 @@ describe('handleCheck (via handlePRComment)', () => {
     // A reason that cannot be read still gets a reply.
     expect((await check({ approved: false, why: () => Promise.reject(new Error('API 502')) })).at(-1)).toBe('The approval did not go through. The workflow log has the reason.\n\n<!-- manki -->');
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('API 502'));
+
+    // While the base branch's config cannot be read or loaded, the check approves nothing and says so.
+    jest.mocked(state.approveOrSayWhy).mockClear();
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, config, true);
+    expect(state.approveOrSayWhy).not.toHaveBeenCalled();
+    expect(jest.mocked(octokit.rest.issues.createComment).mock.calls.at(-1)?.[0].body)
+      .toBe('**Approval held:** the config file on the base branch could not be read or does not load. The workflow log has the reason.\n\n<!-- manki -->');
   });
 });
 
@@ -1378,19 +1387,19 @@ describe('handleReviewCommentCommand', () => {
   });
 
   it.each([
-    ['a repo admin PR author', 'OWNER', 'pr-author', true, 'security', true],
-    ['a repo admin PR author, on a plain blocker', 'OWNER', 'pr-author', true, 'blocker', true],
-    ['a PR author without admin', 'OWNER', 'pr-author', false, 'security', false],
-    ['a PR author without admin, on a plain blocker', 'NONE', 'pr-author', false, 'blocker', false],
-    ['a PR author without admin, on a warning', 'NONE', 'pr-author', false, 'warning', true],
+    ['a PR author with a role that allows it', 'OWNER', 'pr-author', true, 'security', true],
+    ['a PR author with a role that allows it, on a plain blocker', 'OWNER', 'pr-author', true, 'blocker', true],
+    ['a PR author with a lower role', 'OWNER', 'pr-author', false, 'security', false],
+    ['a PR author with a lower role, on a plain blocker', 'NONE', 'pr-author', false, 'blocker', false],
+    ['a PR author with a lower role, on a warning', 'NONE', 'pr-author', false, 'warning', true],
     ['a maintainer other than the PR author', 'MEMBER', 'someone', false, 'security', true],
     ['a maintainer other than the PR author, on a re-raised warning', 'MEMBER', 'someone', false, 'reraised', true],
-    ['a PR author without admin, on a re-raised warning', 'NONE', 'pr-author', false, 'reraised', false],
+    ['a PR author with a lower role, on a re-raised warning', 'NONE', 'pr-author', false, 'reraised', false],
     ['an org member with read access', 'MEMBER', 'reader', false, 'security', false],
     ['a collaborator with read access, on a warning', 'COLLABORATOR', 'reader', false, 'warning', false],
     ['an outside contributor', 'CONTRIBUTOR', 'reader', true, 'security', false],
     ['a private org member with write access', 'NONE', 'someone', false, 'security', true],
-  ] as Array<[string, string, string, boolean, FindingKind, boolean]>)('resolves the thread a dismiss was posted in, from %s', async (_who, association, sender, isAdmin, kind, resolves) => {
+  ] as Array<[string, string, string, boolean, FindingKind, boolean]>)('resolves the thread a dismiss was posted in, from %s', async (_who, association, sender, mayClear, kind, resolves) => {
     setContext({
       comment: { id: 62, body: '@manki dismiss', user: { type: 'User' }, in_reply_to_id: 99, author_association: association },
       pull_request: { number: 1, user: { login: 'pr-author' } },
@@ -1398,14 +1407,17 @@ describe('handleReviewCommentCommand', () => {
     });
     const octokit = createMockOctokit();
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(kind), path: 'src/file.ts', line: 10 } });
-    jest.mocked(ghUtils.isRepoAdmin).mockResolvedValue(isAdmin);
+    jest.mocked(ghUtils.authorClearRole).mockClear().mockResolvedValue(mayClear ? 'maintain' : undefined);
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
       { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: kind !== 'warning', ...(kind === 'security' && { isSecurity: true }), findingTitle: 'Token' },
     ]);
 
-    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 62, parseCommand('@manki dismiss'));
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 62, parseCommand('@manki dismiss'), undefined, 'maintain');
 
-    const overrides = isAdmin && kind !== 'warning' && sender === 'pr-author' ? [[octokit, [{ thread: 'PRRT_this', login: 'pr-author', via: 'dismiss' }]]] : [];
+    const guardedByAuthor = kind !== 'warning' && sender === 'pr-author';
+    // The lookup gets the level of the base branch's config, and only the PR author's own dismissal of a guarded thread needs it.
+    expect(jest.mocked(ghUtils.authorClearRole).mock.calls).toEqual(guardedByAuthor ? [[octokit, 'test-owner', 'test-repo', 'pr-author', 'maintain']] : []);
+    const overrides = mayClear && guardedByAuthor ? [[octokit, [{ thread: 'PRRT_this', login: 'pr-author', role: 'maintain', via: 'dismiss' }]]] : [];
     expect(jest.mocked(state.announceSecurityOverrides).mock.calls).toEqual(overrides);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(resolves ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
     // A resolved thread speaks for itself. One left open says why in the thread, and nothing goes to the PR.
@@ -1421,15 +1433,15 @@ describe('handleReviewCommentCommand', () => {
     ['a blocker thread the PR author resolved', 'blocker', 'pr-author', false, 'cleared'],
     ['a security thread the PR author resolved', 'security', 'pr-author', false, 'cleared'],
     ['a blocker thread the PR author resolved, which cannot be reopened', 'blocker', 'pr-author', false, 'failed'],
-    ['a security thread a repo admin PR author resolved', 'security', 'pr-author', true, 'left'],
+    ['a security thread a PR author with a role that allows it resolved', 'security', 'pr-author', true, 'left'],
     ['a blocker thread another maintainer resolved', 'blocker', 'other', false, 'left'],
     ['a warning thread the PR author resolved', 'warning', 'pr-author', false, 'left'],
     // The PR author's own dismissal clears nothing, so it says that the finding keeps blocking.
     ['a blocker thread the PR author resolved, dismissed by the PR author', 'blocker', 'pr-author', false, 'refused', 'pr-author'],
     ['a security thread the PR author resolved, dismissed by the PR author', 'security', 'pr-author', false, 'refused', 'pr-author'],
-    ['a security thread a repo admin PR author resolved, dismissed by that author', 'security', 'pr-author', true, 'left', 'pr-author'],
+    ['a security thread a PR author with a role that allows it resolved, dismissed by that author', 'security', 'pr-author', true, 'left', 'pr-author'],
     ['a blocker thread another maintainer resolved, dismissed by the PR author', 'blocker', 'other', false, 'left', 'pr-author'],
-  ])('clears a resolved thread a maintainer dismisses only when its resolve does not count: %s', async (_label, kind, resolver, authorIsAdmin, result, sender = 'someone') => {
+  ])('clears a resolved thread a maintainer dismisses only when its resolve does not count: %s', async (_label, kind, resolver, authorMayClear, result, sender = 'someone') => {
     setContext({
       comment: { id: 64, body: '@manki dismiss', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' },
       pull_request: { number: 1, user: { login: 'pr-author' } },
@@ -1437,19 +1449,19 @@ describe('handleReviewCommentCommand', () => {
     });
     const octokit = createMockOctokit();
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(kind), path: 'src/file.ts', line: 10 } });
-    jest.mocked(ghUtils.isRepoAdmin).mockResolvedValue(authorIsAdmin);
+    jest.mocked(ghUtils.authorClearRole).mockResolvedValue(authorMayClear ? 'maintain' : undefined);
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
       { id: 'PRRT_this', rootCommentId: 99, isResolved: true, resolvedByLogin: resolver, isBlocking: kind !== 'warning', ...(kind === 'security' && { isSecurity: true }), findingTitle: 'Token' },
     ]);
     jest.mocked(state.reopenThread).mockClear().mockResolvedValue(result !== 'failed');
 
-    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 64, parseCommand('@manki dismiss'));
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 64, parseCommand('@manki dismiss'), undefined, 'maintain');
 
     expect(jest.mocked(state.reopenThread).mock.calls).toEqual(result === 'cleared' || result === 'failed' ? [[octokit, 'PRRT_this']] : []);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(result === 'cleared' ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
     expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
     // A thread that stays resolved by the PR author still blocks, so the dismissal says it did not work.
-    const keepsBlocking = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding, so resolving the thread does not clear it. It keeps blocking until a maintainer other than the PR author, or a repo admin, clears it.`;
+    const keepsBlocking = `This is a ${kind === 'security' ? 'security' : 'blocking'} finding, so resolving the thread does not clear it. It keeps blocking until someone other than the PR author with write access clears it. A PR author can clear it only with the \`maintain\` role or a higher one.`;
     const note = { failed: 'Could not resolve this thread. The run log has the reason.', refused: keepsBlocking, cleared: undefined, left: undefined }[result];
     expect(jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls).toEqual(
       note ? [[expect.objectContaining({ comment_id: 64, body: `${note}\n\n<!-- manki -->` })]] : [],
@@ -1457,7 +1469,7 @@ describe('handleReviewCommentCommand', () => {
     expect(jest.mocked(ghUtils.reactToReviewComment).mock.calls).toEqual(note ? [] : [[octokit, 'test-owner', 'test-repo', 64, '+1']]);
   });
 
-  it('keeps an admin dismissal open when Manki cannot record it, and records it once', async () => {
+  it('keeps a dismissal by the PR author open when Manki cannot record it, and records it once', async () => {
     setContext({
       comment: { id: 63, body: '@manki dismiss', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
       pull_request: { number: 1, user: { login: 'pr-author' } },
@@ -1465,12 +1477,12 @@ describe('handleReviewCommentCommand', () => {
     });
     const octokit = createMockOctokit();
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment('security'), path: 'src/file.ts', line: 10 } });
-    jest.mocked(ghUtils.isRepoAdmin).mockResolvedValue(true);
+    jest.mocked(ghUtils.authorClearRole).mockResolvedValue('admin');
     const thread = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, isSecurity: true, findingTitle: 'Token' };
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([thread]);
     jest.mocked(state.announceSecurityOverrides).mockResolvedValueOnce([]);
 
-    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 63, parseCommand('@manki dismiss'));
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 63, parseCommand('@manki dismiss'), undefined, 'maintain');
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({
       comment_id: 63, body: 'Could not resolve this thread. The run log has the reason.\n\n<!-- manki -->',
@@ -1479,7 +1491,7 @@ describe('handleReviewCommentCommand', () => {
     // A thread that already carries the recorded override, say after someone reopened it, gets no second reply.
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ ...thread, recordedOverride: { login: 'pr-author', via: 'dismiss' } }]);
     jest.mocked(state.announceSecurityOverrides).mockClear();
-    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 63, parseCommand('@manki dismiss'));
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 63, parseCommand('@manki dismiss'), undefined, 'maintain');
     expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
     expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_this', 'WONT_FIX');
   });

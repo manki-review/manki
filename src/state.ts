@@ -4,14 +4,14 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, inline, NO_VERDICT_MARKER, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, HELD_FOR_PERSON_MARKER, inline, NO_VERDICT_MARKER, sanitizeMarkdown, fetchReviewThreadNodes, fetchStandingVerdict, MANKI_VERSION, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, authorClearRole, deleteAutoApproveProgressComment, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { compareChanges } from './diff';
 import { fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, parseContextBlocks, recordedThreadGrades, isSecurityThread, mayClearSecurityThread, parseFindingData, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadMarkerSlug, threadSeverity } from './recap';
 import { formatApprovalRecord, hasReviewRecord } from './review-record';
 import { findPriorThreadId } from './finding-fingerprint';
-import { ApprovalRecord, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
+import { ApprovalRecord, AuthorClearRole, ReviewConfig, RoundContext, SecurityOverride, threadBlocks } from './types';
 import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -67,7 +67,7 @@ interface ReviewThread {
   resolvedByLogin?: string;
   isBlocking: boolean;
   isSecurity?: boolean;
-  /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after an admin check. */
+  /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after `authorClearRole` confirms the role. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
   findingTitle: string;
   /** Where the thread was posted, for which finding and on which commit. Absent for a thread without a finding marker. */
@@ -242,7 +242,7 @@ function reopenReply(isSecurity: boolean, halt: Awaited<ReturnType<typeof autoRe
 async function authorResolvedNote(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, prAuthorLogin: string | undefined, config: ReviewConfig, threadId: string,
 ): Promise<string | undefined> {
-  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin);
+  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin, config.author_clear_role);
   const finding = recap.previousFindings.find(f => f.reopen && f.threadId === threadId);
   return finding && reopenReply(!!finding.isSecurity, await autoReviewHalt(octokit, bot, owner, repo, prNumber, config, recap));
 }
@@ -281,11 +281,11 @@ async function reopenThread(octokit: Octokit, threadId: string): Promise<boolean
  * Replies once on each thread to record a security override. The reply's marker is what later rounds read the override from.
  * Returns the overrides it could record.
  */
-async function announceSecurityOverrides(octokit: Octokit, overrides: SecurityOverride[]): Promise<SecurityOverride[]> {
+async function announceSecurityOverrides(octokit: Octokit, overrides: Array<Required<SecurityOverride>>): Promise<SecurityOverride[]> {
   const announced: SecurityOverride[] = [];
   for (const o of overrides) {
     try {
-      await replyToReviewThread(octokit, o.thread, `Finding dismissed by @${o.login} (repo admin).`, securityOverrideMarker(o.via, o.login));
+      await replyToReviewThread(octokit, o.thread, `Finding dismissed by @${o.login}, the PR author, who has ${rolePhrase(o.role)} on this repository.`, securityOverrideMarker(o.via, o.login));
       announced.push(o);
       core.info(`Recorded the security override by ${o.login} on thread ${o.thread}`);
     } catch (error) {
@@ -300,12 +300,12 @@ async function announceSecurityOverrides(octokit: Octokit, overrides: SecurityOv
  * not cleared. Note threads posted by older versions never block, matching the verdict's bar.
  * A resolved thread is cleared only when Manki resolved it, which it does after the judge marks it
  * addressed or a maintainer agrees, when `mayClearSecurityThread` accepts the resolver,
- * or when the PR author resolved it as a repo admin (`prAuthorIsAdmin`).
+ * or when the PR author resolved it with `prAuthorRole`, a role `authorClearRole` confirmed.
  */
-function unclearedThreads(threads: ReviewThread[], bot: BotIdentity, prAuthorLogin?: string, prAuthorIsAdmin = false, named: ReadonlySet<string> = new Set()): ReviewThread[] {
+function unclearedThreads(threads: ReviewThread[], bot: BotIdentity, prAuthorLogin?: string, prAuthorRole?: AuthorClearRole, named: ReadonlySet<string> = new Set()): ReviewThread[] {
   return threads.filter(t => (t.isBlocking || named.has(t.id)) && !(t.isResolved && (
     isBotLogin(bot, t.resolvedByLogin) || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin)
-    || !!securityOverrideOf(t, prAuthorLogin, prAuthorIsAdmin)
+    || !!securityOverrideOf(t, prAuthorLogin, prAuthorRole)
   )));
 }
 
@@ -520,11 +520,16 @@ function unreviewedLine(headSha: string, halt?: { text: string }): string {
     : `Manki has not reviewed ${head} yet. A push review should start shortly, and approval follows from its verdict.`;
 }
 
+/** Names `role` in a note. With `orHigher`, `role` is the repo's `author_clear_role` and the phrase covers every role that setting allows. */
+function rolePhrase(role: AuthorClearRole, orHigher = false): string {
+  return `the \`${role}\` role${orHigher && role !== 'admin' ? ' or a higher one' : ''}`;
+}
+
 /**
  * Lists the threads `open` that hold an approval, for a person who asks why there is none. `named` holds the threads
  * the covering review blocks on whatever grade they show. `instead` replaces the last line when resolving them is not enough.
  */
-function blockingThreadsLine(open: ReviewThread[], named: ReadonlySet<string>, instead?: string): string {
+function blockingThreadsLine(open: ReviewThread[], named: ReadonlySet<string>, clearRole: AuthorClearRole | undefined, instead?: string): string {
   const list = open.map(t => {
     const title = sanitizeMarkdown(t.findingTitle);
     const note = t.isResolved ? ` (resolved by ${inline(t.resolvedByLogin ?? 'someone')}, who may not clear it)`
@@ -532,7 +537,7 @@ function blockingThreadsLine(open: ReviewThread[], named: ReadonlySet<string>, i
     return `- ${t.threadUrl ? `[${title}](${t.threadUrl})` : title}${note}`;
   }).join('\n');
   const one = open.length === 1;
-  const lifts = `Approval follows once ${one ? 'it is' : 'they are'} resolved by someone allowed to. The PR author may not clear a blocking thread, unless they are a repo admin.`;
+  const lifts = `Approval follows once ${one ? 'it is' : 'they are'} resolved by someone allowed to. The PR author may not clear a blocking thread${clearRole ? ` without ${rolePhrase(clearRole, true)}` : ''}.`;
   return `${one ? '1 thread blocks' : `${open.length} threads block`} the approval:\n${list}\n\n${instead ?? lifts}`;
 }
 
@@ -679,25 +684,25 @@ async function approveOrSayWhy(
   }
 
   const prAuthorLogin = pr.user?.login;
-  const prAuthorIsAdmin = !!prAuthorLogin && threads.some(t => isOverrideCandidate(t, prAuthorLogin))
-    && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
+  const prAuthorRole = prAuthorLogin && threads.some(t => isOverrideCandidate(t, prAuthorLogin))
+    ? await authorClearRole(octokit, owner, repo, prAuthorLogin, config?.author_clear_role) : undefined;
   const overrides = threads.flatMap(t => {
-    const o = securityOverrideOf(t, prAuthorLogin, prAuthorIsAdmin);
+    const o = securityOverrideOf(t, prAuthorLogin, prAuthorRole);
     return o ? [{ ...o, thread: t.id, title: t.findingTitle, threadUrl: t.threadUrl }] : [];
   });
   await announceSecurityOverrides(octokit, overrides.filter(o => !o.announced));
 
   const listReviews = () => octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });
-  const uncleared = (named?: ReadonlySet<string>) => unclearedThreads(threads, bot, prAuthorLogin, prAuthorIsAdmin, named);
+  const uncleared = (named?: ReadonlySet<string>) => unclearedThreads(threads, bot, prAuthorLogin, prAuthorRole, named);
   if (uncleared().length > 0) {
     core.info('Not all blocking findings resolved — skipping auto-approve');
     // Only the reply reads the covering review here, to list every thread that blocks and to say when resolving them is not enough.
     return withheld(async () => {
       const reviews = await listReviews();
       const covered = await coveredCommit(octokit, bot, owner, repo, prNumber, pr, reviews);
-      if (!covered) return blockingThreadsLine(uncleared(), new Set(), unreviewedLine(pr.head.sha, config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config)));
+      if (!covered) return blockingThreadsLine(uncleared(), new Set(), config?.author_clear_role, unreviewedLine(pr.head.sha, config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config)));
       const block = blockOf(reviews, bot, covered, threads, owner, repo, prNumber);
-      return blockingThreadsLine(uncleared(block.named), block.named, block.held && `${block.held}\n\n${NEXT_ROUND_LINE}`);
+      return blockingThreadsLine(uncleared(block.named), block.named, config?.author_clear_role, block.held && `${block.held}\n\n${NEXT_ROUND_LINE}`);
     });
   }
 
@@ -746,7 +751,7 @@ async function approveOrSayWhy(
   const open = uncleared(block.named);
   if (open.length > 0) {
     core.info('A thread the covering review blocks on is not resolved — skipping auto-approve');
-    return withheld(blockingThreadsLine(open, block.named));
+    return withheld(blockingThreadsLine(open, block.named, config?.author_clear_role));
   }
 
   const hold = await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha, false, reason => approvalRecord('held', reason, pr.head.sha));
@@ -812,4 +817,4 @@ async function approveOrSayWhy(
   return { approved: true };
 }
 
-export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { ApprovalCheck, PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, approveOrSayWhy, authorResolvedNote, checkAndAutoApprove, deleteThreadReply, fetchBotReviewThreads, fixedMarker, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, reopenThread, replyToReviewThread, rolePhrase, resolveReviewThread, retireStaleNotices, unclearedThreads, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

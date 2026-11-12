@@ -1,13 +1,13 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, paginateGraphql, titleToSlug } from './github';
+import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, WHAT_GOES_WRONG_LABEL, WHY_LABEL, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, authorClearRole, paginateGraphql, titleToSlug } from './github';
 import { ISSUE_BOX_ANCHOR } from './issue-box';
 import { findPriorThreadId } from './finding-fingerprint';
 import { extractJSON } from './json';
 import { isLockfileAlert } from './lockfile';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
-import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, isSecurityFinding } from './types';
+import { AuthorClearRole, AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacySeverity, migrateStoredSeverities, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_ORDER, SEVERITY_TOKEN_PATTERN, threadBlocks, isSecurityFinding } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -107,13 +107,14 @@ const DISMISS_COMMAND_RE = /^\s*(?:@manki-review|@manki|\/manki)\s+dismiss\b/i;
 
 const SECURITY_OVERRIDE_MARKER_RE = /<!-- manki-security-override:(resolve|dismiss):([\w-]+) -->/;
 
-/** Marks Manki's reply on a security thread the PR author cleared as a repo admin, with how and by whom. */
+/** Marks Manki's reply on a guarded thread the PR author cleared with a role that allows it, with how and by whom. */
 function securityOverrideMarker(via: SecurityOverride['via'], login: string): string {
   return `<!-- manki-security-override:${via}:${login} -->`;
 }
 
-/** How the PR author cleared a security thread as a repo admin. */
+/** How the PR author cleared a guarded thread, and the repository role that allowed it. */
 interface ThreadSecurityOverride extends Omit<SecurityOverride, 'thread'> {
+  role: AuthorClearRole;
   /** Whether Manki has already replied on the thread to record the override. */
   announced: boolean;
 }
@@ -160,24 +161,25 @@ function isLogin(login: string | undefined, prAuthorLogin: string | undefined): 
   return !!login && !!prAuthorLogin && login.toLowerCase() === prAuthorLogin.toLowerCase();
 }
 
-/** Whether a resolved thread the PR author alone cannot clear needs the admin check, since only an admin author may clear it. */
+/** Whether a resolved thread the PR author alone cannot clear needs the role lookup, since only an author with a role `author_clear_role` allows may clear it. */
 function isOverrideCandidate(t: OverrideCandidate, prAuthorLogin: string | undefined): boolean {
   return authorCannotClear(t) && t.isResolved && (isLogin(t.resolvedByLogin, prAuthorLogin) || isLogin(t.recordedOverride?.login, prAuthorLogin));
 }
 
 /** The security overrides on `previousFindings`, one per thread. */
-function securityOverridesIn(previousFindings: PreviousFinding[]): Array<SecurityOverride & { announced: boolean }> {
+function securityOverridesIn(previousFindings: PreviousFinding[]): Array<Required<SecurityOverride> & { announced: boolean }> {
   return previousFindings.flatMap(f => f.threadId && f.securityOverride ? [{ thread: f.threadId, ...f.securityOverride }] : []);
 }
 
 /**
- * Returns how the PR author cleared a resolved security thread as a repo admin: the override Manki recorded on it,
- * or else the author's own resolve. Both need `prAuthorIsAdmin`: a marker alone proves nothing, since a Manki reply can echo text it was given.
+ * Returns how the PR author cleared a resolved guarded thread: the override Manki recorded on it, or else the author's
+ * own resolve. Both need `prAuthorRole`, the role `authorClearRole` confirmed for the author. A marker alone proves
+ * nothing, since a Manki reply can echo text it was given.
  */
-function securityOverrideOf(t: OverrideCandidate, prAuthorLogin: string | undefined, prAuthorIsAdmin: boolean): ThreadSecurityOverride | undefined {
-  if (!prAuthorIsAdmin || !isOverrideCandidate(t, prAuthorLogin)) return undefined;
-  if (t.recordedOverride && isLogin(t.recordedOverride.login, prAuthorLogin)) return { ...t.recordedOverride, announced: true };
-  return isLogin(t.resolvedByLogin, prAuthorLogin) ? { login: t.resolvedByLogin, via: 'resolve', announced: false } : undefined;
+function securityOverrideOf(t: OverrideCandidate, prAuthorLogin: string | undefined, prAuthorRole: AuthorClearRole | undefined): ThreadSecurityOverride | undefined {
+  if (!prAuthorRole || !isOverrideCandidate(t, prAuthorLogin)) return undefined;
+  if (t.recordedOverride && isLogin(t.recordedOverride.login, prAuthorLogin)) return { ...t.recordedOverride, role: prAuthorRole, announced: true };
+  return isLogin(t.resolvedByLogin, prAuthorLogin) ? { login: t.resolvedByLogin, via: 'resolve', role: prAuthorRole, announced: false } : undefined;
 }
 
 const LLM_DEDUP_TIMEOUT_MS = 120_000;
@@ -334,7 +336,7 @@ interface PreviousFinding extends FindingMetadata {
   authorReplyMayClear?: boolean;
   /** A guarded thread the PR author resolved, which Manki has not reopened before. */
   reopen?: boolean;
-  /** A guarded thread the PR author cleared as a repo admin. */
+  /** A guarded thread the PR author cleared with a role that `author_clear_role` allows. */
   securityOverride?: ThreadSecurityOverride;
   /** Manki's latest answer to a developer in the thread, from `latestAnswer`. */
   answer?: string;
@@ -532,7 +534,8 @@ function parseContextBlocks(
 }
 
 /**
- * Fetch previous review state for a PR.
+ * Fetch previous review state for a PR. `clearRole` is the base branch's `author_clear_role`. Without it the PR
+ * author clears no guarded thread.
  */
 async function fetchRecapState(
   octokit: Octokit,
@@ -541,6 +544,7 @@ async function fetchRecapState(
   repo: string,
   prNumber: number,
   prAuthorLogin?: string,
+  clearRole?: AuthorClearRole,
 ): Promise<RecapState> {
   const [threadsResult, { priorRounds, lastApprovalAt, priorRoundsIncomplete, unreadRecords }] = await Promise.all([
     fetchReviewThreads(octokit, bot, owner, repo, prNumber),
@@ -555,14 +559,14 @@ async function fetchRecapState(
     return { ...t, ...(grade && { recordedGrade: grade.grade, peakGrade: grade.peak }), ...(t.isBotThread && priorRoundsIncomplete && { gradeUnknown: true }) };
   });
   const botThreads = threads.filter(t => t.isBotThread);
-  const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isOverrideCandidate(t, prAuthorLogin))
-    && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
+  const prAuthorRole = prAuthorLogin && botThreads.some(t => isOverrideCandidate(t, prAuthorLogin))
+    ? await authorClearRole(octokit, owner, repo, prAuthorLogin, clearRole) : undefined;
   const agreers = new Set(botThreads.flatMap(t => authorCannotClear(t) && t.authorReplyLogin && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
     ? [t.authorReplyLogin] : []));
   const mayAgree = new Map(await Promise.all([...agreers].map(async login => [login, await hasWriteAccess(octokit, owner, repo, login)] as const)));
 
   const previousFindings = botThreads.map(t => {
-    const securityOverride = addressedThreadIds.has(t.threadId) ? undefined : securityOverrideOf(t, prAuthorLogin, prAuthorIsAdmin);
+    const securityOverride = addressedThreadIds.has(t.threadId) ? undefined : securityOverrideOf(t, prAuthorLogin, prAuthorRole);
     return {
       title: t.findingTitle,
       file: t.file,
@@ -634,7 +638,7 @@ function shouldReopen(t: ReviewThread, addressedThreadIds: Set<string>, prAuthor
 
 /**
  * Returns the thread's status for the next round. A resolved guarded thread stays `open` or `replied`
- * unless the judge marked it `addressed`, `mayClearSecurityThread` accepts the resolver, or a repo admin overrode it.
+ * unless the judge marked it `addressed`, `mayClearSecurityThread` accepts the resolver, or the PR author overrode it with a role that allows it.
  * A blocker Manki resolved counts as `auto-resolved`, since Manki resolves one only after such a clear.
  */
 function threadStatus(

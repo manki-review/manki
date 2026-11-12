@@ -1388,8 +1388,8 @@ describe('fetchRecapState', () => {
       type Case = { resolver?: string; reply?: { login: string; association: string; text?: string }; reopened?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
       const cases: Record<string, Case> = {
         'src/author-resolved.ts': { resolver: 'author', security: true, blocks: true },
-        // A recorded override counts only once the PR author passes the admin check, since a Manki reply can echo any text.
-        'src/admin-dismissed.ts': { resolver: BOT_LOGIN, dismissed: true, security: true, blocks: true },
+        // A recorded override counts only once GitHub confirms the PR author's role, since a Manki reply can echo any text.
+        'src/author-dismissed.ts': { resolver: BOT_LOGIN, dismissed: true, security: true, blocks: true },
         'src/bot-resolved.ts': { resolver: BOT_LOGIN, security: true, blocks: true },
         'src/author-resolved-again.ts': { resolver: 'author', reopened: true, security: true, blocks: true },
         'src/author-agreed.ts': { reply: { login: 'author', association: 'OWNER' }, security: true, blocks: true },
@@ -1442,11 +1442,14 @@ describe('fetchRecapState', () => {
           ] },
         });
       }), [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
-      const permissions: Record<string, string> = { author: 'write', bob: 'write', dave: 'read', erin: 'write' };
-      const permission = jest.fn(async ({ username }: { username: string }) => ({ data: { permission: permissions[username] ?? 'none' } }));
+      // Each login's `role_name`. The legacy `permission` beside it reports `maintain` as `write`.
+      const roles: Record<string, string> = { author: 'write', bob: 'write', dave: 'read', erin: 'write' };
+      const legacy: Record<string, string> = { admin: 'admin', maintain: 'write', write: 'write', read: 'read' };
+      const permission = jest.fn(async ({ username }: { username: string }) => ({ data: roles[username] ? { permission: legacy[roles[username]], role_name: roles[username] } : { permission: 'none' } }));
       Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: permission } });
 
-      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author');
+      // The author can push, which is below the default level `maintain`, so their own resolve clears nothing.
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain');
       expect(state.previousFindings.filter(f => f.reopen).map(f => f.file)).toEqual(['src/author-resolved.ts', 'src/blocker-author-resolved.ts']);
       expect(state.previousFindings.filter(f => f.securityOverride)).toEqual([]);
       // A thread someone with write access agreed away or dismissed stays `replied`, also once Manki resolved it.
@@ -1477,27 +1480,33 @@ describe('fetchRecapState', () => {
       expect(collectInPrSuppressions(unknownAuthor.previousFindings).filter(s => s.reason === 'agree-reply').map(s => s.fingerprint.file))
         .toEqual(['src/author-agreed.ts', 'src/collaborator-agreed.ts', 'src/collaborator-dismissed.ts', 'src/private-member-agreed.ts', 'src/blocker-author-agreed.ts']);
 
-      // A repo admin author clears their own resolved threads. Nothing is reopened, and the override waits for Manki's reply.
-      // Permissions are cached per client, so the admin check needs a fresh one.
-      permissions.author = 'admin';
+      // An author with the `maintain` role clears their own resolved threads at that level. Nothing is reopened, and the override waits for Manki's reply.
+      // Permissions are cached per client, so each lookup of a changed role needs a fresh one.
+      roles.author = 'maintain';
       const admin = Object.create(octokit);
-      const adminState = await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author');
+      const adminState = await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain');
       expect(adminState.previousFindings.filter(f => f.reopen)).toEqual([]);
       expect(adminState.previousFindings.filter(f => f.securityOverride).map(f => [f.file, f.securityOverride])).toEqual([
-        ['src/author-resolved.ts', { login: 'author', via: 'resolve', announced: false }],
-        ['src/admin-dismissed.ts', { login: 'author', via: 'dismiss', announced: true }],
-        ['src/author-resolved-again.ts', { login: 'author', via: 'resolve', announced: false }],
-        ['src/blocker-author-resolved.ts', { login: 'author', via: 'resolve', announced: false }],
+        ['src/author-resolved.ts', { login: 'author', via: 'resolve', role: 'maintain', announced: false }],
+        ['src/author-dismissed.ts', { login: 'author', via: 'dismiss', role: 'maintain', announced: true }],
+        ['src/author-resolved-again.ts', { login: 'author', via: 'resolve', role: 'maintain', announced: false }],
+        ['src/blocker-author-resolved.ts', { login: 'author', via: 'resolve', role: 'maintain', announced: false }],
       ]);
+      // The same author clears nothing where the repository asks for `admin`, or where no level is known. The threads are reopened as for any author.
+      for (const level of ['admin', undefined] as const) {
+        const below = await fetchRecapState(Object.create(octokit), TEST_BOT, 'owner', 'repo', 1, 'author', level);
+        expect([level, below.previousFindings.filter(f => f.securityOverride), below.previousFindings.filter(f => f.reopen).map(f => f.file)])
+          .toEqual([level, [], ['src/author-resolved.ts', 'src/blocker-author-resolved.ts']]);
+      }
       const adminOpen = adminState.previousFindings.filter(f => f.status === 'open' || f.status === 'replied')
         .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));
       expect(adminState.priorRounds[0].findings.entries
         .filter(e => determineOutcome([], [e], adminOpen, collectResolvedThreadIds(adminState.previousFindings)).outcome === 'ADDRESS_FIRST')
         .map(e => e.fingerprint.file))
-        .toEqual(files.filter(file => cases[file].blocks && !['src/author-resolved.ts', 'src/admin-dismissed.ts', 'src/author-resolved-again.ts', 'src/blocker-author-resolved.ts'].includes(file)));
+        .toEqual(files.filter(file => cases[file].blocks && !['src/author-resolved.ts', 'src/author-dismissed.ts', 'src/author-resolved-again.ts', 'src/blocker-author-resolved.ts'].includes(file)));
       // A second read on the same client does not ask GitHub again.
       const lookups = permission.mock.calls.length;
-      await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author');
+      await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain');
       expect(permission).toHaveBeenCalledTimes(lookups);
       expect(permission).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', username: 'author' });
     });
@@ -1746,10 +1755,10 @@ describe('fetchRecapState', () => {
       const repeat = makeFinding({ severity: 'blocker', title: 'Stale cache', file: 'src/c.ts', line: 4 });
       expect(deduplicateFindings([repeat], state.previousFindings).unique).toHaveLength(1);
 
-      // A repo admin author still clears their own resolved thread, as with a blocker.
+      // An author whose role allows it still clears their own resolved thread, as with a blocker.
       const admin = Object.create(octokit);
-      Object.assign(admin, { rest: { ...octokit.rest, repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'admin' } })) } } });
-      const adminState = await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author');
+      Object.assign(admin, { rest: { ...octokit.rest, repos: { getCollaboratorPermissionLevel: jest.fn(async () => ({ data: { permission: 'admin', role_name: 'admin' } })) } } });
+      const adminState = await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author', 'maintain');
       expect(adminState.previousFindings.map(f => [f.status, !!f.reopen, f.securityOverride?.login])).toEqual([['resolved', false, 'author'], ['replied', false, undefined], ['resolved', false, undefined]]);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(3);

@@ -9,6 +9,12 @@
 # Triggers on thread resolution and via @manki check
 # auto_approve: true
 
+# The lowest repository role with which a PR author may clear a blocker or a
+# security finding on their own PR: admin, maintain or write (default: maintain).
+# Read from the base branch only. With `write`, everyone who can push may clear
+# the blockers on their own PRs.
+# author_clear_role: maintain
+
 # File filtering
 # Defaults: the known package lockfiles that end in ".lock", such as "Cargo.lock" and
 # "poetry.lock", then "dist/**" and "*.generated.*". Any other ".lock" file, such

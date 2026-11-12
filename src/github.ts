@@ -5,14 +5,14 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { DEFAULT_NOTES, loadConfig } from './config';
+import { changedKeys, DEFAULT_NOTES, fallbackConfig, loadConfig } from './config';
 import { AgentProgressEntry, leftOutUnproven, BinaryFile, CHECK_STATUSES, ConfigSource, DashboardData, DisprovedFinding, FOLLOW_UP_TAG, Finding, PRE_EXISTING_TAG, Refutation, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingFingerprintEntry, FindingSeverity, ParsedDiff, RelatedRelation, RelatedWork, ReviewMetadata, ReviewResult, PostedPlace, RoundContext, RoundOutcome, RoundUsage, ReviewConfig, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity, isSecurityFinding, canLeaveOut, UNPOSTED_REASONS } from './types';
 import { isLineInDiff } from './diff';
 import { issueBox } from './issue-box';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { citedLine, findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, SEVERITY_ORDER, threadBlocks } from './types';
+import { AUTHOR_CLEAR_ROLES, AuthorClearRole, cellGrade, findingKey, isDisprovedRaise, isGradeCell, isNote, MAX_AGENT_RETRIES, outcomeOf, SEVERITY_ORDER, threadBlocks } from './types';
 import { hiddenCharacters, safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { latestLimits } from './providers/instrumentation';
@@ -47,14 +47,22 @@ function isBotUser(bot: BotIdentity, user: { login?: string | null } | null | un
   return !!user?.login && bot.logins.includes(user.login);
 }
 
-const permissionLookups = new WeakMap<Octokit, Map<string, Promise<string>>>();
+/** What GitHub says `login` may do on a repo. `role` is absent when the lookup failed or the answer held none. */
+interface RepoAccess {
+  /** `admin`, `write`, `read` or `none`. It reports a `maintain` role as `write`. */
+  permission: string;
+  /** GitHub's `role_name`: `admin`, `maintain`, `write`, `triage`, `read`, or the name of a custom role. */
+  role?: string;
+}
+
+const permissionLookups = new WeakMap<Octokit, Map<string, Promise<RepoAccess>>>();
 
 /**
- * Returns the repo permission of `login`: `admin`, `write`, `read` or `none`. `author_association` cannot tell,
- * since an org member with read access shows as `MEMBER` and a private org member with write access as `NONE`.
- * Each client caches its answers, so a run asks once per login. A failed lookup counts as `none`.
+ * Returns the repo access of `login`. `author_association` cannot tell, since an org member with read access shows
+ * as `MEMBER` and a private org member with write access as `NONE`. Each client caches its answers, so a run asks
+ * once per login. A failed lookup counts as `none` with no role.
  */
-function repoPermission(octokit: Octokit, owner: string, repo: string, login: string): Promise<string> {
+function repoPermission(octokit: Octokit, owner: string, repo: string, login: string): Promise<RepoAccess> {
   let lookups = permissionLookups.get(octokit);
   if (!lookups) {
     lookups = new Map();
@@ -66,10 +74,10 @@ function repoPermission(octokit: Octokit, owner: string, repo: string, login: st
     lookup = (async () => {
       try {
         const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: login });
-        return data.permission;
+        return { permission: data.permission, ...(typeof data.role_name === 'string' && { role: data.role_name }) };
       } catch (error) {
         core.warning(`Could not read the repo permission of ${login}, treating it as none: ${error}`);
-        return 'none';
+        return { permission: 'none' };
       }
     })();
     lookups.set(key, lookup);
@@ -77,13 +85,21 @@ function repoPermission(octokit: Octokit, owner: string, repo: string, login: st
   return lookup;
 }
 
-async function isRepoAdmin(octokit: Octokit, owner: string, repo: string, login: string): Promise<boolean> {
-  return await repoPermission(octokit, owner, repo, login) === 'admin';
+/**
+ * Returns the repository role of `login` when it is at least `needed`, the base branch's `author_clear_role`.
+ * Returns none for a lower role, a custom role, a failed lookup and an unset `needed`. So only a role GitHub
+ * confirmed lets a PR author clear a guarded finding on their own PR.
+ */
+async function authorClearRole(octokit: Octokit, owner: string, repo: string, login: string, needed: AuthorClearRole | undefined): Promise<AuthorClearRole | undefined> {
+  if (!needed) return undefined;
+  const { role } = await repoPermission(octokit, owner, repo, login);
+  const held = AUTHOR_CLEAR_ROLES.findIndex(r => r === role);
+  return held >= AUTHOR_CLEAR_ROLES.indexOf(needed) ? AUTHOR_CLEAR_ROLES[held] : undefined;
 }
 
 /** Whether `login` can push to the repo. A `maintain` role reads as `write`. */
 async function hasWriteAccess(octokit: Octokit, owner: string, repo: string, login: string): Promise<boolean> {
-  return ['admin', 'write'].includes(await repoPermission(octokit, owner, repo, login));
+  return ['admin', 'write'].includes((await repoPermission(octokit, owner, repo, login)).permission);
 }
 
 const BOT_MARKER = '<!-- manki-bot -->';
@@ -380,6 +396,14 @@ export function configFailed(source: ConfigSource): boolean {
 }
 
 /**
+ * Returns the top-level keys the change's own config `head` edits against the base branch's. A base config that could
+ * not be read or loaded gives none, since the defaults that stand in for it are not what the change edits.
+ */
+export function editedKeys(head: ReviewConfig, base: { config: ReviewConfig; source: ConfigSource }): string[] {
+  return configFailed(base.source) ? [] : changedKeys(head, base.config);
+}
+
+/**
  * Returns the config file that holds the round's approval: the base branch's when it could not be read or loaded, else the
  * PR's own when `brokenOwnCopy` says the PR changed it and it does not load. A PR that only predates the base's copy
  * holds nothing.
@@ -399,8 +423,8 @@ export async function loadBaseConfig(
   describe: (error: unknown) => string,
 ): Promise<{ config: ReviewConfig; source: ConfigSource }> {
   const fallBack = (source: ConfigSource, problem: string, error: unknown) => {
-    core.warning(`${problem} ${configPath} on the base branch, reviewing with the defaults and no approval: ${describe(error)}`);
-    return { config: loadConfig(undefined), source };
+    core.warning(`${problem} ${configPath} on the base branch, using the defaults and no approval: ${describe(error)}`);
+    return { config: fallbackConfig(), source };
   };
   let content: string | null;
   try {
@@ -1746,7 +1770,7 @@ export async function postReview(
     }
     const blockingThreads = formatBlockingPriorThreads(result);
     const overrides = event === 'APPROVE' && formatSecurityOverrides(existingThreads.flatMap(t =>
-      t.securityOverride ? [{ title: t.title, threadUrl: t.threadUrl, login: t.securityOverride.login }] : []));
+      t.securityOverride ? [{ title: t.title, threadUrl: t.threadUrl, login: t.securityOverride.login, role: t.securityOverride.role }] : []));
     const sections = [
       formatNeedsHuman(result, restart),
       (blockingThreads || stillOpen.length > 0) && [blockingThreads ?? STILL_OPEN_HEADING, ...stillOpen].join('\n'),
@@ -2210,15 +2234,15 @@ function formatRelatedWork(work: RelatedWork | undefined, owner: string, repo: s
   return `**Related work:** open PRs and issues that may cover the same change. None of them blocks.\n\n${lines.join('\n')}`;
 }
 
-/** Returns one line naming the security findings a repo admin dismissed on their own PR, or null when there are none. */
-function formatSecurityOverrides(overrides: ReadonlyArray<{ title: string; threadUrl?: string; login: string }>): string | null {
+/** Returns one line naming the guarded findings a PR author dismissed on their own PR, with the role that allowed it, or null when there are none. */
+function formatSecurityOverrides(overrides: ReadonlyArray<{ title: string; threadUrl?: string; login: string; role: AuthorClearRole }>): string | null {
   if (overrides.length === 0) return null;
   const entries = overrides.map(o => {
     const title = sanitizeMarkdown(o.title || '(untitled)');
     const url = safeThreadUrl(o.threadUrl);
-    return `${url ? `[${title}](${url})` : title} by @${o.login}`;
+    return `${url ? `[${title}](${url})` : title} by @${o.login} (\`${o.role}\` role)`;
   });
-  return `**Findings dismissed by a repo admin:** ${entries.join(', ')}.`;
+  return `**Findings dismissed by the PR author:** ${entries.join(', ')}.`;
 }
 
 function formatLabelled(label: string, text: string): string {
@@ -3355,5 +3379,5 @@ async function fetchStandingVerdict(
 }
 
 export type { CodeLinks };
-export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
+export { APPROVED_LINE, CHECKS_MARKER, FIX_LABEL, MISSED_EARLIER_NOTE, UNCONFIRMED_NOTE, formatFindingBlock, inline, WHAT_GOES_WRONG_LABEL, WHY_LABEL, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, authorClearRole, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, fetchStandingVerdict, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings, NO_VERDICT_MARKER, HELD_FOR_PERSON_MARKER };
 export type { StandingVerdict };

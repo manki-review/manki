@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, capNotes, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
+import { ApprovalHeld, authorClearRole, buildDashboard, capNotes, hasWriteAccess, formatFoundAgainReply, formatUnreviewedNotice, formatVariantReply, formatRaisedReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, unreadRecordsLine, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, roundSentence, roundSummary, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings, fetchBlobShas, formatOpenBlockers, fetchCommitsSince } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, DisprovedFinding, Finding, FindingFingerprintEntry, GradeChange, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { highlightCode } from './highlight';
@@ -1755,24 +1755,24 @@ describe('postReview body lead', () => {
     expect(stuck.body).not.toContain('What this does');
   });
 
-  it('names the security findings a repo admin dismissed in an approval, and only there', async () => {
+  it('names the findings a PR author dismissed in an approval, with the role that allowed it, and only there', async () => {
     const thread = (title: string, threadId: string, override?: PreviousFinding['securityOverride']): PreviousFinding => ({
       title, file: 'src/a.ts', line: 3, severity: 'blocker', status: 'resolved', threadId, isSecurity: true,
       threadUrl: `https://github.com/o/r/pull/1#${threadId}`, ...(override && { securityOverride: override }),
     });
     const threads = [
-      thread('Token leaks into logs', 'r1', { login: 'owner', via: 'resolve', announced: false }),
+      thread('Token leaks into logs', 'r1', { login: 'owner', via: 'resolve', role: 'admin', announced: false }),
       thread('Cleared by a maintainer', 'r2'),
-      thread('Secret in the URL', 'r3', { login: 'owner', via: 'dismiss', announced: true }),
+      thread('Secret in the URL', 'r3', { login: 'owner', via: 'dismiss', role: 'maintain', announced: true }),
     ];
-    const line = '**Findings dismissed by a repo admin:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @owner, '
-      + '[Secret in the URL](https://github.com/o/r/pull/1#r3) by @owner.';
+    const line = '**Findings dismissed by the PR author:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @owner (`admin` role), '
+      + '[Secret in the URL](https://github.com/o/r/pull/1#r3) by @owner (`maintain` role).';
 
     const approved = await postedBody(ready, threads);
     expect(approved.body.split('\n')).toContain(line);
-    expect((await postedBody(ready, [thread('Cleared by a maintainer', 'r2')])).body).not.toContain('dismissed by a repo admin');
+    expect((await postedBody(ready, [thread('Cleared by a maintainer', 'r2')])).body).not.toContain('dismissed by the PR author');
     const blocked = await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker] }, threads);
-    expect(blocked.body).not.toContain('dismissed by a repo admin');
+    expect(blocked.body).not.toContain('dismissed by the PR author');
   });
 
   it('explains the top blocker instead of the judge summary when the verdict reader named the blockers', async () => {
@@ -5322,6 +5322,60 @@ describe('fetchStandingVerdict', () => {
     expect(await fetchStandingVerdict(makeMockOctokit(reviews, [dismissal(7, 'approved')]), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
     expect(await fetchStandingVerdict(makeMockOctokit(reviews, [dismissal(7, 'changes_requested')]), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
     expect(await fetchStandingVerdict(makeMockOctokit(reviews, new Error('API error')), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
+  });
+});
+
+describe('authorClearRole', () => {
+  /** A client whose permission lookup answers with `data`, or fails when `data` is an error. */
+  const clientFor = (data: Record<string, unknown> | Error) => {
+    const lookup = jest.fn(async () => {
+      if (data instanceof Error) throw data;
+      return { data };
+    });
+    return { octokit: { rest: { repos: { getCollaboratorPermissionLevel: lookup } } } as unknown as Parameters<typeof authorClearRole>[0], lookup };
+  };
+  // The legacy `permission` GitHub sends beside each `role_name`. It reports `maintain` as `write`.
+  const answers: Record<string, Record<string, unknown> | Error> = {
+    admin: { permission: 'admin', role_name: 'admin' },
+    maintain: { permission: 'write', role_name: 'maintain' },
+    write: { permission: 'write', role_name: 'write' },
+    triage: { permission: 'read', role_name: 'triage' },
+    read: { permission: 'read', role_name: 'read' },
+    'a custom role above write': { permission: 'write', role_name: 'release-manager' },
+    'a custom role named like one': { permission: 'admin', role_name: 'Admin' },
+    'no role in the answer': { permission: 'admin' },
+    'a role that is no string': { permission: 'admin', role_name: null },
+    'a failed lookup': new Error('Server Error'),
+  };
+
+  it.each([
+    ['admin', { admin: 'admin' }],
+    ['maintain', { admin: 'admin', maintain: 'maintain' }],
+    ['write', { admin: 'admin', maintain: 'maintain', write: 'write' }],
+    [undefined, {}],
+  ] as const)('gives the role of a login only when GitHub confirms one at or above `%s`', async (needed, allowed: Record<string, string>) => {
+    const got: Record<string, string | undefined> = {};
+    for (const [who, data] of Object.entries(answers)) got[who] = await authorClearRole(clientFor(data).octokit, 'o', 'r', 'alice', needed);
+
+    expect(got).toEqual(Object.fromEntries(Object.keys(answers).map(who => [who, allowed[who]])));
+  });
+
+  it('asks once per login and client, and leaves write access to the legacy permission', async () => {
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const maintainer = clientFor(answers.maintain);
+    // No level set means the base branch config could not be read, so the lookup is not even made.
+    expect(await authorClearRole(maintainer.octokit, 'o', 'r', 'alice', undefined)).toBeUndefined();
+    expect(maintainer.lookup).not.toHaveBeenCalled();
+    expect(await authorClearRole(maintainer.octokit, 'o', 'r', 'alice', 'admin')).toBeUndefined();
+    expect(await authorClearRole(maintainer.octokit, 'o', 'r', 'Alice', 'maintain')).toBe('maintain');
+    expect(await hasWriteAccess(maintainer.octokit, 'o', 'r', 'alice')).toBe(true);
+    expect(maintainer.lookup).toHaveBeenCalledTimes(1);
+    expect(maintainer.lookup).toHaveBeenCalledWith({ owner: 'o', repo: 'r', username: 'alice' });
+
+    const access = async (who: string) => hasWriteAccess(clientFor(answers[who]).octokit, 'o', 'r', 'alice');
+    expect(await Promise.all(['admin', 'write', 'triage', 'read', 'a custom role above write', 'a failed lookup'].map(access))).toEqual([true, true, false, false, true, false]);
+    expect(warningSpy).toHaveBeenCalledWith('Could not read the repo permission of alice, treating it as none: Error: Server Error');
+    warningSpy.mockRestore();
   });
 });
 
