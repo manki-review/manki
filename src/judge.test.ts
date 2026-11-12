@@ -4278,6 +4278,20 @@ describe('runJudgeAgent on code that applies an earlier fix', () => {
     expect(result[0].tags).toBeUndefined();
   });
 
+  it('keeps a security note and a tool alert, which no step may leave out', async () => {
+    const originals = [makeFinding({ title: 'Token in a log line', severity: 'note', line: 10 }), makeFinding({ title: 'Linter alert', severity: 'note', line: 11, toolSource: 'eslint' })];
+    const judged: JudgedFinding[] = [
+      { title: 'Token in a log line', row: ROW_OF.note, reasoning: 'Minor.', security: true },
+      { title: 'Linter alert', row: ROW_OF.note, reasoning: 'Minor.' },
+    ];
+
+    const result = await dropped(originals, judged);
+    expect(result.map(f => [f.severity, f.tags, f.originalSeverity])).toEqual([['note', [SECURITY_TAG], undefined], ['note', undefined, undefined]]);
+    // The same notes without the tag and the tool are dropped.
+    const plain = await dropped(originals.map(f => ({ ...f, toolSource: undefined })), judged.map(j => ({ ...j, security: undefined })));
+    expect(plain.map(f => f.severity)).toEqual(['ignore', 'ignore']);
+  });
+
   it('does not demote a finding whose file differs from the provenance entry file', async () => {
     // Line 10 is inside makeProvenance()'s range (5–15) but the file is different.
     // The entry.file === finding.file guard must prevent demotion.
@@ -4305,13 +4319,13 @@ describe('runJudgeAgent on code that applies an earlier fix', () => {
   });
 
   it('preserves pre-existing tags when adding own-proposal-followup', async () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'note', line: 10, tags: ['security'] })];
+    const originals = [makeFinding({ title: 'Bug', severity: 'note', line: 10, tags: ['follow-up'] })];
     const judged: JudgedFinding[] = [
       { title: 'Bug', row: 'improvement', reasoning: 'Caveat.' },
     ];
 
     const result = await dropped(originals, judged);
-    expect(result[0].tags).toContain('security');
+    expect(result[0].tags).toContain('follow-up');
     expect(result[0].tags).toContain('own-proposal-followup');
     expect(result[0].tags).toHaveLength(2);
   });

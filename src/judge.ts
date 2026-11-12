@@ -26,7 +26,7 @@ import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-finge
 import { MAX_DOUBT_CHECKS, refuteBlockers } from './refute';
 import { criticalAreaOf } from './routing';
 import { isUnconfirmedBuildClaim } from './static-signals';
-import { CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isSecurityFinding, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
+import { canLeaveOut, CELL_GRADES, CellColumn, cellGrade, CellRow, columnDecidesBlock, CONTRADICTION_TAG, DiffFile, Doubt, DuplicateMatchType, EffortLevel, Finding, finderGrade, gradeStep, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, findingKey, IN_PR_SUPPRESSED_TAG, isGradeCell, isNote, isSecurityFinding, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, REACH_DOUBT, Refutation, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, SEVERITY_ORDER, ParsedDiff, PreExistingCheck, PrContext, threadBlocks, ThreadEvaluation, ToolEvidenceStatus, UNBUILT_TAG, UNPROVEN_TAG, withReachDoubt, breaksRule, RulesMode, RuleVerdict } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -1917,10 +1917,11 @@ function ownProposalOf(finding: Finding, provenanceMap?: ProvenanceEntry[]): Pro
 /**
  * Drops a finding below `warning` on code that applies a prior-round `suggestedFix`, so Manki does not
  * object to a change it asked for. A `warning` or `blocker` there means the new code is worse, and it stays.
+ * So does a security finding or a tool alert of any grade.
  */
 function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): Finding {
   const match = ownProposalOf(finding, provenanceMap);
-  if (!match || !isNote(finding.severity)) return finding;
+  if (!match || !canLeaveOut(finding)) return finding;
   const safeTitle = match.originatingTitle.replace(/[\n\r`]/g, ' ').slice(0, 200);
   const note = `Own-proposal follow-up: implements round ${match.originatingRound} finding "${safeTitle}"`;
   return {
