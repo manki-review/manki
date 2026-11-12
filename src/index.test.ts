@@ -45,7 +45,7 @@ const mockGraphql = jest.fn().mockResolvedValue({ resolveReviewThread: { thread:
 const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 777 } });
 
 const mockChecksCreate = jest.fn().mockResolvedValue({ data: { id: 901 } });
-const mockChecksUpdate = jest.fn().mockResolvedValue({ data: { app: { id: 3200573 } } });
+const mockChecksUpdate = jest.fn().mockImplementation(async () => ({ data: { app: { id: TEST_APP_ID } } }));
 const mockChecksGet = jest.fn().mockResolvedValue({ data: { status: 'in_progress' } });
 /** The `Manki` checks of the App on the head: the check this run completed, and no other. */
 const mockChecksListForRef = jest.fn().mockImplementation(async () => {
@@ -327,7 +327,7 @@ import * as fixRateModule from './fix-rate';
 import * as staticSignalsModule from './static-signals';
 import * as relatedWorkModule from './related-work';
 import { citedLine } from './finding-fingerprint';
-import { LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_BOT } from './test-utils';
+import { LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy, TEST_APP_ID, TEST_BOT } from './test-utils';
 
 /**
  * Seed `RecapState.priorRounds` (the consumer surface for round cap,
@@ -1981,14 +1981,14 @@ describe('runFullReview orchestration', () => {
         conclusion: 'failure', output: { title: 'Changes requested', summary: '**Still open from earlier reviews:**\n- `src/app.ts:3`: Stale cache' },
       });
 
-      // Beside another `Manki` check of the App on the head, the round's verdict also goes into a new check, the one a required check then reads.
-      mockChecksListForRef.mockResolvedValueOnce({ data: { total_count: 2, check_runs: [{ id: 950 }, { id: 901 }] } });
+      // Beside a completed `Manki` check of the App on the head, the round's verdict also goes into a new check, the one a required check then reads.
+      mockChecksListForRef.mockResolvedValueOnce({ data: { total_count: 2, check_runs: [{ id: 950, status: 'completed' }, { id: 901, status: 'completed' }] } });
       mockChecksCreate.mockClear();
       mockChecksUpdate.mockClear();
       await callRunFullReview();
       const approved = { status: 'completed', conclusion: 'success', output: { title: 'Approved', summary: 'Looks good' } };
       expect(completedCheck()).toMatchObject({ check_run_id: 901, ...approved });
-      expect(mockChecksListForRef).toHaveBeenLastCalledWith({ owner: 'test-owner', repo: 'test-repo', ref: 'abc123', check_name: 'Manki', app_id: 3200573, filter: 'all', per_page: 100 });
+      expect(mockChecksListForRef).toHaveBeenLastCalledWith({ owner: 'test-owner', repo: 'test-repo', ref: 'abc123', check_name: 'Manki', app_id: TEST_APP_ID, filter: 'all', per_page: 100 });
       expect(mockChecksCreate.mock.calls.map(([params]) => params)).toEqual([
         expect.objectContaining({ status: 'in_progress' }),
         { owner: 'test-owner', repo: 'test-repo', name: 'Manki', head_sha: 'abc123', details_url: 'https://github.com/test-owner/test-repo/actions/runs/12345', ...approved },

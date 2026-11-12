@@ -112,27 +112,38 @@ export async function startReviewCheck(octokit: Octokit, owner: string, repo: st
   }
 }
 
+/** The conclusions that let a required check pass. Every other conclusion blocks the merge, as a check that has not completed does. */
+const PASSING: ReadonlySet<CheckConclusion> = new Set<CheckConclusion>(['success', 'neutral', 'skipped']);
+
+/** The App's other `Manki` checks on a commit: none, all `completed`, at least one `running`, or `unknown`. `why` says it in words. */
+type OtherChecks = { state: 'none' } | { state: 'completed' | 'running' | 'unknown'; why: string };
+
 /**
- * Says why a required check may read another check than `check`, or `undefined` when it certainly reads `check`.
- * GitHub reads the `Manki` check created last on a commit. A check run carries no creation time and GitHub documents
- * no order of ids, so `check` is certainly that one only as the sole `Manki` check of the App `appId` on its commit.
+ * Reads the other `Manki` checks of the App `appId` on the commit of `check`. The list counts only when it is
+ * whole and names `check`. Everything else is `unknown`.
  */
-async function otherCheckReason(check: ReviewCheck, appId: number | undefined): Promise<string | undefined> {
-  if (appId === undefined) return 'the App that owns this run\'s check is unknown';
+async function otherChecks(check: ReviewCheck, appId: number | undefined): Promise<OtherChecks> {
+  if (appId === undefined) return { state: 'unknown', why: 'the App that owns this run\'s check is unknown' };
   const { octokit, owner, repo, id, headSha } = check;
   try {
     const { data } = await octokit.rest.checks.listForRef({ owner, repo, ref: headSha, check_name: CHECK_NAME, app_id: appId, filter: 'all', per_page: 100 });
-    const sole = data.total_count === 1 && data.check_runs.length === 1 && data.check_runs[0].id === id;
-    return sole ? undefined : `this run's check is not the only ${CHECK_NAME} check of the App on ${headSha}`;
+    const others = data.check_runs.filter(run => run.id !== id);
+    if (data.total_count !== data.check_runs.length || others.length === data.check_runs.length) {
+      return { state: 'unknown', why: `the list of ${CHECK_NAME} checks on ${headSha} is not whole` };
+    }
+    if (others.length === 0) return { state: 'none' };
+    return others.every(run => run.status === 'completed')
+      ? { state: 'completed', why: `this run's check is not the only ${CHECK_NAME} check of the App on ${headSha}` }
+      : { state: 'running', why: `another ${CHECK_NAME} check of the App on ${headSha} has not completed` };
   } catch (error) {
-    return `the ${CHECK_NAME} checks on ${headSha} could not be listed (${error instanceof Error ? error.message : error})`;
+    return { state: 'unknown', why: `the ${CHECK_NAME} checks on ${headSha} could not be listed (${error instanceof Error ? error.message : error})` };
   }
 }
 
 /**
  * Completes `check` with `report`. A failure is logged and leaves the check in progress for the post step to cancel.
- * A result other than `cancelled` must be the one a required check reads. Unless `check` is certainly the check
- * GitHub reads, a new `Manki` check on the commit carries the same result.
+ * GitHub reads the `Manki` check created last on a commit, so beside another check of the App a new check carries
+ * the result as well. A passing result would hide a review that still runs, so it needs every other check completed.
  */
 export async function completeReviewCheck(check: ReviewCheck | undefined, { conclusion, title, summary }: CheckReport): Promise<void> {
   if (!check) return;
@@ -147,11 +158,15 @@ export async function completeReviewCheck(check: ReviewCheck | undefined, { conc
   }
   // A cancelled run reached no verdict, so a newer check keeps speaking for the commit.
   if (conclusion === 'cancelled') return;
-  const reason = await otherCheckReason(check, appId);
-  if (!reason) return;
+  const others = await otherChecks(check, appId);
+  if (others.state === 'none') return;
+  if (PASSING.has(conclusion) && others.state !== 'completed') {
+    core.info(`No new ${CHECK_NAME} check for "${title}", since ${others.why}`);
+    return;
+  }
   try {
     await octokit.rest.checks.create({ owner, repo, name: CHECK_NAME, head_sha: headSha, details_url: runUrl(owner, repo), ...result });
-    core.info(`Wrote "${title}" into a new ${CHECK_NAME} check as well, since ${reason}`);
+    core.info(`Wrote "${title}" into a new ${CHECK_NAME} check as well, since ${others.why}`);
   } catch (error) {
     core.warning(`Could not write "${title}" into a new ${CHECK_NAME} check: ${error instanceof Error ? error.message : error}`);
   }

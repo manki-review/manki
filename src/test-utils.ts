@@ -213,9 +213,9 @@ export const TEST_BOT: BotIdentity = { logins: ['manki-review[bot]'] };
 /** The id of the App whose `Manki` checks `mockChecks` serves. */
 export const TEST_APP_ID = 3200573;
 
-/** The checks API where this run's check `id` belongs to the App `TEST_APP_ID`, whose other `Manki` checks on the commit are `others`. */
+/** The checks API where this run's check `id` belongs to the App `TEST_APP_ID`, whose other `Manki` checks on the commit are `others`, all completed. */
 export function mockChecks(id: number, others: number[] = []) {
-  const runs = [...others, id].map(run => ({ id: run }));
+  const runs = [...others, id].map(run => ({ id: run, status: 'completed' }));
   return {
     create: jest.fn().mockResolvedValue({ data: { id } }),
     update: jest.fn().mockResolvedValue({ data: { id, app: { id: TEST_APP_ID } } }),

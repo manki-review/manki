@@ -14,8 +14,11 @@ const REPO = 'test-repo';
 const HEAD = 'abc123';
 const RUN_URL = 'https://github.com/test-owner/test-repo/actions/runs/12345';
 
-/** The App's `Manki` checks as GitHub lists them. */
-const listed = (...ids: number[]) => ({ data: { total_count: ids.length, check_runs: ids.map(id => ({ id })) } });
+/** The App's `Manki` checks as GitHub lists them: this run's check 901, completed, and `others` as pairs of id and status. */
+const listed = (...others: Array<[number, string]>) => {
+  const check_runs = [...others, [901, 'completed'] as const].map(([id, status]) => ({ id, status }));
+  return { data: { total_count: check_runs.length, check_runs } };
+};
 
 /** The checks API with this run's check 901, where `others` are the App's other `Manki` checks on `HEAD`. */
 function checksApi(others: number[] = []) {
@@ -25,8 +28,20 @@ function checksApi(others: number[] = []) {
 
 const APPROVED: CheckReport = outcomeReport('READY', 'Nothing blocks.');
 const completed = { status: 'completed', conclusion: 'success', output: { title: 'Approved', summary: 'Nothing blocks.' } };
-const NOT_ALONE = `this run's check is not the only Manki check of the App on ${HEAD}`;
 const extraCheck = { owner: OWNER, repo: REPO, name: 'Manki', head_sha: HEAD, details_url: RUN_URL, ...completed };
+
+/** The results a required check passes on. */
+const PASSING: CheckReport[] = [APPROVED, outcomeReport('READY', 'Nothing blocks.', 'draft'), { conclusion: 'skipped', title: 'Skipped', summary: 'A skip rule matched.' }];
+/** The results that block a required check. */
+const BLOCKING: CheckReport[] = [
+  outcomeReport('ADDRESS_FIRST', '1 blocker.'),
+  { conclusion: 'action_required', title: 'Not reviewed', summary: 'Too big to review.' },
+];
+
+const NOT_ALONE = `this run's check is not the only Manki check of the App on ${HEAD}`;
+const RUNNING = `another Manki check of the App on ${HEAD} has not completed`;
+const NOT_WHOLE = `the list of Manki checks on ${HEAD} is not whole`;
+const NO_APP = 'the App that owns this run\'s check is unknown';
 
 describe('completeReviewCheck', () => {
   beforeEach(() => {
@@ -42,7 +57,9 @@ describe('completeReviewCheck', () => {
     return checks.checks.create.mock.calls.map(([params]) => params);
   }
 
-  it('writes the verdict into this run\'s check alone while it is the only `Manki` check of the App on the head', async () => {
+  it('writes the result into this run\'s check alone while it is the only `Manki` check of the App on the head', async () => {
+    for (const report of [...BLOCKING, ...PASSING.slice(1)]) expect(await complete(checksApi(), report)).toEqual([]);
+    expect(core.info).not.toHaveBeenCalled();
     const mock = checksApi();
 
     expect(await complete(mock)).toEqual([]);
@@ -53,28 +70,39 @@ describe('completeReviewCheck', () => {
     expect(core.warning).not.toHaveBeenCalled();
   });
 
-  it.each<[string, (mock: ReturnType<typeof checksApi>) => void, string]>([
-    ['another check of the App is on the head, with a higher id', () => {}, NOT_ALONE],
-    ['another check of the App is on the head, with a lower id', mock => mock.checks.listForRef.mockResolvedValue(listed(901, 5)), NOT_ALONE],
-    ['the list holds more checks than the page returned', mock => mock.checks.listForRef.mockResolvedValue({ data: { total_count: 101, check_runs: [{ id: 901 }] } }), NOT_ALONE],
-    ['the list names one check that is not this run\'s', mock => mock.checks.listForRef.mockResolvedValue(listed(5)), NOT_ALONE],
-    ['the list is empty', mock => mock.checks.listForRef.mockResolvedValue(listed()), NOT_ALONE],
-    ['the list call fails', mock => mock.checks.listForRef.mockRejectedValue(new Error('API 502')), `the Manki checks on ${HEAD} could not be listed (API 502)`],
-    ['the completed check names no App', mock => mock.checks.update.mockResolvedValue({ data: { id: 901, app: null } }), 'the App that owns this run\'s check is unknown'],
-    ['this run\'s check cannot be completed', mock => mock.checks.update.mockRejectedValue(new Error('API 500')), 'the App that owns this run\'s check is unknown'],
-  ])('also writes the verdict into a new check when %s', async (name, arrange, reason) => {
-    const mock = checksApi(name.includes('higher id') ? [950] : []);
-    arrange(mock);
+  it.each<[string, (mock: ReturnType<typeof checksApi>['checks']) => void, string, boolean]>([
+    ['another check has completed, with a higher id', checks => checks.listForRef.mockResolvedValue(listed([950, 'completed'])), NOT_ALONE, true],
+    ['another check has completed, with a lower id', checks => checks.listForRef.mockResolvedValue(listed([5, 'completed'])), NOT_ALONE, true],
+    ['another check is in progress, with a higher id', checks => checks.listForRef.mockResolvedValue(listed([950, 'in_progress'])), RUNNING, false],
+    ['another check is in progress, with a lower id', checks => checks.listForRef.mockResolvedValue(listed([5, 'in_progress'])), RUNNING, false],
+    ['another check is queued', checks => checks.listForRef.mockResolvedValue(listed([950, 'queued'])), RUNNING, false],
+    ['one other check has completed and one is queued', checks => checks.listForRef.mockResolvedValue(listed([5, 'completed'], [950, 'queued'])), RUNNING, false],
+    ['the list holds more checks than the page returned', checks => checks.listForRef.mockResolvedValue({ data: { ...listed().data, total_count: 101 } }), NOT_WHOLE, false],
+    ['the list does not name this run\'s check', checks => checks.listForRef.mockResolvedValue({ data: { total_count: 1, check_runs: [{ id: 5, status: 'completed' }] } }), NOT_WHOLE, false],
+    ['the list is empty', checks => checks.listForRef.mockResolvedValue({ data: { total_count: 0, check_runs: [] } }), NOT_WHOLE, false],
+    ['the list call fails', checks => checks.listForRef.mockRejectedValue(new Error('API 502')), `the Manki checks on ${HEAD} could not be listed (API 502)`, false],
+    ['the completed check names no App', checks => checks.update.mockResolvedValue({ data: { id: 901, app: null } }), NO_APP, false],
+    ['this run\'s check cannot be completed', checks => checks.update.mockRejectedValue(new Error('API 500')), NO_APP, false],
+  ])('writes a blocking result into a new check, and a passing one only beside completed checks, when %s', async (name, arrange, why, passingToo) => {
+    for (const report of [...PASSING, ...BLOCKING]) {
+      const written = passingToo || BLOCKING.includes(report);
+      const mock = checksApi();
+      arrange(mock.checks);
+      jest.mocked(core.warning).mockClear();
+      const result = { status: 'completed', conclusion: report.conclusion, output: { title: report.title, summary: report.summary } };
 
-    expect(await complete(mock)).toEqual([extraCheck]);
+      expect(await complete(mock, report)).toEqual(written ? [{ ...extraCheck, ...result }] : []);
 
-    expect(mock.checks.update).toHaveBeenCalledWith(expect.objectContaining({ check_run_id: 901, ...completed }));
-    expect(jest.mocked(core.info).mock.calls.at(-1)?.[0]).toBe(`Wrote "Approved" into a new Manki check as well, since ${reason}`);
-    // Without the App there is nothing to list by.
-    if (reason.includes('unknown')) expect(mock.checks.listForRef).not.toHaveBeenCalled();
-    expect(jest.mocked(core.warning).mock.calls.map(([message]) => message)).toEqual(
-      name.includes('cannot be completed') ? ['Could not complete the Manki check: API 500'] : [],
-    );
+      expect(mock.checks.update).toHaveBeenCalledWith(expect.objectContaining({ check_run_id: 901, ...result }));
+      expect(jest.mocked(core.info).mock.calls.at(-1)?.[0]).toBe(written
+        ? `Wrote "${report.title}" into a new Manki check as well, since ${why}`
+        : `No new Manki check for "${report.title}", since ${why}`);
+      // Without the App there is nothing to list by.
+      if (why === NO_APP) expect(mock.checks.listForRef).not.toHaveBeenCalled();
+      expect(jest.mocked(core.warning).mock.calls.map(([message]) => message)).toEqual(
+        name.includes('cannot be completed') ? ['Could not complete the Manki check: API 500'] : [],
+      );
+    }
   });
 
   it('warns and does not throw when the new check cannot be created', async () => {
