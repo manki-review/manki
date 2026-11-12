@@ -169,6 +169,15 @@ describe('listUsesOutsideDiff', () => {
       ].join('\n')}\n\`\`\``);
     }
 
+    // A Go receiver name of 160 characters still marks a read through it as the method's own type's, so it ranks last. A
+    // longer one is no name, so that read ranks like any other use.
+    const through = (receiver: string) => `package bank\n\ntype AccountView struct {\n\tBalance int64\n}\n\nfunc (${receiver} *AccountView) Shown() int64 {\n\treturn ${receiver}.Balance\n}\n\nfunc Read(a Account) uint64 { return a.Balance }\n`;
+    const account = (type: string) => `package bank\n\ntype Account struct {\n\tBalance ${type}\n}\n`;
+    for (const [length, uses] of [[160, ['bank/ledger.go:11', 'bank/ledger.go:8', 'bank/ledger.go:4']], [161, ['bank/ledger.go:8', 'bank/ledger.go:11', 'bank/ledger.go:4']]] as const) {
+      const { record } = await usesFor({ 'bank/account.go': account('int64'), 'bank/ledger.go': through('v'.repeat(length)) }, { 'bank/account.go': account('uint64') });
+      expect(record?.symbols?.find(s => s.name === 'Balance')?.uses).toEqual(uses);
+    }
+
     // A base class's own reads of a field its changed subclass overrides read the subclass's value, while an unrelated
     // class's own field ranks after them.
     const models = (value: string) => `class Account:\n    def __init__(self):\n        self.balance = 0\n\n    def total(self):\n        return self.balance\n\n\nclass Savings(Account):\n    def __init__(self):\n        self.balance = ${value}\n`;
@@ -596,6 +605,7 @@ ${body}	return true
     const methods = (type: string, size: string, before = '') => `impl ${type} {\n    fn is_new(&self) -> bool {\n        self.version >= 3\n    }\n\n${before}    pub fn size(&self) -> usize {\n        ${size}\n    }\n}\n`;
     const refund = (type: string, check: string) => `class ${type}:\n    def refund(self, amount):\n${check}        return self.gateway.send(-amount)\n`;
     const area = (receiver: string, body: string) => `package shapes\n\nfunc (${receiver}) Area() float64 {\n${body}}\n`;
+    const perimeter = (receiver: string, value: string) => `package long\n\nfunc (${receiver}) Perimeter() float64 {\n\treturn ${value}\n}\n`;
     // Methods every type has, on types that share no base or only a standard one such as `Generic`, and standard trait
     // impls: none of them makes two types siblings. Two shared bases ask about a method once, with the base class's own one.
     const display = (type: string, text: string) => `\nimpl fmt::Display for ${type} {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        write!(f, "${text}")\n    }\n}\n\nimpl ${type} {\n    fn new() -> Self {\n        Self { name: "${text}" }\n    }\n}\n`;
@@ -629,6 +639,11 @@ ${body}	return true
       'src/views/beta.ts': view('Beta', ' extends ui.View', '2'),
       'src/views/gamma.ts': view('Gamma', '', '3'),
       'src/views/delta.ts': view('Delta', '', '4'),
+      // A receiver type longer than a name is no type, in Go as in the languages that declare a method inside its type.
+      'src/long/first.go': perimeter(`f First${'T'.repeat(156)}`, '1'),
+      'src/long/second.go': perimeter(`s Second${'T'.repeat(155)}`, '2'),
+      'src/long/first.rs': methods(`First${'T'.repeat(156)}`, '2').replace(/size/g, 'girth'),
+      'src/long/second.rs': methods(`Second${'T'.repeat(155)}`, '3').replace(/size/g, 'girth'),
     };
     const { siblings } = await usesFor(base, {
       'src/parts/text.rs': (decode('TextPart', '        if version > 3 {\n            return Err(Error::Version);\n        }\n') + methods('TextPart', '2') + display('TextPart', 'TEXTS'))
@@ -642,6 +657,8 @@ ${body}	return true
       'src/shapes/circle.go': (area('c *Circle[T]', '\treturn 3 * c.r * c.r\n') + stringer('c *Circle[T]', 'disc')).replace('3 * c.r', '3.14 * c.r'),
       'src/views/alpha.ts': view('Alpha', ' extends ui.View', '10'),
       'src/views/gamma.ts': view('Gamma', '', '30'),
+      'src/long/first.go': perimeter(`f First${'T'.repeat(156)}`, '10'),
+      'src/long/first.rs': methods(`First${'T'.repeat(156)}`, '20').replace(/size/g, 'girth'),
     }, ['*.generated.*']);
 
     expect(siblings.implementations.map(q => [q.trait, q.name, q.members.map(m => `${m.owner}${m.changed ? '*' : ''}`)])).toEqual([

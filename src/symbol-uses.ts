@@ -169,9 +169,9 @@ interface FamilyRules {
   owners: Record<string, { type: string; trait?: string }>;
   /** The classes or interfaces a class extends or implements, such as `Base` in Python's `class A(Base)`. */
   bases?: (scope: SgNode) => SgNode[];
-  /** The type a method's receiver names, for a language that declares methods outside their type, such as Go. */
+  /** The type a method's receiver names, for a language that declares methods outside their type, such as Go. One longer than `MAX_NAME_LENGTH` is read as none. */
   receiver?: (node: SgNode) => string | undefined;
-  /** The name a method reads its own type's fields through, such as `self`, `this` or a Go receiver. */
+  /** The name a method reads its own type's fields through, such as `self`, `this` or a Go receiver. One longer than `MAX_NAME_LENGTH` is read as none. */
   selfName: (method: SgNode) => string | undefined;
   /**
    * Functions that can bind that name again inside a method, so a read through it there is not the method's. With
@@ -281,8 +281,11 @@ const RULES: Record<Family, FamilyRules> = {
     object: 'operand',
     index: 'index_expression',
     owners: {},
-    receiver: node => typeName(goReceiver(node)?.field('type')?.text() ?? ''),
-    selfName: node => goReceiver(node)?.field('name')?.text(),
+    receiver: node => shortTypeName(goReceiver(node)?.field('type')?.text() ?? ''),
+    selfName: node => {
+      const name = goReceiver(node)?.field('name')?.text();
+      return name && name.length <= MAX_NAME_LENGTH ? name : undefined;
+    },
     rebinds: {
       kinds: ['func_literal'], byParameter: true,
       locals: {
@@ -316,6 +319,12 @@ function goReceiver(method: SgNode): SgNode | undefined {
 /** Returns the name a type is written with, without a pointer star or generic arguments, such as `Queue` for `*Queue[T]` or `Cache<K, V>`. */
 function typeName(text: string): string {
   return text.replace(/^\*/, '').split(/[<[]/)[0].trim();
+}
+
+/** Returns the `typeName` of `text`, or `''` for one longer than `MAX_NAME_LENGTH`, which names no type. */
+function shortTypeName(text: string): string {
+  const name = typeName(text);
+  return name.length <= MAX_NAME_LENGTH ? name : '';
 }
 
 /** Returns the name of the field a Python assignment declares: a name assigned in a class body, or `self.name` in `__init__`. */
@@ -1292,12 +1301,8 @@ class ParsedFile {
     const fields = scope && this.rules.owners[scope.kind()];
     if (!scope || !fields) return {};
     if (!this.scopes.has(scope.id())) {
-      const named = (text: string) => {
-        const name = typeName(text);
-        return name.length <= MAX_NAME_LENGTH ? name : '';
-      };
       const traitText = fields.trait && scope.field(fields.trait)?.text();
-      this.scopes.set(scope.id(), { owner: named(scope.field(fields.type)?.text() ?? ''), trait: traitText ? named(traitText) : undefined, bases: this.basesOf(scope) });
+      this.scopes.set(scope.id(), { owner: shortTypeName(scope.field(fields.type)?.text() ?? ''), trait: traitText ? shortTypeName(traitText) : undefined, bases: this.basesOf(scope) });
     }
     return this.scopes.get(scope.id())!;
   }
