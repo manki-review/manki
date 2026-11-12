@@ -1083,6 +1083,20 @@ describe('refuteBlockers', () => {
       const [without] = await refuteBlockers(client, [finding('Related line confirms', noProof)], { workspace, diff });
       expect([outcomeOf(without.refutation!), without.refutation?.relatedProof, unprovenReason(without)]).toEqual(['unsettled', undefined, 'unsettled_check']);
 
+      // A related line alone gives a doubted finding the blocker of its cell. Two refuters that disprove a blocker
+      // from related lines alone lower nothing, where the same two disproofs with a line of the PR would.
+      const judgeRaise = { reviewerSeverity: 'warning' as const, gradePath: [{ from: 'warning' as const, to: 'blocker' as const, by: 'judge' as const }], cell: { row: 'wrong' as const, column: 'normal' as const } };
+      const gate = (...disproof: string[]) => ({
+        'Doubted in a blocker cell': answer('confirmed', consumerLine),
+        'Blocker the judge raised': { outcome: 'disproved', reason: 'r', proof: disproof },
+      });
+      const gated = (proof: string[]) => refuteBlockers(fakeClient(gate(...proof), 'model-a'), [
+        finding('Doubted in a blocker cell', { ...noProof, gradeIfConfirmed: 'blocker', cell: judgeRaise.cell }),
+        finding('Blocker the judge raised', judgeRaise),
+      ], { workspace, diff, related, pair: fakeClient(gate(...proof), 'model-b') });
+      expect((await gated([consumerLine])).map(f => [f.severity, checkStatus(f), f.evidence?.proof])).toEqual([['blocker', 'confirmed', []], ['blocker', 'unconfirmed', ['src/math.ts:2']]]);
+      expect((await gated(['src/math.ts:2', consumerLine])).map(f => f.severity)).toEqual(['blocker', 'warning']);
+
       // The stored digest covers the PR's files only, so a check that rests on a related line is made again next round.
       const stored = (f: Finding) => [{ findings: { entries: [{ title: f.title, fingerprint: { file: f.file, lineStart: f.line }, refutation: f.refutation }] }, judge: {} }] as unknown as RoundContext[];
       const unproven = { severity: 'warning' as const, evidence: { checks: [], proof: [] } };
