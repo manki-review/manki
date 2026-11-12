@@ -210,6 +210,20 @@ function legacyFindingToFingerprintEntry(f: LegacyHandoverFindingFixture): Findi
 /** The identity a run without custom App credentials resolves to. */
 export const TEST_BOT: BotIdentity = { logins: ['manki-review[bot]'] };
 
+/** The id of the App whose `Manki` checks `mockChecks` serves. */
+export const TEST_APP_ID = 3200573;
+
+/** The checks API where this run's check `id` belongs to the App `TEST_APP_ID`, whose other `Manki` checks on the commit are `others`. */
+export function mockChecks(id: number, others: number[] = []) {
+  const runs = [...others, id].map(run => ({ id: run }));
+  return {
+    create: jest.fn().mockResolvedValue({ data: { id } }),
+    update: jest.fn().mockResolvedValue({ data: { id, app: { id: TEST_APP_ID } } }),
+    get: jest.fn().mockResolvedValue({ data: { id, status: 'in_progress', head_sha: 'abc123' } }),
+    listForRef: jest.fn().mockResolvedValue({ data: { total_count: runs.length, check_runs: runs } }),
+  };
+}
+
 const numberedLines = (count: number): string[] => Array.from({ length: count }, (_, i) => `line ${i + 1}`);
 
 /** Links a finding comment's code to a fixed commit, with the lines of two files. */

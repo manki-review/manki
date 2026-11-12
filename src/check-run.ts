@@ -16,12 +16,13 @@ export interface CheckReport {
   summary: string;
 }
 
-/** A `Manki` check run this run created on the PR head. */
+/** A `Manki` check run this run created or took over on commit `headSha`. */
 export interface ReviewCheck {
   octokit: Octokit;
   owner: string;
   repo: string;
   id: number;
+  headSha: string;
 }
 
 /** A queued `Manki` check run the token service created for this run's review, on commit `headSha`. */
@@ -104,28 +105,55 @@ export async function startReviewCheck(octokit: Octokit, owner: string, repo: st
       ? queued.id
       : (await octokit.rest.checks.create({ owner, repo, name: CHECK_NAME, head_sha: headSha, status: 'in_progress', details_url: detailsUrl })).data.id;
     core.saveState(CHECK_STATE_KEY, String(id));
-    return { octokit, owner, repo, id };
+    return { octokit, owner, repo, id, headSha };
   } catch (error) {
     core.warning(`Could not create the ${CHECK_NAME} check, reviewing without it. The GitHub App needs the Checks read and write permission: ${error instanceof Error ? error.message : error}`);
     return undefined;
   }
 }
 
-/** Completes `check` with `report`. A failure is logged and leaves the check in progress for the post step to cancel. */
+/**
+ * Says why a required check may read another check than `check`, or `undefined` when it certainly reads `check`.
+ * GitHub reads the `Manki` check created last on a commit. A check run carries no creation time and GitHub documents
+ * no order of ids, so `check` is certainly that one only as the sole `Manki` check of the App `appId` on its commit.
+ */
+async function otherCheckReason(check: ReviewCheck, appId: number | undefined): Promise<string | undefined> {
+  if (appId === undefined) return 'the App that owns this run\'s check is unknown';
+  const { octokit, owner, repo, id, headSha } = check;
+  try {
+    const { data } = await octokit.rest.checks.listForRef({ owner, repo, ref: headSha, check_name: CHECK_NAME, app_id: appId, filter: 'all', per_page: 100 });
+    const sole = data.total_count === 1 && data.check_runs.length === 1 && data.check_runs[0].id === id;
+    return sole ? undefined : `this run's check is not the only ${CHECK_NAME} check of the App on ${headSha}`;
+  } catch (error) {
+    return `the ${CHECK_NAME} checks on ${headSha} could not be listed (${error instanceof Error ? error.message : error})`;
+  }
+}
+
+/**
+ * Completes `check` with `report`. A failure is logged and leaves the check in progress for the post step to cancel.
+ * A result other than `cancelled` must be the one a required check reads. Unless `check` is certainly the check
+ * GitHub reads, a new `Manki` check on the commit carries the same result.
+ */
 export async function completeReviewCheck(check: ReviewCheck | undefined, { conclusion, title, summary }: CheckReport): Promise<void> {
   if (!check) return;
-  const { octokit, owner, repo, id } = check;
+  const { octokit, owner, repo, id, headSha } = check;
+  const result = { status: 'completed' as const, conclusion, output: { title, summary: truncateBody(summary.trim() || title) } };
+  let appId: number | undefined;
   try {
-    await octokit.rest.checks.update({
-      owner,
-      repo,
-      check_run_id: id,
-      status: 'completed',
-      conclusion,
-      output: { title, summary: truncateBody(summary.trim() || title) },
-    });
+    const { data } = await octokit.rest.checks.update({ owner, repo, check_run_id: id, ...result });
+    appId = data.app?.id;
   } catch (error) {
     core.warning(`Could not complete the ${CHECK_NAME} check: ${error instanceof Error ? error.message : error}`);
+  }
+  // A cancelled run reached no verdict, so a newer check keeps speaking for the commit.
+  if (conclusion === 'cancelled') return;
+  const reason = await otherCheckReason(check, appId);
+  if (!reason) return;
+  try {
+    await octokit.rest.checks.create({ owner, repo, name: CHECK_NAME, head_sha: headSha, details_url: runUrl(owner, repo), ...result });
+    core.info(`Wrote "${title}" into a new ${CHECK_NAME} check as well, since ${reason}`);
+  } catch (error) {
+    core.warning(`Could not write "${title}" into a new ${CHECK_NAME} check: ${error instanceof Error ? error.message : error}`);
   }
 }
 
@@ -133,14 +161,16 @@ export async function completeReviewCheck(check: ReviewCheck | undefined, { conc
 export async function cancelOpenReviewCheck(octokit: Octokit, owner: string, repo: string): Promise<void> {
   const id = Number(core.getState(CHECK_STATE_KEY));
   if (!id) return;
+  let headSha: string;
   try {
     const { data } = await octokit.rest.checks.get({ owner, repo, check_run_id: id });
     if (data.status === 'completed') return;
+    headSha = data.head_sha;
   } catch (error) {
     core.warning(`Could not read the ${CHECK_NAME} check: ${error instanceof Error ? error.message : error}`);
     return;
   }
-  await completeReviewCheck({ octokit, owner, repo, id }, {
+  await completeReviewCheck({ octokit, owner, repo, id, headSha }, {
     conclusion: 'cancelled',
     title: 'Review stopped',
     summary: 'The run ended before the review finished.',

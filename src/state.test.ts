@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { approveOrSayWhy, fetchBotReviewThreads, fixedMarker, checkAndAutoApprove, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread, unclearedThreads } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
-import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
+import { LAST_PAGE, makeFindingFingerprintEntry, makeRoundContext, mockChecks, paginateSinglePage, TEST_BOT, TEST_LINKS } from './test-utils';
 import { APPROVED_LINE, formatFindingComment, postReview, titleToSlug } from './github';
 import { extractApprovalRecords, formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG, fallbackConfig } from './config';
@@ -566,7 +566,7 @@ describe('checkAndAutoApprove', () => {
           getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.role === 'admin' ? 'admin' : 'write', role_name: overrides.role ?? 'write', user: { type: 'User' } } }),
           compareCommits: jest.fn(async ({ head }: { head: string }) => ({ data: overrides.diffs?.[head] ?? '' })),
         },
-        checks: overrides.checks ?? { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) },
+        checks: overrides.checks ?? mockChecks(900),
       },
     } as unknown as Octokit;
   }
@@ -1080,16 +1080,21 @@ describe('checkAndAutoApprove', () => {
     );
   });
 
-  it('reports the approval as a passing `Manki` check on the head', async () => {
-    const checks = { create: jest.fn().mockResolvedValue({ data: { id: 901 } }), update: jest.fn().mockResolvedValue({}) };
+  it.each([
+    ['alone', []],
+    ['beside the check of the round that requested changes', [850]],
+  ])('reports the approval as a passing `Manki` check on the head, %s', async (_name, others) => {
+    const checks = mockChecks(901, others);
     const octokit = makeMockOctokit({ threads: [], checks });
     expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
 
-    expect(checks.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'Manki', head_sha: 'abc123', status: 'in_progress' }));
-    expect(checks.update).toHaveBeenCalledWith(expect.objectContaining({
-      check_run_id: 901, status: 'completed', conclusion: 'success',
-      output: { title: 'Approved', summary: 'All blocking threads are resolved.' },
-    }));
+    const approved = { status: 'completed', conclusion: 'success', output: { title: 'Approved', summary: 'All blocking threads are resolved.' } };
+    expect(checks.update).toHaveBeenCalledWith(expect.objectContaining({ check_run_id: 901, ...approved }));
+    // The approval must be in the check a required check reads, so beside another check it goes into a new one as well.
+    expect(checks.create.mock.calls.map(([params]) => params)).toEqual([
+      expect.objectContaining({ name: 'Manki', head_sha: 'abc123', status: 'in_progress' }),
+      ...(others.length ? [expect.objectContaining({ name: 'Manki', head_sha: 'abc123', ...approved })] : []),
+    ]);
   });
 
   it('posts an issue comment (not a COMMENT review) when APPROVE fails', async () => {
