@@ -31,7 +31,7 @@ import { unprovenReason } from './refute';
 import { parsePRDiff } from './diff';
 import { extractJSON } from './json';
 import { GRADE_DEFINITIONS, OUTSIDE_INPUT_RULE, SEVERITY_TABLE, VERIFY_CLAIMS_RULE, WRITING_RULES } from './writing-rules';
-import { CELL_GRADES, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, ThreadEvaluation, isNote } from './types';
+import { CELL_GRADES, damageDisproof, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, REACH_DOUBT, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, RulesMode, RuleVerdict, ThreadEvaluation, isNote } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -2256,9 +2256,9 @@ describe('runJudgeAgent', () => {
         ['Fact confirmed, defect disproved', 'ignore', 'unproven', 'refutation: ignore'],
         ['Fact disputed', ...disputed],
         // With `warn` the judge's rule verdict alone posts the warning, and no check runs. With `block` the missing search caps
-        // the blocker at a warning, so the refuter checks it like any capped blocker: its check is the search the finder left out.
-        // A disproof drops the finding, a confirmation gives the blocker back, and an unsettled check leaves the warning.
-        ['No search, check disproves', ...(grade === 'blocker' ? ['ignore', 'confirmed', 'rule: blocker, unproven: warning, refutation: ignore'] : ['warning', 'confirmed', 'rule: warning'])],
+        // the blocker at a warning, so the refuter checks it: its check is the search the finder left out. A confirmation gives
+        // the blocker back. A disproof and an unsettled check leave the warning, so `block` never posts less than `warn`.
+        ['No search, check disproves', 'warning', 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning' : 'rule: warning'],
         ['No search, check confirms', grade, 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning, refutation: blocker' : 'rule: warning'],
         ['No search, check unsettled', 'warning', 'confirmed', grade === 'blocker' ? 'rule: blocker, unproven: warning' : 'rule: warning'],
       ];
@@ -2281,6 +2281,8 @@ describe('runJudgeAgent', () => {
         [undefined, ['The service fails to start without the variable'], '`.env.example` has no entry for the variable', 2],
       ]);
       expect(raised.evidence?.proof).toEqual(['src/index.ts:17', 'src/index.ts:3']);
+      // The capped rule blocker a check disproved stays with that check's answer, which the comment shows.
+      expect([open['No search, check disproves'].refutation?.outcome, damageDisproof(open['No search, check disproves'])?.reason]).toEqual(['disproved', 'The entry is there.']);
 
       // The kept warning drops the damage the check disproved, so the next round's judge reads a warning with no cell to restate and no open doubt.
       const kept = (await run()).find(f => f.title === 'Damage disproved')!;
