@@ -1659,7 +1659,7 @@ export async function postReview(
   /** The findings posted as threads this round, counted in the verdict line. */
   const threadFindings: Finding[] = [];
   /** The blockers posted as line comments, which get a file-level thread when GitHub refuses the lines. */
-  const lineBlockers: Array<{ path: string; body: string; finding: Finding }> = [];
+  const lineBlockers: Array<{ path: string; finding: Finding }> = [];
   /** The blockers in no changed file, whose threads are on `anchor`. */
   const detached: Finding[] = [];
   /** The findings listed as folds in the review body, under one section per origin. */
@@ -1726,17 +1726,15 @@ export async function postReview(
       continue;
     }
 
-    const commentBody = formatFindingComment(f, links, elsewhere);
-
     if (!elsewhere && (!diff || (f.line > 0 && isLineInDiff(diffFile!, f.line)))) {
-      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
-      lineBlockers.push({ path: f.file, body: commentBody, finding: f });
+      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f, links) });
+      lineBlockers.push({ path: f.file, finding: f });
       threadFindings.push(f);
     } else if (matched) {
       core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: the open thread ${matched} already carries it`);
       leftTo.set(f, matched);
     } else {
-      fileComments.push({ path: elsewhere ? anchor! : f.file, body: commentBody, finding: f });
+      fileComments.push({ path: elsewhere ? anchor! : f.file, body: formatFindingComment(f, links, elsewhere ? 'detached' : 'file'), finding: f });
       threadFindings.push(f);
       if (elsewhere) detached.push(f);
     }
@@ -1863,7 +1861,7 @@ export async function postReview(
   const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter, withoutLineThreads, () => recordFor(inline), inlineComments.map(highlight));
   onPosted?.();
   // A blocker whose line comment GitHub refused gets a file-level thread on its file.
-  const retried = review.lineComments ? [] : lineBlockers;
+  const retried = review.lineComments ? [] : lineBlockers.map(c => ({ ...c, body: formatFindingComment(c.finding, links, 'file') }));
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, [...fileComments, ...retried].map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
@@ -2948,18 +2946,23 @@ function detachedNote(finding: Finding, linkTo: LineLink): string {
   return `${where} Comments are only possible on changed files, so the thread is posted here.`;
 }
 
-/** Formats a finding's thread comment. `detached` is set for a thread posted on another file than the finding's. */
-function formatFindingComment(finding: Finding, links: CodeLinks, detached = false): string {
+/**
+ * Formats a finding's thread comment. `place` says where the thread sits: on the finding's line, on its file as a
+ * file-level thread, or `detached` on another file than the finding's.
+ */
+function formatFindingComment(finding: Finding, links: CodeLinks, place: 'line' | 'file' | 'detached' = 'line'): string {
+  const detached = place === 'detached';
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
   if (detached) comment += `${detachedNote(finding, links.linkTo)}\n\n`;
   const note = trustNote(finding);
   if (note) comment += `${note}\n\n`;
   if (finding.origin === 'reviewed' && !isBlockingFinding(finding)) comment += `${MISSED_EARLIER_NOTE}\n\n`;
-  // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold.
+  // A committable suggestion stays open, so GitHub offers to commit it. Any other code fix goes in the fold. Committing
+  // writes the block over the commented line, so only a thread on the finding's line gets one.
   const fixParts = finding.suggestedFix?.trim() ? splitFix(finding.suggestedFix, finding.file) : [];
-  const suggestion = suggestionBlock(fixParts);
+  const suggestion = place === 'line' ? suggestionBlock(fixParts) : undefined;
   const fix = fixPart(finding, suggestion || fixParts.length === 0 ? undefined : renderFixParts(fixParts, finding.file));
-  const checks = checksSection(finding, links, 'commented');
+  const checks = checksSection(finding, links, place === 'line' ? 'commented' : 'flagged');
   const label = labelDescription(finding, '');
   const open = `${suggestion ? `\n\n${suggestion}` : ''}\n\n${formatFold(fix, '', checks)}`;
   const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - label.length - visibleLength(open));

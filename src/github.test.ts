@@ -195,6 +195,16 @@ describe('formatFindingComment', () => {
     // A committable suggestion stays open, so GitHub offers to commit it, and the fix in words goes in the fold.
     const suggested = render({ ...baseFinding, howToFix: 'Check for `null` first.', suggestedFix: 'if (value != null) { use(value); }', evidence });
     expect(suggested).toContain(`${baseFinding.description}\n\n\`\`\`suggestion\nif (value != null) { use(value); }\n\`\`\`\n\n<!-- manki-checks -->\n<details>\n<summary>How to fix it and 1 place read</summary>\n\n**How to fix it**\nCheck for \`null\` first.\n\n**Checked in the code**\n`);
+    // Committing a suggestion writes it over the commented line. A file-level thread, on the finding's file or another, sits
+    // on no line of the finding, so its code goes in the fold and its check names the flagged line, not a commented one.
+    const onOwnLine = { ...baseFinding, suggestedFix: 'if (value != null) { use(value); }', evidence: { checks: ['src/main.ts:42 reads `value` unchecked'], proof: [] } };
+    expect(render(onOwnLine)).toContain('```suggestion\nif (value != null) { use(value); }\n```\n\n<!-- manki-checks -->\nOn the commented line: Reads `value` unchecked');
+    for (const place of ['file', 'detached'] as const) {
+      const offLine = formatFindingComment(onOwnLine, links, place);
+      expect(offLine).not.toContain('suggestion\n');
+      expect(offLine).toContain('**How to fix it**\n```ts\nif (value != null) { use(value); }\n```\n\n**Checked in the code**\nOn the flagged line: Reads `value` unchecked');
+      expect(parseFindingData(offLine)).toEqual(expect.objectContaining({ fix: 'if (value != null) { use(value); }', ...(place === 'detached' && { detached: true }) }));
+    }
     // A finding with no separate fix keeps the rest of its description as why it matters.
     expect(render({ ...baseFinding, description, evidence })).toContain(`<summary>Why it matters and 1 place read</summary>\n\n**Why it matters**\n${sentence(4)} ${sentence(5)}\n\n**Checked in the code**\n`);
     // A fold never holds a single line, so a one-line fix alone shows open, and a fix with nothing cited says so in the summary.
@@ -4414,9 +4424,9 @@ describe('postReview fallback paths', () => {
       const { octokit, createReview } = makeOctokit(createReviewComment);
 
       await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
-        { severity: 'blocker', title: 'Unchanged line bug', file: 'src/a.ts', line: 40, description: 'Desc.', reviewers: [] },
+        { severity: 'blocker', title: 'Unchanged line bug', file: 'src/a.ts', line: 40, description: 'Desc.', suggestedFix: 'use(value);', reviewers: [] },
         { severity: 'warning', title: 'Rename only', file: 'src/renamed.ts', line: 0, description: 'Desc.', reviewers: [] },
-        { severity: 'blocker', title: 'On changed line', file: 'src/a.ts', line: 2, description: 'Desc.', reviewers: [] },
+        { severity: 'blocker', title: 'On changed line', file: 'src/a.ts', line: 2, description: 'Desc.', suggestedFix: 'use(value);', reviewers: [] },
       ]), diff);
 
       expect(createReviewComment).toHaveBeenCalledTimes(2);
@@ -4433,6 +4443,10 @@ describe('postReview fallback paths', () => {
       expect(review.comments[0]).toEqual(expect.objectContaining({ path: 'src/a.ts', line: 2 }));
       expect(review.comments[0].body).toContain('<!-- manki:blocker:On-changed-line -->');
       expect(review.body).not.toContain('Findings (not on changed lines)');
+      // Only the thread on the finding's own line offers the fix to commit.
+      expect(review.comments[0].body).toContain('```suggestion\nuse(value);\n```');
+      expect(createReviewComment.mock.calls[0][0].body).toContain('```ts\nuse(value);\n```');
+      expect(createReviewComment.mock.calls[0][0].body).not.toContain('```suggestion');
     });
 
     it('posts no file-level comment when creating the review fails', async () => {
@@ -4532,7 +4546,7 @@ describe('postReview fallback paths', () => {
     });
 
     it('records a finding GitHub refused as a thread as listed in the body, whichever post was refused', async () => {
-      const onLine: Finding = { severity: 'blocker', title: 'On changed line', file: 'src/a.ts', line: 2, description: 'Desc.', reviewers: [] };
+      const onLine: Finding = { severity: 'blocker', title: 'On changed line', file: 'src/a.ts', line: 2, description: 'Desc.', suggestedFix: 'use(value);', reviewers: [] };
       const outside: Finding = { severity: 'blocker', title: 'Other file', file: 'src/b.ts', line: 5, description: 'Desc.', reviewers: [] };
       const findings = [onLine, offLineBlocker, outside];
       const context = makeContext({
@@ -4561,8 +4575,14 @@ describe('postReview fallback paths', () => {
       expect(await post(taken(), jest.fn().mockRejectedValue(new Error('refused')))).toEqual([all, ['thread', 'body', 'body']]);
       // The line comments are refused: the first attempt never posts, and the blocker gets a file-level thread on its file.
       const retried = taken();
-      expect(await post(refusedOnce(lineError), retried)).toEqual([all, all]);
+      const refusedLines = refusedOnce(lineError);
+      expect(await post(refusedLines, retried)).toEqual([all, all]);
       expect(lastBody).not.toContain('could not');
+      // The line comment offered its fix to commit. The file-level thread that replaces it has no line to commit to.
+      const suggestion = '```suggestion\nuse(value);\n```';
+      expect(refusedLines.mock.calls[0][0].comments[0].body).toContain(suggestion);
+      expect(retried.mock.calls.map(([c]) => (c.body as string).includes(suggestion))).toEqual([false, false, false]);
+      expect(retried.mock.calls.find(([c]) => c.body.includes('On-changed-line'))![0].body).toContain('```ts\nuse(value);\n```');
       expect(retried.mock.calls.map(([c]) => [c.path, c.subject_type, parseFindingData(c.body)?.detached])).toEqual([
         ['src/a.ts', 'file', undefined], ['src/a.ts', 'file', true], ['src/a.ts', 'file', undefined],
       ]);

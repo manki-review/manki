@@ -100,13 +100,13 @@ describe('handleIssueBoxTick', () => {
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[0][0].body).toContain('[`src/net.ts:7`](https://github.com/o/r/blob/abc123/src/net.ts#L7)');
 
     // A blocker in a file outside the diff has its thread on a changed file, and its finding data names its own file.
-    const elsewhere = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 30 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    const elsewhere = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 30 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(elsewhere), original_line: 1 });
 
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[1][0].body).toContain('[`src/store.ts:30`](https://github.com/o/r/blob/abc123/src/store.ts#L30)');
 
     // That file name is finder output, so it can end neither the code span nor the link, and it mentions nobody.
-    const hostile = formatFindingComment(finding({ severity: 'blocker', file: 'src/a`b) @octocat (x.ts', line: 30 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    const hostile = formatFindingComment(finding({ severity: 'blocker', file: 'src/a`b) @octocat (x.ts', line: 30 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(hostile), original_line: 1 });
 
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[2][0].body).toContain(
@@ -114,12 +114,12 @@ describe('handleIssueBoxTick', () => {
     );
 
     // A browser resolves `..`, so such a name gets no link.
-    const outside = formatFindingComment(finding({ severity: 'blocker', file: '../../../../evil/x', line: 30 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    const outside = formatFindingComment(finding({ severity: 'blocker', file: '../../../../evil/x', line: 30 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(outside), original_line: 1 });
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[3][0].body).toContain('Found by Manki in #5 at `../../../../evil/x:30`. See');
 
     // A finding on a whole file names no line, so the issue takes none from the line its thread sits on.
-    const whole = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 0 }), TEST_LINKS, true).replace('- [ ] Create an issue', '- [x] Create an issue');
+    const whole = formatFindingComment(finding({ severity: 'blocker', file: 'src/store.ts', line: 0 }), TEST_LINKS, 'detached').replace('- [ ] Create an issue', '- [x] Create an issue');
     await tick(octokit, { ...comment(whole), original_line: 1 });
     expect(jest.mocked(octokit.rest.issues.create).mock.calls[4][0].body).toContain('Found by Manki in #5 at [`src/store.ts`](https://github.com/o/r/blob/abc123/src/store.ts). See');
   });

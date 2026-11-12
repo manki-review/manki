@@ -2511,7 +2511,7 @@ describe('parseFindingFromComment', () => {
     for (const file of ['src/store.ts', 'src/_store_file_.ts', 'src/a*b*.ts', 'src/**Warning**: x.ts', 'src/**Blocker** y.ts', 'src/**What goes wrong:** z.ts', '']) {
       // With no other note under it, the line below the note is the description itself.
       for (const checkStatus of [undefined, 'unconfirmed' as const]) {
-        const detached = formatFindingComment({ severity: 'blocker', title: 'Extract helper', file, line: 2, description: 'The logic is duplicated.', reviewers: [], checkStatus }, TEST_LINKS, true);
+        const detached = formatFindingComment({ severity: 'blocker', title: 'Extract helper', file, line: 2, description: 'The logic is duplicated.', reviewers: [], checkStatus }, TEST_LINKS, 'detached');
         expect(detached).toContain(`so the thread is posted here.\n\n${checkStatus ? '_Manki could not confirm this' : '**What goes wrong:** The logic is duplicated.'}`);
         for (const posted of [detached, highlightCode(detached, identifiers)]) {
           expect(parseFindingFromComment(posted)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
@@ -2519,7 +2519,7 @@ describe('parseFindingFromComment', () => {
       }
     }
     // A late warning on such a thread has all three notes under its title. The first is the one on where the finding is, and the other two are skipped in either order.
-    const late = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/store.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], tags: ['follow-up'], checkStatus: 'unconfirmed', origin: 'reviewed' }, TEST_LINKS, true);
+    const late = formatFindingComment({ severity: 'warning', title: 'Extract helper', file: 'src/store.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], tags: ['follow-up'], checkStatus: 'unconfirmed', origin: 'reviewed' }, TEST_LINKS, 'detached');
     const notes = late.match(/(This is in [^\n]+)\n\n(_Manki could not confirm[^\n]+)\n\n(_An earlier round already reviewed[^\n]+)\n\n/);
     expect(notes).not.toBeNull();
     for (const order of [[1, 2, 3], [1, 3, 2]]) {
@@ -2527,7 +2527,7 @@ describe('parseFindingFromComment', () => {
       expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
     }
     // When the title line is not at the top, the layout is not Manki's own, and no line is dropped on the word of the finding data.
-    const edited = `Edited by hand.\n\n${formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/**Warning**: x.ts', line: 2, description: 'The logic is duplicated.', reviewers: [] }, TEST_LINKS, true)}`;
+    const edited = `Edited by hand.\n\n${formatFindingComment({ severity: 'blocker', title: 'Extract helper', file: 'src/**Warning**: x.ts', line: 2, description: 'The logic is duplicated.', reviewers: [] }, TEST_LINKS, 'detached')}`;
     expect(parseFindingFromComment(edited).description).toBe('The logic is duplicated.');
     // The title is the line under the header, so a label in the description is part of the description.
     const labelled = 'It reads **Warning**: not a title, and then goes on.';
