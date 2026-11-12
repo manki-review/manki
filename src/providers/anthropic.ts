@@ -328,15 +328,10 @@ export class AnthropicClient implements LLMClient {
       return this.cachedCLIPath;
     } catch {
       core.info(`Claude CLI not found, installing version ${CLAUDE_CLI_VERSION}...`);
-      const reasonOf = (error: unknown) => error instanceof Error ? error.message : String(error);
       try {
-        // One slow or dropped download must not cost the call, so the install is tried once more.
-        this.cachedCLIPath = await installClaudeCli().catch((error: unknown) => {
-          core.info(`Claude CLI install failed (${reasonOf(error)}), trying again`);
-          return installClaudeCli();
-        });
+        this.cachedCLIPath = await installClaudeCli();
       } catch (error) {
-        throw new Error(`Failed to install Claude CLI: ${reasonOf(error)}`);
+        throw new Error(`Failed to install Claude CLI: ${error instanceof Error ? error.message : String(error)}`);
       }
       return this.cachedCLIPath;
     }

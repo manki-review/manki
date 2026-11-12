@@ -7,7 +7,12 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
-const DOWNLOAD_TIMEOUT_MS = 120_000;
+/** A download that delivers no byte for this long has stalled and is aborted. */
+const STALL_TIMEOUT_MS = 20_000;
+/** How long all tries of one download may take together. A link too slow for it would be as slow on another try. */
+const DOWNLOAD_DEADLINE_MS = 240_000;
+const DOWNLOAD_TRIES = 3;
+const RETRY_WAIT_MS = 2_000;
 // Written last, so a directory with it holds a whole install.
 const INSTALLED_MARKER = '.manki-installed';
 
@@ -17,22 +22,83 @@ export interface PinnedDownload {
   integrity: string;
 }
 
+/** A download failure another try may not hit: no connection, a stalled transfer, or a 408, 429 or 5xx answer. */
+class TransientDownloadError extends Error {}
+
 const installs = new Map<string, Promise<string>>();
 
 /**
  * Returns the directory a pinned download was installed into. A `.tgz`, `.tar.gz` or `.zip` is unpacked there, and
  * any other file is saved there as an executable under its own name. Each download is installed at most once per run.
- * In the runner's temp folder, other processes such as Manki's tool server reuse it too. Throws when the download
- * fails or its digest differs from `integrity`, and the next call then tries again.
+ * In the runner's temp folder, other processes such as Manki's tool server reuse it too. A download that fails in
+ * passing is tried up to `DOWNLOAD_TRIES` times. Throws when the download still fails or its digest differs from
+ * `integrity`, and the next call then tries again.
  */
 export function installPinned(download: PinnedDownload): Promise<string> {
   let install = installs.get(download.url);
   if (!install) {
-    install = downloadAndInstall(download);
+    install = installWithRetries(download);
     installs.set(download.url, install);
     install.catch(() => installs.delete(download.url));
   }
   return install;
+}
+
+async function installWithRetries(download: PinnedDownload): Promise<string> {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), DOWNLOAD_DEADLINE_MS);
+  try {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await downloadAndInstall(download, deadline.signal);
+      } catch (error) {
+        if (!(error instanceof TransientDownloadError) || attempt === DOWNLOAD_TRIES || deadline.signal.aborted) throw error;
+        // Written to stderr, since stdout carries the protocol of Manki's tool server, which installs through here too.
+        process.stderr.write(`${error.message}, trying again (try ${attempt + 1} of ${DOWNLOAD_TRIES})\n`);
+        await new Promise(resolve => setTimeout(resolve, RETRY_WAIT_MS));
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Downloads `url` whole. A download that keeps delivering data may take until `deadline` aborts. Throws
+ * `TransientDownloadError` for a failure another try may not hit, and a plain error for one it would hit again.
+ */
+async function fetchWhole(url: string, deadline: AbortSignal): Promise<Buffer> {
+  const stall = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  const moved = (): void => {
+    clearTimeout(timer);
+    timer = setTimeout(() => stall.abort(), STALL_TIMEOUT_MS);
+  };
+  let status: number;
+  moved();
+  try {
+    const response = await fetch(url, { signal: AbortSignal.any([stall.signal, deadline]) });
+    if (response.ok) {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of response.body ?? []) {
+        moved();
+        chunks.push(chunk);
+      }
+      return Buffer.concat(chunks);
+    }
+    status = response.status;
+    await response.body?.cancel();
+  } catch (error) {
+    if (deadline.aborted) throw new Error(`download of ${url} did not finish within ${DOWNLOAD_DEADLINE_MS / 1000} seconds`);
+    if (stall.signal.aborted) throw new TransientDownloadError(`download of ${url} stalled, no data for ${STALL_TIMEOUT_MS / 1000} seconds`);
+    // `fetch` reports a network failure as "fetch failed" and keeps the reason, such as a refused connection, in `cause`.
+    const cause = error instanceof Error && error.cause instanceof Error ? ` (${error.cause.message})` : '';
+    throw new TransientDownloadError(`download of ${url} failed: ${error instanceof Error ? error.message : String(error)}${cause}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  const failed = `download of ${url} failed with HTTP ${status}`;
+  throw status >= 500 || status === 408 || status === 429 ? new TransientDownloadError(failed) : new Error(failed);
 }
 
 /** Returns a new empty directory in the runner's temp directory, as a real path so tools report paths under it. */
@@ -67,13 +133,11 @@ function sharedInstall({ url, integrity }: PinnedDownload): { path: string; read
   return writableOnlyByUs(path) && existsSync(download) && matchesIntegrity(readFileSync(download), integrity) ? { path, ready: true } : undefined;
 }
 
-async function downloadAndInstall(download: PinnedDownload): Promise<string> {
+async function downloadAndInstall(download: PinnedDownload, deadline: AbortSignal): Promise<string> {
   const { url, integrity } = download;
   const shared = sharedInstall(download);
   if (shared?.ready) return shared.path;
-  const response = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
-  if (!response.ok) throw new Error(`download of ${url} failed with HTTP ${response.status}`);
-  const data = Buffer.from(await response.arrayBuffer());
+  const data = await fetchWhole(url, deadline);
   if (!matchesIntegrity(data, integrity)) {
     throw new Error(`download of ${url} does not match its pinned ${integrity.slice(0, integrity.indexOf('-'))} digest`);
   }

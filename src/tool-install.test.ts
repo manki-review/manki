@@ -6,6 +6,19 @@ import { basename, join } from 'path';
 
 import { installPinned } from './tool-install';
 
+/** Starts `call` and lets `ms` of fake time pass, so its waits and timeouts run without real time. */
+async function afterTime<T>(call: () => Promise<T>, ms: number): Promise<T> {
+  jest.useFakeTimers();
+  try {
+    const result = call();
+    result.catch(() => {});
+    await jest.advanceTimersByTimeAsync(ms);
+    return await result;
+  } finally {
+    jest.useRealTimers();
+  }
+}
+
 function tarball(): Buffer {
   const dir = mkdtempSync(join(tmpdir(), 'manki-tool-test-'));
   mkdirSync(join(dir, 'package'));
@@ -96,9 +109,71 @@ describe('installPinned', () => {
 
     fetchMock.mockImplementation(async () => new Response('gone', { status: 404 }));
     await expect(installPinned({ url: 'https://example.test/tool-3.tgz', integrity })).rejects.toThrow(/HTTP 404/);
+    // Neither would end differently on another try, so each was downloaded once.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     fetchMock.mockImplementation(async () => new Response(data));
     const retried = await installPinned({ url: 'https://example.test/tool-3.tgz', integrity });
     expect(readFileSync(join(retried, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+  });
+
+  /** A response whose body delivers one of `chunks` every `gapMs` and then ends, or goes on with single bytes when `endless`. */
+  function slowResponse(chunks: Uint8Array[], gapMs: number, signal: AbortSignal, endless = false): Response {
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        signal.addEventListener('abort', () => controller.error(signal.reason));
+        const next = (index: number): void => {
+          setTimeout(() => {
+            if (signal.aborted) return;
+            if (index < chunks.length) controller.enqueue(chunks[index]);
+            else if (endless) controller.enqueue(new Uint8Array(1));
+            else return controller.close();
+            next(index + 1);
+          }, gapMs);
+        };
+        next(0);
+      },
+    }));
+  }
+  const signalOf = (init?: RequestInit): AbortSignal => init!.signal!;
+  /** A body that never delivers a byte. */
+  const stalled = async (_url: unknown, init?: RequestInit): Promise<Response> => slowResponse([], 3_600_000, signalOf(init));
+
+  it.each([
+    ['a network error', async () => { throw new TypeError('fetch failed'); }, /failed: fetch failed/],
+    ['a server error', async () => new Response('down', { status: 503 }), /HTTP 503/],
+    ['a throttled download', async () => new Response('slow down', { status: 429 }), /HTTP 429/],
+    ['a download that stalls', stalled, /stalled, no data for 20 seconds/],
+  ])('tries %s three times at most, and installs from the first try that works', async (name, failing, reason) => {
+    const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const url = `https://example.test/${name.replace(/ /g, '-')}.tgz`;
+    try {
+      fetchMock.mockImplementation(failing);
+      await expect(afterTime(() => installPinned({ url, integrity }), 70_000)).rejects.toThrow(reason);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(stderr.mock.calls.map(([line]) => String(line))).toEqual([2, 3].map(attempt => expect.stringMatching(new RegExp(`${reason.source}, trying again \\(try ${attempt} of 3\\)\n$`))));
+
+      fetchMock.mockClear().mockImplementationOnce(failing).mockImplementationOnce(failing).mockImplementation(async () => new Response(data));
+      const dir = await afterTime(() => installPinned({ url, integrity }), 50_000);
+      expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('lets a slow download finish while data keeps arriving, and stops one that takes over four minutes without another try', async () => {
+    const third = Math.ceil(data.length / 3);
+    const chunks = [data.subarray(0, third), data.subarray(third, 2 * third), data.subarray(2 * third)];
+    // A minute in all, three times what a stalled download gets, with 15 seconds between two chunks.
+    fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => slowResponse(chunks, 15_000, signalOf(init)));
+    const dir = await afterTime(() => installPinned({ url: 'https://example.test/slow.tgz', integrity }), 60_000);
+    expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockClear().mockImplementation(async (_url: unknown, init?: RequestInit) => slowResponse([], 15_000, signalOf(init), true));
+    await expect(afterTime(() => installPinned({ url: 'https://example.test/endless.tgz', integrity }), 240_000))
+      .rejects.toThrow('download of https://example.test/endless.tgz did not finish within 240 seconds');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
