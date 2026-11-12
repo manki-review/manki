@@ -25,6 +25,12 @@ export interface PinnedDownload {
 /** A download failure another try may not hit: no connection, a stalled transfer, or a 408, 429 or 5xx answer. */
 class TransientDownloadError extends Error {}
 
+/**
+ * A download failure every try of this run would hit again: a digest that differs from the pinned one, a status such
+ * as 404, or the time for all tries used up. Only such a failure is kept for the run.
+ */
+class LastingDownloadError extends Error {}
+
 const installs = new Map<string, Promise<string>>();
 
 /**
@@ -32,8 +38,9 @@ const installs = new Map<string, Promise<string>>();
  * any other file is saved there as an executable under its own name. Each download is installed at most once per run.
  * In the runner's temp folder, other processes such as Manki's tool server reuse it too. A download that fails in
  * passing is tried up to `DOWNLOAD_TRIES` times. Throws when it still fails, and the next call then tries again.
- * Throws at once for a failure another try would hit again, such as a digest that differs from `integrity` or a
- * download too slow for `DOWNLOAD_DEADLINE_MS`. Every later call of the run gets that failure without a download.
+ * Throws at once for a `LastingDownloadError`, such as a digest that differs from `integrity` or a download too slow
+ * for `DOWNLOAD_DEADLINE_MS`. Every later call of the run gets that failure without a download. Any other failure,
+ * such as a full disk or an archive that does not unpack, throws at once too, and the next call tries again.
  */
 export function installPinned(download: PinnedDownload): Promise<string> {
   let install = installs.get(download.url);
@@ -41,7 +48,7 @@ export function installPinned(download: PinnedDownload): Promise<string> {
     install = installWithRetries(download);
     installs.set(download.url, install);
     install.catch((error: unknown) => {
-      if (error instanceof TransientDownloadError) installs.delete(download.url);
+      if (!(error instanceof LastingDownloadError)) installs.delete(download.url);
     });
   }
   return install;
@@ -68,7 +75,7 @@ async function installWithRetries(download: PinnedDownload): Promise<string> {
 
 /**
  * Downloads `url` whole. A download that keeps delivering data may take until `deadline` aborts. Throws
- * `TransientDownloadError` for a failure another try may not hit, and a plain error for one it would hit again.
+ * `TransientDownloadError` for a failure another try may not hit, and `LastingDownloadError` for one it would hit again.
  */
 async function fetchWhole(url: string, deadline: AbortSignal): Promise<Buffer> {
   const stall = new AbortController();
@@ -92,7 +99,7 @@ async function fetchWhole(url: string, deadline: AbortSignal): Promise<Buffer> {
     status = response.status;
     await response.body?.cancel();
   } catch (error) {
-    if (deadline.aborted) throw new Error(`download of ${url} did not finish within ${DOWNLOAD_DEADLINE_MS / 1000} seconds`);
+    if (deadline.aborted) throw new LastingDownloadError(`download of ${url} did not finish within ${DOWNLOAD_DEADLINE_MS / 1000} seconds`);
     if (stall.signal.aborted) throw new TransientDownloadError(`download of ${url} stalled, no data for ${STALL_TIMEOUT_MS / 1000} seconds`);
     // `fetch` reports a network failure as "fetch failed" and keeps the reason, such as a refused connection, in `cause`.
     const cause = error instanceof Error && error.cause instanceof Error ? ` (${error.cause.message})` : '';
@@ -101,7 +108,7 @@ async function fetchWhole(url: string, deadline: AbortSignal): Promise<Buffer> {
     clearTimeout(timer);
   }
   const failed = `download of ${url} failed with HTTP ${status}`;
-  throw status >= 500 || status === 408 || status === 429 ? new TransientDownloadError(failed) : new Error(failed);
+  throw status >= 500 || status === 408 || status === 429 ? new TransientDownloadError(failed) : new LastingDownloadError(failed);
 }
 
 /** Returns a new empty directory in the runner's temp directory, as a real path so tools report paths under it. */
@@ -142,7 +149,7 @@ async function downloadAndInstall(download: PinnedDownload, deadline: AbortSigna
   if (shared?.ready) return shared.path;
   const data = await fetchWhole(url, deadline);
   if (!matchesIntegrity(data, integrity)) {
-    throw new Error(`download of ${url} does not match its pinned ${integrity.slice(0, integrity.indexOf('-'))} digest`);
+    throw new LastingDownloadError(`download of ${url} does not match its pinned ${integrity.slice(0, integrity.indexOf('-'))} digest`);
   }
   const dir = makeScratchDir('tool');
   const name = basename(new URL(url).pathname);

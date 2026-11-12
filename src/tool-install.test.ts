@@ -119,6 +119,30 @@ describe('installPinned', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('forgets a failure of unpacking or of the disk, so the next call downloads again', async () => {
+    // Only a failure every try of the run would hit again is kept. An archive `tar` cannot read is not one of them.
+    const unreadable = Buffer.from('not an archive');
+    fetchMock.mockImplementation(async () => new Response(unreadable));
+    const download = { url: 'https://example.test/unreadable.tgz', integrity: `sha512-${createHash('sha512').update(unreadable).digest('base64')}` };
+    for (const downloads of [1, 2]) {
+      await expect(installPinned(download)).rejects.toThrow(/tar/);
+      expect(fetchMock).toHaveBeenCalledTimes(downloads);
+    }
+
+    // A temp folder that cannot be written fails after the download too, and the call after the repair installs.
+    fetchMock.mockClear().mockImplementation(async () => new Response(data));
+    const temp = process.env.RUNNER_TEMP!;
+    chmodSync(temp, 0o500);
+    try {
+      await expect(installPinned({ url: 'https://example.test/read-only-temp.tgz', integrity })).rejects.toThrow(/EACCES/);
+    } finally {
+      chmodSync(temp, 0o700);
+    }
+    const dir = await installPinned({ url: 'https://example.test/read-only-temp.tgz', integrity });
+    expect(readFileSync(join(dir, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   /** A response whose body delivers one of `chunks` every `gapMs` and then ends, or goes on with single bytes when `endless`. */
   function slowResponse(chunks: Uint8Array[], gapMs: number, signal: AbortSignal, endless = false): Response {
     return new Response(new ReadableStream<Uint8Array>({
