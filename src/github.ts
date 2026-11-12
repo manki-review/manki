@@ -1090,6 +1090,7 @@ export async function updateProgressDashboard(
  */
 export async function dismissPreviousReviews(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
@@ -1113,7 +1114,7 @@ export async function dismissPreviousReviews(
 
   for (const review of reviews) {
     const onKeptCommit = keepCommit !== undefined && review.commit_id === keepCommit;
-    if (review.id !== keepReviewId && !onKeptCommit && review.body?.includes(BOT_MARKER) && review.state === state) {
+    if (review.id !== keepReviewId && !onKeptCommit && isBotUser(bot, review.user) && review.body?.includes(BOT_MARKER) && review.state === state) {
       assertWritesAllowed();
       try {
         await octokit.rest.pulls.dismissReview({

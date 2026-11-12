@@ -3928,7 +3928,9 @@ describe('settings block placement', () => {
 });
 
 describe('dismissPreviousReviews', () => {
-  it('dismisses reviews with bot marker and CHANGES_REQUESTED state', async () => {
+  const MANKI = { login: TEST_BOT.logins[0] };
+
+  it('dismisses only Manki\'s own reviews with the marker and CHANGES_REQUESTED state', async () => {
     const dismissMock = jest.fn().mockResolvedValue({});
     const mockOctokit = {
       paginate: jest.fn(paginateSinglePage),
@@ -3936,10 +3938,14 @@ describe('dismissPreviousReviews', () => {
         pulls: {
           listReviews: jest.fn().mockResolvedValue({
             data: [
-              { id: 1, body: `${BOT_MARKER}\nSome review`, state: 'CHANGES_REQUESTED' },
-              { id: 2, body: 'Human review', state: 'CHANGES_REQUESTED' },
-              { id: 3, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED' },
-              { id: 4, body: `${BOT_MARKER}\nNew review`, state: 'CHANGES_REQUESTED' },
+              { id: 1, body: `${BOT_MARKER}\nSome review`, state: 'CHANGES_REQUESTED', user: MANKI },
+              { id: 2, body: 'Human review', state: 'CHANGES_REQUESTED', user: { login: 'alice' } },
+              { id: 3, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED', user: MANKI },
+              { id: 4, body: `${BOT_MARKER}\nNew review`, state: 'CHANGES_REQUESTED', user: MANKI },
+              // A person's review that quotes the marker stays, whatever the person is called.
+              { id: 5, body: `Manki wrote:\n${BOT_MARKER}`, state: 'CHANGES_REQUESTED', user: { login: 'alice' } },
+              { id: 6, body: `${BOT_MARKER}\nSome review`, state: 'CHANGES_REQUESTED', user: { login: 'manki-review' } },
+              { id: 7, body: `${BOT_MARKER}\nSome review`, state: 'CHANGES_REQUESTED', user: null },
             ],
           }),
           dismissReview: dismissMock,
@@ -3947,7 +3953,7 @@ describe('dismissPreviousReviews', () => {
       },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1, 4);
+    await dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 4);
     expect(dismissMock).toHaveBeenCalledTimes(1);
     expect(dismissMock).toHaveBeenCalledWith(expect.objectContaining({ review_id: 1 }));
   });
@@ -3955,22 +3961,22 @@ describe('dismissPreviousReviews', () => {
   it('keeps an approval of `keepCommit` and dismisses the ones of older commits', async () => {
     const dismissMock = jest.fn().mockResolvedValue({});
     const reviews = [
-      { id: 1, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED', commit_id: 'old' },
-      { id: 2, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED', commit_id: 'head' },
-      { id: 3, body: `${BOT_MARKER}\nIncomplete`, state: 'COMMENTED', commit_id: 'head' },
+      { id: 1, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED', commit_id: 'old', user: MANKI },
+      { id: 2, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED', commit_id: 'head', user: MANKI },
+      { id: 3, body: `${BOT_MARKER}\nIncomplete`, state: 'COMMENTED', commit_id: 'head', user: MANKI },
     ];
     const mockOctokit = {
       paginate: jest.fn().mockResolvedValue(reviews),
       rest: { pulls: { dismissReview: dismissMock } },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1, 3, 'APPROVED', 'head');
+    await dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 3, 'APPROVED', 'head');
     expect(dismissMock.mock.calls).toEqual([[expect.objectContaining({ review_id: 1 })]]);
   });
 
   it('dismisses reviews past the first page', async () => {
     const dismissMock = jest.fn().mockResolvedValue({});
-    const reviews = Array.from({ length: 35 }, (_, i) => ({ id: i + 1, body: `${BOT_MARKER}\nReview`, state: 'CHANGES_REQUESTED' }));
+    const reviews = Array.from({ length: 35 }, (_, i) => ({ id: i + 1, body: `${BOT_MARKER}\nReview`, state: 'CHANGES_REQUESTED', user: MANKI }));
     const mockOctokit = {
       paginate: jest.fn().mockResolvedValue(reviews),
       rest: {
@@ -3982,7 +3988,7 @@ describe('dismissPreviousReviews', () => {
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
     const keepReviewId = reviews[reviews.length - 1].id;
-    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1, keepReviewId);
+    await dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, keepReviewId);
 
     expect(mockOctokit.paginate).toHaveBeenCalledWith(mockOctokit.rest.pulls.listReviews, expect.objectContaining({ per_page: 100 }));
     expect(dismissMock).toHaveBeenCalledTimes(reviews.length - 1);
@@ -4002,7 +4008,7 @@ describe('dismissPreviousReviews', () => {
       },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    await expect(dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1, 4)).resolves.toBeUndefined();
+    await expect(dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1, 4)).resolves.toBeUndefined();
     expect(dismissMock).not.toHaveBeenCalled();
     expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to dismiss previous reviews: Server Error'));
     warningSpy.mockRestore();
@@ -4015,14 +4021,14 @@ describe('dismissPreviousReviews', () => {
       rest: {
         pulls: {
           listReviews: jest.fn().mockResolvedValue({
-            data: [{ id: 1, body: `${BOT_MARKER}\nReview`, state: 'CHANGES_REQUESTED' }],
+            data: [{ id: 1, body: `${BOT_MARKER}\nReview`, state: 'CHANGES_REQUESTED', user: MANKI }],
           }),
           dismissReview: jest.fn().mockRejectedValue(new Error('Forbidden')),
         },
       },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    await expect(dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1)).resolves.toBeUndefined();
+    await expect(dismissPreviousReviews(mockOctokit, TEST_BOT, 'owner', 'repo', 1)).resolves.toBeUndefined();
     expect(warningSpy).toHaveBeenCalledWith('Could not dismiss the previous review #1, it still requests changes: Forbidden');
     warningSpy.mockRestore();
   });

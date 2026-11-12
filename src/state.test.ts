@@ -1154,7 +1154,7 @@ describe('checkAndAutoApprove', () => {
 
     await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 42);
 
-    expect(dismissPreviousReviews).toHaveBeenCalledWith(octokit, 'owner', 'repo', 42);
+    expect(dismissPreviousReviews).toHaveBeenCalledWith(octokit, TEST_BOT, 'owner', 'repo', 42);
     expect(createReviewMock.mock.invocationCallOrder[0]).toBeLessThan(dismissPreviousReviews.mock.invocationCallOrder[0]);
   });
 
