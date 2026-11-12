@@ -2110,7 +2110,7 @@ async function handleIssueInteraction(): Promise<void> {
   if (!issueNumber) return;
 
   const { octokit, bot } = await getAuth();
-  const { config, held } = await loadEventConfig(octokit, owner, repo, 'main');
+  const { config, held } = await loadEventConfig(octokit, owner, repo, payload.repository?.default_branch ?? 'main');
 
   const { store: memory } = await openMemoryStore(octokit, config.memory, owner, repo, issueNumber);
 
