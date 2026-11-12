@@ -51,7 +51,7 @@ Manki can post as an App you create, with the `github_app_id` and `github_app_pr
 
 ## Step 2: Authentication Secrets
 
-> **Do you need a GitHub token?** No. `github_token` defaults to the workflow's own token. Manki reviews and posts with the GitHub App's token (Step 1) as `manki-review[bot]`, and uses the workflow token only to read the dispatched event and CI results. When the token service times out, cannot be reached or answers with a server error, Manki tries once more. A refusal is not tried again. Without an App token it fails the run and says so on the PR with the workflow token. Review memory of a public repo needs no token either: the token service keeps it in the central memory repository for you. Only a memory repo of your own, which a private repo needs, takes the `memory_repo_token` input, see [Review memory](memory.md).
+> **Do you need a GitHub token?** No. `github_token` defaults to the workflow's own token. Manki reviews and posts with the GitHub App's token (Step 1) as `manki-review[bot]`, and uses the workflow token only to read the dispatched event and CI results. When the token service times out, cannot be reached or answers with a server error, Manki tries once more. It does the same for an answer that does not come from the service itself, such as an error page of the network in front of it. The service's own answer that it has nothing for the run (HTTP 403 or 404) is not tried again. Neither is a call the service throttles (HTTP 429), since its limit counts per minute and the second try would come two seconds later. Without an App token, or when the service cannot tell it the PR's pause setting and ticked boxes, it fails the run and says so on the PR with the workflow token. Review memory of a public repo needs no token either: the token service keeps it in the central memory repository for you. Only a memory repo of your own, which a private repo needs, takes the `memory_repo_token` input, see [Review memory](memory.md).
 
 ### Choosing a provider
 
@@ -185,7 +185,7 @@ on:
 permissions:
   contents: read          # read repo files and diffs
   pull-requests: write    # post review comments and approvals
-  issues: write           # post a note on the PR when the token service gives no token
+  issues: write           # post a note on the PR when the token service fails
   id-token: write         # OIDC token for GitHub App identity
   actions: read           # verify workflow run is legitimate
   # checks: read          # optional: read CI annotations, see "Reading CI results"

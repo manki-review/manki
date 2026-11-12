@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { minimatch } from 'minimatch';
 
-import { callTokenService } from './auth';
+import { callTokenService, NOTHING_FOR_RUN } from './auth';
 import { Finding, FindingSeverity, MemorySkipReason, SECURITY_TAG, UNBUILT_TAG, UNPROVEN_TAG, wouldBlockIfTrue } from './types';
 import { redactSecrets, redactSecretsDeep } from './utils';
 
@@ -182,13 +182,17 @@ function serviceFile(file: ServiceFile): StoredFile {
 
 /** The memory the token service keeps for `owner/repo` in the central memory repository, for the run on `pr`. */
 function serviceMemoryStore(owner: string, repo: string, pr: number): MemoryStore {
+  // Only the read is tried again after a failure. A write or an append that reached the repository would be applied twice.
+  const failed = (endpoint: string, status: number) => new Error(`the token service answered ${status} to \`/memory/${endpoint}\``);
   const call = async (endpoint: string, body: object) => {
-    const response = await callTokenService(`memory/${endpoint}`, { owner, repo, pr, ...body });
+    // A 409 is the service's answer to a write of a file that changed since it was read.
+    const response = await callTokenService(`memory/${endpoint}`, { owner, repo, pr, ...body }, [...NOTHING_FOR_RUN, 409], endpoint === 'read');
     if (!response) throw new Error('the run has no OIDC token for the token service');
+    // Any other failed reply, also a 403 or 409 that is not the service's own, says nothing about the run's memory or the file.
+    if (response.unknown) throw failed(endpoint, response.status);
     if (response.status === 403) throw new MemoryRefusedError(endpoint);
     return response;
   };
-  const failed = (endpoint: string, status: number) => new Error(`the token service answered ${status} to \`/memory/${endpoint}\``);
   const read = async () => {
     const response = await call('read', {});
     if (!response.ok) throw failed('read', response.status);

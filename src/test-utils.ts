@@ -57,6 +57,19 @@ export async function expectLinearTime(
   expect(large).toBeLessThan(bound);
 }
 
+/** Runs `call` with fake timers moved on by `ms`, which by default passes the wait before a token service retry. */
+export async function pastRetryWait<T>(call: () => Promise<T>, ms = 2000): Promise<T> {
+  jest.useFakeTimers();
+  try {
+    const result = call();
+    result.catch(() => {});
+    await jest.advanceTimersByTimeAsync(ms);
+    return await result;
+  } finally {
+    jest.useRealTimers();
+  }
+}
+
 /** `pageInfo` of the last page of a GraphQL connection. */
 export const LAST_PAGE = { hasNextPage: false, endCursor: null };
 

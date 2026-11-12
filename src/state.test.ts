@@ -1486,6 +1486,19 @@ describe('checkAndAutoApprove', () => {
         .toBe('Manki has not reviewed `head-sh`. Automatic review is paused in the settings block. Tick **Review again** there, or comment `@manki review`, to review it. Untick **Pause automatic reviews** to lift the pause.');
       expect(await asked(staleHeadOctokit(notice(), [])))
         .toBe(NOT_REVIEWED_YET);
+
+      // A token service that cannot say whether the PR is paused must not end in the promise of a push review.
+      const unknown = notice();
+      jest.mocked(authModule.fetchPrState).mockRejectedValueOnce(new Error('HTTP 503'));
+      expect(await asked(staleHeadOctokit(unknown, [])))
+        .toBe('Manki has not reviewed `head-sh`. Manki could not read whether automatic review is paused for this PR. If no review of the commit starts, tick **Review again** in the settings block, or comment `@manki review`.');
+      expect(unknown.mock.calls[0][0].body).toContain('**Auto-approve withheld** for `head-sh`');
+      expect(unknown.mock.calls[0][0].body).toContain('"reason":"pause_unknown"');
+
+      // A pause the rounds show is certain, so it wins over the unknown Pause box.
+      jest.mocked(authModule.fetchPrState).mockRejectedValueOnce(new Error('HTTP 503'));
+      expect(await asked(staleHeadOctokit(notice(), [formatReviewRecord(notConverging)])))
+        .toMatch(/^Manki has not reviewed `head-sh`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
     });
   });
 });
